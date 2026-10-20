@@ -312,7 +312,8 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
         window.shows(Box::leak(format!("channel-move-{plans}").into_boxed_str()))
     });
     window.click(Box::leak(format!("channel-move-{plans}").into_boxed_str()));
-    window.click("category-choice-none");
+    window.click("channel-group-none");
+    window.click("channel-place-0");
     until_model(&world, &other, "the channel without a category", |model| {
         model
             .channel(plans)
@@ -536,4 +537,309 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
                 if matches!(&settings.page, ChannelPageView::Overview(page) if page.permanent)
         )
     });
+}
+
+/// The channels page of the open administration.
+fn channels_page(window: &mut Window) -> Option<junto_client::state::admin::view::ChannelsPage> {
+    match window.admin().map(|view| view.scope) {
+        Some(Scope::Server {
+            page: ServerPage::Channels(page),
+            ..
+        }) => Some(page),
+        _ => None,
+    }
+}
+
+/// The channels of one group of the channels page, in their order.
+fn group_order(
+    window: &mut Window,
+    category_id: Option<junto_client_core::protocol::ids::CategoryId>,
+) -> Vec<ChannelId> {
+    channels_page(window)
+        .and_then(|page| {
+            page.groups
+                .into_iter()
+                .find(|group| group.category.as_ref().map(|category| category.id) == category_id)
+        })
+        .map(|group| group.channels.into_iter().map(|line| line.id).collect())
+        .unwrap_or_default()
+}
+
+/// Drags the handle of a channel onto another place of the channels page, as the pointer
+/// does. Returns whether a drag started.
+fn drag_channel(window: &mut Window, from: &'static str, to: &'static str) -> bool {
+    use gpui::{Modifiers, MouseButton, point, px};
+    let scroll = window.in_shell(|shell, _, _| shell.admin_scroll_handle());
+    let start = window.reveal(&scroll, from).center();
+    window
+        .cx
+        .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    window.cx.simulate_mouse_move(
+        start + point(px(0.0), px(12.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    let started = window.cx.update(|_, cx| cx.has_active_drag());
+    let end = window.reveal(&scroll, to).center();
+    window
+        .cx
+        .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+    window
+        .cx
+        .simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    window.cx.run_until_parked();
+    started
+}
+
+#[gpui::test]
+fn an_administrator_drags_channels_to_another_place_and_category(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    let projects = world
+        .run(owner.api().create_category(
+            default,
+            &junto_client_core::protocol::structure::CreateCategory {
+                name: "Projects".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    let create = |name: &str, category_id| {
+        let channel = CreateChannel {
+            name: name.to_owned(),
+            kind: ChannelKind::Text,
+            category_id,
+            position: None,
+        };
+        world
+            .run(owner.api().create_channel(default, &channel))
+            .unwrap()
+            .id
+    };
+    let plans = create("plans", None);
+    let notes = create("notes", None);
+    let roadmap = create("roadmap", Some(projects));
+    let handle = |id: ChannelId| selector(format!("channel-handle-{id}"));
+    let row = |id: ChannelId| selector(format!("channel-line-{id}"));
+
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the channels", |window| {
+        group_order(window, Some(projects)) == [roadmap]
+            && group_order(window, None).ends_with(&[plans, notes])
+    });
+
+    // A channel dropped on a channel of another category takes its place there.
+    assert!(drag_channel(&mut window, handle(notes), row(roadmap)));
+    window.until("the channel is in the other category", |window| {
+        group_order(window, Some(projects)) == [notes, roadmap]
+    });
+    let held = world.run(owner.api().channels(default)).unwrap().channels;
+    let moved = held.iter().find(|channel| channel.id == notes).unwrap();
+    assert_eq!(moved.category_id, Some(projects));
+    assert!(!group_order(&mut window, None).contains(&notes));
+
+    // Inside a group the channel takes the place of the row that it is dropped on, and
+    // the channels between move one place.
+    let before = group_order(&mut window, None);
+    let first = before[0];
+    assert!(drag_channel(&mut window, handle(first), row(plans)));
+    let mut expected = before.clone();
+    expected.remove(0);
+    let at = expected.iter().position(|id| *id == plans).unwrap() + 1;
+    expected.insert(at, first);
+    window.until("the channel took the place", |window| {
+        group_order(window, None) == expected
+    });
+
+    // A channel dropped on the heading of a category goes to its end.
+    assert!(drag_channel(
+        &mut window,
+        handle(plans),
+        selector(format!("category-row-{projects}"))
+    ));
+    window.until("the channel is at the end of the category", |window| {
+        group_order(window, Some(projects)) == [notes, roadmap, plans]
+    });
+    assert!(!window.shows("channel-refused"));
+}
+
+/// A window of the member "Luca", who holds "manage channel" in the default workspace
+/// through a role, with the page of the channels open. The window reaches the server at
+/// `address`. Returns the window, the owner and the default workspace.
+fn arranger(
+    cx: &mut TestAppContext,
+    world: &World,
+    server: &crate::support::TestServer,
+    address: &str,
+) -> (tempfile::TempDir, Window, Admin, WorkspaceId) {
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::roles::CreateWorkspaceRole;
+    let owner = world.owner(server);
+    let default = owner.default_workspace(world);
+    let (directory, mut window) = member(cx, world, address, &owner, "Luca");
+    let luca = window.own_account();
+    let api = owner.handle.api();
+    let role = world
+        .run(api.create_workspace_role(
+            default,
+            &CreateWorkspaceRole {
+                name: "Arrangers".to_owned(),
+                permissions: vec![WorkspacePermission::ManageChannel],
+            },
+        ))
+        .unwrap();
+    world
+        .run(api.assign_workspace_role(default, luca, role.id))
+        .unwrap();
+    // The page of the channels joins the list of pages when the role arrives.
+    window.open_administration();
+    crate::admin_pages::open_page(&mut window, "admin-nav-channels", |window| {
+        channels_page(window).is_some()
+    });
+    (directory, window, owner, default)
+}
+
+/// Takes "manage channel" in one channel from every member.
+fn deny_managing(world: &World, owner: &Admin, workspace_id: WorkspaceId, channel_id: ChannelId) {
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::structure::SetChannelOverride;
+    let api = owner.handle.api();
+    let everyone = world
+        .run(api.workspace_roles(workspace_id))
+        .unwrap()
+        .into_iter()
+        .find(|role| role.is_everyone)
+        .unwrap();
+    world
+        .run(api.set_channel_override(
+            channel_id,
+            everyone.id,
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ManageChannel],
+            },
+        ))
+        .unwrap();
+}
+
+/// The category and the position of each channel of a workspace on the server.
+fn server_places(
+    world: &World,
+    owner: &Admin,
+    workspace_id: WorkspaceId,
+) -> std::collections::HashMap<ChannelId, (Option<junto_client_core::protocol::ids::CategoryId>, i32)>
+{
+    world
+        .run(owner.handle.api().channels(workspace_id))
+        .unwrap()
+        .channels
+        .into_iter()
+        .map(|channel| (channel.id, (channel.category_id, channel.position)))
+        .collect()
+}
+
+#[gpui::test]
+fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &server.address());
+    let api = owner.handle.api();
+    let projects = world
+        .run(api.create_category(
+            default,
+            &junto_client_core::protocol::structure::CreateCategory {
+                name: "Projects".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    let create = |name: &str, category_id, position| {
+        let channel = CreateChannel {
+            name: name.to_owned(),
+            kind: ChannelKind::Text,
+            category_id,
+            position,
+        };
+        world.run(api.create_channel(default, &channel)).unwrap().id
+    };
+    let x = create("x", None, None);
+    let b = create("b", Some(projects), Some(10));
+    let c = create("c", Some(projects), Some(20));
+    // The member may change "x", and neither "b" nor "c".
+    deny_managing(&world, &owner, default, b);
+    deny_managing(&world, &owner, default, c);
+    window.until("the page shows what the member manages", |window| {
+        channels_page(window).is_some_and(|page| {
+            page.channel(x).is_some_and(|line| line.may_manage)
+                && [b, c]
+                    .iter()
+                    .all(|id| page.channel(*id).is_some_and(|line| !line.may_manage))
+        })
+    });
+    // A drag between "b" and "c" is offered: it changes "x" alone.
+    assert!(
+        channels_page(&mut window)
+            .unwrap()
+            .takes(x, Some(projects), 1)
+    );
+
+    // "Move to" offers the same place: the category, and then the place after "b".
+    window.click_named(format!("channel-move-{x}"));
+    window.click_named(format!("channel-group-{projects}"));
+    assert!(window.shows("channel-place-1"));
+    window.click("channel-place-1");
+    window.until("the channel is between the two", |window| {
+        group_order(window, Some(projects)) == [b, x, c]
+    });
+    let places = server_places(&world, &owner, default);
+    assert_eq!(places[&x], (Some(projects), 11));
+    assert_eq!(
+        (places[&b], places[&c]),
+        ((Some(projects), 10), (Some(projects), 20))
+    );
+    assert!(!window.shows("channel-refused") && !window.shows("channel-place-1"));
+}
+
+#[gpui::test]
+fn a_move_that_the_server_refuses_for_one_channel_moves_no_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    // The window reaches the server through a proxy, which holds the events of a change of
+    // the permissions while the page still shows the order of before.
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &proxy.address());
+    let x = owner.channel(&world, default, "x");
+    let next = owner.channel(&world, default, "next");
+    window.until("the page shows the two channels", |window| {
+        channels_page(window).is_some_and(|page| {
+            page.channel(x).is_some_and(|line| line.moves_down)
+                && page.channel(next).is_some_and(|line| line.may_manage)
+        })
+    });
+    let before = server_places(&world, &owner, default);
+    assert!(before[&x].1 < before[&next].1);
+
+    // The member loses "manage channel" in "next"; the window does not know it yet. "Down"
+    // exchanges the positions of "x" and "next".
+    proxy.hold_events();
+    deny_managing(&world, &owner, default, next);
+    window.click_named(format!("channel-down-{x}"));
+    window.until("the server refused the move", |window| {
+        window.shows("channel-refused")
+    });
+    assert_eq!(server_places(&world, &owner, default), before);
+    proxy.release_events();
+    window.until(
+        "the page shows that the member may not change the channel",
+        |window| {
+            channels_page(window)
+                .is_some_and(|page| page.channel(next).is_some_and(|line| !line.may_manage))
+        },
+    );
+    assert_eq!(server_places(&world, &owner, default), before);
 }

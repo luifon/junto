@@ -1,10 +1,12 @@
-//! The requests of the administration about the server itself: its logo (ADR 0101).
+//! The requests of the administration about the server itself: its logo (ADR 0101) and
+//! the limits of the files of messages (ADR 0408).
 
 use std::path::{Path, PathBuf};
 
 use gpui::Context;
 use junto_client_core::profile;
 use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::message::AttachmentLimits;
 
 use super::{Answered, AskKind};
 use crate::state::AppState;
@@ -56,6 +58,24 @@ impl AppState {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Replaces the limits of the files of messages. The route takes both limits, so the
+    /// limit that the person did not change is sent as the page shows it. The new limits
+    /// arrive with their event.
+    pub fn set_attachment_limits(
+        &mut self,
+        server_id: ServerId,
+        limits: AttachmentLimits,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin_ask(
+            server_id,
+            AskKind::AttachmentLimits,
+            |api| async move { api.set_attachment_limits(&limits).await },
+            |_, _, _| {},
+            cx,
+        );
     }
 
     /// Removes the logo of the server. The windows draw the generated picture again when

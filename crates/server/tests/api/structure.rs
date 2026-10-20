@@ -1303,3 +1303,117 @@ async fn the_database_refuses_states_that_break_the_invariants() {
         assert!(result.is_err(), "the database accepted: {what}");
     }
 }
+
+#[tokio::test]
+async fn channels_are_moved_together_or_not_at_all() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let manager = server.join(&owner, "Manager").await;
+    server
+        .grant_workspace(&owner, &manager, workspace.id, &[W::ManageChannel])
+        .await;
+    let everyone = everyone_role(&server, &owner, workspace.id).await;
+    let category: Category = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/categories", workspace.id),
+            &json!({ "name": "Projects" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let plans = create_channel(&server, &owner, workspace.id, "plans").await;
+    let notes = create_channel(&server, &owner, workspace.id, "notes").await;
+    let closed = create_channel(&server, &owner, workspace.id, "closed").await;
+    // The manager may not change "closed".
+    set_override(
+        &server,
+        &owner,
+        closed.id,
+        everyone.id,
+        &[],
+        &[W::ManageChannel],
+    )
+    .await
+    .ok::<ChannelOverride>(StatusCode::OK);
+    let path = format!("/api/v1/workspaces/{}/channels/positions", workspace.id);
+    let places = || async {
+        let list: ChannelList = server
+            .get(
+                &owner,
+                &format!("/api/v1/workspaces/{}/channels", workspace.id),
+            )
+            .await
+            .ok(StatusCode::OK);
+        list.channels
+            .into_iter()
+            .map(|channel| (channel.id, (channel.category_id, channel.position)))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let before = places().await;
+    let place = |channel: &Channel| json!({ "category_id": channel.category_id, "position": channel.position });
+    let to = |category_id: Option<_>, position: i32| json!({ "category_id": category_id, "position": position });
+
+    // A move of a channel that the manager may not change refuses the whole request: the
+    // first channel stays where it was.
+    server
+        .patch(
+            &manager,
+            &path,
+            &json!({ "moves": [
+                { "channel_id": plans.id, "from": place(&plans), "to": to(None, closed.position) },
+                { "channel_id": closed.id, "from": place(&closed), "to": to(None, plans.position) },
+            ]}),
+        )
+        .await
+        .error(ErrorCode::Forbidden);
+    assert_eq!(places().await, before);
+
+    // A channel that is no longer where the request read it: nothing changes.
+    server
+        .patch(
+            &manager,
+            &path,
+            &json!({ "moves": [
+                { "channel_id": plans.id, "from": place(&plans), "to": to(Some(category.id), 0) },
+                { "channel_id": notes.id, "from": to(None, notes.position + 1), "to": to(None, 0) },
+            ]}),
+        )
+        .await
+        .error(ErrorCode::Conflict);
+    assert_eq!(places().await, before);
+
+    // No move, and a channel named twice, are refused.
+    server
+        .patch(&manager, &path, &json!({ "moves": [] }))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .patch(
+            &manager,
+            &path,
+            &json!({ "moves": [
+                { "channel_id": plans.id, "from": place(&plans), "to": to(None, 5) },
+                { "channel_id": plans.id, "from": place(&plans), "to": to(None, 6) },
+            ]}),
+        )
+        .await
+        .error(ErrorCode::InvalidRequest);
+
+    // Every move applies: "plans" goes into the category, and "notes" takes its position.
+    server
+        .patch(
+            &manager,
+            &path,
+            &json!({ "moves": [
+                { "channel_id": plans.id, "from": place(&plans), "to": to(Some(category.id), 0) },
+                { "channel_id": notes.id, "from": place(&notes), "to": to(None, plans.position) },
+            ]}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let after = places().await;
+    assert_eq!(after[&plans.id], (Some(category.id), 0));
+    assert_eq!(after[&notes.id], (None, plans.position));
+    assert_eq!(after[&closed.id], before[&closed.id]);
+}

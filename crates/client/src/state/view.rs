@@ -2151,6 +2151,7 @@ fn workspace_view(
         names: names.clone(),
         own_roles: if direct { &[] } else { &workspace.own_role_ids },
         may_manage: allowed.manage_messages && !direct,
+        administrator: model.is_administrator(),
         open_thread: open_thread.map(|(_, root_id)| root_id),
         target: known
             .target

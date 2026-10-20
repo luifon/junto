@@ -27,8 +27,8 @@ use junto_protocol::roles::{
 use junto_protocol::secret::{InviteCode, LinkCode};
 use junto_protocol::structure::{
     Category, Channel, ChannelList, ChannelOverride, CreateCategory, CreateChannel,
-    CreateWorkspace, SetChannelOverride, UpdateCategory, UpdateChannel, UpdateWorkspace, Workspace,
-    WorkspaceMember,
+    CreateWorkspace, MoveChannels, SetChannelOverride, UpdateCategory, UpdateChannel,
+    UpdateWorkspace, Workspace, WorkspaceMember,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -642,6 +642,21 @@ impl ServerApi {
     ) -> Result<Channel, ApiError> {
         self.send(Method::Patch, format!("/channels/{channel_id}"), change)
             .await
+    }
+
+    /// Changes the category and the position of channels of one workspace, all or none.
+    /// The server refuses the whole request with `conflict` when a channel is no longer
+    /// where `from` states.
+    pub async fn move_channels(
+        &self,
+        workspace_id: WorkspaceId,
+        moves: &MoveChannels,
+    ) -> Result<(), ApiError> {
+        let body = Some(super::client::encode(moves)?);
+        let path = format!("/workspaces/{workspace_id}/channels/positions");
+        self.call(Method::Patch, path, Vec::new(), body)
+            .await
+            .map(|_| ())
     }
 
     pub async fn delete_channel(&self, channel_id: ChannelId) -> Result<(), ApiError> {

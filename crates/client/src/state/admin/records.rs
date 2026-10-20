@@ -19,7 +19,8 @@ use junto_client_core::protocol::access_token::CreateAccessToken;
 use junto_client_core::protocol::audit::{AuditEntry, AuditFilterQuery};
 use junto_client_core::protocol::export::ExportState;
 use junto_client_core::protocol::ids::{
-    AccessTokenId, AccountId, AuditEntryId, ExportId, ServerId, WorkspaceId,
+    AccessTokenId, AccountId, AuditEntryId, CategoryId, ChannelId, ExportId, ServerId,
+    ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
 use junto_client_core::transfers::{Stored, StoredKind, part_file};
 
@@ -58,6 +59,9 @@ static AUDIT_READS: AtomicU64 = AtomicU64::new(0);
 pub enum AuditScope {
     Server,
     Workspace(WorkspaceId),
+    /// A workspace that was deleted. The server keeps its entries for the administrators
+    /// (ADR 0308) and reads them from the route of a workspace.
+    DeletedWorkspace(WorkspaceId),
 }
 
 /// How far back the page reads the audit log.
@@ -68,21 +72,63 @@ pub enum AuditPeriod {
     Day,
     Week,
     Month,
+    /// From the start of the first date to the end of the last one, both on the clock of
+    /// the person (ADR 0798).
+    Dates {
+        from: time::Date,
+        to: time::Date,
+    },
 }
 
 impl AuditPeriod {
+    /// The periods that end at the read.
     pub const ALL: [Self; 4] = [Self::Any, Self::Day, Self::Week, Self::Month];
 
-    /// The time from which a read that starts at `now` asks for entries. Absent: from
-    /// the first entry of the log.
-    pub fn since(self, now: time::OffsetDateTime) -> Option<time::OffsetDateTime> {
+    /// The interval of a read that starts at `now`: its first moment, and the moment
+    /// before which it ends. An absent end is the read itself, and an absent start the
+    /// first entry of the log.
+    pub fn interval(
+        self,
+        now: time::OffsetDateTime,
+        zone: crate::state::feed::Zone,
+    ) -> (Option<time::OffsetDateTime>, Option<time::OffsetDateTime>) {
         let days = match self {
-            Self::Any => return None,
+            Self::Any => return (None, None),
             Self::Day => 1,
             Self::Week => 7,
             Self::Month => 30,
+            Self::Dates { from, to } => {
+                let end = to.next_day().map(|day| zone.start_of(day));
+                return (Some(zone.start_of(from)), end);
+            }
         };
-        Some(now - time::Duration::days(days))
+        (Some(now - time::Duration::days(days)), None)
+    }
+}
+
+/// What the filter by the thing concerned names: an identifier that an entry names, its
+/// workspace or its channel (ADR 0305).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuditTarget {
+    Account(AccountId),
+    Workspace(WorkspaceId),
+    Channel(ChannelId),
+    Category(CategoryId),
+    WorkspaceRole(WorkspaceRoleId),
+    ServerRole(ServerRoleId),
+}
+
+impl AuditTarget {
+    /// The identifier that the server matches.
+    pub fn id(self) -> uuid::Uuid {
+        match self {
+            Self::Account(id) => id.as_uuid(),
+            Self::Workspace(id) => id.as_uuid(),
+            Self::Channel(id) => id.as_uuid(),
+            Self::Category(id) => id.as_uuid(),
+            Self::WorkspaceRole(id) => id.as_uuid(),
+            Self::ServerRole(id) => id.as_uuid(),
+        }
     }
 }
 
@@ -94,8 +140,8 @@ pub struct AuditFilter {
     pub action: Option<&'static str>,
     /// The account that acted. Absent: every actor.
     pub actor: Option<AccountId>,
-    /// The account that the entries name. Absent: every entry.
-    pub about: Option<AccountId>,
+    /// What the entries name. Absent: every entry.
+    pub about: Option<AuditTarget>,
     pub period: AuditPeriod,
 }
 
@@ -109,12 +155,23 @@ impl AuditFilter {
 /// The most accounts that the page keeps as the people of its filters.
 pub(crate) const MOST_AUDIT_PEOPLE: usize = 200;
 
+/// What a read of the audit log asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditReadKind {
+    /// The first page of the log, which replaces the loaded entries.
+    First,
+    /// The page after the loaded entries, which is added to them.
+    Older,
+    /// The page after the loaded entries when the page holds the most entries that it
+    /// keeps: it replaces them, and the page counts them as passed.
+    Next,
+}
+
 /// Why the last read of the audit log failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AuditFailure {
     pub(crate) sentence: String,
-    /// The read asked for the page after the loaded entries.
-    pub(crate) older: bool,
+    pub(crate) read: AuditReadKind,
 }
 
 /// The entries of the audit log that the page has read. The audit log is no collection of
@@ -132,9 +189,16 @@ pub struct AuditLog {
     pub(crate) failed: Option<AuditFailure>,
     /// The filters that the entries were asked for with.
     pub(crate) filter: AuditFilter,
-    /// The start of the period that the first page of the entries was asked for with.
-    /// The read of an older page repeats it, so that both pages belong to one list.
-    pub(crate) since: Option<time::OffsetDateTime>,
+    /// The interval that the first page of the entries was asked for with. The read of an
+    /// older page repeats it, so that both pages belong to one list.
+    pub(crate) interval: (Option<time::OffsetDateTime>, Option<time::OffsetDateTime>),
+    /// The number of entries of the list, newer than the loaded ones, that the page let go
+    /// when it went on after the most entries that it keeps.
+    pub(crate) passed: usize,
+    /// The deleted workspace whose log the person opened, with its name as the entry of
+    /// its deletion states it. The scopes of the page offer it while the layer shows this
+    /// server.
+    pub(crate) deleted: Option<(WorkspaceId, String)>,
     /// The accounts that acted in an entry of a page that was read for the shown log,
     /// with any filter. The filters offer them.
     pub(crate) people: Vec<AccountId>,
@@ -146,15 +210,15 @@ pub struct AuditLog {
 /// the first page stated it, and the entry that the page continues after.
 pub(crate) fn audit_query(
     filter: &AuditFilter,
-    since: Option<time::OffsetDateTime>,
+    (since, until): (Option<time::OffsetDateTime>, Option<time::OffsetDateTime>),
     before: Option<AuditEntryId>,
 ) -> AuditFilterQuery {
     AuditFilterQuery {
         action: filter.action.map(str::to_owned),
         actor_id: filter.actor,
-        target_id: filter.about.map(|account_id| account_id.as_uuid()),
+        target_id: filter.about.map(AuditTarget::id),
         since,
-        until: None,
+        until,
         before,
         limit: Some(AUDIT_PAGE),
     }
@@ -777,10 +841,27 @@ impl AppState {
             audit.entries.clear();
             audit.next_before = None;
             audit.filter = AuditFilter::default();
-            audit.since = None;
+            audit.interval = (None, None);
+            audit.passed = 0;
             audit.people.clear();
         }
-        self.read_audit(server.api(), server_id, scope, None, cx);
+        self.read_audit(server.api(), server_id, scope, AuditReadKind::First, cx);
+    }
+
+    /// Shows the log of a deleted workspace, which the entry of its deletion in the log of
+    /// the server names (ADR 0308).
+    pub fn show_deleted_workspace_log(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.admin.audit.shown.map(|(of, _)| of) != Some(server_id) {
+            return;
+        }
+        self.admin.audit.deleted = Some((workspace_id, name));
+        self.show_audit_log(server_id, AuditScope::DeletedWorkspace(workspace_id), cx);
     }
 
     /// Reads the shown log of a server again from its start with these filters. The
@@ -805,7 +886,8 @@ impl AppState {
         audit.filter = filter;
         audit.entries.clear();
         audit.next_before = None;
-        self.read_audit(server.api(), server_id, scope, None, cx);
+        audit.passed = 0;
+        self.read_audit(server.api(), server_id, scope, AuditReadKind::First, cx);
     }
 
     /// Reads the page of entries after the loaded ones. Nothing is read while a read is
@@ -813,19 +895,36 @@ impl AppState {
     /// keeps.
     pub fn read_older_audit(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         let audit = &self.admin.audit;
+        if audit.entries.len() >= MOST_AUDIT_ENTRIES {
+            return;
+        }
+        self.read_on(server_id, AuditReadKind::Older, cx);
+    }
+
+    /// Goes on after the most entries that the page keeps: the next page of the same list
+    /// replaces the loaded entries, which the page counts as passed. "Read again" returns
+    /// to the newest entries.
+    pub fn continue_audit(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if self.admin.audit.entries.len() < MOST_AUDIT_ENTRIES {
+            return;
+        }
+        self.read_on(server_id, AuditReadKind::Next, cx);
+    }
+
+    /// Reads the page after the loaded entries of the shown log, unless a read is on its
+    /// way or the server holds no further entry.
+    fn read_on(&mut self, server_id: ServerId, kind: AuditReadKind, cx: &mut Context<Self>) {
+        let audit = &self.admin.audit;
         let Some((shown, scope)) = audit.shown else {
             return;
         };
-        if shown != server_id || audit.reading || audit.entries.len() >= MOST_AUDIT_ENTRIES {
+        if shown != server_id || audit.reading || audit.next_before.is_none() {
             return;
         }
-        let Some(before) = audit.next_before else {
-            return;
-        };
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        self.read_audit(server.api(), server_id, scope, Some(before), cx);
+        self.read_audit(server.api(), server_id, scope, kind, cx);
     }
 
     /// What the account may see on a server changed (ADR 0748): the shown log of that
@@ -841,7 +940,7 @@ impl AppState {
             return;
         };
         let concerned = match (scope, changed) {
-            (_, None) | (AuditScope::Server, Some(_)) => true,
+            (_, None) | (AuditScope::Server | AuditScope::DeletedWorkspace(_), Some(_)) => true,
             (AuditScope::Workspace(of), Some(changed)) => of == changed,
         };
         if shown != server_id || !concerned {
@@ -853,8 +952,9 @@ impl AppState {
         let audit = &mut self.admin.audit;
         audit.entries.clear();
         audit.next_before = None;
+        audit.passed = 0;
         audit.people.clear();
-        self.read_audit(server.api(), server_id, scope, None, cx);
+        self.read_audit(server.api(), server_id, scope, AuditReadKind::First, cx);
     }
 
     fn read_audit(
@@ -862,24 +962,31 @@ impl AppState {
         api: ServerApi,
         server_id: ServerId,
         scope: AuditScope,
-        before: Option<AuditEntryId>,
+        kind: AuditReadKind,
         cx: &mut Context<Self>,
     ) {
         let number = AUDIT_READS.fetch_add(1, Ordering::Relaxed) + 1;
+        let zone = self.known.zone;
         let audit = &mut self.admin.audit;
         audit.read = number;
         audit.reading = true;
         audit.failed = None;
         let filter = audit.filter;
-        let since = match before {
-            Some(_) => audit.since,
-            None => filter.period.since(time::OffsetDateTime::now_utc()),
+        let (before, interval) = match kind {
+            AuditReadKind::First => (
+                None,
+                filter
+                    .period
+                    .interval(time::OffsetDateTime::now_utc(), zone),
+            ),
+            AuditReadKind::Older | AuditReadKind::Next => (audit.next_before, audit.interval),
         };
-        let query = audit_query(&filter, since, before);
+        let query = audit_query(&filter, interval, before);
         cx.spawn(async move |this, cx| {
             let read = match scope {
                 AuditScope::Server => api.server_audit_log(&query).await,
-                AuditScope::Workspace(workspace_id) => {
+                AuditScope::Workspace(workspace_id)
+                | AuditScope::DeletedWorkspace(workspace_id) => {
                     api.workspace_audit_log(workspace_id, &query).await
                 }
             };
@@ -893,9 +1000,17 @@ impl AppState {
                 audit.reading = false;
                 match read {
                     Ok(page) => {
-                        if before.is_none() {
-                            audit.entries.clear();
-                            audit.since = since;
+                        match kind {
+                            AuditReadKind::First => {
+                                audit.entries.clear();
+                                audit.interval = interval;
+                                audit.passed = 0;
+                            }
+                            AuditReadKind::Older => {}
+                            AuditReadKind::Next => {
+                                audit.passed += audit.entries.len();
+                                audit.entries.clear();
+                            }
                         }
                         for actor in page.entries.iter().filter_map(|entry| entry.actor_id) {
                             if audit.people.len() < MOST_AUDIT_PEOPLE
@@ -911,7 +1026,7 @@ impl AppState {
                     Err(error) => {
                         audit.failed = Some(AuditFailure {
                             sentence: text::admin::records::audit_failure(&error),
-                            older: before.is_some(),
+                            read: kind,
                         });
                     }
                 }
@@ -969,7 +1084,11 @@ impl AuditLog {
         self.reading = false;
         self.failed = Some(AuditFailure {
             sentence: sentence.into(),
-            older: !self.entries.is_empty(),
+            read: if self.entries.is_empty() {
+                AuditReadKind::First
+            } else {
+                AuditReadKind::Older
+            },
         });
         self
     }
@@ -1025,14 +1144,19 @@ mod tests {
 
     #[test]
     fn a_period_starts_a_number_of_days_before_the_read_and_any_time_has_no_start() {
+        use crate::state::feed::Zone;
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
-        assert_eq!(AuditPeriod::Any.since(now), None);
+        let zone = Zone::Fixed(time::UtcOffset::UTC);
+        assert_eq!(AuditPeriod::Any.interval(now, zone), (None, None));
         for (period, days) in [
             (AuditPeriod::Day, 1),
             (AuditPeriod::Week, 7),
             (AuditPeriod::Month, 30),
         ] {
-            assert_eq!(period.since(now), Some(now - time::Duration::days(days)));
+            assert_eq!(
+                period.interval(now, zone),
+                (Some(now - time::Duration::days(days)), None)
+            );
         }
         assert_eq!(AuditPeriod::ALL[0], AuditPeriod::default());
         assert!(!AuditFilter::default().is_set());
@@ -1044,17 +1168,53 @@ mod tests {
     }
 
     #[test]
-    fn the_request_of_a_page_states_the_filters_and_an_older_page_repeats_their_start() {
+    fn dates_start_and_end_at_midnight_on_the_clock_of_the_person() {
+        use crate::state::feed::Zone;
+        let date =
+            |day: u8| time::Date::from_calendar_date(2026, time::Month::October, day).unwrap();
+        let at = |day: u8, hour: u8| date(day).with_hms(hour, 0, 0).unwrap().assume_utc();
+        let now = at(19, 12);
+        let period = AuditPeriod::Dates {
+            from: date(1),
+            to: date(3),
+        };
+        // Three hours west of UTC: midnight there is three in the morning in UTC.
+        let west = Zone::Fixed(time::UtcOffset::from_hms(-3, 0, 0).unwrap());
+        assert_eq!(period.interval(now, west), (Some(at(1, 3)), Some(at(4, 3))));
+        // A zone with a change of its clock: each date follows its own offset.
+        let berlin = Zone::Named(chrono_tz::Europe::Berlin);
+        let around = AuditPeriod::Dates {
+            from: date(24),
+            to: date(25),
+        };
+        assert_eq!(
+            around.interval(now, berlin),
+            (Some(at(23, 22)), Some(at(25, 23)))
+        );
+        // The same date as start and end is one whole day.
+        let one = AuditPeriod::Dates {
+            from: date(19),
+            to: date(19),
+        };
+        let utc = Zone::Fixed(time::UtcOffset::UTC);
+        assert_eq!(one.interval(now, utc), (Some(at(19, 0)), Some(at(20, 0))));
+    }
+
+    #[test]
+    fn the_request_of_a_page_states_the_filters_and_an_older_page_repeats_their_interval() {
+        use crate::state::feed::Zone;
         let (actor, about) = (AccountId::generate(), AccountId::generate());
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let filter = AuditFilter {
             action: Some("account_banned"),
             actor: Some(actor),
-            about: Some(about),
+            about: Some(AuditTarget::Account(about)),
             period: AuditPeriod::Week,
         };
-        let since = filter.period.since(now);
-        let first = audit_query(&filter, since, None);
+        let interval = filter
+            .period
+            .interval(now, Zone::Fixed(time::UtcOffset::UTC));
+        let first = audit_query(&filter, interval, None);
         assert_eq!(first.action.as_deref(), Some("account_banned"));
         assert_eq!(first.actor_id, Some(actor));
         // The person concerned is an identifier that the entry names.
@@ -1062,17 +1222,45 @@ mod tests {
         assert_eq!(first.since, Some(now - time::Duration::days(7)));
         assert_eq!((first.until, first.before), (None, None));
         assert_eq!(first.limit, Some(AUDIT_PAGE));
-        // The page after it names the last entry and the same filters, with the start of
-        // the period as the first page stated it.
+        // The page after it names the last entry and the same filters, with the interval
+        // as the first page stated it.
         let last = AuditEntryId::generate();
-        let older = audit_query(&filter, since, Some(last));
+        let older = audit_query(&filter, interval, Some(last));
         assert_eq!(older.before, Some(last));
         assert_eq!(
-            (older.action, older.actor_id, older.target_id, older.since),
-            (first.action, first.actor_id, first.target_id, first.since)
+            (
+                older.action,
+                older.actor_id,
+                older.target_id,
+                older.since,
+                older.until
+            ),
+            (
+                first.action,
+                first.actor_id,
+                first.target_id,
+                first.since,
+                first.until
+            )
+        );
+        // A channel, a role or a workspace is matched by its identifier as well.
+        let channel = ChannelId::generate();
+        let by_channel = AuditFilter {
+            about: Some(AuditTarget::Channel(channel)),
+            ..AuditFilter::default()
+        };
+        assert_eq!(
+            audit_query(&by_channel, (None, None), None).target_id,
+            Some(channel.as_uuid())
+        );
+        // A range of dates states its end.
+        let end = now + time::Duration::days(1);
+        assert_eq!(
+            audit_query(&AuditFilter::default(), (Some(now), Some(end)), None).until,
+            Some(end)
         );
         // No filter: the request of before.
-        let plain = audit_query(&AuditFilter::default(), None, None);
+        let plain = audit_query(&AuditFilter::default(), (None, None), None);
         assert_eq!(
             plain,
             AuditFilterQuery {

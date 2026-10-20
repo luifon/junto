@@ -1,13 +1,16 @@
 //! The screens of the logo of a server (ADR 0101): the server book with a server that has
-//! a logo beside one without, and the page "Server" of the administration with its states.
+//! a logo beside one without, and the page "Server" of the administration with its states
+//! and the limits of the files of messages (ADR 0408).
 
 use junto_client::shell::Shell;
 use junto_client::shell::admin::Mode;
+use junto_client::shell::admin::server::Limit;
 use junto_client::state::admin::{AdminPage, Ask, AskKind, AskState};
 use junto_client::state::view::ServerSnapshot;
-use junto_client_core::model::ServerModel;
+use junto_client_core::model::{Collection, ServerModel};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::message::AttachmentLimits;
 
 use super::admin::{open_page, refused, servers, tell};
 use super::{Screen, Studio, id, two_servers};
@@ -45,9 +48,17 @@ fn acme_id() -> ServerId {
     id(1)
 }
 
-/// Luca owns "Acme Studio", so the administration has the page "Server".
+/// Luca owns "Acme Studio", so the administration has the page "Server". The server
+/// takes files of up to 100 MB, 10 in a message.
 fn owned() -> Vec<ServerSnapshot> {
-    servers(|model: &mut ServerModel| model.account.is_owner = true)
+    servers(|model: &mut ServerModel| {
+        model.account.is_owner = true;
+        std::sync::Arc::make_mut(&mut model.admin).attachment_limits =
+            Collection::Loaded(AttachmentLimits {
+                bytes_per_file: 100_000_000,
+                files_per_message: 10,
+            });
+    })
 }
 
 /// Shows the logo of "Acme Studio", and then what `then` opens. "Harbor" has no logo.
@@ -114,6 +125,27 @@ pub fn draw(studio: &mut Studio) -> Result<(), String> {
             open_server_page(shell, window, cx);
             let what = AskKind::SetLogo;
             tell(shell, refused(what, ErrorCode::ImageUnsupported), None, cx);
+        }),
+    )?;
+
+    // The form of the largest file of a message, with a number outside the range.
+    studio.draw(
+        Screen::new("limits-page-form", owned()),
+        with_logo(|shell, window, cx| {
+            open_server_page(shell, window, cx);
+            shell.set_admin_mode(Some(Mode::Limit(Limit::FileSize)), "", window, cx);
+            shell.type_admin_value("2000", window, cx);
+            shell.submit_admin_form(window, cx);
+        }),
+    )?;
+    // The server refused the limits.
+    studio.draw(
+        Screen::new("limits-page-refused", owned()),
+        with_logo(|shell, window, cx| {
+            open_server_page(shell, window, cx);
+            shell.set_admin_mode(Some(Mode::Limit(Limit::FilesPerMessage)), "", window, cx);
+            let what = AskKind::AttachmentLimits;
+            tell(shell, refused(what, ErrorCode::InvalidRequest), None, cx);
         }),
     )
 }

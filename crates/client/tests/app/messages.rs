@@ -1378,3 +1378,132 @@ fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
     assert!(!window.shows("emoji-picker"));
     assert!(!window.shows("compose-problem"));
 }
+
+#[gpui::test]
+fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let code = crate::admin_pages::invite(&world, &owner, Vec::new());
+    let (_device, luca) = crate::admin_pages::joined(&world, &server, &code, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let change = junto_client_core::protocol::structure::UpdateChannel {
+        permanent_messages: Some(true),
+        ..Default::default()
+    };
+    world
+        .run(owner.api().update_channel(general, &change))
+        .unwrap();
+    let send = |text: &str| {
+        let message = SendMessage {
+            document: document(text),
+            reply_to: None,
+            attachments: Vec::new(),
+        };
+        world
+            .run(luca.api().send_message(PlaceId::Channel(general), &message))
+            .unwrap()
+    };
+    let kept = send("The budget is approved.");
+    let wrong = send("The budget is approved twice.");
+    window.until_message("The budget is approved.");
+    let row = window.until_message("The budget is approved twice.");
+    assert!(row.message.permanent && !row.own);
+    assert!(row.can_delete && !row.can_edit);
+
+    // The bar of the message under the pointer has Delete, and the deletion asks first
+    // with what stays of the message.
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{}", wrong.id)))
+        .expect("the message is drawn");
+    window
+        .cx
+        .simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none());
+    window.settle();
+    window.click_named(format!("delete:{}", wrong.id));
+    assert!(window.shows("confirm-delete-message") && window.shows("confirm-delete-permanent"));
+    window.click("delete-message");
+    window.until(
+        "the message is gone and the channel states the deletion",
+        |window| {
+            let feed = window.feed().unwrap();
+            let gone = feed
+                .rows
+                .iter()
+                .all(|row| !matches!(row, FeedRow::Message(row) if row.message.id == wrong.id));
+            let line = feed.rows.iter().any(|row| {
+                matches!(row, FeedRow::System(line)
+                if line.message.system.as_ref().is_some_and(|system| {
+                    system.action == "permanent_message_deleted"
+                }))
+            });
+            gone && line
+        },
+    );
+    assert!(
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == kept.id)
+    );
+}
+
+#[gpui::test]
+fn a_message_whose_files_the_retention_removed_says_so(cx: &mut TestAppContext) {
+    use sqlx::ConnectOptions;
+    let world = World::new();
+    let mut server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("draft.txt");
+    std::fs::write(&path, b"the first draft").unwrap();
+    window.in_shell(|shell, _, cx| shell.attach_paths(Pane::Main, vec![path.clone()], cx));
+    window.until("the upload is complete", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            workspace.draft.len() == 1
+                && matches!(workspace.draft[0].progress.stage, UploadStage::Complete(_))
+        })
+    });
+    window.write("The draft");
+    let sent = window.until_message("The draft");
+    assert_eq!(sent.message.attachments.len(), 1);
+    let removed = crate::harness::selector(format!("files-removed:{}", sent.message.id));
+    assert!(!window.shows(removed));
+
+    // The workspace keeps files for one day, and the file was attached two days ago. The
+    // server applies the retention when it starts.
+    let workspace_id = window.view().workspace().unwrap().id;
+    world
+        .run(admin.handle.api().set_file_retention(
+            workspace_id,
+            &junto_client_core::protocol::discovery::Retention { days: Some(1) },
+        ))
+        .unwrap();
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query("update attachments set retention_at = now() - interval '2 days'")
+            .execute(&mut database)
+            .await
+            .unwrap();
+    });
+    world.run(server.restart());
+
+    // The message stays with its text, without the file, and states why.
+    window.until("the message states that its files were removed", |window| {
+        window.shows(removed)
+    });
+    let row = window.until_message("The draft");
+    assert!(row.message.files_removed_by_retention);
+    assert!(row.message.attachments.is_empty());
+    assert!(!window.shows_named("file:0".to_owned()));
+}

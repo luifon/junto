@@ -41,6 +41,7 @@ Pins:
 Permanent messages (ADR 0402):
 
 - The header of a channel with permanent messages carries a marker whose explanation opens on hover and on focus. The composer states that a sent message cannot be edited, also the composer of a thread of that channel. The actions of a permanent message state "No edit or delete here"; edit and delete are not offered to its author.
+- An administrator of the server has Delete on every permanent message of a channel, in the bar and in the menu of the message, and its actions state "No edit here". Every other person, its author and a holder of "manage messages" included, has no Delete on it: the server allows the deletion to the administrator permission only (ADR 0402). The question before the deletion states that the channel shows a line that the person deleted a permanent message and that the audit log keeps an entry. Test: `messages::an_administrator_deletes_one_permanent_message_of_another_person`.
 
 Direct conversations:
 

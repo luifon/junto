@@ -1,6 +1,6 @@
-//! The logo of a server in the window against the real server (ADR 0101): an administrator
-//! sets and removes it on the page "Server" of the administration, and the server book of
-//! every window follows the event.
+//! The page "Server" of the administration against the real server: an administrator sets
+//! and removes the logo (ADR 0101), and the server book of every window follows the event;
+//! an administrator changes the limits of the files of messages (ADR 0408).
 
 use gpui::TestAppContext;
 use junto_client::state::admin::view::{Scope, ServerPage};
@@ -193,4 +193,81 @@ fn a_logo_dialog_that_is_answered_on_the_page_of_another_server_sends_nothing(
         window.shows("logo-picture")
     });
     assert_eq!(logo_requests(&proxy), 1);
+}
+
+#[gpui::test]
+fn an_administrator_changes_the_limits_of_files_and_the_window_of_a_member_follows(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::message::AttachmentLimits;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_owner_directory, mut owner) = named(cx, "Ada");
+    owner.find_server(&server.address());
+    owner.join_with_code(&server.owner_code().unwrap());
+    owner.until_ready();
+    let code = invite(&world, &owner.handle(), Vec::new());
+    let (_member_directory, mut member) = named(cx, "Luca");
+    member.find_server(&server.address());
+    member.join_with_code(code.expose());
+    member.until_ready();
+    let limits = |window: &mut Window| match window.admin().map(|view| view.scope) {
+        Some(Scope::Server {
+            page: ServerPage::Server(page),
+            ..
+        }) => page.limits.loaded().cloned(),
+        _ => None,
+    };
+
+    owner.open_administration();
+    open_page(&mut owner, "admin-nav-server", shows_server_page);
+    let shown = owner.until_value("the page shows the limits of the server", limits);
+    assert_eq!(
+        shown,
+        AttachmentLimits {
+            bytes_per_file: 100_000_000,
+            files_per_message: 10,
+        }
+    );
+    assert!(owner.shows("limit-file-size-value") && owner.shows("limit-files-value"));
+
+    // A number outside the range is not sent, and the form says why.
+    click_in_page(&mut owner, "limit-file-size");
+    assert!(owner.shows("limit-field"));
+    owner.in_shell(|shell, window, cx| shell.type_admin_value("2000", window, cx));
+    owner.click("admin-form-send");
+    assert!(owner.shows("admin-form-invalid"));
+    owner.in_shell(|shell, window, cx| shell.type_admin_value("25", window, cx));
+    owner.click("admin-form-send");
+    owner.until("the page shows the new largest file", |window| {
+        limits(window).is_some_and(|held| held.bytes_per_file == 25_000_000)
+            && !window.shows("limit-field")
+    });
+
+    // The other limit is changed with Enter; the largest file stays.
+    click_in_page(&mut owner, "limit-files");
+    owner.in_shell(|shell, window, cx| shell.type_admin_value("3", window, cx));
+    owner.press("enter");
+    let changed = AttachmentLimits {
+        bytes_per_file: 25_000_000,
+        files_per_message: 3,
+    };
+    owner.until("the page shows the new number of files", |window| {
+        limits(window).as_ref() == Some(&changed) && !window.shows("limit-field")
+    });
+    assert!(!owner.shows("limit-refused"));
+    assert_eq!(
+        world.run(owner.handle().api().attachment_limits()).unwrap(),
+        changed
+    );
+
+    // The composer of the member follows the event: the limits are checked before a send.
+    member.until("the member holds the new limits", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.feed.as_ref())
+            .and_then(|feed| feed.limits.clone())
+            == Some(changed.clone())
+    });
 }

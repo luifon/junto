@@ -6,7 +6,7 @@ mod notifications;
 mod overrides;
 mod people;
 pub(crate) mod recordings;
-mod records;
+pub mod records;
 pub mod roles;
 mod server;
 pub(crate) mod structure;
@@ -27,7 +27,7 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
 pub use recordings::RecordingList;
-pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, ExportFiles};
+pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, AuditTarget, ExportFiles};
 pub use roles::{RoleLevel, RolePermission, RoleRef};
 pub use view::AdminView;
 use view::Scope;
@@ -39,7 +39,8 @@ use crate::text;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdminPage {
     Workspaces,
-    /// The server itself: its logo (ADR 0101).
+    /// The server itself: its logo (ADR 0101) and the limits of the files of messages
+    /// (ADR 0408).
     Server,
     People,
     Invites,
@@ -109,6 +110,9 @@ pub enum AskKind {
     DeleteCategory(CategoryId),
     CreateChannel,
     UpdateChannel(ChannelId),
+    /// A move of a channel, with the other channels whose position it changes, in one
+    /// request (ADR 0761).
+    MoveChannels(ChannelId),
     DeleteChannel(ChannelId),
     ArchiveChannel(ChannelId),
     RestoreChannel(ChannelId),
@@ -146,6 +150,8 @@ pub enum AskKind {
     /// A file is read and sent as the logo of the server (ADR 0101).
     SetLogo,
     RemoveLogo,
+    /// The largest file and the number of files of a message (ADR 0408).
+    AttachmentLimits,
 }
 
 /// Where a request stands. A request that the server did leaves no state: its effect

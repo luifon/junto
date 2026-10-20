@@ -1825,7 +1825,8 @@ impl Shell {
                     )),
                 )
             })
-            // A permanent message has no edit and no delete for its author (ADR 0402).
+            // A permanent message has no edit, and no delete for anybody but an
+            // administrator (ADR 0402).
             .when(row.message.permanent && !row.message.deleted, |bar| {
                 bar.child(
                     div()
@@ -1845,7 +1846,11 @@ impl Shell {
                         .ink(colors.ink_2)
                         .whitespace_nowrap()
                         .child(icon(Icon::EditOff, 14.0, colors.ink_2))
-                        .child(text::NO_EDIT_OR_DELETE),
+                        .child(if row.can_delete {
+                            text::NO_EDIT
+                        } else {
+                            text::NO_EDIT_OR_DELETE
+                        }),
                 )
             })
             .into_any_element()
@@ -2059,6 +2064,24 @@ impl Shell {
                 None => Vec::new(),
             };
             body.extend(self.attachments(feed, message, None, &theme, cx));
+            // The server removed files of the message after the retention of its workspace
+            // (ADR 0409). The text of the message stays.
+            if message.files_removed_by_retention {
+                body.push(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(6.0))
+                        .mt(u(5.0))
+                        .typeface(theme.types.small, &theme)
+                        .ink(colors.ink_2)
+                        .debug_selector(move || format!("files-removed:{message_id}"))
+                        .child(icon(Icon::Clock, 14.0, colors.ink_2))
+                        .child(text::FILES_REMOVED_BY_RETENTION)
+                        .into_any_element(),
+                );
+            }
             body.extend(self.reactions(feed, row, &theme, cx));
             if !bare {
                 body.extend(self.thread_chip(feed, row, &theme, cx));
@@ -2572,7 +2595,21 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let server_id = self.pane_feed(Pane::Main).map(|feed| feed.server_id);
-        crate::ui::Dialog::new(text::DELETE_MESSAGE_TITLE, self.layer_focus())
+        // The deletion of a permanent message is stated with what stays of it (ADR 0402).
+        let permanent = [Pane::Main, Pane::Thread]
+            .into_iter()
+            .filter_map(|pane| self.pane_feed(pane))
+            .flat_map(|feed| feed.rows.iter())
+            .any(|row| {
+                matches!(row, FeedRow::Message(row)
+                    if row.message.id == message_id && row.message.permanent)
+            });
+        let (title, sentence) = if permanent {
+            (text::DELETE_PERMANENT_TITLE, text::DELETE_PERMANENT_CONFIRM)
+        } else {
+            (text::DELETE_MESSAGE_TITLE, text::DELETE_MESSAGE_CONFIRM)
+        };
+        crate::ui::Dialog::new(title, self.layer_focus())
             .selector("confirm-delete-message")
             .on_close(Self::handler(cx, |this, window, cx| {
                 this.close_layer(window, cx);
@@ -2581,7 +2618,10 @@ impl Shell {
                 div()
                     .typeface(theme.types.notice, &theme)
                     .ink(theme.colors.ink_2)
-                    .child(text::DELETE_MESSAGE_CONFIRM),
+                    .when(permanent, |sentence| {
+                        sentence.debug_selector(|| "confirm-delete-permanent".to_owned())
+                    })
+                    .child(sentence),
             )
             .child(crate::ui::dialog_footer([
                 Button::new("cancel-delete-message")

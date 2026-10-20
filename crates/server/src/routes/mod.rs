@@ -322,6 +322,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(channels::update_channel, channels::delete_channel)
     });
+    add(&mut router, || routes!(channels::move_channels));
     add(&mut router, || {
         routes!(archive::archive_channel, archive::restore_channel)
     });

@@ -1,5 +1,6 @@
-//! The page of the server itself (ADR 0101): its logo, with the file dialog that sets it
-//! and the question before its removal.
+//! The page of the server itself: its logo (ADR 0101), with the file dialog that sets it
+//! and the question before its removal, and the limits of the files of messages
+//! (ADR 0408).
 
 use std::path::PathBuf;
 
@@ -8,18 +9,64 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div,
 };
 
-use super::{Mode, Question, group_label, page_title, refusal, sentence};
+use junto_client_core::model::AdminPart;
+use junto_client_core::protocol::message::AttachmentLimits;
+
+use super::{
+    Form, FormField, Mode, Question, group_label, line, line_text, page_title, refusal, row_action,
+    sentence,
+};
 use crate::shell::Shell;
-use crate::state::admin::view::AdminView;
 use crate::state::admin::view::server::ServerSettingsPage;
+use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminOpen, AdminPage, AskKind};
 use crate::text;
 use crate::text::admin::server as txt;
-use crate::theme::{theme, u};
+use crate::theme::{Theme, theme, u};
 use crate::ui::{Avatar, Button};
 
 /// The side of the logo on the page, in design pixels.
 const LOGO_SIZE: f32 = 56.0;
+
+/// One limit of the files of messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Limit {
+    /// The largest file, typed in megabytes.
+    FileSize,
+    FilesPerMessage,
+}
+
+const BYTES_PER_MEGABYTE: u64 = 1_000_000;
+/// The largest file that the server takes, in whole megabytes: the server takes at most
+/// 1,073,741,824 bytes.
+const MOST_MEGABYTES: u64 = 1_073;
+const _: () = assert!(MOST_MEGABYTES * BYTES_PER_MEGABYTE <= 1_073_741_824);
+const MOST_FILES: u32 = 100;
+
+/// The limits after the person typed `typed` for one of them, when it is a number in its
+/// range. The other limit stays as the page shows it.
+fn typed_limits(
+    typed: &str,
+    which: Limit,
+    shown: &AttachmentLimits,
+) -> Result<AttachmentLimits, &'static str> {
+    match which {
+        Limit::FileSize => match typed.parse::<u64>() {
+            Ok(megabytes) if (1..=MOST_MEGABYTES).contains(&megabytes) => Ok(AttachmentLimits {
+                bytes_per_file: megabytes * BYTES_PER_MEGABYTE,
+                ..shown.clone()
+            }),
+            _ => Err(txt::LARGEST_FILE_RANGE),
+        },
+        Limit::FilesPerMessage => match typed.parse::<u32>() {
+            Ok(files) if (1..=MOST_FILES).contains(&files) => Ok(AttachmentLimits {
+                files_per_message: files,
+                ..shown.clone()
+            }),
+            _ => Err(txt::FILES_RANGE),
+        },
+    }
+}
 
 impl Shell {
     /// Asks the person for a file, and sends it as the logo of the server of the page.
@@ -73,6 +120,110 @@ impl Shell {
         };
         self.state
             .update(cx, |state, cx| state.set_server_logo(server_id, file, cx));
+    }
+
+    /// Sends the limit that the open row of the page "Server" holds.
+    pub(crate) fn submit_limit(&mut self, view: &AdminView, cx: &mut Context<Self>) {
+        let Some(Mode::Limit(which)) = self.admin.mode else {
+            return;
+        };
+        let Scope::Server {
+            page: ServerPage::Server(page),
+            ..
+        } = &view.scope
+        else {
+            return;
+        };
+        let Listed::Loaded(shown) = &page.limits else {
+            return;
+        };
+        match typed_limits(&self.admin_value(cx), which, shown) {
+            Ok(limits) => {
+                let server_id = view.server_id;
+                self.admin_sent(AskKind::AttachmentLimits);
+                self.state.update(cx, |state, cx| {
+                    state.set_attachment_limits(server_id, limits, cx);
+                });
+            }
+            Err(range) => self.admin.invalid = Some(range),
+        }
+        cx.notify();
+    }
+
+    /// One limit of the files of messages: its name, its value, and the form that changes
+    /// it.
+    fn render_limit(
+        &mut self,
+        view: &AdminView,
+        which: Limit,
+        limits: &AttachmentLimits,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (title, value, field, range, selector) = match which {
+            Limit::FileSize => (
+                txt::LARGEST_FILE,
+                text::file_size(limits.bytes_per_file),
+                txt::MEGABYTES_FIELD,
+                txt::LARGEST_FILE_RANGE,
+                "limit-file-size",
+            ),
+            Limit::FilesPerMessage => (
+                txt::FILES_PER_MESSAGE,
+                txt::files(limits.files_per_message),
+                txt::FILES_FIELD,
+                txt::FILES_RANGE,
+                "limit-files",
+            ),
+        };
+        let sending = view.sending(AskKind::AttachmentLimits);
+        let open = self.admin.mode == Some(Mode::Limit(which));
+        let content: AnyElement = if open {
+            self.render_form(
+                Form {
+                    field: FormField::Value,
+                    label: field,
+                    field_selector: "limit-field",
+                    send: text::SAVE,
+                    sending,
+                    help: Some(range),
+                    extra: Vec::new(),
+                },
+                theme,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap(u(8.0))
+                .child(
+                    line_text(title, Some(value.into()), theme)
+                        .debug_selector(move || format!("{selector}-value")),
+                )
+                .child(row_action(
+                    selector,
+                    text::admin::CHANGE,
+                    selector.to_owned(),
+                    sending.then_some(text::admin::SENDING),
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_admin_mode(Some(Mode::Limit(which)), "", window, cx);
+                    }),
+                ))
+                .into_any_element()
+        };
+        // The refusal belongs to the row whose form asked: the form stays open with it.
+        let refused = view.refused(AskKind::AttachmentLimits).filter(|_| open);
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(self.mode_row(&[Mode::Limit(which)], line(theme).child(content)))
+            .children(refusal(refused, "limit-refused"))
+            .into_any_element()
     }
 
     pub(crate) fn render_server_settings_page(
@@ -201,6 +352,70 @@ impl Shell {
             )
             .children(held.map(|reason| sentence(reason, &theme).mt(u(5.0))))
             .children(refusal(refused, "logo-refused"))
+            .child(group_label(txt::ATTACHMENTS, &theme))
+            .child(sentence(txt::ATTACHMENTS_HELP, &theme).mb(u(4.0)))
+            .child(match &page.limits {
+                Listed::Loading => {
+                    self.render_reading(server_id, AdminPart::AttachmentLimits, None, &theme, cx)
+                }
+                Listed::Failed(failure) => self.render_reading(
+                    server_id,
+                    AdminPart::AttachmentLimits,
+                    Some(*failure),
+                    &theme,
+                    cx,
+                ),
+                Listed::Loaded(limits) => div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .child(self.render_limit(view, Limit::FileSize, limits, &theme, cx))
+                    .child(self.render_limit(view, Limit::FilesPerMessage, limits, &theme, cx))
+                    .into_any_element(),
+            })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_limit_replaces_one_limit_within_the_range_of_the_server() {
+        let shown = AttachmentLimits {
+            bytes_per_file: 100_000_000,
+            files_per_message: 10,
+        };
+        assert_eq!(
+            typed_limits("25", Limit::FileSize, &shown),
+            Ok(AttachmentLimits {
+                bytes_per_file: 25_000_000,
+                files_per_message: 10,
+            })
+        );
+        assert_eq!(
+            typed_limits("1073", Limit::FileSize, &shown).map(|held| held.bytes_per_file),
+            Ok(1_073_000_000)
+        );
+        assert_eq!(
+            typed_limits("4", Limit::FilesPerMessage, &shown),
+            Ok(AttachmentLimits {
+                bytes_per_file: 100_000_000,
+                files_per_message: 4,
+            })
+        );
+        for typed in ["0", "1074", "-3", "2.5", ""] {
+            assert_eq!(
+                typed_limits(typed, Limit::FileSize, &shown),
+                Err(txt::LARGEST_FILE_RANGE)
+            );
+        }
+        for typed in ["0", "101", "ten"] {
+            assert_eq!(
+                typed_limits(typed, Limit::FilesPerMessage, &shown),
+                Err(txt::FILES_RANGE)
+            );
+        }
     }
 }

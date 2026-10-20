@@ -1,4 +1,5 @@
-//! The text of the page of the server itself: its logo (ADR 0101).
+//! The text of the page of the server itself: its logo (ADR 0101) and the limits of the
+//! files of messages (ADR 0408).
 
 use junto_client_core::profile::InvalidAvatar;
 
@@ -11,6 +12,28 @@ pub const CHOOSE_IMAGE: &str = "Choose image…";
 pub const REMOVE_LOGO: &str = "Remove logo";
 pub const REMOVE_LOGO_QUESTION: &str = "Remove the logo of this server?";
 pub const LOGO_NEEDS: &str = "Only an administrator can change the logo.";
+
+pub const ATTACHMENTS: &str = "Files of messages";
+pub const ATTACHMENTS_HELP: &str = "The server refuses a larger file and a message with more files. A \
+     lower largest file applies to the next upload, and fewer files to the next message. \
+     Files that were sent stay.";
+pub const LARGEST_FILE: &str = "Largest file";
+pub const FILES_PER_MESSAGE: &str = "Files per message";
+pub const MEGABYTES_FIELD: &str = "Megabytes";
+pub const FILES_FIELD: &str = "Files";
+pub const LARGEST_FILE_RANGE: &str =
+    "A whole number of megabytes from 1 to 1,073. One megabyte is 1,000,000 bytes.";
+pub const FILES_RANGE: &str = "A whole number of files from 1 to 100.";
+pub const LIMITS_REFUSED: &str = "The server did not accept the limits. A file has at most \
+     1,073,741,824 bytes, and a message has 1 to 100 files.";
+
+/// The number of files that a message may hold.
+pub fn files(count: u32) -> String {
+    match count {
+        1 => "1 file".to_owned(),
+        count => format!("{count} files"),
+    }
+}
 
 // Why a file is not sent as the logo, and why the server did not take it.
 pub const LOGO_NOT_READ: &str =

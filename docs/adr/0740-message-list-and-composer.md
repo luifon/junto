@@ -28,6 +28,7 @@ List:
 - A check box takes a click and sends an edit where the message can be edited: an own message that is not permanent (ADR 0402), in a channel that is not archived (ADR 0410). Elsewhere it is drawn without a click, because the server refuses the edit (ADR 0401).
 - A file that the server marked as a picture (PNG, JPEG or WebP up to 1,024 pixels per side) is drawn inline at the size that its message states, so the row has its height before the picture has arrived. The picture is decoded away from the window with limits of 1,024 pixels per side. The window holds 48 decoded pictures, each for the owner that it was read for, and reads 4 at one time (ADR 0745). Every other file is a row with its name, its size and the state of its download.
 - A download goes to the download directory of the person under a name that no file has, and the row then offers "Show in folder". No file of a message is opened by the application.
+- A message whose files the retention of its workspace removed (ADR 0409) keeps its text, and its body states under the remaining files that its files were removed after the retention time of the workspace. The server marks such a message with `files_removed_by_retention`; without the sentence a message that had files would look as if it never had them. Test: `messages::a_message_whose_files_the_retention_removed_says_so`.
 
 Actions of a message:
 
