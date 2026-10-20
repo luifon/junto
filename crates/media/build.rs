@@ -12,7 +12,11 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg=-ObjC");
         if std::env::var_os("CARGO_FEATURE_NATIVE_DEVICE_TESTS").is_some() {
-            let info = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            // Cargo sets the directory of the package for each run of the build script; a path
+            // compiled into it can name another checkout whose build the target directory reused.
+            let info = std::env::var_os("CARGO_MANIFEST_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| panic!("Cargo sets CARGO_MANIFEST_DIR for a build script"))
                 .join("tests/native/Usage.plist");
             println!("cargo:rerun-if-changed={}", info.display());
             println!(

@@ -39,15 +39,22 @@ impl Drop for Server {
     }
 }
 
+/// The fixture script, in the directory of this package in the checkout that runs the test:
+/// `cargo test` sets that directory at run time, while a path compiled into the binary can
+/// name another checkout whose build the shared target directory reused.
+fn fixture_script() -> String {
+    let package = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
+        panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test")
+    });
+    format!("{package}/../../tools/test-turn-tls.py")
+}
+
 #[tokio::test]
 #[ignore = "requires Python and OpenSSL in the isolated Linux container"]
 async fn turn_tls_uses_system_roots_and_checks_the_peer() {
     let Ok(fixtures) = std::env::var("JUNTO_TEST_TLS_FIXTURES") else {
         let status = Command::new("python3")
-            .args([
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
-                "run",
-            ])
+            .args([&fixture_script(), "run"])
             .arg(std::env::current_exe().unwrap_or_else(|error| panic!("{error}")))
             .status()
             .unwrap_or_else(|error| panic!("TLS fixtures: {error}"));
@@ -67,12 +74,7 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
     ] {
         let mut server = Server(
             Command::new("python3")
-                .args([
-                    concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
-                    "serve",
-                    &fixtures,
-                    certificate,
-                ])
+                .args([&fixture_script(), "serve", &fixtures, certificate])
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap_or_else(|error| panic!("TLS server: {error}")),

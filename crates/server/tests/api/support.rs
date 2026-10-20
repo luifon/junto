@@ -35,6 +35,15 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 /// Bounded statements prepare large fixtures under the normal database time limits.
+/// The directory of this package in the checkout that runs the test: `cargo test` sets it at
+/// run time, while a path compiled into the binary can name another checkout whose build the
+/// shared target directory reused.
+pub fn package_directory() -> PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test"))
+}
+
 pub fn fixture_batches(rows: i32) -> impl Iterator<Item = (i32, i32)> {
     (1..=rows)
         .step_by(500)

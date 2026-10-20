@@ -225,14 +225,20 @@ else
 fi
 
 # A file that the Linux build image downloads from another place than the Debian snapshot is
-# checked by its SHA-256 in the same instruction: the instruction names the sum and runs
-# sha256sum -c.
+# checked by its SHA-256 in the same instruction: the instruction names a sum for each address
+# and runs sha256sum -c.
 unpinned=$(awk '
     { instruction = instruction $0 }
     /\\$/ { sub(/\\$/, "", instruction); next }
     { print instruction; instruction = "" }
-' "$linux" | grep -E 'https?://' | grep -v 'snapshot\.debian\.org/archive' \
-    | grep -v -E '[0-9a-f]{64}.*sha256sum -c' || true)
+' "$linux" | grep -E 'https?://' | grep -v 'snapshot\.debian\.org/archive' | awk '
+    BEGIN { for (i = 0; i < 64; i++) sum = sum "[0-9a-f]" }
+    {
+        addresses = gsub(/https?:\/\//, "&")
+        sums = gsub("(^|[^0-9a-f])" sum "([^0-9a-f]|$)", "&")
+        if (sums < addresses || $0 !~ /sha256sum (--[a-z]+ )*-c/) print
+    }
+' || true)
 if [ -n "$unpinned" ]; then
     echo "$unpinned"
     fail "$linux downloads a file without checking its SHA-256"

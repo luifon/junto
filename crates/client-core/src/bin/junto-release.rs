@@ -347,7 +347,17 @@ mod tests {
 
     #[test]
     fn private_key_paths_inside_a_repository_are_refused_before_any_creation() {
-        let existing = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        assert!(matches!(external(&existing), Err(Error::Invalid(_))));
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repository.path().join(".git")).unwrap();
+        let below = repository.path().join("keys/release");
+        std::fs::create_dir_all(&below).unwrap();
+        for key in [repository.path().join("secret"), below.join("secret")] {
+            assert!(
+                matches!(external(&key), Err(Error::Invalid(_))),
+                "{}",
+                key.display()
+            );
+            assert!(!key.exists());
+        }
     }
 }

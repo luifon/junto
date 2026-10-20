@@ -49,6 +49,7 @@ docker run --rm --network none -v "$PWD:/repository:ro" -w /repository "$JUNTO_C
     --severity=warning --external-sources \
     tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh \
     tools/linux-container.sh tools/linux/run.sh tools/linux/session.sh tools/linux/run-as-user.sh tools/linux/display.sh \
+    tools/linux/appimage-runtime/build.sh tools/linux/appimage-runtime/link.sh \
     tools/ci/pins.sh tools/ci/ci.sh tools/ci/run-jobs.sh tools/ci/rust-linux.sh \
     tools/ci/rust-other-systems.sh tools/ci/licences.sh tools/ci/layout-page.sh \
     tools/ci/transcription-worker.sh tools/ci/deployment.sh \
@@ -71,6 +72,8 @@ step "The test drivers read the owner code from the standard output of the serve
 python3 -B -m unittest discover -s deploy/tests -p 'test_server_output.py'
 step "Server image"
 docker build --load -f deploy/images/server/Dockerfile -t junto-ci-server .
+step "The licence files of the server image"
+python3 -B deploy/tests/check_licences.py junto-ci-server
 step "Link image"
 docker build --load -t junto-ci-link deploy/images/link
 step "Hand-over of a transcription job between two containers"

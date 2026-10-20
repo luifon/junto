@@ -7,20 +7,31 @@ ARG RUST_IMAGE=rust:1.98.1-slim-trixie@sha256:4cd829461bd5c4d511c32e269da9cb8929
 ARG NODE_IMAGE=node:22.23.3-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa
 ARG DEBIAN_IMAGE=debian:trixie-20261005-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
-# The server binary, from Cargo.lock.
+# The server binary, from Cargo.lock, and the licence file of the crates that it is built from
+# (ADR 0801), which packaging/licences.py writes with Python from the Debian snapshot.
 FROM ${RUST_IMAGE} AS server-build
+ARG DEBIAN_SNAPSHOT=20261005T000000Z
 # Optional: the number of parallel compile jobs, for a build host with little memory.
 ARG CARGO_BUILD_JOBS
+RUN rm -f /etc/apt/sources.list.d/* \
+ && echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} trixie main" > /etc/apt/sources.list \
+ && echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} trixie-security main" >> /etc/apt/sources.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends python3 \
+ && rm -rf /var/lib/apt/lists/*
 ENV CARGO_PROFILE_RELEASE_STRIP=symbols \
     CARGO_TERM_COLOR=never
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock LICENSE ./
 COPY crates ./crates
 COPY vendor ./vendor
+COPY packaging/licences.py ./packaging/
+COPY packaging/licence-texts ./packaging/licence-texts
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
     cargo build --locked --release -p junto-server --bin junto-server \
- && install -D -m 0755 target/release/junto-server /out/junto-server
+ && install -D -m 0755 target/release/junto-server /out/junto-server \
+ && python3 packaging/licences.py server linux "$(uname -m)" target/release /out/licences
 
 # The recording layout page (ADR 0609), from package-lock.json. No install script runs.
 FROM ${NODE_IMAGE} AS layout-build
@@ -87,6 +98,7 @@ RUN groupadd --gid "${JUNTO_GID}" junto \
       /var/lib/junto/exports
 COPY --from=ffmpeg-build /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-build /opt/ffmpeg/share/licenses /usr/share/licenses
+COPY --from=server-build /out/licences /usr/share/licenses/junto-server
 COPY --from=layout-build /src/recording-layout/dist /usr/share/junto/recording-layout
 COPY --from=server-build /out/junto-server /usr/local/bin/junto-server
 COPY --chmod=0755 deploy/images/server/junto-transcribe-handover deploy/images/server/junto-volumes \

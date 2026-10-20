@@ -795,11 +795,16 @@ fn no_code_of_the_application_names_the_local_zone_of_chrono() {
             }
         }
     }
+    // The directory of this package in the checkout that runs the test, which `cargo test`
+    // sets at run time; a path compiled into the binary can name another checkout whose build
+    // the shared target directory reused.
+    let package = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test")
+        });
     let mut found = Vec::new();
-    files(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut found,
-    );
+    files(&package.join("src"), &mut found);
     assert!(found.len() > 50, "{found:?}");
     let named: Vec<String> = found
         .iter()

@@ -741,12 +741,14 @@ impl Drop for Other {
 
 #[cfg(target_os = "macos")]
 fn participant_tool() -> String {
+    // The directory of this package in the checkout that runs the test, which `cargo test`
+    // sets at run time; a path compiled into the binary can name another checkout whose build
+    // the shared target directory reused.
     std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../spikes/test-participant/target/release/test-participant"
-        )
-        .to_owned()
+        let package = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
+            panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test")
+        });
+        format!("{package}/../../spikes/test-participant/target/release/test-participant")
     })
 }
 
