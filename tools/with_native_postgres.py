@@ -19,10 +19,11 @@ SHA-256 of the ZIP of the system, for the key of a cache.
 
 The downloaded ZIP is kept in JUNTO_TEST_POSTGRES_DOWNLOADS (default: .cache/junto-postgres in
 the home folder). Each run has a new data directory, which is removed at the end, also when
-the program receives SIGTERM, SIGINT or SIGHUP. A failure to start prints the log of the
-server.
+the program receives SIGTERM, SIGINT or SIGHUP. The server is a direct child process of this
+program; pg_ctl is not used. A failure to start prints the log of the server.
 """
 
+import contextlib
 import hashlib
 import os
 import pathlib
@@ -35,7 +36,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import typing
 import urllib.request
 import zipfile
 
@@ -158,7 +158,7 @@ def extract(archive, destination):
 
 
 def program(installation, name):
-    return str(installation / "bin" / name)
+    return str(installation / "bin" / (name + ".exe" if os.name == "nt" else name))
 
 
 def free_port():
@@ -172,27 +172,14 @@ def init_command(installation, data):
             "-E", "UTF8", "--no-sync"]
 
 
-def start_command(installation, data, log, port):
-    """The server listens on TCP only: without a Unix socket it writes no file outside its
-    data directory."""
-    settings = " ".join(f"-c {setting}" for setting in SERVER_SETTINGS)
-    return [program(installation, "pg_ctl"), "start", "-D", str(data), "-l", str(log), "-w",
-            "-t", str(START_SECONDS), "-o",
-            f"-c listen_addresses=127.0.0.1 -c unix_socket_directories= -p {port} {settings}"]
-
-
-def stop_command(installation, data):
-    return [program(installation, "pg_ctl"), "stop", "-D", str(data), "-m", "immediate", "-w"]
-
-
 def command_environment(environment, port):
     return {**environment, "JUNTO_TEST_DATABASE_URL": f"postgres://postgres@127.0.0.1:{port}/postgres"}
 
 
 def checked(command, what, output, log=None):
     """Runs a PostgreSQL program with its output in the file `output`; on a failure prints that
-    output and the log of the server. The server that `pg_ctl start` starts holds the output
-    handles of pg_ctl as long as it runs, so a pipe would not reach its end."""
+    output and the log of the server. A program whose child process keeps its output open
+    would hold a pipe open until that child ends."""
     with open(output, "w") as file:
         try:
             returncode = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=file, stderr=subprocess.STDOUT,
@@ -207,21 +194,73 @@ def checked(command, what, output, log=None):
         raise Failure(f"{what} failed")
 
 
-class Process(typing.NamedTuple):
-    """A process as the system states it: its number, its start time and the resolved path of
-    its executable. A process number that the system gives again to another process has
-    another start time."""
-    number: int
-    start: int
-    path: str
+STOP_SECONDS = 30
 
 
-def program_path(path):
-    return os.path.normcase(os.path.realpath(path))
+class UnixServer:
+    """The postgres process of the run, a direct child of this program in a session and a
+    process group of its own, whose number is the number of the process. Until this program
+    collects the child, the system gives neither number to another process, so the signals
+    of `stop` reach only this server and the processes of its group."""
 
+    def __init__(self, command, log):
+        with open(log, "ab") as file:
+            self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=file, stderr=subprocess.STDOUT,
+                                            start_new_session=True)
+        self.number = self.process.pid
 
-def server_program(installation):
-    return program_path(installation / "bin" / ("postgres.exe" if os.name == "nt" else "postgres"))
+    def running(self):
+        """Whether the server has not exited. The exited server is not collected here."""
+        if self.process.returncode is not None:
+            return False
+        try:
+            return os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None
+        except ChildProcessError:
+            return False
+
+    def signal(self, send, number):
+        """Sends the signal to the server or its group, before the server is collected. macOS
+        refuses a signal to an exited server that is not collected, and to a group with only
+        that server, with EPERM: then no process is left to signal."""
+        try:
+            send(self.process.pid, number)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            if self.running():
+                raise
+
+    def group_runs(self):
+        try:
+            os.killpg(self.process.pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def stop(self, seconds=None):
+        """A fast shutdown with SIGINT; after `seconds`, or at once when the server has exited,
+        SIGKILL to the processes of its group; then collects the server. Returns whether no
+        process of the group runs."""
+        seconds = STOP_SECONDS if seconds is None else seconds
+        deadline = time.monotonic() + seconds
+        if self.process.returncode is None:
+            # Not Popen.send_signal: it collects an exited child first, and the number of a
+            # collected child can belong to another process.
+            self.signal(os.kill, signal.SIGINT)
+            while self.running() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.signal(os.killpg, signal.SIGKILL)
+            self.process.wait(timeout=max(1.0, deadline - time.monotonic()))
+        # The group of the collected server can have members only of this server: a group
+        # number stays with its group as long as one member runs.
+        while self.group_runs() and time.monotonic() < deadline + seconds:
+            time.sleep(0.05)
+        return not self.group_runs()
+
+    def close(self):
+        pass
 
 
 if os.name == "nt":
@@ -229,187 +268,200 @@ if os.name == "nt":
     from ctypes import wintypes
 
     KERNEL = ctypes.WinDLL("kernel32", use_last_error=True)
-    KERNEL.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    KERNEL.OpenProcess.restype = wintypes.HANDLE
-    KERNEL.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    KERNEL.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-    KERNEL.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
-                                                  ctypes.POINTER(wintypes.DWORD)]
+    ADVAPI = ctypes.WinDLL("advapi32", use_last_error=True)
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR),
+                    ("lpTitle", wintypes.LPWSTR), ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+                    ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD), ("dwXCountChars", wintypes.DWORD),
+                    ("dwYCountChars", wintypes.DWORD), ("dwFillAttribute", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+                    ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+                    ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+
+    class ProcessInformation(ctypes.Structure):
+        _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+                    ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class SidAuthority(ctypes.Structure):
+        _fields_ = [("Value", ctypes.c_ubyte * 6)]
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    class BasicAccounting(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                    ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+    KERNEL.GetCurrentProcess.restype = wintypes.HANDLE
+    KERNEL.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    KERNEL.CreateJobObjectW.restype = wintypes.HANDLE
+    KERNEL.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    KERNEL.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                                 ctypes.c_void_p]
+    KERNEL.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    KERNEL.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    KERNEL.ResumeThread.argtypes = [wintypes.HANDLE]
+    KERNEL.ResumeThread.restype = wintypes.DWORD
     KERNEL.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    KERNEL.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     KERNEL.CloseHandle.argtypes = [wintypes.HANDLE]
-    KERNEL.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-    KERNEL.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    ADVAPI.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    ADVAPI.AllocateAndInitializeSid.argtypes = [ctypes.POINTER(SidAuthority), ctypes.c_ubyte] + \
+        [wintypes.DWORD] * 8 + [ctypes.POINTER(ctypes.c_void_p)]
+    ADVAPI.FreeSid.argtypes = [ctypes.c_void_p]
+    ADVAPI.CreateRestrictedToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                             ctypes.POINTER(SidAndAttributes), wintypes.DWORD, ctypes.c_void_p,
+                                             wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HANDLE)]
+    ADVAPI.CreateProcessAsUserW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p,
+                                            ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p,
+                                            wintypes.LPCWSTR, ctypes.POINTER(StartupInfo),
+                                            ctypes.POINTER(ProcessInformation)]
 
-    class ProcessEntry(ctypes.Structure):
-        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
-                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
-                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
-                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
-                    ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
-
-    KERNEL.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
-    KERNEL.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
-    QUERY_LIMITED_INFORMATION, TERMINATE, STILL_ACTIVE = 0x1000, 0x0001, 259
-
-    def handle_identity(handle, number):
-        """The identity of the running process of `handle`, or None when it has ended."""
-        code = wintypes.DWORD()
-        if not KERNEL.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != STILL_ACTIVE:
-            return None
-        created, ended, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
-        if not KERNEL.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(ended),
-                                      ctypes.byref(kernel_time), ctypes.byref(user_time)):
-            return None
-        size = wintypes.DWORD(32768)
-        path = ctypes.create_unicode_buffer(size.value)
-        if not KERNEL.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
-            return None
-        return Process(number, (created.dwHighDateTime << 32) | created.dwLowDateTime, program_path(path.value))
-
-    def children_of(number):
-        """The numbers of the processes whose parent is `number`."""
-        snapshot = KERNEL.CreateToolhelp32Snapshot(0x2, 0)
-        if snapshot in (None, wintypes.HANDLE(-1).value):
+    def checked_call(result):
+        if not result:
             raise ctypes.WinError(ctypes.get_last_error())
+        return result
+
+    def restricted_token():
+        """The token of this program without its privileges and with the groups Administrators
+        and Power Users only for denial, as pg_ctl starts the server: PostgreSQL refuses to run
+        with administrator rights."""
+        token, restricted = wintypes.HANDLE(), wintypes.HANDLE()
+        all_access, disable_max_privilege = 0xF01FF, 0x1
+        checked_call(ADVAPI.OpenProcessToken(KERNEL.GetCurrentProcess(), all_access, ctypes.byref(token)))
+        authority = SidAuthority((ctypes.c_ubyte * 6)(0, 0, 0, 0, 0, 5))
+        sids = [ctypes.c_void_p(), ctypes.c_void_p()]
         try:
-            entry = ProcessEntry()
-            entry.dwSize = ctypes.sizeof(ProcessEntry)
-            found = []
-            more = KERNEL.Process32FirstW(snapshot, ctypes.byref(entry))
-            while more:
-                if entry.th32ParentProcessID == number and entry.th32ProcessID != number:
-                    found.append(entry.th32ProcessID)
-                more = KERNEL.Process32NextW(snapshot, ctypes.byref(entry))
-            return found
+            for sid, alias in zip(sids, (544, 547)):
+                checked_call(ADVAPI.AllocateAndInitializeSid(ctypes.byref(authority), 2, 32, alias, 0, 0, 0, 0, 0, 0,
+                                                             ctypes.byref(sid)))
+            disabled = (SidAndAttributes * 2)(SidAndAttributes(sids[0], 0), SidAndAttributes(sids[1], 0))
+            checked_call(ADVAPI.CreateRestrictedToken(token, disable_max_privilege, 2, disabled, 0, None, 0, None,
+                                                      ctypes.byref(restricted)))
+            return restricted
         finally:
-            KERNEL.CloseHandle(snapshot)
+            for sid in sids:
+                if sid.value:
+                    ADVAPI.FreeSid(sid)
+            KERNEL.CloseHandle(token)
 
-elif sys.platform == "darwin":
-    import ctypes
+    class WindowsServer:
+        """The postgres process of the run, created suspended in a job object of its own that
+        ends its processes when the job is closed, and resumed only after it is in the job, so
+        every child process of the server is in the job. The program keeps the handles of the
+        process and of the job: it never acts on a process number."""
 
-    LIBPROC = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-
-    class BsdInfo(ctypes.Structure):
-        # struct proc_bsdinfo of <sys/proc_info.h>
-        _fields_ = [("flags", ctypes.c_uint32), ("status", ctypes.c_uint32), ("xstatus", ctypes.c_uint32),
-                    ("pid", ctypes.c_uint32), ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
-                    ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32), ("rgid", ctypes.c_uint32),
-                    ("svuid", ctypes.c_uint32), ("svgid", ctypes.c_uint32), ("rfu", ctypes.c_uint32),
-                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32), ("nfiles", ctypes.c_uint32),
-                    ("pgid", ctypes.c_uint32), ("pjobc", ctypes.c_uint32), ("tdev", ctypes.c_uint32),
-                    ("tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32), ("start_seconds", ctypes.c_uint64),
-                    ("start_microseconds", ctypes.c_uint64)]
-
-
-def identity(number):
-    """The process `number` as the system states it now, or None when no such process runs."""
-    if number is None or number <= 0:
-        return None
-    if os.name == "nt":
-        handle = KERNEL.OpenProcess(QUERY_LIMITED_INFORMATION, False, number)
-        if not handle:
-            return None
-        try:
-            return handle_identity(handle, number)
-        finally:
-            KERNEL.CloseHandle(handle)
-    if sys.platform == "darwin":
-        info = BsdInfo()
-        bsd_info = 3
-        if LIBPROC.proc_pidinfo(number, bsd_info, ctypes.c_uint64(0), ctypes.byref(info),
-                                ctypes.sizeof(info)) != ctypes.sizeof(info):
-            return None
-        path = ctypes.create_string_buffer(4096)
-        if LIBPROC.proc_pidpath(number, path, len(path)) <= 0:
-            return None
-        return Process(number, info.start_seconds * 1_000_000 + info.start_microseconds,
-                       program_path(os.fsdecode(path.value)))
-    try:
-        with open(f"/proc/{number}/stat") as file:
-            fields = file.read().rsplit(")", 1)[1].split()
-        if fields[0] == "Z":
-            return None
-        return Process(number, int(fields[19]), program_path(os.readlink(f"/proc/{number}/exe")))
-    except (OSError, IndexError, ValueError):
-        return None
-
-
-def runs(process):
-    """Whether `process` still runs: a process with its number and its start time. The path is
-    read only to find the server; the start time alone tells it from a later process that
-    received the same number."""
-    now = None if process is None else identity(process.number)
-    return now is not None and now.start == process.start
-
-
-def server_of(installation, data):
-    """The server that `data` names in postmaster.pid, when that process runs the program of
-    `installation`. The directory of the installation is new in each run, so a process of
-    another program, which received a number that the server had, is never taken for it."""
-    try:
-        number = int((data / "postmaster.pid").read_text().splitlines()[0])
-    except (OSError, ValueError, IndexError):
-        return None
-    process = identity(number)
-    if process is None or process.path != server_program(installation):
-        return None
-    return process
-
-
-def end(process):
-    """Ends `process` and its child processes, when `process` still runs. On Unix the server
-    that pg_ctl starts leads a process group of its own, which holds its child processes; on
-    Windows each child with the program of the server is ended by a handle that is checked
-    against its identity first."""
-    if not runs(process):
-        return
-    if os.name == "nt":
-        targets = [process] + [child for child in map(identity, children_of(process.number))
-                               if child is not None and child.path == process.path and child.start >= process.start]
-        for target in targets:
-            handle = KERNEL.OpenProcess(QUERY_LIMITED_INFORMATION | TERMINATE, False, target.number)
-            if not handle:
-                continue
+        def __init__(self, command, log):
+            self.job = checked_call(KERNEL.CreateJobObjectW(None, None))
+            self.process = None
             try:
-                now = handle_identity(handle, target.number)
-                if now is not None and now.start == target.start and not KERNEL.TerminateProcess(handle, 1):
+                limits = ExtendedLimits()
+                kill_on_job_close, extended_limits = 0x2000, 9
+                limits.BasicLimitInformation.LimitFlags = kill_on_job_close
+                checked_call(KERNEL.SetInformationJobObject(self.job, extended_limits, ctypes.byref(limits),
+                                                            ctypes.sizeof(limits)))
+                self.start(command, log)
+            except BaseException:
+                self.close()
+                raise
+
+        def start(self, command, log):
+            import msvcrt
+
+            token = restricted_token()
+            try:
+                with open(log, "ab") as output, open(os.devnull, "rb") as nothing:
+                    handles = [msvcrt.get_osfhandle(output.fileno()), msvcrt.get_osfhandle(nothing.fileno())]
+                    for handle in handles:
+                        os.set_handle_inheritable(handle, True)
+                    startup = StartupInfo()
+                    startup.cb = ctypes.sizeof(startup)
+                    startup.dwFlags = 0x100  # STARTF_USESTDHANDLES
+                    startup.hStdInput, startup.hStdOutput, startup.hStdError = handles[1], handles[0], handles[0]
+                    information = ProcessInformation()
+                    line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+                    create_suspended, create_no_window = 0x4, 0x08000000
+                    checked_call(ADVAPI.CreateProcessAsUserW(token, None, line, None, None, True,
+                                                             create_suspended | create_no_window, None, None,
+                                                             ctypes.byref(startup), ctypes.byref(information)))
+            finally:
+                KERNEL.CloseHandle(token)
+            self.process, self.number = information.hProcess, information.dwProcessId
+            try:
+                if not KERNEL.AssignProcessToJobObject(self.job, self.process):
+                    error = ctypes.WinError(ctypes.get_last_error())
+                    KERNEL.TerminateProcess(self.process, 1)
+                    raise error
+                if KERNEL.ResumeThread(information.hThread) == 0xFFFFFFFF:
                     raise ctypes.WinError(ctypes.get_last_error())
             finally:
-                KERNEL.CloseHandle(handle)
-        return
-    try:
-        if os.getpgid(process.number) == process.number:
-            os.killpg(process.number, signal.SIGKILL)
-        else:
-            os.kill(process.number, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+                KERNEL.CloseHandle(information.hThread)
+
+        def running(self):
+            code = wintypes.DWORD()
+            return bool(KERNEL.GetExitCodeProcess(self.process, ctypes.byref(code))) and code.value == 259
+
+        def active_processes(self):
+            accounting = BasicAccounting()
+            basic_accounting = 1
+            checked_call(KERNEL.QueryInformationJobObject(self.job, basic_accounting, ctypes.byref(accounting),
+                                                          ctypes.sizeof(accounting), None))
+            return accounting.ActiveProcesses
+
+        def stop(self, seconds=None):
+            """Ends every process of the job. Returns whether no process of the job runs."""
+            checked_call(KERNEL.TerminateJobObject(self.job, 1))
+            deadline = time.monotonic() + (STOP_SECONDS if seconds is None else seconds)
+            while self.active_processes() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            return self.active_processes() == 0
+
+        def close(self):
+            for handle in (self.process, self.job):
+                if handle:
+                    KERNEL.CloseHandle(handle)
+            self.process = self.job = None
+
+    Server = WindowsServer
+else:
+    Server = UnixServer
 
 
-def stop(installation, data, output, server=None, end_seconds=30):
-    """Stops `server`, or the server of `data` when it is not given, with pg_ctl. When pg_ctl
-    fails or its time limit ends and the server still runs, ends the server and its child
-    processes. Acts only while the process has the identity of the server, never on the
-    number of postmaster.pid alone. Returns whether the server has ended."""
-    server = server or server_of(installation, data)
-    if not runs(server):
-        return True
-    try:
-        checked(stop_command(installation, data), "the stop of PostgreSQL", output)
-    except (Failure, OSError) as failure:
-        print(f"PostgreSQL was not stopped by pg_ctl: {failure}", flush=True)
-    if not runs(server):
-        return True
-    print(f"PostgreSQL still runs after pg_ctl stop: process {server.number} and its child processes are ended",
-          flush=True)
-    try:
-        end(server)
-    except (OSError, subprocess.SubprocessError) as error:
-        print(f"the processes of PostgreSQL were not ended: {error}", flush=True)
-    deadline = time.monotonic() + end_seconds
-    while runs(server) and time.monotonic() < deadline:
+def server_command(installation, data, port):
+    """The server listens on TCP only: without a Unix socket it writes no file outside its
+    data directory."""
+    settings = [part for setting in SERVER_SETTINGS for part in ("-c", setting)]
+    return [program(installation, "postgres"), "-D", str(data), "-c", "listen_addresses=127.0.0.1",
+            "-c", "unix_socket_directories=", "-p", str(port), *settings]
+
+
+def wait_until_ready(server, installation, port, log):
+    """Waits until the server accepts connections; fails when it exits or after START_SECONDS."""
+    deadline = time.monotonic() + START_SECONDS
+    ready = [program(installation, "pg_isready"), "-q", "-h", "127.0.0.1", "-p", str(port), "-U", "postgres"]
+    while time.monotonic() < deadline:
+        if not server.running():
+            raise Failure("the server ended during its start")
+        if subprocess.run(ready, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          timeout=30).returncode == 0:
+            return
         time.sleep(0.1)
-    return not runs(server)
+    raise Failure(f"the server did not accept connections within {START_SECONDS} s")
 
 
 class Ended(BaseException):
@@ -421,14 +473,15 @@ class Ended(BaseException):
 
 
 class Signals:
-    """SIGTERM, SIGINT and SIGHUP end the program after the stop of the server. pg_ctl starts
-    the server in a session of its own, so the end of the process group of this program does
-    not end it. Only the first signal raises Ended, and only before `defer`: the cleanup calls
-    `defer` first, so no signal interrupts it, and a signal during the cleanup is recorded."""
+    """SIGTERM, SIGINT and SIGHUP end the program after the stop of the server. The server runs
+    in a session of its own, so the end of the process group of this program does not end it.
+    The first signal raises Ended once, outside `held` and before `defer`; a signal while the
+    signals are held is raised at the end of `held`; after `defer` signals are only recorded."""
 
     def __init__(self):
         self.number = None
         self.raising = True
+        self.raised = False
 
     def install(self):
         for name in ("SIGTERM", "SIGINT", "SIGHUP"):
@@ -438,9 +491,21 @@ class Signals:
     def handle(self, number, _frame):
         if self.number is None:
             self.number = number
-        if self.raising:
-            self.raising = False
+        if self.raising and not self.raised:
+            self.raised = True
             raise Ended(number)
+
+    @contextlib.contextmanager
+    def held(self):
+        """No signal raises inside: the start of the server and its record are not separated."""
+        before, self.raising = self.raising, False
+        try:
+            yield
+        finally:
+            self.raising = before
+        if before and self.number is not None and not self.raised:
+            self.raised = True
+            raise Ended(self.number)
 
     def defer(self):
         self.raising = False
@@ -454,10 +519,10 @@ class Signals:
         return self.number
 
 
-def serve(arguments, version, downloads, url, expected, installation, data, log, output, started_servers):
+def serve(arguments, version, downloads, url, expected, installation, data, log, output, servers, signals):
     """Starts the server of `data` and runs the command with its address; returns the exit
-    code of the command, or 1 when the server did not start. The identity of the started
-    server goes into `started_servers`."""
+    code of the command, or 1 when the server did not start. The started server goes into
+    `servers`."""
     try:
         extract(fetch(downloads, url, expected), installation)
         started = time.monotonic()
@@ -465,12 +530,13 @@ def serve(arguments, version, downloads, url, expected, installation, data, log,
         # The runner has no other process that takes a port between this choice and the
         # start; a taken port ends the start with the log of the server.
         port = free_port()
-        # On Windows, pg_ctl starts the server with the administrator rights removed from
-        # its token, which the server requires.
-        checked(start_command(installation, data, log, port), "the start of PostgreSQL", output, log)
-        started_servers.append(server_of(installation, data))
+        with signals.held():
+            servers.append(Server(server_command(installation, data, port), log))
+        wait_until_ready(servers[0], installation, port, log)
     except (Failure, OSError) as failure:
         print(f"PostgreSQL {version} did not start: {failure}", flush=True)
+        if log.exists():
+            print(f"the log of the server:\n{log.read_text(errors='replace')}", flush=True)
         return 1
     print(f"PostgreSQL {version} runs at 127.0.0.1:{port}, started in {time.monotonic() - started:.0f} s",
           flush=True)
@@ -502,19 +568,23 @@ def main(arguments):
     root = pathlib.Path(tempfile.mkdtemp(prefix="junto-postgres-"))
     installation, data, log = root / "pgsql", root / "data", root / "server.log"
     output = root / "programs.log"
-    started_servers, results = [], []
+    servers, results = [], []
 
     def cleanup():
         """Stops the server and removes the directory of the run, once; later calls return
         the result of the first."""
         signals.defer()
         if not results:
+            stopped = True
             try:
-                stopped = stop(installation, data, output, started_servers[0] if started_servers else None)
+                for server in servers:
+                    stopped = server.stop() and stopped
             except Exception as error:
                 print(f"the stop of PostgreSQL failed: {error!r}", file=sys.stderr, flush=True)
                 stopped = False
             finally:
+                for server in servers:
+                    server.close()
                 shutil.rmtree(root, ignore_errors=True)
             results.append(stopped)
         return results[0]
@@ -525,8 +595,8 @@ def main(arguments):
     try:
         try:
             signals.install()
-            status = serve(arguments, version, downloads, url, expected, installation, data, log, output,
-                           started_servers)
+            status = serve(arguments, version, downloads, url, expected, installation, data, log, output, servers,
+                           signals)
         finally:
             cleanup()
     except Ended:
