@@ -758,10 +758,11 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
         );
         // The window draws again, and paints the pixel buffer inside the picture of the
         // share.
-        junto_client::ui::take_painted_surfaces();
+        let record = junto_client::ui::record_painted_surfaces();
         window.cx.update(|window, _| window.refresh());
         window.settle();
         let painted = junto_client::ui::take_painted_surfaces();
+        drop(record);
         let viewport = window.cx.debug_bounds("share-picture").unwrap();
         let inside = |bounds: gpui::Bounds<gpui::Pixels>| {
             let near = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other) >= -1.0;

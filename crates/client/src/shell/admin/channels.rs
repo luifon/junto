@@ -93,7 +93,7 @@ fn drop_target(
                     return;
                 }
                 let channel_id = drag.channel_id;
-                if let Some(moves) = plans.plan(channel_id, category_id, to) {
+                if let Ok(moves) = plans.plan(channel_id, category_id, to) {
                     this.state.update(cx, |state, cx| {
                         state.move_channels(server_id, workspace_id, channel_id, moves, cx);
                     });
@@ -246,21 +246,24 @@ impl Shell {
                 None => text::admin::PLACE_FIRST.to_owned(),
             };
             let moves = page.plan(channel_id, category_id, to);
-            let enabled = moves.is_some() && !sending;
             let mut button = Button::new(("channel-place", to))
                 .label(label)
-                .disabled(!enabled)
+                .disabled(moves.is_err() || sending)
                 .h(u(28.0))
                 .px(u(10.0));
-            if let Some(moves) = moves {
-                button = button.on_click(Self::moves_listener(
-                    server_id,
-                    workspace_id,
-                    channel_id,
-                    moves,
-                    true,
-                    cx,
-                ));
+            match moves {
+                Ok(moves) => {
+                    button = button.on_click(Self::moves_listener(
+                        server_id,
+                        workspace_id,
+                        channel_id,
+                        moves,
+                        true,
+                        cx,
+                    ));
+                }
+                // A place that is not offered states why.
+                Err(reason) => button = button.tooltip(text::admin::unplanned(reason)),
             }
             row = row.child(named(format!("channel-place-{to}"), button));
         }
@@ -660,7 +663,7 @@ impl Shell {
                     } else {
                         Some(index + 1)
                     };
-                    to.and_then(|to| page.plan(channel_id, row.category_id, to))
+                    to.and_then(|to| page.plan(channel_id, row.category_id, to).ok())
                         .unwrap_or_default()
                 };
                 div()
@@ -678,7 +681,7 @@ impl Shell {
                         format!("channel-up-{channel_id}"),
                         row.first
                             .then_some(text::admin::FIRST_ALREADY)
-                            .or((!row.moves_up).then_some(text::admin::MOVE_NEEDS)),
+                            .or(row.moves_up.err().map(text::admin::unplanned)),
                         Self::moves_listener(
                             server_id,
                             workspace_id,
@@ -694,7 +697,7 @@ impl Shell {
                         format!("channel-down-{channel_id}"),
                         row.last
                             .then_some(text::admin::LAST_ALREADY)
-                            .or((!row.moves_down).then_some(text::admin::MOVE_NEEDS)),
+                            .or(row.moves_down.err().map(text::admin::unplanned)),
                         Self::moves_listener(
                             server_id,
                             workspace_id,

@@ -195,12 +195,17 @@ impl Part {
                 Event::MessageChanged { place: of, .. }
                     if PlaceId::of(of) == PlaceId::Channel(*channel_id)
             ),
+            // An answer that was read before a deletion can hold the notices of the deleted
+            // places, whose messages the state does not place any more: the first page is
+            // read again (`replay_reads`).
             Self::Notices => matches!(
                 event,
                 Event::NotificationChanged { .. }
                     | Event::MessageRead { .. }
                     | Event::ThreadRead { .. }
                     | Event::NotificationsRead { .. }
+                    | Event::ChannelDeleted { .. }
+                    | Event::WorkspaceDeleted { .. }
             ),
             Self::Named(message_id) => {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
@@ -294,8 +299,21 @@ impl ServerModel {
     /// Applies one event. The caller moves the cursor.
     pub(crate) fn apply(&mut self, event: &Event) -> Follow {
         let stale = self.apply_admin(event);
+        let had_notices = !self.notices.is_empty();
         let mut follow = self.apply_event(event);
         follow.load.extend(stale.into_iter().map(Part::Admin));
+        // A further page of the notices continues from the last held notice. When the
+        // event took every held notice and the server holds more, no notice is left to
+        // continue from, and the notices that the server still holds are read again from
+        // their first page.
+        if had_notices
+            && self.notices.is_empty()
+            && self.notices_more
+            && !follow.reload
+            && !follow.load.contains(&Part::Notices)
+        {
+            follow.load.push(Part::Notices);
+        }
         follow
     }
 
@@ -987,6 +1005,17 @@ impl ServerModel {
         let mut reads = Vec::new();
         for event in events {
             if !part.concerns(event, self) {
+                continue;
+            }
+            if part == Part::Notices
+                && matches!(
+                    event,
+                    Event::ChannelDeleted { .. } | Event::WorkspaceDeleted { .. }
+                )
+            {
+                if !reads.contains(&part) {
+                    reads.push(part);
+                }
                 continue;
             }
             if let (

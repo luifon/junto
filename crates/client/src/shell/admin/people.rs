@@ -847,7 +847,7 @@ impl Shell {
                             text::admin::roles::ROLES
                         },
                         format!("account-roles-toggle-{account_id}"),
-                        None,
+                        held(None),
                         cx.listener(move |this, _, _, cx| {
                             this.show_account_roles((!shown).then_some(account_id), cx);
                         }),
@@ -969,7 +969,14 @@ impl Shell {
         if let Some(choices) = &row.assignable
             && self.admin.roles.account == Some(account_id)
         {
-            under.push(self.render_role_choices(view, account_id, &row.name, choices, theme, cx));
+            under.push(self.render_role_choices(
+                view,
+                (account_id, &row.name),
+                choices,
+                held(None),
+                theme,
+                cx,
+            ));
         }
         under.extend(refusal(refused, "account-refused"));
         let modes = [
@@ -1249,7 +1256,12 @@ impl Shell {
                         ));
                         if shown {
                             under.push(self.render_role_choices(
-                                view, account_id, &row.name, choices, &theme, cx,
+                                view,
+                                (account_id, &row.name),
+                                choices,
+                                None,
+                                &theme,
+                                cx,
                             ));
                         }
                     }

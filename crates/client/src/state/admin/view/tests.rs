@@ -487,16 +487,19 @@ fn a_channel_in_which_the_person_does_not_manage_takes_no_change_on_the_channels
     };
     // The list of the workspace holds for every channel: "general" is the first channel
     // of its group and "Daily" the last, and "plans" is alone in its category.
+    let here = Err(Unplanned::Nothing);
     assert_eq!(
         lines(&scene),
         [
-            (true, false, true),
-            (true, true, false),
-            (true, false, false)
+            (true, here, Ok(())),
+            (true, Ok(()), here),
+            (true, here, here)
         ]
     );
-    // An override denies "manage channel" in "Daily": the channel takes no change, and
-    // no move of a neighbour that would change its position either (ADR 0790).
+    // An override denies "manage channel" in "Daily": the channel takes no change, and no
+    // move of a neighbour that would change its position either (ADR 0790). "general"
+    // still goes after it, to the free position after the last one, which changes no
+    // other channel.
     let daily = scene.daily;
     scene.studio_mut().channel_permissions = vec![ChannelPermissions {
         channel_id: daily,
@@ -505,9 +508,9 @@ fn a_channel_in_which_the_person_does_not_manage_takes_no_change_on_the_channels
     assert_eq!(
         lines(&scene),
         [
-            (true, false, false),
-            (false, false, false),
-            (true, false, false)
+            (true, here, Ok(())),
+            (false, Err(Unplanned::NotManaged), here),
+            (true, here, here)
         ]
     );
 }
@@ -1183,8 +1186,8 @@ fn page_of_moves(positions: &[i32]) -> (ChannelsPage, ChannelId, CategoryId, Vec
         first: false,
         last: false,
         may_manage,
-        moves_up: false,
-        moves_down: false,
+        moves_up: Err(Unplanned::Nothing),
+        moves_down: Err(Unplanned::Nothing),
     };
     let others: Vec<ChannelId> = positions.iter().map(|_| ChannelId::generate()).collect();
     let page = ChannelsPage {
@@ -1240,8 +1243,56 @@ fn a_move_names_where_each_channel_was_read_and_needs_every_channel_that_it_chan
     assert!((0..=2).all(|to| page.takes(x, Some(projects), to)));
     // Without a free position the other channels would change: no move is offered.
     let (page, x, projects, _) = page_of_moves(&[10, 11]);
-    assert_eq!(page.plan(x, Some(projects), 1), None);
+    assert_eq!(page.plan(x, Some(projects), 1), Err(Unplanned::NotManaged));
     assert!(!page.takes(x, Some(projects), 1));
     // A drop at its own place moves nothing.
-    assert_eq!(page.plan(x, None, 0), None);
+    assert_eq!(page.plan(x, None, 0), Err(Unplanned::Nothing));
+}
+
+#[test]
+fn a_move_names_at_most_the_channels_that_one_request_names() {
+    // One group of 401 channels at consecutive positions, all managed by the person.
+    let lines: Vec<ChannelLine> = (0..=400)
+        .map(|position| ChannelLine {
+            id: ChannelId::generate(),
+            name: format!("c{position}"),
+            kind: ChannelKind::Text,
+            category_id: None,
+            position,
+            place: ChannelPlace {
+                category_id: None,
+                position,
+            },
+            permanent: false,
+            first: false,
+            last: false,
+            may_manage: true,
+            moves_up: Err(Unplanned::Nothing),
+            moves_down: Err(Unplanned::Nothing),
+        })
+        .collect();
+    let first = lines[0].id;
+    let page = ChannelsPage {
+        workspace_id: WorkspaceId::generate(),
+        workspace_name: "Studio".to_owned(),
+        may_manage: true,
+        groups: vec![ChannelGroup {
+            category: None,
+            channels: lines,
+        }],
+    };
+    // To the end and to the first place: a free position, one move.
+    assert_eq!(page.plan(first, None, 400).unwrap().len(), 1);
+    let last = page.groups[0].channels[400].id;
+    assert_eq!(page.plan(last, None, 0).unwrap().len(), 1);
+    // Into the run, the fewest moves: the 150 channels after the place move up.
+    assert_eq!(page.plan(first, None, 250).unwrap().len(), 151);
+    // Into the middle, every way moves 200 channels besides the moved one: more than one
+    // request names, so the place is not offered, and the page states why.
+    assert_eq!(page.plan(first, None, 200), Err(Unplanned::TooMany));
+    assert!(!page.takes(first, None, 200));
+    assert!(
+        crate::text::admin::MOVE_TOO_MANY.contains(&MOST_CHANNEL_MOVES.to_string()),
+        "the reason names the bound of the route"
+    );
 }

@@ -465,6 +465,70 @@ fn a_deleted_workspace_takes_the_notices_of_its_unread_archived_channels() {
 }
 
 #[test]
+fn notices_that_an_event_takes_whole_are_read_again_when_the_server_holds_more() {
+    let scene = scene();
+    let other = AccountId::generate();
+    let noticed = message(scene.text_place(), 7, other, "@you");
+    let held = |more: bool| {
+        let mut model = scene.model();
+        model.set_notices(NotificationPage {
+            notifications: vec![notice(noticed.id)],
+            has_more: more,
+        });
+        assert!(model.put_message(noticed.clone()));
+        model
+    };
+
+    // The held notices lie in the deleted workspace, and the server holds older ones of
+    // other places: no notice is left to continue from, so the first page is read again.
+    let mut model = held(true);
+    let follow = model.apply(&Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    });
+    assert!(model.notices.is_empty() && model.notices_more);
+    assert!(follow.load.contains(&Part::Notices), "{:?}", follow.load);
+
+    // The same for a deleted channel.
+    let mut model = held(true);
+    let follow = model.apply(&Event::ChannelDeleted {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.general,
+    });
+    assert!(follow.load.contains(&Part::Notices), "{:?}", follow.load);
+
+    // Without more notices on the server the empty list is the whole list.
+    let mut model = held(false);
+    let follow = model.apply(&Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    });
+    assert!(!follow.load.contains(&Part::Notices), "{:?}", follow.load);
+
+    // An answer that was read before the deletion holds the deleted notices again, and the
+    // state does not place their messages any more: the first page is read again.
+    let mut model = held(true);
+    let deleted = Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    };
+    model.apply(&deleted);
+    model.set_notices(NotificationPage {
+        notifications: vec![notice(noticed.id)],
+        has_more: true,
+    });
+    assert_eq!(
+        model.replay_reads(Part::Notices, [&deleted]),
+        [Part::Notices]
+    );
+    let channel_deleted = Event::ChannelDeleted {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.general,
+    };
+    assert_eq!(
+        model.replay_reads(Part::Notices, [&channel_deleted]),
+        [Part::Notices]
+    );
+}
+
+#[test]
 fn notices_are_replaced_by_their_first_page_and_continued_from_their_last_one() {
     let scene = scene();
     let mut model = scene.model();

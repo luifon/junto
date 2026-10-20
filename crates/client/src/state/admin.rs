@@ -2,6 +2,7 @@
 //! open, which collections of the client core that page needs, and the one request of
 //! the person that is on its way or was refused.
 
+mod moves;
 mod notifications;
 mod overrides;
 mod people;
@@ -226,6 +227,8 @@ pub struct AdminState {
     /// The roles whose permissions the person changed and whose change the state does
     /// not show yet (ADR 0791).
     pub(crate) role_changes: roles::RoleChanges,
+    /// The moves of channels that the person sent and that the state does not show yet.
+    pub(crate) channel_moves: moves::ChannelMoves,
 }
 
 /// The request that an answer belongs to.
@@ -293,6 +296,7 @@ impl AdminState {
                 self.close();
                 // The changes that wait belong to the account of before.
                 self.role_changes.forget();
+                self.channel_moves.forget();
                 true
             }
         }
@@ -478,6 +482,7 @@ impl AppState {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
         self.settle_role_changes();
+        self.settle_channel_moves();
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();

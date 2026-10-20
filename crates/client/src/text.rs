@@ -2115,8 +2115,6 @@ pub const ARCHIVED_RESULTS_NOT_READ: &str =
     "The archived channels could not be read, so their results are not listed.";
 pub const SHOW_MORE_RESULTS: &str = "Show more results";
 pub const READING_MORE_RESULTS: &str = "Reading more…";
-pub const SEARCH_MESSAGES: &str = "Messages";
-pub const SEARCH_TRANSCRIPTS: &str = "Transcripts";
 pub const FILTER_CHANNEL: &str = "Channel";
 pub const FILTER_AUTHOR: &str = "Author";
 pub const FILTER_DATE: &str = "Date";

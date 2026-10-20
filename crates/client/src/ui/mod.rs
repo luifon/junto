@@ -41,7 +41,7 @@ pub use panel::{Notice, NoticeKind, SectionLabel, SideHeader, StatePanel, WaitBo
 pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;
 #[cfg(all(target_os = "macos", feature = "test-support"))]
-pub use picture::{PaintedSurface, take_painted_surfaces};
+pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_painted_surfaces};
 pub use rows::{
     CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
 };

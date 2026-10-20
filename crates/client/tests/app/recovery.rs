@@ -6,6 +6,7 @@ use gpui::TestAppContext;
 use junto_client::state::account::{PageView, RecoveryLine, RecoveryList};
 use junto_client::state::admin::view::people::NoRecovery;
 use junto_client::state::admin::view::{Scope, ServerPage};
+use junto_client_core::protocol::roles::CreateServerRole;
 
 use crate::admin_pages::{
     account, awaited, click_in_page, invite, joined, open_page, owner_window_at, sel,
@@ -46,6 +47,14 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
     let code = invite(&world, &owner_handle, Vec::new());
     let (_dora_device, dora) = joined(&world, &server, &code, "Dora");
     let dora = logged_in(&dora);
+    // A server role that the owner can give, so that the row of an account has switches.
+    let helpers = world
+        .run(owner_handle.api().create_server_role(&CreateServerRole {
+            name: "Helpers".to_owned(),
+            permissions: Vec::new(),
+        }))
+        .unwrap()
+        .id;
     // The only device of the account is lost with its data directory.
     drop(member);
     drop(lost);
@@ -87,6 +96,13 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
         window.shows("recovery-form")
     });
 
+    // The roles of another account are open under its row while the form is open.
+    click_in_page(&mut owner, sel("account-roles-toggle", dora));
+    owner.until("the roles of the other account are drawn", |window| {
+        window.shows(sel("account-roles", dora))
+    });
+    assert!(owner.shows("recovery-form"));
+
     // A text that is no key is told at the form, and nothing is sent.
     owner.in_shell(|shell, window, cx| shell.type_recovery("not a key", "", window, cx));
     click_in_page(&mut owner, "recovery-confirm");
@@ -94,8 +110,8 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
     assert!(owner.shows("recovery-form") && !owner.shows("account-recovered"));
 
     // The key as the new device shows it, in groups, recovers the account. While the
-    // request is on its way neither Cancel nor the action of another row releases the
-    // row of the form (ADR 0730).
+    // request is on its way neither Cancel, the action of another row, its Roles control
+    // nor one of its open role switches releases the row of the form (ADR 0730).
     owner.in_shell(|shell, window, cx| shell.type_recovery(&key, "Replacement", window, cx));
     proxy.hold_request("POST", "/recovery");
     click_in_page(&mut owner, "recovery-confirm");
@@ -107,6 +123,17 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
     click_in_page(&mut owner, "recovery-cancel");
     click_in_page(&mut owner, sel("account-ban", dora));
     assert!(owner.shows("recovery-form") && !owner.shows("account-confirm"));
+    let switch = sel(&format!("account-role-{dora}"), helpers);
+    click_in_page(&mut owner, switch);
+    click_in_page(&mut owner, sel("account-roles-toggle", dora));
+    owner.settle();
+    assert!(owner.shows("recovery-form") && owner.shows(sel("account-roles", dora)));
+    assert!(
+        proxy
+            .seen(&format!("/api/v1/accounts/{dora}/server-roles/{helpers}"))
+            .is_empty(),
+        "a role switch was sent while the recovery was on its way"
+    );
     proxy.release();
     owner.until("the row tells the recovery", |window| {
         window.shows("account-recovered")

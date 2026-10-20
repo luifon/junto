@@ -148,17 +148,17 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
     let panel = window.until_searched();
     assert!(window.shows("search-panel") && window.shows("search-results"));
     assert_eq!(panel.state, SearchShown::Results);
-    assert_eq!((panel.messages.len(), panel.transcripts.len()), (2, 1));
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (2, 1));
     assert!(!panel.more);
     let in_general = panel
-        .messages
-        .iter()
+        .messages()
+        .into_iter()
         .find(|row| row.target == ResultTarget::Message(first.id))
         .unwrap();
     assert_eq!(in_general.author, "Ada");
     assert_eq!(in_general.text, "the quartz retention spec");
     assert_eq!(&in_general.text[in_general.marks[0].clone()], "quartz");
-    let line = &panel.transcripts[0];
+    let line = panel.transcripts()[0];
     assert_eq!(
         line.place,
         Whereabouts::Channel {
@@ -177,7 +177,7 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
     assert!(window.shows("search-filter-menu"));
     window.click_named(format!("search-channel:{random}"));
     let panel = window.until_searched();
-    assert_eq!((panel.messages.len(), panel.transcripts.len()), (1, 0));
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (1, 0));
     assert_eq!(panel.channel.as_ref().unwrap().0, random);
     window.in_shell(|shell, _, cx| {
         shell.set_search_filters(
@@ -190,10 +190,10 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
         );
     });
     let panel = window.until_searched();
-    assert_eq!((panel.messages.len(), panel.transcripts.len()), (0, 1));
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (0, 1));
     window.in_shell(|shell, _, cx| shell.set_search_filters(Filters::default(), cx));
     let panel = window.until_searched();
-    assert_eq!(panel.messages.len(), 2);
+    assert_eq!(panel.messages().len(), 2);
 
     // A result leads to its message: the channel is shown, and the list marks the message.
     window.click_channel("random");
@@ -244,8 +244,8 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
     let gone = window
         .search_panel()
         .unwrap()
-        .messages
-        .iter()
+        .messages()
+        .into_iter()
         .find_map(|row| match row.target {
             ResultTarget::Message(id) if id != first.id => Some(id),
             _ => None,
@@ -261,8 +261,8 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
         window.search_panel().is_some_and(|panel| {
             panel.go_failed.as_deref() == Some(text::RESULT_GONE)
                 && panel
-                    .messages
-                    .iter()
+                    .messages()
+                    .into_iter()
                     .all(|row| row.target != ResultTarget::Message(gone))
         })
     });
@@ -315,15 +315,16 @@ fn a_search_reads_a_further_page_and_loses_the_results_of_a_hidden_channel(
     // The first page has 50 results, and the panel offers the next one.
     window.search_for("paged");
     let panel = window.until_searched();
-    assert_eq!(panel.messages.len(), 50);
+    assert_eq!(panel.messages().len(), 50);
     assert!(panel.more);
     // The control stands after the 50 results.
     window.in_shell(|shell, _, cx| shell.show_end_of_results(cx));
     assert!(window.shows("more-results"));
     window.click("more-results");
     let panel = window.until_searched();
-    assert_eq!(panel.messages.len(), 53);
-    assert!(!panel.more && !window.shows("more-results"));
+    assert_eq!(panel.messages().len(), 53);
+    // The control keeps its place under the list, and offers nothing more.
+    assert!(!panel.more && !panel.can_read_more && window.shows("more-results"));
 
     // The administrator hides the first channel from the role of every member: its
     // results leave the panel, and the one of the other channel stays.
@@ -340,13 +341,13 @@ fn a_search_reads_a_further_page_and_loses_the_results_of_a_hidden_channel(
         .unwrap();
     window.until("the results of the hidden channel are gone", |window| {
         window.search_panel().is_some_and(|panel| {
-            panel.messages.len() == 1 && panel.messages[0].text == "paged entry elsewhere"
+            panel.messages().len() == 1 && panel.messages()[0].text == "paged entry elsewhere"
         })
     });
     // A new search of the same text answers in the same way.
     window.search_for("paged");
     let panel = window.until_searched();
-    assert_eq!(panel.messages.len(), 1);
+    assert_eq!(panel.messages().len(), 1);
 }
 
 #[gpui::test]
@@ -384,7 +385,7 @@ fn a_reload_of_the_state_reads_the_search_again_and_leaves_the_side_panel(cx: &m
     // The notices lie over a search. The state is replaced: the notices stay, and the
     // search does not return into the side panel.
     window.search_for("paged");
-    assert_eq!(window.until_searched().messages.len(), 50);
+    assert_eq!(window.until_searched().messages().len(), 50);
     window.click("notices-row");
     assert!(window.shows("notices-panel") && !window.shows("search-panel"));
     mute(&mut window, Some(MuteFor::OneHour));
@@ -393,14 +394,14 @@ fn a_reload_of_the_state_reads_the_search_again_and_leaves_the_side_panel(cx: &m
 
     // A search that the side panel shows is read again from its first page.
     window.search_for("paged");
-    assert_eq!(window.until_searched().messages.len(), 50);
+    assert_eq!(window.until_searched().messages().len(), 50);
     window.in_shell(|shell, _, cx| shell.show_end_of_results(cx));
     window.click("more-results");
-    assert_eq!(window.until_searched().messages.len(), 52);
+    assert_eq!(window.until_searched().messages().len(), 52);
     mute(&mut window, None);
     window.until("the first page was read again", |window| {
         window.search_panel().is_some_and(|panel| {
-            panel.state == SearchShown::Results && panel.messages.len() == 50 && panel.more
+            panel.state == SearchShown::Results && panel.messages().len() == 50 && panel.more
         })
     });
     assert!(window.shows("search-panel"));
@@ -435,10 +436,10 @@ fn a_result_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
     window.search_for("quartz");
     let panel = window.until_searched();
     assert_eq!(panel.state, SearchShown::Results);
-    assert_eq!(panel.messages.len(), 3);
+    assert_eq!(panel.messages().len(), 3);
     let old = panel
-        .messages
-        .iter()
+        .messages()
+        .into_iter()
         .find(|row| row.target == ResultTarget::Message(archived.id))
         .unwrap();
     assert_eq!(
@@ -525,7 +526,7 @@ fn the_first_page_of_results_is_shown_whole_when_its_archived_list_answers(
         .find(|row| row.kind == ChannelKind::Voice)
         .unwrap();
     // A transcript line that ranks above the message of the archived channel: it is the
-    // first result of the page, and the transcripts stand under the messages.
+    // first result of the page.
     world.run(seed_transcript(
         &server,
         workspace_id,
@@ -559,16 +560,16 @@ fn the_first_page_of_results_is_shown_whole_when_its_archived_list_answers(
     );
     assert_eq!(window.search_panel().unwrap().state, SearchShown::Searching);
 
-    // The list answers: the page appears whole, the message above the transcript line.
+    // The list answers: the page appears whole, in the order of the server.
     proxy.release();
     let panel = window.until_searched();
-    assert_eq!((panel.messages.len(), panel.transcripts.len()), (1, 1));
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (1, 1));
     assert!(window.shows(line) && window.shows(message));
     let (line_at, message_at) = (
         window.cx.debug_bounds(line).unwrap(),
         window.cx.debug_bounds(message).unwrap(),
     );
-    assert!(message_at.origin.y < line_at.origin.y);
+    assert!(line_at.origin.y < message_at.origin.y);
 }
 
 #[gpui::test]
@@ -587,8 +588,8 @@ fn a_failed_archived_list_is_stated_with_a_retry_in_the_search_and_the_notices(
     let listed = |window: &mut Window| {
         window.search_panel().is_some_and(|panel| {
             panel
-                .messages
-                .iter()
+                .messages()
+                .into_iter()
                 .any(|row| row.target == ResultTarget::Message(archived.id))
         })
     };
@@ -642,4 +643,58 @@ fn a_failed_archived_list_is_stated_with_a_retry_in_the_search_and_the_notices(
         notices(window) == 1
     });
     assert!(!window.shows("notices-archive-failed"));
+}
+
+#[gpui::test]
+fn a_further_page_moves_no_result_and_no_control_of_the_pages_before(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let workspace_id = window.view().workspace().unwrap().id;
+    let own = window.own_account();
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap();
+    // A transcript line that ranks above every message, and 50 messages: the first page
+    // holds the line and 49 messages, and the second page one message.
+    world.run(seed_transcript(
+        &server,
+        workspace_id,
+        voice.id,
+        own,
+        "quartz quartz quartz quartz",
+    ));
+    for number in 0..50 {
+        admin.send(&world, general, document(&format!("quartz entry {number}")));
+    }
+    window.until_message("quartz entry 49");
+
+    window.search_for("quartz");
+    let panel = window.until_searched();
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (49, 1));
+    assert!(panel.more);
+    let controls = ["search-transcript-0", "more-results"];
+    let bounds = |window: &mut Window| {
+        window.settle();
+        controls.map(|selector| window.cx.debug_bounds(selector).unwrap())
+    };
+    let before = bounds(&mut window);
+
+    // The second page joins the list after the first one: the line of the transcript and
+    // "Show more results" stay where they were.
+    window.click("more-results");
+    let panel = window.until_searched();
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (50, 1));
+    assert_eq!(bounds(&mut window), before);
+    assert!(matches!(
+        panel.results[0].target,
+        ResultTarget::Transcript { .. }
+    ));
 }

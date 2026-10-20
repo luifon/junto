@@ -17,7 +17,7 @@ use junto_client_core::protocol::structure::ChannelKind;
 use time::OffsetDateTime;
 
 use crate::assets::Icon;
-use crate::state::admin::view::NavTitle;
+use crate::state::admin::view::{NavTitle, Unplanned};
 use crate::state::admin::{AdminPage, AskKind, ChannelPage};
 
 pub const TITLE: &str = "Administration";
@@ -41,6 +41,9 @@ pub const FIRST_ALREADY: &str = "It is the first one.";
 pub const MOVE_NEEDS: &str =
     "The move changes a channel in which you do not hold “manage channel”.";
 pub const CHANNEL_MANAGE_NEEDS: &str = "You do not hold “manage channel” in this channel.";
+pub const MOVE_TOO_MANY: &str =
+    "The move changes the places of more than 200 channels, and one change takes 200 at most.";
+pub const MOVE_HERE_ALREADY: &str = "The channel is at this place already.";
 pub const LAST_ALREADY: &str = "It is the last one.";
 pub const NAME_EMPTY: &str = "Type a name.";
 
@@ -244,6 +247,15 @@ pub const PLACE_FIRST: &str = "At the start";
 pub const OTHER_CATEGORY: &str = "Another category";
 
 /// A place of a channel after another channel of its new category.
+/// Why a place is not offered to a channel.
+pub fn unplanned(reason: Unplanned) -> &'static str {
+    match reason {
+        Unplanned::Nothing => MOVE_HERE_ALREADY,
+        Unplanned::NotManaged => MOVE_NEEDS,
+        Unplanned::TooMany => MOVE_TOO_MANY,
+    }
+}
+
 pub fn place_after(name: &str) -> String {
     format!("After {name}")
 }

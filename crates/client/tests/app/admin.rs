@@ -634,8 +634,9 @@ fn an_administrator_drags_channels_to_another_place_and_category(cx: &mut TestAp
 
     // A channel dropped on a channel of another category takes its place there.
     assert!(drag_channel(&mut window, handle(notes), row(roadmap)));
+    // The page shows the move at the drop; the server has done it at the answer.
     window.until("the channel is in the other category", |window| {
-        group_order(window, Some(projects)) == [notes, roadmap]
+        group_order(window, Some(projects)) == [notes, roadmap] && crate::admin_pages::idle(window)
     });
     let held = world.run(owner.api().channels(default)).unwrap().channels;
     let moved = held.iter().find(|channel| channel.id == notes).unwrap();
@@ -794,7 +795,7 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
     assert!(window.shows("channel-place-1"));
     window.click("channel-place-1");
     window.until("the channel is between the two", |window| {
-        group_order(window, Some(projects)) == [b, x, c]
+        group_order(window, Some(projects)) == [b, x, c] && crate::admin_pages::idle(window)
     });
     let places = server_places(&world, &owner, default);
     assert_eq!(places[&x], (Some(projects), 11));
@@ -815,19 +816,21 @@ fn a_move_that_the_server_refuses_for_one_channel_moves_no_channel(cx: &mut Test
     let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &proxy.address());
     let x = owner.channel(&world, default, "x");
     let next = owner.channel(&world, default, "next");
-    window.until("the page shows the two channels", |window| {
+    let last = owner.channel(&world, default, "last");
+    window.until("the page shows the three channels", |window| {
         channels_page(window).is_some_and(|page| {
-            page.channel(x).is_some_and(|line| line.moves_down)
-                && page.channel(next).is_some_and(|line| line.may_manage)
+            page.channel(x).is_some_and(|line| line.moves_down.is_ok())
+                && page.channel(last).is_some_and(|line| line.may_manage)
         })
     });
     let before = server_places(&world, &owner, default);
-    assert!(before[&x].1 < before[&next].1);
+    assert!(before[&x].1 + 1 == before[&next].1 && before[&next].1 + 1 == before[&last].1);
 
-    // The member loses "manage channel" in "next"; the window does not know it yet. "Down"
-    // exchanges the positions of "x" and "next".
+    // The member loses "manage channel" in "last"; the window does not know it yet. No
+    // position is free between "next" and "last": "Down" puts "x" at the position of
+    // "last", which moves up by one.
     proxy.hold_events();
-    deny_managing(&world, &owner, default, next);
+    deny_managing(&world, &owner, default, last);
     window.click_named(format!("channel-down-{x}"));
     window.until("the server refused the move", |window| {
         window.shows("channel-refused")
@@ -838,8 +841,69 @@ fn a_move_that_the_server_refuses_for_one_channel_moves_no_channel(cx: &mut Test
         "the page shows that the member may not change the channel",
         |window| {
             channels_page(window)
-                .is_some_and(|page| page.channel(next).is_some_and(|line| !line.may_manage))
+                .is_some_and(|page| page.channel(last).is_some_and(|line| !line.may_manage))
         },
     );
     assert_eq!(server_places(&world, &owner, default), before);
+}
+
+#[gpui::test]
+fn a_move_changes_the_order_at_the_press_and_no_row_moves_at_its_answer(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    // The request of the move waits at the proxy, so that the answer and the events come
+    // at a time that the test chooses.
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &proxy.address());
+    let a = owner.channel(&world, default, "a");
+    let b = owner.channel(&world, default, "b");
+    let c = owner.channel(&world, default, "c");
+    window.until("the page shows the three channels", |window| {
+        let order = group_order(window, None);
+        order.ends_with(&[a, b, c])
+    });
+
+    // "Move to" of "a" puts it after "b". The order changes at the press: "b" takes the
+    // place of "a", and the form of "a" goes with "a".
+    proxy.hold_request("PATCH", "/channels/positions");
+    window.click_named(format!("channel-move-{a}"));
+    window.click("channel-group-none");
+    let place = {
+        let order = group_order(&mut window, None);
+        let after_b = order.iter().filter(|id| **id != a).position(|id| *id == b);
+        after_b.unwrap() + 1
+    };
+    let place = crate::admin_pages::sel("channel-place", place);
+    window.click(place);
+    window.until("the page shows the asked order", |window| {
+        group_order(window, None).ends_with(&[b, a, c])
+    });
+    window.settle();
+    let controls = [
+        selector(format!("channel-settings-{b}")),
+        selector(format!("channel-settings-{c}")),
+    ];
+    let bounds = |window: &mut Window| {
+        window.settle();
+        controls.map(|selector| window.cx.debug_bounds(selector).unwrap())
+    };
+    let pressed = bounds(&mut window);
+
+    // The server does the move, and the state holds its events: no control moves.
+    proxy.release();
+    window.until("the form of the move is closed", |window| {
+        !window.shows(place) && channels_page(window).is_some()
+    });
+    // The channel list of the server follows the state alone.
+    window.until("the state holds the move and its answer", |window| {
+        let names = window.channel_names();
+        let at = |name: &str| names.iter().position(|held| held == name);
+        at("b") < at("a")
+            && window.admin().is_some_and(|view| {
+                !view.sending(junto_client::state::admin::AskKind::MoveChannels(a))
+            })
+    });
+    assert_eq!(bounds(&mut window), pressed);
+    assert!(group_order(&mut window, None).ends_with(&[b, a, c]));
+    assert!(!window.shows("channel-refused"));
 }

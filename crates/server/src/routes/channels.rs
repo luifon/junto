@@ -9,8 +9,8 @@ use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{
     Category, ChangeChannelOverride, Channel, ChannelKind, ChannelList, ChannelOverride,
-    ChannelPermissions, CreateCategory, CreateChannel, MoveChannels, OverrideState,
-    SetChannelOverride, UpdateCategory, UpdateChannel,
+    ChannelPermissions, CreateCategory, CreateChannel, MOST_CHANNEL_MOVES, MoveChannels,
+    OverrideState, SetChannelOverride, UpdateCategory, UpdateChannel,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -511,9 +511,6 @@ pub async fn update_channel(
     .map(Json)
 }
 
-/// The most channels that one change of the order names.
-const MOST_MOVES: usize = 200;
-
 /// Changes the category and the position of channels of one workspace in one transaction:
 /// all of them or none. Each move states where the client read the channel; when one of
 /// them is no longer there, the answer is `conflict` and nothing changes. Each channel
@@ -533,9 +530,9 @@ pub async fn move_channels(
     ApiPath(workspace_id): ApiPath<WorkspaceId>,
     ApiJson(body): ApiJson<MoveChannels>,
 ) -> ApiResult<StatusCode> {
-    if body.moves.is_empty() || body.moves.len() > MOST_MOVES {
+    if body.moves.is_empty() || body.moves.len() > MOST_CHANNEL_MOVES {
         return Err(ApiError::invalid(format!(
-            "moves must name 1 to {MOST_MOVES} channels"
+            "moves must name 1 to {MOST_CHANNEL_MOVES} channels"
         )));
     }
     let mut named = std::collections::HashSet::new();

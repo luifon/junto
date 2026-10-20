@@ -16,8 +16,8 @@ use crate::state::search::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SectionLabel,
-    SelectBox, SideHeader, StatePanel, StyleExt,
+    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SelectBox,
+    SideHeader, StatePanel, StyleExt,
 };
 
 /// One of the three filters of a search.
@@ -341,9 +341,12 @@ impl Shell {
         row.into_any_element()
     }
 
+    /// One result. `index` is its place in the list, and `number` its place among the
+    /// results of its kind, which names a line of a transcript for a test.
     fn render_result(
         &mut self,
         index: usize,
+        number: usize,
         row: &ResultRow,
         panel: &SearchPanel,
         theme: &Theme,
@@ -365,7 +368,7 @@ impl Shell {
             ResultTarget::Transcript { .. } => (
                 text::OPEN_TRANSCRIPT.into(),
                 Some(text::RECORDING_RESULT.into()),
-                format!("search-transcript-{index}"),
+                format!("search-transcript-{number}"),
             ),
         };
         let shown = Excerpt {
@@ -454,7 +457,7 @@ impl Shell {
         let _ = window;
         let theme = theme(cx);
         let colors = theme.colors;
-        let found = panel.messages.len() + panel.transcripts.len();
+        let found = panel.results.len();
         let note: SharedString = match &panel.state {
             SearchShown::Searching if found == 0 => text::SEARCHING.into(),
             _ => text::results_for(found, panel.more, &panel.text).into(),
@@ -541,55 +544,48 @@ impl Shell {
                     .into_any_element()
             }
             SearchShown::Searching | SearchShown::Results => {
-                let mut rows: Vec<AnyElement> = Vec::new();
-                if !panel.messages.is_empty() {
-                    rows.push(
-                        SectionLabel::new(text::SEARCH_MESSAGES)
-                            .count(panel.messages.len())
-                            .into_any_element(),
-                    );
-                    for (index, row) in panel.messages.iter().enumerate() {
-                        rows.push(self.render_result(index, row, panel, &theme, cx));
-                    }
+                // One list in the order of the server: the rows of a later page join it
+                // after the rows before, and no listed row moves (ADR 0730, ADR 0743).
+                let mut rows: Vec<AnyElement> = Vec::with_capacity(panel.results.len());
+                let mut transcripts = 0;
+                for (index, row) in panel.results.iter().enumerate() {
+                    let number = match row.target {
+                        ResultTarget::Message(_) => index,
+                        ResultTarget::Transcript { .. } => {
+                            transcripts += 1;
+                            transcripts - 1
+                        }
+                    };
+                    rows.push(self.render_result(index, number, row, panel, &theme, cx));
                 }
-                if !panel.transcripts.is_empty() {
-                    rows.push(
-                        SectionLabel::new(text::SEARCH_TRANSCRIPTS)
-                            .count(panel.transcripts.len())
-                            .into_any_element(),
-                    );
-                    for (index, row) in panel.transcripts.iter().enumerate() {
-                        rows.push(self.render_result(index, row, panel, &theme, cx));
-                    }
-                }
-                if panel.can_read_more {
-                    rows.push(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .px(u(14.0))
-                            .py(u(8.0))
-                            .child(
-                                Button::new("more-results")
-                                    .label(if panel.reading_more {
-                                        text::READING_MORE_RESULTS
-                                    } else {
-                                        text::SHOW_MORE_RESULTS
-                                    })
-                                    .disabled(panel.reading_more)
-                                    .selector("more-results")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state
-                                            .update(cx, |state, cx| state.read_more_results(cx));
-                                    })),
-                            )
-                            .into_any_element(),
-                    );
-                }
-                ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
-                    .selector("search-results")
-                    .children(rows)
-                    .child(div().flex_none().h(u(6.0)))
+                // "Show more results" stands under the list, at a place of its own while
+                // results are listed: a page that arrives does not move it.
+                let more = div().flex().flex_none().px(u(14.0)).py(u(8.0)).child(
+                    Button::new("more-results")
+                        .label(if panel.reading_more {
+                            text::READING_MORE_RESULTS
+                        } else {
+                            text::SHOW_MORE_RESULTS
+                        })
+                        .disabled(panel.reading_more || !panel.can_read_more)
+                        .selector("more-results")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.read_more_results(cx));
+                        })),
+                );
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
+                            .selector("search-results")
+                            .children(rows)
+                            .child(div().flex_none().h(u(6.0))),
+                    )
+                    .child(more)
                     .into_any_element()
             }
         };
