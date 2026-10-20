@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import typing
 import urllib.request
 import zipfile
 
@@ -206,78 +207,209 @@ def checked(command, what, output, log=None):
         raise Failure(f"{what} failed")
 
 
-def server_number(data):
-    """The process number of the server of `data`, from the first line of postmaster.pid."""
+class Process(typing.NamedTuple):
+    """A process as the system states it: its number, its start time and the resolved path of
+    its executable. A process number that the system gives again to another process has
+    another start time."""
+    number: int
+    start: int
+    path: str
+
+
+def program_path(path):
+    return os.path.normcase(os.path.realpath(path))
+
+
+def server_program(installation):
+    return program_path(installation / "bin" / ("postgres.exe" if os.name == "nt" else "postgres"))
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    KERNEL = ctypes.WinDLL("kernel32", use_last_error=True)
+    KERNEL.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    KERNEL.OpenProcess.restype = wintypes.HANDLE
+    KERNEL.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    KERNEL.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    KERNEL.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                  ctypes.POINTER(wintypes.DWORD)]
+    KERNEL.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    KERNEL.CloseHandle.argtypes = [wintypes.HANDLE]
+    KERNEL.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    KERNEL.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+    KERNEL.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+    KERNEL.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+    QUERY_LIMITED_INFORMATION, TERMINATE, STILL_ACTIVE = 0x1000, 0x0001, 259
+
+    def handle_identity(handle, number):
+        """The identity of the running process of `handle`, or None when it has ended."""
+        code = wintypes.DWORD()
+        if not KERNEL.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != STILL_ACTIVE:
+            return None
+        created, ended, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        if not KERNEL.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(ended),
+                                      ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            return None
+        size = wintypes.DWORD(32768)
+        path = ctypes.create_unicode_buffer(size.value)
+        if not KERNEL.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
+            return None
+        return Process(number, (created.dwHighDateTime << 32) | created.dwLowDateTime, program_path(path.value))
+
+    def children_of(number):
+        """The numbers of the processes whose parent is `number`."""
+        snapshot = KERNEL.CreateToolhelp32Snapshot(0x2, 0)
+        if snapshot in (None, wintypes.HANDLE(-1).value):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = ProcessEntry()
+            entry.dwSize = ctypes.sizeof(ProcessEntry)
+            found = []
+            more = KERNEL.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                if entry.th32ParentProcessID == number and entry.th32ProcessID != number:
+                    found.append(entry.th32ProcessID)
+                more = KERNEL.Process32NextW(snapshot, ctypes.byref(entry))
+            return found
+        finally:
+            KERNEL.CloseHandle(snapshot)
+
+elif sys.platform == "darwin":
+    import ctypes
+
+    LIBPROC = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+
+    class BsdInfo(ctypes.Structure):
+        # struct proc_bsdinfo of <sys/proc_info.h>
+        _fields_ = [("flags", ctypes.c_uint32), ("status", ctypes.c_uint32), ("xstatus", ctypes.c_uint32),
+                    ("pid", ctypes.c_uint32), ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
+                    ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32), ("rgid", ctypes.c_uint32),
+                    ("svuid", ctypes.c_uint32), ("svgid", ctypes.c_uint32), ("rfu", ctypes.c_uint32),
+                    ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32), ("nfiles", ctypes.c_uint32),
+                    ("pgid", ctypes.c_uint32), ("pjobc", ctypes.c_uint32), ("tdev", ctypes.c_uint32),
+                    ("tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32), ("start_seconds", ctypes.c_uint64),
+                    ("start_microseconds", ctypes.c_uint64)]
+
+
+def identity(number):
+    """The process `number` as the system states it now, or None when no such process runs."""
+    if number is None or number <= 0:
+        return None
+    if os.name == "nt":
+        handle = KERNEL.OpenProcess(QUERY_LIMITED_INFORMATION, False, number)
+        if not handle:
+            return None
+        try:
+            return handle_identity(handle, number)
+        finally:
+            KERNEL.CloseHandle(handle)
+    if sys.platform == "darwin":
+        info = BsdInfo()
+        bsd_info = 3
+        if LIBPROC.proc_pidinfo(number, bsd_info, ctypes.c_uint64(0), ctypes.byref(info),
+                                ctypes.sizeof(info)) != ctypes.sizeof(info):
+            return None
+        path = ctypes.create_string_buffer(4096)
+        if LIBPROC.proc_pidpath(number, path, len(path)) <= 0:
+            return None
+        return Process(number, info.start_seconds * 1_000_000 + info.start_microseconds,
+                       program_path(os.fsdecode(path.value)))
     try:
-        return int((data / "postmaster.pid").read_text().splitlines()[0])
-    except (OSError, ValueError, IndexError):
+        with open(f"/proc/{number}/stat") as file:
+            fields = file.read().rsplit(")", 1)[1].split()
+        if fields[0] == "Z":
+            return None
+        return Process(number, int(fields[19]), program_path(os.readlink(f"/proc/{number}/exe")))
+    except (OSError, IndexError, ValueError):
         return None
 
 
-def running(number):
-    """Whether the process `number` runs."""
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
+def runs(process):
+    """Whether `process` still runs: a process with its number and its start time. The path is
+    read only to find the server; the start time alone tells it from a later process that
+    received the same number."""
+    now = None if process is None else identity(process.number)
+    return now is not None and now.start == process.start
 
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.OpenProcess.restype = wintypes.HANDLE
-        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        query_limited_information, still_active = 0x1000, 259
-        handle = kernel.OpenProcess(query_limited_information, False, number)
-        if not handle:
-            return False
-        try:
-            code = wintypes.DWORD()
-            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == still_active
-        finally:
-            kernel.CloseHandle(handle)
+
+def server_of(installation, data):
+    """The server that `data` names in postmaster.pid, when that process runs the program of
+    `installation`. The directory of the installation is new in each run, so a process of
+    another program, which received a number that the server had, is never taken for it."""
     try:
-        os.kill(number, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        number = int((data / "postmaster.pid").read_text().splitlines()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    process = identity(number)
+    if process is None or process.path != server_program(installation):
+        return None
+    return process
 
 
-def end_tree(number):
-    """Ends the process `number` and its child processes. On Unix the server that pg_ctl
-    starts leads a process group of its own, which holds its child processes."""
+def end(process):
+    """Ends `process` and its child processes, when `process` still runs. On Unix the server
+    that pg_ctl starts leads a process group of its own, which holds its child processes; on
+    Windows each child with the program of the server is ended by a handle that is checked
+    against its identity first."""
+    if not runs(process):
+        return
     if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(number)], stdin=subprocess.DEVNULL,
-                       capture_output=True, timeout=60)
+        targets = [process] + [child for child in map(identity, children_of(process.number))
+                               if child is not None and child.path == process.path and child.start >= process.start]
+        for target in targets:
+            handle = KERNEL.OpenProcess(QUERY_LIMITED_INFORMATION | TERMINATE, False, target.number)
+            if not handle:
+                continue
+            try:
+                now = handle_identity(handle, target.number)
+                if now is not None and now.start == target.start and not KERNEL.TerminateProcess(handle, 1):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                KERNEL.CloseHandle(handle)
         return
     try:
-        if os.getpgid(number) == number:
-            os.killpg(number, signal.SIGKILL)
+        if os.getpgid(process.number) == process.number:
+            os.killpg(process.number, signal.SIGKILL)
         else:
-            os.kill(number, signal.SIGKILL)
+            os.kill(process.number, signal.SIGKILL)
     except ProcessLookupError:
         pass
 
 
-def stop(installation, data, output, end_seconds=30):
-    """Stops the server of `data` with pg_ctl. When pg_ctl fails or its time limit ends and
-    the server still runs, ends the server and its child processes by the process number of
-    postmaster.pid. Returns whether no server of `data` runs afterwards."""
-    number = server_number(data)
-    if number is None:
+def stop(installation, data, output, server=None, end_seconds=30):
+    """Stops `server`, or the server of `data` when it is not given, with pg_ctl. When pg_ctl
+    fails or its time limit ends and the server still runs, ends the server and its child
+    processes. Acts only while the process has the identity of the server, never on the
+    number of postmaster.pid alone. Returns whether the server has ended."""
+    server = server or server_of(installation, data)
+    if not runs(server):
         return True
     try:
         checked(stop_command(installation, data), "the stop of PostgreSQL", output)
     except (Failure, OSError) as failure:
         print(f"PostgreSQL was not stopped by pg_ctl: {failure}", flush=True)
-    if not running(number):
+    if not runs(server):
         return True
-    print(f"PostgreSQL still runs after pg_ctl stop: its processes are ended from process {number}", flush=True)
-    end_tree(number)
+    print(f"PostgreSQL still runs after pg_ctl stop: process {server.number} and its child processes are ended",
+          flush=True)
+    try:
+        end(server)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"the processes of PostgreSQL were not ended: {error}", flush=True)
     deadline = time.monotonic() + end_seconds
-    while running(number) and time.monotonic() < deadline:
+    while runs(server) and time.monotonic() < deadline:
         time.sleep(0.1)
-    return not running(number)
+    return not runs(server)
 
 
 class Ended(BaseException):
@@ -313,10 +445,19 @@ class Signals:
     def defer(self):
         self.raising = False
 
+    def restore(self):
+        """The default handling again: a signal after the cleanup ends the program at once,
+        with the signal as its status. Returns the first recorded signal."""
+        for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), signal.SIG_DFL)
+        return self.number
 
-def serve(arguments, version, downloads, url, expected, installation, data, log, output):
+
+def serve(arguments, version, downloads, url, expected, installation, data, log, output, started_servers):
     """Starts the server of `data` and runs the command with its address; returns the exit
-    code of the command, or 1 when the server did not start."""
+    code of the command, or 1 when the server did not start. The identity of the started
+    server goes into `started_servers`."""
     try:
         extract(fetch(downloads, url, expected), installation)
         started = time.monotonic()
@@ -327,6 +468,7 @@ def serve(arguments, version, downloads, url, expected, installation, data, log,
         # On Windows, pg_ctl starts the server with the administrator rights removed from
         # its token, which the server requires.
         checked(start_command(installation, data, log, port), "the start of PostgreSQL", output, log)
+        started_servers.append(server_of(installation, data))
     except (Failure, OSError) as failure:
         print(f"PostgreSQL {version} did not start: {failure}", flush=True)
         return 1
@@ -357,31 +499,43 @@ def main(arguments):
             return 1
         return 0
     signals = Signals()
-    signals.install()
     root = pathlib.Path(tempfile.mkdtemp(prefix="junto-postgres-"))
     installation, data, log = root / "pgsql", root / "data", root / "server.log"
     output = root / "programs.log"
+    started_servers, results = [], []
 
     def cleanup():
+        """Stops the server and removes the directory of the run, once; later calls return
+        the result of the first."""
         signals.defer()
-        stopped = stop(installation, data, output)
-        shutil.rmtree(root, ignore_errors=True)
-        return stopped
+        if not results:
+            try:
+                stopped = stop(installation, data, output, started_servers[0] if started_servers else None)
+            except Exception as error:
+                print(f"the stop of PostgreSQL failed: {error!r}", file=sys.stderr, flush=True)
+                stopped = False
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+            results.append(stopped)
+        return results[0]
 
-    # Ended can be raised once, before the cleanup has called defer. When it is raised in
-    # the cleanup of the finally, the cleanup runs again in the except, where no signal
-    # interrupts it.
+    # Ended can be raised once, before the cleanup has called defer. When it is raised at
+    # the start of the cleanup of the finally, the cleanup runs in the except.
     status = 1
     try:
         try:
-            status = serve(arguments, version, downloads, url, expected, installation, data, log, output)
+            signals.install()
+            status = serve(arguments, version, downloads, url, expected, installation, data, log, output,
+                           started_servers)
         finally:
-            stopped = cleanup()
+            cleanup()
     except Ended:
-        stopped = cleanup()
-    if signals.number is not None:
-        print(f"PostgreSQL {version} stopped after signal {signals.number}", file=sys.stderr, flush=True)
-        status = 128 + signals.number
+        cleanup()
+    stopped = results[0]
+    number = signals.restore()
+    if number is not None:
+        print(f"PostgreSQL {version} stopped after signal {number}", file=sys.stderr, flush=True)
+        status = 128 + number
     if not stopped:
         print(f"PostgreSQL {version} still runs: its processes did not end", file=sys.stderr, flush=True)
         status = status or 1

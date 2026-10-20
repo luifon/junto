@@ -7,6 +7,7 @@ import io
 import os
 import pathlib
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -218,55 +219,142 @@ class Extract(unittest.TestCase):
         self.assertFalse(postgres.inside(folder.parent / "installation-2" / "x", folder))
 
 
-def detached_process():
-    """A process that sleeps and is not a child of the tests, as the server that pg_ctl
-    starts: its parent ends at once. On Unix it leads a session of its own."""
-    child = "import time; time.sleep(60)"
-    session = ", start_new_session=True" if os.name != "nt" else ""
-    streams = "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
-    parent = (f"import subprocess, sys; child = subprocess.Popen([sys.executable, '-c', {child!r}], "
-              f"{streams}{session}); print(child.pid)")
+STREAMS = "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
+# The program of this interpreter as the system states it. A Python of a macOS framework build
+# runs another program of the framework soon after its start; this one keeps its program.
+PYTHON = postgres.identity(os.getpid()).path if postgres.identity(os.getpid()) else sys.executable
+
+
+def detached(program, arguments=(), session=True):
+    """Starts `program` as the server that pg_ctl starts: its parent ends at once, so it is no
+    child of the tests; on Unix it leads a session of its own. Returns its process number."""
+    options = ", start_new_session=True" if session and os.name != "nt" else ""
+    parent = (f"import subprocess, sys; child = subprocess.Popen({[str(program), *arguments]!r}, "
+              f"{STREAMS}{options}); print(child.pid)")
     result = subprocess.run([sys.executable, "-c", parent], capture_output=True, text=True, timeout=30, check=True)
     return int(result.stdout.split()[0])
 
 
+def detached_tree(directory):
+    """A detached process with one child process of the same program, both sleeping. Returns the
+    numbers of both."""
+    record = pathlib.Path(directory) / "child"
+    server = (f"import subprocess, sys, time; child = subprocess.Popen([{PYTHON!r}, '-c', 'import time; "
+              f"time.sleep(60)'], {STREAMS}); open({str(record)!r}, 'w').write(str(child.pid)); time.sleep(60)")
+    number = detached(PYTHON, ["-c", server])
+    deadline = time.monotonic() + 30
+    while not (record.exists() and record.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return number, int(record.read_text())
+
+
+def failed_pg_ctl(calls):
+    def checked(*arguments, **_options):
+        calls.append(arguments[0])
+        raise postgres.Failure("the stop of PostgreSQL failed")
+    return checked
+
+
+class Identity(unittest.TestCase):
+    def test_a_running_process_states_its_program_and_start_and_an_ended_one_none(self):
+        number = detached(PYTHON, ["-c", "import time; time.sleep(60)"])
+        try:
+            process = postgres.identity(number)
+            self.assertIsNotNone(process)
+            self.assertEqual(process.number, number)
+            self.assertEqual(process.path, PYTHON)
+            self.assertEqual(postgres.identity(number), process)
+        finally:
+            end_process(number)
+        deadline = time.monotonic() + 30
+        while postgres.identity(number) == process and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertNotEqual(postgres.identity(number), process)
+
+
 class Stop(unittest.TestCase):
-    def test_a_server_that_pg_ctl_does_not_stop_is_ended_by_its_process_number(self):
-        number = detached_process()
-        try:
-            with tempfile.TemporaryDirectory() as temporary:
-                root = pathlib.Path(temporary)
-                (root / "data").mkdir()
-                (root / "data" / "postmaster.pid").write_text(f"{number}\n{root / 'data'}\n")
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = pathlib.Path(self.temporary.name)
+        self.data = self.root / "data"
+        self.data.mkdir()
+        self.calls = []
 
-                def failed_stop(*_arguments, **_options):
-                    raise postgres.Failure("the stop of PostgreSQL failed")
+    def stop(self, server=None, end_seconds=30):
+        with mock.patch.object(postgres, "checked", failed_pg_ctl(self.calls)), \
+                contextlib.redirect_stdout(io.StringIO()) as printed:
+            given = {"server": server} if server else {}
+            stopped = postgres.stop(self.root / "pgsql", self.data, self.root / "output", end_seconds=end_seconds,
+                                    **given)
+        return stopped, printed.getvalue()
 
-                with mock.patch.object(postgres, "checked", failed_stop), \
-                        contextlib.redirect_stdout(io.StringIO()) as printed:
-                    stopped = postgres.stop(root / "pgsql", root / "data", root / "output")
-            self.assertIs(stopped, True)
-            self.assertFalse(postgres.running(number))
-            self.assertIn(f"ended from process {number}", printed.getvalue())
-        finally:
-            end_process(number)
+    def test_a_number_of_postmaster_pid_that_another_program_has_is_not_acted_on(self):
+        number = detached(PYTHON, ["-c", "import time; time.sleep(60)"])
+        self.addCleanup(end_process, number)
+        before = postgres.identity(number)
+        (self.data / "postmaster.pid").write_text(f"{number}\n")
+        stopped, _ = self.stop()
+        self.assertIs(stopped, True)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(postgres.identity(number), before)
 
-    def test_a_missing_pg_ctl_is_a_failed_stop(self):
-        number = detached_process()
-        try:
-            with tempfile.TemporaryDirectory() as temporary:
-                root = pathlib.Path(temporary)
-                (root / "data").mkdir()
-                (root / "data" / "postmaster.pid").write_text(f"{number}\n")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    self.assertIs(postgres.stop(root / "no-installation", root / "data", root / "output"), True)
-            self.assertFalse(postgres.running(number))
-        finally:
-            end_process(number)
+    def test_a_recorded_server_whose_number_has_another_start_is_not_acted_on(self):
+        number = detached(PYTHON, ["-c", "import time; time.sleep(60)"])
+        self.addCleanup(end_process, number)
+        running = postgres.identity(number)
+        earlier = running._replace(start=running.start - 1)
+        stopped, _ = self.stop(earlier)
+        self.assertIs(stopped, True)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(postgres.identity(number), running)
+
+    def test_a_server_that_pg_ctl_does_not_stop_is_ended_with_its_child_processes(self):
+        number, child = detached_tree(self.root)
+        self.addCleanup(end_process, number)
+        self.addCleanup(end_process, child)
+        server, process_of_child = postgres.identity(number), postgres.identity(child)
+        stopped, printed = self.stop(server)
+        self.assertIs(stopped, True)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(f"process {number} and its child processes are ended", printed)
+        deadline = time.monotonic() + 30
+        while postgres.runs(process_of_child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(postgres.runs(server))
+        self.assertFalse(postgres.runs(process_of_child))
+
+    @unittest.skipIf(os.name == "nt", "the program of the server is a copy of sleep")
+    def test_the_server_of_postmaster_pid_is_the_process_with_the_program_of_the_installation(self):
+        program = self.root / "pgsql" / "bin" / "postgres"
+        program.parent.mkdir(parents=True)
+        shutil.copyfile(shutil.which("sleep"), program)
+        program.chmod(0o755)
+        number = detached(program, ["60"])
+        self.addCleanup(end_process, number)
+        (self.data / "postmaster.pid").write_text(f"{number}\n{self.data}\n")
+        server = postgres.server_of(self.root / "pgsql", self.data)
+        self.assertEqual(server, postgres.identity(number))
+        stopped, _ = self.stop()
+        self.assertIs(stopped, True)
+        self.assertFalse(postgres.runs(server))
+
+    def test_an_error_of_the_forced_end_is_reported_and_the_stop_fails(self):
+        number = detached(PYTHON, ["-c", "import time; time.sleep(60)"])
+        self.addCleanup(end_process, number)
+
+        def failed_end(_process):
+            raise subprocess.TimeoutExpired(["taskkill"], 60)
+
+        with mock.patch.object(postgres, "end", failed_end):
+            stopped, printed = self.stop(postgres.identity(number), end_seconds=0)
+        self.assertIs(stopped, False)
+        self.assertIn("were not ended", printed)
 
     def test_without_a_process_file_no_server_runs(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.assertIs(postgres.stop(pathlib.Path(temporary), pathlib.Path(temporary), None), True)
+        stopped, _ = self.stop()
+        self.assertIs(stopped, True)
+        self.assertEqual(self.calls, [])
 
 
 @unittest.skipIf(os.name == "nt", "Windows ends a process on SIGTERM without a handler")
@@ -276,12 +364,17 @@ class Main(unittest.TestCase):
     def setUp(self):
         self.handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
         self.stops = []
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = pathlib.Path(self.temporary.name) / "run"
+        self.root.mkdir()
         patches = [
             mock.patch.object(postgres, "current_system", lambda: "macos"),
             mock.patch.object(postgres, "fetch", lambda *_arguments: pathlib.Path("pg.zip")),
             mock.patch.object(postgres, "extract", lambda *_arguments: None),
             mock.patch.object(postgres, "checked", lambda *_arguments, **_options: None),
             mock.patch.object(postgres, "free_port", lambda: 5999),
+            mock.patch.object(postgres.tempfile, "mkdtemp", lambda **_options: str(self.root)),
         ]
         for patch in patches:
             patch.start()
@@ -306,22 +399,26 @@ class Main(unittest.TestCase):
 
         with mock.patch.object(postgres, "stop", stop):
             status, errors = self.main("pass")
-        self.assertEqual(self.stops[:2], ["started", "finished"])
+        self.assertEqual(self.stops, ["started", "finished"])
         self.assertEqual(status, 128 + signal.SIGTERM)
         self.assertIn(f"stopped after signal {int(signal.SIGTERM)}", errors)
 
-    def test_a_signal_during_the_command_ends_it_and_stops_the_server(self):
+    def test_a_signal_during_the_command_ends_it_and_stops_the_server_once(self):
+        results = [False, True]
+
         def stop(*_arguments):
             self.stops.append("stopped")
-            return True
+            return results.pop(0)
 
         command = "import os, signal, time; os.kill(os.getppid(), signal.SIGTERM); time.sleep(30)"
         began = time.monotonic()
         with mock.patch.object(postgres, "stop", stop):
-            status, _ = self.main(command)
+            status, errors = self.main(command)
         self.assertLess(time.monotonic() - began, 20)
-        self.assertIn("stopped", self.stops)
+        self.assertEqual(self.stops, ["stopped"])
         self.assertEqual(status, 128 + signal.SIGTERM)
+        self.assertIn("still runs", errors)
+        self.assertFalse(self.root.exists())
 
     def test_a_server_that_still_runs_after_the_stop_fails_the_program(self):
         with mock.patch.object(postgres, "stop", lambda *_arguments: False):
@@ -329,9 +426,27 @@ class Main(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("still runs", errors)
 
+    def test_an_error_of_the_stop_is_reported_and_the_directory_is_removed(self):
+        def stop(*_arguments):
+            raise PermissionError("operation not permitted")
+
+        with mock.patch.object(postgres, "stop", stop):
+            status, errors = self.main("pass")
+        self.assertEqual(status, 1)
+        self.assertIn("operation not permitted", errors)
+        self.assertIn("still runs", errors)
+        self.assertFalse(self.root.exists())
+
+    def test_after_the_cleanup_a_signal_has_its_default_effect(self):
+        with mock.patch.object(postgres, "stop", lambda *_arguments: True):
+            self.assertEqual(self.main("pass")[0], 0)
+        for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            self.assertEqual(signal.getsignal(number), signal.SIG_DFL)
+
     def test_the_exit_code_of_the_command_is_the_exit_code_of_the_program(self):
         with mock.patch.object(postgres, "stop", lambda *_arguments: True):
             self.assertEqual(self.main("raise SystemExit(7)")[0], 7)
+            self.root.mkdir()
             self.assertEqual(self.main("pass")[0], 0)
 
 
