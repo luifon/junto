@@ -1823,6 +1823,73 @@ mod tests {
     /// bridge of the wrapper and nothing else.
     const NATIVE_THROW: &str = "JUNTO_TEST_NATIVE_THROW";
 
+    /// The longest time that a run of the test program for one call takes: it starts and ends
+    /// at once, and only a fault such as a message box of Windows keeps it.
+    const NATIVE_THROW_LIMIT: Duration = Duration::from_secs(60);
+
+    /// The address space of a run that exhausts its memory first, in KiB for `ulimit -v`: more
+    /// than the test program takes at its start.
+    #[cfg(target_os = "linux")]
+    const EXHAUSTED_ADDRESS_SPACE_KIB: u64 = 4 << 20;
+
+    /// Takes every block that the allocator still gives, from 1 GiB down to one byte, and
+    /// keeps it, so that the next allocation fails.
+    #[cfg(target_os = "linux")]
+    fn exhaust_memory() {
+        let mut size = 1_usize << 30;
+        while size > 0 {
+            let mut block: Vec<u8> = Vec::new();
+            if block.try_reserve_exact(size).is_ok() {
+                std::mem::forget(block);
+            } else {
+                size /= 2;
+            }
+        }
+    }
+
+    /// Runs `command` to its end within `limit`, with its standard error read. Past the limit
+    /// the process is killed and the test fails.
+    fn run_within(
+        mut command: std::process::Command,
+        limit: Duration,
+    ) -> (std::process::ExitStatus, String) {
+        use std::io::Read;
+        use std::process::Stdio;
+
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut stderr = child
+            .stderr
+            .take()
+            .unwrap_or_else(|| panic!("no standard error"));
+        let reader = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            let _ = stderr.read_to_end(&mut text);
+            String::from_utf8_lossy(&text).into_owned()
+        });
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap_or_else(|error| panic!("{error}")) {
+                break status;
+            }
+            if started.elapsed() > limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                let text = reader.join().unwrap_or_default();
+                panic!("the process did not end within {limit:?}\n{text}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let text = reader
+            .join()
+            .unwrap_or_else(|_| panic!("the reader of standard error failed"));
+        (status, text)
+    }
+
     #[test]
     fn a_cpp_exception_that_the_wrapper_did_not_throw_ends_the_process_with_a_line_that_names_it() {
         use std::process::Command;
@@ -1832,42 +1899,67 @@ mod tests {
         if let Ok(call) = std::env::var(NATIVE_THROW) {
             let returned = match call.as_str() {
                 "runtime" => ffi::throw_runtime_exception(0).is_err(),
+                #[cfg(target_os = "linux")]
+                "exhausted" => {
+                    exhaust_memory();
+                    ffi::throw_value().is_err()
+                }
                 _ => ffi::throw_value().is_err(),
             };
             panic!("the native call returned (with an error: {returned})");
         }
         // On Linux the C++ library is the one inside the WebRTC library, built without
-        // exceptions: it ends the process where another C++ library throws.
-        let cases: &[(&str, &str, &str)] = &[
+        // exceptions: it ends the process where another C++ library throws. "exhausted" throws
+        // when no allocation succeeds any longer: the first line must not need one, and the
+        // line of the readable names, which needs memory, may be missing. Each case: the call,
+        // the bridge function, a text of the type in the first line, and the readable type of the second
+        // line when there is one.
+        let cases: &[(&str, &str, &str, Option<&str>)] = &[
             #[cfg(target_os = "macos")]
             (
                 "runtime",
                 "throw_runtime_exception",
-                "of type std::out_of_range: ",
+                "out_of_range",
+                Some("std::out_of_range"),
             ),
             #[cfg(windows)]
-            ("runtime", "throw_runtime_exception", "of type not known;"),
+            (
+                "runtime",
+                "throw_runtime_exception",
+                "of type not known;",
+                None,
+            ),
             #[cfg(unix)]
-            ("value", "throw_value", "of type int;"),
+            ("value", "throw_value", "of type i;", Some("int")),
+            #[cfg(target_os = "linux")]
+            ("exhausted", "throw_value", "of type i;", None),
             #[cfg(windows)]
-            ("value", "throw_value", "of type not known;"),
+            ("value", "throw_value", "of type not known;", None),
         ];
-        for (call, function, type_text) in cases {
+        for (call, function, type_text, readable_type) in cases {
             let program = std::env::current_exe().unwrap_or_else(|error| panic!("{error}"));
-            let output = Command::new(program)
+            let mut command = Command::new(&program);
+            #[cfg(target_os = "linux")]
+            if *call == "exhausted" {
+                command = Command::new("sh");
+                command.args([
+                    "-c",
+                    &format!("ulimit -v {EXHAUSTED_ADDRESS_SPACE_KIB} && exec \"$0\" \"$@\""),
+                ]);
+                command.arg(&program);
+            }
+            command
                 .args(["--exact", NAME, "--nocapture"])
-                .env(NATIVE_THROW, call)
-                .output()
-                .unwrap_or_else(|error| panic!("{error}"));
-            let stderr = String::from_utf8_lossy(&output.stderr);
+                .env(NATIVE_THROW, call);
+            let (status, stderr) = run_within(command, NATIVE_THROW_LIMIT);
             assert!(
-                !output.status.success(),
+                !status.success(),
                 "{call}: the process did not end\n{stderr}"
             );
             #[cfg(unix)]
             {
                 use std::os::unix::process::ExitStatusExt;
-                assert_eq!(output.status.signal(), Some(6), "{call}: {stderr}");
+                assert_eq!(status.signal(), Some(6), "{call}: {stderr}");
             }
             let line = stderr
                 .lines()
@@ -1875,6 +1967,17 @@ mod tests {
                 .unwrap_or_else(|| panic!("{call}: no line of the wrapper\n{stderr}"));
             assert!(line.contains(function), "{call}: {line}");
             assert!(line.contains(type_text), "{call}: {line}");
+            if let Some(readable_type) = readable_type {
+                let names = stderr
+                    .lines()
+                    .find(|line| line.starts_with("livekit_ffi: readable names: "))
+                    .unwrap_or_else(|| panic!("{call}: no line of readable names\n{stderr}"));
+                assert!(names.contains(function), "{call}: {names}");
+                assert!(
+                    names.ends_with(&format!("the type {readable_type}")),
+                    "{call}: {names}"
+                );
+            }
         }
     }
 

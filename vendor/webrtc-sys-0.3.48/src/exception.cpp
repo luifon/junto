@@ -26,46 +26,47 @@
 namespace livekit_ffi {
 namespace {
 
-std::string readable(const char* name) {
+const char* current_type(const char* windows_type) noexcept {
 #if defined(_MSC_VER)
-  return name;
-#else
-  int status = 0;
-  char* text = abi::__cxa_demangle(name, nullptr, nullptr, &status);
-  if (status != 0 || text == nullptr) {
-    return name;
-  }
-  std::string result(text);
-  std::free(text);
-  return result;
-#endif
-}
-
-std::string current_type(const char* windows_type) {
-#if defined(_MSC_VER)
-  return windows_type != nullptr ? windows_type : "not known";
+  return windows_type;
 #else
   static_cast<void>(windows_type);
   const std::type_info* type = abi::__cxa_current_exception_type();
-  return type != nullptr ? readable(type->name()) : "not known";
+  return type != nullptr ? type->name() : nullptr;
 #endif
 }
 
 }  // namespace
 
+// The first line is written without an allocation, so that it is written also when the memory
+// of the process is exhausted: an exception of an allocation inside this noexcept function
+// would end the process through std::terminate before the line. It has the names as the
+// compiler wrote them. The readable names of the second line need memory: abi::__cxa_demangle
+// ends the process when an allocation fails, so that line comes after the first one.
 void end_at_foreign_exception(const char* bridge_function,
                               const char* windows_type,
                               const char* message) noexcept {
-  std::string type = current_type(windows_type);
+#if defined(_MSC_VER)
+  // abort() of the C++ runtime would also show a message box and report the fault to Windows.
+  // This comes first, so that a fault in the steps below does not show it either.
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+  const char* type = current_type(windows_type);
   std::fprintf(stderr,
                "livekit_ffi: the bridge function %s ended with a C++ exception that is not "
                "livekit_ffi::Exception, of type %s%s%s; the process ends\n",
-               readable(bridge_function).c_str(), type.c_str(),
+               bridge_function, type != nullptr ? type : "not known",
                message != nullptr ? ": " : "", message != nullptr ? message : "");
   std::fflush(stderr);
-#if defined(_MSC_VER)
-  // abort() of the C++ runtime would also show a message box and report the fault to Windows.
-  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#if !defined(_MSC_VER)
+  int status = 0;
+  const char* readable_function = abi::__cxa_demangle(bridge_function, nullptr, nullptr, &status);
+  const char* readable_type =
+      type != nullptr ? abi::__cxa_demangle(type, nullptr, nullptr, &status) : nullptr;
+  std::fprintf(stderr, "livekit_ffi: readable names: the bridge function %s, the type %s\n",
+               readable_function != nullptr ? readable_function : bridge_function,
+               readable_type != nullptr ? readable_type : (type != nullptr ? type : "not known"));
+  std::fflush(stderr);
 #endif
   std::abort();
 }

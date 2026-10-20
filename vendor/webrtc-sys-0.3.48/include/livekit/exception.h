@@ -38,8 +38,8 @@ class Exception final : public std::exception {
 };
 
 // Writes one line that names the bridge function, the type of the current exception and its
-// message to standard error, and ends the process with std::abort(). Called only inside a catch
-// clause. `windows_type` and `message` are null when they are not known: on macOS and Linux the
+// message to standard error, on macOS and Linux a second line with the readable names, and ends
+// the process with std::abort(). Called only inside a catch clause. `windows_type` and `message` are null when they are not known: on macOS and Linux the
 // C++ ABI gives the type of the current exception, on Windows only the type of a std::exception
 // is known.
 [[noreturn]] void end_at_foreign_exception(const char* bridge_function,
