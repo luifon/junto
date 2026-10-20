@@ -3,13 +3,17 @@
 
 use gpui::TestAppContext;
 use junto_client::shell::Pane;
+use junto_client_core::ServerHandle;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ServerPermission;
-use junto_client_core::protocol::ids::AccountId;
+use junto_client_core::protocol::discovery::NotificationKind;
+use junto_client_core::protocol::ids::{AccountId, ConversationId};
+use junto_client_core::protocol::message::SendMessage;
 use junto_client_core::protocol::roles::CreateServerRole;
 
-use crate::admin_pages::{invite, joined};
+use crate::admin_pages::{default_workspace, invite, joined};
 use crate::harness::{Window, World, member};
+use crate::messages::document;
 use crate::support::logged_in;
 
 impl Window {
@@ -46,9 +50,48 @@ impl Window {
 
     /// The account of the direct conversation that the main area shows.
     fn conversation_with(&mut self) -> Option<(AccountId, Option<String>)> {
-        let conversation = self.view().workspace()?.conversation.clone()?;
+        let conversation = self.view().lists()?.conversation.clone()?;
         Some((conversation.account_id, conversation.name))
     }
+
+    /// Types a text into the composer of the main area and sends it with Enter.
+    fn send(&mut self, text: &str) {
+        self.in_shell(|shell, window, cx| {
+            shell.type_message(Pane::Main, text, window, cx);
+            shell.focus_composer(Pane::Main, window, cx);
+        });
+        self.press("enter");
+        self.until_message(text);
+    }
+}
+
+/// Writes from an account to another one in their direct conversation.
+fn write_to(world: &World, from: &ServerHandle, to: AccountId, text: &str) -> ConversationId {
+    let api = from.api();
+    let conversation = world.run(api.open_conversation(to)).unwrap();
+    let message = SendMessage {
+        document: document(text),
+        reply_to: None,
+        attachments: Vec::new(),
+    };
+    world
+        .run(api.send_message(PlaceId::Direct(conversation.id), &message))
+        .unwrap();
+    conversation.id
+}
+
+/// The number of the messages of a direct conversation, as an account reads them from the
+/// server.
+fn message_count(world: &World, reader: &ServerHandle, conversation_id: ConversationId) -> usize {
+    world
+        .run(
+            reader
+                .api()
+                .messages(PlaceId::Direct(conversation_id), &Default::default()),
+        )
+        .unwrap()
+        .messages
+        .len()
 }
 
 #[gpui::test]
@@ -165,4 +208,96 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
         "the conversation with Carl is shown by his name",
         |window| window.conversation_with() == Some((carl_id, Some("Carl".to_owned()))),
     );
+}
+
+#[gpui::test]
+fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let ada_id = logged_in(&admin.handle);
+    let api = admin.handle.api();
+
+    // Eve administers the server as well.
+    let eve_code = invite(&world, &admin.handle, Vec::new());
+    let (_eve_device, eve) = joined(&world, &server, &eve_code, "Eve");
+    let eve_id = logged_in(&eve);
+    let operators = world
+        .run(api.create_server_role(&CreateServerRole {
+            name: "Operators".to_owned(),
+            permissions: vec![ServerPermission::Administrator],
+        }))
+        .unwrap();
+    world
+        .run(api.assign_server_role(eve_id, operators.id))
+        .unwrap();
+
+    // Luca loses the membership of the only workspace of the server. The window states
+    // that he sees no workspace, and keeps the notices and the direct conversations.
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca_id = window.view().person.account_id.unwrap();
+    let default = default_workspace(&world, &admin.handle);
+    world
+        .run(api.remove_workspace_member(default, luca_id, &Default::default()))
+        .unwrap();
+    window.until("the window shows no workspace", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.workspace.is_none())
+            && window.shows("no-workspace")
+    });
+    assert!(window.shows("no-workspace-note") && window.shows("notices-row"));
+
+    // He writes to an administrator from "New direct message", whose name the window reads
+    // from the profile.
+    window.search_contacts("Ada");
+    window.choose_contact(ada_id);
+    window.until("the conversation with Ada is shown by her name", |window| {
+        window.conversation_with() == Some((ada_id, Some("Ada".to_owned())))
+    });
+    window.until("the empty conversation", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    window.send("Hello without a workspace");
+    let with_ada = world.run(admin.handle.api().conversations()).unwrap();
+    assert_eq!(with_ada.len(), 1);
+    assert_eq!(message_count(&world, &admin.handle, with_ada[0].id), 1);
+
+    // The other administrator writes to him: the conversation is listed with its unread
+    // sign, the server and the notices count it, and "New direct message" stays where it
+    // is (ADR 0730).
+    window.cx.run_until_parked();
+    let new_direct = window.cx.debug_bounds("new-direct");
+    assert!(new_direct.is_some());
+    let with_eve = write_to(&world, &eve, luca_id, "A question from Eve");
+    window.until("the conversation with Eve is listed as unread", |window| {
+        let view = window.view();
+        view.lists().is_some_and(|lists| {
+            lists
+                .directs
+                .iter()
+                .any(|row| row.id == with_eve && row.unread.any())
+        }) && view.servers[0].unread.any()
+            && window.unread_notices() == 1
+    });
+    assert!(window.shows_named(format!("direct-row:{with_eve}")) && window.shows("notices-count"));
+    window.cx.run_until_parked();
+    assert_eq!(window.cx.debug_bounds("new-direct"), new_direct);
+
+    // The notice opens beside the shown conversation and leads to the other one, and is
+    // read then.
+    window.open_notices();
+    let notice = window.notices().unwrap().rows[0].clone();
+    assert_eq!(notice.kind, NotificationKind::Direct);
+    window.click_named(format!("notice:{}", notice.id));
+    window.until("the conversation with Eve is shown", |window| {
+        window.conversation_with() == Some((eve_id, Some("Eve".to_owned())))
+    });
+    window.until_message("A question from Eve");
+    window.until("the notice is read", |window| window.unread_notices() == 0);
+
+    // The answer goes from the composer of that conversation.
+    window.send("An answer from Luca");
+    assert_eq!(message_count(&world, &eve, with_eve), 2);
 }

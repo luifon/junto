@@ -107,9 +107,9 @@ impl Shell {
             let name = self
                 .view
                 .as_ref()
-                .and_then(|view| view.workspace())
-                .and_then(|workspace| {
-                    workspace
+                .and_then(|view| view.lists())
+                .and_then(|lists| {
+                    lists
                         .directs
                         .iter()
                         .find(|direct| direct.account_id == other)

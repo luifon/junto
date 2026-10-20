@@ -77,17 +77,15 @@ impl Window {
             .read_with(&self.cx, |state, _| state.kept_notifications())
     }
 
-    fn notices(&mut self) -> Option<NoticesPanel> {
-        self.view().workspace()?.notices.clone()
+    pub(crate) fn notices(&mut self) -> Option<NoticesPanel> {
+        self.view().lists()?.notices.clone()
     }
 
-    fn unread_notices(&mut self) -> usize {
-        self.view()
-            .workspace()
-            .map_or(0, |workspace| workspace.unread_notices)
+    pub(crate) fn unread_notices(&mut self) -> usize {
+        self.view().lists().map_or(0, |lists| lists.unread_notices)
     }
 
-    fn open_notices(&mut self) {
+    pub(crate) fn open_notices(&mut self) {
         self.click("notices-row");
         self.until("the notices are listed", |window| {
             window

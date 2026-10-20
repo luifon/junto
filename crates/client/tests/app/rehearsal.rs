@@ -292,8 +292,8 @@ impl Rehearsal {
             window.until("the messages of the text channel are read", |window| {
                 window
                     .view()
-                    .workspace()
-                    .and_then(|workspace| workspace.feed.as_ref())
+                    .lists()
+                    .and_then(|lists| lists.feed.as_ref())
                     .is_some_and(|feed| feed.loaded)
             });
         }
@@ -937,7 +937,7 @@ fn invite_line(
 }
 
 fn feed_rows(window: &mut Window) -> Option<junto_client::state::feed::Feed> {
-    window.view().workspace()?.feed.clone()
+    window.view().lists()?.feed.clone()
 }
 
 fn messages(window: &mut Window) -> Vec<MessageRow> {

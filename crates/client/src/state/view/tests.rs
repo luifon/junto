@@ -377,7 +377,7 @@ fn pending_upload_progress_is_scoped_to_server() {
             ..Selection::default()
         };
         let view = derive(&servers, &selection, &known);
-        let uploads = &view.workspace().unwrap().uploads;
+        let uploads = &view.lists().unwrap().uploads;
         assert_eq!(uploads.len(), 1);
         assert_eq!(uploads.get(&1), Some(&expected));
     }
@@ -986,14 +986,11 @@ fn recoveries_and_a_stale_state_are_shown_with_the_lists() {
     assert!(view.workspace().is_some());
     assert_eq!(view.servers[0].workspaces.len(), 2);
 
-    // An account that sees no workspace.
+    // An account that sees no workspace: the server still shows its lists.
     let mut scene = scene;
     scene.snapshot.workspaces.clear();
     let view = derive_one(&scene.server());
-    assert_eq!(
-        view.selected.as_ref().unwrap().content,
-        Content::NoWorkspace
-    );
+    assert!(view.lists().is_some_and(|lists| lists.workspace.is_none()));
 }
 
 #[test]

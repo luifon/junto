@@ -14,8 +14,8 @@ use crate::assets::Icon;
 use junto_media::calls::Phase;
 
 use crate::state::view::{
-    CallPanel, ChannelRow, Content, Members, RecordingControl, RecordingShown, Relation,
-    SelectedServer, ServerStatus, ShellView, VoiceState, WorkspaceView,
+    CallPanel, ChannelRow, Members, RecordingControl, RecordingShown, Relation, SelectedServer,
+    ServerLists, ServerStatus, ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -46,6 +46,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
+        let lists = view.lists();
         let workspace = view.workspace();
         let channel = workspace.and_then(|workspace| workspace.channel.as_ref());
         // The call of this device, when its voice channel is the selected one.
@@ -55,30 +56,36 @@ impl Shell {
         let members_open = self.members_open && workspace.is_some() && call.is_none();
         let server_id = view.selected.as_ref().map(|server| server.id);
         // The side panel shows one thing: a thread, the pinned messages, the notices of
-        // the server, a search, or the members.
-        let side_of = |this: &mut Self,
-                       shown: &WorkspaceView,
-                       window: &mut Window,
-                       cx: &mut Context<Self>| {
-            if let (None, None, Some(transcript), Some(server_id)) =
-                (&shown.thread, &shown.pins, &shown.transcript, server_id)
-            {
-                return Some(this.render_transcript_panel(server_id, transcript, cx));
-            }
-            match (&shown.thread, &shown.pins, &shown.notices, &shown.search) {
-                (Some(thread), ..) => Some(this.render_thread_panel(thread, window, cx)),
-                (None, Some(pins), ..) => {
-                    Some(this.render_pins_panel(pins, shown.feed.as_ref(), window, cx))
+        // the server, a search, or the members. Without a workspace only the notices.
+        let side_of =
+            |this: &mut Self, lists: &ServerLists, window: &mut Window, cx: &mut Context<Self>| {
+                let shown = lists.workspace.as_ref();
+                if let (Some(shown), Some(server_id)) = (shown, server_id)
+                    && shown.thread.is_none()
+                    && shown.pins.is_none()
+                    && let Some(transcript) = &shown.transcript
+                {
+                    return Some(this.render_transcript_panel(server_id, transcript, cx));
                 }
-                (None, None, Some(notices), _) => {
-                    server_id.map(|server_id| this.render_notices_panel(server_id, notices, cx))
+                let thread = shown.and_then(|shown| shown.thread.as_ref());
+                let pins = shown.and_then(|shown| shown.pins.as_ref());
+                let search = shown.and_then(|shown| shown.search.as_ref());
+                match (thread, pins, &lists.notices, search) {
+                    (Some(thread), ..) => Some(this.render_thread_panel(thread, window, cx)),
+                    (None, Some(pins), ..) => {
+                        Some(this.render_pins_panel(pins, lists.feed.as_ref(), window, cx))
+                    }
+                    (None, None, Some(notices), _) => {
+                        server_id.map(|server_id| this.render_notices_panel(server_id, notices, cx))
+                    }
+                    (None, None, None, Some(search)) => {
+                        Some(this.render_search_panel(search, window, cx))
+                    }
+                    _ => shown
+                        .filter(|_| members_open)
+                        .map(|shown| this.render_members(lists, shown, &theme, cx)),
                 }
-                (None, None, None, Some(search)) => {
-                    Some(this.render_search_panel(search, window, cx))
-                }
-                _ => members_open.then(|| this.render_members(shown, &theme, cx)),
-            }
-        };
+            };
 
         // State panels keep their notices below the actions (ADR 0730).
         let mut notices = Some(self.render_notices(view, &theme, cx));
@@ -87,7 +94,7 @@ impl Shell {
                 .after_actions(notices.take().unwrap_or_default())
                 .into_any_element()
         };
-        let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, workspace) {
+        let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, lists) {
             (None, _) => (
                 stated(
                     StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER).selector("no-server"),
@@ -95,15 +102,16 @@ impl Shell {
                 ),
                 None,
             ),
-            (Some(server), Some(shown)) => match (call, channel, shown.conversation.as_ref()) {
+            (Some(server), Some(lists)) => match (call, channel, lists.conversation.as_ref()) {
                 (Some((channel, panel)), _, _) => {
                     self.render_call(view, channel, panel, narrow, window, cx)
                 }
                 (None, Some(_), _) => (
-                    self.render_feed(shown, false, notices.take().unwrap_or_default(), window, cx),
-                    side_of(self, shown, window, cx),
+                    self.render_feed(lists, false, notices.take().unwrap_or_default(), window, cx),
+                    side_of(self, lists, window, cx),
                 ),
-                // A direct conversation in place of a channel.
+                // A direct conversation in place of a channel, also on a server where the
+                // account can see no workspace (ADR 0741).
                 (None, None, Some(conversation)) => (
                     div()
                         .flex()
@@ -112,41 +120,38 @@ impl Shell {
                         .min_h_0()
                         .child(self.render_direct_call(server.id, conversation.account_id, cx))
                         .child(self.render_feed(
-                            shown,
+                            lists,
                             false,
                             notices.take().unwrap_or_default(),
                             window,
                             cx,
                         ))
                         .into_any_element(),
-                    side_of(self, shown, window, cx),
+                    side_of(self, lists, window, cx),
                 ),
                 (None, None, None) => (
                     stated(
-                        StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
-                            .selector("no-channel"),
-                        &mut notices,
-                    ),
-                    side_of(self, shown, window, cx),
-                ),
-            },
-            (Some(server), None) => (
-                match server.content {
-                    Content::NoWorkspace => stated(
-                        StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_WORKSPACES)
-                            .selector("no-workspace"),
-                        &mut notices,
-                    ),
-                    // A server that waits for a device link shows its code and the key
-                    // of this device (ADR 0782).
-                    _ => stated(
-                        match self.render_link_wait_panel(server, cx) {
-                            Some(panel) => panel,
-                            None => self.render_server_state(server, cx),
+                        match lists.workspace {
+                            Some(_) => StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
+                                .selector("no-channel"),
+                            None => StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_WORKSPACES)
+                                .selector("no-workspace"),
                         },
                         &mut notices,
                     ),
-                },
+                    side_of(self, lists, window, cx),
+                ),
+            },
+            // A server that waits for a device link shows its code and the key of this
+            // device (ADR 0782).
+            (Some(server), None) => (
+                stated(
+                    match self.render_link_wait_panel(server, cx) {
+                        Some(panel) => panel,
+                        None => self.render_server_state(server, cx),
+                    },
+                    &mut notices,
+                ),
                 None,
             ),
         };
@@ -154,7 +159,7 @@ impl Shell {
         let in_call = call.is_some();
         let thread_open = workspace.is_some_and(|workspace| workspace.thread.is_some());
         let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
-        let notices_open = workspace.is_some_and(|workspace| workspace.notices.is_some());
+        let notices_open = lists.is_some_and(|lists| lists.notices.is_some());
         let transcript_open = workspace.is_some_and(|workspace| workspace.transcript.is_some());
         let search_open = workspace.is_some_and(|workspace| workspace.search.is_some());
         let split = div()
@@ -247,9 +252,7 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let members_open = self.members_open && call.is_none();
-        let conversation = view
-            .workspace()
-            .and_then(|workspace| workspace.conversation.as_ref());
+        let conversation = view.lists().and_then(|lists| lists.conversation.as_ref());
         let title: Option<(Icon, SharedString)> = match (conversation, channel) {
             (Some(conversation), _) => Some((
                 Icon::People,
@@ -1061,6 +1064,7 @@ impl Shell {
 
     fn render_members(
         &mut self,
+        lists: &ServerLists,
         workspace: &WorkspaceView,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -1116,8 +1120,8 @@ impl Shell {
                     .as_ref()
                     .and_then(|view| view.selected.as_ref())
                     .map(|server| server.id);
-                let refused = workspace.conversation_refused.clone();
-                let asked = workspace.conversation_asked;
+                let refused = lists.conversation_refused.clone();
+                let asked = lists.conversation_asked;
                 let rows = members.iter().enumerate().map(|(index, member)| {
                     let detail: SharedString = member.roles.join(" · ").into();
                     let account_id = member.account_id;

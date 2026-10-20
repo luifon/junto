@@ -995,6 +995,36 @@ pub struct CallPanel {
     pub room: RoomView,
 }
 
+/// The lists of the selected server: its direct conversations and its notices, which
+/// belong to the server, and the lists of a workspace when the account can see one
+/// (ADR 0741).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerLists {
+    /// The shown workspace. Absent when the account can see no workspace.
+    pub workspace: Option<WorkspaceView>,
+    /// The direct conversations of the server.
+    pub directs: Vec<DirectRow>,
+    /// The direct conversation that the main area shows in place of a channel.
+    pub conversation: Option<DirectRow>,
+    /// Why the server did not open a direct conversation, with the account asked for.
+    pub conversation_refused: Option<(AccountId, String)>,
+    /// The account whose direct conversation the server was asked for, while the answer
+    /// is on its way.
+    pub conversation_asked: Option<AccountId>,
+    /// The messages of the place of the main area: the shown conversation or channel.
+    /// Absent until the client holds its timeline.
+    pub feed: Option<Feed>,
+    /// The files that the person attached to the next message of the place of the main
+    /// area.
+    pub draft: Vec<DraftFile>,
+    /// The uploads of the messages that wait to be sent, by the number of the upload.
+    pub uploads: Arc<HashMap<u64, UploadProgress>>,
+    /// The notices of the server that the side panel shows.
+    pub notices: Option<NoticesPanel>,
+    /// The notices of the server that the person has not read.
+    pub unread_notices: usize,
+}
+
 /// The selected workspace of the selected server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceView {
@@ -1009,31 +1039,12 @@ pub struct WorkspaceView {
     /// What the person holds in the shown channel, and in the workspace while no channel
     /// is shown.
     pub allowed: Allowed,
-    /// The messages of the selected channel. Absent until the client holds its timeline.
-    pub feed: Option<Feed>,
-    /// The files that the person attached to the next message of the selected channel.
-    pub draft: Vec<DraftFile>,
     /// The roles of the workspace that a message can mention, without the "everyone" role.
     pub roles: Vec<(WorkspaceRoleId, String)>,
-    /// The uploads of the messages that wait to be sent, by the number of the upload.
-    pub uploads: Arc<HashMap<u64, UploadProgress>>,
-    /// The direct conversations of the server.
-    pub directs: Vec<DirectRow>,
-    /// The direct conversation that the main area shows in place of a channel.
-    pub conversation: Option<DirectRow>,
     /// The thread that the side panel shows.
     pub thread: Option<ThreadPanel>,
     /// The pinned messages that the side panel shows.
     pub pins: Option<PinsPanel>,
-    /// Why the server did not open a direct conversation, with the account asked for.
-    pub conversation_refused: Option<(AccountId, String)>,
-    /// The account whose direct conversation the server was asked for, while the answer
-    /// is on its way.
-    pub conversation_asked: Option<AccountId>,
-    /// The notices of the server that the side panel shows.
-    pub notices: Option<NoticesPanel>,
-    /// The notices of the server that the person has not read.
-    pub unread_notices: usize,
     /// The search that the side panel shows.
     pub search: Option<SearchPanel>,
     /// The transcript of a recording that the side panel shows.
@@ -1116,8 +1127,8 @@ impl ShellView {
             .as_ref()
             .is_some_and(|server| server.id == server_id)
             && self
-                .workspace()
-                .and_then(|workspace| workspace.feed.as_ref())
+                .lists()
+                .and_then(|lists| lists.feed.as_ref())
                 .is_some_and(|feed| {
                     feed.rows.iter().any(|row| {
                         matches!(row, feed::FeedRow::Recording(row)
@@ -1198,10 +1209,8 @@ impl ShellView {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Content {
-    /// The lists of a workspace.
-    Workspace(Box<WorkspaceView>),
-    /// The account can see no workspace.
-    NoWorkspace,
+    /// The lists of the server, with or without a workspace.
+    Lists(Box<ServerLists>),
     /// The server has no lists to show; its status says why.
     State,
 }
@@ -1388,11 +1397,16 @@ pub struct ShellView {
 }
 
 impl ShellView {
-    pub fn workspace(&self) -> Option<&WorkspaceView> {
+    /// The lists of the selected server, while it shows them.
+    pub fn lists(&self) -> Option<&ServerLists> {
         match &self.selected.as_ref()?.content {
-            Content::Workspace(workspace) => Some(workspace),
-            Content::NoWorkspace | Content::State => None,
+            Content::Lists(lists) => Some(lists),
+            Content::State => None,
         }
+    }
+
+    pub fn workspace(&self) -> Option<&WorkspaceView> {
+        self.lists()?.workspace.as_ref()
     }
 
     /// Puts these levels into a view that [`derive`] made with other levels. The result is
@@ -1402,10 +1416,13 @@ impl ShellView {
     /// again (ADR 0730).
     pub fn show_levels(&mut self, levels: &ShownLevels) {
         let Some(SelectedServer {
-            content: Content::Workspace(workspace),
+            content: Content::Lists(lists),
             ..
         }) = &mut self.selected
         else {
+            return;
+        };
+        let Some(workspace) = &mut lists.workspace else {
             return;
         };
         // The rows of the channel list, and the shown channel, which holds a copy of its row.
@@ -1486,8 +1503,9 @@ impl ShellView {
             channel: workspace
                 .and_then(|workspace| workspace.channel.as_ref())
                 .map(|channel| channel.id),
-            conversation: workspace
-                .and_then(|workspace| workspace.conversation.as_ref())
+            conversation: self
+                .lists()
+                .and_then(|lists| lists.conversation.as_ref())
                 .map(|conversation| conversation.id),
             thread: workspace
                 .and_then(|workspace| workspace.thread.as_ref())
@@ -1495,7 +1513,7 @@ impl ShellView {
             pins: workspace
                 .and_then(|workspace| workspace.pins.as_ref())
                 .map(|pins| pins.channel_id),
-            notices: workspace.is_some_and(|workspace| workspace.notices.is_some()),
+            notices: self.lists().is_some_and(|lists| lists.notices.is_some()),
             transcript: workspace
                 .and_then(|workspace| workspace.transcript.as_ref())
                 .map(|transcript| transcript.recording_id),
@@ -1535,10 +1553,12 @@ fn target_of(
     }
 }
 
+/// The name of an account: from the member list of the shown workspace, when there is one,
+/// and from the profiles that were read otherwise.
 fn name_of(
     server_id: ServerId,
     account_id: AccountId,
-    workspace: &WorkspaceModel,
+    workspace: Option<&WorkspaceModel>,
     model: &ServerModel,
     known: &Known,
 ) -> Option<String> {
@@ -1546,8 +1566,7 @@ fn name_of(
         return Some(crate::text::label(&model.account.name));
     }
     workspace
-        .members
-        .loaded()
+        .and_then(|workspace| workspace.members.loaded())
         .and_then(|members| {
             members
                 .iter()
@@ -1579,7 +1598,8 @@ fn voice_state(
     } else {
         Relation::Outside
     };
-    let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
+    let name_of =
+        |account_id: AccountId| name_of(server_id, account_id, Some(workspace), model, known);
     let own_presence = match active.map(|call| call.phase) {
         Some(Phase::Connecting | Phase::Entering) => Presence::Connecting,
         Some(Phase::Reconnecting) => Presence::Reconnecting,
@@ -1960,7 +1980,7 @@ fn members(
 /// name is not known yet stands at the end.
 fn directs(
     server_id: ServerId,
-    workspace: &WorkspaceModel,
+    workspace: Option<&WorkspaceModel>,
     model: &ServerModel,
     known: &Known,
     unreads: &Unreads,
@@ -2008,15 +2028,16 @@ fn uploads_of(server_id: ServerId, known: &Known) -> HashMap<u64, UploadProgress
         .collect()
 }
 
-fn workspace_view(
+/// The lists of a server that shows them: its direct conversations, its notices, and the
+/// shown workspace when the account can see one (ADR 0741).
+fn server_lists(
     server_id: ServerId,
-    workspace: &WorkspaceModel,
     model: &ServerModel,
     selection: &Selection,
     known: &Known,
-) -> WorkspaceView {
+) -> ServerLists {
     let unreads = Unreads::of(model);
-    let mut sections = sections(server_id, workspace, model, known, &unreads);
+    let workspace = shown_workspace(model, selection.workspaces.get(&server_id).copied());
     // A direct conversation is shown in place of a channel while the state holds it.
     let conversation_id = selection
         .conversations
@@ -2032,6 +2053,109 @@ fn workspace_view(
         conversation_id,
     );
     let conversation = directs.iter().find(|row| row.selected).cloned();
+    let (shown, channel_feed) = match workspace {
+        Some(workspace) => {
+            let (view, feed) = workspace_view(
+                server_id,
+                workspace,
+                model,
+                selection,
+                known,
+                &unreads,
+                conversation.is_some(),
+            );
+            (Some(view), feed)
+        }
+        None => (None, None),
+    };
+    // A direct conversation has no workspace: no role of one counts in it, and nobody
+    // manages its messages (ADR 0302).
+    let feed = match &conversation {
+        Some(row) => model.timeline(PlaceId::Direct(row.id)).map(|timeline| {
+            feed::derive(&feed::Source {
+                server_id,
+                model,
+                timeline,
+                names: Arc::new(names(server_id, workspace, model, known)),
+                own_roles: &[],
+                may_manage: false,
+                administrator: model.is_administrator(),
+                open_thread: None,
+                target: target_of_jump(server_id, known),
+                threads: true,
+                quoted: &known.quoted,
+                zone: known.zone,
+                today: known.today,
+                cards: None,
+            })
+        }),
+        None => channel_feed,
+    };
+    let place = conversation
+        .as_ref()
+        .map(|row| PlaceId::Direct(row.id))
+        .or(shown
+            .as_ref()
+            .and_then(|view| view.channel.as_ref())
+            .map(|row| PlaceId::Channel(row.id)));
+    // The notices of the server lie under a thread, under the pinned messages and under
+    // a transcript, and the call of this device has its own panel.
+    let notices = selection
+        .notices
+        .filter(|of| *of == server_id)
+        .filter(|_| {
+            shown.as_ref().is_none_or(|view| {
+                view.thread.is_none()
+                    && view.pins.is_none()
+                    && view.transcript.is_none()
+                    && view.call.is_none()
+            })
+        })
+        .map(|_| super::notices::notices_panel(server_id, model, known));
+    ServerLists {
+        workspace: shown,
+        directs,
+        conversation,
+        conversation_refused: known
+            .conversation_refused
+            .as_ref()
+            .filter(|(server, _, _)| *server == server_id)
+            .map(|(_, account_id, reason)| (*account_id, reason.clone())),
+        conversation_asked: known
+            .conversation_asked
+            .filter(|(server, _)| *server == server_id)
+            .map(|(_, account_id)| account_id),
+        feed,
+        draft: place
+            .and_then(|place| known.drafts.get(&(server_id, place)).cloned())
+            .unwrap_or_default(),
+        uploads: Arc::new(uploads_of(server_id, known)),
+        notices,
+        unread_notices: super::notices::unread_notices(model),
+    }
+}
+
+/// The message that the person went to from a notice or a search result on a server, with
+/// the number of that jump.
+fn target_of_jump(server_id: ServerId, known: &Known) -> Option<(MessageId, u64)> {
+    known
+        .target
+        .filter(|(of, _, _)| *of == server_id)
+        .map(|(_, message_id, number)| (message_id, number))
+}
+
+/// The lists of a workspace, and the messages of its shown channel. `in_conversation`: the
+/// main area shows a direct conversation in place of a channel.
+fn workspace_view(
+    server_id: ServerId,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    selection: &Selection,
+    known: &Known,
+    unreads: &Unreads,
+    in_conversation: bool,
+) -> (WorkspaceView, Option<Feed>) {
+    let mut sections = sections(server_id, workspace, model, known, unreads);
     let wanted = selection
         .channels
         .get(&(server_id, workspace.workspace.id))
@@ -2039,11 +2163,11 @@ fn workspace_view(
     // An archived channel is in no list. The main area shows it while the state knows it
     // and the person has it selected (ADR 0762).
     let archived = wanted
-        .filter(|_| conversation.is_none())
+        .filter(|_| !in_conversation)
         .and_then(|id| model.admin.archived_channel(id))
         .filter(|held| held.channel.workspace_id == workspace.workspace.id);
     let rows = || sections.iter().flat_map(|section| section.rows.iter());
-    let shown = if conversation.is_some() {
+    let shown = if in_conversation {
         None
     } else if let Some(archived) = archived {
         Some(archived.channel.id)
@@ -2062,7 +2186,7 @@ fn workspace_view(
         .thread
         .filter(|(server, channel_id, _)| *server == server_id && Some(*channel_id) == shown)
         .map(|(_, channel_id, root_id)| (channel_id, root_id));
-    let names = Arc::new(names(server_id, workspace, model, known));
+    let names = Arc::new(names(server_id, Some(workspace), model, known));
     let mut channel = None;
     for row in sections
         .iter_mut()
@@ -2124,12 +2248,6 @@ fn workspace_view(
     let allowed = channel
         .as_ref()
         .map_or_else(|| allowed(&workspace.permissions), |row| row.allowed);
-    let place = conversation
-        .as_ref()
-        .map(|row| PlaceId::Direct(row.id))
-        .or(channel.as_ref().map(|row| PlaceId::Channel(row.id)));
-    // A direct conversation has no workspace: no role of one counts in it (ADR 0302).
-    let direct = conversation.is_some();
     let accounts = super::notices::account_names(server_id, model, known);
     let cards = channel
         .as_ref()
@@ -2149,22 +2267,20 @@ fn workspace_view(
         model,
         timeline,
         names: names.clone(),
-        own_roles: if direct { &[] } else { &workspace.own_role_ids },
-        may_manage: allowed.manage_messages && !direct,
+        own_roles: &workspace.own_role_ids,
+        may_manage: allowed.manage_messages,
         administrator: model.is_administrator(),
         open_thread: open_thread.map(|(_, root_id)| root_id),
-        target: known
-            .target
-            .filter(|(of, _, _)| *of == server_id)
-            .map(|(_, message_id, number)| (message_id, number)),
+        target: target_of_jump(server_id, known),
         threads: call.is_none(),
         quoted: &known.quoted,
         zone: known.zone,
         today: known.today,
         cards: cards.as_ref(),
     };
-    let feed = place
-        .and_then(|place| model.timeline(place))
+    let feed = channel
+        .as_ref()
+        .and_then(|row| model.timeline(PlaceId::Channel(row.id)))
         .map(|timeline| feed::derive(&source(timeline)));
     // An archived channel takes no change (ADR 0410): its messages offer none, in the
     // main area, in a thread and in the pin list.
@@ -2312,15 +2428,11 @@ fn workspace_view(
             line: known.transcript_line,
             jump: known.transcript_jump,
         });
-    // The notices of the server lie under a thread, under the pinned messages and under
-    // a transcript, and the call of this device has its own panel.
-    let notices = selection
-        .notices
-        .filter(|of| *of == server_id)
-        .filter(|_| thread.is_none() && pins.is_none() && transcript.is_none() && call.is_none())
-        .map(|_| super::notices::notices_panel(server_id, model, known));
+    // The notices of the server (`server_lists`) lie under a thread, under the pinned
+    // messages and under a transcript, and over a search.
+    let notices_wanted = selection.notices == Some(server_id);
     let (no_thread, no_pins, in_call) = (thread.is_none(), pins.is_none(), call.is_some());
-    WorkspaceView {
+    let view = WorkspaceView {
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
         sections,
@@ -2328,34 +2440,18 @@ fn workspace_view(
         members: members(server_id, workspace, model, known),
         call,
         allowed,
-        feed,
-        draft: place.map(draft_of).unwrap_or_default(),
         roles: workspace
             .roles
             .iter()
             .filter(|role| !role.is_everyone)
             .map(|role| (role.id, crate::text::label(&role.name)))
             .collect(),
-        uploads: Arc::new(uploads_of(server_id, known)),
-        directs,
-        conversation,
         thread,
         pins,
-        conversation_refused: known
-            .conversation_refused
-            .as_ref()
-            .filter(|(server, _, _)| *server == server_id)
-            .map(|(_, account_id, reason)| (*account_id, reason.clone())),
-        conversation_asked: known
-            .conversation_asked
-            .filter(|(server, _)| *server == server_id)
-            .map(|(_, account_id)| account_id),
         search: super::search::search_panel(server_id, workspace, model, known).filter(|_| {
-            no_thread && no_pins && transcript.is_none() && notices.is_none() && !in_call
+            no_thread && no_pins && transcript.is_none() && !notices_wanted && !in_call
         }),
         transcript,
-        notices,
-        unread_notices: super::notices::unread_notices(model),
         archived: archived
             .filter(|held| workspace.channel(held.channel.id).is_none())
             .map(|held| ArchivedState {
@@ -2363,14 +2459,15 @@ fn workspace_view(
                 deletes_at: held.deletes_at.map(|at| known.zone.local(at)),
                 may_restore: allowed.manage,
             }),
-    }
+    };
+    (view, feed)
 }
 
-/// The names that the messages of a workspace can mention: its members, the accounts
-/// whose names were read, the account itself, and its roles.
+/// The names that the messages of a place can mention: the members of the shown workspace,
+/// the accounts whose names were read, the account itself, and the roles of the workspace.
 fn names(
     server_id: ServerId,
-    workspace: &WorkspaceModel,
+    workspace: Option<&WorkspaceModel>,
     model: &ServerModel,
     known: &Known,
 ) -> Names {
@@ -2379,7 +2476,7 @@ fn names(
         .names(server_id)
         .map(|(account_id, name)| (account_id, name.to_owned()))
         .collect();
-    if let Some(members) = workspace.members.loaded() {
+    if let Some(members) = workspace.and_then(|workspace| workspace.members.loaded()) {
         accounts.extend(
             members
                 .iter()
@@ -2390,7 +2487,8 @@ fn names(
     Names {
         accounts,
         roles: workspace
-            .roles
+            .map(|workspace| workspace.roles.as_slice())
+            .unwrap_or_default()
             .iter()
             .map(|role| (role.id, crate::text::label(&role.name)))
             .collect(),
@@ -2460,7 +2558,8 @@ fn share_stage(
     known: &Known,
 ) -> Option<ShareStage> {
     let call = model.call_at(&active.target.place);
-    let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
+    let name_of =
+        |account_id: AccountId| name_of(server_id, account_id, Some(workspace), model, known);
     let mut shares: Vec<ShareCard> = active
         .shares
         .iter()
@@ -2702,7 +2801,8 @@ fn room_view(
     known: &Known,
 ) -> RoomView {
     let call = model.call_at(&active.target.place);
-    let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
+    let name_of =
+        |account_id: AccountId| name_of(server_id, account_id, Some(workspace), model, known);
     let own = model.account.id;
     let meeting = call
         .filter(|_| active.phase == Phase::Connected)
@@ -2784,11 +2884,23 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
             };
             let by = workspace
                 .and_then(|workspace| {
-                    name_of(server.id, invitation.invited_by, workspace, model, known)
+                    name_of(
+                        server.id,
+                        invitation.invited_by,
+                        Some(workspace),
+                        model,
+                        known,
+                    )
                 })
                 .or_else(|| {
                     model.workspaces.iter().find_map(|workspace| {
-                        name_of(server.id, invitation.invited_by, workspace, model, known)
+                        name_of(
+                            server.id,
+                            invitation.invited_by,
+                            Some(workspace),
+                            model,
+                            known,
+                        )
                     })
                 })
                 .or_else(|| known.people.name(server.id, invitation.invited_by));
@@ -2834,7 +2946,7 @@ fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> 
             account_id: request.account_id,
             name: workspace
                 .and_then(|workspace| {
-                    name_of(server.id, request.account_id, workspace, model, known)
+                    name_of(server.id, request.account_id, Some(workspace), model, known)
                 })
                 .or_else(|| known.people.name(server.id, request.account_id)),
             channel: channel_of(servers, &active.target),
@@ -2866,7 +2978,7 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
             CallPlace::Channel { workspace_id, .. } => model.workspace(workspace_id)?,
             CallPlace::Direct { .. } => return None,
         };
-        name_of(server.id, account_id, workspace, model, known)
+        name_of(server.id, account_id, Some(workspace), model, known)
     };
     let held = active.and_then(|call| call.microphone_block.as_ref());
     let warning = if let Some(block) = held {
@@ -2940,7 +3052,13 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
             model
                 .and_then(|model| {
                     model.workspaces.iter().find_map(|workspace| {
-                        name_of(active.target.server_id, other, workspace, model, known)
+                        name_of(
+                            active.target.server_id,
+                            other,
+                            Some(workspace),
+                            model,
+                            known,
+                        )
                     })
                 })
                 .or_else(|| known.people.name(active.target.server_id, other))
@@ -3067,12 +3185,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         let content = match shown_model(server).filter(|_| status.shows_content()) {
             None => Content::State,
             Some(model) => {
-                match shown_workspace(model, selection.workspaces.get(&server.id).copied()) {
-                    Some(workspace) => Content::Workspace(Box::new(workspace_view(
-                        server.id, workspace, model, selection, known,
-                    ))),
-                    None => Content::NoWorkspace,
-                }
+                Content::Lists(Box::new(server_lists(server.id, model, selection, known)))
             }
         };
         SelectedServer {

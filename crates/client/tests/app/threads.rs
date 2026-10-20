@@ -472,8 +472,8 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
     let directs = |window: &mut Window| {
         window
             .view()
-            .workspace()
-            .map(|workspace| workspace.directs.clone())
+            .lists()
+            .map(|lists| lists.directs.clone())
             .unwrap_or_default()
     };
     assert!(directs(&mut window).is_empty());
@@ -485,16 +485,10 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
     window.until("the conversation is shown", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation.is_some())
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_some())
     });
-    let conversation = window
-        .view()
-        .workspace()
-        .unwrap()
-        .conversation
-        .clone()
-        .unwrap();
+    let conversation = window.view().lists().unwrap().conversation.clone().unwrap();
     assert_eq!(conversation.account_id, ada);
     assert_eq!(conversation.name.as_deref(), Some("Ada"));
     assert!(window.view().workspace().unwrap().channel.is_none());
@@ -524,9 +518,12 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
     // the row of the conversation.
     window.click_channel("general");
     window.until("the channel again", |window| {
-        window.view().workspace().is_some_and(|workspace| {
-            workspace.conversation.is_none() && workspace.channel.is_some()
-        })
+        let view = window.view();
+        view.lists()
+            .is_some_and(|lists| lists.conversation.is_none())
+            && view
+                .workspace()
+                .is_some_and(|workspace| workspace.channel.is_some())
     });
     let answer = SendMessage {
         document: document("Hello back"),
@@ -619,17 +616,11 @@ fn a_mention_in_a_direct_conversation_offers_the_other_person_only(cx: &mut Test
     window.until("the empty conversation", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation.is_some())
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_some())
             && window.feed().is_some_and(|feed| feed.loaded)
     });
-    let conversation = window
-        .view()
-        .workspace()
-        .unwrap()
-        .conversation
-        .clone()
-        .unwrap();
+    let conversation = window.view().lists().unwrap().conversation.clone().unwrap();
     type_text(&mut window, "@");
     assert_eq!(names(&mut window), vec!["Ada".to_owned()]);
     type_text(&mut window, "@Edi");
@@ -682,18 +673,18 @@ fn a_late_answer_for_a_conversation_does_not_replace_what_the_person_selected(
     window.until("the conversation is in the state", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| !workspace.directs.is_empty())
+            .lists()
+            .is_some_and(|lists| !lists.directs.is_empty())
     });
     window.until("the answer of the server was taken", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation_asked.is_none())
+            .lists()
+            .is_some_and(|lists| lists.conversation_asked.is_none())
     });
     let view = window.view();
+    assert!(view.lists().unwrap().conversation.is_none());
     let workspace = view.workspace().unwrap();
-    assert!(workspace.conversation.is_none());
     assert_eq!(workspace.channel.as_ref().unwrap().id, voice.id);
 }
 
@@ -723,18 +714,18 @@ fn a_late_answer_for_a_conversation_is_not_followed_after_the_person_went_away_a
     window.until("the conversation is in the state", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| !workspace.directs.is_empty())
+            .lists()
+            .is_some_and(|lists| !lists.directs.is_empty())
     });
     window.until("the answer of the server was taken", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation_asked.is_none())
+            .lists()
+            .is_some_and(|lists| lists.conversation_asked.is_none())
     });
     let view = window.view();
+    assert!(view.lists().unwrap().conversation.is_none());
     let workspace = view.workspace().unwrap();
-    assert!(workspace.conversation.is_none());
     assert_eq!(workspace.channel.as_ref().unwrap().id, text);
 }
 

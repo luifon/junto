@@ -180,28 +180,28 @@ fn a_direct_conversation_is_shown_in_place_of_a_channel() {
     // Without a selection the channel is shown, and the conversations are listed: the
     // one with a known name first.
     let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
-    let workspace = view.workspace().unwrap();
-    assert!(workspace.conversation.is_none() && workspace.channel.is_some());
-    let names: Vec<Option<&str>> = workspace
+    let lists = view.lists().unwrap();
+    assert!(lists.conversation.is_none() && view.workspace().unwrap().channel.is_some());
+    let names: Vec<Option<&str>> = lists
         .directs
         .iter()
         .map(|row| row.name.as_deref())
         .collect();
     assert_eq!(names, [Some("Ana"), None]);
-    assert_eq!(workspace.directs[0].account_id, ana);
-    assert!(workspace.directs[0].unread.sign);
+    assert_eq!(lists.directs[0].account_id, ana);
+    assert!(lists.directs[0].unread.sign);
     assert_eq!(view.shown().place(), Some(PlaceId::Channel(scene.general)));
 
     // The selected conversation takes the place of the channel, with its messages.
     let mut selection = Selection::default();
     selection.conversations.insert(server.id, with_ana.id);
     let view = derive(std::slice::from_ref(&server), &selection, &known);
-    let workspace = view.workspace().unwrap();
-    assert!(workspace.channel.is_none());
-    assert_eq!(workspace.conversation.as_ref().unwrap().id, with_ana.id);
-    assert!(workspace.directs[0].selected);
+    let lists = view.lists().unwrap();
+    assert!(view.workspace().unwrap().channel.is_none());
+    assert_eq!(lists.conversation.as_ref().unwrap().id, with_ana.id);
+    assert!(lists.directs[0].selected);
     assert_eq!(view.shown().place(), Some(PlaceId::Direct(with_ana.id)));
-    let feed = workspace.feed.as_ref().unwrap();
+    let feed = lists.feed.as_ref().unwrap();
     assert_eq!(feed.place, PlaceId::Direct(with_ana.id));
     // A message of a direct conversation has no thread and no pin.
     let feed::FeedRow::Message(row) = feed
@@ -220,8 +220,67 @@ fn a_direct_conversation_is_shown_in_place_of_a_channel() {
         .conversations
         .insert(server.id, ConversationId::generate());
     let view = derive(std::slice::from_ref(&server), &selection, &known);
-    assert!(view.workspace().unwrap().conversation.is_none());
+    assert!(view.lists().unwrap().conversation.is_none());
     assert!(view.workspace().unwrap().channel.is_some());
+}
+
+#[test]
+fn a_server_without_a_workspace_shows_its_direct_conversations_and_notices() {
+    let mut scene = scene();
+    let ana = AccountId::generate();
+    scene.snapshot.workspaces.clear();
+    let mut model = scene.model();
+    let with_ana = Conversation {
+        id: ConversationId::generate(),
+        low_account_id: scene.own.min(ana),
+        high_account_id: scene.own.max(ana),
+    };
+    model.conversations = vec![with_ana.clone()];
+    let direct = MessagePlace::Direct {
+        conversation_id: with_ana.id,
+        low_account_id: with_ana.low_account_id,
+        high_account_id: with_ana.high_account_id,
+    };
+    model.message_states = vec![summary(direct, 2, 0)];
+    model.timelines.push(Arc::new(timeline(
+        PlaceId::Direct(with_ana.id),
+        vec![message(direct, 1, ana, "hello")],
+    )));
+    let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
+    let mut known = Known::default();
+    known.people.read_name(server.id, ana, "Ana");
+
+    // Without a selection the conversation is listed with its sign, which the server row
+    // also shows, and the main area shows no place.
+    let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+    let lists = view.lists().unwrap();
+    assert!(lists.workspace.is_none());
+    let row = &lists.directs[0];
+    assert_eq!(
+        (row.account_id, row.name.as_deref(), row.selected),
+        (ana, Some("Ana"), false)
+    );
+    assert!(row.unread.sign);
+    assert!(view.servers[0].unread.any());
+    assert!(lists.conversation.is_none() && lists.feed.is_none());
+    assert_eq!(view.shown().place(), None);
+    // The other person is named, so that the window reads the profile.
+    assert!(view.wanted_people[&server.id].accounts.contains(&ana));
+
+    // The selected conversation is shown with its messages, and the notices of the server
+    // open in the side panel beside it.
+    let mut selection = Selection::default();
+    selection.conversations.insert(server.id, with_ana.id);
+    selection.notices = Some(server.id);
+    let view = derive(std::slice::from_ref(&server), &selection, &known);
+    let lists = view.lists().unwrap();
+    assert_eq!(lists.conversation.as_ref().unwrap().id, with_ana.id);
+    assert_eq!(view.shown().place(), Some(PlaceId::Direct(with_ana.id)));
+    assert_eq!(
+        lists.feed.as_ref().unwrap().place,
+        PlaceId::Direct(with_ana.id)
+    );
+    assert!(lists.notices.is_some() && view.shown().notices);
 }
 
 #[test]
@@ -308,7 +367,7 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
 
     // The row of the root in the channel counts its replies and names the last one,
     // which the open thread holds.
-    let feed = workspace.feed.as_ref().unwrap();
+    let feed = view.lists().unwrap().feed.as_ref().unwrap();
     let marks: Vec<_> = feed
         .rows
         .iter()

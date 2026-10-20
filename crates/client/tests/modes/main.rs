@@ -458,8 +458,8 @@ fn run_mode(mode: Mode) -> ExitCode {
         window.until("the end of the long channel is drawn", |window| {
             window
                 .view()
-                .workspace()
-                .and_then(|workspace| workspace.feed.as_ref())
+                .lists()
+                .and_then(|lists| lists.feed.as_ref())
                 .is_some_and(|feed| feed.loaded)
                 && window.in_shell(|shell, _, _| {
                     shell.feed_bounds(junto_client::shell::Pane::Main).is_some()

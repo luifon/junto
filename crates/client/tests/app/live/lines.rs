@@ -40,8 +40,8 @@ fn a_window_that_starts_after_a_call_that_was_not_answered_shows_its_lines_and_a
     window.until(
         "the conversation of the call with its unread sign and the name of the caller",
         |window| {
-            conversation = window.view().workspace().and_then(|workspace| {
-                workspace
+            conversation = window.view().lists().and_then(|lists| {
+                lists
                     .directs
                     .iter()
                     .find(|row| {

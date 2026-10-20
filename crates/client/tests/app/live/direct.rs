@@ -18,8 +18,8 @@ fn direct_conversation_starts_outgoing_call_and_carries_sound(cx: &mut TestAppCo
     window.until("conversation shown", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation.is_some())
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_some())
     });
     window.click("start-direct-call");
     window.until("outgoing call shown", |window| {
@@ -165,8 +165,8 @@ fn missed_direct_call_is_shown_in_conversation(cx: &mut TestAppContext) {
     window.until("conversation shown", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation.is_some())
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_some())
     });
     enter(
         &world,
@@ -261,8 +261,8 @@ fn outgoing_decline_ends_call_and_is_shown(cx: &mut TestAppContext) {
     window.until("conversation shown", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation.is_some())
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_some())
     });
     window.click("start-direct-call");
     window.until("ring arrives", |_| {

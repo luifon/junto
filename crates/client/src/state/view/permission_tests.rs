@@ -256,7 +256,7 @@ fn the_message_of_another_person_offers_deletion_and_pin_by_the_list_of_its_chan
             &shown(server.id, scene, scene.general),
             &Known::default(),
         );
-        let feed = view.workspace().unwrap().feed.clone().unwrap();
+        let feed = view.lists().unwrap().feed.clone().unwrap();
         feed.rows
             .iter()
             .find_map(|row| match row {

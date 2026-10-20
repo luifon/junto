@@ -33,7 +33,7 @@ use crate::state::feed::{
     can_send_again,
 };
 use crate::state::people::ServerFaces;
-use crate::state::view::{DraftFile, ShellView, WorkspaceView};
+use crate::state::view::{DraftFile, ServerLists, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -527,10 +527,10 @@ impl Shell {
     /// The feed that a pane shows: the one of the main area, or the replies of the thread
     /// of the side panel.
     pub(crate) fn pane_feed(&self, pane: Pane) -> Option<&Feed> {
-        let workspace = self.view.as_ref()?.workspace()?;
+        let view = self.view.as_ref()?;
         match pane {
-            Pane::Main => workspace.feed.as_ref(),
-            Pane::Thread => workspace.thread.as_ref()?.feed.as_ref(),
+            Pane::Main => view.lists()?.feed.as_ref(),
+            Pane::Thread => view.workspace()?.thread.as_ref()?.feed.as_ref(),
         }
     }
 
@@ -542,9 +542,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let workspace = view.workspace();
-        let main = workspace.and_then(|workspace| workspace.feed.as_ref());
-        let thread = workspace
+        let main = view.lists().and_then(|lists| lists.feed.as_ref());
+        let thread = view
+            .workspace()
             .and_then(|workspace| workspace.thread.as_ref())
             .and_then(|thread| thread.feed.as_ref());
         self.feed.take(main);
@@ -671,27 +671,28 @@ impl Shell {
     /// `compact` is the chat of a call in its panel.
     pub(crate) fn render_feed(
         &mut self,
-        workspace: &WorkspaceView,
+        lists: &ServerLists,
         compact: bool,
         notices: Vec<AnyElement>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let permanent = workspace
-            .channel
+        let permanent = lists
+            .workspace
             .as_ref()
+            .and_then(|workspace| workspace.channel.as_ref())
             .is_some_and(|channel| channel.permanent);
-        let gone = match &workspace.conversation {
+        let gone = match &lists.conversation {
             Some(_) => text::CONVERSATION_CLOSED,
             None => text::MESSAGES_GONE,
         };
-        let empty = match &workspace.conversation {
+        let empty = match &lists.conversation {
             Some(_) => text::NO_DIRECT_MESSAGES,
             None => text::NO_MESSAGES,
         };
         let shown = PaneShown {
-            feed: workspace.feed.as_ref(),
-            draft: &workspace.draft,
+            feed: lists.feed.as_ref(),
+            draft: &lists.draft,
             compact,
             permanent,
             gone,
@@ -2256,8 +2257,8 @@ impl Shell {
         let uploads = self
             .view
             .as_ref()
-            .and_then(|view| view.workspace())
-            .map(|workspace| workspace.uploads.clone())
+            .and_then(|view| view.lists())
+            .map(|lists| lists.uploads.clone())
             .unwrap_or_default();
         let (sentence, failed): (SharedString, bool) = match pending.state {
             SendState::WaitingForFiles => (text::WAITING_FOR_FILES.into(), false),
