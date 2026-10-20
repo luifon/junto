@@ -352,7 +352,10 @@ async fn the_owner_claims_and_logs_in_after_a_restart_from_the_stored_key() {
     let restarted = device.reopened(&network);
     let handle = restarted.server(server.server_id()).unwrap();
     assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
-    assert_eq!(handle.access().actions, [ActionKind::LogIn]);
+    assert_eq!(
+        handle.access().actions,
+        [ActionKind::LogIn, ActionKind::LogOutByPerson]
+    );
     assert!(matches!(
         handle.api().own_account().await,
         Err(ApiError::NotLoggedIn)
@@ -1229,7 +1232,14 @@ async fn a_flow_runs_one_action_at_a_time_and_only_actions_of_its_state() {
     running.await.unwrap();
     let after = handle.access();
     assert_eq!(after.in_progress, None);
-    assert_eq!(after.actions, [ActionKind::Check, ActionKind::LogOut]);
+    assert_eq!(
+        after.actions,
+        [
+            ActionKind::Check,
+            ActionKind::LogOut,
+            ActionKind::LogOutByPerson
+        ]
+    );
     assert_eq!(server.account_count(), 1);
 }
 
@@ -1277,6 +1287,118 @@ async fn a_request_that_races_with_a_logout_does_not_log_in_again() {
     assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
     assert_eq!(server.session_count(), 0);
     assert_eq!(server.count("/auth/sessions"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_logout_of_the_person_ends_the_session_and_stays_until_the_person_logs_in() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    let key = handle.device_public_key().unwrap();
+
+    handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+    assert_eq!(
+        handle.access().state,
+        AccessState::LoggedOutByPerson { account_id }
+    );
+    assert_eq!(handle.access().actions, [ActionKind::LogIn]);
+    assert_eq!(server.session_count(), 0);
+    assert!(handle.entry().logged_out);
+    assert!(matches!(
+        handle.api().own_account().await,
+        Err(ApiError::NotLoggedIn)
+    ));
+    // Nothing that the client does by itself logs in: a contact sends no request.
+    let sent = server.seen().len();
+    handle.connect().await.unwrap();
+    handle.connect_when_free().await.unwrap();
+    handle.end_session().await.unwrap();
+    assert_eq!(server.seen().len(), sent);
+
+    // The book keeps the logout over a restart, with the membership and the key.
+    let restarted = device.reopened(&network);
+    let handle = restarted.server(server.server_id()).unwrap();
+    assert_eq!(
+        handle.access().state,
+        AccessState::LoggedOutByPerson { account_id }
+    );
+    restarted.connect_all().await;
+    assert_eq!(server.seen().len(), sent);
+    assert_eq!(handle.device_public_key().unwrap(), key);
+
+    // A login of the person ends the logout, in memory and in the book.
+    handle.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(logged_in(&handle), account_id);
+    assert!(!handle.entry().logged_out);
+    let restarted = device.reopened(&network);
+    let handle = restarted.server(server.server_id()).unwrap();
+    assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
+    // The logout of a program that ends is not kept.
+    handle.connect().await.unwrap();
+    handle.end_session().await.unwrap();
+    assert!(!device.reopened(&network).servers()[0].entry().logged_out);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_contact_that_waits_for_an_action_does_not_undo_a_logout_of_the_person() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    // After a restart the device is logged out, and the client contacts the server by
+    // itself.
+    let restarted = device.reopened(&network);
+    let handle = restarted.server(server.server_id()).unwrap();
+    assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
+    let logins = server.count("/auth/sessions");
+
+    // An action runs, and the contact of the client waits for it. That action is the
+    // logout of the person, which ends while the contact waits.
+    let running = handle.server.gate.lock().await;
+    let when_free = handle.connect_when_free();
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    handle.server.log_out_by_person().await.unwrap();
+    drop(running);
+    when_free.await.unwrap();
+
+    assert_eq!(
+        handle.access().state,
+        AccessState::LoggedOutByPerson { account_id }
+    );
+    assert!(handle.entry().logged_out);
+    assert_eq!(server.count("/auth/sessions"), logins);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_logout_of_the_person_ends_the_session_on_the_device_when_the_server_does_not_answer() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+
+    // The server stays busy for every attempt of the client.
+    server.fail("/auth/session", [Fault::Busy; 8]);
+    let failed = handle.dispatch(AccessAction::LogOutByPerson).await;
+    assert!(failed.is_err());
+    assert_eq!(
+        handle.access().state,
+        AccessState::LoggedOutByPerson { account_id }
+    );
+    assert!(handle.access().error.is_some());
+    assert!(handle.entry().logged_out);
+    assert!(matches!(
+        handle.api().own_account().await,
+        Err(ApiError::NotLoggedIn)
+    ));
 }
 
 #[tokio::test(start_paused = true)]

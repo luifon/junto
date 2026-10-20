@@ -10,6 +10,7 @@ pub mod call;
 mod camera;
 mod channels;
 mod composer;
+mod contacts;
 pub mod detached;
 mod direct;
 mod feed;
@@ -97,6 +98,9 @@ pub(crate) enum Layer {
     Account,
     /// The link of a device on all servers (ADR 0782).
     LinkAll,
+    /// The chooser of a new direct conversation (ADR 0307). The state of the application
+    /// holds the accounts that it lists.
+    NewDirect,
 }
 
 /// What the emoji of the picker is for.
@@ -281,6 +285,9 @@ pub struct Shell {
     pub(crate) pins_scroll: ScrollHandle,
     /// The name of the channel that a thread is forked into.
     pub(crate) fork_name: Entity<InputState>,
+    /// The part of a name that the chooser of a direct conversation searches.
+    pub(crate) contact_part: Entity<InputState>,
+    pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
     pub(crate) notices_scroll: ScrollHandle,
     pub(crate) search_scroll: ScrollHandle,
@@ -372,6 +379,7 @@ impl Shell {
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
+        let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
         let quiet_until = Field::state(text::QUIET_UNTIL, window, cx);
@@ -399,6 +407,16 @@ impl Shell {
             }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
+            Field::observe(
+                &contact_part,
+                window,
+                cx,
+                |this: &mut Self, event, _, cx| {
+                    if event == FieldEvent::Changed {
+                        this.contact_part_changed(cx);
+                    }
+                },
+            ),
             Field::observe(
                 &fork_name,
                 window,
@@ -452,9 +470,7 @@ impl Shell {
                     this.set_talking(false, cx);
                 } else {
                     this.modifiers_changed(window.modifiers(), cx);
-                    if !this.detached
-                        && let Some(view) = this.view.clone()
-                    {
+                    if let Some(view) = this.view.clone() {
                         this.feed_changed(&view, window, cx);
                     }
                 }
@@ -462,18 +478,18 @@ impl Shell {
             cx.observe_in(&state, window, |this, state, window, cx| {
                 // A share that is being chosen belongs to one call, in both windows.
                 this.drop_stale_share_picker(window, cx);
-                if this.detached {
-                    this.view = Some(state.read(cx).call_view());
-                    cx.notify();
-                    return;
-                }
-                if let Some((submitted, result)) =
-                    state.update(cx, |state, _| state.take_name_result())
-                {
-                    this.name_was_decided(&submitted, result, window, cx);
-                }
+                // The call window shows the place of the call, with its chat (ADR 0772).
+                let view = if this.detached {
+                    state.read(cx).call_view()
+                } else {
+                    if let Some((submitted, result)) =
+                        state.update(cx, |state, _| state.take_name_result())
+                    {
+                        this.name_was_decided(&submitted, result, window, cx);
+                    }
+                    state.read(cx).view()
+                };
                 // A layer whose server is gone, or whose work is done, has nothing to show.
-                let view = state.read(cx).view();
                 this.drop_stale_layer(&view, window, cx);
                 // The list of the members who can be invited belongs to the call that
                 // the window shows.
@@ -492,6 +508,7 @@ impl Shell {
                     this.type_search("", window, cx);
                 }
                 this.view = Some(view.clone());
+                this.take_handed_drafts(window, cx);
                 this.feed_changed(&view, window, cx);
                 cx.notify();
             }),
@@ -610,6 +627,8 @@ impl Shell {
             thread_composer,
             pins_scroll: ScrollHandle::new(),
             fork_name,
+            contact_part,
+            contacts_scroll: ScrollHandle::new(),
             notices_scroll: ScrollHandle::new(),
             search_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
@@ -631,6 +650,21 @@ impl Shell {
             _subscriptions: subscriptions,
         };
         shell.follow_pictures(window, cx);
+        if detached {
+            // The text that a call window holds when it closes goes to the main window
+            // (ADR 0772). The state closes the window and tells the main window.
+            let held = cx.weak_entity();
+            shell.state.update(cx, |state, _| {
+                state.on_call_window_closing(move |cx| {
+                    if let Some(shell) = held.upgrade() {
+                        shell.update(cx, |shell, cx| {
+                            shell.hand_over_drafts(composer::HandTo::Main, cx);
+                        });
+                    }
+                });
+            });
+            shell.take_handed_drafts(window, cx);
+        }
         let active = window.is_window_active();
         if !detached {
             shell
@@ -887,6 +921,9 @@ impl Shell {
             self.reset_account_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_account(cx));
         }
+        if matches!(self.layer, Layer::NewDirect) {
+            self.state.update(cx, |state, cx| state.close_contacts(cx));
+        }
         if matches!(self.layer, Layer::LinkAll) {
             // The request with its link codes is gone with the layer.
             self.reset_linking_ui(window, cx);
@@ -1116,6 +1153,27 @@ impl Render for Shell {
             .typeface(theme.types.body, &theme)
             .font_features(tabular_numerals())
             .ink(theme.colors.ink)
+            .map(|shell| Self::presses_and_escape(shell, cx))
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.modifiers_changed(event.modifiers, cx);
+            }))
+            .child(self.render_rail(&view, collapsed, narrow, window, cx))
+            .child(self.render_channel_column(&view, window, cx))
+            .child(self.render_main(&view, narrow, window, cx))
+            .when(!matches!(self.layer, Layer::None), |shell| {
+                shell.child(self.render_layer(&view, window, cx))
+            })
+            .into_any_element()
+    }
+}
+
+impl Shell {
+    /// What both windows do after every click and at Escape.
+    pub(crate) fn presses_and_escape<E: InteractiveElement>(
+        element: E,
+        cx: &mut Context<Self>,
+    ) -> E {
+        element
             // After every click: a press that closed the menu of the server is over.
             .on_mouse_up(
                 gpui::MouseButton::Left,
@@ -1145,20 +1203,8 @@ impl Render for Shell {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
-                this.modifiers_changed(event.modifiers, cx);
-            }))
-            .child(self.render_rail(&view, collapsed, narrow, window, cx))
-            .child(self.render_channel_column(&view, window, cx))
-            .child(self.render_main(&view, narrow, window, cx))
-            .when(!matches!(self.layer, Layer::None), |shell| {
-                shell.child(self.render_layer(&view, window, cx))
-            })
-            .into_any_element()
     }
-}
 
-impl Shell {
     fn drop_stale_layer(&mut self, view: &ShellView, window: &mut Window, cx: &mut Context<Self>) {
         let gone = |server_id: &ServerId| !view.servers.iter().any(|row| row.id == *server_id);
         let stale = match &self.layer {
@@ -1242,6 +1288,7 @@ impl Shell {
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
             // The server left the server book, or it shows no account or another one.
             Layer::Account => self.state.read(cx).account_view().is_none(),
+            Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1287,6 +1334,7 @@ impl Shell {
             Layer::Admin => self.render_admin(window, cx),
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
+            Layer::NewDirect => self.render_new_direct(cx),
         }
     }
 }

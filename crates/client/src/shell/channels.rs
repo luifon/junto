@@ -487,8 +487,19 @@ impl Shell {
             );
         }
         // The direct conversations of the server, after the channels of the workspace.
-        if !workspace.directs.is_empty() {
-            rows.push(CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element());
+        rows.push(CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element());
+        // A new conversation, with an account that the server lists for the person
+        // (ADR 0307). It stands before the conversations, so that a conversation that
+        // arrives does not move it.
+        if let Some(server_id) = server_id {
+            rows.push(
+                ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
+                    .selector("new-direct")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_new_direct(server_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
         }
         for (index, direct) in workspace.directs.iter().enumerate() {
             let conversation_id = direct.id;

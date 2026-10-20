@@ -57,6 +57,29 @@ impl Zone {
         };
         crate::moment::in_offset(at, offset)
     }
+
+    /// The first moment of a date on the clock of the zone. On a date whose clock skips
+    /// midnight, the first hour that the clock shows.
+    pub fn start_of(self, date: Date) -> OffsetDateTime {
+        match self {
+            Self::Fixed(offset) => date.midnight().assume_offset(offset),
+            Self::Named(zone) => {
+                use chrono::TimeZone as _;
+                let day = chrono::NaiveDate::from_ymd_opt(
+                    date.year(),
+                    u32::from(u8::from(date.month())),
+                    u32::from(date.day()),
+                );
+                (0..24)
+                    .find_map(|hour| {
+                        let local = day?.and_hms_opt(hour, 0, 0)?;
+                        let first = zone.from_local_datetime(&local).earliest()?;
+                        OffsetDateTime::from_unix_timestamp(first.timestamp()).ok()
+                    })
+                    .unwrap_or_else(|| date.midnight().assume_utc())
+            }
+        }
+    }
 }
 
 /// Messages of one author within this time form one group under one name.
@@ -198,6 +221,10 @@ pub struct MessageRow {
     /// The message mentions the account, one of its roles, or everyone.
     pub mentions_own: bool,
     pub reply: Option<Quote>,
+    /// The message takes a reaction and an answer: a message of a person in a place that
+    /// takes changes (ADR 0410).
+    pub can_react: bool,
+    pub can_reply: bool,
     /// The roles of the person allow the change. The server decides each request.
     pub can_edit: bool,
     pub can_delete: bool,
@@ -221,6 +248,8 @@ impl PartialEq for MessageRow {
             && self.author == other.author
             && self.time == other.time
             && self.reply == other.reply
+            && self.can_react == other.can_react
+            && self.can_reply == other.can_reply
             && self.can_edit == other.can_edit
             && self.can_delete == other.can_delete
             && self.can_pin == other.can_pin
@@ -231,6 +260,18 @@ impl PartialEq for MessageRow {
 }
 
 impl Eq for MessageRow {}
+
+impl MessageRow {
+    /// The message offers at least one action: its bar and its menu have an entry.
+    pub fn has_actions(&self) -> bool {
+        self.can_react
+            || self.can_reply
+            || self.can_thread
+            || self.can_pin
+            || self.can_edit
+            || self.can_delete
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SystemRow {
@@ -395,6 +436,9 @@ pub struct Source<'a> {
     pub own_roles: &'a [WorkspaceRoleId],
     /// The roles of the person allow the deletion of messages of other people, and pins.
     pub may_manage: bool,
+    /// The account is an administrator of the server: it deletes a permanent message of a
+    /// channel (ADR 0402).
+    pub administrator: bool,
     /// The thread that the side panel shows.
     pub open_thread: Option<MessageId>,
     /// The message that the person went to from a notice or a search result, with the
@@ -702,8 +746,17 @@ pub fn message_row<'a>(
             .as_ref()
             .is_some_and(|document| mentions(document, own, source.own_roles)),
         reply: message.reply_to.map(|id| quote(source, loaded, id)),
+        can_react: changeable,
+        can_reply: changeable,
         can_edit: changeable && is_own && !message.permanent,
-        can_delete: changeable && !message.permanent && (is_own || source.may_manage),
+        // A permanent message is deleted by an administrator only, also its author's
+        // (ADR 0402).
+        can_delete: changeable
+            && if message.permanent {
+                in_channel && source.administrator
+            } else {
+                is_own || source.may_manage
+            },
         can_pin: changeable && in_channel && source.may_manage,
         can_thread,
         thread: has_thread
@@ -1095,6 +1148,7 @@ mod tests {
                 names: self.names.clone(),
                 own_roles: &[self.role],
                 may_manage,
+                administrator: false,
                 open_thread: None,
                 target: None,
                 threads: true,
@@ -1191,6 +1245,7 @@ mod tests {
                 names: scene.names.clone(),
                 own_roles: &[scene.role],
                 may_manage: false,
+                administrator: false,
                 open_thread: None,
                 target: None,
                 threads: true,
@@ -1240,6 +1295,7 @@ mod tests {
                 names: scene.names.clone(),
                 own_roles: &[],
                 may_manage: false,
+                administrator: false,
                 open_thread,
                 target: None,
                 threads,
@@ -1338,6 +1394,7 @@ mod tests {
             names: scene.names.clone(),
             own_roles: &[],
             may_manage: true,
+            administrator: false,
             open_thread: None,
             target: None,
             threads: true,
@@ -1360,6 +1417,47 @@ mod tests {
             ),
             "Thursday, 8 October 2026"
         );
+    }
+
+    #[test]
+    fn only_an_administrator_deletes_a_permanent_message() {
+        let scene = scene();
+        let permanent = |author| {
+            let mut message = scene.message(1, author, 0, "approved");
+            message.permanent = true;
+            message
+        };
+        let timeline = scene.timeline(vec![permanent(scene.own), permanent(scene.ana)]);
+        let rows = |feed: &Feed| -> Vec<(bool, bool)> {
+            feed.rows
+                .iter()
+                .filter_map(|row| match row {
+                    FeedRow::Message(row) => Some((row.can_edit, row.can_delete)),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Neither its author nor a person with "manage messages" deletes it.
+        assert_eq!(rows(&scene.feed(&timeline, true)), [(false, false); 2]);
+        let source = |administrator| Source {
+            server_id: scene.server_id,
+            model: &scene.model,
+            timeline: &timeline,
+            names: scene.names.clone(),
+            own_roles: &[],
+            may_manage: false,
+            administrator,
+            open_thread: None,
+            target: None,
+            threads: true,
+            quoted: &scene.quoted,
+            zone: Zone::Fixed(UtcOffset::UTC),
+            today: None,
+            cards: None,
+        };
+        // An administrator deletes every permanent message of a channel and edits none.
+        assert_eq!(rows(&derive(&source(true))), [(false, true); 2]);
+        assert_eq!(rows(&derive(&source(false))), [(false, false); 2]);
     }
 
     #[test]
@@ -1605,6 +1703,7 @@ mod tests {
             names: scene.names.clone(),
             own_roles: &[],
             may_manage: false,
+            administrator: false,
             open_thread: None,
             target: None,
             threads: true,

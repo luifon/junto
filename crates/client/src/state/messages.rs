@@ -99,7 +99,14 @@ impl AppState {
     /// The places whose messages the window shows are held open in the client core: the
     /// place of the main area and the thread of the side panel. Every other place is
     /// released (ADR 0721). The pin list of the side panel is held in the same way.
-    pub(super) fn follow_places(&mut self, shown: Shown, cx: &mut Context<Self>) {
+    /// Holds a reader for each place that a window shows: the place and the thread of the
+    /// main window, and the place of the call while the call window is open (ADR 0772).
+    pub(super) fn follow_places(
+        &mut self,
+        shown: Shown,
+        call_window: Option<(ServerId, PlaceId)>,
+        cx: &mut Context<Self>,
+    ) {
         let wanted: Vec<(ServerId, PlaceId)> = shown
             .server
             .into_iter()
@@ -110,6 +117,7 @@ impl AppState {
                     .chain(shown.thread_place())
                     .map(move |place| (server_id, place))
             })
+            .chain(call_window)
             .collect();
         let gone: Vec<(ServerId, PlaceId)> = self
             .open_places

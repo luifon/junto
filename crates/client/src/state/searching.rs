@@ -110,6 +110,8 @@ impl AppState {
             go_failed: None,
         });
         self.search_next = None;
+        // An archived list that failed is read again with the new search (ADR 0743).
+        self.read_failed_archived_lists_again(server_id);
         self.ask_search(false, cx);
         self.changed(cx);
     }
@@ -190,9 +192,15 @@ impl AppState {
                         if !more {
                             search.hits.clear();
                         }
+                        let number = search.hits.last().map_or(0, |last| last.page + 1);
                         for hit in page.results {
-                            let hit = Hit::from(hit);
-                            if search.hits.len() < MOST_HITS && !search.hits.contains(&hit) {
+                            let hit = Hit {
+                                page: number,
+                                ..Hit::from(hit)
+                            };
+                            if search.hits.len() < MOST_HITS
+                                && !search.hits.iter().any(|held| held.same_result(&hit))
+                            {
                                 search.hits.push(hit);
                             }
                         }

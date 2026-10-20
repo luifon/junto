@@ -1,5 +1,5 @@
-//! What a search hit states about its place, and the lines of a transcript around a line
-//! (ADR 0413).
+//! What a search hit states about its place and its workspace, and the lines of a
+//! transcript around a line (ADR 0413).
 
 use junto_protocol::transcript::TranscriptLinePage;
 
@@ -34,13 +34,20 @@ async fn a_hit_states_the_position_and_the_thread_root_of_its_message() {
 
     let hits = search(&server, &reader, "quartz").await.results;
     assert_eq!(hits.len(), 3);
-    for (message, thread_root) in [(&root, None), (&answer, Some(root.id)), (&direct, None)] {
+    // A hit names the workspace of its channel, and none for a direct conversation.
+    let workspace_id = Some(channel.workspace_id);
+    for (message, thread_root, workspace_id) in [
+        (&root, None, workspace_id),
+        (&answer, Some(root.id), workspace_id),
+        (&direct, None, None),
+    ] {
         let hit = hits
             .iter()
             .find(|hit| hit.message_id == Some(message.id))
             .expect("a hit for the message");
         assert_eq!(hit.position, Some(message.position));
         assert_eq!(hit.thread_root, thread_root);
+        assert_eq!(hit.workspace_id, workspace_id);
         assert_eq!(hit.start_ms, None);
         assert_eq!(hit.line, None);
     }
@@ -80,6 +87,7 @@ async fn a_transcript_hit_states_the_start_of_its_line() {
     let hits = search(server, owner, "quartz").await.results;
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].recording_id, Some(done.recording.id));
+    assert_eq!(hits[0].workspace_id, Some(done.recording.workspace_id));
     assert_eq!(hits[0].line, Some(spoken.line));
     assert_eq!(hits[0].start_ms, Some(spoken.start_ms));
     assert!(spoken.start_ms > 0);

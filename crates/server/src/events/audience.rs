@@ -930,7 +930,8 @@ pub struct Recipient<'a> {
     /// workspace that the recipient is a member of.
     pub fellows: &'a HashSet<AccountId>,
     /// How the recipient stands to the accounts that the audiences of a batch name for a
-    /// direct message or a direct call. An account that is not active has no entry.
+    /// direct message or a direct call, and to the accounts of a profile that is no
+    /// fellow's. An account that is not active has no entry.
     pub contacts: &'a HashMap<AccountId, Contact>,
     /// The lists of `event_receivers`, of the ones that the audiences of a batch name, that
     /// hold the recipient.
@@ -969,6 +970,8 @@ impl Recipient<'_> {
             Acquaintance::Own
         } else if self.fellows.contains(&account_id) {
             Acquaintance::SharedWorkspace
+        } else if self.contacts.get(&account_id) == Some(&Contact::Administrator) {
+            Acquaintance::Administrator
         } else {
             Acquaintance::Unrelated
         }

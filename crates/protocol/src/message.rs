@@ -213,6 +213,24 @@ pub struct Conversation {
 pub struct OpenConversation {
     pub account_id: AccountId,
 }
+
+/// An account that the caller may write to and call: both are active, and they share a
+/// workspace or one of them administers the server (ADR 0307).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ContactAccount {
+    pub id: AccountId,
+    pub name: String,
+}
+
+/// A page of the accounts that the caller may contact, in the order of their names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ContactPage {
+    pub accounts: Vec<ContactAccount>,
+    /// The value of `after` for the next page. Absent after the last page.
+    pub next_after: Option<String>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Attachment {

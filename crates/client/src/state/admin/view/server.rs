@@ -1,10 +1,13 @@
-//! The page of the server itself (ADR 0101): its logo, which an administrator sets and
-//! removes.
+//! The page of the server itself: its logo (ADR 0101) and the limits of the files of
+//! messages (ADR 0408), which an administrator changes.
 
 use std::sync::Arc;
 
 use gpui::RenderImage;
 use junto_client_core::model::ServerModel;
+use junto_client_core::protocol::message::AttachmentLimits;
+
+use super::Listed;
 
 use crate::state::view::{Known, ServerSnapshot};
 
@@ -19,6 +22,8 @@ pub struct ServerSettingsPage {
     pub image: Option<Arc<RenderImage>>,
     /// The person is an administrator: set and remove.
     pub may_change: bool,
+    /// The largest file and the number of files of a message that the server accepts.
+    pub limits: Listed<AttachmentLimits>,
 }
 
 pub fn settings(server: &ServerSnapshot, model: &ServerModel, known: &Known) -> ServerSettingsPage {
@@ -28,6 +33,7 @@ pub fn settings(server: &ServerSnapshot, model: &ServerModel, known: &Known) -> 
         has_logo: logo.exists,
         image: logo.image,
         may_change: model.is_administrator(),
+        limits: Listed::of(&model.admin.attachment_limits, Clone::clone),
     }
 }
 
@@ -176,6 +182,7 @@ mod tests {
                 has_logo: true,
                 image: Some(held.image),
                 may_change: true,
+                limits: Listed::Loading,
             }
         );
     }

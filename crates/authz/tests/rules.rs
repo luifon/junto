@@ -299,11 +299,21 @@ fn own_account_is_open_to_every_actor() {
 }
 
 #[test]
-fn a_profile_is_open_to_its_account_to_fellow_members_and_to_moderators() {
+fn a_profile_is_open_to_its_account_to_fellow_members_to_contacts_and_to_moderators() {
     let moderator = with_server(&[ServerPermission::BanMembers]);
     let inviter = with_server(&[ServerPermission::CreateInvites]);
-    for actor in [owner(), administrator(), moderator.clone(), plain()] {
-        for near in [Acquaintance::Own, Acquaintance::SharedWorkspace] {
+    for actor in [
+        owner(),
+        administrator(),
+        moderator.clone(),
+        plain(),
+        inviter.clone(),
+    ] {
+        for near in [
+            Acquaintance::Own,
+            Acquaintance::SharedWorkspace,
+            Acquaintance::Administrator,
+        ] {
             assert_eq!(authorize(&actor, &Request::ViewAccount(near)), Allow);
         }
     }

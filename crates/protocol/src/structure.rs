@@ -127,6 +127,36 @@ pub struct CreateChannel {
     pub position: Option<i32>,
 }
 
+/// The category and the position of a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChannelPlace {
+    /// Absent: the channel has no category.
+    #[serde(default)]
+    pub category_id: Option<CategoryId>,
+    pub position: i32,
+}
+
+/// One channel of a change of the order: where the client read it, and where it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMove {
+    pub channel_id: ChannelId,
+    pub from: ChannelPlace,
+    pub to: ChannelPlace,
+}
+
+/// A change of the order of the channels of one workspace, applied whole or not at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MoveChannels {
+    /// 1 to 200 channels, each named once.
+    pub moves: Vec<ChannelMove>,
+}
+
 /// An absent field keeps its value. `category_id: null` takes the channel out of its category.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

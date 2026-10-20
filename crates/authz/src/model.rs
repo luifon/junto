@@ -222,6 +222,10 @@ pub enum Acquaintance {
     Own,
     /// The two accounts are members of at least one common workspace.
     SharedWorkspace,
+    /// The two accounts have no common workspace, and the other account is active and is
+    /// the server owner or holds the administrator permission: the actor may write to it
+    /// (ADR 0307).
+    Administrator,
     Unrelated,
 }
 

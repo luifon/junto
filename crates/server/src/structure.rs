@@ -11,9 +11,10 @@ use junto_protocol::ids::{
 use junto_protocol::roles::{ServerRole, WorkspaceRole};
 use junto_protocol::structure::{ChannelKind, UpdateChannel};
 use junto_protocol::structure_file::{
-    ApplyStructureChanges, CategoryEntry, ChannelEntry, CreatedEntry, Deletions, OverrideEntry,
-    RoleEntry, STRUCTURE_FORMAT, ServerRoleEntry, StructureApplied, StructureChange,
-    StructureExport, StructureFile, StructureKind, WorkspaceEntry,
+    ApplyStructureChanges, CategoryEntry, ChannelEntry, CreatedEntry, Deletions,
+    OLDEST_STRUCTURE_FORMAT, OverrideEntry, RoleEntry, STRUCTURE_FORMAT, ServerRoleEntry,
+    StructureApplied, StructureChange, StructureExport, StructureFile, StructureKind,
+    WorkspaceEntry,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -706,9 +707,12 @@ pub fn file_schema() -> Result<serde_json::Value, serde_json::Error> {
     Ok(sorted(serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Junto structure file",
-        "description": "The structure of a Junto server as the setup tool writes and reads \
-                        it: format 1. An entry is matched by its identifier; an entry that \
-                        is absent is kept; a deletion is listed under `delete`.",
+        "description": format!(
+            "The structure of a Junto server as the setup tool writes it: format \
+             {STRUCTURE_FORMAT}. The tool reads the formats {OLDEST_STRUCTURE_FORMAT} to \
+             {STRUCTURE_FORMAT}. An entry is matched by its identifier; an entry that is absent \
+             is kept; a deletion is listed under `delete`."
+        ),
         "$ref": "#/components/schemas/StructureFile",
         "components": components,
     })))

@@ -1,4 +1,5 @@
-//! Direct calls keep the conversation available beneath their call state.
+//! A direct conversation outside its call: the button that starts a direct-message call, and
+//! the outcome of the last call.
 use super::Shell;
 use crate::{
     assets::Icon,
@@ -67,6 +68,11 @@ impl Shell {
             )
             .into_any_element()
     }
+    /// What a direct conversation shows above its messages while the main window does not
+    /// draw its call: the button that starts a direct-message call, or the statement that
+    /// the call window draws the call of the conversation with Return, and the outcome of
+    /// the last call with the person. The call of the conversation is drawn as the call of
+    /// a voice channel is (ADR 0735).
     pub(crate) fn render_direct_call(
         &self,
         server: ServerId,
@@ -74,9 +80,6 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = self.state.read(cx);
-        let calls = state.media_calls();
-        let active = calls.call.as_ref().filter(|call| call.target.server_id == server && matches!(call.target.place, CallPlace::Direct { low_account_id: low, high_account_id: high } if low == other || high == other));
-        let joined = state.direct_connected(server, other);
         let latest = state
             .direct_calls()
             .rings
@@ -87,96 +90,17 @@ impl Shell {
         let history = history_label(
             state.direct_calls().finished.get(&(server, other)).copied(),
             latest.map(|ring| (ring.outcome, ring.incoming)),
-            active.is_some(),
         );
         let incoming = self.view.as_ref().is_some_and(|view| view.invitations.iter().any(|invited| invited.target.server_id == server && matches!(invited.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)));
-        let faces = self.faces(server);
-        let pictures = active.map(|call| {
-            let CallPlace::Direct {
-                low_account_id,
-                high_account_id,
-            } = call.target.place
-            else {
-                return div();
-            };
-            let own = if low_account_id == other {
-                high_account_id
-            } else {
-                low_account_id
-            };
-            let name = self
-                .view
-                .as_ref()
-                .and_then(|view| view.workspace())
-                .and_then(|workspace| {
-                    workspace
-                        .directs
-                        .iter()
-                        .find(|direct| direct.account_id == other)
-                })
-                .and_then(|direct| direct.name.clone())
-                .unwrap_or_else(|| text::DIRECT_CALL.to_owned());
-            div().flex().flex_wrap().gap(u(8.0)).children(
-                [
-                    (junto_media::engine::ShareId::Own, own, text::YOU.to_owned()),
-                    (junto_media::engine::ShareId::Of(other), other, name),
-                ]
-                .into_iter()
-                .filter_map(|(id, account, label)| {
-                    let picture = self.cameras.get(&id).map(|(_, image)| image.clone());
-                    if state.voice().hide_people_without_video
-                        && !self.cameras.is_empty()
-                        && picture.is_none()
-                    {
-                        return None;
-                    }
-                    Some(
-                        crate::ui::PersonTile::new(
-                            format!("direct-camera:{id:?}"),
-                            label.clone(),
-                            account.as_uuid().as_u128(),
-                            label,
-                        )
-                        .camera_view(active.and_then(|call| {
-                            let running = if id == junto_media::engine::ShareId::Own {
-                                matches!(
-                                    call.camera,
-                                    junto_media::camera::CameraState::Starting
-                                        | junto_media::camera::CameraState::Running
-                                )
-                            } else {
-                                call.cameras.contains(&account)
-                            };
-                            running.then(|| (state.calls().clone(), id))
-                        }))
-                        .picture(faces.image(account))
-                        .camera_picture(picture),
-                    )
-                }),
-            )
-        });
-        let share = (active.and(self.pictures.main.as_ref()))
-            .map(|(_, picture)| div().w_full().h(u(240.0)).child(picture.clone().element()));
-        let separate = active.is_some() && state.is_call_detached() && !self.detached;
-        let call = if let Some(call) = active {
-            let (label, selector) = if call.phase == junto_media::calls::Phase::Reconnecting {
-                (text::CALL_RECONNECTING, "direct-call-reconnecting")
-            } else if call.phase == junto_media::calls::Phase::Entering {
-                (text::CALL_ENTERING, "direct-call-entering")
-            } else if joined {
-                (text::DIRECT_CALL, "active-direct-call")
-            } else {
-                (text::CALLING, "outgoing-direct-call")
-            };
-            Notice::new(label)
-                .selector(selector)
-                .action(
-                    Button::new("direct-leave")
-                        .label(text::LEAVE_CALL)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.leave_call(cx))
-                        })),
-                )
+        let separate = state.is_call_detached()
+            && state.media_calls().call.is_some_and(|call| {
+                call.target.server_id == server
+                    && matches!(call.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)
+            });
+        let call = if separate {
+            Notice::new(text::CALL_SEPARATE)
+                .selector("call-in-separate-window")
+                .action(self.return_call_button(cx))
                 .into_any_element()
         } else if incoming {
             div().into_any_element()
@@ -197,23 +121,10 @@ impl Shell {
             .p(u(12.0))
             .child(call)
             .child(
-                crate::ui::notice_slot("direct-notice-area")
-                    .children(if separate {
-                        Some(
-                            Notice::new(text::CALL_SEPARATE)
-                                .selector("call-in-separate-window")
-                                .action(self.return_call_button(cx))
-                                .into_any_element(),
-                        )
-                    } else {
-                        None
-                    })
-                    .children(
-                        history.map(|line| Notice::new(line).selector("direct-call-history")),
-                    ),
+                crate::ui::notice_slot("direct-notice-area").children(
+                    history.map(|line| Notice::new(line).selector("direct-call-history")),
+                ),
             )
-            .children(if separate { None } else { share })
-            .children(if separate { None } else { pictures })
             .into_any_element()
     }
 }
@@ -221,11 +132,7 @@ impl Shell {
 fn history_label(
     finished: Option<RingOutcome>,
     latest: Option<(RingOutcome, bool)>,
-    active: bool,
 ) -> Option<&'static str> {
-    if active {
-        return None;
-    }
     match finished.or_else(|| latest.map(|(outcome, _)| outcome)) {
         Some(RingOutcome::Missed)
             if finished.is_some() || latest.is_none_or(|(_, incoming)| !incoming) =>
@@ -249,24 +156,16 @@ mod tests {
     #[test]
     fn no_answer_uses_the_current_call_direction_even_after_an_older_incoming_call() {
         assert_eq!(
-            history_label(
-                Some(RingOutcome::Missed),
-                Some((RingOutcome::Missed, true)),
-                false
-            ),
+            history_label(Some(RingOutcome::Missed), Some((RingOutcome::Missed, true))),
             Some("No answer")
         );
         assert_eq!(
-            history_label(None, Some((RingOutcome::Cancelled, true)), false),
+            history_label(None, Some((RingOutcome::Cancelled, true))),
             Some(text::MISSED_CALL)
         );
         assert_eq!(
-            history_label(None, Some((RingOutcome::Cancelled, false)), false),
+            history_label(None, Some((RingOutcome::Cancelled, false))),
             Some(text::DIRECT_CALL_CANCELLED)
-        );
-        assert_eq!(
-            history_label(None, Some((RingOutcome::Missed, true)), true),
-            None
         );
     }
 }

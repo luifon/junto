@@ -470,10 +470,14 @@ pub async fn acquaintance(
         return Ok(Acquaintance::Own);
     }
     let fellows = fellow_members(connection, access.account_id, &[account_id]).await?;
-    Ok(if fellows.contains(&account_id) {
-        Acquaintance::SharedWorkspace
-    } else {
-        Acquaintance::Unrelated
+    if fellows.contains(&account_id) {
+        return Ok(Acquaintance::SharedWorkspace);
+    }
+    // An account that the caller may write to is one whose profile it sees (ADR 0119,
+    // ADR 0307).
+    Ok(match contact(connection, access, account_id).await? {
+        Some(Contact::Administrator) => Acquaintance::Administrator,
+        _ => Acquaintance::Unrelated,
     })
 }
 

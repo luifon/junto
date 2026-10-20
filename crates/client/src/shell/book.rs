@@ -466,6 +466,7 @@ mod tests {
             (ServerStatus::Connecting, "connecting…"),
             (ServerStatus::Reconnecting, "reconnecting…"),
             (ServerStatus::LoggedOut, "not logged in"),
+            (ServerStatus::LoggedOutByPerson, "logged out"),
             (
                 ServerStatus::WaitingForApproval {
                     name: "Luca".to_owned(),

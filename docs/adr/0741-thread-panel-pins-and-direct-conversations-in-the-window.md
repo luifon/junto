@@ -34,13 +34,14 @@ Fork:
 
 Pins:
 
-- "Pins" in the header of a channel opens the pin list in the side panel: each pinned message with "Go to message" and, with "manage messages", "Unpin". "Go to message" shows the message in its place with the messages around it, or opens the thread of a pinned reply.
+- "Pins" in the header of a channel opens the pin list in the side panel: each pinned message with "Go to message" and, with "manage messages", "Unpin". "Go to message" goes to the message as a notice does (ADR 0742): the list of its place, or the thread of a pinned reply, reads the messages around its position when it does not hold the message, shows it and marks it.
 - "Pin" and "Unpin" are in the actions and in the menu of a message for a person whose roles hold "manage messages". A refusal is told above the composer: the limit of 100 pins, a missing permission, and every other answer by its error code.
 - A pinned message carries the mark "Pinned" without a name.
 
 Permanent messages (ADR 0402):
 
 - The header of a channel with permanent messages carries a marker whose explanation opens on hover and on focus. The composer states that a sent message cannot be edited, also the composer of a thread of that channel. The actions of a permanent message state "No edit or delete here"; edit and delete are not offered to its author.
+- An administrator of the server has Delete on every permanent message of a channel, in the bar and in the menu of the message, and its actions state "No edit here". Every other person, its author and a holder of "manage messages" included, has no Delete on it: the server allows the deletion to the administrator permission only (ADR 0402). The question before the deletion states that the channel shows a line that the person deleted a permanent message and that the audit log keeps an entry. Test: `messages::an_administrator_deletes_one_permanent_message_of_another_person`.
 
 Direct conversations:
 
@@ -49,6 +50,11 @@ Direct conversations:
 - A conversation whose two accounts may not write to each other any more says so in place of its messages.
 - The name of a person who is no member of the shown workspace is read from the profile route.
 - A message of a direct conversation offers no thread and no pin.
+- The section of the direct conversations is drawn for every server that shows its lists, also without a conversation, and starts with "New direct message", before the conversations, so that a conversation that arrives does not move it. It opens a dialog with a field for a part of a name and the accounts that the server lists for it (ADR 0307), also those that are in no member list that the person can open. Choosing an account opens the conversation with it, as the members panel does, and closes the dialog.
+- The dialog reads one page of 50 accounts at a time and "Show more" reads the next one, at most 500 accounts. "Show more" stands under the list at a place of its own and is drawn in every state, disabled while there is nothing more or a read is on its way: the rows of its answer join the list after the rows before, so neither the button nor a row moves under the pointer; a person who has not found an account then types more of its name. One read runs at a time: a part that the person types during a read is read after it, and the answer of a part that the person no longer wants is not shown. A read that failed is stated with "Try again".
+- The list has a fixed height, and the state of a read is drawn in a slot of fixed height above it, so an answer moves neither the field nor the buttons of the dialog (ADR 0730). A row is an element named by its account, so a press that starts on one account and ends on another after an answer chooses nobody.
+- The dialog belongs to the account that it was opened for: it closes when the server shows another account or none.
+- Test: `contacts::a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person` writes from a member to an administrator of a workspace of her own, whose name the window shows, sees that another member of that workspace is not offered, and as an administrator then finds that member; "Show more" keeps its bounds when an answer brings fewer rows. The test failed before the channel column had the control, and before "Show more" had a place of its own.
 
 Unread signs:
 

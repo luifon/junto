@@ -52,7 +52,9 @@ commands:
                                --name <name> [--device-name <name>]
   request                      ask for access without a code
                                --name <name> [--wait]
-  login                        log in with the stored device key
+  login                        log in with the stored device key; ends a logout
+  logout                       log out of the account on this device: no command logs in
+                               again until `login`; the account and the key stay
   link                         link this device to an account of another device
                                [--device-name <name>] [--wait]
   approve-link                 approve the link code that a new device shows
@@ -601,7 +603,22 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             server.dispatch(action).await.map_err(failed)?;
             wait_or_show(&server, &arguments).await
         }
+        "logout" => {
+            let server = pick(&client, &arguments)?;
+            let result = server
+                .dispatch_when_free(AccessAction::LogOutByPerson)
+                .await;
+            show(&server);
+            result.map_err(failed)
+        }
         "login" => {
+            let server = pick(&client, &arguments)?;
+            if matches!(server.access().state, AccessState::LoggedOutByPerson { .. }) {
+                server
+                    .dispatch_when_free(AccessAction::LogIn)
+                    .await
+                    .map_err(failed)?;
+            }
             let server = logged_in(&client, &arguments).await?;
             let account = server.api().own_account().await;
             show(&server);
@@ -748,6 +765,7 @@ fn servers(client: &Client) -> Result<(), Failure> {
         let membership = match entry.membership {
             Membership::None => "no account",
             Membership::JoinRequested { .. } => "waiting for approval",
+            Membership::Member { .. } if entry.logged_out => "member, logged out",
             Membership::Member { .. } => "member",
             Membership::Banned { .. } => "banned",
             Membership::Removed => "removed",
@@ -1007,6 +1025,9 @@ async fn logged_in(client: &Client, arguments: &Arguments) -> Result<ServerHandl
     notices(&server);
     match server.access().state {
         AccessState::LoggedIn { .. } => Ok(server),
+        AccessState::LoggedOutByPerson { .. } => Err(Failure::Failed(
+            "this device is logged out of this server; `login` logs in again".to_owned(),
+        )),
         _ => {
             show(&server);
             contacted.map_err(failed)?;
@@ -1336,6 +1357,10 @@ fn show(server: &ServerHandle) {
         }
         AccessState::LoggedOut { account_id } => {
             println!("state: logged out");
+            println!("account: {account_id}");
+        }
+        AccessState::LoggedOutByPerson { account_id } => {
+            println!("state: logged out by the person; `login` logs in again");
             println!("account: {account_id}");
         }
         AccessState::LoggedIn {

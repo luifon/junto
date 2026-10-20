@@ -37,7 +37,7 @@ impl Window {
     fn link(&mut self) -> Option<LinkView> {
         match self.account()?.page {
             PageView::Devices(page) => page.link,
-            PageView::Profile(_) => None,
+            PageView::Profile(_) | PageView::Recoveries(_) => None,
         }
     }
 

@@ -12,7 +12,7 @@ The server decides who is in a call and gives out the token for the media server
 
 Routes:
 
-- The API object of a server has one function for each route of the calls: the call of the account, its own state, its screen share, its hand and its speaking report; the call of a voice channel, its settings, its lock and meeting mode; requests to enter and their answers; invitations and their answers; moves, their join and their failure; the two blocks and the removal of a person; direct-message calls and their refusal; and the mute of a direct-message conversation. A further function reads the snapshot (ADR 0207).
+- The API object of a server has one function for each route of the calls: the call of the account, its own state, its screen share, its hand and its speaking report; the call of a voice channel, its settings, its lock and meeting mode; requests to enter and their answers; invitations and their answers; moves, their join and their failure; the two blocks, the lowering of the hand of another person (ADR 0516) and the removal of a person; direct-message calls and their refusal; and the mute of a direct-message conversation. A further function reads the snapshot (ADR 0207).
 - A join returns the address of the media server, the identity and the token. The token is held by the secret type of the protocol crate, and the body of the response by a buffer that is overwritten (ADR 0714).
 - A call request is sent again only after `busy` and `timeout`, as every request without a signature (ADR 0714).
 - This unit connects to no media server.

@@ -8,6 +8,7 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod contacts;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -327,9 +328,15 @@ pub struct LevelsChanged;
 
 impl gpui::EventEmitter<LevelsChanged> for AppState {}
 
+/// What the call window does before it closes.
+type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
+
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
+    /// What the call window does before it closes: it gives the text of its composer to
+    /// the main window (ADR 0772).
+    call_window_closing: Option<CallWindowClosing>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
@@ -368,6 +375,8 @@ pub struct AppState {
     /// What the account layer holds: the open page, its requests and the devices that it
     /// lists (ADR 0781).
     account: account::AccountState,
+    /// The chooser of a new direct conversation (ADR 0307).
+    contacts: contacts::ContactSearch,
     /// The role and the flow of the link on all servers (ADR 0782).
     linking: linking::LinkingState,
     /// What the person did with the update notice, and a move of a server that failed
@@ -648,6 +657,7 @@ impl AppState {
         let mut state = Self {
             talking_windows: HashSet::new(),
             call_window: None,
+            call_window_closing: None,
             call_window_settings,
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
@@ -672,6 +682,7 @@ impl AppState {
             pending: Pending::default(),
             admin: admin::AdminState::default(),
             account: account::AccountState::default(),
+            contacts: contacts::ContactSearch::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
             update_install: update_install::InstallState::new(),
@@ -1109,6 +1120,28 @@ impl AppState {
     pub fn allow_to_speak(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
         self.ask_own_call(cx, move |api, channel_id| async move {
             api.unblock_microphone(channel_id, account_id).await
+        });
+    }
+
+    /// The presenter of meeting mode lowers the raised hand of a person of the call of this
+    /// device, and the block of the microphone of that person stays (ADR 0516).
+    pub fn lower_hand_in_call(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            api.lower_participant_hand(channel_id, account_id).await
+        });
+    }
+
+    /// Lowers the raised hand of a person in a voice channel: a moderator with "mute
+    /// members", and the presenter of meeting mode in that call (ADR 0516).
+    pub fn lower_hand_of(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            api.lower_participant_hand(channel_id, account_id).await
         });
     }
 
@@ -2032,19 +2065,11 @@ impl AppState {
         self.follow_people(&view, cx);
         self.follow_followed(&view, cx);
         self.follow_moderation(&snapshots, cx);
-        let archived = shown.server.zip(
-            view.workspace()
-                .filter(|workspace| workspace.archived.is_some())
-                .and_then(|workspace| Some((workspace.id, workspace.channel.as_ref()?.id))),
-        );
-        self.follow_admin(
-            archived.map(|(server_id, (workspace_id, channel_id))| {
-                (server_id, workspace_id, channel_id)
-            }),
-            cx,
-        );
+        let readers = self.archived_readers(&view, &snapshots);
+        self.follow_admin(readers, cx);
         self.follow_account(cx);
-        self.follow_places(shown, cx);
+        let call_window = self.call_window_place(&snapshots);
+        self.follow_places(shown, call_window, cx);
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.follow_result_jump(shown);
@@ -2144,6 +2169,22 @@ impl AppState {
     pub fn connect(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         if let Some(server) = self.client.server(server_id) {
             Self::run(server.connect(), cx);
+        }
+    }
+
+    /// Logs in after a logout of the person: from then on the application logs in by
+    /// itself again (ADR 0712).
+    pub fn log_in(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if let Some(server) = self.client.server(server_id) {
+            Self::run(server.dispatch_when_free(AccessAction::LogIn), cx);
+        }
+    }
+
+    /// Logs out of the account of the server on this device. The account and the key stay,
+    /// and the application does not log in again until the person asks (ADR 0712).
+    pub fn log_out(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if let Some(server) = self.client.server(server_id) {
+            Self::run(server.dispatch_when_free(AccessAction::LogOutByPerson), cx);
         }
     }
 
