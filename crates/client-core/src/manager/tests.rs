@@ -1343,6 +1343,40 @@ async fn a_logout_of_the_person_ends_the_session_and_stays_until_the_person_logs
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_contact_that_waits_for_an_action_does_not_undo_a_logout_of_the_person() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    // After a restart the device is logged out, and the client contacts the server by
+    // itself.
+    let restarted = device.reopened(&network);
+    let handle = restarted.server(server.server_id()).unwrap();
+    assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
+    let logins = server.count("/auth/sessions");
+
+    // An action runs, and the contact of the client waits for it. That action is the
+    // logout of the person, which ends while the contact waits.
+    let running = handle.server.gate.lock().await;
+    let when_free = handle.connect_when_free();
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    handle.server.log_out_by_person().await.unwrap();
+    drop(running);
+    when_free.await.unwrap();
+
+    assert_eq!(
+        handle.access().state,
+        AccessState::LoggedOutByPerson { account_id }
+    );
+    assert!(handle.entry().logged_out);
+    assert_eq!(server.count("/auth/sessions"), logins);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_logout_of_the_person_ends_the_session_on_the_device_when_the_server_does_not_answer() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");

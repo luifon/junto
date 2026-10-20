@@ -114,21 +114,20 @@ impl Shell {
                     .child(choice),
             );
         }
-        if view.more {
-            list = list.child(
-                div().px(u(12.0)).py(u(6.0)).child(
-                    Button::new("contacts-more")
-                        .label(text::MORE_CONTACTS)
-                        .selector("contacts-more")
-                        .disabled(view.reading)
-                        .h(u(28.0))
-                        .px(u(10.0))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.more_contacts(cx));
-                        })),
-                ),
-            );
-        }
+        // "Show more" stands under the list, at a place of its own in every state: the rows
+        // of its answer join the list after the rows before, and nothing moves under the
+        // pointer (ADR 0730).
+        let more = div().flex_none().mt(u(6.0)).child(
+            Button::new("contacts-more")
+                .label(text::MORE_CONTACTS)
+                .selector("contacts-more")
+                .disabled(!view.more || view.reading)
+                .h(u(28.0))
+                .px(u(10.0))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |state, cx| state.more_contacts(cx));
+                })),
+        );
         Dialog::new(text::NEW_DIRECT_TITLE, self.layer_focus())
             .selector("new-direct-dialog")
             .on_close(Self::handler(cx, |this, window, cx| {
@@ -158,6 +157,7 @@ impl Shell {
                     .flex_col()
                     .child(list),
             )
+            .child(more)
             .child(dialog_footer([Button::new("cancel-new-direct")
                 .label(text::CANCEL)
                 .selector("cancel-new-direct")

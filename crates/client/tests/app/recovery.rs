@@ -8,10 +8,10 @@ use junto_client::state::admin::view::people::NoRecovery;
 use junto_client::state::admin::view::{Scope, ServerPage};
 
 use crate::admin_pages::{
-    account, awaited, click_in_page, invite, joined, open_page, owner_window, sel,
+    account, awaited, click_in_page, invite, joined, open_page, owner_window_at, sel,
 };
 use crate::harness::{Window, World, named};
-use crate::support::logged_in;
+use crate::support::{FaultProxy, logged_in};
 
 impl Window {
     /// The recoveries that the open recoveries page lists. Absent while the page reads
@@ -36,11 +36,16 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
 ) {
     let world = World::new();
     let server = world.server("Acme Studio");
-    let (_owner_directory, mut owner, owner_handle) = owner_window(cx, &server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_owner_directory, mut owner, owner_handle) =
+        owner_window_at(cx, &server, &proxy.address());
     let ada = logged_in(&owner_handle);
     let code = invite(&world, &owner_handle, Vec::new());
     let (lost, member) = joined(&world, &server, &code, "Bruno");
     let bruno = logged_in(&member);
+    let code = invite(&world, &owner_handle, Vec::new());
+    let (_dora_device, dora) = joined(&world, &server, &code, "Dora");
+    let dora = logged_in(&dora);
     // The only device of the account is lost with its data directory.
     drop(member);
     drop(lost);
@@ -88,9 +93,21 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
     assert!(owner.shows("recovery-invalid"));
     assert!(owner.shows("recovery-form") && !owner.shows("account-recovered"));
 
-    // The key as the new device shows it, in groups, recovers the account.
+    // The key as the new device shows it, in groups, recovers the account. While the
+    // request is on its way neither Cancel nor the action of another row releases the
+    // row of the form (ADR 0730).
     owner.in_shell(|shell, window, cx| shell.type_recovery(&key, "Replacement", window, cx));
+    proxy.hold_request("POST", "/recovery");
     click_in_page(&mut owner, "recovery-confirm");
+    owner.until("the recovery is on its way", |_| {
+        !proxy
+            .seen(&format!("/api/v1/accounts/{bruno}/recovery"))
+            .is_empty()
+    });
+    click_in_page(&mut owner, "recovery-cancel");
+    click_in_page(&mut owner, sel("account-ban", dora));
+    assert!(owner.shows("recovery-form") && !owner.shows("account-confirm"));
+    proxy.release();
     owner.until("the row tells the recovery", |window| {
         window.shows("account-recovered")
     });

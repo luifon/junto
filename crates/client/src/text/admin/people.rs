@@ -37,6 +37,7 @@ pub const RECOVER_HELP: &str = "The new device gets access to this account and t
 pub const RECOVER_OWN: &str = "Your own account gets a new device by a link on the page \
      “Devices” of your account.";
 pub const RECOVER_NOT_ACTIVE: &str = "Only an active account is recovered.";
+pub const RECOVERY_SENT: &str = "Wait until the server has answered the recovery.";
 pub const RECOVERY_HELP: &str = "The server owner recovers an account whose person has lost \
      every device: the person adds the server on a new device, chooses to link the device, \
      and gives the owner the key that it shows.";

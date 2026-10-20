@@ -314,3 +314,114 @@ async fn the_profile_of_an_administrator_is_seen_by_the_accounts_that_may_write_
         .error(ErrorCode::NotFound);
     assert!(!reached(&server, &ann).await.contains(&eve.account_id));
 }
+
+/// The rows that a list of contacts reads follow what the caller may reach, not the
+/// accounts that it may not see (ADR 0307). Ten thousand other accounts sort before the
+/// people of the test, hold a server role without the administrator permission and are
+/// members of a workspace of their own.
+#[tokio::test]
+async fn the_contacts_of_a_member_read_the_candidates_and_not_the_hidden_accounts() {
+    use crate::plan_support::{analyze, explained, index_names, visited_rows};
+    use junto_server::routes::contacts::{CONTACTS_OF_ADMINISTRATOR, CONTACTS_OF_MEMBER};
+    let People {
+        server,
+        owner,
+        ann,
+        bea,
+        eve,
+        ..
+    } = people().await;
+    let hidden: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Hidden" }))
+        .await
+        .ok(StatusCode::CREATED);
+    let role = server
+        .grant_server(&owner, &owner, &[ServerPermission::CreateInvites])
+        .await;
+    sqlx::query(
+        "insert into accounts(id,name,status,created_at)
+         select lpad(to_hex(i),32,'0')::uuid,'Hidden','active',now()
+         from generate_series(1,10000) i",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into account_server_roles(account_id,role_id)
+         select id,$1 from accounts where name='Hidden'",
+    )
+    .bind(role)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into workspace_members(workspace_id,account_id,joined_at)
+         select $1,id,now() from accounts where name='Hidden'",
+    )
+    .bind(hidden.id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    analyze(
+        &server.db,
+        &[
+            "accounts",
+            "workspace_members",
+            "account_server_roles",
+            "server_roles",
+        ],
+    )
+    .await;
+    // The bit of the administrator permission in the stored set (ADR 0301).
+    let administrator: i64 = 1;
+    for settings in [
+        "",
+        "set local enable_nestloop = off; set local enable_hashjoin = off",
+        "set local enable_nestloop = off; set local enable_mergejoin = off",
+    ] {
+        let mut transaction = server.db.begin().await.unwrap();
+        if !settings.is_empty() {
+            sqlx::raw_sql(settings)
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+        }
+        let plan: serde_json::Value = sqlx::query_scalar(explained(CONTACTS_OF_MEMBER))
+            .bind(ann.account_id)
+            .bind("")
+            .bind(None::<String>)
+            .bind(None::<uuid::Uuid>)
+            .bind(administrator)
+            .bind(51_i64)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        assert!(
+            visited_rows(&plan[0]["Plan"]) < 100,
+            "a member with {settings:?}: {plan}"
+        );
+        // An administrator reaches every account; a page reads its rows in the order of
+        // the index.
+        let plan: serde_json::Value = sqlx::query_scalar(explained(CONTACTS_OF_ADMINISTRATOR))
+            .bind(eve.account_id)
+            .bind("")
+            .bind(None::<String>)
+            .bind(None::<uuid::Uuid>)
+            .bind(51_i64)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        assert!(
+            index_names(&plan)
+                .iter()
+                .any(|name| name == "accounts_contact_order"),
+            "an administrator with {settings:?}: {plan}"
+        );
+        assert!(
+            visited_rows(&plan[0]["Plan"]) < 200,
+            "an administrator with {settings:?}: {plan}"
+        );
+    }
+    // The answers are those of the rule: none of the hidden accounts for Ann.
+    assert_eq!(reached(&server, &ann).await, ids(&[&owner, &bea, &eve]));
+}

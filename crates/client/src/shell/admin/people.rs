@@ -403,6 +403,7 @@ impl Shell {
                 Button::new("recovery-cancel")
                     .label(text::CANCEL)
                     .selector("recovery-cancel")
+                    .disabled(sending)
                     .h(u(28.0))
                     .px(u(10.0))
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -745,6 +746,14 @@ impl Shell {
             action.is_err_and(|reason| reason != Blocked::OrderNotRead)
         };
         let reading = |action: Result<(), Blocked>| action == Err(Blocked::OrderNotRead);
+        // While a recovery is sent the page offers no release of its row: its answer
+        // arrives at a time that the person does not choose (ADR 0730).
+        let recovering = matches!(
+            self.admin.people.sent,
+            Some(AskKind::RecoverAccount(id)) if view.sending(AskKind::RecoverAccount(id))
+        );
+        let held =
+            |reason: Option<&'static str>| reason.or(recovering.then_some(txt::RECOVERY_SENT));
         let stale = match self.admin.people.open {
             Some(Open::RemoveAccount(id)) => id == account_id && gone(row.remove),
             Some(Open::BanAccount(id)) => id == account_id && gone(row.ban),
@@ -850,7 +859,7 @@ impl Shell {
                         ("account-remove", account_id.as_uuid().as_u128() as u64),
                         txt::REMOVE,
                         format!("account-remove-{account_id}"),
-                        row.remove.err().map(txt::blocked),
+                        held(row.remove.err().map(txt::blocked)),
                         cx.listener(move |this, _, window, cx| {
                             this.set_people_open(Some(Open::RemoveAccount(account_id)), window, cx);
                         }),
@@ -862,7 +871,7 @@ impl Shell {
                             ("account-ban", account_id.as_uuid().as_u128() as u64),
                             txt::BAN,
                             format!("account-ban-{account_id}"),
-                            row.ban.err().map(txt::blocked),
+                            held(row.ban.err().map(txt::blocked)),
                             cx.listener(move |this, _, window, cx| {
                                 this.set_people_open(
                                     Some(Open::BanAccount(account_id)),
@@ -873,7 +882,7 @@ impl Shell {
                         ));
                     }
                     AccountStatus::Banned => {
-                        let held = row.unban.err().map(txt::blocked).or(view
+                        let held = held(row.unban.err().map(txt::blocked)).or(view
                             .sending(AskKind::UnbanAccount(account_id))
                             .then_some(text::admin::SENDING));
                         content = content.child(row_action(
@@ -895,7 +904,7 @@ impl Shell {
                         ("account-recover", account_id.as_uuid().as_u128() as u64),
                         txt::RECOVER,
                         format!("account-recover-{account_id}"),
-                        recover.err().map(txt::no_recovery),
+                        held(recover.err().map(txt::no_recovery)),
                         cx.listener(move |this, _, window, cx| {
                             this.set_people_open(
                                 Some(Open::RecoverAccount(account_id)),

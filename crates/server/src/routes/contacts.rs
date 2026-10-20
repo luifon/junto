@@ -33,6 +33,60 @@ pub struct Query {
     pub limit: Option<u32>,
 }
 
+/// The contacts of an account that administers the server: every active account, read in
+/// the order of the index `accounts_contact_order`. Every account is visible to it, so the
+/// rows that the statement reads beyond a page tell it nothing that it may not know.
+/// `$1` the caller, `$2` the part of the name, `$3` and `$4` the cursor, `$5` the rows.
+pub const CONTACTS_OF_ADMINISTRATOR: &str = "select a.id, a.name, lower(a.name)
+     from accounts a
+     where a.status = 'active'
+       and a.id <> $1
+       and strpos(lower(a.name), $2) > 0
+       and ($3::text is null
+            or (lower(a.name) collate \"C\", a.id) > ($3 collate \"C\", $4::uuid))
+     order by lower(a.name) collate \"C\", a.id
+     limit $5";
+
+/// The contacts of every other account: it starts from the candidates, the members of the
+/// workspaces of the caller, the server owner and the holders of a server role with the
+/// administrator permission, so the rows that it reads follow those and not the accounts
+/// that the caller may not see. Each lookup is a lateral subquery with `offset 0`, which the
+/// planner keeps as a lookup by key for each row before it: a join could become a merge or
+/// a hash join that reads every member, holder or account (ADR 0119 states the same of the
+/// member list). `$1` the caller, `$2` the part of the name, `$3` and `$4` the cursor, `$5`
+/// the bit of the administrator permission, `$6` the rows.
+pub const CONTACTS_OF_MEMBER: &str = "with candidates as (
+         select theirs.account_id as id
+         from workspace_members mine
+         cross join lateral (
+             select account_id from workspace_members
+             where workspace_id = mine.workspace_id offset 0
+         ) theirs
+         where mine.account_id = $1
+         union
+         select owner_account_id from server_state where owner_account_id is not null
+         union
+         select held.account_id
+         from server_roles r
+         cross join lateral (
+             select account_id from account_server_roles
+             where role_id = r.id offset 0
+         ) held
+         where (r.permissions & $5) <> 0
+     )
+     select a.id, a.name, lower(a.name)
+     from candidates c
+     cross join lateral (
+         select id, name, status from accounts where id = c.id offset 0
+     ) a
+     where a.status = 'active'
+       and a.id <> $1
+       and strpos(lower(a.name), $2) > 0
+       and ($3::text is null
+            or (lower(a.name) collate \"C\", a.id) > ($3 collate \"C\", $4::uuid))
+     order by lower(a.name) collate \"C\", a.id
+     limit $6";
+
 /// The place after the last account of a page: its name in lower case and its identifier,
 /// which order the accounts. The cursor holds both, so a renamed account does not move a
 /// later page.
@@ -86,35 +140,29 @@ pub async fn list_contacts(
         // The caller reaches an account without a common workspace only when it
         // administers the server itself.
         let reaches_everyone = access.allows(Request::Contact(Contact::Unrelated));
-        let rows: Vec<(AccountId, String, String)> = sqlx::query_as(
-            "select a.id, a.name, lower(a.name)
-             from accounts a
-             where a.status = 'active'
-               and a.id <> $1
-               and strpos(lower(a.name), $2) > 0
-               and ($3::text is null
-                    or (lower(a.name) collate \"C\", a.id) > ($3 collate \"C\", $4::uuid))
-               and ($5
-                    or exists (select 1 from workspace_members mine
-                               join workspace_members theirs
-                                 on theirs.workspace_id = mine.workspace_id
-                               where mine.account_id = $1 and theirs.account_id = a.id)
-                    or a.id is not distinct from (select owner_account_id from server_state)
-                    or exists (select 1 from account_server_roles held
-                               join server_roles r on r.id = held.role_id
-                               where held.account_id = a.id and (r.permissions & $6) <> 0))
-             order by lower(a.name) collate \"C\", a.id
-             limit $7",
-        )
-        .bind(access.account_id)
-        .bind(&part)
-        .bind(after.as_ref().map(|(name, _)| name.as_str()))
-        .bind(after.as_ref().map(|(_, id)| *id))
-        .bind(reaches_everyone)
-        .bind(administrator)
-        .bind(i64::from(limit) + 1)
-        .fetch_all(&mut *connection)
-        .await?;
+        let after_name = after.as_ref().map(|(name, _)| name.as_str());
+        let after_id = after.as_ref().map(|(_, id)| *id);
+        let fetched = i64::from(limit) + 1;
+        let rows: Vec<(AccountId, String, String)> = if reaches_everyone {
+            sqlx::query_as(CONTACTS_OF_ADMINISTRATOR)
+                .bind(access.account_id)
+                .bind(&part)
+                .bind(after_name)
+                .bind(after_id)
+                .bind(fetched)
+                .fetch_all(&mut *connection)
+                .await?
+        } else {
+            sqlx::query_as(CONTACTS_OF_MEMBER)
+                .bind(access.account_id)
+                .bind(&part)
+                .bind(after_name)
+                .bind(after_id)
+                .bind(administrator)
+                .bind(fetched)
+                .fetch_all(&mut *connection)
+                .await?
+        };
         let more = rows.len() > limit as usize;
         let rows = &rows[..rows.len().min(limit as usize)];
         let ids: Vec<AccountId> = rows.iter().map(|(id, _, _)| *id).collect();

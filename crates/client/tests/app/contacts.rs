@@ -133,7 +133,33 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
                 .is_some_and(|model| model.is_administrator())
         })
     });
-    window.search_contacts("Carl");
+    // "Show more" keeps its place whatever the number of rows that an answer brings.
+    window.search_contacts("");
+    let settled = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .contacts_view()
+                .is_some_and(|view| !view.reading && view.rows.is_some())
+        })
+    };
+    window.until("every contact is listed", settled);
+    let rows = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .contacts_view()
+                .and_then(|view| view.rows)
+                .map_or(0, |rows| rows.len())
+        })
+    };
+    let listed = rows(&mut window);
+    window.cx.run_until_parked();
+    let place = window.cx.debug_bounds("contacts-more");
+    assert!(place.is_some());
+    window.in_shell(|shell, window, cx| shell.type_contact_part("Carl", window, cx));
+    window.until_offered(carl_id);
+    assert!(rows(&mut window) < listed);
+    window.cx.run_until_parked();
+    assert_eq!(window.cx.debug_bounds("contacts-more"), place);
     window.choose_contact(carl_id);
     window.until(
         "the conversation with Carl is shown by his name",

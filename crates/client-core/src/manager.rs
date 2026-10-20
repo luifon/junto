@@ -597,9 +597,16 @@ impl ServerHandle {
         &self,
         action: AccessAction,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        self.run_wanted(Wanted::Action(action))
+    }
+
+    fn run_wanted(
+        &self,
+        wanted: Wanted,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
         let server = self.server.clone();
         let work = self.server.core.runtime.run(async move {
-            let result = server.clone().dispatch(action).await;
+            let result = server.clone().dispatch(wanted).await;
             if result.is_ok()
                 && let Ok(applying) = server.applying.try_lock()
             {
@@ -619,10 +626,17 @@ impl ServerHandle {
         &self,
         action: AccessAction,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        self.run_wanted_when_free(Wanted::Action(action))
+    }
+
+    fn run_wanted_when_free(
+        &self,
+        wanted: Wanted,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
         let handle = self.clone();
         let work = self.server.core.runtime.run(async move {
             loop {
-                match handle.dispatch(action.clone()).await {
+                match handle.run_wanted(wanted.clone()).await {
                     Err(FlowError::Busy) => drop(handle.server.gate.lock().await),
                     result => return result,
                 }
@@ -636,14 +650,7 @@ impl ServerHandle {
     pub fn connect_when_free(
         &self,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
-        let contacting =
-            contact_action(&self.access().state).map(|kind| self.dispatch_when_free(kind));
-        async move {
-            match contacting {
-                Some(contacting) => contacting.await,
-                None => Ok(()),
-            }
-        }
+        self.run_wanted_when_free(Wanted::Contact)
     }
 
     /// Logs out, after an action or a renewal of the session that runs now has ended.
@@ -666,13 +673,7 @@ impl ServerHandle {
     /// belongs to an account logs in; no action of the user is needed (ADR 0109). After a
     /// logout of the person nothing is sent: only the action `log in` ends that logout.
     pub fn connect(&self) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
-        let contacting = contact_action(&self.access().state).map(|kind| self.dispatch(kind));
-        async move {
-            match contacting {
-                Some(contacting) => contacting.await,
-                None => Ok(()),
-            }
-        }
+        self.run_wanted(Wanted::Contact)
     }
 
     /// Asks the server every `interval` until a join request or a device link is decided,
@@ -1049,6 +1050,16 @@ impl From<KeyFault> for FlowError {
     }
 }
 
+/// What a caller of the flow asks for: one action, or the contact that the client makes by
+/// itself. The action of a contact is chosen from the state after the action lock is taken,
+/// so a logout of the person that ends while the contact waits is not undone by a login
+/// chosen before it.
+#[derive(Debug, Clone)]
+enum Wanted {
+    Action(AccessAction),
+    Contact,
+}
+
 /// The action that contacts the server in a state: a login for a device that is logged out,
 /// none after a logout of the person, and a check otherwise.
 fn contact_action(state: &AccessState) -> Option<AccessAction> {
@@ -1174,9 +1185,16 @@ impl Server {
         self.id
     }
 
-    async fn dispatch(self: Arc<Self>, action: AccessAction) -> Result<(), FlowError> {
+    async fn dispatch(self: Arc<Self>, wanted: Wanted) -> Result<(), FlowError> {
         let Ok(_gate) = self.gate.try_lock() else {
             return Err(FlowError::Busy);
+        };
+        let action = match wanted {
+            Wanted::Action(action) => action,
+            Wanted::Contact => match contact_action(&lock(&self.state).access) {
+                Some(action) => action,
+                None => return Ok(()),
+            },
         };
         let kind = action.kind();
         let before = {
