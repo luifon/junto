@@ -1,5 +1,5 @@
-"""Unit tests of tools/windows/with_test_postgres.py. They run on every system and start no
-PostgreSQL: the CI job on Windows starts the real one."""
+"""Unit tests of tools/with_native_postgres.py. They run on every system and start no
+PostgreSQL: the CI jobs on Windows and macOS start the real one."""
 
 import contextlib
 import hashlib
@@ -8,17 +8,20 @@ import os
 import pathlib
 import re
 import signal
+import stat
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 import zipfile
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-import with_test_postgres as postgres  # noqa: E402
+import with_native_postgres as postgres  # noqa: E402
 
-REPOSITORY = pathlib.Path(__file__).resolve().parents[2]
+REPOSITORY = pathlib.Path(__file__).resolve().parents[1]
 
 
 def archive_bytes(members):
@@ -59,16 +62,34 @@ def end_process(number):
 
 
 class Pin(unittest.TestCase):
-    def test_the_version_is_the_version_of_the_ci_image(self):
-        pins = (REPOSITORY / "tools/ci/pins.sh").read_text()
-        image = re.search(r"JUNTO_TEST_POSTGRES_IMAGE:=postgres:([0-9.]+)-", pins)
-        self.assertIsNotNone(image, "tools/ci/pins.sh names no PostgreSQL image")
-        self.assertEqual(postgres.VERSION.split("-")[0], image.group(1))
+    def setUp(self):
+        self.pins = postgres.read_pins((REPOSITORY / "tools/ci/pins.sh").read_text())
 
-    def test_the_download_is_named_by_its_version_and_has_a_sha256(self):
-        self.assertIn(postgres.VERSION, postgres.URL)
-        self.assertTrue(postgres.URL.startswith("https://"))
-        self.assertRegex(postgres.SHA256, r"^[0-9a-f]{64}$")
+    def test_the_version_is_the_version_of_the_ci_image(self):
+        text = (REPOSITORY / "tools/ci/pins.sh").read_text()
+        image = re.search(r"JUNTO_TEST_POSTGRES_IMAGE:=postgres:([0-9.]+)-", text)
+        self.assertIsNotNone(image, "tools/ci/pins.sh names no PostgreSQL image")
+        for system in postgres.SYSTEMS:
+            version, _, _ = postgres.build_of(self.pins, system)
+            self.assertEqual(version.split("-")[0], image.group(1))
+
+    def test_each_download_is_named_by_its_version_and_has_a_sha256_of_its_own(self):
+        self.assertEqual(sorted(postgres.SYSTEMS), ["macos", "windows"])
+        sums = set()
+        for system in postgres.SYSTEMS:
+            version, url, expected = postgres.build_of(self.pins, system)
+            self.assertIn(f"postgresql-{version}-", url)
+            self.assertTrue(url.startswith("https://get.enterprisedb.com/postgresql/"))
+            self.assertRegex(expected, r"^[0-9a-f]{64}$")
+            sums.add(expected)
+        self.assertEqual(len(sums), 2)
+
+    def test_a_missing_or_malformed_pin_is_refused(self):
+        with self.assertRaisesRegex(postgres.Failure, "JUNTO_CI_POSTGRES_MACOS_SHA256"):
+            postgres.build_of(postgres.read_pins("JUNTO_CI_POSTGRES_BUILD=17.11-1\n"), "macos")
+        malformed = postgres.read_pins("JUNTO_CI_POSTGRES_BUILD=17.11-1\nJUNTO_CI_POSTGRES_MACOS_SHA256=abc\n")
+        with self.assertRaisesRegex(postgres.Failure, "no valid PostgreSQL build for macos"):
+            postgres.build_of(malformed, "macos")
 
     def test_the_server_options_are_those_of_the_docker_wrapper(self):
         script = (REPOSITORY / "tools/with-test-postgres.sh").read_text()
@@ -82,6 +103,7 @@ class Fetch(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.downloads = pathlib.Path(self.temporary.name)
         self.data = archive_bytes({"pgsql/bin/postgres.exe": b"program"})
+        self.url = "https://example.test/postgresql-17.11-1-osx-binaries.zip"
         self.sum = hashlib.sha256(self.data).hexdigest()
         self.requests = 0
 
@@ -93,22 +115,48 @@ class Fetch(unittest.TestCase):
         path.write_bytes(self.data)
 
     def test_a_download_with_the_pinned_sum_is_kept_and_used_again(self):
-        path = postgres.fetch(self.downloads, self.sum, self.download)
+        path = postgres.fetch(self.downloads, self.url, self.sum, self.download)
         self.assertEqual(path.read_bytes(), self.data)
-        self.assertEqual(postgres.fetch(self.downloads, self.sum, self.download), path)
+        self.assertEqual(postgres.fetch(self.downloads, self.url, self.sum, self.download), path)
         self.assertEqual(self.requests, 1)
         self.assertEqual(sorted(p.name for p in self.downloads.iterdir()), [path.name])
 
     def test_a_download_with_another_sum_is_refused_and_removed(self):
         with self.assertRaisesRegex(postgres.Failure, "SHA-256"):
-            postgres.fetch(self.downloads, "0" * 64, self.download)
+            postgres.fetch(self.downloads, self.url, "0" * 64, self.download)
         self.assertEqual(list(self.downloads.iterdir()), [])
 
     def test_a_kept_file_with_another_sum_is_downloaded_again(self):
-        (self.downloads / postgres.URL.rsplit("/", 1)[1]).write_bytes(b"cut")
-        path = postgres.fetch(self.downloads, self.sum, self.download)
+        (self.downloads / "postgresql-17.11-1-osx-binaries.zip").write_bytes(b"cut")
+        path = postgres.fetch(self.downloads, self.url, self.sum, self.download)
         self.assertEqual(path.read_bytes(), self.data)
         self.assertEqual(self.requests, 1)
+
+    def test_the_download_of_an_earlier_version_is_removed(self):
+        (self.downloads / "postgresql-17.10-1-osx-binaries.zip").write_bytes(b"old")
+        (self.downloads / "notes.txt").write_bytes(b"kept")
+        path = postgres.fetch(self.downloads, self.url, self.sum, self.download)
+        self.assertEqual(sorted(p.name for p in self.downloads.iterdir()), sorted([path.name, "notes.txt"]))
+
+
+def zip_entry(name, mode):
+    entry = zipfile.ZipInfo(name)
+    entry.create_system = 3
+    entry.external_attr = mode << 16
+    return entry
+
+
+class System(unittest.TestCase):
+    def test_windows_and_macos_have_a_build_and_other_systems_none(self):
+        expected = {"nt": "windows"}.get(os.name, "macos" if sys.platform == "darwin" else None)
+        if expected is None:
+            with self.assertRaisesRegex(postgres.Failure, "with-test-postgres.sh"):
+                postgres.current_system()
+        else:
+            self.assertEqual(postgres.current_system(), expected)
+        with mock.patch.object(postgres.os, "name", "posix"), mock.patch.object(postgres.sys, "platform", "linux"):
+            with self.assertRaisesRegex(postgres.Failure, "with-test-postgres.sh"):
+                postgres.current_system()
 
 
 class Extract(unittest.TestCase):
@@ -130,6 +178,43 @@ class Extract(unittest.TestCase):
             self.assertEqual(files, ["bin/initdb.exe", "lib/pg_stat_statements.dll",
                                      "share/extension/pg_stat_statements.control"])
 
+    @unittest.skipIf(os.name == "nt", "Windows has no permission bits of a program")
+    def test_a_file_keeps_the_permission_bits_of_the_zip_without_writes_for_others(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archive = root / "pg.zip"
+            with zipfile.ZipFile(archive, "w") as opened:
+                opened.writestr(zip_entry("pgsql/bin/initdb", 0o100777), b"i")
+                opened.writestr(zip_entry("pgsql/share/postgres.bki", 0o100644), b"s")
+            installation = postgres.extract(archive, root / "installation")
+            self.assertEqual(stat.S_IMODE((installation / "bin/initdb").stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((installation / "share/postgres.bki").stat().st_mode), 0o644)
+
+    def test_a_link_in_the_zip_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archive = root / "pg.zip"
+            with zipfile.ZipFile(archive, "w") as opened:
+                opened.writestr(zip_entry("pgsql/lib/libpq.dylib", 0o120777), b"/etc/passwd")
+            with self.assertRaisesRegex(postgres.Failure, "not a file"):
+                postgres.extract(archive, root / "installation")
+
+
+class Signals(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Windows ends a process on SIGTERM without a handler")
+    def test_the_first_signal_raises_ended_and_the_next_are_ignored(self):
+        program = ("import os, signal, sys; sys.path.insert(0, sys.argv[1]); import with_native_postgres as p\n"
+                   "p.end_on_signals()\n"
+                   "try:\n"
+                   "    os.kill(os.getpid(), signal.SIGTERM)\n"
+                   "except p.Ended as ended:\n"
+                   "    os.kill(os.getpid(), signal.SIGHUP)\n"
+                   "    print('ended', ended.number)\n")
+        result = subprocess.run([sys.executable, "-c", program, str(REPOSITORY / "tools")],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["ended", str(int(signal.SIGTERM))])
+
 
 class Commands(unittest.TestCase):
     def test_the_server_listens_on_the_loopback_address_at_the_given_port(self):
@@ -139,6 +224,7 @@ class Commands(unittest.TestCase):
         self.assertIn("-w", command)
         options = command[command.index("-o") + 1]
         self.assertIn("-c listen_addresses=127.0.0.1", options)
+        self.assertIn("-c unix_socket_directories= ", options)
         self.assertIn("-p 5999", options)
         for setting in postgres.SERVER_SETTINGS:
             self.assertIn(f"-c {setting}", options)

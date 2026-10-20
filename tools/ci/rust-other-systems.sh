@@ -1,8 +1,9 @@
 #!/bin/bash
 # The job "Rust on macOS" and "Rust on Windows" (ADR 0905, ADR 0912). Needs the Rust version
 # of rust-toolchain.toml with rustfmt and clippy, and Python 3. On Windows it runs in the
-# Bash of Git for Windows. On Windows, tools/windows/with_test_postgres.py keeps the
-# PostgreSQL download in ~/.cache/junto-postgres, which a runner may keep between runs.
+# Bash of Git for Windows. tools/with_native_postgres.py keeps the PostgreSQL download of the
+# system in ~/.cache/junto-postgres or in JUNTO_TEST_POSTGRES_DOWNLOADS, which a runner may
+# keep between runs.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/ci/pins.sh
@@ -33,7 +34,7 @@ if [ "$system" = macos ]; then
     step "Media unit tests on macOS"
     cargo test --locked -p junto-media --lib
 fi
-# The tests that need PostgreSQL run on Linux only, except the window tests on Windows.
+# The tests that need PostgreSQL run on Linux only, except the window tests.
 step "Tests that need no database"
 cargo test --locked -p junto-authz -p junto-protocol
 # The reading of the free space of a directory, which differs between Unix and Windows
@@ -44,6 +45,7 @@ step "Packaging unit tests"
 python3 -m unittest discover -s packaging -p "test_*.py"
 step "Test service wrapper failure paths"
 python3 tools/test_test_services.py
+python3 tools/test_with_native_postgres.py
 if [ "$system" = macos ]; then
     step "macOS signing and installation checks"
     temporary=$(mktemp -d)
@@ -51,35 +53,44 @@ if [ "$system" = macos ]; then
     export TMPDIR="$temporary"
     python3 packaging/check_signing.py
     python3 packaging/check_update.py
-    exit 0
+    # The bundle of the client build, started with an empty data directory until the window
+    # has drawn its first frame (ADR 0725). The window appears without taking the focus.
+    step "First frame of the macOS bundle"
+    build="${CARGO_TARGET_DIR:-target}/debug"
+    python3 packaging/bundle.py "$build/junto" "$temporary/Junto.app" "$build/junto-recover" "$build/junto-icon"
+    python3 packaging/check_start.py "$temporary/Junto.app"
+else
+    # The unit tests of the media crate, and the capture of the screen against the window of
+    # a fixture program, which appears on the desktop of the account for a few seconds
+    # without taking the focus. No test plays sound (ADR 0706).
+    step "Media tests and screen capture on Windows"
+    cargo test --locked -p junto-media --lib --test windows_capture
+    # The ZIP of the client: extracted into a folder of the account, started, updated while
+    # its program runs, and rolled back by its recovery program (ADR 0755).
+    step "Windows package"
+    python3 packaging/check_windows.py
+    python3 -m unittest discover -s tools/windows -p "test_*.py"
 fi
 
-# The unit tests of the media crate, and the capture of the screen against the window of a
-# fixture program, which appears on the desktop of the account for a few seconds without
-# taking the focus. No test plays sound (ADR 0706).
-step "Media tests and screen capture on Windows"
-cargo test --locked -p junto-media --lib --test windows_capture
-# The ZIP of the client: extracted into a folder of the account, started, updated while its
-# program runs, and rolled back by its recovery program (ADR 0755).
-step "Windows package"
-python3 packaging/check_windows.py
 # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0912). This
 # step has no database, so a test here that needs one fails. --workspace, as in the build
 # step, so that Cargo builds nothing again.
 step "Window tests without a database"
 cargo test --locked --workspace --test app -- updates::
-step "PostgreSQL for Windows"
-python3 tools/windows/with_test_postgres.py --fetch
-# The other window tests, against the PostgreSQL build for Windows of the version of the CI
-# image. Not here: the tests of live:: need LiveKit; the tests of recordings::, the files of
-# a message and the export of a channel need the server to store files, which it does on
-# Unix systems only (crates/server/src/recordings/files.rs).
+step "PostgreSQL for $system"
+python3 tools/with_native_postgres.py --fetch
+# The other window tests, against the PostgreSQL build of the system of the version of the
+# CI image. Not here: the tests of live::, which need LiveKit. On Windows also not the tests
+# of recordings::, the files of a message and the export of a channel: they need the server
+# to store files, which it does on Unix systems only (crates/server/src/recordings/files.rs).
+skipped=(--skip updates:: --skip live::)
+if [ "$system" = windows ]; then
+    skipped+=(--skip recordings::
+        --skip messages::a_file_is_sent_with_a_message_and_saved_from_one
+        --skip messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops
+        --skip messages::a_pending_file_picker_cannot_retarget_an_upload
+        --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server
+        --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export)
+fi
 step "Window tests with PostgreSQL"
-python3 -m unittest discover -s tools/windows -p "test_*.py"
-python3 tools/windows/with_test_postgres.py cargo test --locked --workspace --test app -- \
-    --skip updates:: --skip live:: --skip recordings:: \
-    --skip messages::a_file_is_sent_with_a_message_and_saved_from_one \
-    --skip messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops \
-    --skip messages::a_pending_file_picker_cannot_retarget_an_upload \
-    --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server \
-    --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export
+python3 tools/with_native_postgres.py cargo test --locked --workspace --test app -- "${skipped[@]}"
