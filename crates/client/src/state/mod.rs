@@ -327,9 +327,15 @@ pub struct LevelsChanged;
 
 impl gpui::EventEmitter<LevelsChanged> for AppState {}
 
+/// What the call window does before it closes.
+type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
+
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
+    /// What the call window does before it closes: it gives the text of its composer to
+    /// the main window (ADR 0772).
+    call_window_closing: Option<CallWindowClosing>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
@@ -642,6 +648,7 @@ impl AppState {
         let mut state = Self {
             talking_windows: HashSet::new(),
             call_window: None,
+            call_window_closing: None,
             call_window_settings,
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
@@ -1101,6 +1108,28 @@ impl AppState {
     pub fn allow_to_speak(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
         self.ask_own_call(cx, move |api, channel_id| async move {
             api.unblock_microphone(channel_id, account_id).await
+        });
+    }
+
+    /// The presenter of meeting mode lowers the raised hand of a person of the call of this
+    /// device, and the block of the microphone of that person stays (ADR 0516).
+    pub fn lower_hand_in_call(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            api.lower_participant_hand(channel_id, account_id).await
+        });
+    }
+
+    /// Lowers the raised hand of a person in a voice channel: a moderator with "mute
+    /// members", and the presenter of meeting mode in that call (ADR 0516).
+    pub fn lower_hand_of(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            api.lower_participant_hand(channel_id, account_id).await
         });
     }
 

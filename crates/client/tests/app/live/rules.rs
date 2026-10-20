@@ -212,7 +212,7 @@ fn panel(window: &mut Window) -> Option<CallPanel> {
 }
 
 fn room_view(window: &mut Window) -> Option<RoomView> {
-    panel(window).map(|panel| panel.room)
+    panel(window).and_then(|panel| panel.room().cloned())
 }
 
 #[gpui::test]
@@ -624,6 +624,34 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     });
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert_eq!(meeting.hands, [(ada, Some("Ada".to_owned()))]);
+    // The presenter lowers the hand without letting Ada speak (ADR 0516): the block of her
+    // microphone stays.
+    let hand_of_ada = |window: &mut Window| {
+        voice_of(window)
+            .occupants
+            .into_iter()
+            .find(|occupant| occupant.account_id == ada)
+            .map(|occupant| occupant.hand_raised)
+    };
+    scene.window.click("meeting-lower-hand");
+    scene.window.until("the hand of Ada is lowered", |window| {
+        hand_of_ada(window) == Some(false)
+            && !window.shows("meeting-allow")
+            && !window.shows("meeting-lower-hand")
+    });
+    let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
+    assert!(meeting.hands.is_empty() && meeting.waiting.is_empty());
+    assert!(calls.view().call.is_some_and(|call| {
+        call.microphone_block
+            .is_some_and(|block| block.reason == BlockReason::Meeting)
+    }));
+    // Ada raises the hand again.
+    scene.world.run(api.raise_hand()).unwrap();
+    scene
+        .window
+        .until("the hand of Ada is shown again", |window| {
+            window.shows("meeting-allow") && window.shows("meeting-lower-hand")
+        });
     scene.window.click("meeting-allow");
     scene.window.until("Ada may speak", |window| {
         let view = calls.view();
@@ -682,8 +710,12 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     // person is told.
     scene.window.click("call-tab-members");
     scene.window.until("the members are listed", |window| {
-        panel(window)
-            .is_some_and(|panel| panel.outside.iter().any(|member| member.account_id == ada))
+        panel(window).is_some_and(|panel| {
+            panel
+                .outside()
+                .iter()
+                .any(|member| member.account_id == ada)
+        })
     });
     scene.window.click("invite-open");
     assert!(
@@ -822,6 +854,24 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.window.click("menu-block-sound");
     scene.window.until("the sound block is removed", |window| {
         ada_shown(window).is_some_and(|ada| !ada.sound_blocked && !ada.sound_off)
+    });
+
+    // A moderator lowers the raised hand of Ada without meeting mode (ADR 0516). While no
+    // hand is raised, the item is drawn and does nothing.
+    scene.window.right_click_named(ada_row());
+    assert!(scene.window.shows("menu-lower-hand"));
+    scene.window.click("menu-lower-hand");
+    assert!(scene.window.shows("person-menu"));
+    scene.window.press("escape");
+    scene.world.run(api.raise_hand()).unwrap();
+    scene.window.until("the hand of Ada is raised", |window| {
+        ada_shown(window).is_some_and(|ada| ada.hand_raised)
+    });
+    scene.window.right_click_named(ada_row());
+    scene.window.click("menu-lower-hand");
+    assert!(!scene.window.shows("person-menu"));
+    scene.window.until("the hand of Ada is lowered", |window| {
+        ada_shown(window).is_some_and(|ada| !ada.hand_raised)
     });
 
     // The move: the menu lists the other voice channels, and Ada is in the chosen one.

@@ -8,8 +8,8 @@ use crate::{
 };
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ParentElement, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowKind,
-    WindowOptions, div, point, prelude::FluentBuilder, px, size,
+    ParentElement, Styled, Window, WindowBounds, WindowKind, WindowOptions, div, point,
+    prelude::FluentBuilder, px, size,
 };
 use gpui_base::Root;
 use junto_client_core::call_window::CallWindowSettings;
@@ -20,6 +20,10 @@ use junto_client_core::call_window::CallWindowSettings;
 /// the other systems the kind of the window decides, and the window is opened again with
 /// the other kind (ADR 0772).
 const ASKS_WINDOW_MANAGER: bool = cfg!(target_os = "linux");
+
+/// The narrowest stage that the call window draws beside the panel of the call, in pixels
+/// of the design. A narrower window draws the panel over the stage.
+const STAGE_BESIDE_PANEL: f32 = 480.0;
 
 /// Asks the system to keep the call window above other windows, or to stop. Nothing of the
 /// call depends on the answer.
@@ -130,7 +134,12 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
     );
     match result {
         Ok(handle) => state.update(cx, |state, cx| state.opened_call_window(handle, cx)),
-        Err(error) => tracing::warn!(%error, "the call window did not open"),
+        Err(error) => {
+            tracing::warn!(%error, "the call window did not open");
+            // The text that a call window gave to this one goes to the main window.
+            super::composer::HandedDrafts::to_main(cx);
+            state.update(cx, |_, cx| cx.notify());
+        }
     }
 }
 impl Shell {
@@ -144,8 +153,9 @@ impl Shell {
             .selector("return-call")
             .on_click(cx.listener(|this, _, window, cx| {
                 if this.detached {
+                    this.hand_over_drafts(super::composer::HandTo::Main, cx);
                     this.state
-                        .update(cx, |state, cx| state.closed_call_window(cx));
+                        .update(cx, |state, cx| state.call_window_returned(cx));
                     window.remove_window();
                 } else {
                     this.state.update(cx, |state, cx| state.return_call(cx));
@@ -163,10 +173,22 @@ impl Shell {
         let Some(view) = self.view.clone() else {
             return div().into_any_element();
         };
+        #[cfg(feature = "test-support")]
+        {
+            self.drawn = Some(view.clone());
+        }
         window.set_window_title(&view.call_title());
         self.refresh_picture_owner(cx);
         self.sync_camera_visibility(cx);
+        // The frame sets this again when it draws the list of messages.
+        self.feed.drawn = false;
         let theme = theme(cx);
+        let panel = view
+            .workspace()
+            .and_then(|workspace| workspace.call.as_ref());
+        // The panel of the call lies beside the stage when both fit, and over it otherwise.
+        let beside =
+            super::logical_width(window) >= theme.metrics.call_panel_width + STAGE_BESIDE_PANEL;
         let mut body = div()
             .relative()
             .track_focus(&self.focus)
@@ -177,13 +199,15 @@ impl Shell {
             .bg(Hsla::from(theme.colors.basalt));
         let state = self.state.clone();
         let top = self.state.read(cx).call_window_settings().keep_on_top;
-        let header = div()
-            .flex_none()
+        // The window controls and the recording wrap among themselves; the buttons of the
+        // panel keep the end of the first line.
+        let controls = div()
+            .flex_1()
+            .min_w_0()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(u(6.0))
-            .p(u(8.0))
             // The choice is offered only where the system can keep a window above the
             // others (ADR 0507).
             .children(crate::window_level::offered(cx).then(|| {
@@ -196,13 +220,16 @@ impl Shell {
                         ButtonKind::Default
                     })
                     .selector("call-on-top")
-                    .on_click(cx.listener(move |_, _, window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         let state = state.clone();
                         if ASKS_WINDOW_MANAGER {
                             state.update(cx, |state, cx| state.set_call_on_top(!top, cx));
                             ask_above(window, !top, cx);
                             return;
                         }
+                        // The window is opened again with the other kind. The text that
+                        // its composer holds goes to the new window.
+                        this.hand_over_drafts(super::composer::HandTo::CallWindow, cx);
                         cx.defer(move |cx| {
                             state.update(cx, |state, cx| {
                                 state.set_call_on_top(!top, cx);
@@ -219,65 +246,83 @@ impl Shell {
                     .icon(crate::assets::Icon::Expand)
                     .tooltip(text::FULLSCREEN)
                     .on_click(cx.listener(|_, _, window, _| window.toggle_fullscreen())),
+            )
+            .children(
+                panel
+                    .and_then(|panel| panel.channel())
+                    .map(|channel| self.render_recording_control(&channel.recording, &theme, cx))
+                    .into_iter()
+                    .flatten(),
             );
-        let header = if let Some(panel) = view
-            .workspace()
-            .and_then(|workspace| workspace.call.as_ref())
-        {
-            header.children(self.render_recording_control(&panel.recording, &theme, cx))
-        } else {
-            header
-        };
+        let header = div()
+            .flex_none()
+            .flex()
+            .items_start()
+            .gap(u(6.0))
+            .p(u(8.0))
+            .child(controls)
+            .when(panel.is_some(), |header| {
+                header.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .gap(u(6.0))
+                        .children(self.render_call_panel_buttons(cx)),
+                )
+            });
         body = body.child(header);
         // What the main window tells about the call is told here too: the person can use
         // this window alone (ADR 0772).
-        let meeting = view
-            .workspace()
-            .and_then(|workspace| workspace.call.as_ref())
-            .and_then(|panel| panel.room.meeting.as_ref())
+        let meeting = panel
+            .and_then(|panel| panel.room())
+            .and_then(|room| room.meeting.as_ref())
             .map(|meeting| self.render_meeting_bar(meeting, &theme, cx));
         let notices = self.render_call_notices(&view, cx);
-        if let Some(workspace) = view.workspace()
-            && let (Some(channel), Some(panel)) = (&workspace.channel, &workspace.call)
-        {
-            body = body.child(match &panel.stage {
-                Some(shares) if share_visible(panel.phase) => {
-                    self.render_share_stage(channel, panel, shares, &theme, cx)
-                }
-                _ => self.render_stage(channel, panel, &theme, cx),
-            });
-        } else if let Some(call) = self.state.read(cx).media_calls().call
-            && let junto_client_core::protocol::call::CallPlace::Direct {
-                low_account_id: low,
-                high_account_id: high,
-            } = call.target.place
-        {
-            let own = view.person.account_id;
-            body = body.child(
-                div()
-                    .id("direct-call-stage")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(self.render_direct_call(
-                        call.target.server_id,
-                        if own == Some(low) { high } else { low },
-                        cx,
-                    )),
+        let stage = match panel {
+            Some(panel) => self.render_call_stage(panel, &theme, cx),
+            None => div().flex_1().into_any_element(),
+        };
+        let column = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .child(stage)
+            .child(
+                crate::ui::notice_slot("call-notice-area")
+                    .h(u(128.0))
+                    .children(meeting)
+                    .children(notices)
+                    .children(
+                        view.controls
+                            .warning
+                            .as_ref()
+                            .map(|warning| self.render_sound_warning(warning, &theme, cx)),
+                    )
+                    .children(self.render_camera_notice(cx)),
             );
-        }
+        let side = panel
+            .filter(|_| self.call_panel_open)
+            .map(|panel| self.render_call_panel(&view, panel, true, window, cx));
         body = body.child(
-            crate::ui::notice_slot("call-notice-area")
-                .h(u(128.0))
-                .children(meeting)
-                .children(notices)
-                .children(
-                    view.controls
-                        .warning
-                        .as_ref()
-                        .map(|warning| self.render_sound_warning(warning, &theme, cx)),
-                )
-                .children(self.render_camera_notice(cx)),
+            div()
+                .relative()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .child(column)
+                .when_some(side, |middle, side| {
+                    if beside {
+                        middle.child(side)
+                    } else {
+                        middle
+                            .child(Self::side_cover(&theme, cx, |this, _| {
+                                this.call_panel_open = false;
+                            }))
+                            .child(Self::side_overlay(&theme, side))
+                    }
+                }),
         );
         let controls = div()
             .flex()
@@ -341,10 +386,9 @@ impl Shell {
                         })
                     }),
             );
-        let controls = if let Some(panel) = view.workspace().and_then(|w| w.call.as_ref()) {
-            controls.children(self.render_room_controls(&panel.room, &theme, cx))
-        } else {
-            controls
+        let controls = match panel.and_then(|panel| panel.room()) {
+            Some(room) => controls.children(self.render_room_controls(room, &theme, cx)),
+            None => controls,
         };
         body = body.child(controls);
         if let Some(strip) = &view.call {
@@ -353,28 +397,12 @@ impl Shell {
         body.when(!matches!(self.layer, super::Layer::None), |body| {
             body.child(self.render_layer(&view, window, cx))
         })
+        .map(|body| Self::presses_and_escape(body, cx))
         .on_modifiers_changed(
             cx.listener(|this, event: &gpui::ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx)
             }),
         )
         .into_any_element()
-    }
-}
-
-fn share_visible(phase: junto_media::calls::Phase) -> bool {
-    phase == junto_media::calls::Phase::Connected
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn a_detached_reconnecting_call_does_not_show_its_retained_share() {
-        use junto_media::calls::Phase;
-        assert!(share_visible(Phase::Connected));
-        assert!(!share_visible(Phase::Reconnecting));
-        assert!(!share_visible(Phase::Connecting));
-        assert!(!share_visible(Phase::Entering));
     }
 }

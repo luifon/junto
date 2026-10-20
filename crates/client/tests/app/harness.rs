@@ -623,6 +623,43 @@ impl Window {
         result
     }
 
+    /// The call window of the application, with the state, the sound, the capture and the
+    /// camera of this window: both windows hold one state (ADR 0772).
+    #[track_caller]
+    pub fn call_window(&mut self) -> Window {
+        use gpui::AppContext as _;
+        self.settle();
+        let main = self.cx.update(|window, _| window.window_handle());
+        let handle = self
+            .cx
+            .windows()
+            .into_iter()
+            .find(|handle| *handle != main)
+            .expect("a call window is open");
+        let shell = self
+            .cx
+            .update_window(handle, |root, _, cx| {
+                root.downcast::<Root>()
+                    .ok()
+                    .and_then(|root| root.read(cx).view().clone().downcast::<Shell>().ok())
+            })
+            .ok()
+            .flatten()
+            .expect("the call window draws a shell");
+        let mut window = Window {
+            cx: VisualTestContext::from_window(handle, &self.cx),
+            shell,
+            state: self.state.clone(),
+            sound: self.sound.clone(),
+            capture: self.capture.clone(),
+            camera: self.camera.clone(),
+            held: Held::default(),
+            holding: 0,
+        };
+        window.settle();
+        window
+    }
+
     /// The first start: the person types a name and continues.
     #[track_caller]
     pub fn choose_name(&mut self, name: &str) {

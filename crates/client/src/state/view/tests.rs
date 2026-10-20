@@ -1316,7 +1316,17 @@ mod calls {
             assert_eq!(menu.invite_to, None);
             assert!(view.entry_prompts.is_empty());
             assert_eq!(view.call.as_ref().unwrap().hand_raised, None);
-            assert!(!view.workspace().unwrap().call.as_ref().unwrap().room.ready);
+            assert!(
+                !view
+                    .workspace()
+                    .unwrap()
+                    .call
+                    .as_ref()
+                    .unwrap()
+                    .room()
+                    .unwrap()
+                    .ready
+            );
         }
         active.phase = Phase::Connected;
         let view = derive(
@@ -1332,7 +1342,16 @@ mod calls {
         );
         assert_eq!(view.entry_prompts.len(), 1);
         assert!(view.call.as_ref().unwrap().hand_raised.is_some());
-        assert!(view.workspace().unwrap().call.as_ref().unwrap().room.ready);
+        assert!(
+            view.workspace()
+                .unwrap()
+                .call
+                .as_ref()
+                .unwrap()
+                .room()
+                .unwrap()
+                .ready
+        );
     }
 
     #[test]
@@ -1916,7 +1935,14 @@ mod calls {
             &selected(&server, &scene, daily),
             &known,
         );
-        let outside = view.workspace().unwrap().call.clone().unwrap().outside;
+        let outside = view
+            .workspace()
+            .unwrap()
+            .call
+            .clone()
+            .unwrap()
+            .outside()
+            .to_vec();
         let shown: Vec<(&str, Option<&str>)> = outside
             .iter()
             .map(|member| (member.name.as_str(), member.place.as_deref()))
@@ -2147,7 +2173,9 @@ mod calls {
                 &selected(&server, scene, daily),
                 &known,
             ))
-            .recording
+            .recording()
+            .cloned()
+            .unwrap()
         };
         let first = scene.server();
         let mut known = in_call(active(target(&first, &scene, daily)));
@@ -2221,7 +2249,9 @@ mod calls {
         };
         let shown = |known: &Known| {
             panel(&derive(servers, &selected(&server, &scene, daily), known))
-                .recording
+                .recording()
+                .cloned()
+                .unwrap()
                 .state
         };
         let fault_of = |change: &dyn Fn(&mut Recording)| {
@@ -2353,7 +2383,7 @@ mod calls {
                 &selected(&server, scene, daily),
                 &in_call(call),
             );
-            let room = panel(&view).room;
+            let room = panel(&view).room().cloned().unwrap();
             assert_eq!(room.meeting, None);
             room.meeting_start
         };
@@ -2421,7 +2451,7 @@ mod calls {
             &selected(&server, &scene, daily),
             &known,
         );
-        let room = panel(&view).room;
+        let room = panel(&view).room().cloned().unwrap();
         assert_eq!(
             room.meeting,
             Some(MeetingView {
@@ -2465,7 +2495,7 @@ mod calls {
         };
         // Blocked by the meeting, with the hand raised.
         let view = shown(&scene, true, false, daily);
-        let meeting = panel(&view).room.meeting.unwrap();
+        let meeting = panel(&view).room().cloned().unwrap().meeting.unwrap();
         assert!(!meeting.by_self && !meeting.may_speak);
         assert_eq!(meeting.presenter.as_deref(), Some("Ana"));
         assert!(meeting.hands.is_empty() && meeting.waiting.is_empty());
@@ -2475,14 +2505,30 @@ mod calls {
         // The presenter removed the block, and the own setting is "closed": the person
         // may speak. The strip tells it when another channel is shown too.
         let view = shown(&scene, false, true, daily);
-        assert!(panel(&view).room.meeting.unwrap().may_speak);
+        assert!(
+            panel(&view)
+                .room()
+                .cloned()
+                .unwrap()
+                .meeting
+                .unwrap()
+                .may_speak
+        );
         assert_eq!(view.controls.microphone, MicrophoneButton::Muted);
         let view = shown(&scene, false, true, general);
         let strip = view.call.unwrap();
         assert!(strip.may_speak && !strip.shown);
         // The person opened the microphone: nothing is left to tell.
         let view = shown(&scene, false, false, daily);
-        assert!(!panel(&view).room.meeting.unwrap().may_speak);
+        assert!(
+            !panel(&view)
+                .room()
+                .cloned()
+                .unwrap()
+                .meeting
+                .unwrap()
+                .may_speak
+        );
         assert!(!view.call.unwrap().may_speak);
     }
 
@@ -2510,7 +2556,10 @@ mod calls {
                 &selected(&server, scene, daily),
                 &known,
             );
-            (panel(&view).room, view.workspace().unwrap().allowed)
+            (
+                panel(&view).room().cloned().unwrap(),
+                view.workspace().unwrap().allowed,
+            )
         };
         let (shown, allowed) = room(&scene);
         assert!(shown.locked && shown.hides_occupants);
@@ -2772,7 +2821,7 @@ mod calls {
             }]
         );
         assert_eq!(
-            panel(&view).outside,
+            panel(&view).outside().to_vec(),
             [OutsideMember {
                 account_id: ben,
                 name: "Ben".to_owned(),
@@ -2939,6 +2988,7 @@ mod calls {
                 volume: 140,
                 microphone_blocked: None,
                 sound_blocked: None,
+                hand_raised: None,
                 disconnect: false,
             }
         );
@@ -2965,9 +3015,10 @@ mod calls {
             (
                 shown.microphone_blocked,
                 shown.sound_blocked,
+                shown.hand_raised,
                 shown.disconnect
             ),
-            (Some(true), Some(true), true)
+            (Some(true), Some(true), Some(false), true)
         );
         assert_eq!(
             shown.destinations,

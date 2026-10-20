@@ -452,9 +452,7 @@ impl Shell {
                     this.set_talking(false, cx);
                 } else {
                     this.modifiers_changed(window.modifiers(), cx);
-                    if !this.detached
-                        && let Some(view) = this.view.clone()
-                    {
+                    if let Some(view) = this.view.clone() {
                         this.feed_changed(&view, window, cx);
                     }
                 }
@@ -462,18 +460,18 @@ impl Shell {
             cx.observe_in(&state, window, |this, state, window, cx| {
                 // A share that is being chosen belongs to one call, in both windows.
                 this.drop_stale_share_picker(window, cx);
-                if this.detached {
-                    this.view = Some(state.read(cx).call_view());
-                    cx.notify();
-                    return;
-                }
-                if let Some((submitted, result)) =
-                    state.update(cx, |state, _| state.take_name_result())
-                {
-                    this.name_was_decided(&submitted, result, window, cx);
-                }
+                // The call window shows the place of the call, with its chat (ADR 0772).
+                let view = if this.detached {
+                    state.read(cx).call_view()
+                } else {
+                    if let Some((submitted, result)) =
+                        state.update(cx, |state, _| state.take_name_result())
+                    {
+                        this.name_was_decided(&submitted, result, window, cx);
+                    }
+                    state.read(cx).view()
+                };
                 // A layer whose server is gone, or whose work is done, has nothing to show.
-                let view = state.read(cx).view();
                 this.drop_stale_layer(&view, window, cx);
                 // The list of the members who can be invited belongs to the call that
                 // the window shows.
@@ -492,6 +490,7 @@ impl Shell {
                     this.type_search("", window, cx);
                 }
                 this.view = Some(view.clone());
+                this.take_handed_drafts(window, cx);
                 this.feed_changed(&view, window, cx);
                 cx.notify();
             }),
@@ -631,6 +630,21 @@ impl Shell {
             _subscriptions: subscriptions,
         };
         shell.follow_pictures(window, cx);
+        if detached {
+            // The text that a call window holds when it closes goes to the main window
+            // (ADR 0772). The state closes the window and tells the main window.
+            let held = cx.weak_entity();
+            shell.state.update(cx, |state, _| {
+                state.on_call_window_closing(move |cx| {
+                    if let Some(shell) = held.upgrade() {
+                        shell.update(cx, |shell, cx| {
+                            shell.hand_over_drafts(composer::HandTo::Main, cx);
+                        });
+                    }
+                });
+            });
+            shell.take_handed_drafts(window, cx);
+        }
         let active = window.is_window_active();
         if !detached {
             shell
@@ -1116,6 +1130,27 @@ impl Render for Shell {
             .typeface(theme.types.body, &theme)
             .font_features(tabular_numerals())
             .ink(theme.colors.ink)
+            .map(|shell| Self::presses_and_escape(shell, cx))
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.modifiers_changed(event.modifiers, cx);
+            }))
+            .child(self.render_rail(&view, collapsed, narrow, window, cx))
+            .child(self.render_channel_column(&view, window, cx))
+            .child(self.render_main(&view, narrow, window, cx))
+            .when(!matches!(self.layer, Layer::None), |shell| {
+                shell.child(self.render_layer(&view, window, cx))
+            })
+            .into_any_element()
+    }
+}
+
+impl Shell {
+    /// What both windows do after every click and at Escape.
+    pub(crate) fn presses_and_escape<E: InteractiveElement>(
+        element: E,
+        cx: &mut Context<Self>,
+    ) -> E {
+        element
             // After every click: a press that closed the menu of the server is over.
             .on_mouse_up(
                 gpui::MouseButton::Left,
@@ -1145,20 +1180,8 @@ impl Render for Shell {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
-                this.modifiers_changed(event.modifiers, cx);
-            }))
-            .child(self.render_rail(&view, collapsed, narrow, window, cx))
-            .child(self.render_channel_column(&view, window, cx))
-            .child(self.render_main(&view, narrow, window, cx))
-            .when(!matches!(self.layer, Layer::None), |shell| {
-                shell.child(self.render_layer(&view, window, cx))
-            })
-            .into_any_element()
     }
-}
 
-impl Shell {
     fn drop_stale_layer(&mut self, view: &ShellView, window: &mut Window, cx: &mut Context<Self>) {
         let gone = |server_id: &ServerId| !view.servers.iter().any(|row| row.id == *server_id);
         let stale = match &self.layer {

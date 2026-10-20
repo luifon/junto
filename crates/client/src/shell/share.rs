@@ -19,11 +19,11 @@ use junto_media::share::{
     ApplicationId, CaptureError, PictureSource, ScreenAccess, ShareKind, ShareSources, SoundChoice,
 };
 
-use super::call::{occupants, tile_marks};
+use super::call::tile_marks;
 use super::channels::occupant_name;
 use super::{Layer, Shell, prepared};
 use crate::assets::Icon;
-use crate::state::view::{CallPanel, ChannelRow, Microphone, ShareCard, ShareStage};
+use crate::state::view::{CallPanel, Microphone, ShareCard, ShareStage};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -1123,7 +1123,6 @@ impl Shell {
     /// line about the watched one, its picture, and the strip of the people.
     pub(crate) fn render_share_stage(
         &mut self,
-        channel: &ChannelRow,
         panel: &CallPanel,
         stage: &ShareStage,
         theme: &Theme,
@@ -1451,7 +1450,7 @@ impl Shell {
             });
 
         // The setting affects only the tiles; the member list stays complete.
-        let people = occupants(channel);
+        let people = panel.people.as_slice();
         let hidden = panel.hide_without_video
             && people
                 .iter()
