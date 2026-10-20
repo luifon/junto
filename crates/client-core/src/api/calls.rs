@@ -284,6 +284,17 @@ impl ServerApi {
         self.act(Method::Delete, path).await
     }
 
+    /// Lowers the raised hand of another person without removing a microphone block
+    /// (ADR 0516).
+    pub async fn lower_participant_hand(
+        &self,
+        channel_id: ChannelId,
+        account_id: AccountId,
+    ) -> Result<(), ApiError> {
+        let path = participant(channel_id, account_id, "/hand");
+        self.act(Method::Delete, path).await
+    }
+
     pub async fn block_sound(
         &self,
         channel_id: ChannelId,
