@@ -1,8 +1,9 @@
-//! Owners and access lists on Windows (ADR 0711). A private directory is created with the
-//! user of the process as its owner and a protected access list that has one entry: full
-//! access for that user, inherited by everything inside. The security of an object is read
-//! from its opened handle. This is the only module of the library with unsafe code. No
-//! test has executed it yet: it is compiled and type-checked only.
+//! Owners and access lists on Windows (ADR 0711), and the rename that never replaces a file,
+//! which the standard library does not offer. A private directory is created with the user
+//! of the process as its owner and a protected access list that has one entry: full access
+//! for that user, inherited by everything inside. The security of an object is read from its
+//! opened handle. This is the only module of the library with unsafe code. The tests of the
+//! storage run it on Windows in continuous integration (ADR 0905).
 
 #![allow(unsafe_code)]
 
@@ -26,7 +27,7 @@ use windows_sys::Win32::Security::{
     WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, GetFileInformationByHandle,
+    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, GetFileInformationByHandle, MoveFileExW,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -167,6 +168,17 @@ pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
     // SAFETY: the path ends with a zero, and the attributes and the descriptor live until
     // the call returns.
     if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Renames a file and fails when a file has the new name.
+pub(super) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    let from = wide(from)?;
+    let to = wide(to)?;
+    // SAFETY: both paths end with a zero and live until the call returns.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

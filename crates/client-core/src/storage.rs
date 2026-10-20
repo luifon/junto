@@ -344,10 +344,10 @@ impl Dir {
         self.entry(name, "create")?;
         let path = self.path.join(name);
         let created = self.write_temporary(name, bytes).and_then(|temporary| {
-            let linked = self.handle.link_new(&temporary, name);
+            let named = self.handle.name_new(&temporary, name);
             let _ = self.handle.remove(&temporary);
             self.handle.sync()?;
-            linked
+            named
         });
         created.map_err(|error| StorageError::io("create", &path, error))
     }
@@ -640,6 +640,22 @@ mod tests {
         assert!(private.remove("device.key").unwrap());
         assert!(!private.remove("device.key").unwrap());
         assert!(names(&private).is_empty());
+    }
+
+    /// While the creation gave the file a second name, the write failed with access denied in
+    /// about two rounds of a thousand (ADR 0711), so the test repeats the sequence.
+    #[cfg(windows)]
+    #[test]
+    fn a_created_file_is_replaced_at_once() {
+        let (_directory, private) = private();
+        for round in 0..3000 {
+            let name = format!("{round}.key");
+            assert!(private.create(&name, b"created").unwrap());
+            private
+                .write(&name, b"replaced")
+                .unwrap_or_else(|error| panic!("round {round}: {error}"));
+            assert_eq!(fs::read(private.path().join(&name)).unwrap(), b"replaced");
+        }
     }
 
     #[test]
