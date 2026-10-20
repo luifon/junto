@@ -658,6 +658,31 @@ mod tests {
         }
     }
 
+    /// Under a directory of 210 characters a key file has a path of 253 characters and its
+    /// temporary file one of 275; a directory of 300 characters exceeds every limit of 260.
+    #[test]
+    fn files_are_created_and_replaced_under_a_long_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let name = "01a1573f-ee85-7317-99e1-5a267782172e.key";
+        for length in [210, 300] {
+            let mut path = directory.path().join(format!("{length}"));
+            while path.as_os_str().len() < length {
+                let missing = length - path.as_os_str().len() - 1;
+                path.push("d".repeat(missing.clamp(1, 60)));
+            }
+            assert_eq!(path.as_os_str().len(), length);
+            let private = Dir::open(&path).unwrap();
+            let nested = private.subdirectory("k").unwrap();
+            assert!(nested.create(name, b"created").unwrap());
+            nested.write(name, b"replaced").unwrap();
+            let mut buffer = [0u8; 16];
+            assert_eq!(nested.read_private(name, &mut buffer).unwrap(), Some(8));
+            assert_eq!(&buffer[..8], b"replaced");
+            drop(nested.lock().unwrap());
+            assert!(nested.remove(name).unwrap());
+        }
+    }
+
     #[test]
     fn leftovers_of_an_interrupted_write_are_removed() {
         let (_directory, private) = private();
