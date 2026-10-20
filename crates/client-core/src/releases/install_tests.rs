@@ -963,3 +963,15 @@ fn a_candidate_that_cannot_be_read_leaves_every_entry_in_place() {
     );
     assert!(!root.path().join("missing.replaced").exists());
 }
+
+#[test]
+fn the_previous_archive_is_a_second_name_on_unix_and_a_copy_on_windows() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("installed.junto");
+    let destination = directory.path().join("previous.junto");
+    fs::write(&source, b"first").unwrap();
+    keep_archive(&source, &destination).unwrap();
+    fs::write(&source, b"other").unwrap();
+    let expected: &[u8] = if cfg!(windows) { b"first" } else { b"other" };
+    assert_eq!(fs::read(&destination).unwrap(), expected);
+}

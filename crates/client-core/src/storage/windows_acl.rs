@@ -1,8 +1,9 @@
-//! Owners and access lists on Windows (ADR 0711). A private directory is created with the
-//! user of the process as its owner and a protected access list that has one entry: full
-//! access for that user, inherited by everything inside. The security of an object is read
-//! from its opened handle. This is the only module of the library with unsafe code. No
-//! test has executed it yet: it is compiled and type-checked only.
+//! Owners and access lists on Windows (ADR 0711), and the rename that never replaces a file,
+//! which the standard library does not offer. A private directory is created with the user
+//! of the process as its owner and a protected access list that has one entry: full access
+//! for that user, inherited by everything inside. The security of an object is read from its
+//! opened handle. This is the only module of the library with unsafe code. The tests of the
+//! storage run it on Windows in continuous integration (ADR 0905).
 
 #![allow(unsafe_code)]
 
@@ -26,7 +27,8 @@ use windows_sys::Win32::Security::{
     WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, GetFileInformationByHandle,
+    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, GetFileInformationByHandle, GetFullPathNameW,
+    MoveFileExW,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -120,6 +122,28 @@ impl UserSid {
     }
 }
 
+const SEPARATOR: u16 = b'\\' as u16;
+const OTHER_SEPARATOR: u16 = b'/' as u16;
+const COLON: u16 = b':' as u16;
+const VERBATIM: &[u16] = &[SEPARATOR, SEPARATOR, b'?' as u16, SEPARATOR];
+const NT: &[u16] = &[SEPARATOR, b'?' as u16, b'?' as u16, SEPARATOR];
+const DEVICE: &[u16] = &[SEPARATOR, SEPARATOR, b'.' as u16, SEPARATOR];
+const UNC: &[u16] = &[
+    SEPARATOR,
+    SEPARATOR,
+    b'?' as u16,
+    SEPARATOR,
+    b'U' as u16,
+    b'N' as u16,
+    b'C' as u16,
+    SEPARATOR,
+];
+/// The length from which `CreateDirectoryW` refuses a path that has no `\\?\` prefix.
+const LEGACY_LIMIT: usize = 248;
+
+/// A path for a call of the Windows API, ending with a zero. A path that is not short and
+/// absolute becomes absolute with the prefix `\\?\`, which has no limit of 260 characters, as
+/// the standard library converts the paths of its own calls.
 fn wide(path: &Path) -> io::Result<Vec<u16>> {
     let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
     if units.contains(&0) {
@@ -129,7 +153,53 @@ fn wide(path: &Path) -> io::Result<Vec<u16>> {
         ));
     }
     units.push(0);
-    Ok(units)
+    if units.starts_with(VERBATIM) || units.starts_with(NT) || units == [0] {
+        return Ok(units);
+    }
+    if units.len() < LEGACY_LIMIT {
+        match units.as_slice() {
+            [drive, COLON, 0] | [drive, COLON, SEPARATOR | OTHER_SEPARATOR, ..]
+                if *drive != SEPARATOR && *drive != OTHER_SEPARATOR =>
+            {
+                return Ok(units);
+            }
+            [SEPARATOR | OTHER_SEPARATOR, SEPARATOR | OTHER_SEPARATOR, ..] => return Ok(units),
+            _ => {}
+        }
+    }
+    let absolute = full_path(&units)?;
+    let (prefix, rest): (&[u16], &[u16]) = match absolute.as_slice() {
+        [_, COLON, SEPARATOR, ..] => (VERBATIM, &absolute),
+        rest if rest.starts_with(DEVICE) => (VERBATIM, &rest[DEVICE.len()..]),
+        rest if rest.starts_with(VERBATIM) || rest.starts_with(NT) => (&[], rest),
+        [SEPARATOR, SEPARATOR, rest @ ..] => (UNC, rest),
+        rest => (&[], rest),
+    };
+    let mut converted = Vec::with_capacity(prefix.len() + rest.len() + 1);
+    converted.extend_from_slice(prefix);
+    converted.extend_from_slice(rest);
+    converted.push(0);
+    Ok(converted)
+}
+
+/// The absolute and normalized form of a path that ends with a zero, without the zero.
+fn full_path(path: &[u16]) -> io::Result<Vec<u16>> {
+    let mut buffer = vec![0u16; 512];
+    loop {
+        let size = u32::try_from(buffer.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        // SAFETY: the path ends with a zero, and the buffer has `size` units.
+        let length =
+            unsafe { GetFullPathNameW(path.as_ptr(), size, buffer.as_mut_ptr(), ptr::null_mut()) }
+                as usize;
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Ok(buffer);
+        }
+        buffer.resize(length, 0);
+    }
 }
 
 /// Creates one directory that the user of this process owns and whose access list has a
@@ -167,6 +237,17 @@ pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
     // SAFETY: the path ends with a zero, and the attributes and the descriptor live until
     // the call returns.
     if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Renames a file and fails when a file has the new name.
+pub(super) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    let from = wide(from)?;
+    let to = wide(to)?;
+    // SAFETY: both paths end with a zero and live until the call returns.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

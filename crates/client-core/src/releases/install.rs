@@ -330,6 +330,18 @@ fn random_name(prefix: &str) -> Result<String, Error> {
     Ok(format!("{prefix}{}", super::hex(&random)))
 }
 
+/// Gives `destination` the content of the archive `source` of the record. On Unix a second
+/// name of the file, or a copy where a link fails. On Windows a copy: after a hard link the
+/// system can keep the file open for up to a second, and while a file is open, a directory
+/// that holds it cannot be renamed, which the update does next (ADR 0711, ADR 0726).
+fn keep_archive(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if fs::hard_link(source, destination).is_ok() {
+        return Ok(());
+    }
+    fs::copy(source, destination).map(|_| ())
+}
+
 fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
@@ -571,9 +583,7 @@ impl<S: System> Installer<S> {
             let archive_path = destination.join("archive.junto");
             let information_path = destination.join("release.json");
             if let Some(local) = self.local_record(current) {
-                if fs::hard_link(local.join("archive.junto"), &archive_path).is_err() {
-                    fs::copy(local.join("archive.junto"), &archive_path)?;
-                }
+                keep_archive(&local.join("archive.junto"), &archive_path)?;
                 fs::copy(local.join("release.json"), &information_path)?;
             } else {
                 match fetched {
