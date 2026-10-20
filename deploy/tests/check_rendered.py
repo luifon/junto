@@ -5,12 +5,13 @@ usage: check_rendered.py <form> <file with the output of `docker compose config 
 
 import json
 import pathlib
-import re
 import sys
 
-# The setting of the camera layers of the media server, as the tests of the recording layout
-# give it to their test server (ADR 0609). Every form that runs the media server has it.
-TEST_SERVER = pathlib.Path(__file__).resolve().parents[2] / "tools" / "with-test-livekit.sh"
+# The settings of the media server that do not depend on the host. Every form that runs the
+# media server has exactly these sections, and every test server adds this file (ADR 0904).
+LIVEKIT_COMMON = pathlib.Path(__file__).resolve().parents[1] / "livekit-common.yaml"
+# The sections of the configuration of the media server that depend on the host of a form.
+LIVEKIT_HOST_SECTIONS = {"port", "bind_addresses", "keys", "redis", "rtc", "turn", "webhook", "logging"}
 
 # Every published port of each form: (service, container port, protocol, host address).
 # None means every address of the host. A form publishes exactly these, each once.
@@ -66,6 +67,39 @@ SERVER_DIRECTORIES = {
     "JUNTO_RECORDINGS_DIR": "/var/lib/junto/recordings",
     "JUNTO_EXPORTS_DIR": "/var/lib/junto/exports",
 }
+
+
+def yaml_sections(text: str) -> list[tuple[str, list[str]]]:
+    """The top-level sections of a YAML text in their order, each with its lines without
+    comments and empty lines."""
+    sections = []
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace() or not sections:
+            sections.append((line.split(":", 1)[0], []))
+        sections[-1][1].append(line)
+    return sections
+
+
+def livekit_problems(configuration: str) -> list[str]:
+    """How the configuration of the media server of a form differs from
+    deploy/livekit-common.yaml."""
+    common = dict(yaml_sections(LIVEKIT_COMMON.read_text(encoding="utf-8")))
+    found = yaml_sections(configuration)
+    names = [name for name, _ in found]
+    problems = []
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        problems.append(f"livekit: the sections {repeated} appear more than once")
+    found = dict(found)
+    for name, lines in common.items():
+        if found.get(name) != lines:
+            problems.append(f"livekit: the section {name} differs from deploy/livekit-common.yaml")
+    other = sorted(set(found) - set(common) - LIVEKIT_HOST_SECTIONS)
+    if other:
+        problems.append(f"livekit: the sections {other} are not in deploy/livekit-common.yaml and do not depend on the host")
+    return problems
 
 
 def check(form: str, project: dict) -> list[str]:
@@ -137,10 +171,7 @@ def check(form: str, project: dict) -> list[str]:
                 problem("mounts the Docker socket")
 
     if "livekit" in services:
-        found = re.search(r'^deployment_layers="(.*?)^"$', TEST_SERVER.read_text(encoding="utf-8"), re.S | re.M)
-        configuration = services["livekit"].get("environment", {}).get("LIVEKIT_CONFIG", "")
-        if not found or found.group(1) not in configuration:
-            problems.append("livekit: the setting of the camera layers differs from the one of the test server")
+        problems.extend(livekit_problems(services["livekit"].get("environment", {}).get("LIVEKIT_CONFIG", "")))
 
     if "server" in services:
         server = services["server"]

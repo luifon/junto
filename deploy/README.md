@@ -11,6 +11,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 | `one-host.yaml` | Form 1: every component on one host with a public address. |
 | `two-hosts-data.yaml`, `two-hosts-public.yaml` | Form 2: the data host and the public host. |
 | `local.yaml` | Every component on one machine without DNS names and TLS, for a trial and for the tests. |
+| `livekit-common.yaml` | The settings of the media server that do not depend on the host. Every form repeats them in `LIVEKIT_CONFIG`, and `tests/check_rendered.py` compares them; the test servers of `tools/` add this file (ADR 0904). |
 | `worker-gpu.yaml` | Addition to a form: the transcription worker on an NVIDIA GPU. |
 | `backup.sh` | Backup of the database, the attachments and the recordings while the server runs. |
 | `restore.sh` | Restore of such a backup. An interrupted run is followed by a second run. |
@@ -30,8 +31,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 ```sh
 tools/check-pins.sh                                   # pinned versions agree
 deploy/tests/compose-config.sh                        # every form renders and follows the rules
-python3 -B -m unittest discover -s deploy/tests -p 'test_restore_images.py' # restore image checks before container changes
-python3 -B -m unittest discover -s deploy/tests -p 'test_server_output.py'  # the drivers read the owner code from the standard output of the server
+python3 -B -m unittest discover -s deploy/tests -p 'test_*.py' # the restore image checks, the reading of the owner code, and the comparison with livekit-common.yaml
 docker build -f deploy/images/server/Dockerfile -t junto-server .
 python3 deploy/tests/check_licences.py junto-server   # the licence files of the image list every crate of the server
 deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, with two users

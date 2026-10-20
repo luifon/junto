@@ -5,13 +5,15 @@ use junto_client_core::protocol::call::LeaveReason;
 use junto_client_core::protocol::error::ErrorCode;
 use junto_media::calls::{EndReason, JoinError, Outcome, Phase};
 
-use crate::scene::{MEDIA_SERVER, Person, Room, account, model_when, until};
+use crate::limit::limited;
+use crate::scene::{Person, Room, account, media_server_shared, model_when, until};
 use crate::support::FaultProxy;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_call_on_another_server_replaces_the_first_and_a_refused_join_leaves_it() {
-    let _media = MEDIA_SERVER.read().await;
+    limited(async {
+    let _media = media_server_shared().await;
     let (ann, ben) = (Person::new(440.0), Person::new(880.0));
     let (first, ben_at_first) = Room::new("First", &ben, "Ben").await;
     let ann_at_first = first.member(&ben_at_first, &ann, "Ann").await;
@@ -78,184 +80,195 @@ async fn a_call_on_another_server_replaces_the_first_and_a_refused_join_leaves_i
         model.own_call.is_none()
     })
     .await;
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_second_voice_channel_of_one_server_replaces_the_call_without_a_notice() {
-    let _media = MEDIA_SERVER.read().await;
-    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
-    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
-    room.member(&ann_at, &ben, "Ben").await;
-    let other = ann_at
-        .api()
-        .create_channel(
-            room.workspace_id,
-            &junto_client_core::protocol::structure::CreateChannel {
-                name: "Focus".to_owned(),
-                kind: junto_client_core::protocol::structure::ChannelKind::Voice,
-                category_id: None,
-                position: None,
-            },
-        )
-        .await
-        .unwrap()
-        .id;
-    let mut focus = room.target;
-    focus.place = junto_client_core::protocol::call::CallPlace::Channel {
-        workspace_id: room.workspace_id,
-        channel_id: other,
-    };
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        room.member(&ann_at, &ben, "Ben").await;
+        let other = ann_at
+            .api()
+            .create_channel(
+                room.workspace_id,
+                &junto_client_core::protocol::structure::CreateChannel {
+                    name: "Focus".to_owned(),
+                    kind: junto_client_core::protocol::structure::ChannelKind::Voice,
+                    category_id: None,
+                    position: None,
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let mut focus = room.target;
+        focus.place = junto_client_core::protocol::call::CallPlace::Channel {
+            workspace_id: room.workspace_id,
+            channel_id: other,
+        };
 
-    ann.enter(room.target).await;
-    ben.enter(room.target).await;
-    ben.until_heard(&ann).await;
-    ann.enter(focus).await;
-    ben.until_silent(&ann).await;
-    let view = ann.calls.view();
-    assert_eq!(view.call.unwrap().target, focus);
-    assert_eq!(view.outcome, None);
-    model_when(&ann_at, "Ann is in the second channel", |model| {
-        model
-            .own_call
-            .as_ref()
-            .is_some_and(|own| own.place == focus.place)
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ben.until_heard(&ann).await;
+        ann.enter(focus).await;
+        ben.until_silent(&ann).await;
+        let view = ann.calls.view();
+        assert_eq!(view.call.unwrap().target, focus);
+        assert_eq!(view.outcome, None);
+        model_when(&ann_at, "Ann is in the second channel", |model| {
+            model
+                .own_call
+                .as_ref()
+                .is_some_and(|own| own.place == focus.place)
+        })
+        .await;
+        // The state of the server settles, and the call is still the second one.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let view = ann.calls.view();
+        assert_eq!(view.call.unwrap().target, focus);
+        assert_eq!(view.outcome, None);
     })
     .await;
-    // The state of the server settles, and the call is still the second one.
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    let view = ann.calls.view();
-    assert_eq!(view.call.unwrap().target, focus);
-    assert_eq!(view.outcome, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_leave_while_the_server_is_asked_for_a_place_ends_the_call_and_starts_no_other() {
-    let _media = MEDIA_SERVER.read().await;
-    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
-    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
-    let proxy = FaultProxy::start(&room.server).await;
-    let ben_at = room.member_at(&ann_at, &ben, "Ben", &proxy.address()).await;
-    assert_eq!(ben_at.id(), room.target.server_id);
-    let focus = room.second_voice(&ann_at, "Focus").await;
-    let junto_client_core::protocol::call::CallPlace::Channel {
-        channel_id: focus_id,
-        ..
-    } = focus.place
-    else {
-        unreachable!("a voice channel");
-    };
-    model_when(&ben_at, "the second voice channel", |model| {
-        model.channel(focus_id).is_some()
-    })
-    .await;
-    ann.enter(room.target).await;
-    ben.enter(room.target).await;
-    ann.until_heard(&ben).await;
-
-    // Ben asks for a place in the second channel. The request waits on its way to the
-    // server.
-    let path = Room::join_path(&focus);
-    proxy.hold(&path);
-    let joining = ben.calls.join(focus);
-    until("the request for the place is on its way", || {
-        !proxy.seen(&path).is_empty()
-    })
-    .await;
-    assert_eq!(ben.calls.view().joining, Some(focus));
-    let opened = ben.host.opened_inputs().len();
-
-    // Ben leaves. The call that he is in ends, and nothing is shown as asked for.
-    let leaving = ben.calls.leave();
-    let left = ben
-        .until("the call has ended", |view| view.call.is_none())
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let proxy = FaultProxy::start(&room.server).await;
+        let ben_at = room.member_at(&ann_at, &ben, "Ben", &proxy.address()).await;
+        assert_eq!(ben_at.id(), room.target.server_id);
+        let focus = room.second_voice(&ann_at, "Focus").await;
+        let junto_client_core::protocol::call::CallPlace::Channel {
+            channel_id: focus_id,
+            ..
+        } = focus.place
+        else {
+            unreachable!("a voice channel");
+        };
+        model_when(&ben_at, "the second voice channel", |model| {
+            model.channel(focus_id).is_some()
+        })
         .await;
-    ann.until_silent(&ben).await;
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ann.until_heard(&ben).await;
 
-    // The server gets the request only now and gives the place. The client gives it up.
-    proxy.release();
-    assert_eq!(joining.await, Err(JoinError::Cancelled));
-    assert_eq!(left.joining, None);
-    leaving.await;
-    assert!(ben_at.api().own_call().await.unwrap().call.is_none());
-    let view = ben.calls.view();
-    assert_eq!((view.call, view.joining, view.outcome), (None, None, None));
-    // No media connection follows, and the microphone is not opened.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    assert_eq!(ben.calls.view().call, None);
-    assert_eq!(ben.host.opened_inputs().len(), opened);
-    assert!(ben_at.api().own_call().await.unwrap().call.is_none());
+        // Ben asks for a place in the second channel. The request waits on its way to the
+        // server.
+        let path = Room::join_path(&focus);
+        proxy.hold(&path);
+        let joining = ben.calls.join(focus);
+        until("the request for the place is on its way", || {
+            !proxy.seen(&path).is_empty()
+        })
+        .await;
+        assert_eq!(ben.calls.view().joining, Some(focus));
+        let opened = ben.host.opened_inputs().len();
 
-    // A join after the leave is a new one.
-    ben.enter(focus).await;
-    assert!(ben_at.api().own_call().await.unwrap().call.is_some());
+        // Ben leaves. The call that he is in ends, and nothing is shown as asked for.
+        let leaving = ben.calls.leave();
+        let left = ben
+            .until("the call has ended", |view| view.call.is_none())
+            .await;
+        ann.until_silent(&ben).await;
+
+        // The server gets the request only now and gives the place. The client gives it up.
+        proxy.release();
+        assert_eq!(joining.await, Err(JoinError::Cancelled));
+        assert_eq!(left.joining, None);
+        leaving.await;
+        assert!(ben_at.api().own_call().await.unwrap().call.is_none());
+        let view = ben.calls.view();
+        assert_eq!((view.call, view.joining, view.outcome), (None, None, None));
+        // No media connection follows, and the microphone is not opened.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(ben.calls.view().call, None);
+        assert_eq!(ben.host.opened_inputs().len(), opened);
+        assert!(ben_at.api().own_call().await.unwrap().call.is_none());
+
+        // A join after the leave is a new one.
+        ben.enter(focus).await;
+        assert!(ben_at.api().own_call().await.unwrap().call.is_some());
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took() {
-    const OWN_CALL: &str = "/api/v1/call";
-    let _media = MEDIA_SERVER.read().await;
-    let (ann, phone, laptop) = (Person::new(440.0), Person::new(880.0), Person::new(660.0));
-    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
-    let proxy = FaultProxy::start(&room.server).await;
-    let phone_at = room
-        .member_at(&ann_at, &phone, "Ben", &proxy.address())
-        .await;
-    let laptop_at = room.second_device(&phone_at, &laptop).await;
-    ann.enter(room.target).await;
-    phone.enter(room.target).await;
-    ann.until_heard(&phone).await;
+    limited(async {
+        const OWN_CALL: &str = "/api/v1/call";
+        let _media = media_server_shared().await;
+        let (ann, phone, laptop) = (Person::new(440.0), Person::new(880.0), Person::new(660.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let proxy = FaultProxy::start(&room.server).await;
+        let phone_at = room
+            .member_at(&ann_at, &phone, "Ben", &proxy.address())
+            .await;
+        let laptop_at = room.second_device(&phone_at, &laptop).await;
+        ann.enter(room.target).await;
+        phone.enter(room.target).await;
+        ann.until_heard(&phone).await;
 
-    // Ben leaves on the phone. What the phone tells the server waits on its way: one
-    // request that names the identity of the place of the phone (ADR 0510).
-    let seat = phone.calls.view().call.unwrap().identity;
-    let named: String = url::form_urlencoded::byte_serialize(seat.as_bytes()).collect();
-    let leave = format!("{OWN_CALL}?identity={named}");
-    proxy.hold(&leave);
-    // Admission can refresh the own call in the background (ADR 0517). Hold all new
-    // reads: leaving must send its identity-scoped DELETE without waiting for one.
-    // Counting requests alone would confuse that refresh with a read by the leave.
-    proxy.hold(OWN_CALL);
-    let reads = proxy.seen(OWN_CALL).len();
-    let leaving = phone.calls.leave();
-    phone
-        .until("the call has ended on the phone", |view| {
-            view.call.is_none()
+        // Ben leaves on the phone. What the phone tells the server waits on its way: one
+        // request that names the identity of the place of the phone (ADR 0510).
+        let seat = phone.calls.view().call.unwrap().identity;
+        let named: String = url::form_urlencoded::byte_serialize(seat.as_bytes()).collect();
+        let leave = format!("{OWN_CALL}?identity={named}");
+        proxy.hold(&leave);
+        // Admission can refresh the own call in the background (ADR 0517). Hold all new
+        // reads: leaving must send its identity-scoped DELETE without waiting for one.
+        // Counting requests alone would confuse that refresh with a read by the leave.
+        proxy.hold(OWN_CALL);
+        let reads = proxy.seen(OWN_CALL).len();
+        let leaving = phone.calls.leave();
+        phone
+            .until("the call has ended on the phone", |view| {
+                view.call.is_none()
+            })
+            .await;
+        until("the phone tells the server", || {
+            !proxy.seen(&leave).is_empty()
         })
         .await;
-    until("the phone tells the server", || {
-        !proxy.seen(&leave).is_empty()
+        assert_eq!(proxy.seen(&leave)[0].method, "DELETE");
+        // The phone does not read the place first: between a read and the request another
+        // device could take the place.
+        assert!(
+            proxy
+                .seen(OWN_CALL)
+                .iter()
+                .skip(reads)
+                .all(|request| request.answer.is_none()),
+            "no read made after leaving was requested has completed"
+        );
+
+        // Ben enters the call on the laptop before the server hears from the phone.
+        laptop.enter(room.target).await;
+        let identity = laptop.calls.view().call.unwrap().identity;
+        ann.until_heard(&laptop).await;
+
+        // The server hears from the phone now. The place is the one of the laptop, and stays.
+        proxy.release();
+        leaving.await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let own = laptop_at.api().own_call().await.unwrap().call;
+        assert_eq!(own.map(|call| call.own.identity), Some(identity));
+        let view = laptop.calls.view();
+        assert_eq!(view.call.map(|call| call.phase), Some(Phase::Connected));
+        assert_eq!(view.outcome, None);
+        ann.until_heard_afresh(&laptop).await;
     })
     .await;
-    assert_eq!(proxy.seen(&leave)[0].method, "DELETE");
-    // The phone does not read the place first: between a read and the request another
-    // device could take the place.
-    assert!(
-        proxy
-            .seen(OWN_CALL)
-            .iter()
-            .skip(reads)
-            .all(|request| request.answer.is_none()),
-        "no read made after leaving was requested has completed"
-    );
-
-    // Ben enters the call on the laptop before the server hears from the phone.
-    laptop.enter(room.target).await;
-    let identity = laptop.calls.view().call.unwrap().identity;
-    ann.until_heard(&laptop).await;
-
-    // The server hears from the phone now. The place is the one of the laptop, and stays.
-    proxy.release();
-    leaving.await;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let own = laptop_at.api().own_call().await.unwrap().call;
-    assert_eq!(own.map(|call| call.own.identity), Some(identity));
-    let view = laptop.calls.view();
-    assert_eq!(view.call.map(|call| call.phase), Some(Phase::Connected));
-    assert_eq!(view.outcome, None);
-    ann.until_heard_afresh(&laptop).await;
 }
 
 /// ADR 0734, ADR 0520: a person whom a moderator removed does not return by a request for
@@ -264,42 +277,77 @@ async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_renewal_that_waits_does_not_bring_a_removed_person_back() {
-    // The events reach the device before the answer of the renewal, and after it.
-    for events_first in [true, false] {
-        let _media = MEDIA_SERVER.read().await;
-        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
-        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
-        let proxy = FaultProxy::start(&room.server).await;
-        let ben_at = room.member_at(&ann_at, &ben, "Ben", &proxy.address()).await;
-        let ben_id = account(&ben_at);
-        ann.enter(room.target).await;
-        ben.enter(room.target).await;
-        ann.until_heard(&ben).await;
-        let first = ben.calls.view().call.unwrap().identity;
+    limited(async {
+        // The events reach the device before the answer of the renewal, and after it.
+        for events_first in [true, false] {
+            let _media = media_server_shared().await;
+            let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+            let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+            let proxy = FaultProxy::start(&room.server).await;
+            let ben_at = room.member_at(&ann_at, &ben, "Ben", &proxy.address()).await;
+            let ben_id = account(&ben_at);
+            ann.enter(room.target).await;
+            ben.enter(room.target).await;
+            ann.until_heard(&ben).await;
+            let first = ben.calls.view().call.unwrap().identity;
 
-        // The media connection of Ben ends, and his device asks for a new token of its
-        // seat. The request waits on its way to the server.
-        let path = Room::renew_path(&room.target, &first);
-        let asked = proxy.seen(&path).len();
-        proxy.hold(&path);
-        ben.calls.simulate_connection_loss();
-        until("the request for a new token is on its way", || {
-            proxy.seen(&path).len() > asked
-        })
-        .await;
-        if !events_first {
-            // The device gets no event until the answer has arrived.
-            proxy.block_streams(true);
-            proxy.cut_streams();
-        }
+            // The media connection of Ben ends, and his device asks for a new token of its
+            // seat. The request waits on its way to the server.
+            let path = Room::renew_path(&room.target, &first);
+            let asked = proxy.seen(&path).len();
+            proxy.hold(&path);
+            ben.calls.simulate_connection_loss();
+            until("the request for a new token is on its way", || {
+                proxy.seen(&path).len() > asked
+            })
+            .await;
+            if !events_first {
+                // The device gets no event until the answer has arrived.
+                proxy.block_streams(true);
+                proxy.cut_streams();
+            }
 
-        // Ann removes Ben while the request waits.
-        ann_at
-            .api()
-            .disconnect_participant(room.voice, ben_id)
-            .await
-            .unwrap();
-        if events_first {
+            // Ann removes Ben while the request waits.
+            ann_at
+                .api()
+                .disconnect_participant(room.voice, ben_id)
+                .await
+                .unwrap();
+            if events_first {
+                let view = ben
+                    .until("the call has ended", |view| view.call.is_none())
+                    .await;
+                assert_eq!(
+                    view.outcome,
+                    Some(Outcome::Ended {
+                        target: room.target,
+                        reason: EndReason::Server(Some(LeaveReason::Disconnected)),
+                    })
+                );
+            }
+
+            // The server gets the request only now. The seat that it names ended by the
+            // removal: the server refuses it with the reason, and gives no seat.
+            proxy.release();
+            until("the server has answered the request", || {
+                proxy
+                    .seen(&path)
+                    .last()
+                    .is_some_and(|request| matches!(request.answer, Some((409, _))))
+            })
+            .await;
+            let answer = proxy.seen(&path).last().unwrap().answer.clone().unwrap();
+            let body = String::from_utf8_lossy(&answer.1);
+            assert!(
+                body.contains(r#""code":"seat_ended""#)
+                    && body.contains(r#""left":"disconnected""#),
+                "{body}"
+            );
+            if !events_first {
+                proxy.block_streams(false);
+            }
+            // The call ends with the reason that the server stated, and nothing is asked
+            // again: no seat to give up, no place.
             let view = ben
                 .until("the call has ended", |view| view.call.is_none())
                 .await;
@@ -310,59 +358,28 @@ async fn a_renewal_that_waits_does_not_bring_a_removed_person_back() {
                     reason: EndReason::Server(Some(LeaveReason::Disconnected)),
                 })
             );
-        }
-
-        // The server gets the request only now. The seat that it names ended by the
-        // removal: the server refuses it with the reason, and gives no seat.
-        proxy.release();
-        until("the server has answered the request", || {
-            proxy
-                .seen(&path)
-                .last()
-                .is_some_and(|request| matches!(request.answer, Some((409, _))))
-        })
-        .await;
-        let answer = proxy.seen(&path).last().unwrap().answer.clone().unwrap();
-        let body = String::from_utf8_lossy(&answer.1);
-        assert!(
-            body.contains(r#""code":"seat_ended""#) && body.contains(r#""left":"disconnected""#),
-            "{body}"
-        );
-        if !events_first {
-            proxy.block_streams(false);
-        }
-        // The call ends with the reason that the server stated, and nothing is asked
-        // again: no seat to give up, no place.
-        let view = ben
-            .until("the call has ended", |view| view.call.is_none())
-            .await;
-        assert_eq!(
-            view.outcome,
-            Some(Outcome::Ended {
-                target: room.target,
-                reason: EndReason::Server(Some(LeaveReason::Disconnected)),
+            model_when(&ann_at, "Ann is alone in the call", |model| {
+                model
+                    .call_at(&room.target.place)
+                    .is_some_and(|call| call.participants.len() == 1)
             })
-        );
-        model_when(&ann_at, "Ann is alone in the call", |model| {
-            model
-                .call_at(&room.target.place)
-                .is_some_and(|call| call.participants.len() == 1)
-        })
-        .await;
-        let seen = proxy.all().len();
-        ann.host.clear_played();
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        let later = proxy.all();
-        assert!(
-            !later[seen..].iter().any(|request| request
-                .path
-                .starts_with(&Room::join_path(&room.target))
-                || request.path.starts_with("/api/v1/call?identity=")),
-            "a request for a place or a leave followed the refusal: {:?}",
-            &later[seen..]
-        );
-        assert_eq!(ben.calls.view().call, None);
-        assert!(ben_at.api().own_call().await.unwrap().call.is_none());
-        assert!(ann.hears(ben.hz) < crate::scene::ABSENT_DBFS);
-    }
+            .await;
+            let seen = proxy.all().len();
+            ann.host.clear_played();
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let later = proxy.all();
+            assert!(
+                !later[seen..].iter().any(|request| request
+                    .path
+                    .starts_with(&Room::join_path(&room.target))
+                    || request.path.starts_with("/api/v1/call?identity=")),
+                "a request for a place or a leave followed the refusal: {:?}",
+                &later[seen..]
+            );
+            assert_eq!(ben.calls.view().call, None);
+            assert!(ben_at.api().own_call().await.unwrap().call.is_none());
+            assert!(ann.hears(ben.hz) < crate::scene::ABSENT_DBFS);
+        }
+    })
+    .await;
 }

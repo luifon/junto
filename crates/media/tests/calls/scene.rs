@@ -21,7 +21,9 @@ use junto_media::calls::{CallTarget, CallTiming, CallsView, MediaOptions, Phase}
 use junto_media::engine::VoiceConfig;
 use junto_media::permission::FixedPermission;
 use junto_media::share::synthetic::SyntheticCapture;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use crate::limit::step;
 
 use crate::support::{Device, TestServer, claim, join, logged_in};
 
@@ -34,7 +36,176 @@ pub const HEARD_DBFS: f32 = -20.0;
 pub const ABSENT_DBFS: f32 = -55.0;
 
 /// The one LiveKit server of the test run. A test that restarts it holds it alone.
-pub static MEDIA_SERVER: RwLock<()> = RwLock::const_new(());
+static MEDIA_SERVER: RwLock<()> = RwLock::const_new(());
+
+/// The tests that hold the media server now. A test that waits for it notes them as its
+/// step, so that a test that does not end names the test that it waits for.
+static HOLDERS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The hold of a test on the media server.
+pub struct MediaServer {
+    _shared: Option<RwLockReadGuard<'static, ()>>,
+    _alone: Option<RwLockWriteGuard<'static, ()>>,
+    test: String,
+}
+
+impl Drop for MediaServer {
+    fn drop(&mut self) {
+        if self._alone.is_some() {
+            give_the_media_server_back();
+        }
+        let mut holders = HOLDERS.lock().unwrap();
+        if let Some(at) = holders.iter().position(|test| *test == self.test) {
+            holders.remove(at);
+        }
+    }
+}
+
+fn holding(
+    shared: Option<RwLockReadGuard<'static, ()>>,
+    alone: Option<RwLockWriteGuard<'static, ()>>,
+) -> MediaServer {
+    let test = this_test();
+    HOLDERS.lock().unwrap().push(test.clone());
+    step("holds the media server");
+    MediaServer {
+        _shared: shared,
+        _alone: alone,
+        test,
+    }
+}
+
+fn this_test() -> String {
+    std::thread::current().name().unwrap_or("a test").to_owned()
+}
+
+/// The longest time that one Docker command of a restore of the media server may take.
+const RESTORE_LIMIT: Duration = Duration::from_secs(30);
+
+/// Makes the LiveKit server of the test run run and answer again. A test that holds it
+/// alone pauses or stops it; when that test ends in another way than its own last step, by
+/// a failure or by its limit, the tests after it would find no media server.
+fn give_the_media_server_back() {
+    let Ok(container) = std::env::var("JUNTO_TEST_LIVEKIT_CONTAINER") else {
+        return;
+    };
+    // Each command does nothing to a server that runs already.
+    for action in ["unpause", "start"] {
+        docker_within(&[action, &container], RESTORE_LIMIT);
+    }
+    let started = std::time::Instant::now();
+    while !livekit_answers() {
+        if started.elapsed() > PATIENCE {
+            eprintln!("after {PATIENCE:?} the media server {container} does not answer");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Runs a Docker command from a drop, which cannot wait for a future, and ends it at
+/// `limit`.
+fn docker_within(arguments: &[&str], limit: Duration) {
+    let Ok(mut child) = std::process::Command::new("docker")
+        .args(arguments)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let _adopted = crate::limit::adopt(child.id());
+    let started = std::time::Instant::now();
+    while matches!(child.try_wait(), Ok(None)) {
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// True when the API of the media server answers a request at once.
+pub fn livekit_answers() -> bool {
+    std::env::var("JUNTO_TEST_LIVEKIT_API_URL").is_ok_and(|url| answers(&url))
+}
+
+/// How long one check of the media server may wait for each of its steps.
+const ANSWER_WAIT: Duration = Duration::from_millis(500);
+
+/// True when an HTTP server at `url` answers a request within the waits of a check. The name
+/// is looked up on a thread of its own, because a lookup has no time limit of its own.
+fn answers(url: &str) -> bool {
+    use std::io::{Read, Write};
+    use std::net::ToSocketAddrs;
+    let authority = url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let (found, finding) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = found.send(authority.to_socket_addrs().map(|mut all| all.next()));
+    });
+    let Ok(Ok(Some(address))) = finding.recv_timeout(ANSWER_WAIT) else {
+        return false;
+    };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&address, ANSWER_WAIT) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(ANSWER_WAIT)).is_err()
+        || stream.set_write_timeout(Some(ANSWER_WAIT)).is_err()
+        || stream.write_all(b"GET / HTTP/1.0\r\n\r\n").is_err()
+    {
+        return false;
+    }
+    let mut answer = [0u8; 12];
+    stream.read_exact(&mut answer).is_ok() && answer.starts_with(b"HTTP/1.")
+}
+
+#[test]
+fn a_check_of_a_media_server_that_does_not_answer_ends_within_its_waits() {
+    // The listener accepts connections into its queue and never answers them.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let started = std::time::Instant::now();
+    assert!(!answers(&format!(
+        "http://{}",
+        silent.local_addr().unwrap()
+    )));
+    // An address of a private network that no host of a test answers, and a name that the
+    // system cannot look up: each step ends at its wait.
+    assert!(!answers("http://10.255.255.1:7880"));
+    assert!(!answers(
+        "http://junto-test-name-that-does-not-exist.invalid:7880"
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+fn note_wait(how: &str) {
+    let holders = HOLDERS.lock().unwrap().join(", ");
+    step(format!(
+        "waits for the media server, {how}; it is held by: {holders}"
+    ));
+}
+
+/// Waits for the media server, which the test shares with the other tests that do not
+/// restart it.
+pub async fn media_server_shared() -> MediaServer {
+    note_wait("shared");
+    holding(Some(MEDIA_SERVER.read().await), None)
+}
+
+/// Waits until the test holds the media server alone, to restart it.
+pub async fn media_server_alone() -> MediaServer {
+    note_wait("alone");
+    holding(None, Some(MEDIA_SERVER.write().await))
+}
 
 pub struct Person {
     pub device: Device,
@@ -118,6 +289,7 @@ impl Person {
 
     /// Waits until the view of the calls fulfils a condition.
     pub async fn until(&self, what: &str, holds: impl FnMut(&CallsView) -> bool) -> CallsView {
+        step(what);
         let mut watch = self.calls.watch();
         match tokio::time::timeout(PATIENCE, watch.wait_for(holds)).await {
             Ok(Ok(view)) => view.clone(),
@@ -129,6 +301,7 @@ impl Person {
     }
 
     pub async fn enter(&self, target: CallTarget) {
+        step("asks to join the call");
         self.calls.join(target).await.unwrap();
         self.until("the media connection of the call", |view| {
             view.call
@@ -170,6 +343,7 @@ impl Person {
     /// Waits until the tone of another person arrives at a level that does not change any
     /// more, and returns that level.
     pub async fn until_steady(&self, of: &Person) -> f32 {
+        step(format!("the tone of {} Hz is steady", of.hz));
         let started = tokio::time::Instant::now();
         let mut before = f32::MIN;
         loop {
@@ -188,6 +362,7 @@ impl Person {
     }
 
     pub async fn until_level(&self, hz: f32, what: &str, holds: impl Fn(f32) -> bool) -> f32 {
+        step(format!("{what}: {hz} Hz"));
         let started = tokio::time::Instant::now();
         loop {
             let level = self.hears(hz);
@@ -225,6 +400,7 @@ pub async fn when(
     what: &str,
     holds: impl FnMut(&LiveView) -> bool,
 ) -> LiveView {
+    step(what);
     let mut watch = handle.live().watch();
     match tokio::time::timeout(PATIENCE, watch.wait_for(holds)).await {
         Ok(Some(view)) => view,
@@ -423,6 +599,7 @@ impl Room {
 
 /// Waits until `holds`, for a state that no watch tells.
 pub async fn until(what: &str, holds: impl Fn() -> bool) {
+    step(what);
     let started = tokio::time::Instant::now();
     while !holds() {
         assert!(
@@ -435,4 +612,34 @@ pub async fn until(what: &str, holds: impl Fn() -> bool) {
 
 pub fn account(handle: &ServerHandle) -> AccountId {
     logged_in(handle)
+}
+
+#[tokio::test]
+async fn a_test_that_waits_for_the_media_server_notes_the_tests_that_hold_it() {
+    let held = media_server_shared().await;
+    let holder = this_test();
+    let noted = std::thread::Builder::new()
+        .name("a waiting test".to_owned())
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let waited = runtime.block_on(async {
+                tokio::time::timeout(Duration::from_millis(100), media_server_alone()).await
+            });
+            assert!(waited.is_err(), "the media server is held");
+            crate::limit::last_steps()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(
+        noted.contains(&format!(
+            "waits for the media server, alone; it is held by: {holder}"
+        )),
+        "{noted}"
+    );
+    drop(held);
+    assert!(!HOLDERS.lock().unwrap().contains(&holder));
 }

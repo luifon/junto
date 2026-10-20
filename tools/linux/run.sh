@@ -10,6 +10,8 @@ build=$prefix-build
 postgres=$prefix-postgres
 postgres_image=${JUNTO_TEST_POSTGRES_IMAGE:-postgres:17-alpine}
 livekit=$prefix-livekit
+# The settings of every form of the deployment that do not depend on the host (ADR 0904).
+livekit_common=$(cat "$root/deploy/livekit-common.yaml")
 livekit_image=${JUNTO_TEST_LIVEKIT_IMAGE:-livekit/livekit-server:v1.13.9@sha256:d0c04791bf63ca8dcea123571827d56ba9504bd57c8d5de60ee03b5408cc3154}
 proxy=$prefix-control
 cargo_volume=$prefix-cargo
@@ -84,6 +86,7 @@ webhook:
   api_key: devkey
   urls:
     - http://$build:17890/internal/media/notifications
+$livekit_common
 " "$livekit_image" \
     --dev --bind 0.0.0.0 >/dev/null
 created="$proxy $created"
