@@ -46,6 +46,7 @@ impl Shell {
         };
         let server_id = server.id;
         let keep = server.keep_connected;
+        let can_log_out = server.can_log_out;
         let has_content = !matches!(server.content, crate::state::view::Content::State);
         let header = div()
             .flex()
@@ -191,6 +192,23 @@ impl Shell {
                         )
                     })
                     .child(menu_separator(cx))
+                    // Drawn in every state, so that a change of the state while the menu is
+                    // open moves no item under the pointer (ADR 0730).
+                    .child(
+                        MenuItem::new("log-out", text::LOG_OUT)
+                            .detail(if can_log_out {
+                                text::LOG_OUT_HELP
+                            } else {
+                                text::LOG_OUT_UNAVAILABLE
+                            })
+                            .disabled(!can_log_out)
+                            .selector("menu-log-out")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.log_out(server_id, cx));
+                                this.close_layer(window, cx);
+                            })),
+                    )
                     .child(
                         MenuItem::new("remove-server", text::REMOVE_SERVER)
                             .icon(Icon::Trash)

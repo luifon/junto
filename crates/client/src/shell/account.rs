@@ -1,10 +1,11 @@
-//! The account layer (ADR 0781): the profile and the devices of the account on the
-//! selected server, in the frame of the administration layer: a list of pages at the left
+//! The account layer (ADR 0781): the profile, the devices and the recoveries of the account
+//! on the selected server, in the frame of the administration layer: a list of pages at the left
 //! and the open page at the right. A form and a question are drawn in the row that they
 //! belong to.
 
 mod devices;
 mod profile;
+mod recoveries;
 
 use std::path::PathBuf;
 
@@ -242,7 +243,7 @@ impl Shell {
             .account_view()
             .and_then(|view| match view.page {
                 PageView::Profile(page) => Some(page.name),
-                PageView::Devices(_) => None,
+                PageView::Devices(_) | PageView::Recoveries(_) => None,
             });
         if let Some(name) = held {
             self.account
@@ -455,6 +456,7 @@ impl Shell {
         let page = match &view.page {
             PageView::Profile(page) => self.render_profile_page(&view, page, window, cx),
             PageView::Devices(page) => self.render_devices_page(&view, page, window, cx),
+            PageView::Recoveries(list) => self.render_recoveries_page(list, window, cx),
         };
         let surface = Surface {
             id: "account",
@@ -486,7 +488,11 @@ impl Shell {
                 .truncate()
                 .child(text::account::ON_THIS_SERVER),
         );
-        for page in [AccountPage::Profile, AccountPage::Devices] {
+        for page in [
+            AccountPage::Profile,
+            AccountPage::Devices,
+            AccountPage::Recoveries,
+        ] {
             let name = text::account::page_name(page);
             column = column.child(
                 ChannelRow::new(name, text::account::page_icon(page), name)

@@ -862,6 +862,26 @@ fn every_state_of_the_access_and_of_the_connection_has_its_status() {
         ServerStatus::Unreachable
     );
     assert_eq!(logged_out(reachable(), None), ServerStatus::LoggedOut);
+    // After the logout of the person the client contacts nobody: the state is told without
+    // a contact, and a login of the person connects.
+    let by_person = |reach, in_progress| {
+        let mut server = without_account(AccessState::LoggedOutByPerson { account_id: own });
+        server.reach = reach;
+        server.in_progress = in_progress;
+        status(&server)
+    };
+    assert_eq!(
+        by_person(Reach::Unknown, None),
+        ServerStatus::LoggedOutByPerson
+    );
+    assert_eq!(
+        by_person(Reach::Unreachable, None),
+        ServerStatus::LoggedOutByPerson
+    );
+    assert_eq!(
+        by_person(Reach::Unknown, Some(ActionKind::LogIn)),
+        ServerStatus::Connecting
+    );
     let too_old = Incompatibility::ClientTooOld { server_oldest: 3 };
     assert_eq!(
         logged_out(Reach::Incompatible(too_old), None),

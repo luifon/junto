@@ -22,10 +22,10 @@ use crate::shell::Shell;
 use crate::state::admin::view::people::{
     AccountLine, Blocked, DEFAULT_EXPIRY_DAYS, DEFAULT_USES, EXPIRY_DAYS, Grant, InviteLine,
     InvitesPage, MemberLine, MemberList, MembersPage, NewCode, NoRemoval, PeoplePage, RequestsPage,
-    USES, expiry, typed_reason, typed_uses,
+    USES, expiry, typed_reason, typed_recovery, typed_uses,
 };
 use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
-use crate::state::admin::{AdminPage, AskKind, AskState};
+use crate::state::admin::{AdminPage, AskKind, AskState, Made};
 use crate::text;
 use crate::text::admin::people as txt;
 use crate::theme::{Theme, theme, u};
@@ -57,6 +57,8 @@ pub enum Open {
     BanAccount(AccountId),
     /// The question before the removal of a member from the shown workspace.
     RemoveMember(AccountId),
+    /// The form of the recovery of an account onto a new device (ADR 0104).
+    RecoverAccount(AccountId),
     /// The form of a new invite.
     NewInvite,
 }
@@ -83,6 +85,12 @@ pub(crate) struct Ui {
     pub(crate) reason: Entity<InputState>,
     /// The typed message to the person of that ban or removal (ADR 0120).
     pub(crate) message: Entity<InputState>,
+    /// The typed public key of the new device of a recovery.
+    pub(crate) recovery_key: Entity<InputState>,
+    /// The typed name of the new device of a recovery.
+    pub(crate) recovery_device: Entity<InputState>,
+    /// Why the form of a recovery was not sent.
+    pub(crate) recovery_invalid: Option<&'static str>,
     pub(crate) open: Option<Open>,
     pub(crate) filter: Filter,
     /// The lifetime of a new invite in days.
@@ -110,6 +118,13 @@ impl Ui {
         let uses = Field::state(txt::USES_PLACEHOLDER, window, cx);
         let reason = Field::state(txt::REASON_PLACEHOLDER, window, cx);
         let message = Field::state(txt::MESSAGE_PLACEHOLDER, window, cx);
+        let recovery_key = Field::state(txt::RECOVER_KEY_PLACEHOLDER, window, cx);
+        let recovery_device = Field::state(txt::RECOVER_DEVICE_PLACEHOLDER, window, cx);
+        fn retyped(_: &mut Shell, event: FieldEvent, _: &mut Window, cx: &mut Context<Shell>) {
+            if event == FieldEvent::Changed {
+                cx.notify();
+            }
+        }
         fn redraw(_: &mut Shell, event: FieldEvent, _: &mut Window, cx: &mut Context<Shell>) {
             match event {
                 FieldEvent::Changed => cx.notify(),
@@ -132,11 +147,27 @@ impl Ui {
             // The question draws whether the typed texts can be sent.
             Field::observe(&reason, window, cx, redraw),
             Field::observe(&message, window, cx, redraw),
+            Field::observe(
+                &recovery_key,
+                window,
+                cx,
+                |this: &mut Shell, event, window, cx| {
+                    this.admin.people.recovery_invalid = None;
+                    match event {
+                        FieldEvent::Changed => cx.notify(),
+                        FieldEvent::Submitted => this.submit_recovery(window, cx),
+                    }
+                },
+            ),
+            Field::observe(&recovery_device, window, cx, retyped),
         ];
         let ui = Self {
             uses,
             reason,
             message,
+            recovery_key,
+            recovery_device,
+            recovery_invalid: None,
             open: None,
             filter: Filter::All,
             invite_days: DEFAULT_EXPIRY_DAYS,
@@ -291,6 +322,165 @@ impl Shell {
         Ok(Statement { reason, message })
     }
 
+    /// Puts text into the fields of the open recovery, as typing does.
+    pub fn type_recovery(
+        &mut self,
+        key: &str,
+        device: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (key, device) = (key.to_owned(), device.to_owned());
+        let people = &self.admin.people;
+        people
+            .recovery_key
+            .update(cx, |field, cx| field.set_value(key, window, cx));
+        people
+            .recovery_device
+            .update(cx, |field, cx| field.set_value(device, window, cx));
+        cx.notify();
+    }
+
+    /// Sends the open recovery: the key that the person typed, checked before any request,
+    /// and the name of the new device.
+    fn submit_recovery(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Open::RecoverAccount(account_id)) = self.admin.people.open else {
+            return;
+        };
+        let Some(view) = self.state.read(cx).admin_view() else {
+            return;
+        };
+        let what = AskKind::RecoverAccount(account_id);
+        if view.sending(what) {
+            return;
+        }
+        let people = &self.admin.people;
+        let typed = typed_recovery(
+            &people.recovery_key.read(cx).value(),
+            &people.recovery_device.read(cx).value(),
+        );
+        let recovery = match typed {
+            Ok(recovery) => recovery,
+            Err(fault) => {
+                self.admin.people.recovery_invalid = Some(txt::recovery_fault(fault));
+                cx.notify();
+                return;
+            }
+        };
+        let server_id = view.server_id;
+        self.admin.people.recovery_invalid = None;
+        self.admin.people.sent = Some(what);
+        self.state.update(cx, |state, cx| {
+            state.recover_account(server_id, account_id, recovery, cx);
+        });
+        cx.notify();
+    }
+
+    /// The form of a recovery in the row of its account: the question with its two
+    /// answers.
+    fn render_recovery_question(
+        &mut self,
+        name: &str,
+        sending: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(u(8.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink)
+                    .child(txt::recover_question(name)),
+            )
+            .child(
+                Button::new("recovery-cancel")
+                    .label(text::CANCEL)
+                    .selector("recovery-cancel")
+                    .disabled(sending)
+                    .h(u(28.0))
+                    .px(u(10.0))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_people_open(None, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("recovery-confirm")
+                    .kind(ButtonKind::Primary)
+                    .label(txt::RECOVER)
+                    .selector("recovery-confirm")
+                    .disabled(sending)
+                    .h(u(28.0))
+                    .px(u(10.0))
+                    .on_click(cx.listener(|this, _, window, cx| this.submit_recovery(window, cx))),
+            )
+    }
+
+    /// The fields of an open recovery under its question, with what a recovery does and
+    /// why the typed text was not sent.
+    fn render_recovery_fields(&mut self, theme: &Theme) -> AnyElement {
+        let people = &self.admin.people;
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(u(4.0))
+            .mt(u(6.0))
+            .mb(u(6.0))
+            .pl(u(34.0))
+            .debug_selector(|| "recovery-form".to_owned())
+            .child(Field::new(&people.recovery_key, txt::RECOVER_KEY).selector("recovery-key"))
+            .child(
+                div().mt(u(6.0)).child(
+                    Field::new(&people.recovery_device, txt::RECOVER_DEVICE)
+                        .selector("recovery-device"),
+                ),
+            )
+            .child(sentence(txt::RECOVER_HELP, theme).mt(u(4.0)))
+            .child(
+                crate::ui::notice_slot("recovery-invalid-slot").children(
+                    people
+                        .recovery_invalid
+                        .map(|reason| Notice::error(reason).selector("recovery-invalid")),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// The recovery that the server did, in the row of its account until the person puts
+    /// it away.
+    fn render_recovered(&mut self, at: OffsetDateTime, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_none()
+            .mt(u(4.0))
+            .mb(u(4.0))
+            .pl(u(34.0))
+            .child(
+                Notice::new(txt::recovered(at))
+                    .selector("account-recovered")
+                    .action(
+                        Button::new("recovered-done")
+                            .kind(ButtonKind::Primary)
+                            .label(txt::DONE)
+                            .selector("recovered-done")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.admin.people.space.release();
+                                this.state
+                                    .update(cx, |state, cx| state.dismiss_admin_made(cx));
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// The fields of the reason and of the message to the person under an open question,
     /// with what each text is for and why a typed text cannot be sent.
     fn render_reason(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -361,9 +551,15 @@ impl Shell {
         if open == Some(Open::NewInvite) {
             self.reset_invite_form(window, cx);
         }
-        // A reason and a message belong to the question that they were typed for.
+        // A reason and a message belong to the question that they were typed for, and a
+        // key to the recovery that it was typed for.
         self.type_reason("", window, cx);
         self.type_moderation_message("", window, cx);
+        self.type_recovery("", "", window, cx);
+        self.admin.people.recovery_invalid = None;
+        // A recovery that a row tells is put away with it.
+        self.state
+            .update(cx, |state, cx| state.dismiss_admin_recovered(cx));
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
         cx.notify();
@@ -550,9 +746,18 @@ impl Shell {
             action.is_err_and(|reason| reason != Blocked::OrderNotRead)
         };
         let reading = |action: Result<(), Blocked>| action == Err(Blocked::OrderNotRead);
+        // While a recovery is sent the page offers no release of its row: its answer
+        // arrives at a time that the person does not choose (ADR 0730).
+        let recovering = matches!(
+            self.admin.people.sent,
+            Some(AskKind::RecoverAccount(id)) if view.sending(AskKind::RecoverAccount(id))
+        );
+        let held =
+            |reason: Option<&'static str>| reason.or(recovering.then_some(txt::RECOVERY_SENT));
         let stale = match self.admin.people.open {
             Some(Open::RemoveAccount(id)) => id == account_id && gone(row.remove),
             Some(Open::BanAccount(id)) => id == account_id && gone(row.ban),
+            Some(Open::RecoverAccount(id)) => id == account_id && row.recover != Some(Ok(())),
             _ => false,
         };
         if stale {
@@ -602,6 +807,11 @@ impl Shell {
                     },
                 )
                 .into_any_element(),
+            Some(Open::RecoverAccount(id)) if id == account_id && row.recover == Some(Ok(())) => {
+                let sending = view.sending(AskKind::RecoverAccount(account_id));
+                self.render_recovery_question(&row.name, sending, theme, cx)
+                    .into_any_element()
+            }
             _ => {
                 let mut content = div()
                     .flex()
@@ -649,7 +859,7 @@ impl Shell {
                         ("account-remove", account_id.as_uuid().as_u128() as u64),
                         txt::REMOVE,
                         format!("account-remove-{account_id}"),
-                        row.remove.err().map(txt::blocked),
+                        held(row.remove.err().map(txt::blocked)),
                         cx.listener(move |this, _, window, cx| {
                             this.set_people_open(Some(Open::RemoveAccount(account_id)), window, cx);
                         }),
@@ -661,7 +871,7 @@ impl Shell {
                             ("account-ban", account_id.as_uuid().as_u128() as u64),
                             txt::BAN,
                             format!("account-ban-{account_id}"),
-                            row.ban.err().map(txt::blocked),
+                            held(row.ban.err().map(txt::blocked)),
                             cx.listener(move |this, _, window, cx| {
                                 this.set_people_open(
                                     Some(Open::BanAccount(account_id)),
@@ -672,7 +882,7 @@ impl Shell {
                         ));
                     }
                     AccountStatus::Banned => {
-                        let held = row.unban.err().map(txt::blocked).or(view
+                        let held = held(row.unban.err().map(txt::blocked)).or(view
                             .sending(AskKind::UnbanAccount(account_id))
                             .then_some(text::admin::SENDING));
                         content = content.child(row_action(
@@ -689,19 +899,46 @@ impl Shell {
                     }
                     AccountStatus::Removed => {}
                 }
+                if let Some(recover) = row.recover {
+                    content = content.child(row_action(
+                        ("account-recover", account_id.as_uuid().as_u128() as u64),
+                        txt::RECOVER,
+                        format!("account-recover-{account_id}"),
+                        held(recover.err().map(txt::no_recovery)),
+                        cx.listener(move |this, _, window, cx| {
+                            this.set_people_open(
+                                Some(Open::RecoverAccount(account_id)),
+                                window,
+                                cx,
+                            );
+                        }),
+                    ));
+                }
                 content.into_any_element()
             }
         };
         let refused = view
             .refused(AskKind::RemoveAccount(account_id))
             .or(view.refused(AskKind::BanAccount(account_id)))
-            .or(view.refused(AskKind::UnbanAccount(account_id)));
+            .or(view.refused(AskKind::UnbanAccount(account_id)))
+            .or(view.refused(AskKind::RecoverAccount(account_id)));
         let mut under: Vec<AnyElement> = Vec::new();
         if matches!(
             self.admin.people.open,
             Some(Open::RemoveAccount(id) | Open::BanAccount(id)) if id == account_id
         ) {
             under.push(self.render_reason(theme, cx));
+        }
+        if self.admin.people.open == Some(Open::RecoverAccount(account_id)) {
+            under.push(self.render_recovery_fields(theme));
+        }
+        if let Some(Made::Recovered {
+            account_id: recovered,
+            notice,
+        }) = &view.made
+            && *recovered == account_id
+        {
+            under.push(self.render_recovered(notice.performed_at, cx));
         }
         // The server keeps the account banned for the person: the row states it without a
         // pointer (ADR 0311).
@@ -738,6 +975,7 @@ impl Shell {
         let modes = [
             Open::RemoveAccount(account_id),
             Open::BanAccount(account_id),
+            Open::RecoverAccount(account_id),
         ];
         self.admin
             .people
@@ -846,6 +1084,7 @@ impl Shell {
         column
             .child(sentence(txt::REMOVAL_HELP, &theme).mt(u(12.0)))
             .child(sentence(txt::BAN_HELP, &theme).mt(u(4.0)))
+            .child(sentence(txt::RECOVERY_HELP, &theme).mt(u(4.0)))
             .into_any_element()
     }
 

@@ -121,7 +121,11 @@ fn apply_limits<'a>(actor: &Actor, request: &Request<'a>) -> Limited<'a> {
         } => Limited::Open(Check::Server(ServerPermission::BanMembers)),
 
         Request::OwnAccount => allow,
-        Request::ViewAccount(Acquaintance::Own | Acquaintance::SharedWorkspace) => allow,
+        // The profile of every account that the actor may contact (ADR 0307): an actor who
+        // administers the server passes the check of an unrelated account.
+        Request::ViewAccount(
+            Acquaintance::Own | Acquaintance::SharedWorkspace | Acquaintance::Administrator,
+        ) => allow,
         Request::ViewAccount(Acquaintance::Unrelated) => {
             Limited::Open(Check::Server(ServerPermission::BanMembers))
         }

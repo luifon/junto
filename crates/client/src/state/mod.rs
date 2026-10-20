@@ -8,6 +8,7 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod contacts;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -368,6 +369,8 @@ pub struct AppState {
     /// What the account layer holds: the open page, its requests and the devices that it
     /// lists (ADR 0781).
     account: account::AccountState,
+    /// The chooser of a new direct conversation (ADR 0307).
+    contacts: contacts::ContactSearch,
     /// The role and the flow of the link on all servers (ADR 0782).
     linking: linking::LinkingState,
     /// What the person did with the update notice, and a move of a server that failed
@@ -672,6 +675,7 @@ impl AppState {
             pending: Pending::default(),
             admin: admin::AdminState::default(),
             account: account::AccountState::default(),
+            contacts: contacts::ContactSearch::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
             update_install: update_install::InstallState::new(),
@@ -2135,6 +2139,22 @@ impl AppState {
     pub fn connect(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         if let Some(server) = self.client.server(server_id) {
             Self::run(server.connect(), cx);
+        }
+    }
+
+    /// Logs in after a logout of the person: from then on the application logs in by
+    /// itself again (ADR 0712).
+    pub fn log_in(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if let Some(server) = self.client.server(server_id) {
+            Self::run(server.dispatch_when_free(AccessAction::LogIn), cx);
+        }
+    }
+
+    /// Logs out of the account of the server on this device. The account and the key stay,
+    /// and the application does not log in again until the person asks (ADR 0712).
+    pub fn log_out(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if let Some(server) = self.client.server(server_id) {
+            Self::run(server.dispatch_when_free(AccessAction::LogOutByPerson), cx);
         }
     }
 

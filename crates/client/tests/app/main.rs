@@ -29,6 +29,7 @@ mod account;
 mod admin;
 mod admin_pages;
 mod calls;
+mod contacts;
 mod flows;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
@@ -41,11 +42,13 @@ mod layout_forms;
 mod linking;
 mod live;
 mod logo;
+mod logout;
 mod messages;
 mod notices;
 mod people;
 mod permissions;
 mod recordings;
+mod recovery;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.
 #[allow(dead_code)]

@@ -32,6 +32,7 @@ pub(crate) fn status_line(row: &ServerRow) -> Option<(Option<Icon>, &'static str
         ServerStatus::Connecting => (None, text::STATUS_CONNECTING),
         ServerStatus::Reconnecting => (Some(Icon::Retry), text::STATUS_RECONNECTING),
         ServerStatus::LoggedOut => (Some(Icon::Warning), text::STATUS_LOGGED_OUT),
+        ServerStatus::LoggedOutByPerson => (None, text::STATUS_LOGGED_OUT_BY_PERSON),
         ServerStatus::WaitingForApproval { .. } => {
             (Some(Icon::Clock), text::STATUS_WAITING_FOR_APPROVAL)
         }

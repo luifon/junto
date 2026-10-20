@@ -974,6 +974,22 @@ impl Shell {
                 .selector("logged-out")
                 .action(check(text::TRY_AGAIN, cx))
                 .action(remove(cx)),
+            ServerStatus::LoggedOutByPerson => {
+                StatePanel::new(text::LOGGED_OUT_BY_PERSON_TITLE, text::LOGGED_OUT_BY_PERSON)
+                    .selector("logged-out-by-person")
+                    .action(
+                        Button::new("log-in")
+                            .kind(ButtonKind::Primary)
+                            .label(text::LOG_IN)
+                            .selector("log-in")
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.log_in(server_id, cx));
+                            })),
+                    )
+                    .action(remove(cx))
+            }
             ServerStatus::WaitingForApproval { name } => StatePanel::new(
                 text::REQUEST_SENT_TITLE,
                 text::request_sent(&server.name, name),

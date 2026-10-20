@@ -3,7 +3,7 @@
 
 use junto_client_core::model::{Collection, Loadable, ServerModel, WorkspaceModel, outranks};
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::account::{AccountStatus, AccountSummary};
+use junto_client_core::protocol::account::{AccountStatus, AccountSummary, RecoverAccount};
 use junto_client_core::protocol::ids::{
     AccountId, InviteId, JoinRequestId, ServerId, WorkspaceId, WorkspaceRoleId,
 };
@@ -63,6 +63,15 @@ pub enum Blocked {
     NotUnbannable,
 }
 
+/// Why the server owner cannot recover an account onto a new device (ADR 0104).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoRecovery {
+    /// The own account of the owner gets a new device by a link (ADR 0112).
+    OwnAccount,
+    /// The server recovers an active account only.
+    NotActive,
+}
+
 /// Why a member cannot be removed from the shown workspace (ADR 0106).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoRemoval {
@@ -104,6 +113,32 @@ pub fn typed_reason(text: &str) -> Result<Option<String>, ReasonFault> {
     }
 }
 
+/// Why a typed recovery cannot be sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryFault {
+    /// The text is no public key of a device.
+    Key,
+    /// The name of the new device breaks the rule of a device name (ADR 0112).
+    DeviceName,
+}
+
+/// The recovery that a request carries for what the owner typed: the public key without
+/// the spaces between the groups in which a window shows it (ADR 0782), and the name of
+/// the new device by the rule of the client core.
+pub fn typed_recovery(key: &str, device: &str) -> Result<RecoverAccount, RecoveryFault> {
+    let key: String = key
+        .chars()
+        .filter(|symbol| !symbol.is_whitespace())
+        .collect();
+    let public_key = key.parse().map_err(|_| RecoveryFault::Key)?;
+    let device_name =
+        junto_client_core::profile::device_name(device).map_err(|_| RecoveryFault::DeviceName)?;
+    Ok(RecoverAccount {
+        public_key,
+        device_name,
+    })
+}
+
 /// The server roles of an account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleNames {
@@ -131,6 +166,9 @@ pub struct AccountLine {
     /// For an administrator and an active account: the server roles that the account
     /// holds or can be given. Absent while the order of the roles is not read.
     pub assignable: Option<Vec<RoleChoice>>,
+    /// For the server owner: whether the account can be recovered onto a new device, and
+    /// why not. Absent for every other person: only the owner recovers (ADR 0104).
+    pub recover: Option<Result<(), NoRecovery>>,
 }
 
 impl AccountLine {
@@ -203,6 +241,13 @@ impl AccountLine {
             assignable: (administrator && account.status == AccountStatus::Active)
                 .then(|| server_choices(model, &account.server_role_ids))
                 .flatten(),
+            recover: model.account.is_owner.then_some(if account.id == own {
+                Err(NoRecovery::OwnAccount)
+            } else if account.status != AccountStatus::Active {
+                Err(NoRecovery::NotActive)
+            } else {
+                Ok(())
+            }),
         }
     }
 }
@@ -965,6 +1010,25 @@ mod tests {
 
     fn first_invite(page: &InvitesPage) -> &InviteLine {
         &page.invites.loaded().unwrap()[0]
+    }
+
+    #[test]
+    fn a_typed_recovery_is_a_key_without_its_spaces_and_a_device_name() {
+        let key = junto_client_core::protocol::keys::PublicKey::from_bytes([7; 32]);
+        let grouped = crate::text::account::key_fingerprint(&key);
+        assert!(grouped.contains(' '));
+        let typed = typed_recovery(&format!(" {grouped}\n"), "  Replacement ").unwrap();
+        assert_eq!(typed.public_key, key);
+        assert_eq!(typed.device_name, "Replacement");
+        assert_eq!(typed_recovery(&grouped, "").unwrap().device_name, "");
+        assert_eq!(
+            typed_recovery("not a key", "").unwrap_err(),
+            RecoveryFault::Key
+        );
+        assert_eq!(
+            typed_recovery(&grouped, &"n".repeat(65)).unwrap_err(),
+            RecoveryFault::DeviceName
+        );
     }
 
     #[test]

@@ -441,6 +441,13 @@ async fn world() -> World {
             &own,
         ),
         operation(
+            Method::GET,
+            "/api/v1/direct-messages/contacts",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
             Method::POST,
             "/api/v1/conversations",
             &[],

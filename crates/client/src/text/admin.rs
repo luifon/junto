@@ -345,6 +345,7 @@ fn conflict(what: AskKind) -> &'static str {
         AskKind::RemoveAccount(_) => "The account is removed already.",
         AskKind::BanAccount(_) => "The account is banned or removed already.",
         AskKind::UnbanAccount(_) => "The account is not banned.",
+        AskKind::RecoverAccount(_) => "The account is banned or removed. It is not recovered.",
         AskKind::ApproveRequest(_) | AskKind::DenyRequest(_) => {
             "The request was decided already, or it has expired."
         }
@@ -436,6 +437,10 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
         }
         (Some(ErrorCode::InvalidRequest), _) if is_moderation(what) => people::REASON_REFUSED,
         (Some(ErrorCode::InvalidRequest), _) => invalid(what),
+        (Some(ErrorCode::KeyAlreadyRegistered), _) => {
+            "This key belongs to a device of an account already. The new device shows the key \
+             of its own that it waits with."
+        }
         (Some(ErrorCode::InviteNotFound), _) => "The server knows no invite with this code.",
         (Some(ErrorCode::InviteExpired), _) => "The invite has expired.",
         (Some(ErrorCode::InviteExhausted), _) => "The invite has no use left.",

@@ -258,9 +258,9 @@ impl From<InvitationOutcome> for RingOutcome {
 fn account_of(access: &junto_client_core::flow::access::AccessState) -> Option<AccountId> {
     use junto_client_core::flow::access::AccessState;
     match access {
-        AccessState::LoggedIn { account_id, .. } | AccessState::LoggedOut { account_id } => {
-            Some(*account_id)
-        }
+        AccessState::LoggedIn { account_id, .. }
+        | AccessState::LoggedOut { account_id }
+        | AccessState::LoggedOutByPerson { account_id } => Some(*account_id),
         AccessState::Banned { account_id } => *account_id,
         AccessState::NoAccount { .. }
         | AccessState::WaitingForApproval { .. }

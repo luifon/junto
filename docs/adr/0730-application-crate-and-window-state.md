@@ -35,7 +35,7 @@ State:
 - A removal of a server that is asked for while a removal of the same server runs is not started.
 - The result of a write is used only where it still applies. A name that was stored marks the name field as saved only when the field still holds that name.
 - The argument `--scale` sets the interface scale of one start and is not stored. A scale that the person chooses in the settings is stored and ends the scale of the start.
-- What the application does by itself: it contacts every saved server at the start; it checks a join request or a device link that waits every 5 seconds, as `junto-cli --wait` does; and every 20 seconds it contacts a server on which this device has an account and no session.
+- What the application does by itself: it contacts every saved server at the start; it checks a join request or a device link that waits every 5 seconds, as `junto-cli --wait` does; and every 20 seconds it contacts a server on which this device has an account and no session. A server on which the person logged out is not contacted until the person logs in (ADR 0712).
 - A recovery is acknowledged only by the button of its notice (ADR 0118). A notice that was drawn is not acknowledged.
 
 Window:
@@ -48,6 +48,7 @@ Window:
 - The call of the device ends with the application: the server is told when the application quits, with a wait of at most 2 seconds.
 - The interface text is in one module, with one sentence for every failure of a flow and for the error codes of joining. A test fails when the client core adds a failure without a sentence.
 - A device name that the application sends is the name of the product and of the operating system. It holds nothing of the machine or of the person.
+- The menu of the selected server has "Log out", which is the logout of the person (ADR 0712). The item is drawn in every state of the server, disabled with its reason as its second line when the state does not accept the logout, so that a change of the state while the menu is open moves no item of the menu. After the logout the main area shows the state "You logged out of this server" with "Log in" and "Remove from this device", and the server book shows "logged out" under the name of the server. Test: `logout::a_person_logs_out_and_the_device_logs_in_again_only_when_the_person_asks` logs out in the menu, sees the server end the session, starts the window again without a login, logs in with the button to the same account, and starts again with a login. The test failed before the menu had the item.
 
 Notice areas:
 

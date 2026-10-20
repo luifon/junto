@@ -126,6 +126,8 @@ pub enum AskKind {
     RemoveAccount(AccountId),
     BanAccount(AccountId),
     UnbanAccount(AccountId),
+    /// The server owner gives a new device key access to an account (ADR 0104).
+    RecoverAccount(AccountId),
     CreateInvite,
     RevokeInvite(InviteId),
     ApproveRequest(JoinRequestId),
@@ -178,6 +180,11 @@ pub enum Made {
     Entered(Vec<WorkspaceId>),
     /// An export was asked for. Its state is on the page of the exports.
     Export(ExportId),
+    /// The recovery of an account: the answer states when the server did it (ADR 0112).
+    Recovered {
+        account_id: AccountId,
+        notice: junto_client_core::protocol::account::RecoveryNotice,
+    },
 }
 
 /// What the administration holds beside the state of the servers.
@@ -357,6 +364,15 @@ impl AppState {
     pub fn dismiss_admin_ask(&mut self, cx: &mut Context<Self>) {
         self.admin.ask = None;
         cx.notify();
+    }
+
+    /// Puts away the recovery that the row of its account tells. A code or a token that the
+    /// last request made stays.
+    pub fn dismiss_admin_recovered(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.admin.made, Some(Made::Recovered { .. })) {
+            self.admin.made = None;
+            cx.notify();
+        }
     }
 
     /// Puts away what the last request made. A code and a token are gone with it.
