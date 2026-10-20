@@ -1417,3 +1417,114 @@ async fn channels_are_moved_together_or_not_at_all() {
     assert_eq!(after[&notes.id], (None, plans.position));
     assert_eq!(after[&closed.id], before[&closed.id]);
 }
+
+/// A page drops "x" after "b", between "b" at 10 and "c" at 20, and sends the two neighbours
+/// as checks. Another administrator moved "b" first: the move of "x" alone would still apply
+/// and put "x" before both channels, so the check refuses it. A check needs "view channel"
+/// only and writes nothing.
+#[tokio::test]
+async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let manager = server.join(&owner, "Manager").await;
+    server
+        .grant_workspace(&owner, &manager, workspace.id, &[W::ManageChannel])
+        .await;
+    let everyone = everyone_role(&server, &owner, workspace.id).await;
+    let mut placed = Vec::new();
+    for (name, position) in [("b", 10), ("c", 20), ("x", 30), ("hidden", 40)] {
+        let channel = create_channel(&server, &owner, workspace.id, name).await;
+        let channel: Channel = server
+            .patch(
+                &owner,
+                &format!("/api/v1/channels/{}", channel.id),
+                &json!({ "position": position }),
+            )
+            .await
+            .ok(StatusCode::OK);
+        placed.push(channel);
+    }
+    let [b, c, x, hidden] = <[Channel; 4]>::try_from(placed).unwrap();
+    // The manager sees "c" but may not change it, and does not see "hidden".
+    set_override(&server, &owner, c.id, everyone.id, &[], &[W::ManageChannel])
+        .await
+        .ok::<ChannelOverride>(StatusCode::OK);
+    set_override(
+        &server,
+        &owner,
+        hidden.id,
+        everyone.id,
+        &[],
+        &[W::ViewChannel],
+    )
+    .await
+    .ok::<ChannelOverride>(StatusCode::OK);
+    let path = format!("/api/v1/workspaces/{}/channels/positions", workspace.id);
+    let at = |position: i32| json!({ "category_id": null, "position": position });
+    let drop = |neighbour: &Channel, read: i32| {
+        json!({ "moves": [
+            { "channel_id": x.id, "from": at(30), "to": at(11) },
+            { "channel_id": neighbour.id, "from": at(read), "to": at(read) },
+            { "channel_id": c.id, "from": at(20), "to": at(20) },
+        ]})
+    };
+    let place_of = |id: ChannelId| {
+        let server = &server;
+        let owner = &owner;
+        async move {
+            let list: ChannelList = server
+                .get(
+                    owner,
+                    &format!("/api/v1/workspaces/{}/channels", workspace.id),
+                )
+                .await
+                .ok(StatusCode::OK);
+            list.channels
+                .into_iter()
+                .find(|channel| channel.id == id)
+                .map(|channel| (channel.category_id, channel.position))
+                .unwrap()
+        }
+    };
+    let audit_entries = || async {
+        sqlx::query_scalar::<_, i64>("select count(*) from audit_entries")
+            .fetch_one(&server.db)
+            .await
+            .unwrap()
+    };
+
+    // A check of a channel that the manager does not see refuses the request.
+    server
+        .patch(&manager, &path, &drop(&hidden, 40))
+        .await
+        .error(ErrorCode::NotFound);
+    assert_eq!(place_of(x.id).await, (None, 30));
+
+    // The other administrator moves "b"; the page still read it at 10.
+    server
+        .patch(
+            &owner,
+            &format!("/api/v1/channels/{}", b.id),
+            &json!({ "position": 40 }),
+        )
+        .await
+        .ok::<Channel>(StatusCode::OK);
+    server
+        .patch(&manager, &path, &drop(&b, 10))
+        .await
+        .error(ErrorCode::Conflict);
+    assert_eq!(place_of(x.id).await, (None, 30));
+
+    // From the current page the drop applies. The checks change nothing, so "x" has the only
+    // audit entry, and "c", which the manager may not change, is checked.
+    let entries = audit_entries().await;
+    server
+        .patch(&manager, &path, &drop(&b, 40))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(place_of(x.id).await, (None, 11));
+    assert_eq!(place_of(b.id).await, (None, 40));
+    assert_eq!(place_of(c.id).await, (None, 20));
+    assert_eq!(audit_entries().await, entries + 1);
+}

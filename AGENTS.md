@@ -89,7 +89,7 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
 - CI runs on three machines of the project and is started with `tools/ci/ci.sh`:
   - `ci.sh run <commit>` sends the commit to the Linux host and to the Windows machine over SSH and starts their jobs: on Linux `rust-linux`, `licences`, `transcription-worker`, `layout-page`; on Windows `rust-windows`.
   - `ci.sh local <commit>` runs the macOS jobs on the local machine: `rust-macos` and `deployment`.
-  - `ci.sh status <commit>` prints `passed` when the latest run on each of the three machines finished with every job passed.
+  - `ci.sh status <commit>` prints `passed` when each job of the three machines passed in the latest run of the commit that has the job, so a run of only the failed jobs completes an earlier run.
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
 - `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.
