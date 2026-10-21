@@ -569,8 +569,7 @@ fn group_order(
 /// does. Returns whether a drag started.
 fn drag_channel(window: &mut Window, from: &'static str, to: &'static str) -> bool {
     use gpui::{Modifiers, MouseButton, point, px};
-    let scroll = window.in_shell(|shell, _, _| shell.admin_scroll_handle());
-    let start = window.reveal(&scroll, from).center();
+    let start = crate::admin_pages::reveal_in_page(window, from).center();
     window
         .cx
         .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
@@ -580,7 +579,7 @@ fn drag_channel(window: &mut Window, from: &'static str, to: &'static str) -> bo
         Modifiers::none(),
     );
     let started = window.cx.update(|_, cx| cx.has_active_drag());
-    let end = window.reveal(&scroll, to).center();
+    let end = crate::admin_pages::reveal_in_page(window, to).center();
     window
         .cx
         .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
@@ -877,15 +876,19 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
     assert_eq!(server_places(&world, &owner, default), server_now);
     assert_eq!(bounds(&mut window), pressed);
     // Close shows the order of the state that was read again, with the events still held.
+    // The order before the read is the same, so the wait is for the place that only the
+    // read state holds.
     crate::admin_pages::click_in_page(&mut window, "channel-move-refused-dismiss");
-    window.until("the page shows the order of the state", |window| {
-        !window.shows("channel-move-refused")
-            && group_order(window, None).ends_with(&[x, next, last])
-    });
-    let page = channels_page(&mut window).unwrap();
-    assert_eq!(
-        page.channel(last).unwrap().place.position,
-        before[&last].1 + 50
+    window.until(
+        "the page shows the order of the state that was read",
+        |window| {
+            !window.shows("channel-move-refused")
+                && group_order(window, None).ends_with(&[x, next, last])
+                && channels_page(window).is_some_and(|page| {
+                    page.channel(last)
+                        .is_some_and(|line| line.place.position == before[&last].1 + 50)
+                })
+        },
     );
     proxy.release_events();
     assert_eq!(server_places(&world, &owner, default), server_now);
@@ -1002,8 +1005,13 @@ fn a_refused_move_to_keeps_the_height_of_its_form(cx: &mut TestAppContext) {
         at(a) == at(others[2]).map(|at| at + 1)
     });
     let rows = [others[3], others[4]].map(|id| selector(format!("channel-line-{id}")));
+    // The page draws only the rows in view: the two rows under the form are brought into
+    // view with the row of the form.
+    crate::admin_pages::reveal_in_page(&mut window, rows[1]);
+    let form_row = format!("channel-{a}");
     let bounds = |window: &mut Window| {
         window.settle();
+        crate::admin_pages::under_form(window, &form_row, rows[1]);
         rows.map(|selector| window.cx.debug_bounds(selector).unwrap())
     };
     let pressed = bounds(&mut window);

@@ -1,6 +1,7 @@
 //! The page of the categories and channels of a workspace, and the overview of the
 //! settings of one channel (ADR 0304, ADR 0402, ADR 0504).
 
+use super::list::Row;
 use gpui::{
     AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
@@ -885,37 +886,110 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &ChannelsPage,
-        _window: &mut Window,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        enum Line {
+            Heading,
+            Category(usize),
+            Channel(usize, usize),
+            NewChannel(usize),
+            NewCategory,
+        }
+        let mut rows = vec![("channels-header".to_owned(), Line::Heading)];
+        if page.may_manage {
+            for (group_index, group) in page.groups.iter().enumerate() {
+                let key = format!(
+                    "category-{:?}",
+                    group.category.as_ref().map(|category| category.id)
+                );
+                rows.push((key.clone(), Line::Category(group_index)));
+                rows.extend(group.channels.iter().enumerate().map(|(index, channel)| {
+                    (
+                        format!("channel-{}", channel.id),
+                        Line::Channel(group_index, index),
+                    )
+                }));
+                rows.push((format!("{key}-new"), Line::NewChannel(group_index)));
+            }
+            rows.push(("category-new".to_owned(), Line::NewCategory));
+        }
+        let list = rows
+            .iter()
+            .map(|(key, line)| {
+                let row = Row::new(key.clone(), true);
+                if matches!(line, Line::Channel(..)) {
+                    row
+                } else {
+                    row.part()
+                }
+            })
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, _, cx| {
+                let theme = theme(cx);
+                match rows[index].1 {
+                    Line::Heading => div()
+                        .flex()
+                        .flex_col()
+                        .child(page_title(
+                            text::admin::page_name(AdminPage::Channels),
+                            text::admin::CHANNELS_HELP,
+                            &theme,
+                        ))
+                        .children(
+                            (!page.may_manage)
+                                .then(|| sentence(text::MANAGE_NO_PERMISSION, &theme)),
+                        )
+                        .into_any_element(),
+                    Line::Category(index) => {
+                        let group = &page.groups[index];
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(this.render_category_header(
+                                &view,
+                                &page,
+                                group.category.as_ref(),
+                                group.channels.len(),
+                                &theme,
+                                cx,
+                            ))
+                            .children(group.channels.is_empty().then(|| {
+                                sentence(text::admin::NO_CHANNELS_HERE, &theme).py(u(6.0))
+                            }))
+                            .into_any_element()
+                    }
+                    Line::Channel(group, index) => this.render_channel_line(
+                        &view,
+                        &page,
+                        &page.groups[group].channels[index],
+                        index,
+                        &theme,
+                        cx,
+                    ),
+                    Line::NewChannel(index) => {
+                        this.render_new_channel(&view, &page.groups[index], index, &theme, cx)
+                    }
+                    Line::NewCategory => this.render_new_category(&view, &page, cx),
+                }
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_new_category(
+        &mut self,
+        view: &AdminView,
+        page: &ChannelsPage,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
-        let mut column = div().flex().flex_col().child(page_title(
-            text::admin::page_name(AdminPage::Channels),
-            text::admin::CHANNELS_HELP,
-            &theme,
-        ));
-        if !page.may_manage {
-            return column
-                .child(sentence(text::MANAGE_NO_PERMISSION, &theme))
-                .into_any_element();
-        }
-        for (index, group) in page.groups.iter().enumerate() {
-            column = column.child(self.render_category_header(
-                view,
-                page,
-                group.category.as_ref(),
-                group.channels.len(),
-                &theme,
-                cx,
-            ));
-            if group.channels.is_empty() {
-                column = column.child(sentence(text::admin::NO_CHANNELS_HERE, &theme).py(u(6.0)));
-            }
-            for (at, row) in group.channels.iter().enumerate() {
-                column = column.child(self.render_channel_line(view, page, row, at, &theme, cx));
-            }
-            column = column.child(self.render_new_channel(view, group, index, &theme, cx));
-        }
+        let mut column = div().flex().flex_col();
         // A new category.
         column = column.child(group_label(text::admin::NEW_CATEGORY, &theme));
         let new_category = match self.admin.mode {

@@ -2,6 +2,7 @@
 //! (ADR 0113), the members of the shown workspace (ADR 0115), the invites with the form of
 //! a new one, and the join requests (ADR 0111).
 
+use super::list::Row;
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, InteractiveElement, IntoElement, ParentElement,
     Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
@@ -280,6 +281,7 @@ impl Shell {
         ui.invalid = None;
         ui.sent = None;
         ui.space.release();
+        self.admin.list.state.remeasure();
         ui.new_invite.reset();
         ui.copied = None;
         self.reset_invite_form(window, cx);
@@ -473,6 +475,7 @@ impl Shell {
                             .px(u(10.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.admin.people.space.release();
+                                this.admin.list.state.remeasure();
                                 this.state
                                     .update(cx, |state, cx| state.dismiss_admin_made(cx));
                             })),
@@ -547,6 +550,7 @@ impl Shell {
         self.admin.people.invalid = None;
         self.admin.people.sent = None;
         self.admin.people.space.release();
+        self.admin.list.state.remeasure();
         self.admin.people.new_invite.release();
         if open == Some(Open::NewInvite) {
             self.reset_invite_form(window, cx);
@@ -1007,6 +1011,54 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_people(view, window, cx);
+        let filter = self.admin.people.filter;
+        let rows: Vec<_> = page
+            .accounts
+            .loaded()
+            .into_iter()
+            .flatten()
+            .filter(|row| filter == Filter::All || row.status == AccountStatus::Banned)
+            .cloned()
+            .collect();
+        let list = std::iter::once(Row::new("people-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("account-{}", row.id), true)),
+            )
+            .chain(std::iter::once(Row::new("people-footer", false).part()))
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                let theme = theme(cx);
+                if index == 0 {
+                    return this.render_people_header(&view, &page, window, cx);
+                }
+                if let Some(row) = rows.get(index - 1) {
+                    return this.render_account_row(&view, row, &theme, cx);
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(sentence(txt::REMOVAL_HELP, &theme).mt(u(12.0)))
+                    .child(sentence(txt::BAN_HELP, &theme).mt(u(4.0)))
+                    .child(sentence(txt::RECOVERY_HELP, &theme).mt(u(4.0)))
+                    .into_any_element()
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_people_header(
+        &mut self,
+        view: &AdminView,
+        page: &PeoplePage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let filter = self.admin.people.filter;
         let choice = Segmented::new(
@@ -1083,16 +1135,9 @@ impl Shell {
                             .debug_selector(|| "accounts-none".to_owned()),
                     );
                 }
-                for row in shown {
-                    column = column.child(self.render_account_row(view, row, &theme, cx));
-                }
             }
         }
-        column
-            .child(sentence(txt::REMOVAL_HELP, &theme).mt(u(12.0)))
-            .child(sentence(txt::BAN_HELP, &theme).mt(u(4.0)))
-            .child(sentence(txt::RECOVERY_HELP, &theme).mt(u(4.0)))
-            .into_any_element()
+        column.into_any_element()
     }
 
     /// The question before the removal of a member from the shown workspace, in the row
@@ -1144,10 +1189,212 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_people(view, window, cx);
+        let members = match &page.members {
+            MemberList::Loaded(rows) => rows.clone(),
+            _ => Vec::new(),
+        };
+        let addable = if matches!(page.members, MemberList::Loaded(_)) {
+            page.addable
+                .as_ref()
+                .and_then(Listed::loaded)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let list = std::iter::once(
+            Row::new("members-header", matches!(page.members, MemberList::Failed)).part(),
+        )
+        .chain(members.iter().map(|row| {
+            Row::new(
+                format!("member-{}", row.account_id),
+                row.assignable.is_some() || matches!(row.remove, Some(Ok(()))),
+            )
+        }))
+        .chain(std::iter::once(
+            Row::new(
+                "members-add-header",
+                matches!(page.addable, Some(Listed::Failed(_))),
+            )
+            .part(),
+        ))
+        .chain(
+            addable
+                .iter()
+                .map(|row| Row::new(format!("member-addable-{}", row.account_id), true)),
+        )
+        .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, _, cx| {
+                if index == 0 {
+                    return this.render_members_header(&page, cx);
+                }
+                if let Some(row) = members.get(index - 1) {
+                    return this.render_member_row(&view, &page, row, cx);
+                }
+                let index = index - members.len() - 1;
+                if index == 0 {
+                    return this.render_addable_header(&view, &page, cx);
+                }
+                this.render_addable_row(&view, &page, &addable[index - 1], cx)
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_member_row(
+        &mut self,
+        view: &AdminView,
+        page: &MembersPage,
+        row: &MemberLine,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let faces = self.faces(view.server_id);
+        let account_id = row.account_id;
+        let modes = [Open::RemoveMember(account_id)];
+        if let Some(question) = self.render_member_question(view, page, row, &theme, cx) {
+            let mut under = vec![self.render_reason(&theme, cx)];
+            under.extend(refusal(
+                view.refused(AskKind::RemoveMember(account_id)),
+                "member-remove-refused",
+            ));
+            let framed = framed(
+                format!("member-row-{account_id}"),
+                line(&theme).child(question),
+                under,
+            );
+            let open = self.admin.people.open;
+            return self
+                .admin
+                .people
+                .space
+                .row(open, &modes, framed)
+                .into_any_element();
+        }
+        let roles = (!row.roles.is_empty()).then(|| SharedString::from(row.roles.join(", ")));
+        let mut content = line(&theme)
+            .child(
+                crate::shell::people::avatar_of(
+                    &faces,
+                    row.account_id,
+                    &row.name,
+                    row.pictured,
+                    26.0,
+                )
+                .radius(2.0),
+            )
+            .child(line_text(row.name.clone(), roles, &theme));
+        if row.is_self {
+            content = content.child(Chip::new(txt::YOU));
+        }
+        let mut under: Vec<AnyElement> = Vec::new();
+        // Role order protects the member: the row states it without a
+        // pointer (ADR 0309).
+        if row.remove == Some(Err(NoRemoval::Outranked)) {
+            under.push(
+                sentence(txt::MEMBER_OUTRANKED, &theme)
+                    .mt(u(3.0))
+                    .mb(u(4.0))
+                    .pl(u(34.0))
+                    .ink(theme.colors.ink)
+                    .debug_selector(move || format!("member-outranked-{account_id}"))
+                    .into_any_element(),
+            );
+        }
+        under.extend(refusal(
+            view.refused(AskKind::RemoveMember(account_id)),
+            "member-remove-refused",
+        ));
+        if let Some(choices) = &row.assignable {
+            let shown = self.admin.roles.account == Some(account_id);
+            content = content.child(row_action(
+                ("member-roles", account_id.as_uuid().as_u128() as u64),
+                if shown {
+                    text::admin::roles::HIDE_ROLES
+                } else {
+                    text::admin::roles::ROLES
+                },
+                format!("member-roles-toggle-{account_id}"),
+                None,
+                cx.listener(move |this, _, _, cx| {
+                    this.show_account_roles((!shown).then_some(account_id), cx);
+                }),
+            ));
+            if shown {
+                under.push(self.render_role_choices(
+                    view,
+                    (account_id, &row.name),
+                    choices,
+                    None,
+                    &theme,
+                    cx,
+                ));
+            }
+        }
+        if let Some(remove) = row.remove {
+            content = content.child(row_action(
+                ("member-remove", account_id.as_uuid().as_u128() as u64),
+                txt::REMOVE_FROM_WORKSPACE,
+                format!("member-remove-{account_id}"),
+                remove.err().map(txt::no_removal),
+                cx.listener(move |this, _, window, cx| {
+                    this.set_people_open(Some(Open::RemoveMember(account_id)), window, cx);
+                }),
+            ));
+        }
+        let framed = framed(format!("member-row-{account_id}"), content, under);
+        let open = self.admin.people.open;
+        self.admin
+            .people
+            .space
+            .row(open, &modes, framed)
+            .into_any_element()
+    }
+
+    fn render_addable_row(
+        &mut self,
+        view: &AdminView,
+        page: &MembersPage,
+        row: &crate::state::admin::view::people::AddableLine,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let server_id = view.server_id;
-        let faces = self.faces(server_id);
         let workspace_id = page.workspace_id;
+        let faces = self.faces(server_id);
+        let account_id = row.account_id;
+        let what = AskKind::AddMember(account_id);
+        let content = line(&theme)
+            .child(
+                crate::shell::people::avatar_of(&faces, account_id, &row.name, false, 26.0)
+                    .radius(2.0),
+            )
+            .child(line_text(row.name.clone(), None, &theme))
+            .child(row_action(
+                ("member-add", account_id.as_uuid().as_u128() as u64),
+                txt::ADD,
+                format!("member-add-{account_id}"),
+                view.sending(what).then_some(text::admin::SENDING),
+                cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.add_workspace_member(server_id, workspace_id, account_id, cx);
+                    });
+                }),
+            ));
+        framed(
+            format!("member-addable-{account_id}"),
+            content,
+            refusal(view.refused(what), "member-refused"),
+        )
+    }
+
+    fn render_members_header(&mut self, page: &MembersPage, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme(cx);
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::page_name(AdminPage::Members),
             txt::members_help(&page.workspace_name),
@@ -1185,107 +1432,20 @@ impl Shell {
                 if rows.is_empty() {
                     column = column.child(sentence(txt::NO_MEMBERS, &theme).py(u(10.0)));
                 }
-                for row in rows {
-                    let account_id = row.account_id;
-                    let modes = [Open::RemoveMember(account_id)];
-                    if let Some(question) = self.render_member_question(view, page, row, &theme, cx)
-                    {
-                        let mut under = vec![self.render_reason(&theme, cx)];
-                        under.extend(refusal(
-                            view.refused(AskKind::RemoveMember(account_id)),
-                            "member-remove-refused",
-                        ));
-                        let framed = framed(
-                            format!("member-row-{account_id}"),
-                            line(&theme).child(question),
-                            under,
-                        );
-                        let open = self.admin.people.open;
-                        column = column.child(self.admin.people.space.row(open, &modes, framed));
-                        continue;
-                    }
-                    let roles =
-                        (!row.roles.is_empty()).then(|| SharedString::from(row.roles.join(", ")));
-                    let mut content = line(&theme)
-                        .child(
-                            crate::shell::people::avatar_of(
-                                &faces,
-                                row.account_id,
-                                &row.name,
-                                row.pictured,
-                                26.0,
-                            )
-                            .radius(2.0),
-                        )
-                        .child(line_text(row.name.clone(), roles, &theme));
-                    if row.is_self {
-                        content = content.child(Chip::new(txt::YOU));
-                    }
-                    let mut under: Vec<AnyElement> = Vec::new();
-                    // Role order protects the member: the row states it without a
-                    // pointer (ADR 0309).
-                    if row.remove == Some(Err(NoRemoval::Outranked)) {
-                        under.push(
-                            sentence(txt::MEMBER_OUTRANKED, &theme)
-                                .mt(u(3.0))
-                                .mb(u(4.0))
-                                .pl(u(34.0))
-                                .ink(theme.colors.ink)
-                                .debug_selector(move || format!("member-outranked-{account_id}"))
-                                .into_any_element(),
-                        );
-                    }
-                    under.extend(refusal(
-                        view.refused(AskKind::RemoveMember(account_id)),
-                        "member-remove-refused",
-                    ));
-                    if let Some(choices) = &row.assignable {
-                        let shown = self.admin.roles.account == Some(account_id);
-                        content = content.child(row_action(
-                            ("member-roles", account_id.as_uuid().as_u128() as u64),
-                            if shown {
-                                text::admin::roles::HIDE_ROLES
-                            } else {
-                                text::admin::roles::ROLES
-                            },
-                            format!("member-roles-toggle-{account_id}"),
-                            None,
-                            cx.listener(move |this, _, _, cx| {
-                                this.show_account_roles((!shown).then_some(account_id), cx);
-                            }),
-                        ));
-                        if shown {
-                            under.push(self.render_role_choices(
-                                view,
-                                (account_id, &row.name),
-                                choices,
-                                None,
-                                &theme,
-                                cx,
-                            ));
-                        }
-                    }
-                    if let Some(remove) = row.remove {
-                        content = content.child(row_action(
-                            ("member-remove", account_id.as_uuid().as_u128() as u64),
-                            txt::REMOVE_FROM_WORKSPACE,
-                            format!("member-remove-{account_id}"),
-                            remove.err().map(txt::no_removal),
-                            cx.listener(move |this, _, window, cx| {
-                                this.set_people_open(
-                                    Some(Open::RemoveMember(account_id)),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        ));
-                    }
-                    let framed = framed(format!("member-row-{account_id}"), content, under);
-                    let open = self.admin.people.open;
-                    column = column.child(self.admin.people.space.row(open, &modes, framed));
-                }
             }
         }
+        column.into_any_element()
+    }
+
+    fn render_addable_header(
+        &mut self,
+        view: &AdminView,
+        page: &MembersPage,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let server_id = view.server_id;
+        let mut column = div().flex().flex_col();
         match (&page.addable, &page.members) {
             (None, _) => {
                 column = column
@@ -1321,39 +1481,6 @@ impl Shell {
                         if rows.is_empty() {
                             column =
                                 column.child(sentence(txt::ALL_ARE_MEMBERS, &theme).py(u(10.0)));
-                        }
-                        for row in rows {
-                            let account_id = row.account_id;
-                            let what = AskKind::AddMember(account_id);
-                            let content = line(&theme)
-                                .child(
-                                    crate::shell::people::avatar_of(
-                                        &faces, account_id, &row.name, false, 26.0,
-                                    )
-                                    .radius(2.0),
-                                )
-                                .child(line_text(row.name.clone(), None, &theme))
-                                .child(row_action(
-                                    ("member-add", account_id.as_uuid().as_u128() as u64),
-                                    txt::ADD,
-                                    format!("member-add-{account_id}"),
-                                    view.sending(what).then_some(text::admin::SENDING),
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.state.update(cx, |state, cx| {
-                                            state.add_workspace_member(
-                                                server_id,
-                                                workspace_id,
-                                                account_id,
-                                                cx,
-                                            );
-                                        });
-                                    }),
-                                ));
-                            column = column.child(framed(
-                                format!("member-addable-{account_id}"),
-                                content,
-                                refusal(view.refused(what), "member-refused"),
-                            ));
                         }
                     }
                 }
@@ -1468,6 +1595,7 @@ impl Shell {
                         // height and the new invite takes its place in the list.
                         this.admin.people.copied = None;
                         this.admin.people.space.release();
+                        this.admin.list.state.remeasure();
                         this.admin.people.new_invite.release();
                         this.state
                             .update(cx, |state, cx| state.dismiss_admin_made(cx));
@@ -1685,6 +1813,50 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_people(view, window, cx);
+        let rows: Vec<InviteLine> = page
+            .invites
+            .loaded()
+            .map(|listed| {
+                self.admin
+                    .people
+                    .new_invite
+                    .drawn(listed, |row| row.id)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let list = std::iter::once(Row::new("invites-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("invite-{}", row.id), row.may_revoke)),
+            )
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                if index == 0 {
+                    return this.render_invites_header(&view, &page, &rows, window, cx);
+                }
+                let row = &rows[index - 1];
+                let new = page.made.as_ref().map(|made| made.invite_id) == Some(row.id);
+                this.render_invite_row(&view, row, new, &theme(cx), cx)
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_invites_header(
+        &mut self,
+        view: &AdminView,
+        page: &InvitesPage,
+        rows: &[InviteLine],
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::page_name(AdminPage::Invites),
@@ -1748,7 +1920,6 @@ impl Shell {
                 ));
             }
             Listed::Loaded(listed) => {
-                let rows = self.admin.people.new_invite.drawn(listed, |row| row.id);
                 let none = sentence(txt::NO_INVITES, &theme).py(u(10.0));
                 if listed.is_empty() {
                     column = column.child(none.debug_selector(|| "invites-none".to_owned()));
@@ -1759,16 +1930,6 @@ impl Shell {
                         none.invisible()
                             .debug_selector(|| "invites-none-space".to_owned()),
                     );
-                }
-                let new = page.made.as_ref().map(|made| made.invite_id);
-                for row in rows {
-                    column = column.child(self.render_invite_row(
-                        view,
-                        row,
-                        new == Some(row.id),
-                        &theme,
-                        cx,
-                    ));
                 }
             }
         }
@@ -1783,6 +1944,93 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_people(view, window, cx);
+        let rows = page.requests.loaded().cloned().unwrap_or_default();
+        let list = std::iter::once(Row::new("requests-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("request-{}", row.id), true)),
+            )
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                if index == 0 {
+                    this.render_requests_header(&view, &page, window, cx)
+                } else {
+                    this.render_request_row(&view, &page, &rows[index - 1], cx)
+                }
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_request_row(
+        &mut self,
+        view: &AdminView,
+        page: &RequestsPage,
+        row: &crate::state::admin::view::people::RequestLine,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let server_id = view.server_id;
+        let chosen = page.grant.kept(&self.admin.people.approval_workspaces);
+        let held = grant_reason(&page.grant, chosen.len());
+        let request_id = row.id;
+        let (approve, deny) = (
+            AskKind::ApproveRequest(request_id),
+            AskKind::DenyRequest(request_id),
+        );
+        let sending = (view.sending(approve) || view.sending(deny)).then_some(text::admin::SENDING);
+        let workspace_ids = chosen.clone();
+        let content = line(&theme)
+            .child(line_text(
+                row.name.clone(),
+                Some(txt::request_times(row.created, row.expires).into()),
+                &theme,
+            ))
+            .child(row_action(
+                ("request-deny", request_id.as_uuid().as_u128() as u64),
+                txt::DENY,
+                format!("request-deny-{request_id}"),
+                sending,
+                cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.deny_join_request(server_id, request_id, cx);
+                    });
+                }),
+            ))
+            .child(row_action(
+                ("request-approve", request_id.as_uuid().as_u128() as u64),
+                txt::APPROVE,
+                format!("request-approve-{request_id}"),
+                held.or(sending),
+                cx.listener(move |this, _, _, cx| {
+                    let workspace_ids = workspace_ids.clone();
+                    this.state.update(cx, |state, cx| {
+                        state.approve_join_request(server_id, request_id, workspace_ids, cx);
+                    });
+                }),
+            ));
+        framed(
+            format!("request-row-{request_id}"),
+            content,
+            refusal(
+                view.refused(approve).or(view.refused(deny)),
+                "request-refused",
+            ),
+        )
+    }
+
+    fn render_requests_header(
+        &mut self,
+        view: &AdminView,
+        page: &RequestsPage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let server_id = view.server_id;
         let chosen = page.grant.kept(&self.admin.people.approval_workspaces);
@@ -1826,58 +2074,6 @@ impl Shell {
                             .py(u(10.0))
                             .debug_selector(|| "requests-none".to_owned()),
                     );
-                }
-                for row in rows {
-                    let request_id = row.id;
-                    let (approve, deny) = (
-                        AskKind::ApproveRequest(request_id),
-                        AskKind::DenyRequest(request_id),
-                    );
-                    let sending = (view.sending(approve) || view.sending(deny))
-                        .then_some(text::admin::SENDING);
-                    let workspace_ids = chosen.clone();
-                    let content = line(&theme)
-                        .child(line_text(
-                            row.name.clone(),
-                            Some(txt::request_times(row.created, row.expires).into()),
-                            &theme,
-                        ))
-                        .child(row_action(
-                            ("request-deny", request_id.as_uuid().as_u128() as u64),
-                            txt::DENY,
-                            format!("request-deny-{request_id}"),
-                            sending,
-                            cx.listener(move |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| {
-                                    state.deny_join_request(server_id, request_id, cx);
-                                });
-                            }),
-                        ))
-                        .child(row_action(
-                            ("request-approve", request_id.as_uuid().as_u128() as u64),
-                            txt::APPROVE,
-                            format!("request-approve-{request_id}"),
-                            held.or(sending),
-                            cx.listener(move |this, _, _, cx| {
-                                let workspace_ids = workspace_ids.clone();
-                                this.state.update(cx, |state, cx| {
-                                    state.approve_join_request(
-                                        server_id,
-                                        request_id,
-                                        workspace_ids,
-                                        cx,
-                                    );
-                                });
-                            }),
-                        ));
-                    column = column.child(framed(
-                        format!("request-row-{request_id}"),
-                        content,
-                        refusal(
-                            view.refused(approve).or(view.refused(deny)),
-                            "request-refused",
-                        ),
-                    ));
                 }
             }
         }
