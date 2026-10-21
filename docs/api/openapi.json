@@ -14598,6 +14598,7 @@
           "exceeds_own_permissions",
           "not_found",
           "conflict",
+          "channel_archived",
           "last_device",
           "limit_reached",
           "key_already_registered",
