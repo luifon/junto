@@ -5,6 +5,7 @@ ci.sh sends to the Bash of the machine with sh in a folder of the test, scp copi
 folder, and powershell.exe answers the question whether a run has ended."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -207,6 +208,112 @@ class WindowsRunner(unittest.TestCase):
         self.assertIn("rust-windows           not run", result.stdout)
         self.assertIn("the runner ended with status 1 before its first job", result.stdout)
         self.assertIn("    the run starts no job: the disk of the caches has 1 KiB free", result.stdout)
+
+
+# ssh for both machines: the Bash of the Windows machine runs in the folder "machine", and a
+# command for the Linux host runs as it is, with the CI directory of the test.
+SSH_BOTH = r"""#!/bin/sh
+eval "command=\${$#}"
+case "$command" in
+    *"bash.exe -s") cd "$FAKE_ROOT/machine" && exec sh -s ;;
+    *) exec sh -c "$command" ;;
+esac
+"""
+DEFAULT_JOBS = {
+    "linux": ["rust-linux", "licences", "transcription-worker", "layout-page"],
+    "macos": ["rust-macos", "deployment"],
+    "windows": ["rust-windows"],
+}
+
+
+class CommitStatus(unittest.TestCase):
+    """ci.sh status <commit> decides from the latest run of each runner that has every default
+    job; an optional job of that run is shown and does not decide."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="junto-ci-status-")
+        self.root = Path(self.temporary.name)
+        programs = self.root / "bin"
+        programs.mkdir()
+        (programs / "ssh").write_text(SSH_BOTH)
+        (programs / "ssh").chmod(0o755)
+        self.commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                                     capture_output=True, text=True).stdout.strip()
+        self.directories = {
+            "linux": self.root / "linux",
+            "macos": self.root / "macos",
+            "windows": self.root / "machine" / "C:" / "ci",
+        }
+        self.environment = dict(
+            os.environ, PATH=f"{programs}:{os.environ['PATH']}", FAKE_ROOT=str(self.root),
+            JUNTO_CI_HOST="linux.example.test", JUNTO_CI_DIR=str(self.directories["linux"]),
+            JUNTO_CI_LOCAL_DIR=str(self.directories["macos"]), JUNTO_CI_WINDOWS_HOST="windows.example.test",
+            JUNTO_CI_WINDOWS_DIR="C:/ci", JUNTO_CI_WINDOWS_USER="Example User",
+            JUNTO_CI_WINDOWS_KEY=str(self.root / "key"))
+        self.runs = []
+
+    def tearDown(self):
+        for run in self.runs:
+            shutil.rmtree(ROOT / "target" / "ci-logs" / run, ignore_errors=True)
+        self.temporary.cleanup()
+
+    def run_of(self, runner, time, results):
+        """A finished run of the commit with these job results (job name: exit status)."""
+        run = f"20261021T{time}Z-{self.commit[:12]}-{runner}"
+        here = self.directories[runner] / "runs" / run
+        (here / "logs").mkdir(parents=True)
+        (here / "commit").write_text(self.commit + "\n")
+        (here / "jobs").write_text(" ".join(results) + "\n")
+        (here / "record.tsv").write_text("".join(
+            f"{self.commit}\t{job}\tstart\tend\t{status}\tlogs/{job}.log\t61\n" for job, status in results.items()))
+        for job in results:
+            (here / "logs" / f"{job}.log").write_text("log\n")
+        (here / "finished").write_text(("0" if all(v == 0 for v in results.values()) else "1") + "\n")
+        self.runs.append(run)
+        return run
+
+    def passing(self, runner, time="010000", **extra):
+        return self.run_of(runner, time, {**{job: 0 for job in DEFAULT_JOBS[runner]}, **extra})
+
+    def status(self):
+        return subprocess.run(["sh", str(CI), "status", self.commit], env=self.environment,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_a_failed_optional_job_is_shown_and_does_not_fail_the_commit(self):
+        self.passing("linux", **{"rust-linux-devices": 101})
+        self.passing("macos")
+        self.passing("windows")
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-linux-devices +FAILED .*  \(optional\)")
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    def test_a_later_run_of_only_the_optional_job_leaves_the_full_run_to_decide(self):
+        full = self.passing("linux")
+        self.run_of("linux", "020000", {"rust-linux-devices": 0})
+        self.passing("macos")
+        self.passing("windows")
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"run {full}", result.stdout)
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    def test_a_failed_default_job_fails_the_commit(self):
+        self.passing("linux", **{"rust-linux": 101, "rust-linux-devices": 0})
+        self.passing("macos")
+        self.passing("windows")
+        result = self.status()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+
+    def test_a_commit_with_only_a_run_of_the_optional_job_is_incomplete(self):
+        self.run_of("linux", "020000", {"rust-linux-devices": 0})
+        self.passing("macos")
+        self.passing("windows")
+        result = self.status()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("rust-linux is not part of this run", result.stdout)
+        self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
 
 
 if __name__ == "__main__":

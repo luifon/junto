@@ -24,6 +24,15 @@ mod raw;
 ))]
 mod worker;
 
+#[cfg(any(
+    test,
+    all(
+        target_os = "linux",
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
+mod v4l2;
+
 #[cfg(all(
     target_os = "linux",
     any(test, not(feature = "test-support"), feature = "native-device-tests")
@@ -197,6 +206,18 @@ pub fn native_for_test() -> Arc<dyn CameraCapture> {
     {
         Arc::new(linux::SystemCamera)
     }
+}
+
+/// The frame rate that the last camera start asked the driver for, as a fraction of frames
+/// per second; `None` when the driver states no rate.
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "native-device-tests"
+))]
+pub fn native_rate_for_test() -> Option<(u32, u32)> {
+    *worker::LAST_RATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// For the native stage: whether a camera buffer delivered without conversion is in the 601

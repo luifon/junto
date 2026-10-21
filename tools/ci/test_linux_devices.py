@@ -81,5 +81,28 @@ esac''',
         self.assertNotIn("windows.example.test", commands)
 
 
+class LinuxJob(unittest.TestCase):
+    def test_the_linux_job_lints_the_device_tests_of_the_media_crate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools/ci").mkdir(parents=True)
+            shutil.copy(ROOT / "tools/ci/rust-linux.sh", root / "tools/ci")
+            shutil.copy(ROOT / "tools/ci/pins.sh", root / "tools/ci")
+            recorder = root / "tools/linux-container.sh"
+            recorder.write_text('#!/bin/sh\necho "$*" >>"$RECORD"\n')
+            recorder.chmod(0o755)
+            record = root / "record"
+            result = subprocess.run(["sh", str(root / "tools/ci/rust-linux.sh")],
+                                    env=dict(os.environ, RECORD=str(record)),
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            steps = record.read_text().splitlines()
+            self.assertIn("cargo clippy --locked -p junto-media --features native-device-tests "
+                          "--all-targets -- -D warnings", steps)
+            self.assertLess(steps.index("cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings"),
+                            steps.index("cargo clippy --locked -p junto-media --features native-device-tests "
+                                        "--all-targets -- -D warnings"))
+
+
 if __name__ == "__main__":
     unittest.main()

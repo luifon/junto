@@ -36,6 +36,14 @@ name = "camera-device"
 path = "tests/camera_device/runner.rs"
 required-features = ["native-device-tests"]
 
+# The media source of the virtual cameras of the Windows device check, a COM server that the
+# Frame Server of Windows loads (ADR 0913).
+[[example]]
+name = "virtual-camera-source"
+path = "tests/camera_device/virtual_source.rs"
+crate-type = ["cdylib"]
+required-features = ["native-device-tests"]
+
 [features]
 # The synthetic sound devices and the tone analysis, for the tests of this crate and of the
 # desktop client.
@@ -95,9 +103,10 @@ windows = { version = "0.62.2", features = ["Devices_Enumeration", "Foundation",
 windows-core = "0.62.2"
 
 # The registration of a scheme of the test's own for the account, for the test of the open of
-# a link through the shell (ADR 0706).
+# a link through the shell (ADR 0706); the virtual cameras of the device check, with the JPEG
+# encoder of their compressed source (ADR 0913).
 [target.'cfg(target_os = "windows")'.dev-dependencies]
-windows = { version = "0.62.2", features = ["Win32_Security", "Win32_System_Registry"] }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Imaging", "Win32_Media_KernelStreaming", "Win32_Security", "Win32_System_Registry"] }
 
 # Initialize the native call library's PipeWire symbols before the sound host uses them.
 [build-dependencies]

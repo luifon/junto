@@ -19,6 +19,10 @@ mod fixture;
 #[cfg(target_os = "macos")]
 mod guard;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
+#[cfg(target_os = "macos")]
 mod measure;
 #[cfg(target_os = "macos")]
 mod protocol;

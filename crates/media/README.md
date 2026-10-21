@@ -102,8 +102,22 @@ JUNTO_TEST_CAMERA_DEVICE=1 cargo run -p junto-media --features native-device-tes
 ```
 
 `JUNTO_TEST_CAMERA_INDEX` selects an index in the current list (default zero). Capture
-requires a device and checks thirty frames at the declared size. No permission dialog
-is requested. Run Linux checks on Linux with the chosen device exposed to the build
+requires a device, checks the size and the content of thirty pictures, and then the rate
+over three seconds against the rate that capture asked the driver for (a real camera
+needs light to keep its rate). No permission dialog is requested.
+
+On Windows 11, as an administrator, the same check runs against two virtual cameras of
+Media Foundation, one of them through the MJPEG decoder, without a real camera:
+
+```sh
+cargo build -p junto-media --features native-device-tests --example virtual-camera-source --example camera-device
+JUNTO_TEST_CAMERA_DEVICE=1 target/debug/examples/camera-device.exe --virtual
+```
+
+The check registers the source library for its session, removes the registration and the
+cameras at its end, and runs from an SSH session as well as from the desktop (ADR 0913).
+The Linux capture code is tested on every commit against a V4L2 device in memory
+(`src/camera/v4l2_fake.c`). Run Linux checks on Linux with the chosen device exposed to the build
 container, and use `tools/serial.sh` for native builds. The example does not capture
 on macOS; its native camera stage is in `tests/native/README.md`.
 

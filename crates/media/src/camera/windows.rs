@@ -7,6 +7,7 @@ use ::windows::core::{GUID, HRESULT, Interface, Ref, implement};
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
+use super::format::Mode;
 use super::matrix::Tag;
 use super::raw::{Layout, Pixel};
 use super::{worker, *};
@@ -95,19 +96,29 @@ fn enumerate() -> Result<Vec<(CameraDevice, IMFActivate)>, CameraError> {
         CoTaskMemFree(Some(pointer.cast()));
         owned
     };
-    activations
-        .into_iter()
-        .map(|activation| {
-            let device = CameraDevice {
-                id: string(
-                    &activation,
-                    &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-                )?,
-                name: string(&activation, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)?,
-            };
-            Ok((device, activation))
-        })
-        .collect()
+    listed(activations)
+}
+
+/// The cameras of an enumeration, each with its activation object. An entry without a
+/// symbolic link cannot be chosen again and is left out; one without a name is named
+/// "Camera".
+fn listed<T: Interface>(items: Vec<T>) -> Result<Vec<(CameraDevice, T)>, CameraError> {
+    let mut devices = Vec::new();
+    for item in items {
+        let attributes: IMFAttributes = item.cast().map_err(error)?;
+        let Ok(id) = string(
+            &attributes,
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+        ) else {
+            continue;
+        };
+        let name = string(&attributes, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Camera".into());
+        devices.push((CameraDevice { id, name }, item));
+    }
+    Ok(devices)
 }
 
 pub(super) struct SystemCamera;
@@ -147,6 +158,8 @@ impl CameraCapture for SystemCamera {
 struct Read {
     status: HRESULT,
     flags: u32,
+    /// The time stamp of the sample in units of 100 nanoseconds.
+    timestamp: i64,
     sample: Option<IMFSample>,
 }
 
@@ -158,12 +171,13 @@ impl IMFSourceReaderCallback_Impl for Callback_Impl {
         status: HRESULT,
         _: u32,
         flags: u32,
-        _: i64,
+        timestamp: i64,
         sample: Ref<IMFSample>,
     ) -> ::windows::core::Result<()> {
         let _ = self.0.send(Read {
             status,
             flags,
+            timestamp,
             sample: sample.as_ref().cloned(),
         });
         Ok(())
@@ -180,6 +194,7 @@ impl IMFSourceReaderCallback_Impl for Callback_Impl {
                 let _ = self.0.send(Read {
                     status,
                     flags: 0,
+                    timestamp: 0,
                     sample: None,
                 });
             }
@@ -254,39 +269,101 @@ fn layout(media: &IMFMediaType) -> Result<Layout, CameraError> {
     }
 }
 
-fn configure(reader: &IMFSourceReader) -> Result<Layout, CameraError> {
-    let mut formats = Vec::new();
+/// The capture mode of a native type that capture can read: a progressive uncompressed type
+/// that `layout` accepts, or a progressive MJPEG type, which the reader decodes.
+fn mode(media: &IMFMediaType) -> Option<Mode> {
+    // SAFETY: reading attributes does not mutate the type.
+    unsafe {
+        let (n, d) = pair(media.GetUINT64(&MF_MT_FRAME_RATE).ok()?);
+        let rate = (n > 0 && d > 0).then_some((n, d));
+        if media.GetGUID(&MF_MT_SUBTYPE).ok()? == MFVideoFormat_MJPG {
+            let interlace = media.GetUINT32(&MF_MT_INTERLACE_MODE).unwrap_or(0);
+            if interlace != 0 && interlace != MFVideoInterlace_Progressive.0 as u32 {
+                return None;
+            }
+            let (width, height) = pair(media.GetUINT64(&MF_MT_FRAME_SIZE).ok()?);
+            return Some(Mode {
+                width,
+                height,
+                rate,
+                compressed: true,
+            });
+        }
+        let layout = layout(media).ok()?;
+        Some(Mode {
+            width: layout.width,
+            height: layout.height,
+            rate,
+            compressed: false,
+        })
+    }
+}
+
+/// The index of the native type to capture with (`format::select`).
+fn choose_type(types: &[IMFMediaType]) -> Option<usize> {
+    let modes: Vec<(usize, Mode)> = types
+        .iter()
+        .enumerate()
+        .filter_map(|(index, media)| Some((index, mode(media)?)))
+        .collect();
+    let listed: Vec<Mode> = modes.iter().map(|(_, mode)| *mode).collect();
+    super::format::select(&listed).map(|chosen| modes[chosen].0)
+}
+
+/// Sets the chosen native type. An MJPEG type is decoded by the reader's video processing to
+/// limited-range 601 NV12 of the same size and rate.
+fn configure(reader: &IMFSourceReader) -> Result<(Layout, Option<(u32, u32)>), CameraError> {
+    let mut types = Vec::new();
     for index in 0..1024 {
         // SAFETY: the reader owns the source and returns a retained type.
         match unsafe { reader.GetNativeMediaType(VIDEO, index) } {
-            Ok(media) => {
-                if let Ok(layout) = layout(&media) {
-                    // SAFETY: reading a scalar attribute does not mutate the source.
-                    let (n, d) = pair(unsafe { media.GetUINT64(&MF_MT_FRAME_RATE) }.unwrap_or(0));
-                    if n > 0 && d > 0 {
-                        formats.push((layout, n, d, media));
-                    }
-                }
-            }
+            Ok(media) => types.push(media),
             Err(e) if e.code() == MF_E_NO_MORE_TYPES => break,
             Err(e) => return Err(error(e)),
         }
     }
-    let size = super::format::choose(|(w, h)| {
-        formats
-            .iter()
-            .any(|(layout, _, _, _)| layout.width == w && layout.height == h)
-    })
-    .ok_or(CameraError::Unsupported)?;
-    formats.retain(|(layout, _, _, _)| (layout.width, layout.height) == size);
-    formats.sort_by(|a, b| super::format::rate_order((a.1, a.2), (b.1, b.2)));
-    for (_, _, _, media) in formats {
-        // SAFETY: the source has advertised the type; there is no pending read yet.
-        if unsafe { reader.SetCurrentMediaType(VIDEO, None, &media) }.is_ok() {
-            return layout(&unsafe { reader.GetCurrentMediaType(VIDEO) }.map_err(error)?);
+    let media = &types[choose_type(&types).ok_or(CameraError::Unsupported)?];
+    let rate = mode(media).and_then(|mode| mode.rate);
+    // SAFETY: the source has advertised the type; there is no pending read yet. The output
+    // type is owned here and copied by the reader.
+    unsafe {
+        if media.GetGUID(&MF_MT_SUBTYPE).map_err(error)? == MFVideoFormat_MJPG {
+            let extended: IMFSourceReaderEx = reader.cast().map_err(error)?;
+            extended.SetNativeMediaType(VIDEO, media).map_err(error)?;
+            let output = MFCreateMediaType().map_err(error)?;
+            output
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(error)?;
+            output
+                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)
+                .map_err(error)?;
+            for key in [&MF_MT_FRAME_SIZE, &MF_MT_FRAME_RATE] {
+                output
+                    .SetUINT64(key, media.GetUINT64(key).map_err(error)?)
+                    .map_err(error)?;
+            }
+            output
+                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .map_err(error)?;
+            output
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)
+                .map_err(error)?;
+            output
+                .SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT601.0 as u32)
+                .map_err(error)?;
+            reader
+                .SetCurrentMediaType(VIDEO, None, &output)
+                .map_err(error)?;
+        } else {
+            reader
+                .SetCurrentMediaType(VIDEO, None, media)
+                .map_err(error)?;
         }
+        Ok((
+            layout(&reader.GetCurrentMediaType(VIDEO).map_err(error)?)?,
+            rate,
+        ))
     }
-    Err(CameraError::Unsupported)
 }
 
 fn frame(
@@ -342,9 +419,10 @@ fn capture(
         .into_iter()
         .find(|(device, _)| device.id == chosen.id)
         .ok_or(CameraError::DeviceGone)?;
-    if delivery.stopped() {
+    // The claim is declared before the source, so that it is released after the shutdown.
+    let Some(_claim) = delivery.claim(&chosen.id) else {
         return Ok(());
-    }
+    };
     // SAFETY: activation is used only on this capture thread and shut down by Source.
     let source = Source {
         source: unsafe { activation.ActivateObject() }.map_err(error)?,
@@ -358,6 +436,10 @@ fn capture(
         attributes
             .SetUnknown(&MF_SOURCE_READER_ASYNC_CALLBACK, &callback)
             .map_err(error)?;
+        // The decoder of an MJPEG type and the conversion of its output (`configure`).
+        attributes
+            .SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)
+            .map_err(error)?;
         let reader =
             MFCreateSourceReaderFromMediaSource(&source.source, &attributes).map_err(error)?;
         reader
@@ -366,7 +448,7 @@ fn capture(
         reader.SetStreamSelection(VIDEO, true).map_err(error)?;
         reader
     };
-    let layout = configure(&reader)?;
+    let (layout, rate) = configure(&reader)?;
     // SAFETY: asynchronous mode requires null out parameters; only one read is outstanding.
     let read = || unsafe {
         reader
@@ -374,8 +456,9 @@ fn capture(
             .map_err(error)
     };
     read()?;
-    let mut last_picture = Instant::now();
-    let mut last_delivery = None;
+    let start = Instant::now();
+    let mut last_picture = start;
+    let mut pacer = worker::Pacer::default();
     while !delivery.stopped() {
         let event = match receive.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => event,
@@ -400,10 +483,17 @@ fn capture(
         }
         if let Some(sample) = event.sample {
             last_picture = Instant::now();
-            if worker::frame_due(&mut last_delivery, last_picture) {
+            let at = u64::try_from(event.timestamp)
+                .map(|units| Duration::from_nanos(units.saturating_mul(100)))
+                .unwrap_or(last_picture - start);
+            if pacer.due(at) {
                 let picture = frame(&sample, layout)?;
                 if let Some(ready) = ready.take() {
-                    let _ = ready.send(Ok((layout.width, layout.height)));
+                    let _ = ready.send(Ok(worker::Started {
+                        width: layout.width,
+                        height: layout.height,
+                        rate,
+                    }));
                 }
                 delivery.picture(Arc::new(picture));
             }
@@ -516,6 +606,98 @@ mod tests {
         assert_eq!(
             error(MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED.into()),
             CameraError::Interrupted
+        );
+    }
+
+    fn video(subtype: &GUID, size: (u32, u32), rate: u32) -> IMFMediaType {
+        // SAFETY: the test owns the new media type.
+        unsafe {
+            let media = MFCreateMediaType().unwrap();
+            media
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .unwrap();
+            media.SetGUID(&MF_MT_SUBTYPE, subtype).unwrap();
+            media
+                .SetUINT64(
+                    &MF_MT_FRAME_SIZE,
+                    (u64::from(size.0) << 32) | u64::from(size.1),
+                )
+                .unwrap();
+            media
+                .SetUINT64(&MF_MT_FRAME_RATE, (u64::from(rate) << 32) | 1)
+                .unwrap();
+            media
+        }
+    }
+
+    #[test]
+    fn a_compressed_type_is_chosen_when_only_it_reaches_24_fps_at_the_largest_size() {
+        initialize().unwrap();
+        let types = [
+            video(&MFVideoFormat_YUY2, (1280, 720), 10),
+            video(&MFVideoFormat_MJPG, (1280, 720), 30),
+            video(&MFVideoFormat_YUY2, (640, 480), 30),
+        ];
+        assert_eq!(choose_type(&types), Some(1));
+        let types = [
+            video(&MFVideoFormat_MJPG, (1280, 720), 30),
+            video(&MFVideoFormat_NV12, (1280, 720), 30),
+        ];
+        assert_eq!(choose_type(&types), Some(1));
+        let types = [
+            video(&MFVideoFormat_YUY2, (1280, 720), 10),
+            video(&MFVideoFormat_YUY2, (640, 480), 30),
+        ];
+        assert_eq!(choose_type(&types), Some(1));
+    }
+
+    #[test]
+    fn a_camera_without_a_name_is_listed_and_one_without_a_link_is_left_out() {
+        initialize().unwrap();
+        let entry = |link: Option<&str>, name: Option<&str>| {
+            let attributes = attributes().unwrap();
+            // SAFETY: the test owns the attributes and the strings outlive each call.
+            unsafe {
+                if let Some(link) = link {
+                    attributes
+                        .SetString(
+                            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+                            &::windows::core::HSTRING::from(link),
+                        )
+                        .unwrap();
+                }
+                if let Some(name) = name {
+                    attributes
+                        .SetString(
+                            &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+                            &::windows::core::HSTRING::from(name),
+                        )
+                        .unwrap();
+                }
+            }
+            attributes
+        };
+        let devices: Vec<CameraDevice> = listed(vec![
+            entry(Some("first-link"), Some("First camera")),
+            entry(Some("second-link"), None),
+            entry(None, Some("Camera without a link")),
+        ])
+        .unwrap()
+        .into_iter()
+        .map(|(device, _)| device)
+        .collect();
+        assert_eq!(
+            devices,
+            [
+                CameraDevice {
+                    id: "first-link".into(),
+                    name: "First camera".into(),
+                },
+                CameraDevice {
+                    id: "second-link".into(),
+                    name: "Camera".into(),
+                },
+            ]
         );
     }
 }

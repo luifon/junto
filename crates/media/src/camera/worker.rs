@@ -1,8 +1,8 @@
 //! Cancellation fences delivery immediately; native resources close on their owning thread.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 use super::{CameraError, CameraSink};
@@ -25,6 +25,27 @@ impl Delivery {
         }
     }
 
+    /// Holds `device` for this capture: waits while another capture of the process holds it,
+    /// because the driver refuses a second open until the first capture has closed it. Returns
+    /// `None` when this capture was stopped first.
+    pub fn claim(&self, device: &str) -> Option<Claim> {
+        let mut claimed = CLAIMED.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if self.stopped() {
+                return None;
+            }
+            if !claimed.iter().any(|held| held == device) {
+                claimed.push(device.to_owned());
+                return Some(Claim(device.to_owned()));
+            }
+            // A stop does not signal the condition; it is read again after this bound.
+            claimed = RELEASED
+                .wait_timeout(claimed, Duration::from_millis(100))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
     pub fn ended(&self, error: CameraError) {
         if let Some(sink) = self
             .sink
@@ -35,6 +56,18 @@ impl Delivery {
             sink.ended(error);
         }
         self.stopped.store(true, Ordering::Release);
+    }
+}
+
+/// A device that one capture holds; dropped after the native capture has closed.
+pub(super) struct Claim(String);
+impl Drop for Claim {
+    fn drop(&mut self) {
+        CLAIMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|held| *held != self.0);
+        RELEASED.notify_all();
     }
 }
 
@@ -50,16 +83,66 @@ impl Drop for Running {
     }
 }
 
-pub(super) type Ready = oneshot::Sender<Result<(u32, u32), CameraError>>;
-
-pub(super) fn frame_due(last: &mut Option<Instant>, arrived: Instant) -> bool {
-    let interval = Duration::from_nanos(1_000_000_000 / 30);
-    if last.is_some_and(|last| arrived.saturating_duration_since(last) < interval) {
-        return false;
-    }
-    *last = Some(arrived);
-    true
+/// The size of the pictures and the frame rate that the driver was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Started {
+    pub width: u32,
+    pub height: u32,
+    pub rate: Option<(u32, u32)>,
 }
+
+pub(super) type Ready = oneshot::Sender<Result<Started, CameraError>>;
+
+/// The rate of the last capture that started, for the device check.
+#[cfg(feature = "native-device-tests")]
+pub(super) static LAST_RATE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+
+const INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 30);
+
+/// Limits delivery to 30 pictures per second, from the time stamps of the pictures. A camera
+/// whose pictures arrive on average no faster than 32 per second keeps every picture. The
+/// pictures of a faster camera are taken at least one interval of 30 per second apart; a
+/// picture is taken when it is at most a quarter interval, and less than half its own gap,
+/// before its place, so that the gaps stay even.
+#[derive(Default)]
+pub(super) struct Pacer {
+    last: Option<Duration>,
+    /// The average gap between pictures, over about the last eight.
+    gap: Option<Duration>,
+    next: Duration,
+}
+
+impl Pacer {
+    /// `at`: the time stamp of a picture, from a fixed origin of the stream.
+    pub fn due(&mut self, at: Duration) -> bool {
+        let gap = match self.last.replace(at) {
+            Some(last) if at > last => at - last,
+            // The first picture, or time stamps that started again.
+            _ => {
+                self.gap = None;
+                self.next = at + INTERVAL;
+                return true;
+            }
+        };
+        let gap = self.gap.map_or(gap, |average| (average * 7 + gap) / 8);
+        self.gap = Some(gap);
+        if gap * 16 >= INTERVAL * 15 {
+            self.next = at + INTERVAL;
+            return true;
+        }
+        if at + (INTERVAL / 4).min(gap / 2) < self.next {
+            return false;
+        }
+        // A picture after its place moves the place of the next one, so that the gaps follow a
+        // camera that lags the limit, such as one of 59.94 pictures per second.
+        self.next = self.next.max(at) + INTERVAL;
+        true
+    }
+}
+
+/// The devices that a capture holds, of every capture of the process.
+static CLAIMED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static RELEASED: Condvar = Condvar::new();
 
 pub(super) async fn start(
     sink: Arc<dyn CameraSink>,
@@ -75,13 +158,17 @@ pub(super) async fn start(
         .name("camera-capture".into())
         .spawn(move || capture(delivery, ready))
         .map_err(|error| CameraError::Failed(error.to_string()))?;
-    let (w, h) = tokio::time::timeout(Duration::from_secs(10), answer)
+    let started = tokio::time::timeout(Duration::from_secs(10), answer)
         .await
         .map_err(|_| {
             CameraError::Failed("camera sent no picture before the start deadline".into())
         })?
         .map_err(|_| CameraError::Failed("camera stopped before starting".into()))??;
-    Ok(CaptureStream::new(w, h, running))
+    #[cfg(feature = "native-device-tests")]
+    {
+        *LAST_RATE.lock().unwrap_or_else(PoisonError::into_inner) = started.rate;
+    }
+    Ok(CaptureStream::new(started.width, started.height, running))
 }
 
 #[cfg(test)]
@@ -89,17 +176,68 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    /// The pictures of `rate` per second over `seconds`, each moved by `jitter(index)`, that
+    /// the pacer delivers, as their time stamps.
+    fn paced(rate: f64, seconds: u32, jitter: impl Fn(u32) -> f64) -> Vec<Duration> {
+        let mut pacer = Pacer::default();
+        let count = (rate * f64::from(seconds)) as u32;
+        (0..count)
+            .map(|index| {
+                let at = f64::from(index) / rate + jitter(index) / 1000.0;
+                Duration::from_secs_f64(at.max(0.0))
+            })
+            .filter(|at| pacer.due(*at))
+            .collect()
+    }
+
     #[test]
-    fn thirty_fps_is_measured_from_arrival_and_faster_frames_are_discarded() {
-        let start = Instant::now();
-        let interval = Duration::from_nanos(1_000_000_000 / 30);
-        let mut last = None;
-        for index in 0..30 {
-            let arrived = start + interval * index;
-            assert!(frame_due(&mut last, arrived));
-            assert!(!frame_due(&mut last, arrived + Duration::from_millis(10)));
+    fn a_thirty_fps_camera_with_jitter_keeps_every_picture() {
+        // Up to two milliseconds early or late, in a pattern without a period of the grid.
+        let pattern = [0.0, 1.8, -1.5, 0.7, -2.0, 1.1, -0.4, 2.0, -1.2];
+        let delivered = paced(30.0, 10, |index| pattern[index as usize % pattern.len()]);
+        assert_eq!(delivered.len(), 300);
+        let delivered = paced(30.01, 10, |_| 0.0);
+        assert_eq!(delivered.len(), 300);
+        let delivered = paced(29.97, 10, |_| 0.0);
+        assert_eq!(delivered.len(), 299);
+    }
+
+    #[test]
+    fn a_slower_camera_keeps_every_picture() {
+        for rate in [24.0, 15.0, 7.5] {
+            let delivered = paced(rate, 4, |_| 0.0);
+            assert_eq!(delivered.len(), (rate * 4.0) as usize);
         }
-        assert!(frame_due(&mut last, start + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_faster_camera_is_limited_to_thirty_with_even_gaps() {
+        // A camera of 50 gives every second picture: 25 per second with even gaps.
+        for (rate, count) in [(60.0, 300), (120.0, 300), (59.94, 300), (50.0, 250)] {
+            let delivered = paced(rate, 10, |_| 0.0);
+            assert!(
+                delivered.len().abs_diff(count) <= 1,
+                "{rate}: {}",
+                delivered.len()
+            );
+            let gap = Duration::from_secs_f64(10.0 / count as f64);
+            for pair in delivered.windows(2) {
+                let between = pair[1] - pair[0];
+                assert!(
+                    between.abs_diff(gap) < Duration::from_millis(1),
+                    "{rate}: {between:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn time_stamps_that_start_again_start_the_pacing_again() {
+        let mut pacer = Pacer::default();
+        assert!(pacer.due(Duration::from_secs(100)));
+        assert!(pacer.due(Duration::from_secs(100) + INTERVAL));
+        assert!(pacer.due(Duration::from_millis(5)));
+        assert!(pacer.due(Duration::from_millis(5) + INTERVAL));
     }
 
     #[derive(Default)]
@@ -130,7 +268,15 @@ mod tests {
                 4, 2,
             )));
             delivery.ended(CameraError::DeviceGone);
-            assert!(ready.send(Ok((4, 2))).is_err());
+            assert!(
+                ready
+                    .send(Ok(Started {
+                        width: 4,
+                        height: 2,
+                        rate: None,
+                    }))
+                    .is_err()
+            );
             let _ = exited.send(());
         }));
         thread_entered.await.unwrap();
@@ -147,7 +293,13 @@ mod tests {
         let sink = Arc::new(Sink::default());
         let (entered, thread_entered) = oneshot::channel();
         let stream = start(sink.clone(), move |delivery, ready| {
-            ready.send(Ok((640, 480))).unwrap();
+            ready
+                .send(Ok(Started {
+                    width: 640,
+                    height: 480,
+                    rate: Some((30, 1)),
+                }))
+                .unwrap();
             entered
                 .send(delivery)
                 .unwrap_or_else(|_| panic!("receiver is alive"));
@@ -179,5 +331,39 @@ mod tests {
         .await;
         assert!(matches!(result, Err(CameraError::NoPermission(_))));
         assert_eq!(sink.errors.load(Ordering::Relaxed), 0);
+    }
+
+    fn delivery() -> Arc<Delivery> {
+        Arc::new(Delivery {
+            stopped: AtomicBool::new(false),
+            sink: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn a_second_capture_of_a_device_waits_until_the_first_has_closed_it() {
+        let first = delivery().claim("claimed-device").unwrap();
+        let (claimed, second) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            let claim = delivery().claim("claimed-device");
+            claimed.send(()).unwrap();
+            claim.is_some()
+        });
+        // Another device is not held by the first claim.
+        assert!(delivery().claim("other-device").is_some());
+        assert!(second.recv_timeout(Duration::from_millis(300)).is_err());
+        drop(first);
+        second.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(waiting.join().unwrap());
+    }
+
+    #[test]
+    fn a_stopped_capture_stops_waiting_for_its_device() {
+        let _first = delivery().claim("stopped-device").unwrap();
+        let waiting = delivery();
+        let stopped = waiting.clone();
+        let thread = std::thread::spawn(move || waiting.claim("stopped-device").is_none());
+        stopped.stopped.store(true, Ordering::Release);
+        assert!(thread.join().unwrap());
     }
 }

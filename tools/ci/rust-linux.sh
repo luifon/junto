@@ -16,6 +16,10 @@ step "Format"
 tools/linux-container.sh cargo fmt --all --check
 step "Lint"
 tools/linux-container.sh cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+# The device checks of the media crate and the native code that only they select, which the
+# workspace lint does not compile (ADR 0913).
+step "Lint the device checks of the media crate"
+tools/linux-container.sh cargo clippy --locked -p junto-media --features native-device-tests --all-targets -- -D warnings
 step "Build the server used by process tests"
 tools/linux-container.sh cargo build --workspace --locked
 step "Tests with PostgreSQL"

@@ -1,8 +1,13 @@
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo:rerun-if-changed=src/camera/v4l2.c");
+        for file in ["v4l2.c", "v4l2.h", "v4l2_fake.c"] {
+            println!("cargo:rerun-if-changed=src/camera/{file}");
+        }
+        // The device of the tests is a separate object of the library: only the tests refer
+        // to it, so the linker does not add it to the product.
         cc::Build::new()
             .file("src/camera/v4l2.c")
+            .file("src/camera/v4l2_fake.c")
             .compile("junto_camera");
         println!("cargo:rerun-if-changed=src/audio/linux/pipewire.cc");
         cc::Build::new()

@@ -20,6 +20,34 @@ class UserLauncher(unittest.TestCase):
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def launch(self, groups, *command):
+        """Runs the launcher with programs in place of setpriv and chown, which record their
+        arguments, so that the camera branch runs without root."""
+        with tempfile.TemporaryDirectory() as temporary:
+            programs = Path(temporary)
+            record = programs / "record"
+            for name in ("setpriv", "chown"):
+                (programs / name).write_text(f'#!/bin/sh\necho "{name} $*" >>"{record}"\n')
+                (programs / name).chmod(0o755)
+            result = subprocess.run(
+                ["sh", str(LAUNCHER), "1000", "1000", "--", *command],
+                env=dict(os.environ, PATH=f"{programs}:{os.environ['PATH']}", JUNTO_TEST_CAMERA_DEVICE="1",
+                         JUNTO_LINUX_CAMERA_GROUPS=groups),
+                capture_output=True, text=True)
+            return result, record.read_text().splitlines() if record.exists() else []
+
+    def test_the_camera_branch_keeps_only_the_explicit_device_groups(self):
+        result, calls = self.launch("44,45", "cargo", "run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[-1], "setpriv --reuid=1000 --regid=1000 --groups=44,45 "
+                                    "env HOME=/tmp/junto-user-1000 cargo run")
+
+    def test_the_camera_branch_refuses_groups_that_are_not_a_list_of_numbers(self):
+        for groups in ["", ",44", "44,", "44,,45", "video", "44;45"]:
+            result, calls = self.launch(groups, "true")
+            self.assertEqual(result.returncode, 2, groups)
+            self.assertFalse(any(call.startswith("setpriv") for call in calls), groups)
+
     def test_root_is_rejected(self):
         result = subprocess.run([LAUNCHER, "0", "0", "--", "true"], capture_output=True)
         self.assertEqual(result.returncode, 2)
