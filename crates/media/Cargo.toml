@@ -33,7 +33,7 @@ required-features = ["native-device-tests", "test-support"]
 
 [[example]]
 name = "camera-device"
-path = "tests/camera_device.rs"
+path = "tests/camera_device/main.rs"
 required-features = ["native-device-tests"]
 
 [features]

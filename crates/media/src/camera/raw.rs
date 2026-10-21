@@ -24,11 +24,11 @@ pub(super) struct Layout {
 impl Layout {
     pub fn length(self) -> Option<usize> {
         let (w, h) = (self.width as usize, self.height as usize);
-        if w == 0 || h == 0 || w > 1280 || h > 720 || w % 2 != 0 || h % 2 != 0 {
+        if w == 0 || h == 0 || w > 1280 || h > 720 || !w.is_multiple_of(2) || !h.is_multiple_of(2) {
             return None;
         }
         let row = if self.pixel == Pixel::Yuy2 { w * 2 } else { w };
-        if self.stride < row || self.stride > 16384 || self.stride % 2 != 0 {
+        if self.stride < row || self.stride > 16384 || !self.stride.is_multiple_of(2) {
             return None;
         }
         let luma = self.stride.checked_mul(h)?;
@@ -76,9 +76,8 @@ impl Layout {
                         let p = row * 2 * self.stride + col * 4;
                         let average = |offset| {
                             ((u16::from(bytes[p + offset])
-                                + u16::from(bytes[p + self.stride + offset])
-                                + 1)
-                                / 2) as u8
+                                + u16::from(bytes[p + self.stride + offset]))
+                            .div_ceil(2)) as u8
                         };
                         (average(1), average(3))
                     }

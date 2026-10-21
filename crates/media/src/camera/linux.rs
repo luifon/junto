@@ -123,6 +123,9 @@ fn capture(
         .find(|(device, _)| device.id == chosen.id)
         .ok_or(CameraError::DeviceGone)?;
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| CameraError::DeviceGone)?;
+    if delivery.stopped() {
+        return Ok(());
+    }
     let mut format = Format::default();
     let mut pointer = std::ptr::null_mut();
     // SAFETY: valid out parameters; a successful call transfers one native capture.

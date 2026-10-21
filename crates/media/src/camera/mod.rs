@@ -6,26 +6,42 @@ use livekit::webrtc::video_frame::VideoBuffer;
 
 use crate::share::{CaptureStream, Pending};
 
-#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+#[cfg(any(
+    test,
+    all(
+        any(target_os = "windows", target_os = "linux"),
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
 mod raw;
 
-#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+#[cfg(any(
+    test,
+    all(
+        any(target_os = "windows", target_os = "linux"),
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
 mod worker;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    target_os = "linux",
+    any(test, not(feature = "test-support"), feature = "native-device-tests")
+))]
 #[allow(unsafe_code)]
 mod linux;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(
+    target_os = "windows",
+    any(test, not(feature = "test-support"), feature = "native-device-tests")
+))]
 #[allow(unsafe_code)]
 mod windows;
 
 #[cfg(any(
     test,
-    target_os = "windows",
-    target_os = "linux",
     all(
-        target_os = "macos",
+        any(target_os = "macos", target_os = "windows", target_os = "linux"),
         any(not(feature = "test-support"), feature = "native-device-tests")
     )
 ))]
@@ -33,10 +49,8 @@ mod format;
 
 #[cfg(any(
     test,
-    target_os = "windows",
-    target_os = "linux",
     all(
-        target_os = "macos",
+        any(target_os = "macos", target_os = "windows", target_os = "linux"),
         any(not(feature = "test-support"), feature = "native-device-tests")
     )
 ))]
@@ -172,7 +186,7 @@ pub fn native_for_test() -> Arc<dyn CameraCapture> {
 /// Explicit opt-in factory; ordinary test-support builds never select a hardware camera.
 #[cfg(all(
     any(target_os = "windows", target_os = "linux"),
-    feature = "native-device-tests"
+    any(test, feature = "native-device-tests")
 ))]
 pub fn native_for_test() -> Arc<dyn CameraCapture> {
     #[cfg(target_os = "windows")]

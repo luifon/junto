@@ -279,19 +279,7 @@ fn configure(reader: &IMFSourceReader) -> Result<Layout, CameraError> {
     })
     .ok_or(CameraError::Unsupported)?;
     formats.retain(|(layout, _, _, _)| (layout.width, layout.height) == size);
-    formats.sort_by(|a, b| {
-        let score = |n: u32, d: u32| {
-            let fps = f64::from(n) / f64::from(d);
-            if fps <= 30.0 {
-                (0, 30.0 - fps)
-            } else {
-                (1, fps - 30.0)
-            }
-        };
-        score(a.1, a.2)
-            .partial_cmp(&score(b.1, b.2))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    formats.sort_by(|a, b| super::format::rate_order((a.1, a.2), (b.1, b.2)));
     for (_, _, _, media) in formats {
         // SAFETY: the source has advertised the type; there is no pending read yet.
         if unsafe { reader.SetCurrentMediaType(VIDEO, None, &media) }.is_ok() {
@@ -354,6 +342,9 @@ fn capture(
         .into_iter()
         .find(|(device, _)| device.id == chosen.id)
         .ok_or(CameraError::DeviceGone)?;
+    if delivery.stopped() {
+        return Ok(());
+    }
     // SAFETY: activation is used only on this capture thread and shut down by Source.
     let source = Source {
         source: unsafe { activation.ActivateObject() }.map_err(error)?,
@@ -432,6 +423,89 @@ fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_foundation_two_dimensional_pitch_is_not_transmitted() {
+        initialize().unwrap();
+        // SAFETY: the test owns the 2D buffer, keeps it locked for each write, and opens no device.
+        unsafe {
+            let buffer = MFCreate2DMediaBuffer(4, 2, u32::from_le_bytes(*b"NV12"), false).unwrap();
+            let two_d: IMF2DBuffer = buffer.cast().unwrap();
+            let mut pointer = std::ptr::null_mut();
+            let mut pitch = 0;
+            two_d.Lock2D(&mut pointer, &mut pitch).unwrap();
+            assert!(pitch >= 4);
+            for row in 0..2 {
+                std::ptr::write_bytes(pointer.add(row * pitch as usize), 135, 4);
+            }
+            std::ptr::copy_nonoverlapping(
+                [67, 57, 67, 57].as_ptr(),
+                pointer.add(2 * pitch as usize),
+                4,
+            );
+            two_d.Unlock2D().unwrap();
+            let sample = MFCreateSample().unwrap();
+            sample.AddBuffer(&buffer).unwrap();
+            let picture = frame(
+                &sample,
+                Layout {
+                    width: 4,
+                    height: 2,
+                    stride: 4,
+                    pixel: Pixel::Nv12,
+                    matrix: Tag::Bt601,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                picture.data(),
+                (&[135u8; 8][..], &[67u8; 2][..], &[57u8; 2][..])
+            );
+        }
+    }
+
+    #[test]
+    fn media_foundation_padded_709_sample_reaches_the_shared_converter() {
+        initialize().unwrap();
+        // SAFETY: the test owns the media type, sample and writable buffer; no device opens.
+        unsafe {
+            let media = MFCreateMediaType().unwrap();
+            media
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .unwrap();
+            media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).unwrap();
+            media
+                .SetUINT64(&MF_MT_FRAME_SIZE, (4u64 << 32) | 2)
+                .unwrap();
+            media.SetUINT32(&MF_MT_DEFAULT_STRIDE, 8).unwrap();
+            media
+                .SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)
+                .unwrap();
+            let bytes = [
+                157, 157, 157, 157, 0, 0, 0, 0, 157, 157, 157, 157, 0, 0, 0, 0, 58, 51, 58, 51, 0,
+                0, 0, 0,
+            ];
+            let buffer = MFCreateMemoryBuffer(bytes.len() as u32).unwrap();
+            let mut pointer = std::ptr::null_mut();
+            buffer.Lock(&mut pointer, None, None).unwrap();
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len());
+            buffer.Unlock().unwrap();
+            buffer.SetCurrentLength(bytes.len() as u32).unwrap();
+            let sample = MFCreateSample().unwrap();
+            sample.AddBuffer(&buffer).unwrap();
+            let picture = frame(&sample, layout(&media).unwrap()).unwrap();
+            assert_eq!(
+                picture.data(),
+                (&[135u8; 8][..], &[67u8; 2][..], &[57u8; 2][..])
+            );
+            buffer.SetCurrentLength(15).unwrap();
+            assert!(frame(&sample, layout(&media).unwrap()).is_err());
+            media
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_0_255.0 as u32)
+                .unwrap();
+            assert!(layout(&media).is_err());
+        }
+    }
     #[test]
     fn permission_refusal_and_unplug_are_preserved() {
         assert_eq!(
