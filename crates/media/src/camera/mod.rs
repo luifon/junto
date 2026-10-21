@@ -6,8 +6,24 @@ use livekit::webrtc::video_frame::VideoBuffer;
 
 use crate::share::{CaptureStream, Pending};
 
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+mod raw;
+
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+mod worker;
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod linux;
+
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod windows;
+
 #[cfg(any(
     test,
+    target_os = "windows",
+    target_os = "linux",
     all(
         target_os = "macos",
         any(not(feature = "test-support"), feature = "native-device-tests")
@@ -17,6 +33,8 @@ mod format;
 
 #[cfg(any(
     test,
+    target_os = "windows",
+    target_os = "linux",
     all(
         target_os = "macos",
         any(not(feature = "test-support"), feature = "native-device-tests")
@@ -151,6 +169,22 @@ pub fn native_for_test() -> Arc<dyn CameraCapture> {
     Arc::new(macos::SystemCamera)
 }
 
+/// Explicit opt-in factory; ordinary test-support builds never select a hardware camera.
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "native-device-tests"
+))]
+pub fn native_for_test() -> Arc<dyn CameraCapture> {
+    #[cfg(target_os = "windows")]
+    {
+        Arc::new(windows::SystemCamera)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(linux::SystemCamera)
+    }
+}
+
 /// For the native stage: whether a camera buffer delivered without conversion is in the 601
 /// matrix of the publication path. `None` for a buffer that the camera code converted.
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
@@ -164,7 +198,15 @@ pub fn system() -> Arc<dyn CameraCapture> {
     {
         Arc::new(macos::SystemCamera)
     }
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(target_os = "windows")]
+    {
+        Arc::new(windows::SystemCamera)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(linux::SystemCamera)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Arc::new(NoCamera)
     }

@@ -1,5 +1,9 @@
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rerun-if-changed=src/camera/v4l2.c");
+        cc::Build::new()
+            .file("src/camera/v4l2.c")
+            .compile("junto_camera");
         println!("cargo:rerun-if-changed=src/audio/linux/pipewire.cc");
         cc::Build::new()
             .cpp(true)

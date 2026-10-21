@@ -84,6 +84,29 @@ tools/linux-container.sh tools/linux/display.sh wayland tools/linux/portal.sh \
 
 The script installs the nightly toolchain `nightly-2026-10-01` into a temporary directory of the container, builds `junto-media` for the host target with the checking into a directory of the container, and runs the ignored tests of `share::linux::audio::tests` and, under the virtual portal of this command, the picture capture test `share::linux::live`. Without the display and portal scripts it runs the sound tests only. The toolchain and the build end with the container; the build volume is not used. Run it after a change of `src/share/linux/registry.rs`, `connection.rs`, `audio.rs` or `video.rs`, and after a new version of the `pipewire` crate. A run takes a full build of the dependencies of `junto-media`.
 
+## Camera capture
+
+`camera::CameraCapture` uses AVFoundation on macOS, Media Foundation on Windows and
+V4L2 on Linux. Device selection, errors, supported sizes and colour normalization are
+described in ADR 0770. Linux needs read/write access to its V4L2 capture nodes; it does
+not obtain camera permission through the desktop portal. Compressed-only and
+multi-planar-only Linux devices are unsupported.
+
+The ordinary `test-support` camera factory remains `NoCamera`. Synthetic frame and
+cancellation tests open no device. For an explicitly authorized Windows or Linux
+device check, first list without capture:
+
+```sh
+cargo run -p junto-media --features native-device-tests --example camera-device -- --list
+JUNTO_TEST_CAMERA_DEVICE=1 cargo run -p junto-media --features native-device-tests --example camera-device
+```
+
+`JUNTO_TEST_CAMERA_INDEX` selects an index in the current list (default zero). Capture
+requires a device and checks thirty frames at the declared size. No permission dialog
+is requested. Run Linux checks on Linux with the chosen device exposed to the build
+container, and use `tools/serial.sh` for native builds. The example does not capture
+on macOS; its native camera stage is in `tests/native/README.md`.
+
 ## Screen capture
 
 The common interface is `share::ScreenCapture`. A `CaptureStream` owns the running capture; dropping it ends the capture. The sink receives pictures, interleaved sound and an end notification. An end notification is terminal. Sound is separate from the microphone pipeline and has no microphone echo cancellation or noise suppression.
