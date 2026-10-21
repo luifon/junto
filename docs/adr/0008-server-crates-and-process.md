@@ -24,6 +24,10 @@ Configuration:
 - The server reads its settings from environment variables with the prefix `JUNTO_`: `DATABASE_URL` (required), `LISTEN_ADDRESS` (default `127.0.0.1:8080`), `SERVER_NAME` (default `Junto`), `TRUSTED_PROXIES` (a comma-separated list of IP addresses, default empty), `LOG_FORMAT` (`json` or `text`, default `json`), `LOG_LEVEL` (default `info`) and `STOP_WITH_PROCESS` (the number of a process, default none).
 - `SERVER_NAME` is used at the first start only. The name is stored in the database afterwards.
 - An invalid value stops the start with a message that names the variable.
+- `JUNTO_OTEL_ENDPOINT` optionally enables request traces and metrics to an
+  administrator-operated collector; its transport, bounds and privacy rules are
+  in ADR 0007. An unset or empty value disables export. `JUNTO_OTEL_CA_FILE`
+  optionally adds a PEM CA bundle for an HTTPS collector with an internal authority.
 
 Process:
 

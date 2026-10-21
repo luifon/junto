@@ -98,6 +98,8 @@ RUN groupadd --gid "${JUNTO_GID}" junto \
       /var/lib/junto/exports
 COPY --from=ffmpeg-build /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-build /opt/ffmpeg/share/licenses /usr/share/licenses
+COPY --from=ffmpeg-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=ffmpeg-build /usr/share/doc/ca-certificates/copyright /usr/share/doc/ca-certificates/copyright
 COPY --from=server-build /out/licences /usr/share/licenses/junto-server
 COPY --from=layout-build /src/recording-layout/dist /usr/share/junto/recording-layout
 COPY --from=server-build /out/junto-server /usr/local/bin/junto-server

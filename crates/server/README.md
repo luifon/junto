@@ -30,6 +30,60 @@ JUNTO_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres \
 
 Without the four LiveKit settings the server runs, and a request to join a call gets `media_unavailable`.
 
+## Monitoring
+
+Set `JUNTO_OTEL_ENDPOINT` to the base URL of an administrator-operated OpenTelemetry
+collector, for example `http://collector.example.test:4318`. Unset or empty disables
+export; the server opens no monitoring connection. The URL accepts HTTP or HTTPS and
+an optional path prefix, but no credentials, query or fragment. Use HTTP only on a
+private network; HTTPS verifies the collector against the system trust store. The
+exporter uses the configured destination directly, without proxies or redirects.
+Standard `OTEL_*` exporter settings are ignored, including headers and compression.
+Compose passes the endpoint to the server; it does not install a collector.
+
+For an internal CA, set `JUNTO_OTEL_CA_FILE` to a readable PEM CA bundle. These
+certificates supplement the system trust store. Compose passes this path; mount the
+file read-only in an override file, for example:
+
+```yaml
+services:
+  server:
+    volumes:
+      - ./collector-ca.pem:/run/collector-ca.pem:ro
+```
+
+Set `JUNTO_OTEL_CA_FILE=/run/collector-ca.pem` in the deployment environment. An
+unreadable or invalid bundle prevents startup when export is enabled, with a message
+that names the setting without its value. Export disabled means the file is not read.
+
+The server sends OTLP/HTTP JSON to `<base>/v1/traces` and `<base>/v1/metrics` every
+five seconds. Each HTTP request that enters the middleware produces one server span, one increment of
+`http.server.request.count`, and one observation of `http.server.request.duration`
+in seconds. Duration ends when the response headers are ready; it excludes streaming
+the body and the lifetime of an upgraded WebSocket. Server errors mark the span as an
+error. Attributes contain only the standard HTTP method (other methods are `_OTHER`),
+the route template (`unmatched` for an unknown route), and the response status.
+If the request future is cancelled before response headers, both metrics are still
+recorded and the span has error status. The fixed `error.type=cancelled` replaces the
+response-status attribute.
+The only resource attribute is the fixed `service.name=junto-server`.
+
+No request or response content, identifiers, names, raw paths, queries, headers,
+keys, network addresses or incoming trace context are exported. Existing logs stay
+on standard error; the owner code stays on standard output (ADR 0008).
+
+Export runs on background threads. At most 1024 finished spans wait in a queue,
+with batches of 256; a full queue drops spans. Each metric retains at most 4096
+attribute combinations, then combines further values in an overflow series.
+That series carries only `otel.metric.overflow=true`.
+An export attempt, including the collector's response, has a two-second limit and is
+not retried. A failed export loses
+its spans; cumulative metrics remain available at the next collection. Graceful
+shutdown attempts a final export. A collector outage does not delay HTTP requests.
+Export failures and queue drops produce warnings on standard error, limited to one
+per minute per signal and warning kind. Warnings contain no destination or collector
+response; queue warnings give the number of dropped spans since the previous warning.
+
 ## Event stream
 
 A logged-in device receives the changes of the server over one WebSocket connection (ADR 0107).
