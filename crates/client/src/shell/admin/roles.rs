@@ -3,6 +3,7 @@
 //! and the move of a role; and the roles of one account in the lists of people. A role
 //! that the person cannot act on states why in its row.
 
+use super::list::Row;
 use std::sync::Arc;
 
 use gpui::{
@@ -722,10 +723,13 @@ impl Shell {
     ) -> AnyElement {
         self.settle_roles(view, window, cx);
         let rows = page.roles.loaded().cloned().unwrap_or_default();
-        let keys = std::iter::once("roles-header".to_owned())
-            .chain(rows.iter().map(|row| format!("role-{:?}", row.role)))
+        let list = std::iter::once(Row::new("roles-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("role-{:?}", row.role), true)),
+            )
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = Arc::new(page.clone());
         self.render_admin_list(
@@ -736,6 +740,7 @@ impl Shell {
                     this.render_role(&view, &page, &rows[index - 1], index - 1, &theme(cx), cx)
                 }
             },
+            window,
             cx,
         )
     }

@@ -2,6 +2,7 @@
 //! workspace, a new name, the deletion, and the invite code that enters a further
 //! workspace.
 
+use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
     Window, div,
@@ -203,14 +204,18 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &WorkspacesPage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let keys = std::iter::once("workspaces-header".to_owned())
-            .chain(page.rows.iter().map(|row| format!("workspace-{}", row.id)))
-            .chain(std::iter::once("workspaces-footer".to_owned()))
+        let list = std::iter::once(Row::new("workspaces-header", true).part())
+            .chain(
+                page.rows
+                    .iter()
+                    .map(|row| Row::new(format!("workspace-{}", row.id), true)),
+            )
+            .chain(std::iter::once(Row::new("workspaces-footer", true).part()))
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -229,6 +234,7 @@ impl Shell {
                 }
                 this.render_workspaces_footer(&view, &page, cx)
             },
+            window,
             cx,
         )
     }

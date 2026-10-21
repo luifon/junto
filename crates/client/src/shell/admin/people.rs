@@ -2,6 +2,7 @@
 //! (ADR 0113), the members of the shown workspace (ADR 0115), the invites with the form of
 //! a new one, and the join requests (ADR 0111).
 
+use super::list::Row;
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, InteractiveElement, IntoElement, ParentElement,
     Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
@@ -1012,11 +1013,14 @@ impl Shell {
             .filter(|row| filter == Filter::All || row.status == AccountStatus::Banned)
             .cloned()
             .collect();
-        let keys = std::iter::once("people-header".to_owned())
-            .chain(rows.iter().map(|row| format!("account-{}", row.id)))
-            .chain(std::iter::once("people-footer".to_owned()))
+        let list = std::iter::once(Row::new("people-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("account-{}", row.id), true)),
+            )
+            .chain(std::iter::once(Row::new("people-footer", false).part()))
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -1036,6 +1040,7 @@ impl Shell {
                     .child(sentence(txt::RECOVERY_HELP, &theme).mt(u(4.0)))
                     .into_any_element()
             },
+            window,
             cx,
         )
     }
@@ -1190,32 +1195,29 @@ impl Shell {
         } else {
             Vec::new()
         };
-        let keys = std::iter::once("members-header".to_owned())
-            .chain(
-                members
-                    .iter()
-                    .map(|row| format!("member-{}", row.account_id)),
+        let list = std::iter::once(
+            Row::new("members-header", matches!(page.members, MemberList::Failed)).part(),
+        )
+        .chain(members.iter().map(|row| {
+            Row::new(
+                format!("member-{}", row.account_id),
+                row.assignable.is_some() || matches!(row.remove, Some(Ok(()))),
             )
-            .chain(std::iter::once("members-add-header".to_owned()))
-            .chain(
-                addable
-                    .iter()
-                    .map(|row| format!("member-addable-{}", row.account_id)),
+        }))
+        .chain(std::iter::once(
+            Row::new(
+                "members-add-header",
+                matches!(page.addable, Some(Listed::Failed(_))),
             )
-            .collect();
-        self.admin.list.take(view, keys, cx);
-        self.admin.list.interactive = std::iter::once(matches!(page.members, MemberList::Failed))
-            .chain(
-                members
-                    .iter()
-                    .map(|row| row.assignable.is_some() || matches!(row.remove, Some(Ok(())))),
-            )
-            .chain(std::iter::once(matches!(
-                page.addable,
-                Some(Listed::Failed(_))
-            )))
-            .chain(addable.iter().map(|_| true))
-            .collect();
+            .part(),
+        ))
+        .chain(
+            addable
+                .iter()
+                .map(|row| Row::new(format!("member-addable-{}", row.account_id), true)),
+        )
+        .collect();
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -1232,6 +1234,7 @@ impl Shell {
                 }
                 this.render_addable_row(&view, &page, &addable[index - 1], cx)
             },
+            window,
             cx,
         )
     }
@@ -1811,13 +1814,13 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
-        let keys = std::iter::once("invites-header".to_owned())
-            .chain(rows.iter().map(|row| format!("invite-{}", row.id)))
+        let list = std::iter::once(Row::new("invites-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("invite-{}", row.id), row.may_revoke)),
+            )
             .collect();
-        self.admin.list.take(view, keys, cx);
-        self.admin.list.interactive = std::iter::once(true)
-            .chain(rows.iter().map(|row| row.may_revoke))
-            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -1829,6 +1832,7 @@ impl Shell {
                 let new = page.made.as_ref().map(|made| made.invite_id) == Some(row.id);
                 this.render_invite_row(&view, row, new, &theme(cx), cx)
             },
+            window,
             cx,
         )
     }
@@ -1929,10 +1933,13 @@ impl Shell {
     ) -> AnyElement {
         self.settle_people(view, window, cx);
         let rows = page.requests.loaded().cloned().unwrap_or_default();
-        let keys = std::iter::once("requests-header".to_owned())
-            .chain(rows.iter().map(|row| format!("request-{}", row.id)))
+        let list = std::iter::once(Row::new("requests-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("request-{}", row.id), true)),
+            )
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -1943,6 +1950,7 @@ impl Shell {
                     this.render_request_row(&view, &page, &rows[index - 1], cx)
                 }
             },
+            window,
             cx,
         )
     }

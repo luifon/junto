@@ -1591,6 +1591,7 @@ pub(super) fn with_names() -> Vec<ServerSnapshot> {
     })
 }
 
+/// Opens the audit log with `count` entries, the newest first.
 pub(super) fn prepare_audit_rows(
     shell: &mut Shell,
     count: usize,
@@ -1598,22 +1599,31 @@ pub(super) fn prepare_audit_rows(
     cx: &mut gpui::Context<Shell>,
 ) {
     open_page(shell, AdminPage::AuditLog, window, cx);
-    let mut log = Log::new(None);
-    for index in 0..count {
-        log.entry(
-            index as i64,
-            Some("Ana"),
-            AuditEvent::AccountUnbanned {
+    show_audit_rows(shell, audit_rows(count, 0), cx);
+}
+
+/// The audit log of the server with `count` entries, the newest first, after `newer`
+/// entries arrived since the first log. An entry keeps its identifier in every log.
+pub(super) fn audit_rows(count: usize, newer: usize) -> AuditLog {
+    let entries = (newer..newer + count)
+        .rev()
+        .map(|number| AuditEntry {
+            id: id(AUDIT + number as u32),
+            occurred_at: at() - Duration::minutes(10_000 - number as i64),
+            actor_id: Some(person("Ana")),
+            access_token_id: None,
+            workspace_id: None,
+            channel_id: None,
+            event: AuditEvent::AccountUnbanned {
                 account_id: person("Bruno"),
             },
-        );
-    }
-    show_records(
-        shell,
-        AuditLog::loaded(id(ACME), AuditScope::Server, log.entries, false),
-        ExportFiles::default(),
-        cx,
-    );
+        })
+        .collect();
+    AuditLog::loaded(id(ACME), AuditScope::Server, entries, false)
+}
+
+pub(super) fn show_audit_rows(shell: &mut Shell, log: AuditLog, cx: &mut gpui::Context<Shell>) {
+    show_records(shell, log, ExportFiles::default(), cx);
 }
 
 /// Shows the audit log of a scope of "Acme Studio" in the open administration.

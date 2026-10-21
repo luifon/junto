@@ -1,6 +1,7 @@
 //! The page of the recordings of a workspace (ADR 0784): a list that is read in pages on
 //! demand. It shows no player, and no control that saves or removes a recording.
 
+use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
 };
@@ -89,6 +90,30 @@ impl Shell {
         }
     }
 
+    /// Moves the open page of the administration to a place between its start (0) and its
+    /// end (1), as a drag of the scroll bar does. The screen tool uses it.
+    #[cfg(feature = "test-support")]
+    pub fn scroll_admin_page_to(&mut self, fraction: f32) {
+        if self.admin.list.state.item_count() > 0 {
+            let state = &self.admin.list.state;
+            let end = state.max_offset_for_scrollbar().y;
+            state.set_offset_from_scrollbar(gpui::point(gpui::px(0.0), -end * fraction));
+        } else {
+            let end = self.admin.page_scroll.max_offset().y;
+            self.admin
+                .page_scroll
+                .set_offset(gpui::point(gpui::px(0.0), -end * fraction));
+        }
+    }
+
+    /// The height of the content of the open page of the administration, as its scroll
+    /// bar takes it.
+    #[cfg(feature = "test-support")]
+    pub fn admin_page_extent(&self) -> gpui::Pixels {
+        let state = &self.admin.list.state;
+        state.max_offset_for_scrollbar().y + state.viewport_bounds().size.height
+    }
+
     #[cfg(feature = "test-support")]
     pub fn admin_page_at_end(&self) -> bool {
         self.admin.list.state.is_scrolled_to_end() == Some(true)
@@ -124,15 +149,15 @@ impl Shell {
                 });
             });
         }
-        let keys = std::iter::once("recordings-header".to_owned())
-            .chain(page.rows.iter().map(|row| format!("recording-{}", row.id)))
-            .chain(std::iter::once("recordings-footer".to_owned()))
+        let list = std::iter::once(Row::new("recordings-header", false).part())
+            .chain(
+                page.rows
+                    .iter()
+                    .map(|row| Row::new(format!("recording-{}", row.id), false)),
+            )
+            .chain(std::iter::once(Row::new("recordings-footer", true).part()))
             .collect();
-        self.admin.list.take(view, keys, cx);
-        self.admin.list.interactive = std::iter::once(false)
-            .chain(page.rows.iter().map(|_| false))
-            .chain(std::iter::once(true))
-            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
         let page = page.clone();
         self.render_admin_list(
             move |this, index, _, cx| {
@@ -151,6 +176,7 @@ impl Shell {
                 }
                 this.render_recordings_footer(server_id, &page, cx)
             },
+            window,
             cx,
         )
     }

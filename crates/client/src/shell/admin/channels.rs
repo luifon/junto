@@ -1,6 +1,7 @@
 //! The page of the categories and channels of a workspace, and the overview of the
 //! settings of one channel (ADR 0304, ADR 0402, ADR 0504).
 
+use super::list::Row;
 use gpui::{
     AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
@@ -832,44 +833,53 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &ChannelsPage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        enum Row {
+        enum Line {
             Heading,
             Category(usize),
             Channel(usize, usize),
             NewChannel(usize),
             NewCategory,
         }
-        let mut rows = vec![("channels-header".to_owned(), Row::Heading)];
+        let mut rows = vec![("channels-header".to_owned(), Line::Heading)];
         if page.may_manage {
             for (group_index, group) in page.groups.iter().enumerate() {
                 let key = format!(
                     "category-{:?}",
                     group.category.as_ref().map(|category| category.id)
                 );
-                rows.push((key.clone(), Row::Category(group_index)));
+                rows.push((key.clone(), Line::Category(group_index)));
                 rows.extend(group.channels.iter().enumerate().map(|(index, channel)| {
                     (
                         format!("channel-{}", channel.id),
-                        Row::Channel(group_index, index),
+                        Line::Channel(group_index, index),
                     )
                 }));
-                rows.push((format!("{key}-new"), Row::NewChannel(group_index)));
+                rows.push((format!("{key}-new"), Line::NewChannel(group_index)));
             }
-            rows.push(("category-new".to_owned(), Row::NewCategory));
+            rows.push(("category-new".to_owned(), Line::NewCategory));
         }
-        self.admin
-            .list
-            .take(view, rows.iter().map(|(key, _)| key.clone()).collect(), cx);
+        let list = rows
+            .iter()
+            .map(|(key, line)| {
+                let row = Row::new(key.clone(), true);
+                if matches!(line, Line::Channel(..)) {
+                    row
+                } else {
+                    row.part()
+                }
+            })
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
             move |this, index, _, cx| {
                 let theme = theme(cx);
                 match rows[index].1 {
-                    Row::Heading => div()
+                    Line::Heading => div()
                         .flex()
                         .flex_col()
                         .child(page_title(
@@ -882,7 +892,7 @@ impl Shell {
                                 .then(|| sentence(text::MANAGE_NO_PERMISSION, &theme)),
                         )
                         .into_any_element(),
-                    Row::Category(index) => {
+                    Line::Category(index) => {
                         let group = &page.groups[index];
                         div()
                             .flex()
@@ -900,7 +910,7 @@ impl Shell {
                             }))
                             .into_any_element()
                     }
-                    Row::Channel(group, index) => this.render_channel_line(
+                    Line::Channel(group, index) => this.render_channel_line(
                         &view,
                         &page,
                         &page.groups[group].channels[index],
@@ -908,12 +918,13 @@ impl Shell {
                         &theme,
                         cx,
                     ),
-                    Row::NewChannel(index) => {
+                    Line::NewChannel(index) => {
                         this.render_new_channel(&view, &page.groups[index], index, &theme, cx)
                     }
-                    Row::NewCategory => this.render_new_category(&view, cx),
+                    Line::NewCategory => this.render_new_category(&view, cx),
                 }
             },
+            window,
             cx,
         )
     }

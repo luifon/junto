@@ -142,7 +142,7 @@ impl AdminUi {
             space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
-            list: list::PageList::default(),
+            list: list::PageList::new(cx),
             overrides,
             people,
             records,
@@ -382,7 +382,7 @@ impl Shell {
 
     /// The fields and the open forms of the layer belong to the page that was shown.
     pub(crate) fn reset_admin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.admin.list = list::PageList::default();
+        self.admin.list = list::PageList::new(cx);
         self.admin.mode = None;
         self.admin.move_group = None;
         self.admin.invalid = None;

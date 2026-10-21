@@ -335,6 +335,101 @@ pub(crate) fn reveal_in_page(
     })
 }
 
+/// The bounds of an element of the open page of the administration when it is drawn whole
+/// inside the visible part of the page. The page is not scrolled.
+pub(crate) fn in_view(
+    window: &mut Window,
+    selector: &'static str,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    let page = window.cx.debug_bounds("admin-page")?;
+    window
+        .cx
+        .debug_bounds(selector)
+        .filter(|bounds| bounds.top() >= page.top() && bounds.bottom() <= page.bottom())
+}
+
+/// The bounds of `under` for a comparison of its place before and after an answer. The
+/// row of the form, with the key `form_row`, is drawn at least in part, and `under` whole,
+/// in the visible part of the page: a row above the first row in view moves no row under
+/// it, so the comparison would hold whatever the answer does.
+#[track_caller]
+pub(crate) fn under_form(
+    window: &mut Window,
+    form_row: &str,
+    under: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
+    let page = window.cx.debug_bounds("admin-page");
+    let row = window.cx.debug_bounds(sel("admin-row", form_row));
+    let shown = page
+        .zip(row)
+        .is_some_and(|(page, row)| page.intersects(&row));
+    match (shown, in_view(window, under)) {
+        (true, Some(bounds)) => bounds,
+        _ => panic!(
+            "the row {form_row} of the form and {under} are not both in view: page {page:?}, \
+             row {row:?}, under {:?}",
+            window.cx.debug_bounds(under),
+        ),
+    }
+}
+
+/// Brings the control `form` of the form and `under` into the visible part of the page at
+/// the same time and returns the bounds of `under`, as [`under_form`]. A press on `form`
+/// after it then scrolls nothing, so the page moves only by what the answer does.
+#[track_caller]
+pub(crate) fn reveal_under_form(
+    window: &mut Window,
+    form: &'static str,
+    form_row: &str,
+    under: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
+    awaited(
+        window,
+        &format!("{form} and {under} are in view"),
+        |window| {
+            let control = try_reveal(window, form)?;
+            if in_view(window, under).is_some() {
+                return Some(());
+            }
+            let page = window.cx.debug_bounds("admin-page")?;
+            // With the control in view, `under` is below it, drawn or not: the page moves up
+            // until the bottom of `under` is at the bottom of the page, or by the space above
+            // the control when `under` is not drawn.
+            let distance = match window.cx.debug_bounds(under) {
+                Some(bounds) => {
+                    assert!(
+                        bounds.top() > control.top()
+                            && bounds.bottom() - control.top() <= page.size.height,
+                        "{form} at {control:?} and {under} at {bounds:?} do not fit in the page \
+                     at {page:?}",
+                    );
+                    bounds.bottom() - page.bottom()
+                }
+                None => {
+                    assert!(
+                        control.top() > page.top(),
+                        "{under} is not drawn with {form} at the top of the page at {page:?}",
+                    );
+                    control.top() - page.top()
+                }
+            };
+            window.cx.simulate_event(ScrollWheelEvent {
+                position: page.center(),
+                delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
+                ..Default::default()
+            });
+            None
+        },
+    );
+    under_form(window, form_row, under)
+}
+
+/// The key of the row of the open page of the administration that holds the focused
+/// control.
+pub(crate) fn focused_row(window: &mut Window) -> Option<String> {
+    window.in_shell(|shell, window, cx| shell.admin_focused_row(window, cx))
+}
+
 /// Clicks an element of the open page of the administration. The click waits for an
 /// element that is not drawn now, and the page is scrolled to an element below its
 /// visible part.
@@ -1684,6 +1779,52 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     assert!(window.shows("channel-delete"));
 }
 
+/// Tab reaches "Open" and "Settings" of each archived channel for a member who may not
+/// restore one: the rows hold these controls whatever the permission (ADR 0761).
+#[gpui::test]
+fn tab_reaches_each_archived_channel_of_a_member_who_may_not_restore(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let default = default_workspace(&world, &admin.handle);
+    for name in ["notes", "plans", "drafts"] {
+        let channel = text_channel(&world, &admin.handle, default, name);
+        world
+            .run(admin.handle.api().archive_channel(channel))
+            .unwrap();
+    }
+    window.open_administration();
+    open_page(&mut window, "admin-nav-archive", |window| {
+        server_page!(window, Archive)
+            .is_some_and(|page| page.channels.loaded().is_some_and(|rows| rows.len() == 3))
+    });
+    let page = server_page!(&mut window, Archive).unwrap();
+    assert!(!page.may_manage);
+    let rows = page.channels.loaded().unwrap().clone();
+    let key = |at: usize| Some(format!("archived-{}", rows[at].id));
+
+    // "Open" of the first row, then its "Settings", then "Open" and "Settings" of the
+    // second row. "Restore" is disabled and takes no focus.
+    window.in_shell(|shell, window, cx| shell.focus_admin_page(window, cx));
+    window.until("the focus is in the first row", |window| {
+        focused_row(window) == key(0)
+    });
+    for row in [0, 1, 1] {
+        window.press("tab");
+        window.until("the focus is in the next row", |window| {
+            focused_row(window) == key(row)
+        });
+    }
+    window.press("enter");
+    window.until("the settings of the second channel are open", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Channel(settings)) if settings.channel_id == rows[1].id
+        )
+    });
+}
+
 /// The settings of a channel that a member opens without "manage channel" show the page
 /// "Archive and deletion", the only one. When the role arrives, the pages of the channel
 /// are offered, and the page that is shown stays (ADR 0761).
@@ -1804,9 +1945,8 @@ fn an_answer_to_a_question_about_an_account_moves_no_row_under_it(cx: &mut TestA
             |window| try_reveal(window, "account-confirm").is_some(),
         );
         let row = sel("account-row", asked);
-        reveal_in_page(&mut window, under);
-        reveal_in_page(&mut window, "account-confirm");
-        let before = window.cx.debug_bounds(under).unwrap();
+        let form_row = format!("account-{asked}");
+        let before = reveal_under_form(&mut window, "account-confirm", &form_row, under);
         let (row_before, page_before) = (
             window.cx.debug_bounds(row).unwrap(),
             window.cx.debug_bounds("admin-page").unwrap(),
@@ -1827,7 +1967,7 @@ fn an_answer_to_a_question_about_an_account_moves_no_row_under_it(cx: &mut TestA
             idle(window) && !window.shows("account-confirm")
         });
         assert_eq!(
-            window.cx.debug_bounds(under).unwrap(),
+            under_form(&mut window, &form_row, under),
             before,
             "the answer to {action} moved the row under the question; the row asked about \
              was at {row_before:?} and is at {:?}, the page was at {page_before:?} and is at \
@@ -1869,7 +2009,7 @@ fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut Test
         window.until("the form of a new invite is open", |window| {
             try_reveal(window, "invite-create").is_some()
         });
-        let before = reveal_in_page(&mut window, under);
+        let before = reveal_under_form(&mut window, "invite-create", "invites-header", under);
         let listed = invites(&mut window).len();
         // In the first round the state of the server brings the new invite while the
         // answer waits at the proxy. In the second, the answer is not held.
@@ -1882,7 +2022,7 @@ fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut Test
                 "the answer waits and the state has the new invite",
                 |window| proxy.answers_waiting() == 1 && invites(window).len() == listed + 1,
             );
-            assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+            assert_eq!(under_form(&mut window, "invites-header", under), before);
             proxy.release();
         }
         window.until(
@@ -1898,7 +2038,7 @@ fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut Test
             .and_then(|page| page.made.as_ref().map(|made| made.invite_id))
             .unwrap();
         assert_eq!(
-            window.cx.debug_bounds(under).unwrap(),
+            under_form(&mut window, "invites-header", under),
             before,
             "round {round}: the new invite moved the row under the form"
         );
@@ -1951,7 +2091,7 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
         });
         window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
         window.settle();
-        let before = reveal_in_page(&mut window, under);
+        let before = reveal_under_form(&mut window, "token-create", "tokens-header", under);
         let listed = tokens(&mut window).len();
         // In the first round the state of the server brings the new token while the
         // answer waits at the proxy. In the second, the answer is not held.
@@ -1964,7 +2104,7 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
                 "the answer waits and the state has the new token",
                 |window| proxy.answers_waiting() == 1 && tokens(window).len() == listed + 1,
             );
-            assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+            assert_eq!(under_form(&mut window, "tokens-header", under), before);
             proxy.release();
         }
         window.until(
@@ -1980,7 +2120,7 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
             .and_then(|page| page.made.as_ref().map(|made| made.access_token_id))
             .unwrap();
         assert_eq!(
-            window.cx.debug_bounds(under).unwrap(),
+            under_form(&mut window, "tokens-header", under),
             before,
             "round {round}: the new token moved the row under the form"
         );
@@ -2002,6 +2142,8 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
 #[derive(Clone, Copy)]
 struct NewRowPage {
     nav: &'static str,
+    /// The key of the row of the list that holds the form.
+    header: &'static str,
     new: &'static str,
     form: &'static str,
     create: &'static str,
@@ -2021,6 +2163,7 @@ struct NewRowPage {
 
 const INVITES: NewRowPage = NewRowPage {
     nav: "admin-nav-invites",
+    header: "invites-header",
     new: "invite-new",
     form: "invite-form",
     create: "invite-create",
@@ -2036,6 +2179,7 @@ const INVITES: NewRowPage = NewRowPage {
 
 const TOKENS: NewRowPage = NewRowPage {
     nav: "admin-nav-tokens",
+    header: "tokens-header",
     new: "token-new",
     form: "token-form",
     create: "token-create",
@@ -2201,7 +2345,7 @@ fn a_new_row_that_the_state_brings_after_its_result_is_put_away_moves_no_row_und
         window.until("the result is put away", |window| {
             !window.shows(page.result)
         });
-        let before = reveal_in_page(&mut window, under);
+        let before = reveal_under_form(&mut window, page.new, page.header, under);
         proxy.release();
         window.until("the state has the new row", |window| {
             page.rows(window).unwrap_or_default().contains(&made)
@@ -2210,7 +2354,7 @@ fn a_new_row_that_the_state_brings_after_its_result_is_put_away_moves_no_row_und
         // before the window is measured (ADR 0730).
         window.settle();
         assert_eq!(
-            window.cx.debug_bounds(under).unwrap(),
+            under_form(&mut window, page.header, under),
             before,
             "{}: the new row that the state brought moved the row under the form",
             page.nav
@@ -2288,7 +2432,7 @@ fn the_form_of_a_new_row_stays_while_its_request_is_sent(cx: &mut TestAppContext
         proxy.hold_answer_ending("POST", page.request);
         click_in_page(&mut window, page.create);
         window.until("the answer waits", |_| proxy.answers_waiting() == 1);
-        let before = reveal_in_page(&mut window, under);
+        let before = reveal_under_form(&mut window, page.create, page.header, under);
 
         for (selector, what) in [
             (page.cancel, "Cancel"),
@@ -2315,7 +2459,7 @@ fn the_form_of_a_new_row_stays_while_its_request_is_sent(cx: &mut TestAppContext
             },
         );
         window.settle();
-        assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+        assert_eq!(under_form(&mut window, page.header, under), before);
         click_in_page(&mut window, page.done);
         window.until("the result is put away", |window| {
             !window.shows(page.result)
@@ -2349,7 +2493,7 @@ fn a_second_new_row_keeps_the_first_one_out_of_the_list_until_a_release(cx: &mut
         // The person opens the form again, a release while the state does not hold the
         // first row, and sends it.
         page.open_form(&mut window);
-        let before = reveal_in_page(&mut window, under);
+        let before = reveal_under_form(&mut window, page.create, page.header, under);
         click_in_page(&mut window, page.create);
         window.until("the second result is shown", |window| {
             idle(window)
@@ -2364,7 +2508,7 @@ fn a_second_new_row_keeps_the_first_one_out_of_the_list_until_a_release(cx: &mut
         });
         window.settle();
         assert_eq!(
-            window.cx.debug_bounds(under).unwrap(),
+            under_form(&mut window, page.header, under),
             before,
             "{}: the first new row moved the row under the form",
             page.nav
@@ -2471,12 +2615,13 @@ fn the_first_row_joins_the_list_at_its_done_while_a_second_request_is_sent(
         // Done of the first result: the first row joins the list at this press.
         click_in_page(&mut window, page.done);
         reveal_in_page(&mut window, sel(page.row, &first));
-        let before = reveal_in_page(&mut window, under);
+        let before = reveal_under_form(&mut window, page.create, page.header, under);
         proxy.release();
         window.until(
             "the second result is shown and the state has the second row",
             |window| {
                 idle(window)
+                    && window.shows(page.result)
                     && page.made(window).is_some_and(|made| {
                         made != first && page.rows(window).unwrap_or_default().contains(&made)
                     })
@@ -2485,13 +2630,12 @@ fn the_first_row_joins_the_list_at_its_done_while_a_second_request_is_sent(
         window.settle();
         let second = page.made(&mut window).unwrap();
         assert_eq!(
-            window.cx.debug_bounds(under).unwrap(),
+            under_form(&mut window, page.header, under),
             before,
             "{}: the answer of the second request moved the row under the form",
             page.nav
         );
         assert!(!window.shows(sel(page.row, &second)));
-        reveal_in_page(&mut window, page.result);
         click_in_page(&mut window, page.done);
         reveal_in_page(&mut window, sel(page.row, &second));
     }
@@ -2585,8 +2729,11 @@ fn server_entries(world: &World, server: &TestServer) -> usize {
     })
 }
 
+/// The audit log of the server is read page by page with its cursor past 2,000 entries:
+/// every entry once, the newest first. The cost of the pages is measured apart from the
+/// cost of drawing them (ADR 0761).
 #[test]
-fn two_thousand_audit_entries_are_read_without_exhausting_the_server_connections() {
+fn more_than_two_thousand_audit_entries_are_read_page_by_page_once_each_in_order() {
     let world = World::new();
     let server = world.server("Audit pages");
     let owner = world.owner(&server);
@@ -2639,7 +2786,16 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
     use sqlx::ConnectOptions;
     let world = World::new();
     let server = world.server("People list");
-    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    // A member whose name sorts near the start of the list, and who renames itself later.
+    let code = invite(&world, &owner, Vec::new());
+    let device = Device::new();
+    let mover = world.run(async {
+        let handle = device.add(&server.address()).await;
+        handle.dispatch(join(&code, "Member 0002b")).await.unwrap();
+        logged_in(&handle);
+        handle
+    });
     world.run(async {
         let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
         let mut database = options.connect().await.unwrap();
@@ -2657,7 +2813,7 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
         server_page!(window, People).is_some_and(|page| {
             page.accounts
                 .loaded()
-                .is_some_and(|rows| rows.len() == 2001)
+                .is_some_and(|rows| rows.len() == 2002)
         })
     });
     let rows = server_page!(&mut window, People)
@@ -2666,12 +2822,47 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
         .loaded()
         .unwrap()
         .clone();
-    let count = |window: &mut Window| {
-        rows.iter()
-            .filter(|row| window.cx.debug_bounds(sel("account-row", row.id)).is_some())
-            .count()
-    };
+    let count = |window: &mut Window| window.in_shell(|shell, _, _| shell.admin_rows_laid_out());
     assert!(count(&mut window) < 100);
+
+    // The scroll bar covers every account: a row not laid out has an estimated height,
+    // also after a change of the width of the window.
+    let extent = |window: &mut Window| window.in_shell(|shell, _, _| shell.admin_page_extent());
+    let estimated = px(2000.0 * 30.0);
+    assert!(extent(&mut window) > estimated, "{:?}", extent(&mut window));
+    window.cx.simulate_resize(gpui::size(px(720.0), px(600.0)));
+    window.settle();
+    assert!(extent(&mut window) > estimated, "{:?}", extent(&mut window));
+
+    // A row that moves from above the view moves no row in view: the member renames
+    // itself and its row goes to the end of the list.
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to(0.5);
+        cx.notify();
+    });
+    window.settle();
+    let seen = rows
+        .iter()
+        .map(|row| sel("account-row", row.id))
+        .find(|selector| in_view(&mut window, selector).is_some())
+        .unwrap();
+    let before = in_view(&mut window, seen);
+    world
+        .run(mover.api().update_profile("Member 1999b"))
+        .unwrap();
+    window.until("the renamed member is near the end", |window| {
+        server_page!(window, People).is_some_and(|page| {
+            page.accounts.loaded().is_some_and(|rows| {
+                rows.iter()
+                    .rev()
+                    .nth(1)
+                    .is_some_and(|row| row.name == "Member 1999b")
+            })
+        })
+    });
+    window.settle();
+    assert_eq!(in_view(&mut window, seen), before);
+
     let last = sel("account-row", rows.last().unwrap().id);
     assert!(!window.shows(last));
     window.in_shell(|shell, _, cx| {
@@ -2738,45 +2929,65 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
     let full = load_older_until(&mut window, |page| page.at_bound);
     assert_eq!(full.loaded, MOST_AUDIT_ENTRIES);
     assert!(full.continues && !full.older && full.passed == 0);
-    let drawn = full
-        .rows
-        .iter()
-        .filter(|row| window.cx.debug_bounds(sel("audit-row", row.id)).is_some())
-        .count();
-    assert!(drawn < 100, "the audit page laid out {drawn} rows");
+    let laid_out = window.in_shell(|shell, _, _| shell.admin_rows_laid_out());
+    assert!(laid_out < 100, "the audit page laid out {laid_out} rows");
+
+    // The keyboard: the entries hold no control, so Tab goes from the filters to the
+    // first control of the footer, "Continue", and Shift+Tab goes back.
     window.in_shell(|shell, window, cx| shell.focus_admin_page(window, cx));
-    let in_view = |window: &mut Window, selector| {
-        let viewport = window.cx.debug_bounds("admin-page").unwrap();
-        window.cx.debug_bounds(selector).is_some_and(|bounds| {
-            bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom()
-        })
-    };
+    let focused = |window: &mut Window, row: &str| focused_row(window).as_deref() == Some(row);
+    window.until("the focus is in the filters", |window| {
+        focused(window, "audit-header")
+    });
+    // Shift+Tab leaves the list for the list of pages. With entries in view and no
+    // control drawn, Tab enters the list again at the filters.
+    window.press("shift-tab");
+    window.until("the focus left the list", |window| {
+        focused_row(window).is_none()
+    });
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to(0.5);
+        cx.notify();
+    });
+    window.settle();
+    assert!(in_view(&mut window, "audit-period").is_none());
+    window.press("tab");
+    window.until("Tab enters the list at the filters", |window| {
+        focused(window, "audit-header")
+    });
     for _ in 0..80 {
-        if in_view(&mut window, "audit-reload") {
+        if focused(&mut window, "audit-footer") {
             break;
         }
         window.press("tab");
+        window.until("the focus is in the filters or the footer", |window| {
+            focused(window, "audit-header") || focused(window, "audit-footer")
+        });
     }
-    assert!(
-        in_view(&mut window, "audit-reload"),
-        "Tab reaches the footer past 2000 rows"
+    let reached = (
+        focused_row(&mut window),
+        in_view(&mut window, "audit-continue"),
+        window.cx.debug_bounds("audit-continue"),
+        window.cx.debug_bounds("admin-page"),
     );
-    for _ in 0..80 {
-        if in_view(&mut window, "audit-period") {
-            break;
-        }
-        window.press("shift-tab");
-    }
     assert!(
-        in_view(&mut window, "audit-period"),
-        "Shift+Tab returns to the filters"
+        reached.0.as_deref() == Some("audit-footer") && reached.1.is_some(),
+        "Tab reaches the footer past 2000 rows: {reached:?}"
     );
-    reveal_in_page(&mut window, "audit-continue");
+    window.press("shift-tab");
+    window.until("Shift+Tab returns to the filters", |window| {
+        focused(window, "audit-header") && in_view(window, "audit-period").is_some()
+    });
+    window.press("tab");
+    window.until("Tab returns to the footer", |window| {
+        focused(window, "audit-footer") && in_view(window, "audit-continue").is_some()
+    });
     assert!(window.shows("audit-bound") && !window.shows("audit-older"));
     let first_ids: Vec<_> = full.rows.iter().map(|row| row.id).collect();
 
-    // "Continue" shows the next entries of the same list in place of the loaded ones.
-    click_in_page(&mut window, "audit-continue");
+    // "Continue" shows the next entries of the same list in place of the loaded ones. It
+    // holds the focus and is pressed with the keyboard.
+    window.press("enter");
     let next = awaited(&mut window, "the next entries are read", |window| {
         server_page!(window, AuditLog)
             .filter(|page| page.state == AuditRead::Loaded && page.passed > 0)

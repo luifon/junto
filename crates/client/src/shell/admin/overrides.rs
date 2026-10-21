@@ -2,6 +2,7 @@
 //! the workspace with their overrides in the channel. One role at a time shows its
 //! permissions, each with the three choices "Allow", "Default" and "Deny".
 
+use super::list::Row;
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
     Styled, Subscription, Window, div, prelude::FluentBuilder,
@@ -265,14 +266,17 @@ impl Shell {
         view: &AdminView,
         settings: &ChannelSettings,
         page: &PermissionsPage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let rows = page.roles.loaded().cloned().unwrap_or_default();
-        let keys = std::iter::once("permissions-header".to_owned())
-            .chain(rows.iter().map(|row| format!("override-{}", row.id)))
+        let list = std::iter::once(Row::new("permissions-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("override-{}", row.id), true)),
+            )
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let settings = settings.clone();
         let page = page.clone();
@@ -296,6 +300,7 @@ impl Shell {
                     cx,
                 )
             },
+            window,
             cx,
         )
     }

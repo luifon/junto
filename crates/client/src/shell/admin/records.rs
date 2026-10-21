@@ -2,6 +2,7 @@
 //! new one (ADR 0210), the exports of the person with their files (ADR 0411), and the
 //! audit log with its filters (ADR 0303, ADR 0305).
 
+use super::list::Row;
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
     ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
@@ -714,11 +715,14 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
-        let keys = std::iter::once("tokens-header".to_owned())
-            .chain(rows.iter().map(|row| format!("token-{}", row.id)))
-            .chain(std::iter::once("tokens-footer".to_owned()))
+        let list = std::iter::once(Row::new("tokens-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("token-{}", row.id), true)),
+            )
+            .chain(std::iter::once(Row::new("tokens-footer", false).part()))
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -739,6 +743,7 @@ impl Shell {
                     div().into_any_element()
                 }
             },
+            window,
             cx,
         )
     }
@@ -973,15 +978,18 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &ExportsPage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_export_question(view);
         let rows = page.exports.loaded().cloned().unwrap_or_default();
-        let keys = std::iter::once("exports-header".to_owned())
-            .chain(rows.iter().map(|row| format!("export-{}", row.id)))
+        let list = std::iter::once(Row::new("exports-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("export-{}", row.id), true)),
+            )
             .collect();
-        self.admin.list.take(view, keys, cx);
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -992,6 +1000,7 @@ impl Shell {
                     this.render_export_row(&view, &rows[index - 1], &theme(cx), cx)
                 }
             },
+            window,
             cx,
         )
     }
@@ -1558,15 +1567,14 @@ impl Shell {
                 });
             });
         }
-        let keys = std::iter::once("audit-header".to_owned())
-            .chain(page.rows.iter().map(|row| format!("audit-{}", row.id)))
-            .chain(std::iter::once("audit-footer".to_owned()))
-            .collect();
-        self.admin.list.take(view, keys, cx);
-        self.admin.list.interactive = std::iter::once(true)
-            .chain(page.rows.iter().map(|row| row.deleted_workspace.is_some()))
-            .chain(std::iter::once(true))
-            .collect();
+        let list =
+            std::iter::once(Row::new("audit-header", true).part())
+                .chain(page.rows.iter().map(|row| {
+                    Row::new(format!("audit-{}", row.id), row.deleted_workspace.is_some())
+                }))
+                .chain(std::iter::once(Row::new("audit-footer", true).part()))
+                .collect();
+        self.admin.list.take(Some(view), list, window, cx);
         let page = page.clone();
         self.render_admin_list(
             move |this, index, window, cx| {
@@ -1579,6 +1587,7 @@ impl Shell {
                 }
                 this.render_audit_footer(server_id, &page, cx)
             },
+            window,
             cx,
         )
     }

@@ -1,6 +1,7 @@
 //! The page of the archived channels and of the retention of a workspace, and the page of
 //! the archive, the export and the deletion of one channel (ADR 0410, ADR 0411, ADR 0409).
 
+use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
     Window, div,
@@ -363,19 +364,34 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &ArchivePage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let rows = page.channels.loaded().cloned().unwrap_or_default();
-        let keys = std::iter::once("archive-header".to_owned())
-            .chain(rows.iter().map(|row| format!("archived-{}", row.id)))
-            .chain(std::iter::once("archive-footer".to_owned()))
-            .collect();
-        self.admin.list.take(view, keys, cx);
-        self.admin.list.interactive = std::iter::once(matches!(page.channels, Listed::Failed(_)))
-            .chain(rows.iter().map(|_| page.may_manage))
-            .chain(std::iter::once(true))
-            .collect();
+        // "Open" and "Settings" of an archived channel take the focus whatever the
+        // permission; "Restore" is the only action that needs "manage channel".
+        let list = std::iter::once(
+            Row::new("archive-header", matches!(page.channels, Listed::Failed(_))).part(),
+        )
+        .chain(
+            rows.iter()
+                .map(|row| Row::new(format!("archived-{}", row.id), true)),
+        )
+        .chain(std::iter::once(
+            Row::new(
+                "archive-footer",
+                page.settings
+                    .as_ref()
+                    .is_some_and(|days| !matches!(days, Listed::Loading))
+                    || page
+                        .direct_retention
+                        .as_ref()
+                        .is_some_and(|days| !matches!(days, Listed::Loading)),
+            )
+            .part(),
+        ))
+        .collect();
+        self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
@@ -388,6 +404,7 @@ impl Shell {
                 }
                 this.render_archive_footer(&view, &page, cx)
             },
+            window,
             cx,
         )
     }
