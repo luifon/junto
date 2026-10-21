@@ -314,7 +314,7 @@ class Check:
 
     @step("real client packages: install, first frame, update, first frame, rollback, first frame")
     def real_client_lifecycle(self):
-        check_lifecycle.check(self.root / "real-client", "linux", self.files)
+        check_lifecycle.check(self.root, "linux", self.files)
 
 
 def main():

@@ -45,23 +45,8 @@ Checks (`packaging/check_linux.py`, in the build image):
 - An update of a running fixture directory package from a local source and its rollback with the recovery program; a read-only location, a changed archive and a second rollback are refused.
 - The Rust tests `tests/linux_packages.rs` replace an AppImage that is open and a directory with the Linux system tools, and roll both back.
 
-- The real-client lifecycle (`packaging/check_lifecycle.py`) builds the same checkout twice,
-  with temporary test keys and the workspace version followed by its next patch version.
-  It installs the first tarball and AppImage, updates each from signed real-client packages,
-  and restores each with the standalone recovery program from its previous release record.
-  At all three stages the compiled version and the first frame are checked under X11 and
-  Wayland, with a new empty data directory for every start.
-- The AppImage update is driven by the ignored Rust test `real_appimage_package_update`,
-  called only by the package check with the real package path, version and test public keys.
-  It supplies the running version to the production installer as the client does; the
-  external release tool cannot infer an AppImage version from its file. The existing
-  synthetic-file Rust tests retain their coverage of open-file replacement.
-- The lifecycle uses FUSE when the container exposes a readable and writable `/dev/fuse`
-  and a `fusermount` executable. Otherwise it states the missing prerequisite and uses
-  extract-and-run with extraction under its temporary directory. A startup failure when
-  those prerequisites are present fails the check. Each start has a 120-second bound;
-  timeout ends its process group, including its virtual display. No package, menu entry,
-  data directory or extraction is installed outside the temporary directory.
+- The real-client lifecycle (`packaging/check_lifecycle.py`, described in ADR 0725) for the tarball and for the AppImage: two builds of the checkout with temporary test keys, the workspace version and its next patch version, in their own target directory. The first package is installed in a folder whose name holds a space and a character outside ASCII. The installed client updates itself with `--update-from` (ADR 0724); the AppImage runs through its runtime, so the client finds its AppImage and its version as it does for a person. The recovery program of the previous release record rolls the update back. At installation, after the update and after the rollback, the installed directory equals the package directory of the expected version file by file, or the AppImage equals the expected AppImage, and the client states its version and draws its first frame under X11 and under Wayland, each start with a new empty data directory.
+- The lifecycle uses FUSE when the container has a `/dev/fuse` that the account can read and write and a `fusermount` or `fusermount3` program. Otherwise it prints the missing prerequisite and uses extract-and-run, with the extraction under its temporary folder; the build container of CI has no `/dev/fuse`. A start has a bound of 300 seconds, as the other starts of this check: it includes the start of the virtual display and its window manager and, with extract-and-run, the extraction of the AppImage. The processes of every command, with its virtual display, are ended when the command returns. No package, menu entry, data directory or extraction is written outside the temporary folder.
 
 ## Consequences
 

@@ -1,12 +1,15 @@
 """Install, start, update and recover real packages of two builds of one checkout."""
 import contextlib
+import hashlib
 import os
 import pathlib
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 import zipfile
 
@@ -15,29 +18,128 @@ from configuration import architecture
 from programs import outcome
 
 ROOT = release_tools.REPOSITORY
-TARGET = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve() / "debug"
+# The two builds of the check have a target directory of their own inside the target cache, so
+# that the build of the commit in the shared target directory, which later steps start, stays
+# as it is.
+TARGET = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve() / "lifecycle"
+# The bound of one start until the first frame. On Linux it also holds the start of the display
+# and its window manager and, without FUSE, the extraction of the AppImage.
+START_BOUND = 300 if sys.platform.startswith("linux") else 120
+# How long the output of a command that timed out is read after its processes were ended.
+DRAIN_BOUND = 30
+# The check runs in a folder whose name has a space and a character outside ASCII.
+FOLDER = "real client é"
 
 
-def stop(child):
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True, timeout=30)
-    else:
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _ntdll = ctypes.WinDLL("ntdll")
+    _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    _kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _kernel32.TerminateJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+    _ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    _ntdll.NtResumeProcess.restype = ctypes.c_long
+
+
+class Processes:
+    """The processes of one command and of every program that it starts: a process group on
+    Unix, a job object that ends its processes when it closes on Windows."""
+
+    def __init__(self, arguments, options):
+        self.job = None
+        if os.name == "nt":
+            self.job = _kernel32.CreateJobObjectW(None, None)
+            if not self.job:
+                raise ctypes.WinError(ctypes.get_last_error())
+            limits = _ExtendedLimits()
+            limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not _kernel32.SetInformationJobObject(self.job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                self.close()
+                raise ctypes.WinError(ctypes.get_last_error())
+            # The program starts suspended, so that it is in the job before it can start another.
+            options["creationflags"] = options.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+        else:
+            options["start_new_session"] = True
         try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            self.child = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          encoding="utf-8", errors="replace", **options)
+        except BaseException:
+            self.close()
+            raise
+        if os.name == "nt":
+            self.join_job()
+
+    def join_job(self):
+        # PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SUSPEND_RESUME
+        process = _kernel32.OpenProcess(0x0100 | 0x0001 | 0x0800, False, self.child.pid)
+        try:
+            if not process or not _kernel32.AssignProcessToJobObject(self.job, process):
+                error = ctypes.WinError(ctypes.get_last_error())
+                self.child.kill()
+                self.child.wait()
+                self.close()
+                raise error
+            if _ntdll.NtResumeProcess(process) < 0:
+                self.end()
+                self.child.wait()
+                raise AssertionError(f"the command did not resume: {self.child.args}")
+        finally:
+            if process:
+                _kernel32.CloseHandle(process)
+
+    def end(self):
+        """Ends every process of the command; the direct child is not reaped here."""
+        if os.name == "nt":
+            if self.job:
+                _kernel32.TerminateJobObject(self.job, 1)
+        else:
+            try:
+                os.killpg(self.child.pid, signal.SIGKILL)
+            # macOS refuses the signal when every process of the group has ended but the
+            # direct child is not reaped yet.
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def close(self):
+        if self.job:
+            _kernel32.CloseHandle(self.job)
+            self.job = None
 
 
 @contextlib.contextmanager
-def interruptions(children):
+def interruptions(running):
     received = []
     previous = {}
 
     def interrupted(number, _frame):
         if not received:
             received.append(number)
-        for child in children:
-            stop(child)
+        for processes in running:
+            processes.end()
 
     if os.name != "nt":
         for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -61,40 +163,74 @@ def lock_descriptors(environment):
 
 
 def command(arguments, *, timeout=180, **options):
-    children = []
-    with interruptions(children) as received:
-        return run_command(arguments, timeout, children, received, options)
+    """Runs a command and returns its output. Every process that the command started is ended
+    when it returns, also when it fails, times out or this program receives TERM, INT or HUP."""
+    running = []
+    with interruptions(running) as received:
+        return run_command(arguments, timeout, running, received, options)
 
 
-def run_command(arguments, timeout, children, received, options):
+def run_command(arguments, timeout, running, received, options):
     arguments = [str(value) for value in arguments]
     if os.name == "nt":
-        import ctypes
         ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
     else:
         options["pass_fds"] = lock_descriptors(options.get("env") or os.environ)
-    child = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                             start_new_session=os.name != "nt", **options)
-    children.append(child)
-    if received:
-        stop(child)
+    processes = Processes(arguments, options)
+    child = processes.child
+    running.append(processes)
     try:
-        output, errors = child.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        stop(child)
-        output, errors = child.communicate(timeout=30)
-        raise AssertionError("command timed out: " + outcome(subprocess.CompletedProcess(
-            arguments, child.returncode, output, errors))) from None
+        if received:
+            processes.end()
+        try:
+            output, errors = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            processes.end()
+            output, errors = drain(child)
+            child.wait(timeout=DRAIN_BOUND)
+            raise AssertionError(f"command timed out after {timeout} seconds: " + outcome(
+                subprocess.CompletedProcess(arguments, child.returncode, output, errors))) from None
     finally:
+        processes.end()
         if child.poll() is None:
-            stop(child)
-            child.wait(timeout=30)
+            child.wait(timeout=DRAIN_BOUND)
+        processes.close()
     if received:
         raise SystemExit(128 + received[0])
     result = subprocess.CompletedProcess(arguments, child.returncode, output, errors)
     if result.returncode:
         raise AssertionError(outcome(result))
     return output + errors
+
+
+def drain(child):
+    """The output of a command whose processes were ended. A program outside the process group
+    can keep the pipes open; then the output read so far is kept and the pipes are closed."""
+    try:
+        return child.communicate(timeout=DRAIN_BOUND)
+    except subprocess.TimeoutExpired as expired:
+        for stream in (child.stdout, child.stderr):
+            stream.close()
+        return expired.stdout, expired.stderr
+
+
+def remove_tree(path, attempts=10, interval=3):
+    """Removes a folder. On Windows a virus scanner can keep a new program file open for a short
+    time after its process ended, so a removal that fails is tried again, a bounded number of
+    times; the last failure names the files that are left."""
+    path = pathlib.Path(path)
+    for attempt in range(1, attempts + 1):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if attempt == attempts:
+                left = sorted(str(item.relative_to(path)) for item in path.rglob("*"))
+                raise AssertionError(f"{path} was not removed after {attempts} attempts: {error}\n"
+                                     f"left: {left[:50]}") from None
+            time.sleep(interval)
 
 
 def start(arguments, version, data, *, environment=None):
@@ -107,22 +243,24 @@ def start(arguments, version, data, *, environment=None):
     if version + " (test configuration)" not in label.splitlines():
         raise AssertionError(f"wrong client version: {label}")
     output = command([*arguments, "--data-dir", data, "--no-activate", "--check-startup"],
-                     env=environment, timeout=120)
+                     env=environment, timeout=START_BOUND)
     if "Junto first frame rendered" not in output.splitlines():
         raise AssertionError("the client did not render its first frame: " + output)
     print(f"    version {version}: first frame with an empty profile", flush=True)
 
 
-def fuse_environment(root):
+def fuse_environment(root, device=pathlib.Path("/dev/fuse"), which=shutil.which):
+    """The environment of an AppImage: FUSE when its device and fusermount can be used, else
+    extract-and-run into `root`. The choice and its reason are printed."""
     environment = os.environ.copy()
     for name in ["APPIMAGE_EXTRACT_AND_RUN", "APPIMAGE", "APPDIR"]:
         environment.pop(name, None)
     environment["TMPDIR"] = str(root)
-    if not pathlib.Path("/dev/fuse").exists():
-        reason = "/dev/fuse is absent from the build container"
-    elif not os.access("/dev/fuse", os.R_OK | os.W_OK):
-        reason = "the build account cannot read and write /dev/fuse"
-    elif not (shutil.which("fusermount") or shutil.which("fusermount3")):
+    if not device.exists():
+        reason = f"{device} is absent from the build container"
+    elif not os.access(device, os.R_OK | os.W_OK):
+        reason = f"the build account cannot read and write {device}"
+    elif not (which("fusermount") or which("fusermount3")):
         reason = "the build image has no fusermount or fusermount3"
     else:
         print("    AppImage startup through FUSE", flush=True)
@@ -132,21 +270,82 @@ def fuse_environment(root):
     return environment
 
 
-def check(root, system, files, *, signing=None):
-    root.mkdir()
-    current = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+def versions(manifest):
+    """The version of the workspace manifest and the next patch version."""
+    current = tomllib.loads(manifest)["workspace"]["package"]["version"]
     major, minor, patch = map(int, current.split("."))
-    versions = [current, f"{major}.{minor}.{patch + 1}"]
+    return [current, f"{major}.{minor}.{patch + 1}"]
+
+
+def requests(system, kind, arch, versions):
+    """The requests of an update from the first version to the second: the latest metadata, the
+    new archive, then the metadata and archive of the installed version for the rollback."""
+    current, new = versions
+    return [f"/latest-{system}-{kind}-{arch}.json",
+            f"/junto-{new}-{system}-{kind}-{arch}.junto",
+            f"/release-{current}-{system}-{kind}-{arch}.json",
+            f"/junto-{current}-{system}-{kind}-{arch}.junto"]
+
+
+def contents(path):
+    """Each entry at and below `path`, by its path relative to `path`: a link with its target,
+    a folder, or a file with its SHA-256 and, on Unix, whether it can be run."""
+    path = pathlib.Path(path)
+    found = {}
+    for item in [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]:
+        name = item.relative_to(path).as_posix()
+        status = item.lstat()
+        if stat.S_ISLNK(status.st_mode):
+            found[name] = ("link", os.readlink(item))
+        elif stat.S_ISDIR(status.st_mode):
+            found[name] = ("folder",)
+        else:
+            digest = hashlib.sha256()
+            with open(item, "rb") as file:
+                for block in iter(lambda: file.read(1 << 20), b""):
+                    digest.update(block)
+            runnable = os.name != "nt" and bool(status.st_mode & 0o111)
+            found[name] = ("file", digest.hexdigest(), runnable)
+    return found
+
+
+def compare(installed, application, expected):
+    """The folder of the installation holds the application, the same as `expected`, and at most
+    the update record of the application."""
+    record = f".{application.name}.junto-update"
+    extra = sorted(item.name for item in installed.iterdir() if item.name not in (application.name, record))
+    if extra:
+        raise AssertionError(f"unexpected entries beside the application: {extra}")
+    have, want = contents(application), contents(expected)
+    if have != want:
+        differ = sorted(name for name in have.keys() | want.keys() if have.get(name) != want.get(name))
+        raise AssertionError(f"{application} differs from {expected} in {len(differ)} entries: {differ[:20]}")
+
+
+def verify_signature(application):
+    result = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(application)],
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise AssertionError("the signature of the installed bundle is not valid: " + outcome(result))
+
+
+def check(parent, system, files, *, signing=None):
+    root = parent / FOLDER
+    root.mkdir()
+    built = versions((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    current = built[0]
     environment = os.environ.copy()
     environment.pop("JUNTO_UPDATE_SOURCE", None)
     environment.update(JUNTO_TEST_UPDATE_KEYS_FILE=str(files["release"][1]),
-                       JUNTO_TEST_FRESHNESS_KEYS_FILE=str(files["freshness"][1]))
+                       JUNTO_TEST_FRESHNESS_KEYS_FILE=str(files["freshness"][1]),
+                       CARGO_TARGET_DIR=str(TARGET))
     if signing:
         environment.update(signing)
+    build = TARGET / "debug"
     arch = architecture()
     suffix = ".exe" if system == "windows" else ""
     packages = []
-    for index, version in enumerate(versions):
+    for index, version in enumerate(built):
         print(f"    build real client {version}", flush=True)
         environment["JUNTO_TEST_BUILD_VERSION"] = version
         command(["cargo", "build", "--locked", "-p", "junto-client", "--bin", "junto", "-p",
@@ -155,22 +354,22 @@ def check(root, system, files, *, signing=None):
         output = root / f"build-{index}"
         if system == "macos":
             from bundle import assemble
-            bundle = assemble(TARGET / "junto", output / "package-bundle/Junto.app", version,
-                              TARGET / "junto-recover", icon_tool=TARGET / "junto-icon", build=TARGET)
+            bundle = assemble(build / "junto", output / "package-bundle/Junto.app", version,
+                              build / "junto-recover", icon_tool=build / "junto-icon", build=build)
             command([sys.executable, ROOT / "packaging/sign.py", bundle], env=environment)
             command(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle,
                      output / "Junto.zip"])
         elif system == "windows":
             import windows
-            windows.assemble(TARGET / "junto.exe", TARGET / "junto-recover.exe", version, output, build=TARGET)
+            windows.assemble(build / "junto.exe", build / "junto-recover.exe", version, output, build=build)
         else:
             import linux
-            linux.assemble(TARGET / "junto", TARGET / "junto-recover", version, output,
-                           icon_tool=TARGET / "junto-icon", build=TARGET)
+            linux.assemble(build / "junto", build / "junto-recover", version, output,
+                           icon_tool=build / "junto-icon", build=build)
         packages.append(output)
         if index == 0:
-            updater = root / ("updater" + suffix)
-            shutil.copy2(TARGET / ("junto-release" + suffix), updater)
+            packager = root / ("junto-release" + suffix)
+            shutil.copy2(build / ("junto-release" + suffix), packager)
 
     kinds = ["bundle"] if system == "macos" else ["directory", "appimage"] if system == "linux" else ["directory"]
     for kind in kinds:
@@ -179,9 +378,9 @@ def check(root, system, files, *, signing=None):
         work.mkdir()
         source = work / "source"
         source.mkdir()
-        for index, version in enumerate(versions):
+        for index, version in enumerate(built):
             published = work / f"release-{index}"
-            release_tools.package(updater, files, packages[index] / f"package-{kind}", published,
+            release_tools.package(packager, files, packages[index] / f"package-{kind}", published,
                                   version, system, kind, arch)
             for path in published.iterdir():
                 if index == 1 or not path.name.startswith("latest-"):
@@ -210,35 +409,27 @@ def check(root, system, files, *, signing=None):
             binary = application
         runtime = fuse_environment(work) if kind == "appimage" else os.environ.copy()
 
-        def started(stage, version):
+        def started(stage, index):
+            compare(installed, application, packages[index] / f"package-{kind}" / application.name)
+            if system == "macos":
+                verify_signature(application)
+                if requirement(application) != expected:
+                    raise AssertionError("the signing requirement changed")
             for backend in (["x11", "wayland"] if system == "linux" else [None]):
                 prefix = [ROOT / "tools/linux/display.sh", backend] if backend else []
-                start([*prefix, binary], version, work / f"data-{stage}-{backend}", environment=runtime)
-            if system == "macos" and requirement(application) != expected:
-                raise AssertionError("the signing requirement changed")
+                start([*prefix, binary], built[index], work / f"data-{stage}-{backend}", environment=runtime)
 
-        started("installed", current)
+        started("installed", 0)
         with release_tools.source(source) as (server, address):
-            if kind == "appimage":
-                test_environment = os.environ.copy()
-                test_environment.update(JUNTO_TEST_PACKAGE_APPIMAGE=str(application),
-                                        JUNTO_TEST_PACKAGE_VERSION=current, JUNTO_TEST_PACKAGE_SOURCE=address,
-                                        JUNTO_TEST_PACKAGE_RELEASE_KEYS=str(files["release"][1]),
-                                        JUNTO_TEST_PACKAGE_FRESHNESS_KEYS=str(files["freshness"][1]))
-                command(["cargo", "test", "--locked", "-p", "junto-client-core", "--test", "linux_packages",
-                         "real_appimage_package_update", "--", "--ignored", "--exact", "--nocapture"],
-                        cwd=ROOT, env=test_environment, timeout=3600)
-            else:
-                command([updater, "update", address, application])
-            expected_paths = [f"/latest-{system}-{kind}-{arch}.json",
-                              f"/junto-{versions[1]}-{system}-{kind}-{arch}.junto",
-                              f"/release-{current}-{system}-{kind}-{arch}.json",
-                              f"/junto-{current}-{system}-{kind}-{arch}.junto"]
-            if server.paths != expected_paths:
+            # The installed client updates itself, as the update action of its window does.
+            output = command([binary, "--update-from", address], env=runtime)
+            if f"installed version {built[1]}" not in output.splitlines():
+                raise AssertionError("the client did not report the update: " + output)
+            if server.paths != requests(system, kind, arch, built):
                 raise AssertionError(f"unexpected release requests: {server.paths}")
-        started("updated", versions[1])
+        started("updated", 1)
         record = installed / f".{application.name}.junto-update/record"
         command([record / f"previous/recover{suffix}", "rollback", application])
-        started("restored", current)
+        started("restored", 0)
         if (record / "previous").exists():
             raise AssertionError("rollback kept a previous release")

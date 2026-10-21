@@ -445,3 +445,14 @@ async fn the_release_of_an_installed_version_is_requested_by_its_name_without_fr
         }
     }
 }
+
+#[tokio::test]
+async fn a_product_build_refuses_another_release_source_before_it_reads_the_installation() {
+    let refused =
+        junto_client_core::releases::update_running_from(Some("http://127.0.0.1:9/"), false).await;
+    assert!(
+        matches!(&refused, Err(junto_client_core::releases::Error::Invalid(reason)) if reason.contains("test configuration")),
+        "{:?}",
+        refused.err()
+    );
+}

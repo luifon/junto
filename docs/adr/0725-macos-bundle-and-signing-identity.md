@@ -28,28 +28,12 @@ ADR 0704 requires one bundle identifier and one self-signed code-signing certifi
 - `packaging/check_start.py` starts the executable of a bundle with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires exit code 0 and the line `Junto first frame rendered`. The macOS CI job assembles the unsigned bundle of the debug build of each commit and runs this check on it (ADR 0905). `packaging/check_update.py` also checks the signed real-client lifecycle below.
 
 
-Package lifecycle check (`packaging/check_update.py`, `packaging/check_lifecycle.py`):
+Package lifecycle check (`packaging/check_update.py`, `packaging/check_lifecycle.py`; ADR 0754 and ADR 0755 use the same check):
 
-- Build the real client, recovery program and release tool from the same checkout twice,
-  first with the workspace version and then with the patch version raised by one. Compile
-  temporary release and freshness public keys into both builds with the test configuration;
-  use the temporary signing identity and certificate pin of the packaging checks. No tracked
-  key, certificate pin, manifest or lockfile is changed.
-- Assemble and sign both bundles, create the first-install ZIP with `ditto`, and extract it
-  into the temporary installation directory. Start the installed client with an empty data
-  directory, `--no-activate` and `--check-startup`. Require its compiled version, exit code 0
-  and the first-frame line.
-- Serve both signed releases on a loopback source. Update with the first build's release
-  tool, start the updated client with another empty data directory, roll back with the
-  recovery program kept in the previous release record, and start the restored client with
-  a third empty data directory. Check the compiled version at each stage and the same
-  designated signing requirement throughout.
-- Each start has a 120-second bound. A timeout terminates the process group and reports the
-  captured output. Interrupt, termination and hangup signals stop the active command group.
-  Unix commands inherit the CI run lock descriptor so an interrupted runner cannot release
-  its build cache while a command still uses it (ADR 0905). Temporary packages, profiles,
-  keys and release files are removed, and the
-  keychain search list is restored. The checks use no real release key or signing identity.
-- Fixture checks remain for invalid signatures, a read-only installation, a damaged archive
-  and a second rollback. Download quarantine, system permission continuity and a clean
-  machine remain separate checks.
+- The check builds the client, the recovery program and the release tool of the checkout twice: with the workspace version, then with the patch version raised by one. Both builds are test configurations with temporary release and freshness public keys and the temporary signing identity and certificate pin of the packaging checks. No tracked key, pin, manifest or lockfile changes.
+- The two builds use the target directory `lifecycle` inside the target directory of the job. The build of the commit in the shared target directory is not changed, so the later step that starts the bundle of the commit starts that build.
+- It signs both bundles, makes the ZIP of the first with `ditto` and extracts it into a temporary folder whose name holds a space and a character outside ASCII. Both releases are served on a loopback source.
+- The installed client updates itself with `--update-from <address>` (ADR 0724), which runs the code of the update action of the window from inside the installed bundle. The source must receive the requests of ADR 0726 in their order. The recovery program of the previous release record then rolls the update back.
+- At installation, after the update and after the rollback: every file, folder and link of the installed bundle equals the signed bundle of the expected version (content, and whether a file can be run), the folder of the installation holds nothing else than the bundle and its update record, `codesign --verify --deep --strict` accepts the bundle, the designated requirement is the same as at installation, `--version` states the expected version, and a start with a new empty data directory, `--no-activate` and `--check-startup` ends with code 0 and the first-frame line.
+- A start has a bound of 120 seconds. Every command runs in a process group of its own, and the group is ended when the command returns, also after a timeout or a failure, so no program that it started keeps running. A timeout reports the output read so far, also when a program outside the group keeps the pipes open. TERM, INT and HUP end the group of the running command. Commands inherit the descriptor of the CI run lock, so the runner keeps the lock while a command uses the build cache (ADR 0905). Output is read as UTF-8. Temporary packages, profiles, keys and release files are removed and the keychain search list is restored.
+- Fixture checks remain for invalid signatures, a read-only installation, a damaged archive and a second rollback. Download quarantine, system permission continuity and a clean machine are not checked.

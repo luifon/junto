@@ -319,39 +319,3 @@ fn the_exchange_by_two_renames_puts_the_candidate_in_place_or_restores_the_appli
         "new"
     );
 }
-
-/// The package check supplies the real AppImage and its temporary signed release source.
-#[tokio::test]
-#[ignore = "run by packaging/check_linux.py with two real client packages"]
-async fn real_appimage_package_update() {
-    let application = PathBuf::from(std::env::var_os("JUNTO_TEST_PACKAGE_APPIMAGE").unwrap());
-    let version = Version::parse(&std::env::var("JUNTO_TEST_PACKAGE_VERSION").unwrap()).unwrap();
-    let source = std::env::var("JUNTO_TEST_PACKAGE_SOURCE").unwrap();
-    let keys =
-        |name| TrustedKeys::from_json(&fs::read(std::env::var_os(name).unwrap()).unwrap()).unwrap();
-    let trust = keys("JUNTO_TEST_PACKAGE_RELEASE_KEYS")
-        .with_freshness(keys("JUNTO_TEST_PACKAGE_FRESHNESS_KEYS"));
-    let installer = Installer::with_system(
-        &application,
-        Package::AppImage,
-        LinuxTools::with_running(&application, version).unwrap(),
-    )
-    .unwrap()
-    .with_trust(trust.clone(), String::new());
-    let source = HttpSource::new(
-        &source,
-        trust,
-        version,
-        Target::this_build(Package::AppImage),
-    )
-    .unwrap();
-    let installed = tokio::time::timeout(
-        std::time::Duration::from_secs(180),
-        releases::update(installer, &source),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(installed.version > version);
-    assert_eq!(installed.previous, Previous::Kept(version));
-}

@@ -138,7 +138,7 @@ def check():
                     assert result.returncode != 0, outcome(result)
                     assert version(installed) == "1.0.0"
             print("20 update and archive-recovery assertions passed", flush=True)
-            check_lifecycle.check(root / "real-client", "macos", files, signing={
+            check_lifecycle.check(root, "macos", files, signing={
                 name: environment[name] for name in ["JUNTO_CODESIGN_IDENTITY", "JUNTO_CODESIGN_KEYCHAIN",
                                                      "JUNTO_TEST_CERTIFICATE_FILE"]})
         finally:

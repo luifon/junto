@@ -52,11 +52,31 @@ impl install::Installer<Tools> {
 /// Downloads the newest release from the source of this build and installs it over the
 /// installation that this process runs from.
 pub async fn update_running() -> Result<install::Installed, Error> {
+    update_running_from(None, TEST_CONFIGURATION).await
+}
+
+/// [`update_running`] from the source at `base` instead of the compiled source, with the
+/// compiled keys. Only a test configuration accepts another source: the package checks
+/// serve their releases on an address that is known only when they run.
+pub async fn update_running_from(
+    base: Option<&str>,
+    test_configuration: bool,
+) -> Result<install::Installed, Error> {
+    if base.is_some() && !test_configuration {
+        return Err(Error::Invalid(
+            "only a test configuration accepts another release source",
+        ));
+    }
     let installer = PlatformInstaller::running()?;
     installer.location()?;
     let current = installer.installed_version()?;
-    let source = HttpSource::compiled_for(installer.target().clone(), current)?
-        .ok_or(Error::Invalid("no update source"))?;
+    let target = installer.target().clone();
+    let source = match base {
+        Some(base) => HttpSource::new(base, TrustedKeys::compiled()?, current, target)?,
+        None => {
+            HttpSource::compiled_for(target, current)?.ok_or(Error::Invalid("no update source"))?
+        }
+    };
     update(installer, &source).await
 }
 

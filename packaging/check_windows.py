@@ -193,29 +193,30 @@ class Check:
 
     @step("real client packages: install, first frame, update, first frame, rollback, first frame")
     def real_client_lifecycle(self):
-        check_lifecycle.check(self.root / "real-client", "windows", self.files)
+        check_lifecycle.check(self.root, "windows", self.files)
 
 
 def main():
     import ctypes
     ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
-    with tempfile.TemporaryDirectory(prefix="junto-windows-package-") as temporary:
-        check = Check(pathlib.Path(temporary))
-        try:
-            for number, (name, function) in enumerate(STEPS, 1):
-                print(f"[{number}/{len(STEPS)}] {name}", flush=True)
-                try:
-                    function(check)
-                except Exception as error:
-                    print(f"FAILED at step {number}: {name}\n{type(error).__name__}: {error}", flush=True)
-                    return 1
-            print(f"all {len(STEPS)} steps of the Windows package check passed", flush=True)
-            return 0
-        finally:
-            running = getattr(check, "running", None)
-            if running is not None and running.poll() is None:
-                running.kill()
-                running.wait()
+    temporary = pathlib.Path(tempfile.mkdtemp(prefix="junto-windows-package-"))
+    check = Check(temporary)
+    try:
+        for number, (name, function) in enumerate(STEPS, 1):
+            print(f"[{number}/{len(STEPS)}] {name}", flush=True)
+            try:
+                function(check)
+            except Exception as error:
+                print(f"FAILED at step {number}: {name}\n{type(error).__name__}: {error}", flush=True)
+                return 1
+        print(f"all {len(STEPS)} steps of the Windows package check passed", flush=True)
+        return 0
+    finally:
+        running = getattr(check, "running", None)
+        if running is not None and running.poll() is None:
+            running.kill()
+            running.wait()
+        check_lifecycle.remove_tree(temporary)
 
 
 if __name__ == "__main__":
