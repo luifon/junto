@@ -11,7 +11,7 @@ pub mod people;
 mod recordings;
 pub mod records;
 pub mod roles;
-mod server;
+pub mod server;
 mod workspaces;
 
 use gpui::{
@@ -71,6 +71,8 @@ pub enum Mode {
     ChangeTerm(u32),
     /// The question before the removal of the term at this position.
     RemoveTerm(u32),
+    /// One limit of the files of messages is typed (ADR 0408).
+    Limit(server::Limit),
 }
 
 /// What the layer of the administration holds of the window itself: the text of its
@@ -81,6 +83,9 @@ pub(crate) struct AdminUi {
     /// A number or a code: days, a user limit, an invite code.
     pub(crate) value: Entity<InputState>,
     pub(crate) mode: Option<Mode>,
+    /// The second step of "Move to" on the page of the channels: the group whose places
+    /// the row offers. Absent while the group is chosen.
+    pub(crate) move_group: Option<Option<CategoryId>>,
     /// The kind of the channel that is created.
     pub(crate) new_kind: ChannelKind,
     /// Why the text of a field was not sent.
@@ -137,6 +142,7 @@ impl AdminUi {
             name,
             value,
             mode: None,
+            move_group: None,
             new_kind: ChannelKind::Text,
             invalid: None,
             sent: None,
@@ -387,6 +393,7 @@ impl Shell {
     /// The fields and the open forms of the layer belong to the page that was shown.
     pub(crate) fn reset_admin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.admin.mode = None;
+        self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
         self.admin.opened_term = None;
@@ -410,6 +417,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.admin.mode = mode;
+        self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
         self.admin.opened_term = None;
@@ -434,7 +442,7 @@ impl Shell {
                 | Mode::AddTerm
                 | Mode::ChangeTerm(_),
             ) => self.focus_field(&self.admin.name.clone(), window, cx),
-            Some(Mode::EnterCode | Mode::Days(_)) => {
+            Some(Mode::EnterCode | Mode::Days(_) | Mode::Limit(_)) => {
                 self.focus_field(&self.admin.value.clone(), window, cx);
             }
             _ => {}
@@ -495,6 +503,7 @@ impl Shell {
             Some(Mode::AddTerm | Mode::ChangeTerm(_)) => {
                 self.submit_glossary_form(&view, window, cx);
             }
+            Some(Mode::Limit(_)) => self.submit_limit(&view, cx),
             _ => {}
         }
     }

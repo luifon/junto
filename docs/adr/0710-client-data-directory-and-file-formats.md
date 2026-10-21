@@ -36,7 +36,7 @@ Files:
 
 Server book:
 
-- An entry holds the server identifier, a generation, the address, the name, the path of the logo on the server, the API versions that the server reported last, the connection mode (`always` or `when_selected`, ADR 0107), the membership, the last event cursor, the state of the profile preset (ADR 0717), and the identifiers of the newest 100 moderation notices that the person put away (ADR 0764).
+- An entry holds the server identifier, a generation, the address, the name, the path of the logo on the server, the API versions that the server reported last, the connection mode (`always` or `when_selected`, ADR 0107), the membership, the last event cursor, the state of the profile preset (ADR 0717), the identifiers of the newest 100 moderation notices that the person put away (ADR 0764), and whether the person logged out of the account of the membership on this device (ADR 0712).
 - The generation is a random number that the book gives an entry when it is added. A server that is removed and added again gets another generation. A change names the identifier and the generation of the entry that it was made for, and the book refuses it when that entry is gone, so a client with an older view cannot change or remove the entry that replaced it.
 - The membership is what the client learned at its last contact: `none`, `join_requested` with the name and, once the server has answered, the request identifier, `member` with the account and device identifiers, `banned`, or `removed`.
 - A join request is stored as `join_requested` without an identifier before the request is sent (ADR 0712).
@@ -52,10 +52,10 @@ Not stored:
 
 Format version:
 
-- `servers.json` and `profile.json` are JSON objects with the field `format_version`. This record describes version 3 of `servers.json` and version 2 of `profile.json`.
+- `servers.json` and `profile.json` are JSON objects with the field `format_version`. This record describes version 4 of `servers.json` and version 2 of `profile.json`.
 - `settings.json` has the same form and is at version 1. A scale outside 90 to 150 percent is read as the nearest bound.
 - `voice.json` has the same form and is at version 2. Version 1 had no settings of shares; a file of version 1 gets their defaults. A frame rate that is not 15, 30 or 60 is read as 30. A volume above 200 percent is read as 200, a volume of 100 percent of an account is not stored, and the file holds at most 2048 volumes. The identifier of a device is text of the system of at most 512 bytes; the file holds no text that a server sent.
-- Version 1 of `profile.json` named the format of the avatar `png`, `jpeg` or `webp`; version 2 stores its media type. Version 1 of `servers.json` had no state `refused` of the profile preset (ADR 0717); its content is otherwise the content of version 2. Version 2 had no moderation notices put away; its content is otherwise the content of version 3, with none put away. A new field is a new version too, so that an older client does not drop it when it writes the file. A new value of a stored field is a new version, so that an older client refuses the file and does not report it as corrupted.
+- Version 1 of `profile.json` named the format of the avatar `png`, `jpeg` or `webp`; version 2 stores its media type. Version 1 of `servers.json` had no state `refused` of the profile preset (ADR 0717); its content is otherwise the content of version 2. Version 2 had no moderation notices put away; its content is otherwise the content of version 3, with none put away. Version 3 had no logout of the person; its content is otherwise the content of version 4, without a logout. A new field is a new version too, so that an older client does not drop it when it writes the file. A new value of a stored field is a new version, so that an older client refuses the file and does not report it as corrupted.
 - A file with a higher version than the client knows is refused and never overwritten.
 - A file with a lower version is migrated in memory, one version step at a time, and written in the current version at the next change.
 - A key file states its version in its first line (ADR 0711).

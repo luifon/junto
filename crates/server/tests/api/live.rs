@@ -23,12 +23,9 @@ use serde_json::Value;
 use time::Duration;
 
 use crate::calls_support::{Scene, names};
-use crate::support::TestServer;
+use crate::limit::limited;
+use crate::support::{TestServer, package_directory};
 
-const TOOL: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../spikes/test-participant/target/release/test-participant"
-);
 const PATIENCE: Wait = Wait::from_secs(30);
 const REASON: &str = "needs a LiveKit server: run through tools/with-test-livekit.sh";
 
@@ -58,6 +55,7 @@ async fn scene() -> Scene {
 }
 
 async fn until(what: &str, mut holds: impl AsyncFnMut() -> bool) {
+    crate::limit::step(what);
     let started = Instant::now();
     while !holds().await {
         assert!(
@@ -68,15 +66,31 @@ async fn until(what: &str, mut holds: impl AsyncFnMut() -> bool) {
     }
 }
 
+#[tokio::test]
+async fn the_waits_of_the_live_tests_note_their_steps() {
+    until("a condition that holds", async || true).await;
+    assert!(
+        crate::limit::last_steps().contains("a condition that holds"),
+        "{}",
+        crate::limit::last_steps()
+    );
+}
+
 /// A process of the test participant of `spikes/test-participant`.
 struct Client {
     child: Child,
     lines: Arc<Mutex<Vec<Value>>>,
+    _adopted: crate::limit::Adopted,
 }
 
 impl Client {
     fn start(command: &str, url: &str, token: &CallToken, arguments: &[&str]) -> Self {
-        let tool = std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| TOOL.to_owned());
+        let tool = std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| {
+            package_directory()
+                .join("../../spikes/test-participant/target/release/test-participant")
+                .display()
+                .to_string()
+        });
         assert!(
             std::path::Path::new(&tool).exists(),
             "{tool} is missing. Build it once: (cd spikes/test-participant && \
@@ -91,6 +105,7 @@ impl Client {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
+        let adopted = crate::limit::adopt(child.id());
         let output = child.stdout.take().unwrap();
         let lines = Arc::new(Mutex::new(Vec::new()));
         let kept = lines.clone();
@@ -101,7 +116,11 @@ impl Client {
                 }
             }
         });
-        Self { child, lines }
+        Self {
+            child,
+            lines,
+            _adopted: adopted,
+        }
     }
 
     fn publisher(join: &CallJoin, arguments: &[&str]) -> Self {
@@ -118,6 +137,7 @@ impl Client {
 
     /// Waits until the process printed `event`.
     async fn until(&self, event: &str) {
+        crate::limit::step(format!("the participant reports {event:?}"));
         let started = Instant::now();
         while !self.saw(event) {
             assert!(
@@ -131,6 +151,7 @@ impl Client {
 
     /// Waits until the process has ended.
     async fn ended(&mut self) -> ExitStatus {
+        crate::limit::step("the participant ends");
         let started = Instant::now();
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
@@ -166,272 +187,359 @@ fn room_of(join: &CallJoin) -> String {
     claims["video"]["room"].as_str().unwrap().to_owned()
 }
 
+/// Set for a run of this test binary by the test below, which runs one test in a process of
+/// its own.
+const FORCED_END_CHILD: &str = "JUNTO_LIVE_FORCED_END_CHILD";
+
+#[tokio::test]
+#[ignore = "run in its own process by a_forced_end_of_a_test_process_also_ends_its_call_participants"]
+async fn child_with_a_call_participant_that_does_not_end() {
+    if std::env::var_os(FORCED_END_CHILD).is_none() {
+        return;
+    }
+    let scene = scene().await;
+    let join = scene.server.join_call(&scene.ann, scene.voice.id).await;
+    let client = Client::publisher(&join, &["--mic-hz", "440"]);
+    client.until("joined").await;
+    eprintln!("participant process {}", client.child.id());
+    let _limit = crate::limit::watch(Wait::from_millis(300));
+    std::thread::sleep(Wait::from_secs(60));
+}
+
+/// ADR 0904: a forced end of a test process by its limit also ends the call participants
+/// that its tests started, which would otherwise stay in the call and keep what the test
+/// process inherited, such as the lock of the machine.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_forced_end_of_a_test_process_also_ends_its_call_participants() {
+    limited(async {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "live::child_with_a_call_participant_that_does_not_end",
+                "--ignored",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(FORCED_END_CHILD, "1")
+            .stdout(Stdio::null())
+            .output()
+            .await
+            .unwrap();
+        let errors = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(crate::limit::LIMIT_EXIT_CODE),
+            "{errors}"
+        );
+        let participant: u32 = errors
+            .lines()
+            .find_map(|line| line.strip_prefix("participant process "))
+            .expect("the child started a participant")
+            .trim()
+            .parse()
+            .unwrap();
+        let runs = || {
+            std::process::Command::new("kill")
+                .args(["-0", &participant.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        let started = Instant::now();
+        while runs() && started.elapsed() < Wait::from_secs(2) {
+            tokio::time::sleep(Wait::from_millis(20)).await;
+        }
+        if runs() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &participant.to_string()])
+                .status();
+            panic!("the participant {participant} still runs: {errors}");
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn livekit_accepts_the_join_token_and_its_participant_list_drives_who_is_in_the_call() {
-    let _ = REASON;
-    let scene = scene().await;
-    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    until("the first check has reached LiveKit", async || {
-        server.state.calls.reachable() == Some(true)
+    limited(async {
+        let _ = REASON;
+        let scene = scene().await;
+        let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+        let voice = scene.voice.id;
+        until("the first check has reached LiveKit", async || {
+            server.state.calls.reachable() == Some(true)
+        })
+        .await;
+        let mut to_ben = server.full_stream(ben).await;
+
+        let join = server.join_call(ann, voice).await;
+        let room = room_of(&join);
+        assert!(server.occupants(ben, voice).await.is_empty());
+
+        let token = join.token.expose();
+        let signature = token.rfind('.').unwrap() + 1;
+        let first = if token[signature..].starts_with('A') {
+            "B"
+        } else {
+            "A"
+        };
+        let forged = format!("{}{first}{}", &token[..signature], &token[signature + 1..]);
+        let mut refused = Client::start(
+            "publish",
+            &join.media_url,
+            &CallToken::new(forged),
+            &["--leave-after", "5"],
+        );
+        assert!(!refused.ended().await.success());
+        assert!(!refused.saw("joined"), "{:?}", refused.lines());
+
+        let client = Client::publisher(&join, &["--mic-hz", "440"]);
+        client.until("joined").await;
+        client.until("published").await;
+        until("the person is in the call", async || {
+            server.occupants(ben, voice).await == [ann.account_id]
+        })
+        .await;
+        let seen = server.call_events(ben, &mut to_ben).await;
+        assert_eq!(names(&seen), ["call_started", "call_participant_joined"]);
+        let Event::CallParticipantJoined { participant, .. } = &seen[1] else {
+            panic!("{seen:?}");
+        };
+        assert_eq!(participant.identity, join.identity);
+
+        let participants = listed(server, &room).await;
+        assert_eq!(participants.len(), 1);
+        assert_eq!(participants[0].identity, join.identity);
+        assert_eq!(participants[0].publishing, Some(Publishing::open()));
+        assert!(participants[0].publishes(TrackSource::Microphone));
+        let microphone = participants[0]
+            .tracks
+            .iter()
+            .find(|track| track.source == TrackSource::Microphone)
+            .unwrap();
+        assert!(microphone.id.starts_with("TR_"), "{:?}", microphone.id);
+
+        drop(client);
+        until("the person who lost the connection has left", async || {
+            !server.channel_call(ben, voice).await.in_use
+        })
+        .await;
+        let after = server.call_events(ben, &mut to_ben).await;
+        assert!(matches!(
+            after.as_slice(),
+            [
+                Event::CallParticipantLeft {
+                    reason: LeaveReason::ConnectionLost,
+                    ..
+                },
+                Event::CallEnded { .. }
+            ]
+        ));
     })
     .await;
-    let mut to_ben = server.full_stream(ben).await;
-
-    let join = server.join_call(ann, voice).await;
-    let room = room_of(&join);
-    assert!(server.occupants(ben, voice).await.is_empty());
-
-    let token = join.token.expose();
-    let signature = token.rfind('.').unwrap() + 1;
-    let first = if token[signature..].starts_with('A') {
-        "B"
-    } else {
-        "A"
-    };
-    let forged = format!("{}{first}{}", &token[..signature], &token[signature + 1..]);
-    let mut refused = Client::start(
-        "publish",
-        &join.media_url,
-        &CallToken::new(forged),
-        &["--leave-after", "5"],
-    );
-    assert!(!refused.ended().await.success());
-    assert!(!refused.saw("joined"), "{:?}", refused.lines());
-
-    let client = Client::publisher(&join, &["--mic-hz", "440"]);
-    client.until("joined").await;
-    client.until("published").await;
-    until("the person is in the call", async || {
-        server.occupants(ben, voice).await == [ann.account_id]
-    })
-    .await;
-    let seen = server.call_events(ben, &mut to_ben).await;
-    assert_eq!(names(&seen), ["call_started", "call_participant_joined"]);
-    let Event::CallParticipantJoined { participant, .. } = &seen[1] else {
-        panic!("{seen:?}");
-    };
-    assert_eq!(participant.identity, join.identity);
-
-    let participants = listed(server, &room).await;
-    assert_eq!(participants.len(), 1);
-    assert_eq!(participants[0].identity, join.identity);
-    assert_eq!(participants[0].publishing, Some(Publishing::open()));
-    assert!(participants[0].publishes(TrackSource::Microphone));
-    let microphone = participants[0]
-        .tracks
-        .iter()
-        .find(|track| track.source == TrackSource::Microphone)
-        .unwrap();
-    assert!(microphone.id.starts_with("TR_"), "{:?}", microphone.id);
-
-    drop(client);
-    until("the person who lost the connection has left", async || {
-        !server.channel_call(ben, voice).await.in_use
-    })
-    .await;
-    let after = server.call_events(ben, &mut to_ben).await;
-    assert!(matches!(
-        after.as_slice(),
-        [
-            Event::CallParticipantLeft {
-                reason: LeaveReason::ConnectionLost,
-                ..
-            },
-            Event::CallEnded { .. }
-        ]
-    ));
 }
 
 #[tokio::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_removed_person_is_thrown_out_by_the_repeated_check_each_time_they_return() {
-    let scene = scene().await;
-    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    until("the first check has reached LiveKit", async || {
-        server.state.calls.reachable() == Some(true)
-    })
-    .await;
+    limited(async {
+        let scene = scene().await;
+        let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+        let voice = scene.voice.id;
+        until("the first check has reached LiveKit", async || {
+            server.state.calls.reachable() == Some(true)
+        })
+        .await;
 
-    let anchor_join = server.join_call(ben, voice).await;
-    let anchor = Client::publisher(&anchor_join, &["--no-mic"]);
-    anchor.until("joined").await;
-    let join = server.join_call(ann, voice).await;
-    let room = room_of(&join);
-    let client = Client::publisher(&join, &["--mic-hz", "440"]);
-    client.until("joined").await;
-    until("both are in the call", async || {
-        server.occupants(owner, voice).await.len() == 2
-    })
-    .await;
+        let anchor_join = server.join_call(ben, voice).await;
+        let anchor = Client::publisher(&anchor_join, &["--no-mic"]);
+        anchor.until("joined").await;
+        let join = server.join_call(ann, voice).await;
+        let room = room_of(&join);
+        let client = Client::publisher(&join, &["--mic-hz", "440"]);
+        client.until("joined").await;
+        until("both are in the call", async || {
+            server.occupants(owner, voice).await.len() == 2
+        })
+        .await;
 
-    server
-        .delete(
-            owner,
-            &format!(
-                "/api/v1/channels/{voice}/call/participants/{}",
-                ann.account_id
-            ),
-        )
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    client.until("disconnected").await;
-    assert_eq!(server.occupants(owner, voice).await, [ben.account_id]);
-
-    for attempt in 1..=2 {
-        let back = Client::publisher(&join, &["--mic-hz", "440"]);
-        back.until("joined").await;
-        back.until("disconnected").await;
-        assert_eq!(
-            server.occupants(owner, voice).await,
-            [ben.account_id],
-            "return {attempt}"
-        );
-    }
-    until("only the allowed person is left in the room", async || {
-        let identities: Vec<String> = listed(server, &room)
+        server
+            .delete(
+                owner,
+                &format!(
+                    "/api/v1/channels/{voice}/call/participants/{}",
+                    ann.account_id
+                ),
+            )
             .await
-            .into_iter()
-            .map(|participant| participant.identity)
-            .collect();
-        identities == std::slice::from_ref(&anchor_join.identity)
+            .empty(StatusCode::NO_CONTENT);
+        client.until("disconnected").await;
+        assert_eq!(server.occupants(owner, voice).await, [ben.account_id]);
+
+        for attempt in 1..=2 {
+            let back = Client::publisher(&join, &["--mic-hz", "440"]);
+            back.until("joined").await;
+            back.until("disconnected").await;
+            assert_eq!(
+                server.occupants(owner, voice).await,
+                [ben.account_id],
+                "return {attempt}"
+            );
+        }
+        until("only the allowed person is left in the room", async || {
+            let identities: Vec<String> = listed(server, &room)
+                .await
+                .into_iter()
+                .map(|participant| participant.identity)
+                .collect();
+            identities == std::slice::from_ref(&anchor_join.identity)
+        })
+        .await;
+        assert!(!anchor.saw("disconnected"));
+        assert_eq!(server.own_call(ann).await.call, None);
     })
     .await;
-    assert!(!anchor.saw("disconnected"));
-    assert_eq!(server.own_call(ann).await.call, None);
 }
 
 #[tokio::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_microphone_block_stops_the_participant_from_publishing() {
-    let scene = scene().await;
-    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    until("the first check has reached LiveKit", async || {
-        server.state.calls.reachable() == Some(true)
-    })
-    .await;
+    limited(async {
+        let scene = scene().await;
+        let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+        let voice = scene.voice.id;
+        until("the first check has reached LiveKit", async || {
+            server.state.calls.reachable() == Some(true)
+        })
+        .await;
 
-    let join = server.join_call(ann, voice).await;
-    let room = room_of(&join);
-    let speaker = Client::publisher(&join, &["--mic-hz", "440", "--camera"]);
-    speaker.until("joined").await;
-    let expected = format!("{}/microphone=440", join.identity);
-    let listen = |listener: CallJoin| {
-        Client::start(
-            "subscribe",
-            &listener.media_url,
-            &listener.token,
-            &["--duration", "6", "--expect", &expected],
-        )
-    };
-    until("the speaker publishes the microphone", async || {
-        listed(server, &room)
-            .await
-            .iter()
-            .any(|participant| participant.publishes(TrackSource::Microphone))
-    })
-    .await;
-    let mut heard = listen(server.join_call(ben, voice).await);
-    assert!(heard.ended().await.success(), "{:?}", heard.lines());
-
-    let block = format!(
-        "/api/v1/channels/{voice}/call/participants/{}/microphone-block",
-        ann.account_id
-    );
-    server
-        .put_empty(owner, &block)
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    until(
-        "LiveKit lists no microphone track of the blocked person",
-        async || {
-            let participants = listed(server, &room).await;
-            participants
-                .iter()
-                .find(|participant| participant.identity == join.identity)
-                .is_some_and(|participant| {
-                    participant.publishing == Some(Publishing::pictures_only())
-                        && !participant.publishes(TrackSource::Microphone)
-                        && participant.publishes(TrackSource::Camera)
-                })
-        },
-    )
-    .await;
-    let mut silent = listen(server.join_call(ben, voice).await);
-    assert!(!silent.ended().await.success(), "{:?}", silent.lines());
-    let summary = silent.lines().pop().unwrap();
-    assert!(
-        !summary["failures"].as_array().unwrap().is_empty(),
-        "{summary}"
-    );
-
-    let shown = server
-        .channel_call(owner, voice)
-        .await
-        .call
-        .unwrap()
-        .participants
-        .into_iter()
-        .find(|participant| participant.account_id == ann.account_id)
-        .unwrap();
-    assert_eq!(
-        shown.microphone_block.unwrap().reason,
-        BlockReason::Moderator
-    );
-    assert!(!speaker.saw("disconnected"));
-
-    server.leave_call(ann).await;
-    speaker.until("disconnected").await;
-    let again = server.join_call(ann, voice).await;
-    let blocked = Client::publisher(&again, &["--no-mic", "--camera"]);
-    blocked.until("joined").await;
-    until(
-        "the new connection of the blocked person has no sound source",
-        async || {
+        let join = server.join_call(ann, voice).await;
+        let room = room_of(&join);
+        let speaker = Client::publisher(&join, &["--mic-hz", "440", "--camera"]);
+        speaker.until("joined").await;
+        let expected = format!("{}/microphone=440", join.identity);
+        let listen = |listener: CallJoin| {
+            Client::start(
+                "subscribe",
+                &listener.media_url,
+                &listener.token,
+                &["--duration", "6", "--expect", &expected],
+            )
+        };
+        until("the speaker publishes the microphone", async || {
             listed(server, &room)
                 .await
                 .iter()
-                .find(|participant| participant.identity == again.identity)
-                .is_some_and(|participant| {
-                    participant.publishing == Some(Publishing::pictures_only())
-                })
-        },
-    )
+                .any(|participant| participant.publishes(TrackSource::Microphone))
+        })
+        .await;
+        let mut heard = listen(server.join_call(ben, voice).await);
+        assert!(heard.ended().await.success(), "{:?}", heard.lines());
+
+        let block = format!(
+            "/api/v1/channels/{voice}/call/participants/{}/microphone-block",
+            ann.account_id
+        );
+        server
+            .put_empty(owner, &block)
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        until(
+            "LiveKit lists no microphone track of the blocked person",
+            async || {
+                let participants = listed(server, &room).await;
+                participants
+                    .iter()
+                    .find(|participant| participant.identity == join.identity)
+                    .is_some_and(|participant| {
+                        participant.publishing == Some(Publishing::pictures_only())
+                            && !participant.publishes(TrackSource::Microphone)
+                            && participant.publishes(TrackSource::Camera)
+                    })
+            },
+        )
+        .await;
+        let mut silent = listen(server.join_call(ben, voice).await);
+        assert!(!silent.ended().await.success(), "{:?}", silent.lines());
+        let summary = silent.lines().pop().unwrap();
+        assert!(
+            !summary["failures"].as_array().unwrap().is_empty(),
+            "{summary}"
+        );
+
+        let shown = server
+            .channel_call(owner, voice)
+            .await
+            .call
+            .unwrap()
+            .participants
+            .into_iter()
+            .find(|participant| participant.account_id == ann.account_id)
+            .unwrap();
+        assert_eq!(
+            shown.microphone_block.unwrap().reason,
+            BlockReason::Moderator
+        );
+        assert!(!speaker.saw("disconnected"));
+
+        server.leave_call(ann).await;
+        speaker.until("disconnected").await;
+        let again = server.join_call(ann, voice).await;
+        let blocked = Client::publisher(&again, &["--no-mic", "--camera"]);
+        blocked.until("joined").await;
+        until(
+            "the new connection of the blocked person has no sound source",
+            async || {
+                listed(server, &room)
+                    .await
+                    .iter()
+                    .find(|participant| participant.identity == again.identity)
+                    .is_some_and(|participant| {
+                        participant.publishing == Some(Publishing::pictures_only())
+                    })
+            },
+        )
+        .await;
+        server
+            .call_join_reply(owner, voice)
+            .await
+            .ok::<Value>(StatusCode::OK);
+        let _ = ErrorCode::NotInCall;
+    })
     .await;
-    server
-        .call_join_reply(owner, voice)
-        .await
-        .ok::<Value>(StatusCode::OK);
-    let _ = ErrorCode::NotInCall;
 }
 
 #[tokio::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_notification_of_livekit_is_verified_and_starts_a_check() {
-    let listen = setting("JUNTO_TEST_WEBHOOK_ADDRESS");
-    let configure = |config: &mut Config| {
-        media(config);
-        config.limits.calls.check_interval = Duration::hours(1);
-    };
-    let scene = Scene::on(TestServer::start_live(configure, Some(listen)).await).await;
-    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    until("the first check has reached LiveKit", async || {
-        server.state.calls.reachable() == Some(true)
-    })
-    .await;
+    limited(async {
+        let listen = setting("JUNTO_TEST_WEBHOOK_ADDRESS");
+        let configure = |config: &mut Config| {
+            media(config);
+            config.limits.calls.check_interval = Duration::hours(1);
+        };
+        let scene = Scene::on(TestServer::start_live(configure, Some(listen)).await).await;
+        let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+        let voice = scene.voice.id;
+        until("the first check has reached LiveKit", async || {
+            server.state.calls.reachable() == Some(true)
+        })
+        .await;
 
-    let join = server.join_call(ann, voice).await;
-    tokio::time::sleep(Wait::from_secs(1)).await;
-    assert!(server.occupants(ben, voice).await.is_empty());
-    let client = Client::publisher(&join, &["--no-mic"]);
-    client.until("joined").await;
-    until(
-        "a notification of LiveKit made the check see the person",
-        async || server.occupants(ben, voice).await == [ann.account_id],
-    )
+        let join = server.join_call(ann, voice).await;
+        tokio::time::sleep(Wait::from_secs(1)).await;
+        assert!(server.occupants(ben, voice).await.is_empty());
+        let client = Client::publisher(&join, &["--no-mic"]);
+        client.until("joined").await;
+        until(
+            "a notification of LiveKit made the check see the person",
+            async || server.occupants(ben, voice).await == [ann.account_id],
+        )
+        .await;
+    })
     .await;
 }

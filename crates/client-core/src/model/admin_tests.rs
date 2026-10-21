@@ -732,6 +732,43 @@ fn the_events_that_arrived_during_a_read_are_applied_to_a_collection_after_its_a
 }
 
 #[test]
+fn the_attachment_limits_follow_their_event_while_a_reader_holds_them() {
+    use junto_protocol::message::AttachmentLimits;
+    let scene = scene();
+    let mut model = scene.model();
+    let part = AdminPart::AttachmentLimits;
+    let changed = Event::AttachmentLimitsChanged {
+        limits: AttachmentLimits {
+            bytes_per_file: 5_000_000,
+            files_per_message: 3,
+        },
+    };
+    // Without a reader the collection takes nothing.
+    model.apply(&changed);
+    assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
+    loaded(
+        &mut model,
+        part,
+        AdminPayload::AttachmentLimits(AttachmentLimits {
+            bytes_per_file: 100_000_000,
+            files_per_message: 10,
+        }),
+    );
+    // The event carries the limits: they are taken, and nothing is read again.
+    assert!(part.concerns(&changed) && !part.is_stale_after(&changed));
+    assert_eq!(model.apply(&changed), Follow::default());
+    assert_eq!(
+        model.admin.attachment_limits.loaded(),
+        Some(&AttachmentLimits {
+            bytes_per_file: 5_000_000,
+            files_per_message: 3,
+        })
+    );
+    model.set_admin(part, AdminSet::NotLoaded);
+    assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
+}
+
+#[test]
 fn a_change_of_the_retention_asks_for_the_open_settings_again() {
     let scene = scene();
     let mut model = scene.model();

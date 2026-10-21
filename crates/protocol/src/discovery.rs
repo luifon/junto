@@ -1,5 +1,5 @@
 //! Search, notification policy and retention (ADR 0409).
-use crate::ids::{AccountId, MessageId, RecordingId};
+use crate::ids::{AccountId, MessageId, RecordingId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -128,6 +128,9 @@ pub struct SearchHit {
     pub recording_id: Option<RecordingId>,
     pub line: Option<u32>,
     pub place_id: Uuid,
+    /// The workspace of the channel of the result. Absent for a direct conversation.
+    #[serde(default)]
+    pub workspace_id: Option<WorkspaceId>,
     pub author_id: AccountId,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,

@@ -10,55 +10,104 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ChannelKind, CreateCategory, CreateChannel, UpdateCategory, UpdateChannel,
+    ArchivePeriod, ChannelKind, ChannelMove, CreateCategory, CreateChannel, MoveChannels,
+    UpdateCategory, UpdateChannel,
 };
 
 use super::{AskKind, Made};
 use crate::state::AppState;
 
-/// The new positions that move the entry at `index` one place up or down among `order`,
-/// which holds each entry with its position in the shown order. Two neighbours with
-/// different positions exchange them. When two entries share a position, the order of the
-/// server follows their identifiers, so every entry gets its place in the new order as
-/// its position. Entries that keep their position are not named.
-pub fn moved<Id: Copy + PartialEq>(order: &[(Id, i32)], index: usize, up: bool) -> Vec<(Id, i32)> {
-    let other = if up {
-        index.checked_sub(1)
-    } else {
-        index.checked_add(1).filter(|other| *other < order.len())
-    };
-    let (Some(other), Some(entry)) = (other, order.get(index)) else {
-        return Vec::new();
-    };
-    let neighbour = order[other];
-    let distinct = order
+/// Every entry of `order` with its place as its position, without the entries that hold
+/// it already.
+fn renumbered<Id: Copy + PartialEq>(order: &[(Id, i32)], held: &[(Id, i32)]) -> Vec<(Id, i32)> {
+    order
         .iter()
         .enumerate()
-        .all(|(at, (_, position))| order[..at].iter().all(|(_, before)| before != position));
-    if distinct {
-        return vec![(entry.0, neighbour.1), (neighbour.0, entry.1)];
-    }
-    let mut next: Vec<Id> = order.iter().map(|(id, _)| *id).collect();
-    next.swap(index, other);
-    next.into_iter()
-        .enumerate()
-        .filter_map(|(place, id)| {
+        .filter_map(|(place, (id, _))| {
             let position = i32::try_from(place).unwrap_or(i32::MAX);
-            let held = order.iter().find(|(of, _)| *of == id)?.1;
-            (held != position).then_some((id, position))
+            let before = held.iter().find(|(of, _)| of == id).map(|(_, at)| *at);
+            (before != Some(position)).then_some((*id, position))
         })
         .collect()
 }
 
-async fn move_channels(api: ServerApi, changes: Vec<(ChannelId, i32)>) -> Result<(), ApiError> {
-    for (channel_id, position) in changes {
-        let change = UpdateChannel {
-            position: Some(position),
-            ..UpdateChannel::default()
-        };
-        api.update_channel(channel_id, &change).await?;
+/// The new positions that put `moving` at the place `to` of a group, whose entries are
+/// `order` in their shown order. `order` holds `moving` when it moves inside its group,
+/// and `held` is its position before. The entries from `to` on move one place down.
+///
+/// Inside a group with distinct positions, the entries between the two places take the
+/// positions that they held among themselves in the new order, so no other entry changes.
+/// An entry that comes from another group takes a free position between its new
+/// neighbours, and is named also when its position stays, because its group changes.
+/// Without such a position, or when two entries share one, every entry of the group gets
+/// its place as its position. Empty when nothing moves.
+pub fn placed<Id: Copy + PartialEq>(
+    order: &[(Id, i32)],
+    moving: Id,
+    held: i32,
+    to: usize,
+) -> Vec<(Id, i32)> {
+    let from = order.iter().position(|(id, _)| *id == moving);
+    let mut next: Vec<(Id, i32)> = order
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id != moving)
+        .collect();
+    let at = to.min(next.len());
+    next.insert(at, (moving, held));
+    let distinct = |entries: &[(Id, i32)]| entries.windows(2).all(|pair| pair[0].1 < pair[1].1);
+    match from {
+        Some(from) => {
+            if from == at {
+                return Vec::new();
+            }
+            if !distinct(order) {
+                return renumbered(&next, order);
+            }
+            let (first, last) = (from.min(at), from.max(at));
+            let positions: Vec<i32> = order[first..=last].iter().map(|(_, at)| *at).collect();
+            next[first..=last]
+                .iter()
+                .zip(positions)
+                .filter(|((id, _), position)| {
+                    order.iter().any(|(of, at)| of == id && at != position)
+                })
+                .map(|((id, _), position)| (*id, position))
+                .collect()
+        }
+        None => {
+            let others: Vec<(Id, i32)> = next
+                .iter()
+                .copied()
+                .filter(|(id, _)| *id != moving)
+                .collect();
+            let before = at
+                .checked_sub(1)
+                .and_then(|place| next.get(place))
+                .map(|(_, at)| *at);
+            let after = next.get(at + 1).map(|(_, at)| *at);
+            let free = match (before, after) {
+                (None, None) => Some(0),
+                (Some(before), None) => before.checked_add(1),
+                (None, Some(after)) => after.checked_sub(1).filter(|position| *position >= 0),
+                (Some(before), Some(after)) => {
+                    before.checked_add(1).filter(|position| *position < after)
+                }
+            };
+            match free {
+                Some(position) if distinct(&others) => vec![(moving, position)],
+                _ => {
+                    let mut changes = renumbered(&next, &others);
+                    // The entry that changes its group is always named.
+                    if !changes.iter().any(|(id, _)| *id == moving) {
+                        let position = i32::try_from(at).unwrap_or(i32::MAX);
+                        changes.push((moving, position));
+                    }
+                    changes
+                }
+            }
+        }
     }
-    Ok(())
 }
 
 async fn move_categories(
@@ -204,7 +253,15 @@ impl AppState {
         let Some(index) = order.iter().position(|(id, _)| *id == category_id) else {
             return;
         };
-        let changes = moved(&order, index, up);
+        let to = if up {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1)
+        };
+        let Some(to) = to else {
+            return;
+        };
+        let changes = placed(&order, category_id, order[index].1, to);
         if changes.is_empty() {
             return;
         }
@@ -275,47 +332,26 @@ impl AppState {
         );
     }
 
-    /// Moves a channel one place up or down among the channels of its group: the
-    /// channels of its category, or the channels without a category.
-    pub fn move_channel(
+    /// Moves channels of a workspace as the page computed it from what it showed: one
+    /// request that the server applies whole or not at all, and refuses when a channel is
+    /// no longer where the page read it (ADR 0761). `channel_id` is the channel that the
+    /// person moved.
+    pub fn move_channels(
         &mut self,
         server_id: ServerId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
-        up: bool,
+        moves: Vec<ChannelMove>,
         cx: &mut Context<Self>,
     ) {
-        let order: Vec<(ChannelId, i32)> = self
-            .client
-            .server(server_id)
-            .and_then(|server| server.live().view().model)
-            .and_then(|model| {
-                let workspace = model.workspace(workspace_id)?;
-                let group = |category_id: Option<CategoryId>| {
-                    category_id.filter(|id| workspace.categories.iter().any(|held| held.id == *id))
-                };
-                let of = group(workspace.channel(channel_id)?.channel.category_id);
-                Some(
-                    workspace
-                        .channels
-                        .iter()
-                        .filter(|held| group(held.channel.category_id) == of)
-                        .map(|held| (held.channel.id, held.channel.position))
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        let Some(index) = order.iter().position(|(id, _)| *id == channel_id) else {
-            return;
-        };
-        let changes = moved(&order, index, up);
-        if changes.is_empty() {
+        if moves.is_empty() {
             return;
         }
+        let moves = MoveChannels { moves };
         self.admin_ask(
             server_id,
-            AskKind::UpdateChannel(channel_id),
-            |api| move_channels(api, changes),
+            AskKind::MoveChannels(channel_id),
+            |api| async move { api.move_channels(workspace_id, &moves).await },
             |_, (), _| {},
             cx,
         );
@@ -494,32 +530,50 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::moved;
+    use super::placed;
 
     #[test]
-    fn two_neighbours_with_different_positions_exchange_them() {
-        let order = [('a', 0), ('b', 4), ('c', 9)];
-        assert_eq!(moved(&order, 1, true), [('b', 0), ('a', 4)]);
-        assert_eq!(moved(&order, 1, false), [('b', 9), ('c', 4)]);
+    fn an_entry_moved_inside_its_group_takes_the_positions_of_the_entries_that_it_passes() {
+        let order = [('a', 0), ('b', 4), ('c', 9), ('d', 12)];
+        // Down: "a" to the place of "c", which moves up with "b".
+        assert_eq!(placed(&order, 'a', 0, 2), [('b', 0), ('c', 4), ('a', 9)]);
+        // Up: "d" to the first place.
+        assert_eq!(
+            placed(&order, 'd', 12, 0),
+            [('d', 0), ('a', 4), ('b', 9), ('c', 12)]
+        );
+        // A drop at its own place moves nothing.
+        assert!(placed(&order, 'b', 4, 1).is_empty());
+        // A place after the end is the end.
+        assert_eq!(placed(&order, 'c', 9, 10), [('d', 9), ('c', 12)]);
+        // Equal positions: every entry gets its place.
+        let order = [('a', 1), ('b', 1), ('c', 1)];
+        assert_eq!(placed(&order, 'c', 1, 0), [('c', 0), ('b', 2)]);
     }
 
     #[test]
-    fn the_first_entry_does_not_move_up_and_the_last_not_down() {
-        let order = [('a', 0), ('b', 1)];
-        assert!(moved(&order, 0, true).is_empty());
-        assert!(moved(&order, 1, false).is_empty());
-        assert!(moved(&order, 5, true).is_empty());
-        assert!(moved::<char>(&[], 0, false).is_empty());
-    }
-
-    #[test]
-    fn entries_that_share_a_position_get_their_places_as_positions() {
-        // The server orders equal positions by identifier, so an exchange of two equal
-        // positions would change nothing.
-        let order = [('a', 3), ('b', 3), ('c', 3)];
-        assert_eq!(moved(&order, 2, true), [('a', 0), ('c', 1), ('b', 2)]);
-        // An entry that has its place as position already is not sent.
-        let order = [('a', 0), ('b', 1), ('c', 1)];
-        assert_eq!(moved(&order, 2, true), [('b', 2)]);
+    fn an_entry_from_another_group_takes_a_free_position_or_the_group_is_numbered_again() {
+        let order = [('a', 0), ('b', 4), ('c', 5)];
+        // Between "a" and "b" a position is free.
+        assert_eq!(placed(&order, 'x', 7, 1), [('x', 1)]);
+        // At the end, and in an empty group.
+        assert_eq!(placed(&order, 'x', 7, 3), [('x', 6)]);
+        assert_eq!(placed::<char>(&[], 'x', 7, 0), [('x', 0)]);
+        // The entry is named although its position stays: its group changes.
+        assert_eq!(placed(&order, 'x', 6, 3), [('x', 6)]);
+        // Before the first one, a position below it that is not negative.
+        assert_eq!(placed(&[('a', 3)], 'x', 9, 0), [('x', 2)]);
+        // No free position between "b" and "c", and none before position 0: the group is
+        // numbered again.
+        assert_eq!(placed(&order, 'x', 7, 2), [('b', 1), ('x', 2), ('c', 3)]);
+        assert_eq!(
+            placed(&order, 'x', 7, 0),
+            [('x', 0), ('a', 1), ('b', 2), ('c', 3)]
+        );
+        // Equal positions in the group it goes to.
+        assert_eq!(
+            placed(&[('a', 2), ('b', 2)], 'x', 0, 2),
+            [('a', 0), ('b', 1), ('x', 2)]
+        );
     }
 }

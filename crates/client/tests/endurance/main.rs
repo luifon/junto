@@ -60,6 +60,10 @@ mod growth;
 #[path = "../app/harness.rs"]
 mod harness;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
+#[cfg(target_os = "macos")]
 #[path = "../rehearsal/native.rs"]
 mod native;
 #[cfg(target_os = "macos")]
@@ -141,6 +145,10 @@ const PIECES_PER_SLOW_PIECE: usize = 4000;
 /// answers in each thread.
 #[cfg(target_os = "macos")]
 const MESSAGES: usize = 400;
+/// The limit of the writes of the long channel, which wait for the rate of writes of the
+/// server.
+#[cfg(target_os = "macos")]
+const FILL_LIMIT: Duration = Duration::from_secs(1800);
 #[cfg(target_os = "macos")]
 const THREADS: usize = 4;
 #[cfg(target_os = "macos")]
@@ -372,7 +380,7 @@ impl Place {
     /// for its rate of writes waits for the time that the server states.
     fn fill(&self, world: &harness::World, writers: &[ServerHandle]) -> Vec<MessageId> {
         let place = junto_client_core::model::PlaceId::Channel(self.general);
-        world.run(async {
+        world.run_for(FILL_LIMIT, async {
             let mut roots = Vec::new();
             let mut turn = 0usize;
             let mut next = || {

@@ -1,4 +1,4 @@
-"""Only the test LiveKit container can be stopped and started by the live tests."""
+"""Only the test LiveKit container can be stopped, started, paused and unpaused by the live tests."""
 import http.client
 import http.server
 import os
@@ -18,6 +18,8 @@ class Control(http.server.BaseHTTPRequestHandler):
         routes = {
             '/stop': f'/containers/{CONTAINER}/stop?t=1',
             '/start': f'/containers/{CONTAINER}/start',
+            '/pause': f'/containers/{CONTAINER}/pause',
+            '/unpause': f'/containers/{CONTAINER}/unpause',
         }
         if self.path not in routes:
             self.send_error(403)

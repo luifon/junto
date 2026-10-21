@@ -92,8 +92,8 @@ pub struct RoleDrag {
     pub role: RoleRef,
 }
 
-/// What follows the pointer while a role is dragged: the name of the role.
-struct DragLabel(SharedString);
+/// What follows the pointer while a role or a channel is dragged: its name.
+pub(super) struct DragLabel(pub(super) SharedString);
 
 impl Render for DragLabel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

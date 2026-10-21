@@ -1,8 +1,17 @@
-use std::path::Path;
+use std::path::PathBuf;
+
+/// The directory of this package in the checkout that runs the test: `cargo test` sets it at
+/// run time, while a path compiled into the binary can name another checkout whose build the
+/// shared target directory reused.
+fn package_directory() -> PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test"))
+}
 
 #[test]
 fn committed_openapi_document_matches_the_routes() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = package_directory()
         .join("../..")
         .join(junto_server::OPENAPI_DOCUMENT_PATH);
     let committed = std::fs::read_to_string(&path)
@@ -18,7 +27,7 @@ fn committed_openapi_document_matches_the_routes() {
 
 #[test]
 fn committed_event_stream_document_matches_the_event_types() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = package_directory()
         .join("../..")
         .join(junto_server::EVENTS_DOCUMENT_PATH);
     let committed = std::fs::read_to_string(&path)
@@ -34,7 +43,7 @@ fn committed_event_stream_document_matches_the_event_types() {
 
 #[test]
 fn committed_structure_file_schema_matches_the_file_types() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = package_directory()
         .join("../..")
         .join(junto_server::STRUCTURE_FILE_DOCUMENT_PATH);
     let committed = std::fs::read_to_string(&path)
@@ -60,6 +69,15 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
         "https://json-schema.org/draft/2020-12/schema"
     );
     assert_eq!(schema["$ref"], "#/components/schemas/StructureFile");
+    // The text names the format that the tool writes and the formats that it reads.
+    let format = junto_protocol::structure_file::STRUCTURE_FORMAT;
+    let oldest = junto_protocol::structure_file::OLDEST_STRUCTURE_FORMAT;
+    let description = schema["description"].as_str().unwrap();
+    assert!(
+        description.contains(&format!("writes it: format {format}."))
+            && description.contains(&format!("reads the formats {oldest} to {format}.")),
+        "{description}"
+    );
     let schemas = schema["components"]["schemas"].as_object().unwrap();
     for (start, _) in text.match_indices("#/components/schemas/") {
         let name: String = text[start + "#/components/schemas/".len()..]

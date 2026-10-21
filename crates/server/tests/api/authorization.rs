@@ -441,6 +441,13 @@ async fn world() -> World {
             &own,
         ),
         operation(
+            Method::GET,
+            "/api/v1/direct-messages/contacts",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
             Method::POST,
             "/api/v1/conversations",
             &[],
@@ -798,6 +805,17 @@ async fn world() -> World {
             "/api/v1/channels/{channel_id}",
             &[&channel.id],
             json!({ "name": "mine", "permanent_messages": true }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/channels/positions",
+            &[&ws],
+            json!({ "moves": [{
+                "channel_id": channel.id,
+                "from": { "category_id": null, "position": channel.position },
+                "to": { "category_id": null, "position": channel.position + 1 },
+            }]}),
             &forbidden,
         ),
         operation(
@@ -1760,6 +1778,11 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
         (
             "PATCH",
             "/api/v1/workspaces/{workspace_id}/roles/positions",
+            ManageStructure,
+        ),
+        (
+            "PATCH",
+            "/api/v1/workspaces/{workspace_id}/channels/positions",
             ManageStructure,
         ),
         ("POST", "/api/v1/server-roles", ManageStructure),

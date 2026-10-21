@@ -17,6 +17,7 @@ use junto_protocol::events::Event;
 use junto_protocol::export::Export;
 use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::invite::{Invite, JoinRequest, JoinRequestState};
+use junto_protocol::message::AttachmentLimits;
 use junto_protocol::roles::{ListedServerRole, ListedWorkspaceRole, RoleActions, ServerRole};
 use junto_protocol::structure::{ArchivePeriod, ArchivedChannel, Channel, ChannelOverride};
 
@@ -102,6 +103,9 @@ pub enum AdminPart {
     ServerRoles,
     /// The retention of the files of direct messages.
     DirectRetention,
+    /// The largest file and the number of files of a message that the server accepts
+    /// (ADR 0408).
+    AttachmentLimits,
     /// The overrides of the roles in one channel.
     Overrides(ChannelId),
     /// The archived channels of one workspace that the account sees.
@@ -150,6 +154,7 @@ pub(crate) enum AdminPayload {
     Exports(Vec<Export>),
     ServerRoles(Vec<ListedServerRole>),
     DirectRetention(Retention),
+    AttachmentLimits(AttachmentLimits),
     Overrides(Vec<ChannelOverride>),
     Archived(Vec<ArchivedChannel>),
     WorkspaceSettings(WorkspaceSettings),
@@ -195,6 +200,7 @@ pub struct AdminModel {
     /// stated it (ADR 0311). A role that an event added has none until the next read.
     pub server_role_actions: RoleActionList<ServerRoleId>,
     pub direct_retention: Collection<Retention>,
+    pub attachment_limits: Collection<AttachmentLimits>,
     pub overrides: Vec<(ChannelId, Collection<Vec<ChannelOverride>>)>,
     pub archived: Vec<(WorkspaceId, Collection<Vec<ArchivedChannel>>)>,
     pub settings: Vec<(WorkspaceId, Collection<WorkspaceSettings>)>,
@@ -406,6 +412,7 @@ impl AdminModel {
             AdminPart::Exports => state_of(&self.exports),
             AdminPart::ServerRoles => state_of(&self.server_roles),
             AdminPart::DirectRetention => state_of(&self.direct_retention),
+            AdminPart::AttachmentLimits => state_of(&self.attachment_limits),
             AdminPart::Overrides(channel_id) => state_of(self.overrides(channel_id)),
             AdminPart::Archived(workspace_id) => state_of(self.archived(workspace_id)),
             AdminPart::WorkspaceSettings(workspace_id) => {
@@ -532,6 +539,7 @@ impl AdminModel {
                 AdminPart::Exports => mark_loading(&mut self.exports),
                 AdminPart::ServerRoles => mark_loading(&mut self.server_roles),
                 AdminPart::DirectRetention => mark_loading(&mut self.direct_retention),
+                AdminPart::AttachmentLimits => mark_loading(&mut self.attachment_limits),
                 AdminPart::Overrides(channel_id) => {
                     mark_keyed_loading(&mut self.overrides, channel_id);
                 }
@@ -633,6 +641,12 @@ impl AdminModel {
             AdminPart::DirectRetention => {
                 self.direct_retention = plain(set, |payload| match payload {
                     AdminPayload::DirectRetention(retention) => Some(retention),
+                    _ => None,
+                });
+            }
+            AdminPart::AttachmentLimits => {
+                self.attachment_limits = plain(set, |payload| match payload {
+                    AdminPayload::AttachmentLimits(limits) => Some(limits),
                     _ => None,
                 });
             }
@@ -759,6 +773,11 @@ impl AdminModel {
     /// Applies an event to the collections that are loaded.
     fn apply(&mut self, event: &Event) {
         match event {
+            Event::AttachmentLimitsChanged { limits } => {
+                if let Some(held) = self.attachment_limits.loaded_mut() {
+                    held.clone_from(limits);
+                }
+            }
             Event::AccountAdded { account } => {
                 if let Some(accounts) = self.accounts.loaded_mut() {
                     upsert(accounts, account, |held| held.id == account.id);
@@ -976,6 +995,7 @@ impl AdminPart {
                 event,
                 Event::ExportUpdated { .. } | Event::ExportRemoved { .. }
             ),
+            Self::AttachmentLimits => matches!(event, Event::AttachmentLimitsChanged { .. }),
             Self::ServerRoles => matches!(
                 event,
                 Event::ServerRoleCreated { .. }
@@ -1243,6 +1263,7 @@ impl ServerModel {
                     AdminPart::AccessTokens,
                     AdminPart::Exports,
                     AdminPart::ServerRoles,
+                    AdminPart::AttachmentLimits,
                 ]
                 .into_iter()
                 .any(|part| {

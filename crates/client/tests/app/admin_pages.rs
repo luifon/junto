@@ -1466,7 +1466,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     click_in_page(&mut window, sel("audit-about", bruno));
     awaited(&mut window, "the entries about the member", |window| {
         server_page!(window, AuditLog).filter(|page| {
-            page.filter.about == Some(bruno)
+            page.filter.about == Some(junto_client::state::admin::AuditTarget::Account(bruno))
                 && page.state == AuditRead::Loaded
                 && page.rows.iter().any(|row| row.id == banned.id)
         })
@@ -2507,5 +2507,346 @@ fn a_form_opened_before_the_list_is_read_holds_its_new_row_until_a_release(
         window.until("the new row is in the list", |window| {
             window.shows(sel(page.row, &made))
         });
+    }
+}
+
+/// Writes `count` entries about the server into its audit log in one statement, as the
+/// server writes them: that `account` was unbanned, the newest at `newest` and each one
+/// second before the one after it. A test needs more entries, or older ones, than its
+/// requests would make.
+fn write_audit_entries(
+    world: &World,
+    server: &TestServer,
+    account: AccountId,
+    count: i64,
+    newest: OffsetDateTime,
+) {
+    use sqlx::ConnectOptions;
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into audit_entries (id, occurred_at, action, event)
+             select gen_random_uuid(), $2 - make_interval(secs => n), 'account_unbanned',
+                    jsonb_build_object('action', 'account_unbanned', 'account_id', $1::text)
+             from generate_series(0, $3 - 1) as n",
+        )
+        .bind(account.as_uuid())
+        .bind(newest)
+        .bind(count)
+        .execute(&mut database)
+        .await
+        .unwrap();
+    });
+}
+
+/// The number of entries about the server that its audit log holds.
+fn server_entries(world: &World, server: &TestServer) -> usize {
+    use sqlx::ConnectOptions;
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("select count(*) from audit_entries where workspace_id is null")
+                .fetch_one(&mut database)
+                .await
+                .unwrap();
+        usize::try_from(count).unwrap()
+    })
+}
+
+/// Presses "Load older" of the audit log, one page at a time, until `done` holds for the
+/// loaded page.
+fn load_older_until(
+    window: &mut Window,
+    done: impl Fn(&junto_client::state::admin::view::records::AuditPage) -> bool,
+) -> junto_client::state::admin::view::records::AuditPage {
+    loop {
+        let page = awaited(window, "the page is read", |window| {
+            server_page!(window, AuditLog).filter(|page| page.state != AuditRead::Reading)
+        });
+        assert_eq!(
+            page.state,
+            AuditRead::Loaded,
+            "after {} entries",
+            page.loaded
+        );
+        if done(&page) {
+            return *page;
+        }
+        assert!(page.older, "no older entry after {} entries", page.loaded);
+        let loaded = page.loaded;
+        click_in_page(window, "audit-older");
+        window.until(&format!("the page after {loaded} entries"), |window| {
+            server_page!(window, AuditLog).is_some_and(|page| {
+                page.state != AuditRead::Reading && page.loaded != loaded
+                    || matches!(page.state, AuditRead::Failed { .. })
+            })
+        });
+    }
+}
+
+#[gpui::test]
+fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut TestAppContext) {
+    use junto_client::state::admin::view::records::MOST_AUDIT_ENTRIES;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    write_audit_entries(
+        &world,
+        &server,
+        logged_in(&owner),
+        2_060,
+        OffsetDateTime::now_utc(),
+    );
+    let total = server_entries(&world, &server);
+    assert!(total > MOST_AUDIT_ENTRIES);
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-audit", |window| {
+        server_page!(window, AuditLog).is_some_and(|page| page.state == AuditRead::Loaded)
+    });
+    // "Load older" adds pages up to the most entries that the page keeps. Each page is
+    // one step of the test.
+    let full = load_older_until(&mut window, |page| page.at_bound);
+    assert_eq!(full.loaded, MOST_AUDIT_ENTRIES);
+    assert!(full.continues && !full.older && full.passed == 0);
+    assert!(window.shows("audit-bound") && !window.shows("audit-older"));
+    let first_ids: Vec<_> = full.rows.iter().map(|row| row.id).collect();
+
+    // "Continue" shows the next entries of the same list in place of the loaded ones.
+    click_in_page(&mut window, "audit-continue");
+    let next = awaited(&mut window, "the next entries are read", |window| {
+        server_page!(window, AuditLog)
+            .filter(|page| page.state == AuditRead::Loaded && page.passed > 0)
+    });
+    assert_eq!(next.passed, MOST_AUDIT_ENTRIES);
+    assert!(!next.at_bound && next.loaded > 0);
+    assert!(next.rows.iter().all(|row| !first_ids.contains(&row.id)));
+    // The rest of the list is read with "Load older": every entry of the log was shown.
+    let end = load_older_until(&mut window, |page| !page.older && !page.continues);
+    assert_eq!(end.passed + end.loaded, total);
+    assert!(window.shows("audit-count"));
+
+    // "Read again" returns to the newest entries.
+    click_in_page(&mut window, "audit-reload");
+    let newest = awaited(&mut window, "the newest entries again", |window| {
+        server_page!(window, AuditLog)
+            .filter(|page| page.state == AuditRead::Loaded && page.passed == 0)
+    });
+    assert_eq!(
+        newest.rows.first().map(|row| row.id),
+        first_ids.first().copied()
+    );
+}
+
+#[gpui::test]
+fn an_administrator_reads_the_log_of_a_deleted_workspace_from_the_entry_of_its_deletion(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let lab = world
+        .run(owner.api().create_workspace("Lab".to_owned()))
+        .unwrap()
+        .id;
+    let bench = text_channel(&world, &owner, lab, "bench");
+    world.run(owner.api().delete_workspace(lab)).unwrap();
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-audit", |window| {
+        server_page!(window, AuditLog).is_some_and(|page| page.state == AuditRead::Loaded)
+    });
+    let deletion = awaited(&mut window, "the entry of the deletion", |window| {
+        server_page!(window, AuditLog)?
+            .rows
+            .into_iter()
+            .find(|row| row.deleted_workspace.is_some())
+    });
+    assert_eq!(deletion.deleted_workspace, Some((lab, "Lab".to_owned())));
+    click_in_page(&mut window, sel("audit-deleted-log", lab));
+    let page = awaited(&mut window, "the log of the deleted workspace", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.scope == Some(AuditScope::DeletedWorkspace(lab))
+                && page.state == AuditRead::Loaded
+                && page.loaded > 0
+        })
+    });
+    let scopes: Vec<AuditScope> = page.scopes.iter().map(|choice| choice.scope).collect();
+    assert!(scopes.contains(&AuditScope::Server));
+    assert_eq!(scopes.last(), Some(&AuditScope::DeletedWorkspace(lab)));
+    assert_eq!(
+        page.scopes
+            .last()
+            .and_then(|choice| choice.workspace.clone()),
+        Some("Lab".to_owned())
+    );
+    // The entries of the workspace stay: the creation of its channel is among them.
+    let created = page
+        .rows
+        .iter()
+        .find(|row| row.sentence.contains("created") && row.channel.is_some())
+        .unwrap();
+    assert_eq!(created.channel, Some(About::Unknown));
+    assert!(window.shows(sel("audit-row", created.id)));
+    let held = world
+        .run(
+            owner
+                .api()
+                .workspace_audit_log(lab, &AuditFilterQuery::default()),
+        )
+        .unwrap();
+    assert_eq!(page.loaded, held.entries.len());
+    assert!(
+        held.entries
+            .iter()
+            .any(|entry| entry.channel_id == Some(bench))
+    );
+
+    // The scope of the server is chosen again with the control of the scopes.
+    click_in_page(&mut window, "audit-scope-0");
+    awaited(&mut window, "the log of the server again", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.scope == Some(AuditScope::Server) && page.state == AuditRead::Loaded
+        })
+    });
+}
+
+#[gpui::test]
+fn the_audit_log_reads_a_range_of_dates_a_channel_and_names_the_access_token_of_an_action(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::admin::AuditTarget;
+    use junto_client::state::admin::view::records::TokenRef;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let default = default_workspace(&world, &owner);
+    let plans = text_channel(&world, &owner, default, "plans");
+    text_channel(&world, &owner, default, "notes");
+    // One entry of a past year.
+    let past = time::Date::from_calendar_date(2020, time::Month::March, 5)
+        .unwrap()
+        .with_hms(12, 0, 0)
+        .unwrap()
+        .assume_utc();
+    write_audit_entries(&world, &server, logged_in(&owner), 1, past);
+    // Two tokens with one name, each of which creates a channel.
+    let mut tokens = Vec::new();
+    for name in ["built", "rebuilt"] {
+        let token = world
+            .run(owner.api().create_access_token(&CreateAccessToken {
+                name: "deploy".to_owned(),
+                actions: vec![TokenAction::ManageStructure],
+                expires_at: OffsetDateTime::now_utc() + Duration::days(7),
+            }))
+            .unwrap();
+        let with_token = with_access_token(&world, &server, token.token.expose());
+        world
+            .run(with_token.create_channel(
+                default,
+                &CreateChannel {
+                    name: name.to_owned(),
+                    kind: ChannelKind::Text,
+                    category_id: None,
+                    position: None,
+                },
+            ))
+            .unwrap();
+        tokens.push((name, token.access_token.id));
+    }
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-audit", |window| {
+        server_page!(window, AuditLog).is_some_and(|page| page.state == AuditRead::Loaded)
+    });
+
+    // A range of dates: the last date before the first is not applied.
+    click_in_page(&mut window, "audit-period-4");
+    assert!(window.shows("audit-dates"));
+    window.in_shell(|shell, window, cx| {
+        shell.type_audit_dates("2020-03-09", "2020-03-01", window, cx);
+    });
+    click_in_page(&mut window, "audit-dates-apply");
+    assert!(window.shows("audit-dates-invalid"));
+    window.in_shell(|shell, window, cx| {
+        shell.type_audit_dates("2020-03-05", "2020-03-05", window, cx);
+    });
+    window.press("enter");
+    let range = awaited(&mut window, "the entries of the date", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            matches!(page.filter.period, AuditPeriod::Dates { .. })
+                && page.state == AuditRead::Loaded
+        })
+    });
+    assert_eq!(range.loaded, 1);
+    assert!(window.shows("audit-dates-shown") && !window.shows("audit-dates"));
+    click_in_page(&mut window, "audit-clear");
+
+    // The log of the workspace, with the entries about one channel.
+    click_in_page(&mut window, "audit-scope-1");
+    let whole = awaited(&mut window, "the log of the workspace", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.scope == Some(AuditScope::Workspace(default))
+                && page.state == AuditRead::Loaded
+                && page.loaded > 0
+        })
+    });
+    let about_notes = Some(About::Named("# notes".to_owned()));
+    assert!(whole.rows.iter().any(|row| row.channel == about_notes));
+    click_in_page(&mut window, "audit-about");
+    let kinds = awaited(&mut window, "the kinds of things", |window| {
+        let page = server_page!(window, AuditLog)?;
+        window.shows("audit-about-kind").then(|| {
+            page.targets
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>()
+        })
+    });
+    let channels = kinds
+        .iter()
+        .position(|kind| *kind == junto_client::state::admin::view::records::TargetKind::Channels)
+        .unwrap();
+    click_in_page(&mut window, sel("audit-about-kind", channels));
+    click_in_page(&mut window, sel("audit-about", plans.as_uuid()));
+    let about = awaited(&mut window, "the entries about the channel", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.filter.about == Some(AuditTarget::Channel(plans))
+                && page.state == AuditRead::Loaded
+                && page.loaded > 0
+        })
+    });
+    assert!(
+        about
+            .rows
+            .iter()
+            .all(|row| row.channel == Some(About::Named("# plans".to_owned())))
+    );
+    click_in_page(&mut window, "audit-clear");
+
+    // The entry of each channel names its token by name and by identifier: the two
+    // tokens have one name.
+    for (name, token_id) in tokens {
+        let row = awaited(&mut window, "the entry of the token", |window| {
+            server_page!(window, AuditLog)?
+                .rows
+                .into_iter()
+                .find(|row| row.token.is_some() && row.sentence.contains(&format!("“{name}”")))
+        });
+        let token = row.token.clone().unwrap();
+        assert_eq!(
+            token,
+            TokenRef {
+                id: token_id,
+                name: Some("deploy".to_owned()),
+            }
+        );
+        assert!(window.shows(sel("audit-token", row.id)));
+        assert!(
+            junto_client::text::admin::records::audit_token(&token).contains(&token_id.to_string())
+        );
+        assert!(audit_head(&row).contains("Ada with an access token"));
     }
 }

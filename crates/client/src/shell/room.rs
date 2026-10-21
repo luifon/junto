@@ -18,7 +18,7 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId};
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::view::{
-    CallPanel, ChannelRow, Closed, EntryState, MeetingStart, MeetingView, OutsideMember,
+    ChannelCall, ChannelRow, Closed, EntryState, MeetingStart, MeetingView, OutsideMember,
     PersonMenu, Relation, RoomView, ShellView, VoiceState,
 };
 use crate::text;
@@ -269,6 +269,20 @@ impl Shell {
                                 request
                                     .child(div().text_size(u(13.0)).child(text::more_hands(more)))
                             })
+                            .child(
+                                Button::new("meeting-lower-hand")
+                                    .kind(ButtonKind::Call)
+                                    .label(text::LOWER_HAND_OF_PERSON)
+                                    .tooltip(text::lower_hand_help(&name))
+                                    .accessible_label(text::lower_hand_help(&name))
+                                    .selector("meeting-lower-hand")
+                                    .h(u(28.0))
+                                    .on_click(self.call_listener(cx, move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.lower_hand_in_call(account_id, cx);
+                                        });
+                                    })),
+                            )
                             .child(
                                 Button::new("meeting-allow")
                                     .kind(ButtonKind::CallOn)
@@ -541,7 +555,7 @@ impl Shell {
     /// button, what an invitation does, and the list of the members outside the call.
     pub(crate) fn render_invite_area(
         &mut self,
-        panel: &CallPanel,
+        panel: &ChannelCall,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -588,7 +602,7 @@ impl Shell {
 
     fn render_member_picker(
         &mut self,
-        panel: &CallPanel,
+        panel: &ChannelCall,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1098,6 +1112,7 @@ impl Shell {
                     .into_any_element(),
             );
             let moderates = menu.microphone_blocked.is_some()
+                || menu.hand_raised.is_some()
                 || menu.sound_blocked.is_some()
                 || menu.disconnect;
             if moderates {
@@ -1129,6 +1144,28 @@ impl Shell {
                         this.close_layer(window, cx);
                     }))
                     .into_any_element(),
+                );
+            }
+            // The item stays while no hand is raised, disabled, so that a hand that is
+            // raised or lowered while the menu is open moves no item under the pointer.
+            if let Some(raised) = menu.hand_raised {
+                items.push(
+                    MenuItem::new("menu-lower-hand", text::LOWER_HAND_OF_PERSON)
+                        .icon(Icon::Hand)
+                        .detail(if raised {
+                            text::LOWER_HAND_HELP
+                        } else {
+                            text::NO_RAISED_HAND
+                        })
+                        .disabled(!raised)
+                        .selector("menu-lower-hand")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.lower_hand_of(room, account_id, cx);
+                            });
+                            this.close_layer(window, cx);
+                        }))
+                        .into_any_element(),
                 );
             }
             if let Some(blocked) = menu.sound_blocked {

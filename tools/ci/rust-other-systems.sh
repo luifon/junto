@@ -33,7 +33,8 @@ if [ "$system" = macos ]; then
     step "Media unit tests on macOS"
     cargo test --locked -p junto-media --lib
 fi
-# The tests that need PostgreSQL run on Linux only, except the window tests on Windows.
+# The tests that need PostgreSQL run on Linux only, except the window tests on Windows and
+# on macOS.
 step "Tests that need no database"
 cargo test --locked -p junto-authz -p junto-protocol
 # The reading of the free space of a directory, which differs between Unix and Windows
@@ -51,6 +52,23 @@ if [ "$system" = macos ]; then
     export TMPDIR="$temporary"
     python3 packaging/check_signing.py
     python3 packaging/check_update.py
+    # The bundle of the client build, started with an empty data directory until the window
+    # has drawn its first frame (ADR 0725). The window appears without taking the focus.
+    step "First frame of the macOS bundle"
+    build="${CARGO_TARGET_DIR:-target}/debug"
+    python3 packaging/bundle.py "$build/junto" "$temporary/Junto.app" "$build/junto-recover" "$build/junto-icon"
+    python3 packaging/check_start.py "$temporary/Junto.app"
+    # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0916):
+    # updates:: without a database, then the other tests against the PostgreSQL build for
+    # macOS of the version of the CI image. Not here: the tests of live::, which need LiveKit.
+    # --workspace, as in the build step, so that Cargo builds nothing again.
+    step "Window tests without a database"
+    cargo test --locked --workspace --test app -- updates::
+    step "PostgreSQL for macOS"
+    python3 tools/test_with_native_postgres.py
+    python3 tools/with_native_postgres.py --fetch
+    step "Window tests with PostgreSQL"
+    python3 tools/with_native_postgres.py cargo test --locked --workspace --test app -- --skip updates:: --skip live::
     exit 0
 fi
 
@@ -82,4 +100,5 @@ python3 tools/windows/with_test_postgres.py cargo test --locked --workspace --te
     --skip messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops \
     --skip messages::a_pending_file_picker_cannot_retarget_an_upload \
     --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server \
+    --skip messages::a_message_whose_files_the_retention_removed_says_so \
     --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export

@@ -753,13 +753,18 @@ async fn review2_invite_names_and_avatar_metadata_have_the_containing_audience()
             .avatar,
         Some(avatar)
     );
-    server
-        .get(
-            &reader,
-            &format!("/api/v1/accounts/{}/avatar", owner.account_id),
-        )
-        .await
-        .error(ErrorCode::NotFound);
+    // The image itself follows the rule of the profile: the reader may write to the owner,
+    // who administers the server, and so sees the owner's profile (ADR 0119).
+    assert_eq!(
+        server
+            .get(
+                &reader,
+                &format!("/api/v1/accounts/{}/avatar", owner.account_id),
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

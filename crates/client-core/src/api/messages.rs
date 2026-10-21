@@ -3,8 +3,8 @@
 
 use junto_protocol::ids::{AccountId, AttachmentId, MessageId};
 use junto_protocol::message::{
-    AttachmentLimits, Conversation, Document, EditMessage, MarkRead, Message, MessagePage,
-    MessageState, OpenConversation, SendMessage, SetReaction, StartUpload, Upload,
+    AttachmentLimits, ContactPage, Conversation, Document, EditMessage, MarkRead, Message,
+    MessagePage, MessageState, OpenConversation, SendMessage, SetReaction, StartUpload, Upload,
 };
 
 use super::client::read_json;
@@ -224,6 +224,32 @@ impl ServerApi {
         let path = "/conversations".to_owned();
         self.send(Method::Post, path, &OpenConversation { account_id })
             .await
+    }
+
+    /// The accounts that the account may write to and call, whose name holds `part`, in
+    /// the order of their names (ADR 0307). `after` is the `next_after` of the page before.
+    pub async fn contacts(
+        &self,
+        part: &str,
+        after: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<ContactPage, ApiError> {
+        let mut query = vec![("q", part.to_owned())];
+        if let Some(after) = after {
+            query.push(("after", after.to_owned()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        let response = self
+            .call(
+                Method::Get,
+                "/direct-messages/contacts".to_owned(),
+                query,
+                None,
+            )
+            .await?;
+        read_json(&response)
     }
 
     // The files of messages.

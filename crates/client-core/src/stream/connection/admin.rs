@@ -78,6 +78,10 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             .direct_message_retention()
             .await
             .map(AdminPayload::DirectRetention),
+        AdminPart::AttachmentLimits => api
+            .attachment_limits()
+            .await
+            .map(AdminPayload::AttachmentLimits),
         AdminPart::Overrides(channel_id) => api
             .channel_overrides(channel_id)
             .await

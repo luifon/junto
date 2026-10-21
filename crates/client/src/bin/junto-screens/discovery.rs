@@ -171,12 +171,14 @@ fn hit(number: u32, place_id: uuid::Uuid, author: &str, minutes: i64, text: &str
         recording_id: None,
         line: None,
         place_id,
+        workspace_id: None,
         author_id: person(author),
         created_at: morning() + Duration::minutes(minutes),
         text: text.to_owned(),
         position: Some(u64::from(number)),
         thread_root: None,
         start_ms: None,
+        page: 0,
     }
 }
 
@@ -187,12 +189,14 @@ fn retention() -> Search {
         recording_id: Some(id(6400)),
         line: Some(211),
         place_id: id::<ChannelId>(DAILY).as_uuid(),
+        workspace_id: None,
         author_id: person("Ana"),
         created_at: morning() + Duration::minutes(41),
         text: "Diego writes the retention spec, and Luca sends Marta the demo invite.".to_owned(),
         position: None,
         thread_root: None,
         start_ms: Some(1_843_000),
+        page: 0,
     };
     Search {
         server_id: server_id(),

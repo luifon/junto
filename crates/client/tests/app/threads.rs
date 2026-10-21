@@ -11,7 +11,7 @@ use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::message::{Block, Document, Inline, SendMessage};
-use junto_client_core::protocol::roles::UpdateWorkspaceRole;
+use junto_client_core::protocol::roles::{CreateWorkspaceRole, UpdateWorkspaceRole};
 use junto_client_core::protocol::structure::ChannelKind;
 
 use crate::harness::{Admin, Window, World, member};
@@ -405,6 +405,64 @@ fn a_person_pins_a_message_and_reads_the_pin_list(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn going_to_a_pin_shows_the_message_and_a_pinned_reply_in_its_thread(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _channel_id, root_id) = with_root(cx, &world);
+    let api = admin.handle.api();
+    // More replies than the first page of a thread: the oldest one is not read when the
+    // thread opens.
+    let first = admin.reply(&world, root_id, document("the oldest reply"));
+    for number in 0..60 {
+        admin.reply(&world, root_id, document(&format!("reply {number}")));
+    }
+    let pinned = |window: &mut Window| -> Option<Vec<MessageId>> {
+        let view = window.view();
+        match &view.workspace()?.pins.as_ref()?.state {
+            PinsState::Loaded(rows) => Some(rows.iter().map(|row| row.message.id).collect()),
+            PinsState::Loading | PinsState::Failed => None,
+        }
+    };
+
+    // A pinned message of the channel: the list marks it.
+    world.run(api.pin_message(root_id)).unwrap();
+    window.click("pins-button");
+    window.until("the pin of the message", |window| {
+        pinned(window) == Some(vec![root_id])
+    });
+    window.click("go-to-pin");
+    window.until("the message of the pin is marked", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == root_id && row.target)
+    });
+
+    // A pinned reply: its thread opens at the reply, which the list of the thread holds,
+    // draws and marks.
+    world.run(api.unpin_message(root_id)).unwrap();
+    world.run(api.pin_message(first)).unwrap();
+    window.until("the pin of the reply", |window| {
+        pinned(window) == Some(vec![first])
+    });
+    window.click("go-to-pin");
+    window.until("the pinned reply is shown in its thread", |window| {
+        let view = window.view();
+        let marked = view
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .filter(|thread| thread.root_id == root_id)
+            .and_then(|thread| thread.feed.as_ref())
+            .is_some_and(|feed| {
+                feed.rows.iter().any(|row| {
+                    matches!(row, FeedRow::Message(row) if row.message.id == first && row.target)
+                })
+            });
+        marked && window.shows_named(format!("message:{first}"))
+    });
+    assert!(!window.shows("pins-panel"));
+}
+
+#[gpui::test]
 fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
     cx: &mut TestAppContext,
 ) {
@@ -514,6 +572,90 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
     window.until("the statement in the composer of the thread", |window| {
         window.shows("composer-permanent")
     });
+}
+
+#[gpui::test]
+fn a_mention_in_a_direct_conversation_offers_the_other_person_only(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _channel_id, _root_id) = with_root(cx, &world);
+    let ada = admin.handle.account().unwrap();
+    let api = admin.handle.api();
+    let workspace_id = world.run(api.workspaces()).unwrap()[0].id;
+    let role = CreateWorkspaceRole {
+        name: "Editors".to_owned(),
+        permissions: Vec::new(),
+    };
+    world
+        .run(api.create_workspace_role(workspace_id, &role))
+        .unwrap();
+    let names =
+        |window: &mut Window| window.in_shell(|shell, _, _| shell.mention_names(Pane::Main));
+    let type_text = |window: &mut Window, text: &str| {
+        window.in_shell(|shell, window, cx| {
+            shell.type_message(Pane::Main, text, window, cx);
+            shell.focus_composer(Pane::Main, window, cx);
+        });
+    };
+
+    // In a channel the picker offers the members and the roles of the workspace.
+    window.until("the role is in the workspace", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.roles.iter().any(|(_, name)| name == "Editors"))
+    });
+    type_text(&mut window, "@");
+    let offered = names(&mut window);
+    assert!(offered.iter().any(|name| name == "Ada"), "{offered:?}");
+    assert!(offered.iter().any(|name| name == "Editors"), "{offered:?}");
+    assert!(window.shows("mention-picker"));
+    type_text(&mut window, "");
+
+    // In a direct conversation it offers the other person only: the server takes no
+    // other mention there (ADR 0408).
+    window.click("members-button");
+    window.until("the members", |window| window.shows_member("Ada"));
+    window.click_named(format!("message-member:{ada}"));
+    window.until("the empty conversation", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.conversation.is_some())
+            && window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let conversation = window
+        .view()
+        .workspace()
+        .unwrap()
+        .conversation
+        .clone()
+        .unwrap();
+    type_text(&mut window, "@");
+    assert_eq!(names(&mut window), vec!["Ada".to_owned()]);
+    type_text(&mut window, "@Edi");
+    assert!(names(&mut window).is_empty() && !window.shows("mention-picker"));
+
+    // The entry of the picker takes the mention, and the server takes the message.
+    type_text(&mut window, "@");
+    window.click_named("candidate:0".to_owned());
+    window.press("enter");
+    let names_ada = |document: &Document| {
+        document.blocks.iter().any(|block| {
+            matches!(block, Block::Paragraph { content }
+                if content.contains(&Inline::Account { account_id: ada }))
+        })
+    };
+    window.until("the message with the mention is sent", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.document.as_ref().is_some_and(names_ada))
+    });
+    let sent = world
+        .run(api.messages(PlaceId::Direct(conversation.id), &Default::default()))
+        .unwrap();
+    assert_eq!(sent.messages.len(), 1);
+    assert!(sent.messages[0].document.as_ref().is_some_and(names_ada));
 }
 
 #[gpui::test]

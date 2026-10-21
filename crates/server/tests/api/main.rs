@@ -17,6 +17,7 @@ mod calls_rooms;
 mod calls_state;
 mod calls_support;
 mod concurrency;
+mod contacts;
 mod deletions;
 mod devices;
 mod downloads;
@@ -27,6 +28,9 @@ mod host_commands;
 mod http_errors;
 mod joining;
 mod layout_page;
+#[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
 mod live;
 mod login;
 mod maintenance;

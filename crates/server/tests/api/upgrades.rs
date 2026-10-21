@@ -273,7 +273,7 @@ async fn delete_databases(names: &[String]) {
 async fn later_version(further: &[&str]) -> sqlx::migrate::Migrator {
     let directory = std::env::temp_dir().join(format!("junto-migration-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
-    let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let own = crate::support::package_directory().join("migrations");
     for entry in std::fs::read_dir(own).unwrap() {
         let entry = entry.unwrap();
         std::fs::copy(entry.path(), directory.join(entry.file_name())).unwrap();

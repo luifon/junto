@@ -112,6 +112,11 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
     ("PATCH", "/api/v1/server-roles/positions", ManageStructure),
     (
         "PATCH",
+        "/api/v1/workspaces/{workspace_id}/channels/positions",
+        ManageStructure,
+    ),
+    (
+        "PATCH",
         "/api/v1/workspaces/{workspace_id}/roles/positions",
         ManageStructure,
     ),

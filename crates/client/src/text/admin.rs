@@ -238,6 +238,22 @@ pub const KIND: &str = "Kind";
 pub const CATEGORY: &str = "Category";
 pub const MOVE_TO: &str = "Move to…";
 pub const MOVE_TO_HELP: &str = "Choose the category of the channel.";
+pub const MOVE_CHANGED: &str = "The order of the channels changed, or a channel was archived, \
+     before the move. Nothing was moved; the page shows the order now.";
+pub const MOVE_NOT_ALLOWED: &str = "Your account may not change one of the channels that this \
+     move changes. Nothing was moved.";
+pub const CHANNEL_GROUP_HELP: &str = "Choose the category, and then the place in it.";
+pub const CHANNEL_PLACE_HELP: &str = "Choose the place of the channel.";
+pub const PLACE_FIRST: &str = "At the start";
+pub const OTHER_CATEGORY: &str = "Another category";
+
+/// A place of a channel after another channel of its new category.
+pub fn place_after(name: &str) -> String {
+    format!("After {name}")
+}
+
+pub const CHANNEL_HANDLE: &str =
+    "Drag to move the channel to another place or category. Up, Down and Move to do the same.";
 pub const ARCHIVE: &str = "Archive";
 pub const NO_CHANNELS_HERE: &str = "No channel.";
 pub const PERMANENT_MARK: &str = "permanent messages";
@@ -344,11 +360,13 @@ fn conflict(what: AskKind) -> &'static str {
         AskKind::UpdateChannel(_) | AskKind::CallSettings(_) | AskKind::ArchiveChannel(_) => {
             "The channel is archived. Its settings cannot be changed."
         }
+        AskKind::MoveChannels(_) => MOVE_CHANGED,
         AskKind::AddMember(_) => "The account is banned or removed. It cannot be added.",
         AskKind::RemoveMember(_) => "The account is not a member of this workspace any more.",
         AskKind::RemoveAccount(_) => "The account is removed already.",
         AskKind::BanAccount(_) => "The account is banned or removed already.",
         AskKind::UnbanAccount(_) => "The account is not banned.",
+        AskKind::RecoverAccount(_) => "The account is banned or removed. It is not recovered.",
         AskKind::ApproveRequest(_) | AskKind::DenyRequest(_) => {
             "The request was decided already, or it has expired."
         }
@@ -396,6 +414,7 @@ fn invalid(what: AskKind) -> &'static str {
             RETENTION_DAYS_RANGE
         }
         AskKind::CallSettings(_) => "The server did not accept the user limit.",
+        AskKind::AttachmentLimits => server::LIMITS_REFUSED,
         AskKind::MoveRole(_) => {
             "The order of the roles has changed. The role is where the list shows it now."
         }
@@ -449,6 +468,10 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
         }
         (Some(ErrorCode::InvalidRequest), _) if is_moderation(what) => people::REASON_REFUSED,
         (Some(ErrorCode::InvalidRequest), _) => invalid(what),
+        (Some(ErrorCode::KeyAlreadyRegistered), _) => {
+            "This key belongs to a device of an account already. The new device shows the key \
+             of its own that it waits with."
+        }
         (Some(ErrorCode::InviteNotFound), _) => "The server knows no invite with this code.",
         (Some(ErrorCode::InviteExpired), _) => "The invite has expired.",
         (Some(ErrorCode::InviteExhausted), _) => "The invite has no use left.",
@@ -465,6 +488,9 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
         (_, Some(ErrorCategory::NotAllowed)) if is_moderation(what) => {
             "Your account may not do this. An account with a role at or above your highest \
              role cannot be removed, banned or unbanned."
+        }
+        (_, Some(ErrorCategory::NotAllowed)) if matches!(what, AskKind::MoveChannels(_)) => {
+            MOVE_NOT_ALLOWED
         }
         (_, Some(ErrorCategory::NotAllowed)) => "Your account may not do this.",
         (_, Some(ErrorCategory::NotFound)) if matches!(what, AskKind::RemoveMember(_)) => {

@@ -9,10 +9,10 @@ use junto_client::shell::Shell;
 use junto_client::shell::admin::Mode;
 use junto_client::shell::admin::people::Open as PeopleOpen;
 use junto_client::shell::admin::records::AuditMenu;
-use junto_client::state::admin::view::records::{AuditGroup, ExportSave};
+use junto_client::state::admin::view::records::{AuditGroup, ExportSave, TargetKind};
 use junto_client::state::admin::{
     AdminOpen, AdminPage, Ask, AskKind, AskState, AuditFilter, AuditLog, AuditPeriod, AuditScope,
-    ChannelPage, ExportFiles, Made,
+    AuditTarget, ChannelPage, ExportFiles, Made,
 };
 use junto_client::state::feed::Zone;
 use junto_client::state::view::ServerSnapshot;
@@ -1604,7 +1604,7 @@ fn show_log(
     let (entries, older) = match scope {
         // The server holds entries before these: the page offers to read them.
         AuditScope::Server => (server_log(), true),
-        AuditScope::Workspace(_) => (workspace_log(), false),
+        AuditScope::Workspace(_) | AuditScope::DeletedWorkspace(_) => (workspace_log(), false),
     };
     let log = change(AuditLog::loaded(id(ACME), scope, entries, older));
     show_records(shell, log, ExportFiles::default(), cx);
@@ -1647,7 +1647,7 @@ fn draw_audit(studio: &mut Studio) -> Result<(), String> {
     fn banned(log: AuditLog) -> AuditLog {
         let filter = AuditFilter {
             action: Some("account_banned"),
-            about: Some(person("Elisa")),
+            about: Some(AuditTarget::Account(person("Elisa"))),
             period: AuditPeriod::Month,
             ..AuditFilter::default()
         };
@@ -1671,7 +1671,22 @@ fn draw_audit(studio: &mut Studio) -> Result<(), String> {
         Screen::new("admin-audit-filter-people", with_names()),
         |shell, window, cx| {
             show_log(shell, AuditScope::Server, banned, window, cx);
-            shell.show_audit_menu(Some(AuditMenu::About), cx);
+            shell.show_audit_menu(Some(AuditMenu::About(TargetKind::People)), cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-audit-filter-workspaces", with_names()),
+        |shell, window, cx| {
+            show_log(shell, AuditScope::Server, |log| log, window, cx);
+            shell.show_audit_menu(Some(AuditMenu::About(TargetKind::Workspaces)), cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-audit-filter-dates", with_names()),
+        |shell, window, cx| {
+            show_log(shell, AuditScope::Server, |log| log, window, cx);
+            shell.show_audit_menu(Some(AuditMenu::Dates), cx);
+            shell.type_audit_dates("2026-10-01", "2026-10-12", window, cx);
         },
     )?;
     studio.draw(

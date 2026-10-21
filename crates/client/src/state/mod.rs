@@ -8,6 +8,7 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod contacts;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -328,9 +329,15 @@ pub struct LevelsChanged;
 
 impl gpui::EventEmitter<LevelsChanged> for AppState {}
 
+/// What the call window does before it closes.
+type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
+
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
+    /// What the call window does before it closes: it gives the text of its composer to
+    /// the main window (ADR 0772).
+    call_window_closing: Option<CallWindowClosing>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
@@ -369,6 +376,8 @@ pub struct AppState {
     /// What the account layer holds: the open page, its requests and the devices that it
     /// lists (ADR 0781).
     account: account::AccountState,
+    /// The chooser of a new direct conversation (ADR 0307).
+    contacts: contacts::ContactSearch,
     /// The role and the flow of the link on all servers (ADR 0782).
     linking: linking::LinkingState,
     /// What the person did with the update notice, and a move of a server that failed
@@ -401,6 +410,12 @@ pub struct AppState {
     /// The invitations into a call that the person made on this device and that can
     /// still wait.
     made_invitations: HashSet<(ServerId, CallInvitationId)>,
+    /// The number of invitations of the person whose answer of the server has not arrived.
+    invitations_on_the_way: usize,
+    /// How the invitations ended that the server told while an invitation of the person was
+    /// on its way. The invited person can answer before the answer of the server to the
+    /// invitation arrives.
+    early_invitation_ends: HashMap<(ServerId, CallInvitationId), InvitationOutcome>,
     /// The places whose messages the window shows, with the task that opens each in the
     /// client core.
     open_places: HashMap<(ServerId, PlaceId), Task<()>>,
@@ -645,6 +660,7 @@ impl AppState {
         let mut state = Self {
             talking_windows: HashSet::new(),
             call_window: None,
+            call_window_closing: None,
             call_window_settings,
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
@@ -669,6 +685,7 @@ impl AppState {
             pending: Pending::default(),
             admin: admin::AdminState::default(),
             account: account::AccountState::default(),
+            contacts: contacts::ContactSearch::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
             update_install: update_install::InstallState::new(),
@@ -683,6 +700,8 @@ impl AppState {
             early_entry_answers: Vec::new(),
             call_asks: 0,
             made_invitations: HashSet::new(),
+            invitations_on_the_way: 0,
+            early_invitation_ends: HashMap::new(),
             open_places: HashMap::new(),
             open_pins: None,
             fork_asks: 0,
@@ -1114,6 +1133,28 @@ impl AppState {
         });
     }
 
+    /// The presenter of meeting mode lowers the raised hand of a person of the call of this
+    /// device, and the block of the microphone of that person stays (ADR 0516).
+    pub fn lower_hand_in_call(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            api.lower_participant_hand(channel_id, account_id).await
+        });
+    }
+
+    /// Lowers the raised hand of a person in a voice channel: a moderator with "mute
+    /// members", and the presenter of meeting mode in that call (ADR 0516).
+    pub fn lower_hand_of(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            api.lower_participant_hand(channel_id, account_id).await
+        });
+    }
+
     pub fn set_sound_block(
         &mut self,
         room: (ServerId, ChannelId),
@@ -1170,21 +1211,37 @@ impl AppState {
         };
         let (server_id, api) = (server.id(), server.api());
         let asked = self.begin_ask();
+        self.invitations_on_the_way += 1;
         cx.spawn(async move |this, cx| {
-            let invitation = match api.invite_to_call(channel_id, account_id).await {
-                Ok(invitation) => invitation,
-                Err(error) => {
-                    let _ = this.update(cx, |this, cx| this.refused(&asked, &error, cx));
-                    return;
+            let answer = api.invite_to_call(channel_id, account_id).await;
+            let waits = this.update(cx, |this, cx| {
+                this.invitations_on_the_way -= 1;
+                let ended = answer.as_ref().ok().and_then(|invitation| {
+                    this.early_invitation_ends
+                        .remove(&(server_id, invitation.id))
+                });
+                if this.invitations_on_the_way == 0 {
+                    this.early_invitation_ends.clear();
                 }
+                match (&answer, ended) {
+                    (Err(error), _) => {
+                        this.refused(&asked, error, cx);
+                        false
+                    }
+                    (Ok(_), Some(outcome)) => {
+                        this.invitation_ended(outcome, cx);
+                        false
+                    }
+                    (Ok(invitation), None) => {
+                        this.made_invitations.insert((server_id, invitation.id));
+                        true
+                    }
+                }
+            });
+            let (Ok(invitation), Ok(true)) = (answer, waits) else {
+                return;
             };
             let made = (server_id, invitation.id);
-            let kept = this.update(cx, |this, _| {
-                this.made_invitations.insert(made);
-            });
-            if kept.is_err() {
-                return;
-            }
             let lasts = Duration::try_from(invitation.expires_at - invitation.created_at)
                 .unwrap_or(INVITATION_LASTS)
                 + ANSWER_MARGIN;
@@ -1194,6 +1251,17 @@ impl AppState {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Tells the person how an invitation that the person made ended.
+    fn invitation_ended(&mut self, outcome: InvitationOutcome, cx: &mut Context<Self>) {
+        let told = match outcome {
+            InvitationOutcome::Declined => text::INVITATION_DECLINED,
+            InvitationOutcome::Expired => text::INVITATION_EXPIRED,
+            InvitationOutcome::Accepted | InvitationOutcome::Cancelled => return,
+        };
+        self.pending.call_told = Some(told.to_owned());
         cx.notify();
     }
 
@@ -1489,15 +1557,12 @@ impl AppState {
                 self.direct.resolve(server_id, *invitation_id, *outcome);
                 self.reconcile_direct(cx);
                 cx.notify();
-                let made = self.made_invitations.remove(&(server_id, *invitation_id));
-                let told = match outcome {
-                    InvitationOutcome::Declined => Some(text::INVITATION_DECLINED),
-                    InvitationOutcome::Expired => Some(text::INVITATION_EXPIRED),
-                    InvitationOutcome::Accepted | InvitationOutcome::Cancelled => None,
-                };
-                if let (true, Some(told)) = (made, told) {
-                    self.pending.call_told = Some(told.to_owned());
-                    cx.notify();
+                let ended = (server_id, *invitation_id);
+                if self.made_invitations.remove(&ended) {
+                    self.invitation_ended(*outcome, cx);
+                } else if self.invitations_on_the_way > 0 {
+                    // The invitation can be the one whose answer is on its way.
+                    self.early_invitation_ends.insert(ended, *outcome);
                 }
             }
             _ => {}
@@ -1885,6 +1950,8 @@ impl AppState {
         self.waiting.retain(|id, _| ids.contains(id));
         self.notice_readers.retain(|id, _| ids.contains(id));
         self.made_invitations.retain(|(id, _)| ids.contains(id));
+        self.early_invitation_ends
+            .retain(|(id, _), _| ids.contains(id));
         self.pending
             .acknowledge_failed
             .retain(|owner, _| ids.contains(&owner.entry.server_id));
@@ -2008,19 +2075,11 @@ impl AppState {
         self.follow_people(&view, cx);
         self.follow_followed(&view, cx);
         self.follow_moderation(&snapshots, cx);
-        let archived = shown.server.zip(
-            view.workspace()
-                .filter(|workspace| workspace.archived.is_some())
-                .and_then(|workspace| Some((workspace.id, workspace.channel.as_ref()?.id))),
-        );
-        self.follow_admin(
-            archived.map(|(server_id, (workspace_id, channel_id))| {
-                (server_id, workspace_id, channel_id)
-            }),
-            cx,
-        );
+        let readers = self.archived_readers(&view, &snapshots);
+        self.follow_admin(readers, cx);
         self.follow_account(cx);
-        self.follow_places(shown, cx);
+        let call_window = self.call_window_place(&snapshots);
+        self.follow_places(shown, call_window, cx);
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.follow_result_jump(shown);
@@ -2120,6 +2179,22 @@ impl AppState {
     pub fn connect(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         if let Some(server) = self.client.server(server_id) {
             Self::run(server.connect(), cx);
+        }
+    }
+
+    /// Logs in after a logout of the person: from then on the application logs in by
+    /// itself again (ADR 0712).
+    pub fn log_in(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if let Some(server) = self.client.server(server_id) {
+            Self::run(server.dispatch_when_free(AccessAction::LogIn), cx);
+        }
+    }
+
+    /// Logs out of the account of the server on this device. The account and the key stay,
+    /// and the application does not log in again until the person asks (ADR 0712).
+    pub fn log_out(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        if let Some(server) = self.client.server(server_id) {
+            Self::run(server.dispatch_when_free(AccessAction::LogOutByPerson), cx);
         }
     }
 

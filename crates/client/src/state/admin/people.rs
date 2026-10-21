@@ -4,6 +4,7 @@
 
 use gpui::Context;
 use junto_client_core::api::Statement;
+use junto_client_core::protocol::account::RecoverAccount;
 use junto_client_core::protocol::ids::{AccountId, InviteId, JoinRequestId, ServerId, WorkspaceId};
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
 
@@ -67,6 +68,28 @@ impl AppState {
                     .await
             },
             |_, (), _| {},
+            cx,
+        );
+    }
+
+    /// Gives a new device key access to an account (ADR 0104, ADR 0112). Only the server
+    /// owner can do it. The server ends every session of the account and tells each of its
+    /// devices; the answer states when the recovery was done, which the row of the account
+    /// shows until the person puts it away.
+    pub fn recover_account(
+        &mut self,
+        server_id: ServerId,
+        account_id: AccountId,
+        recovery: RecoverAccount,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin_ask(
+            server_id,
+            AskKind::RecoverAccount(account_id),
+            |api| async move { api.recover_account(account_id, &recovery).await },
+            move |this, notice, _| {
+                this.admin.made = Some(Made::Recovered { account_id, notice });
+            },
             cx,
         );
     }

@@ -47,6 +47,10 @@ mod support;
 #[path = "../app/harness.rs"]
 mod harness;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
+#[cfg(target_os = "macos")]
 mod native;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]

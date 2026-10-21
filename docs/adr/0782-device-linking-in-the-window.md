@@ -19,7 +19,7 @@ The key that a person compares:
 One server, the new device:
 
 - The dialog "Join a server" has a third way: "I already have an account: link this device". It runs the action "request link" of the access flow with the device name of the application (ADR 0730). The server is saved when the person chooses this way, as with the other two (ADR 0732).
-- While the device waits, the dialog and the main area of the server show the link code in large fixed-width type, the key of this device, the time at which the code expires in UTC, and what the person does on the logged-in device.
+- While the device waits, the dialog and the main area of the server show the link code in large fixed-width type, the key of this device, the time at which the code expires in UTC, and what the person does on the logged-in device. A second sentence says that a person without a device of the account at hand gives this key to the server owner, who can recover the account onto this device (ADR 0761). The device logs in by itself after the recovery, as after a link, because a login with the key succeeds then (ADR 0712).
 - "New code" sends a new request, which replaces the code of the request before (ADR 0112). "Cancel" forgets the key of this device for the server. It asks no question: the key belongs to no account yet. The server stays in the server book without an account.
 - A link code in another form than ADR 0110 gives is not shown (ADR 0714). The view then says that a new code is needed.
 - The application checks a waiting link every 5 seconds (ADR 0730). The device logs in without an action of the person, and the dialog closes by itself.

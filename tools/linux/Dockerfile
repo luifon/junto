@@ -71,19 +71,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY install-portal.sh /opt/junto-linux/
 RUN sh /opt/junto-linux/install-portal.sh
 # The AppImage of the Linux packages (ADR 0754): the SquashFS tools of the snapshot, and the
-# type 2 runtime of the AppImage project from one dated release, checked by its SHA-256.
+# type 2 runtime of the AppImage project, built here from its source and the sources of the
+# libraries that it links statically, each checked by its SHA-256, with musl and the builtins
+# of compiler-rt. The AppImage carries this source, the build script, and every file of the
+# link of the runtime with the script that links it (ADR 0801).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    squashfs-tools=1:4.5.1-1 \
+    squashfs-tools=1:4.5.1-1 make=4.3-4.1 patch=2.7.6-7 xz-utils=5.4.1-1+deb12u2 autoconf=2.71-3 \
+    automake=1:1.16.5-1.3 libtool=2.4.7-7~deb12u1 musl=1.2.3-1 musl-dev=1.2.3-1 musl-tools=1.2.3-1 \
+    libclang-rt-22-dev=1:22.1.8-1~deb12u1 \
     && rm -rf /var/lib/apt/lists
-RUN case "$(uname -m)" in \
-        x86_64) sum=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;; \
-        aarch64) sum=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;; \
-        *) echo 'no AppImage runtime for this architecture' >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL --retry 5 -o /opt/junto-linux/appimage-runtime \
-        "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$(uname -m)" \
-    && echo "$sum  /opt/junto-linux/appimage-runtime" | sha256sum -c - \
-    && chmod 644 /opt/junto-linux/appimage-runtime
+COPY appimage-runtime/README.md appimage-runtime/build.sh appimage-runtime/link.sh \
+    /opt/junto-linux/appimage-runtime-source/
+RUN mkdir /opt/junto-linux/appimage-runtime-source/sources \
+    && cd /opt/junto-linux/appimage-runtime-source/sources \
+    && curl -fsSL --retry 5 -o type2-runtime-dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz \
+        https://github.com/AppImage/type2-runtime/archive/dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz \
+    && curl -fsSL --retry 5 -o fuse-3.15.0.tar.xz \
+        https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz \
+    && curl -fsSL --retry 5 -o squashfuse-0.5.2.tar.gz https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz \
+    && curl -fsSL --retry 5 -o zstd-1.5.6.tar.gz \
+        https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz \
+    && curl -fsSL --retry 5 -o zlib-1.3.1.tar.gz https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz \
+    && curl -fsSL --retry 5 -o mimalloc-2.1.7.tar.gz https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz \
+    && printf '%s  %s\n' \
+        70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0 fuse-3.15.0.tar.xz \
+        0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d mimalloc-2.1.7.tar.gz \
+        db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3 squashfuse-0.5.2.tar.gz \
+        f5fec23be76e50e2445ed2d018bac49b367490fc483c62c4637e99ec705d27ba type2-runtime-dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz \
+        9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 zlib-1.3.1.tar.gz \
+        8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1 zstd-1.5.6.tar.gz \
+        > ../SHA256SUMS \
+    && sha256sum --strict -c ../SHA256SUMS \
+    && chmod -R a+rX /opt/junto-linux/appimage-runtime-source
+RUN sh /opt/junto-linux/appimage-runtime-source/build.sh /opt/junto-linux/appimage-runtime \
+        /opt/junto-linux/appimage-runtime-source/relink \
+    && chmod 644 /opt/junto-linux/appimage-runtime \
+    && chmod -R a+rX /opt/junto-linux/appimage-runtime-source
 ENV CC=clang-22 CXX=clang++-22 LIBCLANG_PATH=/usr/lib/llvm-22/lib
 ENV CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/target
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-22

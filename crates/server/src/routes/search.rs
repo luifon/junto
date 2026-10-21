@@ -118,8 +118,9 @@ pub async fn search(
              reads_call(r.call_id,$3) ), hits as (select
              content.*,ts_rank_cd(vector,q) as rank from content,query where vector @@ q and ($4::uuid is null or
              place_id=$4) and ($5::uuid is null or author_id=$5) and ($6::timestamptz is null or created_at >= $6) and
-             ($7::timestamptz is null or created_at < $7)) select * from hits where (rank,id,line)<($8,$9,$10) order by
-             rank desc,id desc,line desc limit $11")
+             ($7::timestamptz is null or created_at < $7)) select hits.*,ch.workspace_id from hits left join channels ch on
+             ch.id=hits.place_id where (rank,hits.id,line)<($8,$9,$10) order by rank desc,hits.id desc,line desc limit
+             $11")
             .bind(&query.q)
             .bind(allowed.ids())
             .bind(access.account_id)
@@ -147,6 +148,7 @@ pub async fn search(
                 recording_id: transcript.then(|| RecordingId::from_uuid(id)),
                 line: transcript.then_some(line as u32),
                 place_id: row.try_get("place_id")?,
+                workspace_id: row.try_get("workspace_id")?,
                 author_id: row.try_get("author_id")?,
                 created_at: row.try_get("created_at")?,
                 text: row.try_get("text")?,

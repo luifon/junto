@@ -3312,6 +3312,7 @@ mod tests {
                 last_cursor: None,
                 profile_sync: ProfileSync::NotNeeded,
                 moderation_notices_shown: Vec::new(),
+                logged_out: false,
             })
             .unwrap();
         let client = Client::open(junto_client_core::ClientOptions::new(root)).unwrap();

@@ -43,8 +43,18 @@ impl World {
         }
     }
 
+    /// Runs work on the runtime of the test, with the time limit of a live test: work
+    /// that waits for the network or another process ends.
     pub fn run<F: Future>(&self, work: F) -> F::Output {
-        self.runtime.block_on(work)
+        self.runtime.block_on(crate::limit::limited_step(work))
+    }
+
+    /// Runs work that takes longer than a live test may, with its own limit. The native
+    /// targets use it to write a long channel.
+    #[allow(dead_code)]
+    pub fn run_for<F: Future>(&self, limit: Duration, work: F) -> F::Output {
+        self.runtime
+            .block_on(crate::limit::limited_for(limit, work))
     }
 
     pub fn server(&self, name: &str) -> TestServer {
@@ -484,6 +494,7 @@ impl Window {
     /// does.
     #[track_caller]
     pub fn until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
+        crate::limit::step(what);
         let deadline = Instant::now() + PATIENCE;
         loop {
             self.settle();
@@ -621,6 +632,43 @@ impl Window {
             .update(|window, cx| shell.update(cx, |shell, cx| act(shell, window, cx)));
         self.settle();
         result
+    }
+
+    /// The call window of the application, with the state, the sound, the capture and the
+    /// camera of this window: both windows hold one state (ADR 0772).
+    #[track_caller]
+    pub fn call_window(&mut self) -> Window {
+        use gpui::AppContext as _;
+        self.settle();
+        let main = self.cx.update(|window, _| window.window_handle());
+        let handle = self
+            .cx
+            .windows()
+            .into_iter()
+            .find(|handle| *handle != main)
+            .expect("a call window is open");
+        let shell = self
+            .cx
+            .update_window(handle, |root, _, cx| {
+                root.downcast::<Root>()
+                    .ok()
+                    .and_then(|root| root.read(cx).view().clone().downcast::<Shell>().ok())
+            })
+            .ok()
+            .flatten()
+            .expect("the call window draws a shell");
+        let mut window = Window {
+            cx: VisualTestContext::from_window(handle, &self.cx),
+            shell,
+            state: self.state.clone(),
+            sound: self.sound.clone(),
+            capture: self.capture.clone(),
+            camera: self.camera.clone(),
+            held: Held::default(),
+            holding: 0,
+        };
+        window.settle();
+        window
     }
 
     /// The first start: the person types a name and continues.

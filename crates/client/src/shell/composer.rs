@@ -24,7 +24,7 @@ use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
 use crate::state::feed::{Feed, FeedRow, plain_text};
-use crate::state::view::{DraftFile, Members, ShellView, WorkspaceView};
+use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
@@ -165,6 +165,35 @@ fn mention_query(text: &str, cursor: usize) -> Option<(usize, String)> {
         .then(|| (start, query.to_owned()))
 }
 
+/// The other participant of a direct conversation, when the query finds the name. A
+/// participant whose name the client has not read yet is not offered: the mention would
+/// have no name to show.
+fn direct_candidates(row: &DirectRow, query: &str) -> Vec<Candidate> {
+    row.name
+        .as_ref()
+        .map(|name| Candidate {
+            target: MentionTarget::Account(row.account_id),
+            name: name.clone(),
+            detail: text::IN_THIS_CONVERSATION,
+        })
+        .filter(|candidate| rank(candidate, &query.to_lowercase()).is_some())
+        .into_iter()
+        .collect()
+}
+
+/// Where a candidate stands for a query in lower case: 0 when its name starts with the
+/// query, 1 when the name holds it, and absent otherwise.
+fn rank(candidate: &Candidate, query: &str) -> Option<u8> {
+    let name = candidate.name.to_lowercase();
+    if name.starts_with(query) {
+        Some(0)
+    } else if name.contains(query) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
 /// The members and roles whose names start with the query, and then those that hold it.
 fn candidates(
     workspace: &WorkspaceView,
@@ -197,19 +226,9 @@ fn candidates(
             detail: text::EVERYONE_HELP,
         });
     }
-    let rank = |candidate: &Candidate| {
-        let name = candidate.name.to_lowercase();
-        if name.starts_with(&query) {
-            Some(0)
-        } else if name.contains(&query) {
-            Some(1)
-        } else {
-            None
-        }
-    };
     let mut found: Vec<(u8, Candidate)> = all
         .into_iter()
-        .filter_map(|candidate| rank(&candidate).map(|rank| (rank, candidate)))
+        .filter_map(|candidate| rank(&candidate, &query).map(|rank| (rank, candidate)))
         .collect();
     found.sort_by(|one, other| {
         one.0
@@ -279,6 +298,150 @@ impl Composer {
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
             emoji_scroll: ScrollHandle::new(),
+        }
+    }
+}
+
+/// The texts that a call window held when it closed, until another window takes them
+/// (ADR 0772). The call window that opens again with another kind takes its own; the main
+/// window takes the texts of a call window that closed for another reason.
+#[derive(Default)]
+pub(crate) struct HandedDrafts {
+    call_window: Vec<(Desk, Draft)>,
+    main: Vec<(Desk, Draft)>,
+}
+
+impl gpui::Global for HandedDrafts {}
+
+/// The window that takes the texts of a call window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandTo {
+    /// The call window that opens again in place of the closed one.
+    CallWindow,
+    Main,
+}
+
+impl HandedDrafts {
+    /// The texts for the call window move to the main window: the call window that was to
+    /// take them did not open.
+    pub(crate) fn to_main(cx: &mut gpui::App) {
+        let handed = cx.default_global::<Self>();
+        let waiting = std::mem::take(&mut handed.call_window);
+        handed.main.extend(waiting);
+    }
+}
+
+/// The text of `second` after the text of `first`, on a line of its own, with the mentions
+/// of both.
+fn joined(first: &InputContent, second: &InputContent) -> InputContent {
+    let offset = first.text().len() + 1;
+    let mut content = InputContent::new(format!("{}\n{}", first.text(), second.text()));
+    let spans = first
+        .tokens()
+        .iter()
+        .map(|span| (span.range(), span.token()))
+        .chain(second.tokens().iter().map(|span| {
+            let range = span.range();
+            (range.start + offset..range.end + offset, span.token())
+        }));
+    for (range, token) in spans {
+        // A span that does not fit the joined text keeps its text without the mention.
+        if let Ok(with) = content.clone().with_token(range, token.clone()) {
+            content = with;
+        }
+    }
+    content
+}
+
+impl Composer {
+    /// The text of the shown place and the texts of the other places, taken out of the
+    /// composer. The composer then holds no place, so that its text is taken once.
+    fn take_all(&mut self, cx: &gpui::App) -> Vec<(Desk, Draft)> {
+        let mut taken: Vec<(Desk, Draft)> = self.drafts.drain().collect();
+        if let Some(place) = self.place.take() {
+            taken.push((
+                place,
+                Draft {
+                    content: self.input.read(cx).content(),
+                    reply_to: self.reply_to.take(),
+                    editing: self.editing.take(),
+                },
+            ));
+        }
+        taken.retain(|(_, draft)| {
+            !draft.content.text().trim().is_empty()
+                || draft.reply_to.is_some()
+                || draft.editing.is_some()
+        });
+        taken
+    }
+
+    /// Takes the text of a place that another window held. A place whose text is empty
+    /// gets it with its reply or edit; otherwise the other text follows the text that is
+    /// there, and the reply or edit that is there stays.
+    fn receive(&mut self, desk: Desk, draft: Draft, window: &mut Window, cx: &mut Context<Shell>) {
+        if self.place == Some(desk) {
+            let shown = self.input.read(cx).content();
+            let empty =
+                shown.text().trim().is_empty() && self.reply_to.is_none() && self.editing.is_none();
+            let content = if empty {
+                self.reply_to = draft.reply_to;
+                self.editing = draft.editing;
+                draft.content
+            } else {
+                joined(&shown, &draft.content)
+            };
+            self.input
+                .update(cx, |input, cx| input.set_value(content, window, cx));
+            return;
+        }
+        match self.drafts.entry(desk) {
+            std::collections::hash_map::Entry::Occupied(mut held) => {
+                let held = held.get_mut();
+                held.content = joined(&held.content, &draft.content);
+            }
+            std::collections::hash_map::Entry::Vacant(place) => {
+                place.insert(draft);
+            }
+        }
+    }
+}
+
+impl Shell {
+    /// The call window gives the texts of its composer to another window (ADR 0772).
+    pub(crate) fn hand_over_drafts(&mut self, to: HandTo, cx: &mut gpui::App) {
+        let taken = self.composer.take_all(cx);
+        if taken.is_empty() {
+            return;
+        }
+        let handed = cx.default_global::<HandedDrafts>();
+        match to {
+            HandTo::CallWindow => handed.call_window.extend(taken),
+            HandTo::Main => handed.main.extend(taken),
+        }
+    }
+
+    /// The window takes the texts that a call window gave to it.
+    pub(crate) fn take_handed_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(handed) = cx.try_global::<HandedDrafts>() else {
+            return;
+        };
+        let waiting = if self.detached {
+            handed.call_window.is_empty()
+        } else {
+            handed.main.is_empty()
+        };
+        if waiting {
+            return;
+        }
+        let handed = cx.default_global::<HandedDrafts>();
+        let taken = std::mem::take(if self.detached {
+            &mut handed.call_window
+        } else {
+            &mut handed.main
+        });
+        for (desk, draft) in taken {
+            self.composer.receive(desk, draft, window, cx);
         }
     }
 }
@@ -414,13 +577,26 @@ impl Shell {
         cx.notify();
     }
 
+    /// The entries of the mention picker of a pane. A message of a channel mentions the
+    /// members and the roles of its workspace; a message of a direct conversation mentions
+    /// only its two participants, so the picker offers the other one (ADR 0408).
     fn mention_candidates(&self, pane: Pane) -> Vec<Candidate> {
         let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();
         };
-        view.workspace()
-            .map(|workspace| candidates(workspace, view.person.account_id, &open.query))
-            .unwrap_or_default()
+        let Some(workspace) = view.workspace() else {
+            return Vec::new();
+        };
+        match self.composer_place(pane).map(|(_, place)| place) {
+            Some(PlaceId::Direct(conversation_id)) => workspace
+                .directs
+                .iter()
+                .chain(&workspace.conversation)
+                .find(|row| row.id == conversation_id)
+                .map(|row| direct_candidates(row, &open.query))
+                .unwrap_or_default(),
+            _ => candidates(workspace, view.person.account_id, &open.query),
+        }
     }
 
     /// Puts a mention into the text in place of the typed `@` and its query.
@@ -1729,6 +1905,14 @@ impl Shell {
                 .as_ref()
                 .map(|editing| editing.message_id),
         )
+    }
+
+    /// The names of the entries that the mention picker of a pane shows, in their order.
+    pub fn mention_names(&self, pane: Pane) -> Vec<String> {
+        self.mention_candidates(pane)
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect()
     }
 
     /// Takes the entry of the mention picker with this name.

@@ -5,11 +5,18 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[allow(dead_code)]
+#[path = "../../client-core/tests/e2e/limit.rs"]
+mod limit;
+
 use livekit::webrtc::peer_connection_factory::{
     IceServer, IceTransportsType, PeerConnectionFactory, RtcConfiguration,
 };
 
-struct Server(Child);
+struct Server {
+    child: Child,
+    _adopted: limit::Adopted,
+}
 
 struct TlsFailures(mpsc::Sender<()>);
 
@@ -34,22 +41,39 @@ impl log::Log for TlsFailures {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
+}
+
+/// The fixture script, in the directory of this package in the checkout that runs the test:
+/// `cargo test` sets that directory at run time, while a path compiled into the binary can
+/// name another checkout whose build the shared target directory reused.
+fn fixture_script() -> String {
+    let package = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
+        panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test")
+    });
+    format!("{package}/../../tools/test-turn-tls.py")
 }
 
 #[tokio::test]
 #[ignore = "requires Python and OpenSSL in the isolated Linux container"]
 async fn turn_tls_uses_system_roots_and_checks_the_peer() {
+    // The test waits for processes and reads their pipes, which a timer of tokio does not
+    // end: a watch ends the test process when the test has not ended in time.
+    let _limit = limit::watch(limit::TEST_LIMIT);
     let Ok(fixtures) = std::env::var("JUNTO_TEST_TLS_FIXTURES") else {
-        let status = Command::new("python3")
-            .args([
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
-                "run",
-            ])
+        limit::step("runs the isolated TLS check");
+        let mut check = Command::new("python3")
+            .args([&fixture_script(), "run"])
             .arg(std::env::current_exe().unwrap_or_else(|error| panic!("{error}")))
-            .status()
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap_or_else(|error| panic!("TLS fixtures: {error}"));
+        let _adopted = limit::adopt(check.id());
+        let status = check
+            .wait()
             .unwrap_or_else(|error| panic!("TLS fixtures: {error}"));
         assert!(status.success(), "isolated TLS trust check failed");
         return;
@@ -65,19 +89,26 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
         ("wrong-name", "closed"),
         ("client-only", "untrusted"),
     ] {
-        let mut server = Server(
-            Command::new("python3")
-                .args([
-                    concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
-                    "serve",
-                    &fixtures,
-                    certificate,
-                ])
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap_or_else(|error| panic!("TLS server: {error}")),
+        limit::step(format!(
+            "starts the TLS server with the certificate {certificate}"
+        ));
+        let started = Command::new("python3")
+            .args([&fixture_script(), "serve", &fixtures, certificate])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("TLS server: {error}"));
+        let adopted = limit::adopt(started.id());
+        let mut server = Server {
+            child: started,
+            _adopted: adopted,
+        };
+        let mut output = BufReader::new(
+            server
+                .child
+                .stdout
+                .take()
+                .unwrap_or_else(|| panic!("stdout")),
         );
-        let mut output = BufReader::new(server.0.stdout.take().unwrap_or_else(|| panic!("stdout")));
         let mut port = String::new();
         output
             .read_line(&mut port)
@@ -113,6 +144,9 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
                 .unwrap_or_else(|error| panic!("hostname was not rejected: {error}"));
             connection.close();
         }
+        limit::step(format!(
+            "reads the result for the certificate {certificate}"
+        ));
         let mut result = String::new();
         output
             .read_line(&mut result)
@@ -121,7 +155,7 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
         assert_eq!(result.trim(), expected, "certificate {certificate}");
         assert!(
             server
-                .0
+                .child
                 .wait()
                 .unwrap_or_else(|error| panic!("{error}"))
                 .success()

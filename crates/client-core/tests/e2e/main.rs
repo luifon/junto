@@ -5,6 +5,9 @@
 
 mod admin;
 mod calls_live;
+#[allow(dead_code)]
+mod limit;
+mod limit_tests;
 mod messages;
 mod processes;
 // The window tests use the same file, and parts of it that these tests do not use.

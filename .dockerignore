@@ -3,6 +3,9 @@
 *
 !Cargo.toml
 !Cargo.lock
+!LICENSE
+!packaging/licences.py
+!packaging/licence-texts/
 !crates/
 !vendor/
 !recording-layout/package.json

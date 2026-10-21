@@ -57,6 +57,10 @@ mod support;
 #[path = "../app/harness.rs"]
 mod harness;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
+#[cfg(target_os = "macos")]
 #[path = "../rehearsal/native.rs"]
 mod native;
 #[cfg(target_os = "macos")]
@@ -93,6 +97,10 @@ const INTERVAL: Duration = Duration::from_secs(5);
 /// The messages of the channel that the idle and the text modes show.
 #[cfg(target_os = "macos")]
 const MESSAGES: usize = 400;
+/// The limit of the writes of the long channel, which wait for the rate of writes of the
+/// server.
+#[cfg(target_os = "macos")]
+const FILL_LIMIT: Duration = Duration::from_secs(1800);
 /// The distance that the wheel of the pointer moves the message list in each frame of the
 /// text mode, and how long it moves in one direction before it turns.
 #[cfg(target_os = "macos")]
@@ -695,7 +703,7 @@ fn member(
 fn fill(world: &harness::World, channel: ChannelId, writers: &[ServerHandle]) {
     use junto_client_core::protocol::message::{Block, Document, Inline, SendMessage};
     let place = junto_client_core::model::PlaceId::Channel(channel);
-    world.run(async {
+    world.run_for(FILL_LIMIT, async {
         for number in 0..MESSAGES {
             let api = writers[number % writers.len()].api();
             let message = SendMessage {
@@ -741,12 +749,14 @@ impl Drop for Other {
 
 #[cfg(target_os = "macos")]
 fn participant_tool() -> String {
+    // The directory of this package in the checkout that runs the test, which `cargo test`
+    // sets at run time; a path compiled into the binary can name another checkout whose build
+    // the shared target directory reused.
     std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../spikes/test-participant/target/release/test-participant"
-        )
-        .to_owned()
+        let package = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
+            panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test")
+        });
+        format!("{package}/../../spikes/test-participant/target/release/test-participant")
     })
 }
 

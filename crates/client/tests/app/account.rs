@@ -65,7 +65,7 @@ impl Window {
     fn profile(&mut self) -> Option<ProfilePage> {
         match self.account()?.page {
             PageView::Profile(page) => Some(page),
-            PageView::Devices(_) => None,
+            PageView::Devices(_) | PageView::Recoveries(_) => None,
         }
     }
 
@@ -133,6 +133,15 @@ pub(crate) fn second_device(
     });
     logged_in(&handle);
     (device, handle)
+}
+
+/// The last login that the devices page shows for a device.
+fn other_login(window: &mut Window, device_id: DeviceId) -> Option<time::OffsetDateTime> {
+    window
+        .devices()
+        .into_iter()
+        .find(|row| row.id == device_id)
+        .and_then(|row| row.last_login)
 }
 
 fn named_row(device_id: DeviceId, part: &str) -> String {
@@ -455,6 +464,27 @@ fn a_device_is_renamed_and_removed_and_the_list_follows_the_server(cx: &mut Test
             .devices()
             .iter()
             .any(|row| row.id == own.id && row.name == "Desk")
+    });
+
+    // A login of the other device reaches its row by the event of the server: the page
+    // shows its new last login without an act.
+    let before = other_login(&mut window, other.id);
+    let logged_in_at = world.run(async {
+        second.dispatch(AccessAction::LogOut).await.unwrap();
+        second.dispatch(AccessAction::LogIn).await.unwrap();
+        second
+            .api()
+            .devices()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|device| device.id == other.id)
+            .and_then(|device| device.last_login_at)
+            .unwrap()
+    });
+    assert!(Some(logged_in_at) > before);
+    window.until("the new login of the other device is listed", |window| {
+        other_login(window, other.id) == Some(logged_in_at)
     });
 
     // The removal asks first.

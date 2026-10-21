@@ -35,6 +35,15 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 /// Bounded statements prepare large fixtures under the normal database time limits.
+/// The directory of this package in the checkout that runs the test: `cargo test` sets it at
+/// run time, while a path compiled into the binary can name another checkout whose build the
+/// shared target directory reused.
+pub fn package_directory() -> PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test"))
+}
+
 pub fn fixture_batches(rows: i32) -> impl Iterator<Item = (i32, i32)> {
     (1..=rows)
         .step_by(500)
@@ -218,34 +227,85 @@ struct TestDatabase {
 
 impl Drop for TestDatabase {
     fn drop(&mut self) {
-        let (admin, name) = (self.admin.clone(), self.name.clone());
-        // A drop cannot wait for a future on the runtime of its test.
-        let deleted = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            runtime.block_on(async {
-                let mut connection = admin.connect().await?;
-                for statement in [
-                    "set pg_stat_statements.track = 'none'".to_owned(),
-                    format!("drop database if exists {name} with (force)"),
-                ] {
-                    sqlx::query(sqlx::AssertSqlSafe(statement))
-                        .execute(&mut connection)
-                        .await?;
-                }
-                connection.close().await?;
-                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-            })
-        })
-        .join();
-        if !matches!(deleted, Ok(Ok(()))) {
-            eprintln!(
-                "the test database {} was not deleted: {deleted:?}",
-                self.name
-            );
+        if let Err(problem) = delete_database(
+            self.admin.clone(),
+            self.name.clone(),
+            DATABASE_CLEANUP_LIMIT,
+        ) {
+            eprintln!("the test database {} was not deleted: {problem}", self.name);
         }
     }
+}
+
+/// The longest time that the deletion of a test database may take. A database server that
+/// does not answer would otherwise hold the test, its run and the lock of the machine.
+const DATABASE_CLEANUP_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Deletes a test database through a connection of its own, within `limit`. A drop cannot
+/// wait for a future on the runtime of its test, so the work runs on a thread with its own
+/// runtime.
+fn delete_database(
+    admin: PgConnectOptions,
+    name: String,
+    limit: std::time::Duration,
+) -> Result<(), String> {
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let deleted = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())
+            .and_then(|runtime| {
+                runtime.block_on(async {
+                    let deleting = async {
+                        let mut connection = admin.connect().await?;
+                        for statement in [
+                            "set pg_stat_statements.track = 'none'".to_owned(),
+                            format!("drop database if exists {name} with (force)"),
+                        ] {
+                            sqlx::query(sqlx::AssertSqlSafe(statement))
+                                .execute(&mut connection)
+                                .await?;
+                        }
+                        connection.close().await
+                    };
+                    match tokio::time::timeout(limit, deleting).await {
+                        Ok(deleted) => deleted.map_err(|error| error.to_string()),
+                        Err(_) => Err(format!("it did not end within {limit:?}")),
+                    }
+                })
+            });
+        let _ = done.send(deleted);
+    });
+    // The runtime of the thread ends the work at the limit; the wait has a margin for the
+    // start of the thread and its runtime.
+    ended
+        .recv_timeout(limit + std::time::Duration::from_secs(5))
+        .map_err(|_| format!("it did not end within {limit:?}"))?
+}
+
+#[test]
+fn the_deletion_of_a_test_database_whose_server_does_not_answer_ends_after_its_limit() {
+    // The listener accepts connections into its queue and never answers them.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let admin = PgConnectOptions::new()
+        .host("127.0.0.1")
+        .port(port)
+        .username("postgres");
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(delete_database(
+            admin,
+            "never_created".to_owned(),
+            std::time::Duration::from_millis(200),
+        ));
+    });
+    let deleted = ended
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the deletion ends after its limit");
+    assert!(deleted.is_err(), "{deleted:?}");
+    drop(silent);
 }
 
 /// The fake media server of a test server, with the fake recorder that puts its jobs into

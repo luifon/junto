@@ -588,6 +588,21 @@ impl ServerModel {
     /// A channel or a conversation is gone: nothing of it stays, and nothing of its
     /// threads.
     pub(crate) fn forget_place(&mut self, place: PlaceId) {
+        self.forget_messages_of(place);
+        self.forget_named_of(place);
+    }
+
+    /// A channel was archived and no reader has it open: its messages, its threads and
+    /// its pins leave the state, and its notices stay with their messages. The server
+    /// still lists the notices of an archived channel, and the account reads them
+    /// (ADR 0410); the window places them by the archived list of the workspace
+    /// (ADR 0762).
+    pub(crate) fn close_archived_place(&mut self, place: PlaceId) {
+        self.forget_messages_of(place);
+        self.forget_threads_of(place);
+    }
+
+    fn forget_messages_of(&mut self, place: PlaceId) {
         self.message_states
             .retain(|held| PlaceId::of(&held.place) != place);
         self.timelines
@@ -597,7 +612,6 @@ impl ServerModel {
         if let PlaceId::Channel(channel_id) = place {
             self.pins.retain(|held| held.channel_id != channel_id);
         }
-        self.forget_named_of(place);
     }
 
     pub(crate) fn timeline_mut(&mut self, place: PlaceId) -> Option<&mut Timeline> {

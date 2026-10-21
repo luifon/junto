@@ -733,10 +733,18 @@ impl Standing {
             crate::store::fellow_members(connection, access.account_id, &viewed).await?
         };
         let mut contacts = HashMap::new();
+        // The standing to a viewed account decides whether its profile reaches the
+        // recipient too (ADR 0119).
         let reached = candidates
             .iter()
             .filter_map(|event| event.audience.as_ref())
-            .flat_map(|audience| audience.reached_account_ids(access.account_id));
+            .flat_map(|audience| audience.reached_account_ids(access.account_id))
+            .chain(
+                viewed
+                    .iter()
+                    .copied()
+                    .filter(|viewed| *viewed != access.account_id && !fellows.contains(viewed)),
+            );
         for other in reached {
             if !contacts.contains_key(&other)
                 && let Some(contact) = crate::store::contact(connection, access, other).await?

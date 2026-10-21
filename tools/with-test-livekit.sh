@@ -16,6 +16,9 @@
 # checkouts on one machine run their tests at the same time when each sets another name and
 # other ports. JUNTO_TEST_LIVEKIT_CPUS and JUNTO_TEST_LIVEKIT_MEMORY limit the container
 # (default 2 processors and 1g, without swap).
+#
+# The server has the settings of every form of the deployment that do not depend on the host:
+# the file deploy/livekit-common.yaml (ADR 0904).
 set -eu
 
 if [ "$#" -eq 0 ]; then
@@ -32,6 +35,7 @@ webhook_address="${JUNTO_TEST_WEBHOOK_ADDRESS:-127.0.0.1:17890}"
 webhook_port="${webhook_address##*:}"
 key="${JUNTO_TEST_LIVEKIT_API_KEY:-devkey}"
 secret="${JUNTO_TEST_LIVEKIT_API_SECRET:-secret}"
+common=$(cat "$(dirname -- "$0")/../deploy/livekit-common.yaml")
 
 remove() {
     docker rm -f -v "$name" >/dev/null 2>&1 || true
@@ -64,26 +68,8 @@ webhook:
   api_key: ${key}
   urls:
     - http://host.docker.internal:${webhook_port}/internal/media/notifications
+${common}
 "
-# The setting of the camera layers in the configuration of the deployment
-# (deploy/tests/check_rendered.py compares them). The tests of the recording layout set
-# JUNTO_TEST_LIVEKIT_DEPLOYMENT_LAYERS=1; the other tests use the defaults of LiveKit.
-deployment_layers="video:
-  stream_tracker_manager:
-    video:
-      packet_tracker:
-        1:
-          samples_required: 1
-          cycles_required: 4
-          cycle_duration: 500ms
-        2:
-          samples_required: 1
-          cycles_required: 4
-          cycle_duration: 500ms
-"
-if [ "${JUNTO_TEST_LIVEKIT_DEPLOYMENT_LAYERS:-}" = 1 ]; then
-    config="${config}${deployment_layers}"
-fi
 
 docker run -d --name "$name" \
     --cpus "${JUNTO_TEST_LIVEKIT_CPUS:-2}" --memory "${JUNTO_TEST_LIVEKIT_MEMORY:-1g}" \

@@ -14,8 +14,8 @@ use crate::assets::Icon;
 use junto_media::calls::Phase;
 
 use crate::state::view::{
-    CallPanel, ChannelRow, Content, Members, RecordingControl, RecordingShown, Relation,
-    SelectedServer, ServerStatus, ShellView, VoiceState, WorkspaceView,
+    CallPanel, ChannelRow, Content, Members, PanelPlace, RecordingControl, RecordingShown,
+    Relation, SelectedServer, ServerStatus, ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -48,10 +48,9 @@ impl Shell {
         let theme = theme(cx);
         let workspace = view.workspace();
         let channel = workspace.and_then(|workspace| workspace.channel.as_ref());
-        // The call of this device, when its voice channel is the selected one.
-        let call = workspace
-            .zip(channel)
-            .and_then(|(workspace, channel)| Some((channel, workspace.call.as_ref()?)));
+        // The call of this device, when its voice channel or the direct conversation of its
+        // direct-message call is the shown place.
+        let call = workspace.and_then(|workspace| workspace.call.as_ref());
         let members_open = self.members_open && workspace.is_some() && call.is_none();
         let server_id = view.selected.as_ref().map(|server| server.id);
         // The side panel shows one thing: a thread, the pinned messages, the notices of
@@ -96,9 +95,7 @@ impl Shell {
                 None,
             ),
             (Some(server), Some(shown)) => match (call, channel, shown.conversation.as_ref()) {
-                (Some((channel, panel)), _, _) => {
-                    self.render_call(view, channel, panel, narrow, window, cx)
-                }
+                (Some(panel), _, _) => self.render_call(view, panel, narrow, window, cx),
                 (None, Some(_), _) => (
                     self.render_feed(shown, false, notices.take().unwrap_or_default(), window, cx),
                     side_of(self, shown, window, cx),
@@ -174,7 +171,8 @@ impl Shell {
                         crate::ui::notice_slot("call-notice-area")
                             .h(u(128.0))
                             .children(
-                                call.and_then(|(_, panel)| panel.room.meeting.as_ref())
+                                call.and_then(|panel| panel.room())
+                                    .and_then(|room| room.meeting.as_ref())
                                     .map(|meeting| self.render_meeting_bar(meeting, &theme, cx)),
                             )
                             .children(notices.take().into_iter().flatten()),
@@ -225,14 +223,7 @@ impl Shell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.render_main_header(
-                view,
-                channel,
-                call.map(|(_, panel)| panel),
-                narrow,
-                &theme,
-                cx,
-            ))
+            .child(self.render_main_header(view, channel, call, narrow, &theme, cx))
             .child(split)
     }
 
@@ -301,7 +292,6 @@ impl Shell {
                 after.extend(Self::render_call_interruption(theme));
                 after.push(div().flex_1().into_any_element());
             } else {
-                // The recording of the call, and then the state of the room.
                 after.push(
                     div()
                         .flex_none()
@@ -310,9 +300,41 @@ impl Shell {
                         .bg(Hsla::from(colors.rule))
                         .into_any_element(),
                 );
-                after.extend(self.render_recording_control(&panel.recording, theme, cx));
-                after.push(div().flex_1().into_any_element());
-                after.extend(self.render_room_controls(&panel.room, theme, cx));
+                match &panel.place {
+                    // The recording of the call, and then the state of the room.
+                    PanelPlace::Channel(channel) => {
+                        after.extend(self.render_recording_control(&channel.recording, theme, cx));
+                        after.push(div().flex_1().into_any_element());
+                        after.extend(self.render_room_controls(&channel.room, theme, cx));
+                    }
+                    // Whether the other person has taken a place in the call.
+                    PanelPlace::Direct(direct) => {
+                        let (label, selector) = if direct.joined {
+                            (text::DIRECT_CALL, "active-direct-call")
+                        } else {
+                            (text::CALLING, "outgoing-direct-call")
+                        };
+                        after.push(
+                            div()
+                                .id(selector)
+                                .role(Role::Status)
+                                .aria_label(label)
+                                .debug_selector(move || selector.to_owned())
+                                .flex_none()
+                                .map(|state| {
+                                    if direct.joined {
+                                        state.child(crate::ui::Chip::new(label).icon(Icon::Phones))
+                                    } else {
+                                        state.child(
+                                            Flag::new(FlagKind::Warning, label).icon(Icon::Phones),
+                                        )
+                                    }
+                                })
+                                .into_any_element(),
+                        );
+                        after.push(div().flex_1().into_any_element());
+                    }
+                }
             }
             if narrow {
                 after.extend(self.render_call_panel_buttons(cx));
@@ -426,7 +448,7 @@ impl Shell {
                     )
                 },
             )
-            .when(conversation.is_some(), |header| {
+            .when(conversation.is_some() && call.is_none(), |header| {
                 header.child(
                     Button::new("export-conversation")
                         .icon(Icon::Download)
@@ -1013,6 +1035,22 @@ impl Shell {
                 .selector("logged-out")
                 .action(check(text::TRY_AGAIN, cx))
                 .action(remove(cx)),
+            ServerStatus::LoggedOutByPerson => {
+                StatePanel::new(text::LOGGED_OUT_BY_PERSON_TITLE, text::LOGGED_OUT_BY_PERSON)
+                    .selector("logged-out-by-person")
+                    .action(
+                        Button::new("log-in")
+                            .kind(ButtonKind::Primary)
+                            .label(text::LOG_IN)
+                            .selector("log-in")
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.log_in(server_id, cx));
+                            })),
+                    )
+                    .action(remove(cx))
+            }
             ServerStatus::WaitingForApproval { name } => StatePanel::new(
                 text::REQUEST_SENT_TITLE,
                 text::request_sent(&server.name, name),
@@ -1398,11 +1436,12 @@ impl Shell {
     pub(crate) fn records_now(&self, view: &ShellView) -> bool {
         view.workspace()
             .and_then(|workspace| workspace.call.as_ref())
-            .is_some_and(|panel| {
-                panel.recording.may_record
-                    && !panel.recording.busy
+            .and_then(|panel| panel.recording())
+            .is_some_and(|recording| {
+                recording.may_record
+                    && !recording.busy
                     && matches!(
-                        panel.recording.state,
+                        recording.state,
                         RecordingShown::None | RecordingShown::Failed(_)
                     )
             })

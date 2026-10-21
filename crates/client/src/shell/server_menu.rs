@@ -46,6 +46,7 @@ impl Shell {
         };
         let server_id = server.id;
         let keep = server.keep_connected;
+        let can_log_out = server.can_log_out;
         let has_content = !matches!(server.content, crate::state::view::Content::State);
         let header = div()
             .flex()
@@ -58,7 +59,23 @@ impl Shell {
             .mb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule_soft))
-            .child(Mosaic::new(MosaicKind::Large, server_id.as_uuid().as_u128(), 26.0).radius(2.0))
+            // The logo of the server when the window holds it, as in the server book
+            // (ADR 0799).
+            .child(
+                match view
+                    .servers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, row)| row.id == server_id)
+                {
+                    Some((index, row)) => {
+                        super::rail::picture("selected-server-logo", index, row, 26.0, 2.0)
+                    }
+                    None => Mosaic::new(MosaicKind::Large, server_id.as_uuid().as_u128(), 26.0)
+                        .radius(2.0)
+                        .into_any_element(),
+                },
+            )
             .child(
                 div()
                     .flex_1()
@@ -175,6 +192,23 @@ impl Shell {
                         )
                     })
                     .child(menu_separator(cx))
+                    // Drawn in every state, so that a change of the state while the menu is
+                    // open moves no item under the pointer (ADR 0730).
+                    .child(
+                        MenuItem::new("log-out", text::LOG_OUT)
+                            .detail(if can_log_out {
+                                text::LOG_OUT_HELP
+                            } else {
+                                text::LOG_OUT_UNAVAILABLE
+                            })
+                            .disabled(!can_log_out)
+                            .selector("menu-log-out")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.log_out(server_id, cx));
+                                this.close_layer(window, cx);
+                            })),
+                    )
                     .child(
                         MenuItem::new("remove-server", text::REMOVE_SERVER)
                             .icon(Icon::Trash)

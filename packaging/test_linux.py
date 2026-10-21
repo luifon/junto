@@ -1,10 +1,13 @@
 """The parts of the Linux packaging that need no Linux build image."""
+import io
 import os
 import pathlib
 import subprocess
 import tarfile
 import tempfile
 import unittest
+
+from unittest import mock
 
 import icons
 import linux
@@ -92,6 +95,88 @@ class LinuxPackageTests(unittest.TestCase):
                     picture = (theme / f"{size}x{size}/apps/{linux.APPLICATION_ID}.png").read_bytes()
                     self.assertEqual(picture, icons.rendering(icons.TOOL, size))
                     self.assertEqual(icons.png(picture).size, size)
+
+
+class RuntimeTests(unittest.TestCase):
+    """The AppImage runtime and the source that the AppImage carries (ADR 0754, ADR 0801)."""
+
+    def test_the_runtime_section_holds_the_licence_texts_of_each_component_from_its_source_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "runtime-source"
+            (source / "sources").mkdir(parents=True)
+            for _, archive, names in linux.RUNTIME_COMPONENTS:
+                top = archive.removesuffix(".tar.gz").removesuffix(".tar.xz")
+                mode = "w:xz" if archive.endswith(".xz") else "w:gz"
+                with tarfile.open(source / "sources" / archive, mode) as output:
+                    for name in [*names, "README"]:
+                        content = f"{name} of {top}\n".encode()
+                        info = tarfile.TarInfo(f"{top}/{name}")
+                        info.size = len(content)
+                        output.addfile(info, io.BytesIO(content))
+            packages = []
+            for name in ["musl", "compiler-rt"]:
+                path = pathlib.Path(temporary) / f"{name}-copyright"
+                path.write_text(f"{name} copyright\n")
+                packages.append((name, path))
+            with mock.patch.object(linux, "RUNTIME_PACKAGES", packages):
+                section = linux.runtime_section(source)
+        found = dict((text.decode().strip(), label) for label, text in section.components)
+        self.assertEqual(found["LGPL2.txt of fuse-3.15.0"],
+                         "libfuse 3.15.0, with the change of the AppImage project: LGPL2.txt")
+        self.assertEqual(len(found), sum(len(names) for _, _, names in linux.RUNTIME_COMPONENTS) + 2)
+        self.assertEqual(found["musl copyright"], f"musl: {packages[0][1]}")
+        self.assertEqual(found["compiler-rt copyright"], f"compiler-rt: {packages[1][1]}")
+        self.assertNotIn("README of zlib-1.3.1", found)
+        description = " ".join(section.description)
+        self.assertIn("GNU Lesser General Public License 2.1", description)
+        self.assertIn("licences/appimage-runtime", description)
+        self.assertIn("relink", description)
+
+    def test_the_link_script_links_only_files_of_its_directory_and_the_instructions_name_each(self):
+        tools = pathlib.Path(linux.__file__).resolve().parent.parent / "tools/linux/appimage-runtime"
+        named = linux.link_inputs((tools / "link.sh").read_text())
+        self.assertEqual(named, ["Scrt1.o", "crti.o", "clang_rt.crtbegin.o", "runtime.o", "libsquashfuse.a",
+                                 "libsquashfuse_ll.a", "libzstd.a", "libz.a", "libfuse3.a", "libmimalloc.a",
+                                 "libclang_rt.builtins.a", "libc.a", "clang_rt.crtend.o", "crtn.o",
+                                 "data_sections.ld"])
+        self.assertNotIn("/", " ".join(named))
+        self.assertNotRegex((tools / "link.sh").read_text(), r"\s-[lL]\S")
+        readme = (tools / "README.md").read_text()
+        for name in [*named, "link.sh"]:
+            with self.subTest(name):
+                self.assertIn(f"`{name}`", readme)
+        build = (tools / "build.sh").read_text()
+        self.assertIn('sh "$relink/link.sh" "$output"', build)
+        self.assertNotRegex(build, r"\$CC [^\n]*-o runtime\b")
+
+    def test_the_paths_of_the_build_image_are_posix_paths_on_every_system(self):
+        for path in [linux.RUNTIME, linux.RUNTIME_SOURCE, *(path for _, path in linux.RUNTIME_PACKAGES)]:
+            with self.subTest(str(path)):
+                self.assertIs(type(path), pathlib.PurePosixPath)
+                self.assertTrue(str(path).startswith("/"))
+                self.assertNotIn("\\", str(path))
+
+    def test_the_link_inputs_are_read_from_the_ld_command(self):
+        script = "set -eu\nld -static -o \"$output\" \\\n    a.o libb.a \\\n    -T c.ld\nstrip x.o\n"
+        self.assertEqual(linux.link_inputs(script), ["a.o", "libb.a", "c.ld"])
+        with self.assertRaisesRegex(ValueError, "no ld command"):
+            linux.link_inputs("strip a.o\n")
+
+    def test_the_build_image_downloads_and_the_build_script_extracts_the_archive_of_each_component(self):
+        tools = pathlib.Path(linux.__file__).resolve().parent.parent / "tools/linux"
+        dockerfile = (tools / "Dockerfile").read_text()
+        script = (tools / "appimage-runtime/build.sh").read_text()
+        readme = (tools / "appimage-runtime/README.md").read_text()
+        for _, archive, _ in linux.RUNTIME_COMPONENTS:
+            with self.subTest(archive):
+                top = archive.removesuffix(".tar.gz").removesuffix(".tar.xz")
+                self.assertRegex(dockerfile, f"-o {archive} ")
+                self.assertRegex(dockerfile, f"[0-9a-f]{{64}} {archive} ")
+                self.assertIn(top.removeprefix("type2-runtime-"), script)
+                self.assertIn(archive, readme)
+        self.assertIn("COPY appimage-runtime/README.md appimage-runtime/build.sh appimage-runtime/link.sh \\\n"
+                      f"    {linux.RUNTIME_SOURCE}/", dockerfile)
+        self.assertIn(f"build.sh {linux.RUNTIME} \\\n        {linux.RUNTIME_SOURCE}/relink", dockerfile)
 
 
 if __name__ == "__main__":

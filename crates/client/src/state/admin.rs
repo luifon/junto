@@ -7,7 +7,7 @@ mod notifications;
 mod overrides;
 mod people;
 pub(crate) mod recordings;
-mod records;
+pub mod records;
 pub mod roles;
 mod server;
 pub(crate) mod structure;
@@ -28,7 +28,7 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
 pub use recordings::RecordingList;
-pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, ExportFiles};
+pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, AuditTarget, ExportFiles};
 pub use roles::{RoleLevel, RolePermission, RoleRef};
 pub use view::AdminView;
 use view::Scope;
@@ -40,7 +40,8 @@ use crate::text;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdminPage {
     Workspaces,
-    /// The server itself: its logo (ADR 0101).
+    /// The server itself: its logo (ADR 0101) and the limits of the files of messages
+    /// (ADR 0408).
     Server,
     People,
     Invites,
@@ -112,6 +113,9 @@ pub enum AskKind {
     DeleteCategory(CategoryId),
     CreateChannel,
     UpdateChannel(ChannelId),
+    /// A move of a channel, with the other channels whose position it changes, in one
+    /// request (ADR 0761).
+    MoveChannels(ChannelId),
     DeleteChannel(ChannelId),
     ArchiveChannel(ChannelId),
     RestoreChannel(ChannelId),
@@ -129,6 +133,8 @@ pub enum AskKind {
     RemoveAccount(AccountId),
     BanAccount(AccountId),
     UnbanAccount(AccountId),
+    /// The server owner gives a new device key access to an account (ADR 0104).
+    RecoverAccount(AccountId),
     CreateInvite,
     RevokeInvite(InviteId),
     ApproveRequest(JoinRequestId),
@@ -154,6 +160,8 @@ pub enum AskKind {
     ChangeTerm(u32),
     RemoveTerm(u32),
     MoveTerm(u32),
+    /// The largest file and the number of files of a message (ADR 0408).
+    AttachmentLimits,
 }
 
 /// Where a request stands. A request that the server did leaves no state: its effect
@@ -188,6 +196,11 @@ pub enum Made {
     Entered(Vec<WorkspaceId>),
     /// An export was asked for. Its state is on the page of the exports.
     Export(ExportId),
+    /// The recovery of an account: the answer states when the server did it (ADR 0112).
+    Recovered {
+        account_id: AccountId,
+        notice: junto_client_core::protocol::account::RecoveryNotice,
+    },
 }
 
 /// What the administration holds beside the state of the servers.
@@ -374,6 +387,15 @@ impl AppState {
         cx.notify();
     }
 
+    /// Puts away the recovery that the row of its account tells. A code or a token that the
+    /// last request made stays.
+    pub fn dismiss_admin_recovered(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.admin.made, Some(Made::Recovered { .. })) {
+            self.admin.made = None;
+            cx.notify();
+        }
+    }
+
     /// Puts away what the last request made. A code and a token are gone with it.
     pub fn dismiss_admin_made(&mut self, cx: &mut Context<Self>) {
         self.admin.made = None;
@@ -414,13 +436,58 @@ impl AppState {
         self.admin.open = Some(shown);
     }
 
+    /// The collections that the window needs for archived channels outside the
+    /// administration (ADR 0762): for an archived channel that the main area shows, the
+    /// archived list of its workspace and the permissions of the account in the channel
+    /// (ADR 0310); for the open notices and the open search, the archived list of each
+    /// workspace that a notice or a result names with a channel that is in no channel
+    /// list.
+    pub(super) fn archived_readers(
+        &self,
+        view: &super::view::ShellView,
+        snapshots: &[super::view::ServerSnapshot],
+    ) -> Vec<(ServerId, AdminPart)> {
+        let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
+        let mut want = |key: (ServerId, AdminPart)| {
+            if !wanted.contains(&key) {
+                wanted.push(key);
+            }
+        };
+        let Some(server_id) = self.shown.server else {
+            return wanted;
+        };
+        if let Some((workspace_id, channel_id)) = view
+            .workspace()
+            .filter(|workspace| workspace.archived.is_some())
+            .and_then(|workspace| Some((workspace.id, workspace.channel.as_ref()?.id)))
+        {
+            want((server_id, AdminPart::Archived(workspace_id)));
+            want((server_id, AdminPart::ChannelPermissions(channel_id)));
+        }
+        let Some(model) = snapshots
+            .iter()
+            .find(|server| server.id == server_id)
+            .and_then(|server| view::shown(server))
+        else {
+            return wanted;
+        };
+        if self.selection.notices == Some(server_id) {
+            for workspace_id in super::notices::archived_lists_of_notices(model) {
+                want((server_id, AdminPart::Archived(workspace_id)));
+            }
+        }
+        for workspace_id in super::search::archived_lists_of_search(server_id, model, &self.known) {
+            want((server_id, AdminPart::Archived(workspace_id)));
+        }
+        wanted
+    }
+
     /// The collections of the client core that the window needs are held open: those of
-    /// the open page, and for an archived channel that the main area shows the archived
-    /// list of its workspace (ADR 0762) and the permissions of the account in the channel
-    /// (ADR 0310). Every other collection is released.
+    /// the open page, and those of [`Self::archived_readers`]. Every other collection is
+    /// released.
     pub(super) fn follow_admin(
         &mut self,
-        archived: Option<(ServerId, WorkspaceId, ChannelId)>,
+        readers: Vec<(ServerId, AdminPart)>,
         cx: &mut Context<Self>,
     ) {
         // A save of an export does not outlive its server or its account.
@@ -456,15 +523,9 @@ impl AppState {
                 }
             }
         }
-        if let Some((server_id, workspace_id, channel_id)) = archived {
-            for part in [
-                AdminPart::Archived(workspace_id),
-                AdminPart::ChannelPermissions(channel_id),
-            ] {
-                let key = (server_id, part);
-                if !wanted.contains(&key) {
-                    wanted.push(key);
-                }
+        for key in readers {
+            if !wanted.contains(&key) {
+                wanted.push(key);
             }
         }
         let gone: Vec<(ServerId, AdminPart)> = self
@@ -521,6 +582,35 @@ impl AppState {
                 });
             });
             self.admin.held.insert(key, task);
+        }
+    }
+
+    /// Reads the archived lists of workspaces of a server again after a read that failed:
+    /// the notices and the results that they place follow (ADR 0762).
+    pub fn read_archived_lists_again(
+        &mut self,
+        server_id: ServerId,
+        workspaces: &[WorkspaceId],
+        cx: &mut Context<Self>,
+    ) {
+        for workspace_id in workspaces {
+            self.reload_admin(server_id, AdminPart::Archived(*workspace_id));
+        }
+        self.changed(cx);
+    }
+
+    /// Reads every archived list of a server that the window holds and whose last read
+    /// failed. A new search starts with it.
+    pub(super) fn read_failed_archived_lists_again(&mut self, server_id: ServerId) {
+        let held: Vec<AdminPart> = self
+            .admin
+            .held
+            .keys()
+            .filter(|(of, part)| *of == server_id && matches!(part, AdminPart::Archived(_)))
+            .map(|(_, part)| *part)
+            .collect();
+        for part in held {
+            self.reload_admin(server_id, part);
         }
     }
 

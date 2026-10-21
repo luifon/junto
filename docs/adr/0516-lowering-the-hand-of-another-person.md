@@ -25,3 +25,4 @@ A person in a call raises and lowers the own hand (ADR 0512). While meeting mode
 - A person whose hand was lowered can raise it again at once.
 - When meeting mode has ended, the person who ran it lowers no hand of another person without "mute members".
 - A moderator outside the call lowers a hand in a channel that shows who is inside, as for a microphone block.
+- The desktop client offers the route in the bar of meeting mode of the presenter and in the menu of a person (ADR 0739).

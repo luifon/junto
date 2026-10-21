@@ -69,6 +69,7 @@ pub const STATUS_TOO_OLD: &str = "server is too old";
 pub const STATUS_INCOMPATIBLE: &str = "not compatible";
 pub const STATUS_OTHER_SERVER: &str = "another server answers";
 pub const STATUS_LOGGED_OUT: &str = "not logged in";
+pub const STATUS_LOGGED_OUT_BY_PERSON: &str = "logged out";
 pub const STATUS_RECOVERY: &str = "recovery notice";
 
 // The channel column.
@@ -239,6 +240,9 @@ pub const MEETING_PARTICIPANT_HELP: &str =
     "Every other microphone is closed. Raise a hand to speak.";
 pub const RAISED_A_HAND: &str = " raised a hand";
 pub const ALLOW: &str = "Allow";
+pub const LOWER_HAND_OF_PERSON: &str = "Lower hand";
+pub const LOWER_HAND_HELP: &str = "The microphone stays as it is.";
+pub const NO_RAISED_HAND: &str = "No hand is raised.";
 pub const MAY_SPEAK_NOT_OPEN: &str = " may speak and has not opened the microphone";
 pub const YOU_MAY_SPEAK: &str = "You may speak";
 pub const UNMUTE: &str = "Unmute";
@@ -298,6 +302,10 @@ pub fn meeting_run_by(presenter: Option<&str>) -> String {
 
 pub fn allow_help(name: &str) -> String {
     format!("{name} gets the prompt “You may speak” and opens the microphone without your help.")
+}
+
+pub fn lower_hand_help(name: &str) -> String {
+    format!("Lower the hand of {name}. The microphone of {name} stays closed.")
 }
 
 /// "and 2 more", after the first raised hand.
@@ -803,6 +811,7 @@ pub fn connection_dropped(at: Option<time::OffsetDateTime>, channel: &str) -> St
 // The panel of a call.
 pub const CHAT: &str = "Chat";
 pub const VOICE_CHANNEL_CHAT: &str = "voice channel chat";
+pub const DIRECT_CALL_CHAT: &str = "direct messages";
 pub const CLOSE_PANEL: &str = "Close the panel";
 pub const IN_THE_CALL: &str = "In the call";
 pub const NOT_IN_THE_CALL: &str = "Not in the call";
@@ -985,6 +994,13 @@ pub const STATE_STALE: &str =
 pub const LOGGED_OUT_TITLE: &str = "This device is not logged in";
 pub const LOGGED_OUT: &str =
     "The server answers, and the login with the key of this device did not succeed.";
+pub const LOGGED_OUT_BY_PERSON_TITLE: &str = "You logged out of this server";
+pub const LOGGED_OUT_BY_PERSON: &str = "Your account and the key of this device stay on this \
+     device. Junto logs in again only when you press Log in.";
+pub const LOG_IN: &str = "Log in";
+pub const LOG_OUT: &str = "Log out";
+pub const LOG_OUT_HELP: &str = "Ends the session of this device. The account and its key stay.";
+pub const LOG_OUT_UNAVAILABLE: &str = "This device has no account here that is logged in.";
 pub const LOCKED_STATE: &str = "Locked";
 pub const CONNECTING_TITLE: &str = "Connecting to the server";
 pub const CONNECTING: &str = "Junto logs in with the key of this device.";
@@ -1423,6 +1439,10 @@ pub const MESSAGE_ACTIONS: &str = "Actions of this message";
 pub const DELETE_MESSAGE_TITLE: &str = "Delete this message?";
 pub const DELETE_MESSAGE_CONFIRM: &str =
     "The message and its files are removed for everyone. This cannot be undone.";
+pub const DELETE_PERMANENT_TITLE: &str = "Delete this permanent message?";
+pub const DELETE_PERMANENT_CONFIRM: &str = "Its text and files are removed for everyone. \
+     The channel shows a line that you deleted a permanent message, and the audit log keeps \
+     an entry. This cannot be undone.";
 pub const SENDING: &str = "sending…";
 pub const WAITING_FOR_FILES: &str = "uploading its files…";
 pub const NOT_CONFIRMED: &str = "No answer from the server. The message may have arrived.";
@@ -1451,6 +1471,8 @@ pub const NO_MENTION_FOUND: &str = "No member or role has this name.";
 pub const REMOVE_FILE: &str = "Remove this file";
 pub const REMOVE_FAILED_FILE: &str = "A file was not uploaded. Remove it, or attach it again.";
 pub const MEMBER: &str = "member";
+/// The other person of a direct conversation, in the mention picker.
+pub const IN_THIS_CONVERSATION: &str = "in this conversation";
 pub const ROLE: &str = "role";
 pub const DROP_FILES: &str = "Drop files to attach them";
 pub const PASTED_PICTURE: &str = "pasted-picture.png";
@@ -1522,9 +1544,22 @@ pub const PERMANENT_ABOUT: &str = " Nobody can edit a message in this channel. O
      administrator can delete one. Each deletion leaves a line here and an entry in the \
      audit log.";
 pub const NO_EDIT_OR_DELETE: &str = "No edit or delete here";
+pub const NO_EDIT: &str = "No edit here";
+pub const FILES_REMOVED_BY_RETENTION: &str =
+    "Files of this message were removed after the retention time of this workspace.";
 pub const PERMANENT_COMPOSER: &str = "Permanent messages: a sent message cannot be edited";
 pub const DIRECT_MESSAGES: &str = "Direct messages";
 pub const MESSAGE_PERSON: &str = "Message";
+pub const NEW_DIRECT: &str = "New direct message";
+pub const NEW_DIRECT_TITLE: &str = "New direct message";
+pub const NEW_DIRECT_ABOUT: &str = "The people you can write to on this server: the members of \
+     your workspaces and the administrators of the server. An administrator can write to \
+     every account.";
+pub const CONTACT_PART: &str = "Name";
+pub const CONTACTS: &str = "People you can write to";
+pub const NO_CONTACTS: &str = "Nobody with this name can receive your messages.";
+pub const CONTACTS_NOT_READ: &str = "The people could not be read.";
+pub const MORE_CONTACTS: &str = "Show more";
 pub const NO_CONTACT: &str =
     "You cannot write to this person: you share no workspace with them on this server.";
 pub const CONVERSATION_CLOSED: &str = "You and this person share no workspace on this server any more. The messages are kept \
@@ -1887,6 +1922,9 @@ pub const NO_NOTICES_TITLE: &str = "No notifications";
 pub const NO_NOTICES: &str =
     "A mention, a direct message, and a reply in a thread that you wrote in are listed here.";
 pub const NOTICES_READING: &str = "Reading the notifications…";
+/// The archived list of a workspace could not be read (ADR 0762).
+pub const ARCHIVED_NOTICES_NOT_READ: &str =
+    "The archived channels could not be read, so their notifications are not listed.";
 pub const NOTICE_NOT_READ: &str = "The message of this notification could not be read.";
 pub const SHOW_OLDER: &str = "Show older";
 pub const TODAY: &str = "Today";
@@ -2081,6 +2119,9 @@ pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search te
 pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
 pub const RESULT_GONE: &str = "The message is gone, or you can no longer read it.";
 pub const SEARCH_AGAIN: &str = "Search again";
+/// The archived list of a workspace could not be read (ADR 0762).
+pub const ARCHIVED_RESULTS_NOT_READ: &str =
+    "The archived channels could not be read, so their results are not listed.";
 pub const SHOW_MORE_RESULTS: &str = "Show more results";
 pub const READING_MORE_RESULTS: &str = "Reading more…";
 pub const SEARCH_MESSAGES: &str = "Messages";
@@ -2461,6 +2502,11 @@ pub const CAMERA: &str = "Camera";
 
 pub const DIRECT_CALL: &str = "Direct call";
 pub const CALLING: &str = "Calling…";
+
+/// "Calling Ada…": the stage of a direct-message call while it rings.
+pub fn calling(name: Option<&str>) -> String {
+    format!("Calling {}…", name.unwrap_or(UNKNOWN_PERSON))
+}
 pub const MISSED_CALL: &str = "Missed call";
 pub const DIRECT_CALL_DECLINED: &str = "Call declined";
 pub const DIRECT_CALL_CANCELLED: &str = "Call cancelled";

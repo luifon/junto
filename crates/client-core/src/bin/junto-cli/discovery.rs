@@ -663,6 +663,7 @@ mod tests {
             recording_id: None,
             line: None,
             place_id: uuid::Uuid::nil(),
+            workspace_id: None,
             author_id: AccountId::generate(),
             created_at: at,
             text: "the obsidian plan".to_owned(),

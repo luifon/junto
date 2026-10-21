@@ -14,7 +14,8 @@ Search results:
 
 - A result for a message states `position`, the position of the message in its channel or conversation, and `thread_root`, the root of its thread when the message is a reply.
 - A result for a transcript line states `start_ms`, the start of the line on the timeline of the recording.
-- The fields come from the rows that the search reads already. The rules of ADR 0409 for what a search returns do not change.
+- A result states `workspace_id`, the workspace of its channel, and none for a direct conversation. An archived channel is in no channel list and not in the snapshot (ADR 0410); with the workspace a client knows which archived list names the channel of the result (ADR 0762). The search joins the channels by the place of each result of the page.
+- The fields come from the rows that the search reads already, and the workspace from the channel of the place. The rules of ADR 0409 for what a search returns do not change.
 
 Lines of a transcript around a line:
 
@@ -45,6 +46,7 @@ Not built:
 
 - A client opens the history at a search result without reading the message first, and opens the thread of a result that is a reply.
 - A client shows the time of a transcript result and opens the transcript at that line.
+- A client places a result of an archived channel with one read of the archived list of its workspace.
 - A client draws up to three authors on the row of a thread.
 - A client lists the threads of a channel that the person follows, read or unread.
 - A thread whose replies were all deleted is in no list.

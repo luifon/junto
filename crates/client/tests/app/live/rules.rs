@@ -41,20 +41,30 @@ struct Scene {
     luca: AccountId,
     _directory: tempfile::TempDir,
     _server: crate::support::TestServer,
-    recipient_proxy: Option<crate::support::FaultProxy>,
+    proxy: Option<crate::support::FaultProxy>,
     seen_invitations: HashSet<CallInvitationId>,
 }
 
-fn scene(cx: &mut TestAppContext) -> Scene {
-    make_scene(cx, false)
+/// The device of the scene that reaches the server through a proxy, if one does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Proxied {
+    Nobody,
+    /// The device of Ada, who receives the invitations.
+    Recipient,
+    /// The window of Luca.
+    Window,
 }
 
-fn make_scene(cx: &mut TestAppContext, proxy_recipient: bool) -> Scene {
+fn scene(cx: &mut TestAppContext) -> Scene {
+    make_scene(cx, Proxied::Nobody)
+}
+
+fn make_scene(cx: &mut TestAppContext, proxied: Proxied) -> Scene {
     let world = World::new();
     let server = world.server_with_media("Acme Studio");
-    let recipient_proxy =
-        proxy_recipient.then(|| world.run(crate::support::FaultProxy::start(&server)));
-    let admin = if let Some(proxy) = &recipient_proxy {
+    let proxy =
+        (proxied != Proxied::Nobody).then(|| world.run(crate::support::FaultProxy::start(&server)));
+    let admin = if let (Proxied::Recipient, Some(proxy)) = (proxied, &proxy) {
         world.run(async {
             let device = crate::support::Device::new();
             let handle = device.add(&proxy.address()).await;
@@ -69,7 +79,11 @@ fn make_scene(cx: &mut TestAppContext, proxy_recipient: bool) -> Scene {
         world.owner(&server)
     };
     let caller = admin.caller(&world);
-    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let address = match (proxied, &proxy) {
+        (Proxied::Window, Some(proxy)) => proxy.address(),
+        _ => server.address(),
+    };
+    let (directory, mut window) = member(cx, &world, &address, &admin, "Luca");
     voice_channel(&world, &admin, &mut window, ROOM);
     let workspace_id = window.view().workspace().unwrap().id;
     let voice = room(&mut window).id;
@@ -91,7 +105,7 @@ fn make_scene(cx: &mut TestAppContext, proxy_recipient: bool) -> Scene {
         voice,
         _directory: directory,
         _server: server,
-        recipient_proxy,
+        proxy,
         seen_invitations: HashSet::new(),
     }
 }
@@ -160,6 +174,44 @@ impl Scene {
         invitation
     }
 
+    /// Ada enters the call of the other voice channel of the workspace, and the window
+    /// shows the person there. Returns the place of that call.
+    fn ada_enters_the_other_room(&mut self) -> CallTarget {
+        let destination = self.voice;
+        let source = self
+            .window
+            .channels()
+            .into_iter()
+            .find(|row| row.kind == ChannelKind::Voice && row.id != destination)
+            .unwrap()
+            .id;
+        let CallPlace::Channel { workspace_id, .. } = self.target.place else {
+            unreachable!("the room is a voice channel")
+        };
+        let source_target = CallTarget {
+            server_id: self.target.server_id,
+            place: CallPlace::Channel {
+                workspace_id,
+                channel_id: source,
+            },
+        };
+        enter(&self.world, &self.caller, source_target);
+        let person = self.ada;
+        self.window
+            .until("the other channel has the person", |window| {
+                window.shows_named(format!("occupant:{person}"))
+            });
+        source_target
+    }
+
+    /// Luca invites Ada with the keyboard, from the menu of the person.
+    fn invite_ada_with_the_keyboard(&mut self) {
+        self.window.click_named(format!("occupant:{}", self.ada));
+        self.window.press("shift-f10");
+        assert!(self.window.shows("menu-invite"));
+        self.window.press("down enter");
+    }
+
     /// Turns meeting mode on as the administrator. The server accepts it when its
     /// admission check has seen the share, a moment after the report of the share.
     fn ada_starts_a_meeting(&mut self) {
@@ -212,7 +264,7 @@ fn panel(window: &mut Window) -> Option<CallPanel> {
 }
 
 fn room_view(window: &mut Window) -> Option<RoomView> {
-    panel(window).map(|panel| panel.room)
+    panel(window).and_then(|panel| panel.room().cloned())
 }
 
 #[gpui::test]
@@ -624,6 +676,34 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     });
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert_eq!(meeting.hands, [(ada, Some("Ada".to_owned()))]);
+    // The presenter lowers the hand without letting Ada speak (ADR 0516): the block of her
+    // microphone stays.
+    let hand_of_ada = |window: &mut Window| {
+        voice_of(window)
+            .occupants
+            .into_iter()
+            .find(|occupant| occupant.account_id == ada)
+            .map(|occupant| occupant.hand_raised)
+    };
+    scene.window.click("meeting-lower-hand");
+    scene.window.until("the hand of Ada is lowered", |window| {
+        hand_of_ada(window) == Some(false)
+            && !window.shows("meeting-allow")
+            && !window.shows("meeting-lower-hand")
+    });
+    let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
+    assert!(meeting.hands.is_empty() && meeting.waiting.is_empty());
+    assert!(calls.view().call.is_some_and(|call| {
+        call.microphone_block
+            .is_some_and(|block| block.reason == BlockReason::Meeting)
+    }));
+    // Ada raises the hand again.
+    scene.world.run(api.raise_hand()).unwrap();
+    scene
+        .window
+        .until("the hand of Ada is shown again", |window| {
+            window.shows("meeting-allow") && window.shows("meeting-lower-hand")
+        });
     scene.window.click("meeting-allow");
     scene.window.until("Ada may speak", |window| {
         let view = calls.view();
@@ -682,8 +762,12 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     // person is told.
     scene.window.click("call-tab-members");
     scene.window.until("the members are listed", |window| {
-        panel(window)
-            .is_some_and(|panel| panel.outside.iter().any(|member| member.account_id == ada))
+        panel(window).is_some_and(|panel| {
+            panel
+                .outside()
+                .iter()
+                .any(|member| member.account_id == ada)
+        })
     });
     scene.window.click("invite-open");
     assert!(
@@ -824,6 +908,24 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
         ada_shown(window).is_some_and(|ada| !ada.sound_blocked && !ada.sound_off)
     });
 
+    // A moderator lowers the raised hand of Ada without meeting mode (ADR 0516). While no
+    // hand is raised, the item is drawn and does nothing.
+    scene.window.right_click_named(ada_row());
+    assert!(scene.window.shows("menu-lower-hand"));
+    scene.window.click("menu-lower-hand");
+    assert!(scene.window.shows("person-menu"));
+    scene.window.press("escape");
+    scene.world.run(api.raise_hand()).unwrap();
+    scene.window.until("the hand of Ada is raised", |window| {
+        ada_shown(window).is_some_and(|ada| ada.hand_raised)
+    });
+    scene.window.right_click_named(ada_row());
+    scene.window.click("menu-lower-hand");
+    assert!(!scene.window.shows("person-menu"));
+    scene.window.until("the hand of Ada is lowered", |window| {
+        ada_shown(window).is_some_and(|ada| !ada.hand_raised)
+    });
+
     // The move: the menu lists the other voice channels, and Ada is in the chosen one.
     scene.window.right_click_named(ada_row());
     scene.window.click("menu-move");
@@ -934,33 +1036,17 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
 fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
     cx: &mut TestAppContext,
 ) {
-    let mut scene = make_scene(cx, true);
+    let mut scene = make_scene(cx, Proxied::Recipient);
     scene.join_in_the_window();
     let destination = scene.voice;
-    let source = scene
-        .window
-        .channels()
-        .into_iter()
-        .find(|row| row.kind == ChannelKind::Voice && row.id != destination)
-        .unwrap()
-        .id;
-    let CallPlace::Channel { workspace_id, .. } = scene.target.place else {
-        unreachable!()
+    let source_target = scene.ada_enters_the_other_room();
+    let CallPlace::Channel {
+        channel_id: source, ..
+    } = source_target.place
+    else {
+        unreachable!("the other room is a voice channel")
     };
-    let source_target = CallTarget {
-        server_id: scene.target.server_id,
-        place: CallPlace::Channel {
-            workspace_id,
-            channel_id: source,
-        },
-    };
-    enter(&scene.world, &scene.caller, source_target);
     let person = scene.ada;
-    scene
-        .window
-        .until("the other channel has the person", |window| {
-            window.shows_named(format!("occupant:{person}"))
-        });
     let drag = |window: &mut Window, destination: ChannelId| {
         let from = window
             .cx
@@ -1018,8 +1104,8 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
     drag(&mut scene.window, destination);
     let invitation = scene.invitation_for_ada();
     assert_eq!(invitation.place, scene.target.place);
-    scene.recipient_proxy.as_ref().unwrap().block_streams(true);
-    scene.recipient_proxy.as_ref().unwrap().cut_streams();
+    scene.proxy.as_ref().unwrap().block_streams(true);
+    scene.proxy.as_ref().unwrap().cut_streams();
     scene
         .window
         .until("the recipient stream is interrupted", |_| {
@@ -1058,12 +1144,9 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
         next_invitation(&scene.admin.handle, &scene.seen_invitations).is_none(),
         "a resolved invitation still cached by its recipient must not be used for the next action"
     );
-    scene.recipient_proxy.as_ref().unwrap().block_streams(false);
+    scene.proxy.as_ref().unwrap().block_streams(false);
 
-    scene.window.click_named(format!("occupant:{person}"));
-    scene.window.press("shift-f10");
-    assert!(scene.window.shows("menu-invite"));
-    scene.window.press("down enter");
+    scene.invite_ada_with_the_keyboard();
     let invitation = scene.invitation_for_ada();
     assert_eq!(invitation.place, scene.target.place);
     scene
@@ -1112,6 +1195,64 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
                 .call
                 .is_some_and(|call| call.target == source_target && call.phase == Phase::Connected)
         });
+    scene.world.run(scene.caller.calls.leave());
+    scene.window.click("leave-call");
+}
+
+/// Ada declines while the answer of the server to the invitation is on its way to the
+/// window: the window learns that the invitation ended before it knows the invitation as
+/// its own. The decline is told when the answer arrives (ADR 0514).
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_decline_before_the_answer_to_the_invitation_is_told(cx: &mut TestAppContext) {
+    let mut scene = make_scene(cx, Proxied::Window);
+    scene.join_in_the_window();
+    scene.ada_enters_the_other_room();
+    let proxy = scene.proxy.take().unwrap();
+    proxy.hold_answer_ending("POST", "/call/invitations");
+    scene.invite_ada_with_the_keyboard();
+    let invitation = scene.invitation_for_ada();
+    let luca = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.client().servers())
+        .remove(0);
+    let holds = |handle: &junto_client_core::ServerHandle| {
+        handle.live().view().model.is_some_and(|model| {
+            model
+                .invitations
+                .iter()
+                .any(|held| held.id == invitation.id)
+        })
+    };
+    scene
+        .window
+        .until("the event stream of the window has the invitation", |_| {
+            holds(&luca)
+        });
+    scene
+        .world
+        .run(
+            scene
+                .admin
+                .handle
+                .api()
+                .refuse_call_invitation(invitation.id),
+        )
+        .unwrap();
+    scene
+        .window
+        .until("the event stream of the window has the decline", |_| {
+            !holds(&luca)
+        });
+    scene.window.settle();
+    assert_eq!(proxy.answers_waiting(), 1);
+    assert!(!scene.window.shows("call-told"));
+    proxy.release();
+    scene
+        .window
+        .until("the decline is told", |window| window.shows("call-told"));
+    scene.window.click("dismiss-call-told");
     scene.world.run(scene.caller.calls.leave());
     scene.window.click("leave-call");
 }

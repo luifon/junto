@@ -39,7 +39,7 @@ Outside the workspace:
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
   - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a push after a review by a maintainer.
-- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes and scheduled tasks that a test must not leave behind.
+- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes and scheduled tasks that a test must not leave behind, ADR 0916 the window tests and the start check on macOS.
 - `docs/step-0/README.md` lists the technical tests of step 0 (ADR 0903).
 
 ## Documents for people who install Junto
@@ -58,6 +58,7 @@ Until then: `packaging/README.md` describes the release tooling, the keys and th
 
 The files that install a server with Docker Compose. `deploy/README.md` lists each file; the decisions are in ADR 0003, 0004, 0014, 0015, 0016, 0018, 0021 and 0022.
 
+- `livekit-common.yaml`: the settings of the media server that do not depend on the host. Every form repeats them, and every test server of `tools/` adds the file (ADR 0904).
 - Compose files: `base.yaml` (each service, not used alone), `one-host.yaml`, `two-hosts-data.yaml` with `two-hosts-public.yaml`, `local.yaml` (one machine without DNS names and TLS, for a trial and for the tests), `worker-gpu.yaml`, `restore-images.yaml`.
 - `env.example`: every setting. A deployment copies it to `.env`, which is not tracked.
 - Scripts: `generate-secrets.sh`, `check-limits.sh`, `backup.sh`, `restore.sh`, `upgrade-undo.sh`, `database-user.sh`.
@@ -72,13 +73,14 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
 
 - `tools/serial.sh <command>`: runs one heavy command at a time on the machine, with a shared lock file, at a lower priority. Run `cargo build`, `cargo test`, `cargo clippy` and Docker runs through it when other work shares the machine. `JUNTO_HEAVY_LOCK` names another lock file.
 - `tools/with-test-postgres.sh <command>`: starts a temporary PostgreSQL in Docker, gives the command `JUNTO_TEST_DATABASE_URL`, and removes the container with its volume. After a failure it prints the container state and its logs. `JUNTO_TEST_POSTGRES_CONTAINER` names the container (default `junto-dev-postgres`).
-- `tools/with-test-livekit.sh <command>`: starts a temporary LiveKit server in development mode and removes it. It gives the command `JUNTO_TEST_LIVEKIT_API_URL`, `JUNTO_TEST_LIVEKIT_URL`, `JUNTO_TEST_LIVEKIT_API_KEY`, `JUNTO_TEST_LIVEKIT_API_SECRET`, `JUNTO_TEST_WEBHOOK_ADDRESS` and `JUNTO_TEST_LIVEKIT_CONTAINER`. Its settings: `JUNTO_TEST_LIVEKIT_CONTAINER` (default `junto-dev-livekit`), `JUNTO_TEST_LIVEKIT_PORT`, `JUNTO_TEST_LIVEKIT_TCP_PORT` and `JUNTO_TEST_LIVEKIT_UDP_PORT` (defaults 17880, 17881, 17882), `JUNTO_TEST_WEBHOOK_ADDRESS` (default `127.0.0.1:17890`; on Linux an address of the machine that the container reaches), `JUNTO_TEST_LIVEKIT_CPUS`, `JUNTO_TEST_LIVEKIT_MEMORY`, and `JUNTO_TEST_LIVEKIT_DEPLOYMENT_LAYERS=1`, which gives the camera layers the setting of the deployment (the layout tests set it, ADR 0609).
+- `tools/with-test-livekit.sh <command>`: starts a temporary LiveKit server in development mode and removes it. It gives the command `JUNTO_TEST_LIVEKIT_API_URL`, `JUNTO_TEST_LIVEKIT_URL`, `JUNTO_TEST_LIVEKIT_API_KEY`, `JUNTO_TEST_LIVEKIT_API_SECRET`, `JUNTO_TEST_WEBHOOK_ADDRESS` and `JUNTO_TEST_LIVEKIT_CONTAINER`. Its settings: `JUNTO_TEST_LIVEKIT_CONTAINER` (default `junto-dev-livekit`), `JUNTO_TEST_LIVEKIT_PORT`, `JUNTO_TEST_LIVEKIT_TCP_PORT` and `JUNTO_TEST_LIVEKIT_UDP_PORT` (defaults 17880, 17881, 17882), `JUNTO_TEST_WEBHOOK_ADDRESS` (default `127.0.0.1:17890`; on Linux an address of the machine that the container reaches), `JUNTO_TEST_LIVEKIT_CPUS` and `JUNTO_TEST_LIVEKIT_MEMORY`. The server has the settings of `deploy/livekit-common.yaml`, as every form of the deployment has (ADR 0904).
 - Two checkouts that run tests on one machine at the same time each set their own value of these six variables: `JUNTO_TEST_POSTGRES_CONTAINER`, `JUNTO_TEST_LIVEKIT_CONTAINER`, `JUNTO_TEST_LIVEKIT_PORT`, `JUNTO_TEST_LIVEKIT_TCP_PORT`, `JUNTO_TEST_LIVEKIT_UDP_PORT` and `JUNTO_TEST_WEBHOOK_ADDRESS`.
 - `tools/linux-container.sh <command>`: runs a command in the Linux build image (`tools/linux/Dockerfile`, ADR 0750), with its own PostgreSQL, LiveKit and PipeWire. It takes the lock of `tools/serial.sh` itself; do not wrap it in `tools/serial.sh`.
 - `tools/dev-server.sh`: a development server with a temporary database; it prints the address and the one-time owner code. `--media` also starts LiveKit.
 - `tools/check-pins.sh`: fails when a version that two files state differs between them, or when an image, a CI action, a Debian package of an image or a package that a workflow installs is not pinned (ADR 0014, ADR 0905).
 - `tools/process_usage.py <path>`: reads the memory, the processor time and the threads of every process whose executable is under a path, by the method of the `modes` target, to compare another application with the client (ADR 0914).
 - `tools/check-condition-wait.sh` (ADR 0786), `tools/check-client-start.sh` (a native start of the client with an empty data directory), `tools/native-devices.sh` (ADR 0913).
+- `tools/with_native_postgres.py <command>`: on macOS, starts the PostgreSQL build for macOS without Docker, of the version and SHA-256 in `tools/ci/pins.sh`, gives the command `JUNTO_TEST_DATABASE_URL`, and removes the database. The macOS CI job runs the window tests with it (ADR 0916). `JUNTO_TEST_POSTGRES_DOWNLOADS` names the folder of the download (default `~/.cache/junto-postgres`).
 - `tools/linux/`: the Linux build image and its runner. `tools/windows/`: the setup and the lock of the Windows CI machine, and PostgreSQL for the window tests on Windows (ADR 0912).
 
 ## Continuous integration: `tools/ci/` (ADR 0905)
@@ -92,7 +94,7 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
 - `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.
-- The Linux job runs format, clippy, the workspace build and suite, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target and run the tests that need no database; macOS also runs the media unit tests and the signing and update checks; Windows also runs the check of the Windows package and the window tests with PostgreSQL.
+- The Linux job runs format, clippy, the workspace build and suite, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with PostgreSQL; macOS also runs the media unit tests, the signing and update checks, and the start of the bundle of the client build until its first frame; Windows also runs the check of the Windows package.
 
 ## `vendor/`
 
@@ -150,7 +152,7 @@ Run each heavy command through `tools/serial.sh` when other work shares the mach
   - `rehearsal`: against a deployment installed with `docs/install.md` ("Trial on one machine"), with `JUNTO_REHEARSAL_ADDRESS`, `JUNTO_REHEARSAL_OWNER_CODE_FILE`, `JUNTO_REHEARSAL_SPEECH` and `JUNTO_REHEARSAL_WORK`. See `crates/client/tests/rehearsal/main.rs`.
   - Native device stages (ADR 0913): `JUNTO_TEST_NATIVE_DEVICES=1 tools/native-devices.sh <stage>`. They open real devices and need a person at the machine and the BlackHole virtual sound device; a permission request also needs `JUNTO_TEST_PERMISSION_REQUEST`. The stages that start services need the six variables above. See `crates/media/tests/native/README.md`.
 
-- **Other tests.** The Python unit tests of `packaging/`, `tools/ci/`, `tools/linux/` and `tools/windows/` (`python3 -m unittest discover -s <directory> -p "test_*.py"`), `python3 tools/test_test_services.py` and `python3 tools/test_process_usage.py`; the deployment tests in `deploy/README.md`; the transcription worker and the layout page through their CI scripts in `tools/ci/`.
+- **Other tests.** The Python unit tests of `packaging/`, `tools/ci/`, `tools/linux/` and `tools/windows/` (`python3 -m unittest discover -s <directory> -p "test_*.py"`), `python3 tools/test_test_services.py`, `python3 tools/test_with_native_postgres.py` and `python3 tools/test_process_usage.py`; the deployment tests in `deploy/README.md`; the transcription worker and the layout page through their CI scripts in `tools/ci/`.
 
 ## Before a commit
 
