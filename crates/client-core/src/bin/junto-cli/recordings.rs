@@ -297,7 +297,7 @@ async fn perform(
             let text = arguments
                 .value("text")
                 .ok_or_else(|| usage("--text <corrected text> is missing"))?;
-            let corrected = api.correct_transcript_line(recording(1)?, position, text);
+            let corrected = api.correct_transcript_line(recording(1)?, position, text, None);
             line_lines(&corrected.await.map_err(failed)?)
         }
         "rename-speaker" => {
@@ -307,7 +307,7 @@ async fn perform(
             let name = arguments
                 .value("name")
                 .ok_or_else(|| usage("--name <name of the voice> is missing"))?;
-            let renamed = api.rename_transcript_speaker(recording(1)?, number, name);
+            let renamed = api.rename_transcript_speaker(recording(1)?, number, name, None);
             vec![speaker_line(&renamed.await.map_err(failed)?)]
         }
         "download" => {

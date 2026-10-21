@@ -8,6 +8,7 @@ use gpui::Context;
 use junto_client_core::api::ErrorCategory;
 use junto_client_core::flow::FlowError;
 use junto_client_core::live::LoadError;
+use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
     ChannelId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId,
 };
@@ -517,12 +518,21 @@ impl AppState {
         }
         self.known.recording_refused.remove(&key);
         let api = server.api();
+        let owner = self.owner_of(server_id);
         cx.spawn(async move |this, cx| {
             let removed = api.remove_recording(recording_id).await;
             let _ = this.update(cx, |this, cx| {
+                // The answer to a request of the owner before is told to nobody (ADR 0745).
+                if this.owner_of(server_id) != owner {
+                    return;
+                }
                 this.known.recordings_removing.remove(&key);
                 if let Err(error) = removed {
                     let reason = match error.category() {
+                        // The channel was archived after the control was drawn.
+                        _ if error.code() == Some(ErrorCode::ChannelArchived) => {
+                            text::flow_error(&FlowError::from(&error))
+                        }
                         Some(ErrorCategory::NotAllowed) => {
                             text::RECORDING_REMOVE_NOT_ALLOWED.to_owned()
                         }

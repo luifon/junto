@@ -4,8 +4,8 @@ use junto_client_core::Reach;
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::StreamStatus;
 use junto_client_core::model::{
-    AdminModel, AdminPart, Collection, LoadFailure, PlaceId, Reading, ServerModel, Timeline,
-    WorkspaceSettings,
+    AdminModel, AdminPart, Collection, GlossaryList, LoadFailure, PlaceId, Reading, ServerModel,
+    Timeline, WorkspaceSettings,
 };
 use junto_client_core::protocol::account::OwnAccount;
 use junto_client_core::protocol::discovery::Retention;
@@ -297,6 +297,7 @@ fn a_member_without_permissions_has_the_pages_that_every_member_may_use() {
             AdminPage::Archive,
             AdminPage::Members,
             AdminPage::Recordings,
+            AdminPage::Glossary,
             AdminPage::Tokens,
             AdminPage::Exports
         ]
@@ -360,6 +361,7 @@ fn an_administrator_and_the_owner_have_every_page() {
         AdminPage::Members,
         AdminPage::Notifications,
         AdminPage::Recordings,
+        AdminPage::Glossary,
         AdminPage::Exports,
     ];
     let mut scene = scene();
@@ -1165,6 +1167,100 @@ fn every_member_has_the_page_of_the_recordings_of_the_shown_workspace() {
     assert!(!pages(&nav).contains(&AdminPage::Recordings));
     assert_eq!(selected, AdminPage::Workspaces);
     assert!(matches!(page, ServerPage::Workspaces(_)));
+}
+
+#[test]
+fn every_member_reads_the_glossary_and_the_page_tells_why_it_takes_no_change() {
+    let mut scene = scene();
+    let studio = Some(scene.studio);
+    let model = scene.model();
+    let open = AdminOpen::Server {
+        server_id: scene.server_id,
+        page: AdminPage::Glossary,
+    };
+    assert_eq!(
+        needs(&open, &model, studio),
+        [AdminPart::Glossary(scene.studio)]
+    );
+    assert!(needs(&open, &model, None).is_empty());
+    let glossary = |scene: &Scene, admin: &AdminState| match derive(
+        &[scene.server()],
+        &Selection::default(),
+        &Scene::known(),
+        admin,
+        open,
+    )
+    .unwrap()
+    .scope
+    {
+        Scope::Server {
+            page: ServerPage::Glossary(page),
+            ..
+        } => page,
+        other => panic!("the glossary page was not shown: {other:?}"),
+    };
+    let text = crate::text::admin::glossary::NOT_READ;
+    let page = glossary(&scene, &AdminState::default());
+    assert_eq!(page.terms, Listed::Loading);
+    assert_eq!(page.workspace_name, "Studio");
+    // A member reads it without "manage glossary".
+    assert_eq!(
+        page.held(),
+        Some(crate::text::admin::glossary::MANAGE_NEEDS)
+    );
+    scene.lead_holds(&[WorkspacePermission::ManageGlossary]);
+    assert_eq!(glossary(&scene, &AdminState::default()).held(), Some(text));
+
+    let terms = vec!["Quorvex".to_owned(), "Lumitrax".to_owned()];
+    scene.admin.glossaries = vec![(
+        scene.studio,
+        Collection::Loaded(GlossaryList {
+            terms: terms.clone(),
+            cut: false,
+        }),
+    )];
+    let page = glossary(&scene, &AdminState::default());
+    assert_eq!(page.terms, Listed::Loaded(terms.clone()));
+    assert_eq!(page.held(), None);
+
+    // After a change of the person, the page shows the list of its answer until the state
+    // shows a read that started after the answer arrived.
+    let answered_at = std::time::Instant::now();
+    let admin = AdminState {
+        glossary_answered: Some(crate::state::admin::glossary::Answered {
+            server_id: scene.server_id,
+            workspace_id: scene.studio,
+            terms: vec!["Quorvex".to_owned()],
+            at: answered_at,
+        }),
+        ..AdminState::default()
+    };
+    let part = AdminPart::Glossary(scene.studio);
+    let read = |shown| junto_client_core::model::ReadTimes {
+        started: shown,
+        shown,
+    };
+    for shown in [None, Some(answered_at)] {
+        scene.admin.read_times = vec![(part, read(shown))];
+        let page = glossary(&scene, &admin);
+        assert_eq!(page.terms, Listed::Loaded(vec!["Quorvex".to_owned()]));
+        assert_eq!(page.held(), None);
+    }
+    let later = answered_at + std::time::Duration::from_millis(1);
+    scene.admin.read_times = vec![(part, read(Some(later)))];
+    assert_eq!(
+        glossary(&scene, &admin).terms,
+        Listed::Loaded(terms.clone())
+    );
+
+    // A list that the client holds in part takes no change.
+    scene.admin.glossaries = vec![(
+        scene.studio,
+        Collection::Loaded(GlossaryList { terms, cut: true }),
+    )];
+    let page = glossary(&scene, &AdminState::default());
+    assert!(page.cut);
+    assert_eq!(page.held(), Some(crate::text::admin::glossary::CUT));
 }
 
 /// A page of the channels: "x" without a category, which the person manages, and the

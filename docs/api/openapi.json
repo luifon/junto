@@ -9965,7 +9965,7 @@
         "tags": [
           "recordings"
         ],
-        "summary": "Replaces the glossary of a workspace. The caller holds `manage_glossary`. The speech\nmodel reads the first terms that fit in its limit; a transcript states which terms it\nused (ADR 0613).",
+        "summary": "Replaces the glossary of a workspace. The caller holds `manage_glossary`. The speech\nmodel reads the first terms that fit in its limit; a transcript states which terms it\nused (ADR 0613). With `replaces`, the glossary is replaced only while it holds exactly\nthose terms; otherwise the answer is `conflict` and nothing changes (ADR 0607).",
         "operationId": "set_glossary",
         "parameters": [
           {
@@ -14122,6 +14122,13 @@
           "text"
         ],
         "properties": {
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text of the line that the caller read: the newest correction, or the text of\nthe worker. When given, the server stores the correction only while the line shows\nthis text, and answers `conflict` otherwise, so that a correction made from an older\ntext does not replace a correction of another person without a word (ADR 0607)."
+          },
           "text": {
             "type": "string",
             "description": "The corrected text: 1 to 2000 characters without control characters."
@@ -14591,6 +14598,7 @@
           "exceeds_own_permissions",
           "not_found",
           "conflict",
+          "channel_archived",
           "last_device",
           "limit_reached",
           "key_already_registered",
@@ -16625,6 +16633,13 @@
           "name": {
             "type": "string",
             "description": "The name of the voice: 1 to 64 characters."
+          },
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the voice that the caller read: a name, or `null` for a voice without a\nname. When given, the server stores the name only while the voice has this name, and\nanswers `conflict` otherwise (ADR 0607). Absent: the name is stored in any case."
           }
         }
       },
@@ -17292,6 +17307,16 @@
           "terms"
         ],
         "properties": {
+          "replaces": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The terms that the caller read and changed. When given, the server replaces the\nglossary only while it still holds exactly these terms in this order, and answers\n`conflict` otherwise, so that a change made from an older list does not undo a\nchange of another person (ADR 0607)."
+          },
           "terms": {
             "type": "array",
             "items": {

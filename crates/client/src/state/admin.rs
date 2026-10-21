@@ -2,6 +2,7 @@
 //! open, which collections of the client core that page needs, and the one request of
 //! the person that is on its way or was refused.
 
+pub(crate) mod glossary;
 mod moves;
 mod notifications;
 mod overrides;
@@ -62,6 +63,8 @@ pub enum AdminPage {
     Notifications,
     /// The recordings of the shown workspace that the account can see (ADR 0784).
     Recordings,
+    /// The glossary of the shown workspace (ADR 0616). Every member reads it.
+    Glossary,
     /// The exports of the person.
     Exports,
 }
@@ -151,6 +154,13 @@ pub enum AskKind {
     /// A file is read and sent as the logo of the server (ADR 0101).
     SetLogo,
     RemoveLogo,
+    /// A term is added at the end of the glossary of the shown workspace (ADR 0616).
+    AddTerm,
+    /// The term at this position of the glossary is changed, removed, or moved by one
+    /// place.
+    ChangeTerm(u32),
+    RemoveTerm(u32),
+    MoveTerm(u32),
     /// The largest file and the number of files of a message (ADR 0408).
     AttachmentLimits,
 }
@@ -227,6 +237,9 @@ pub struct AdminState {
     /// The roles whose permissions the person changed and whose change the state does
     /// not show yet (ADR 0791).
     pub(crate) role_changes: roles::RoleChanges,
+    /// The glossary that the answer to the last change of the person carried, while the
+    /// state shows no read of it that started after the answer (ADR 0616).
+    pub(crate) glossary_answered: Option<glossary::Answered>,
     /// The moves of channels that the person sent and that the state does not show yet.
     pub(crate) channel_moves: moves::ChannelMoves,
 }
@@ -260,6 +273,7 @@ impl AdminState {
             // The list of the recordings belongs to its page. A late answer finds no
             // list that waits for it.
             self.recordings = recordings::RecordingList::default();
+            self.glossary_answered = None;
             self.channel_moves.release();
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
@@ -277,6 +291,7 @@ impl AdminState {
         self.made = None;
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
+        self.glossary_answered = None;
         self.channel_moves.release();
     }
 
@@ -486,6 +501,7 @@ impl AppState {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
         self.settle_role_changes();
+        self.settle_glossary_answered();
         self.settle_channel_moves();
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();

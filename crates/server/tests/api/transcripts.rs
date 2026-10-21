@@ -365,6 +365,42 @@ async fn voices_in_shared_sound_get_labels_that_a_person_renames() {
             .error(ErrorCode::InvalidRequest);
     }
 
+    // A name made from an older name, or from no name when the voice has one, is refused
+    // and stores nothing; one made from the name of now is stored.
+    let names = server.count("transcript_speaker_names").await;
+    for older in [json!("Noor"), json!(null)] {
+        server
+            .put(ben, &rename, &json!({ "name": "Other", "replaces": older }))
+            .await
+            .error(ErrorCode::Conflict);
+    }
+    server
+        .put(
+            ben,
+            &path(id, "/speakers/2"),
+            &json!({ "name": "Other", "replaces": "Someone" }),
+        )
+        .await
+        .error(ErrorCode::Conflict);
+    assert_eq!(server.count("transcript_speaker_names").await, names);
+    let unnamed: TranscriptSpeaker = server
+        .put(
+            ben,
+            &path(id, "/speakers/2"),
+            &json!({ "name": "Rafa", "replaces": null }),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(unnamed.name.as_deref(), Some("Rafa"));
+    server
+        .put(
+            ben,
+            &path(id, "/speakers/2"),
+            &json!({ "name": "Speaker 2", "replaces": "Rafa" }),
+        )
+        .await
+        .ok::<TranscriptSpeaker>(StatusCode::OK);
+
     let text = server.get(ben, &path(id, "/text")).await;
     assert_eq!(text.status, StatusCode::OK);
     assert_eq!(
@@ -1269,6 +1305,55 @@ async fn a_line_is_corrected_by_every_person_who_reads_the_recording() {
     let text = server.get(ben, &path(id, "/text")).await.text();
     assert!(text.contains(": Can everyone hear me?\n"), "{text}");
     assert!(text.contains(": Good morning everyone.\n"), "{text}");
+}
+
+#[tokio::test]
+async fn a_correction_made_from_an_older_text_is_refused_and_changes_nothing() {
+    let worker = FakeWorker::new();
+    let studio = Studio::on(worker.server().await).await;
+    let scene = &studio.scene;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let done = studio.finished_after(length()).await;
+    let id = done.recording.id;
+    worker.give(&two_lines(&done));
+    assert!(server.transcribe().await);
+    let line = path(id, "/lines/1");
+
+    // A correction from the text of the worker, as the line shows it, is stored.
+    server
+        .put(
+            ben,
+            &line,
+            &json!({ "text": "Can you all hear me?", "replaces": "Can you hear me?" }),
+        )
+        .await
+        .ok::<TranscriptLine>(StatusCode::OK);
+    // A second correction from the same older text would hide the first one without a
+    // word: it is refused, and nothing is stored or told.
+    let (events, corrections) = (
+        server.count("events").await,
+        server.count("transcript_corrections").await,
+    );
+    server
+        .put(
+            ann,
+            &line,
+            &json!({ "text": "Can everyone hear me?", "replaces": "Can you hear me?" }),
+        )
+        .await
+        .error(ErrorCode::Conflict);
+    assert_eq!(server.count("events").await, events);
+    assert_eq!(server.count("transcript_corrections").await, corrections);
+    // From the text that the line shows now, it is stored.
+    let stored: TranscriptLine = server
+        .put(
+            ann,
+            &line,
+            &json!({ "text": "Can everyone hear me?", "replaces": "Can you all hear me?" }),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(stored.text, "Can everyone hear me?");
 }
 
 #[tokio::test]

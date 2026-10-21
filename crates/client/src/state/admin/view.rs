@@ -3,6 +3,7 @@
 //! of the open page. The server decides every request; a page shows as possible what the
 //! server stated that the person holds (ADR 0310).
 
+pub mod glossary;
 pub mod notifications;
 pub mod overrides;
 pub mod people;
@@ -398,6 +399,7 @@ pub enum ServerPage {
     /// In a box: the page with its filters is larger than every other page.
     AuditLog(Box<records::AuditPage>),
     Recordings(recordings::RecordingsPage),
+    Glossary(glossary::GlossaryPage),
     /// The server roles, or the roles of the shown workspace.
     Roles(roles::RolesPage),
 }
@@ -522,6 +524,8 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
             pages.push(AdminPage::Notifications);
         }
         pages.push(AdminPage::Recordings);
+        // Every member reads the glossary; "manage glossary" changes it (ADR 0603).
+        pages.push(AdminPage::Glossary);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
             pages,
@@ -599,6 +603,7 @@ pub fn needs(
             }
             // A recording of an archived channel is named by the archived list.
             AdminPage::Recordings => workspace_id.map(AdminPart::Archived).into_iter().collect(),
+            AdminPage::Glossary => workspace_id.map(AdminPart::Glossary).into_iter().collect(),
             AdminPage::Members => {
                 let mut parts = Vec::new();
                 if administrator {
@@ -961,6 +966,9 @@ pub fn derive(
                 (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
                     recordings::recordings(server_id, model, workspace, known, admin),
                 ),
+                (AdminPage::Glossary, Some(workspace)) => {
+                    ServerPage::Glossary(glossary::derive(server_id, model, workspace, admin))
+                }
                 (AdminPage::Server, _) => {
                     ServerPage::Server(server::settings(server, model, known))
                 }
@@ -997,7 +1005,8 @@ pub fn derive(
                     | AdminPage::Archive
                     | AdminPage::Members
                     | AdminPage::Notifications
-                    | AdminPage::Recordings,
+                    | AdminPage::Recordings
+                    | AdminPage::Glossary,
                     _,
                 ) => ServerPage::Workspaces(workspaces_page(
                     model,
