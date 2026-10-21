@@ -11,6 +11,15 @@ LAUNCHER = Path(__file__).with_name("run-as-user.sh")
 
 
 class UserLauncher(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux" and os.getuid() == 0, "needs a root Linux container")
+    def test_camera_checks_keep_only_the_explicit_device_groups(self):
+        result = subprocess.run([
+            LAUNCHER, "1000", "1000", "--", sys.executable, "-c",
+            "import os; assert os.getuid()==1000 and os.getgid()==1000; assert os.getgroups()==[44,45]",
+        ], env=dict(os.environ, JUNTO_TEST_CAMERA_DEVICE="1", JUNTO_LINUX_CAMERA_GROUPS="44,45"),
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_root_is_rejected(self):
         result = subprocess.run([LAUNCHER, "0", "0", "--", "true"], capture_output=True)
         self.assertEqual(result.returncode, 2)

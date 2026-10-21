@@ -58,10 +58,18 @@ tests need permissions and must never select a physical sound output by fallback
   when the screen permission is missing.
 - Captured media is analyzed in memory. Results keep counts, dimensions, timings
   and signal measurements, without saving microphone, camera or desktop recordings.
+- The `camera-device` example extends the explicit factory checks to Windows and Linux.
+  `--list` opens no capture. Capturing requires `JUNTO_TEST_CAMERA_DEVICE=1`, uses an
+  explicitly selected listed device, and checks thirty frames against the dimensions
+  of the production stream. It requests no permission dialog and saves no pictures.
+  The optional `rust-linux-devices` job of ADR 0905 authorizes this step explicitly;
+  ordinary CI and its ignored tests retain synthetic devices. Linux device passthrough
+  exposes only video character devices and their groups. The streaming API requires
+  read/write device access even though the test only captures pictures.
 
 ## Consequences
 
 Native stages require an operator, installed virtual audio and a visible desktop.
-They are separate from CI and from generated-media regression tests. Native results
+They are separate from default CI and from generated-media regression tests. Native results
 do not establish packaged-app permission identity, acoustic quality, physical
 device reconnection or behavior on other operating systems.

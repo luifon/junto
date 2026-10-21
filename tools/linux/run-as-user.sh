@@ -21,6 +21,11 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 chown "$uid:$gid" "$user_home"
+if [ "${JUNTO_TEST_CAMERA_DEVICE:-}" = 1 ]; then
+    groups=${JUNTO_LINUX_CAMERA_GROUPS:?camera device groups required}
+    case "$groups" in *[!0-9,]*|,*|*,|*,,*) echo 'numeric camera groups required' >&2; exit 2 ;; esac
+    exec setpriv --reuid="$uid" --regid="$gid" --groups="$groups" env HOME="$user_home" "$@"
+fi
 # The layout job controls only its own test service through the mounted Docker socket.
 if [ -S /var/run/docker.sock ]; then
     exec setpriv --reuid="$uid" --regid="$gid" --groups="$(stat -c %g /var/run/docker.sock)" \

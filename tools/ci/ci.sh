@@ -29,6 +29,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # The jobs of each runner. A commit has passed CI when its latest run on each runner has
 # finished with every job of this list passed.
 linux_jobs="rust-linux licences transcription-worker layout-page"
+linux_optional_jobs="rust-linux-devices"
 macos_jobs="rust-macos deployment"
 windows_jobs="rust-windows"
 runners="linux macos windows"
@@ -355,6 +356,7 @@ run_remote() {
     started=""
     for runner in linux windows; do
         wanted=$(jobs_of "$runner") picked=""
+        if [ "$runner" = linux ]; then wanted="$wanted $linux_optional_jobs"; fi
         for job in "$@"; do
             case " $wanted " in *" $job "*) picked="$picked $job" ;; esac
         done
