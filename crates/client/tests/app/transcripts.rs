@@ -16,7 +16,7 @@ use junto_client::state::recorded::{
     CardDetail, CardState, JobShown, LineRow, RecordingCard, TranscriptRequest, TranscriptShown,
     When, line_row,
 };
-use junto_client::state::view::TranscriptPanelState;
+use junto_client::state::view::{RecordingShown, TranscriptPanelState};
 use junto_client::text;
 use junto_client_core::ServerHandle;
 use junto_client_core::flow::access::AccessAction;
@@ -992,4 +992,182 @@ fn the_answer_to_a_request_of_a_removed_account_is_told_to_nobody(cx: &mut TestA
     let card = window.recording_card(recording_id).unwrap();
     assert_eq!(card.refused, None);
     assert_eq!(card.request, TranscriptRequest::Allowed { sending: false });
+}
+
+/// The sizes of the call window at which its recording control is checked: the narrowest
+/// window at the default scale and at the largest scale, and a wide window.
+const CALL_WINDOW_SIZES: [(f32, u32); 3] = [(480.0, 100), (480.0, 150), (800.0, 100)];
+
+/// The parts of the recording control of a call. Each one that is drawn lies inside the
+/// window, apart from the window controls, the buttons of the panel and the other parts.
+const RECORDING_PARTS: [&str; 7] = [
+    "recording-indicator",
+    "start-recording",
+    "cancel-recording",
+    "stop-recording",
+    "recording-failed",
+    "recording-details",
+    "no-record-permission",
+];
+
+const HEADER_BUTTONS: [&str; 6] = [
+    "call-on-top",
+    "return-call",
+    "call-fullscreen",
+    "open-call-chat",
+    "open-call-members",
+    "open-call-settings",
+];
+
+/// Checks the recording control of the call window at each size of [`CALL_WINDOW_SIZES`],
+/// and that the panel of the call has the place that it had at that size in the states
+/// checked before (ADR 0730).
+fn recording_control_fits(
+    what: &str,
+    window: &mut Window,
+    call: &mut Window,
+    panels: &mut HashMap<(u32, u32), gpui::Bounds<gpui::Pixels>>,
+) {
+    for (width, scale) in CALL_WINDOW_SIZES {
+        window
+            .state
+            .update(&mut window.cx, |state, cx| state.set_scale(scale, cx));
+        call.cx.simulate_resize(gpui::size(px(width), px(640.0)));
+        call.settle();
+        let shown = call.cx.update(|window, _| window.viewport_size().width);
+        let bounds = |call: &mut Window, selectors: &[&'static str]| {
+            selectors
+                .iter()
+                .filter_map(|selector| {
+                    call.cx
+                        .debug_bounds(selector)
+                        .map(|bounds| (*selector, bounds))
+                })
+                .collect::<Vec<_>>()
+        };
+        let parts = bounds(call, &RECORDING_PARTS);
+        assert!(
+            !parts.is_empty(),
+            "{what}: no part of the recording control"
+        );
+        let buttons = bounds(call, &HEADER_BUTTONS);
+        for (part, drawn) in &parts {
+            assert!(
+                drawn.left() >= px(0.0) && drawn.right() <= shown,
+                "{what} at {width} and {scale}%: {part} {drawn:?} is outside the window"
+            );
+            for (button, held) in &buttons {
+                assert!(
+                    !drawn.intersects(held),
+                    "{what} at {width} and {scale}%: {part} {drawn:?} lies on {button} {held:?}"
+                );
+            }
+            for (other, beside) in &parts {
+                assert!(
+                    other == part || !drawn.intersects(beside),
+                    "{what} at {width} and {scale}%: {part} {drawn:?} lies on {other} {beside:?}"
+                );
+            }
+        }
+        let panel = call.cx.debug_bounds("call-panel").unwrap();
+        let held = *panels.entry((width as u32, scale)).or_insert(panel);
+        assert_eq!(
+            held, panel,
+            "{what} at {width} and {scale}%: the panel of the call moved"
+        );
+    }
+}
+
+#[gpui::test]
+fn the_recording_control_of_the_call_window_fits_beside_its_buttons_in_every_state(
+    cx: &mut TestAppContext,
+) {
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        voice,
+        workspace_id,
+        _directory,
+        ..
+    } = scene(cx);
+    window.click_channel("Daily");
+    let seat = world.run(server.enter(voice, &luca, false));
+    show_own_call(&mut window, &seat, workspace_id, voice);
+    window.until("the call is drawn", |window| window.shows("detach-call"));
+    window.click("detach-call");
+    let mut call = window.call_window();
+    call.click("open-call-chat");
+    call.until("the panel of the call is open", |call| {
+        call.shows("call-panel")
+    });
+    let mut panels = HashMap::new();
+
+    call.until("the person may not record", |call| {
+        call.shows("no-record-permission")
+    });
+    recording_control_fits("no permission", &mut window, &mut call, &mut panels);
+
+    give_everyone(
+        &world,
+        &admin,
+        workspace_id,
+        WorkspacePermission::RecordCalls,
+    );
+    call.until("the person may record", |call| {
+        call.shows("start-recording") && !call.shows("no-record-permission")
+    });
+    recording_control_fits("may record", &mut window, &mut call, &mut panels);
+
+    call.click("start-recording");
+    call.click("record-language:auto");
+    call.until("the recorder starts the recording", |call| {
+        call.shows("cancel-recording") && call.shows("recording-indicator")
+    });
+    recording_control_fits("starting", &mut window, &mut call, &mut panels);
+
+    world.run(server.tend());
+    call.until("the recording runs", |call| call.shows("stop-recording"));
+    recording_control_fits("running", &mut window, &mut call, &mut panels);
+
+    call.click("stop-recording");
+    let stopped = |world: &World| {
+        recording_of(world, &admin, workspace_id).is_some_and(|(_, _, stopped)| stopped)
+    };
+    call.until("the server takes the stop", |_| stopped(&world));
+    call.until("the window shows that the recording stops", |call| {
+        call.view()
+            .lists()
+            .and_then(|lists| lists.call.clone())
+            .is_some_and(|panel| {
+                panel.channel().is_some_and(|channel| {
+                    matches!(
+                        channel.recording.state,
+                        RecordingShown::Running { stopping: true, .. }
+                    )
+                })
+            })
+    });
+    recording_control_fits("stopping", &mut window, &mut call, &mut panels);
+    world.run(server.settle_recordings());
+    call.until("the recording no longer runs", |call| {
+        !call.shows("recording-indicator") && call.shows("start-recording")
+    });
+
+    // Without a recorder the next recording fails: the flag, its details and a new start.
+    server.set_recorder_running(false);
+    call.click("start-recording");
+    call.click("record-language:auto");
+    call.until("the recording starts", |call| {
+        call.shows("cancel-recording")
+    });
+    world.run(server.tend());
+    world.run(server.tend());
+    call.until("the recording failed", |call| {
+        call.shows("recording-failed") && call.shows("recording-details")
+    });
+    recording_control_fits("failed", &mut window, &mut call, &mut panels);
+    world.run(server.leave(&[(&luca, seat)]));
 }

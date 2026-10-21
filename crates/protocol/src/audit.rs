@@ -207,12 +207,20 @@ pub enum AuditEvent {
         name: String,
         kind: ChannelKind,
     },
+    /// The name, the category or the position of the channel was changed. The setting of
+    /// permanent messages is the one that the channel had after the change; a change of
+    /// that setting has an entry of its own.
     ChannelUpdated {
         name: String,
         category_id: Option<CategoryId>,
         position: i32,
         permanent_messages: bool,
     },
+    /// The messages of the channel are permanent from now on (ADR 0402).
+    PermanentMessagesTurnedOn,
+    /// Messages sent from now on are not permanent; earlier permanent messages stay
+    /// permanent (ADR 0402).
+    PermanentMessagesTurnedOff,
     ChannelOverrideSet {
         role_id: WorkspaceRoleId,
         allow: Vec<WorkspacePermission>,
@@ -377,6 +385,8 @@ impl AuditEvent {
             Self::CategoryUpdated { .. } => "category_updated",
             Self::ChannelCreated { .. } => "channel_created",
             Self::ChannelUpdated { .. } => "channel_updated",
+            Self::PermanentMessagesTurnedOn => "permanent_messages_turned_on",
+            Self::PermanentMessagesTurnedOff => "permanent_messages_turned_off",
             Self::ChannelOverrideSet { .. } => "channel_override_set",
             Self::ChannelDeleted { .. } => "channel_deleted",
             Self::ChannelCallSettingsUpdated { .. } => "channel_call_settings_updated",

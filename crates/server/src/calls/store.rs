@@ -390,11 +390,13 @@ pub struct MemberRow {
     pub share_audio: Option<String>,
     pub share_seen_at: Option<OffsetDateTime>,
     pub share_missing_since: Option<OffsetDateTime>,
+    /// The identity of the seat in the source call that a completed move replaced.
+    pub moved_from: Option<String>,
 }
 
 const MEMBER_COLUMNS: &str = "call_id, account_id, device_id, session_id, identity, \
      usable_until, connected_at, absent_since, self_muted, self_deafened, hand_raised_at, \
-     share_audio, share_seen_at, share_missing_since";
+     share_audio, share_seen_at, share_missing_since, moved_from";
 
 impl MemberRow {
     pub fn own_call(&self, call: &CallRow) -> OwnCall {

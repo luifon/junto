@@ -507,3 +507,36 @@ async fn many_simultaneous_logins_all_succeed() {
         assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.text());
     }
 }
+
+/// The session token of a login is made inside its transaction. A login whose first
+/// attempts lose stores one session, and the token of the answer is the one that works
+/// (ADR 0009).
+#[tokio::test]
+async fn a_login_that_runs_again_stores_one_session_whose_token_works() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let sessions = |device_id| {
+        sqlx::query_scalar::<_, i64>("select count(*) from sessions where device_id = $1")
+            .bind(device_id)
+            .fetch_one(&server.db)
+    };
+    let before = sessions(owner.device_id).await.unwrap();
+    let login = json!({ "proof": server.proof(&owner.key, ChallengeOperation::Login).await });
+    server.gate().lose_next(2);
+    let created: junto_protocol::auth::SessionCreated = server
+        .open("/api/v1/auth/sessions", &login)
+        .await
+        .ok(StatusCode::CREATED);
+    assert_eq!(sessions(owner.device_id).await.unwrap(), before + 1);
+    let logged_in = crate::support::Member {
+        // A request with the token signs nothing.
+        key: DeviceKey::generate(),
+        account_id: owner.account_id,
+        device_id: owner.device_id,
+        token: created.token.expose().to_owned(),
+    };
+    server
+        .get(&logged_in, "/api/v1/account")
+        .await
+        .ok::<junto_protocol::account::OwnAccount>(StatusCode::OK);
+}

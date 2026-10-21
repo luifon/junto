@@ -349,13 +349,14 @@ async fn complete_move(
     };
     store::admit(&mut *connection, now, destination, seat, now, true).await?;
     sqlx::query(
-        "update call_members set self_muted = $3, self_deafened = $4
+        "update call_members set self_muted = $3, self_deafened = $4, moved_from = $5
          where call_id = $1 and account_id = $2",
     )
     .bind(destination.id)
     .bind(member.account_id)
     .bind(member.self_muted)
     .bind(member.self_deafened)
+    .bind(&member.identity)
     .execute(&mut *connection)
     .await?;
 

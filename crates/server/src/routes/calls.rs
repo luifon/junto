@@ -211,8 +211,9 @@ pub async fn get_own_call(
 }
 
 /// Leaves the call that the caller's account is in, from whichever device. With `identity`,
-/// the call is left only when the account holds its place with that identity; otherwise
-/// nothing changes, and the answer is the same.
+/// the call is left only when the account holds its place with that identity, or with the
+/// place that a completed move gave in place of it; otherwise nothing changes, and the
+/// answer is the same.
 #[utoipa::path(
     delete,
     path = "/api/v1/call",

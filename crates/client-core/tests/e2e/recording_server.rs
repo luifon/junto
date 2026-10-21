@@ -414,6 +414,12 @@ impl RecordingServer {
         self.check().await;
     }
 
+    /// Takes the recorder away, or gives it back: while it is away, no request to start a
+    /// job is taken, and a new recording fails (ADR 0604).
+    pub fn set_recorder_running(&self, running: bool) {
+        self.recorder.set_running(running);
+    }
+
     /// The clock of the server and of the recorder moves forward.
     pub fn advance(&self, seconds: i64) {
         self.clock.advance(time::Duration::seconds(seconds));
