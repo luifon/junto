@@ -32,15 +32,17 @@ class UserLauncher(unittest.TestCase):
             result = subprocess.run(
                 ["sh", str(LAUNCHER), "1000", "1000", "--", *command],
                 env=dict(os.environ, PATH=f"{programs}:{os.environ['PATH']}", JUNTO_TEST_CAMERA_DEVICE="1",
-                         JUNTO_LINUX_CAMERA_GROUPS=groups),
+                         JUNTO_LINUX_CAMERA_GROUPS=groups, TMPDIR=temporary),
                 capture_output=True, text=True)
-            return result, record.read_text().splitlines() if record.exists() else []
+            calls = record.read_text().splitlines() if record.exists() else []
+            return result, [call.replace(temporary, "<tmp>") for call in calls]
 
     def test_the_camera_branch_keeps_only_the_explicit_device_groups(self):
         result, calls = self.launch("44,45", "cargo", "run")
         self.assertEqual(result.returncode, 0, result.stderr)
+        # The home of the user is in the temporary directory of the caller.
         self.assertEqual(calls[-1], "setpriv --reuid=1000 --regid=1000 --groups=44,45 "
-                                    "env HOME=/tmp/junto-user-1000 cargo run")
+                                    "env HOME=<tmp>/junto-user-1000 cargo run")
 
     def test_the_camera_branch_refuses_groups_that_are_not_a_list_of_numbers(self):
         for groups in ["", ",44", "44,", "44,,45", "video", "44;45"]:

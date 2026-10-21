@@ -5,8 +5,8 @@
 //! removes them.
 
 #[cfg(target_os = "windows")]
-#[path = "virtual_ids.rs"]
-mod ids;
+#[path = "virtual_profiles.rs"]
+mod profiles;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod check {
@@ -17,12 +17,12 @@ mod check {
 
     pub type Failure = Box<dyn std::error::Error>;
 
-    /// The size, the colours (Cb and Cr at the centres of the quarters) and the rate of a
+    /// The size, the colours (Y, Cb and Cr at the centres of the quarters) and the rate of a
     /// known source.
     #[derive(Clone, Copy)]
     pub struct Expected {
         pub size: (u32, u32),
-        pub colours: [(u8, u8); 4],
+        pub colours: [(u8, u8, u8); 4],
         /// The rate that capture asks the driver for.
         pub rate: (u32, u32),
     }
@@ -34,9 +34,9 @@ mod check {
         pub luma_varies: bool,
         /// Whether a chroma plane has a value other than 0.
         pub chroma_set: bool,
-        /// Cb and Cr at the centres of the four quarters: top left, top right, bottom left,
-        /// bottom right.
-        pub quarters: [(u8, u8); 4],
+        /// Y, Cb and Cr at the centres of the four quarters: top left, top right, bottom
+        /// left, bottom right.
+        pub quarters: [(u8, u8, u8); 4],
     }
 
     enum Event {
@@ -50,11 +50,12 @@ mod check {
         fn picture(&self, frame: Arc<dyn VideoBuffer>) {
             let event = frame.as_i420().map_or(Event::Unreadable, |i420| {
                 let (y, u, v) = i420.data();
-                let (_, su, sv) = i420.strides();
+                let (sy, su, sv) = i420.strides();
                 let (w, h) = (frame.width() as usize, frame.height() as usize);
-                let quarter = |x: usize, y: usize| {
-                    let (x, y) = (x / 2, y / 2);
-                    (u[y * su as usize + x], v[y * sv as usize + x])
+                let quarter = |x: usize, row: usize| {
+                    let luma = y[row * sy as usize + x];
+                    let (x, row) = (x / 2, row / 2);
+                    (luma, u[row * su as usize + x], v[row * sv as usize + x])
                 };
                 Event::Picture(Picture {
                     size: (frame.width(), frame.height()),
@@ -133,7 +134,10 @@ mod check {
             }
             if let Some(Expected { colours, .. }) = expected {
                 for (found, wanted) in picture.quarters.iter().zip(colours) {
-                    if found.0.abs_diff(wanted.0) > 12 || found.1.abs_diff(wanted.1) > 12 {
+                    if found.0.abs_diff(wanted.0) > 4
+                        || found.1.abs_diff(wanted.1) > 4
+                        || found.2.abs_diff(wanted.2) > 4
+                    {
                         return Err(format!(
                             "colours {:?}, expected {colours:?}",
                             picture.quarters
@@ -189,11 +193,12 @@ mod virtual_cameras {
     use std::time::{Duration, Instant};
     use windows::Win32::Foundation::ERROR_SUCCESS;
     use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::CoCreateGuid;
     use windows::Win32::System::Registry::*;
     use windows::core::{GUID, HSTRING, PCWSTR};
 
-    fn key(class: u128) -> String {
-        format!("SOFTWARE\\Classes\\CLSID\\{{{:?}}}", GUID::from_u128(class))
+    fn key(class: &GUID) -> String {
+        format!("SOFTWARE\\Classes\\CLSID\\{{{class:?}}}")
     }
 
     fn wide(text: &str) -> Vec<u8> {
@@ -203,51 +208,66 @@ mod virtual_cameras {
             .collect()
     }
 
-    /// The registration of the two sources, removed when dropped. The Frame Server runs as a
-    /// service and reads the classes of the machine, so this needs an administrator.
-    struct Registered;
+    /// Writes string values (`None`: the default value) to a volatile key of the machine.
+    fn write(path: &str, values: &[(Option<&str>, &str)]) -> Result<(), Failure> {
+        let mut handle = HKEY::default();
+        // SAFETY: valid strings and out parameter; the key is closed below.
+        unsafe {
+            let status = RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                &HSTRING::from(path),
+                None,
+                PCWSTR::null(),
+                REG_OPTION_VOLATILE,
+                KEY_WRITE,
+                None,
+                &mut handle,
+                None,
+            );
+            if status != ERROR_SUCCESS {
+                return Err(format!("the source cannot be registered: {status:?}").into());
+            }
+            let mut failure = None;
+            for (name, value) in values {
+                let name = name.map(HSTRING::from);
+                let name = name
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |name| PCWSTR(name.as_ptr()));
+                let status = RegSetValueExW(handle, name, None, REG_SZ, Some(&wide(value)));
+                if status != ERROR_SUCCESS {
+                    failure = Some(status);
+                }
+            }
+            let _ = RegCloseKey(handle);
+            match failure {
+                Some(status) => Err(format!("the source cannot be registered: {status:?}").into()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    /// The registration of the two sources for this check, removed when dropped. Each check
+    /// registers new class identifiers, because COM in the Frame Server keeps the class of an
+    /// identifier that it loaded once, and a later check would use the earlier library. The
+    /// Frame Server runs as a service and reads the classes of the machine, so this needs an
+    /// administrator.
+    struct Registered(Vec<GUID>);
 
     impl Registered {
         fn new(library: &std::path::Path) -> Result<Self, Failure> {
-            let registered = Registered;
-            for class in [super::ids::UNCOMPRESSED, super::ids::COMPRESSED] {
-                let mut handle = HKEY::default();
-                let path = HSTRING::from(format!("{}\\InprocServer32", key(class)));
-                // SAFETY: valid strings and out parameter; the key is closed below.
-                unsafe {
-                    let status = RegCreateKeyExW(
-                        HKEY_LOCAL_MACHINE,
-                        &path,
-                        None,
-                        PCWSTR::null(),
-                        REG_OPTION_VOLATILE,
-                        KEY_WRITE,
-                        None,
-                        &mut handle,
-                        None,
-                    );
-                    if status != ERROR_SUCCESS {
-                        return Err(format!("the source cannot be registered: {status:?}").into());
-                    }
-                    let library = wide(&library.to_string_lossy());
-                    let model = wide("Both");
-                    let written = [
-                        RegSetValueExW(handle, PCWSTR::null(), None, REG_SZ, Some(&library)),
-                        RegSetValueExW(
-                            handle,
-                            &HSTRING::from("ThreadingModel"),
-                            None,
-                            REG_SZ,
-                            Some(&model),
-                        ),
-                    ];
-                    let _ = RegCloseKey(handle);
-                    if let Some(status) =
-                        written.into_iter().find(|status| *status != ERROR_SUCCESS)
-                    {
-                        return Err(format!("the source cannot be registered: {status:?}").into());
-                    }
-                }
+            let mut registered = Registered(Vec::new());
+            for profile in [super::profiles::UNCOMPRESSED, super::profiles::COMPRESSED] {
+                // SAFETY: creates a new identifier.
+                let class = unsafe { CoCreateGuid()? };
+                registered.0.push(class);
+                write(&key(&class), &[(Some(super::profiles::PROFILE), profile)])?;
+                write(
+                    &format!("{}\\InprocServer32", key(&class)),
+                    &[
+                        (None, &library.to_string_lossy()),
+                        (Some("ThreadingModel"), "Both"),
+                    ],
+                )?;
             }
             Ok(registered)
         }
@@ -255,10 +275,37 @@ mod virtual_cameras {
 
     impl Drop for Registered {
         fn drop(&mut self) {
-            for class in [super::ids::UNCOMPRESSED, super::ids::COMPRESSED] {
-                // SAFETY: removes only the key that `new` created.
+            for class in &self.0 {
+                // SAFETY: removes only a key that `new` created.
                 let _ = unsafe { RegDeleteTreeW(HKEY_LOCAL_MACHINE, &HSTRING::from(key(class))) };
             }
+        }
+    }
+
+    /// The copy of the source library that this check registers. The Frame Server keeps a
+    /// library loaded until it stops, and Windows does not replace a loaded file, so each check
+    /// registers a copy named by its process; a copy that is no longer loaded is removed by a
+    /// later check.
+    struct LibraryCopy(std::path::PathBuf);
+
+    impl LibraryCopy {
+        fn new(built: &std::path::Path) -> Result<Self, Failure> {
+            let folder = built.parent().ok_or("the library has no folder")?;
+            for entry in std::fs::read_dir(folder)?.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("virtual_camera_source-") && name.ends_with(".dll") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+            let copy = folder.join(format!("virtual_camera_source-{}.dll", std::process::id()));
+            std::fs::copy(built, &copy)?;
+            Ok(Self(copy))
+        }
+    }
+
+    impl Drop for LibraryCopy {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
         }
     }
 
@@ -279,18 +326,25 @@ mod virtual_cameras {
         camera: &Arc<dyn CameraCapture>,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<(), Failure> {
-        let library = std::env::current_exe()?.with_file_name("virtual_camera_source.dll");
-        if !library.exists() {
-            return Err(format!("{} is not built", library.display()).into());
+        let built = std::env::current_exe()?.with_file_name("virtual_camera_source.dll");
+        if !built.exists() {
+            return Err(format!("{} is not built", built.display()).into());
         }
-        let _registered = Registered::new(&library)?;
+        let copy = LibraryCopy::new(&built)?;
+        let registered = Registered::new(&copy.0)?;
         // The colours of the four quarters of `virtual_source.rs`.
-        let colours = [(110, 150), (150, 150), (110, 110), (150, 110)];
-        for (class, name) in [
-            (super::ids::UNCOMPRESSED, "Junto test camera NV12"),
-            (super::ids::COMPRESSED, "Junto test camera MJPEG"),
-        ] {
-            let source = HSTRING::from(format!("{{{:?}}}", GUID::from_u128(class)));
+        let colours = [
+            (150, 63, 63),
+            (130, 73, 183),
+            (110, 183, 73),
+            (100, 193, 193),
+        ];
+        for (class, name) in registered
+            .0
+            .iter()
+            .zip(["Junto test camera NV12", "Junto test camera MJPEG"])
+        {
+            let source = HSTRING::from(format!("{{{class:?}}}"));
             // SAFETY: valid strings; the camera lives for this session of the process.
             let started = unsafe {
                 let created = MFCreateVirtualCamera(

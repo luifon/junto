@@ -306,6 +306,15 @@ class CommitStatus(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f"commit {self.commit}: failed", result.stdout)
 
+    def test_a_later_failed_run_of_a_default_job_fails_the_commit(self):
+        self.passing("linux")
+        self.run_of("linux", "020000", {"rust-linux": 101})
+        self.passing("macos")
+        self.passing("windows")
+        result = self.status()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+
     def test_a_commit_with_only_a_run_of_the_optional_job_is_incomplete(self):
         self.run_of("linux", "020000", {"rust-linux-devices": 0})
         self.passing("macos")

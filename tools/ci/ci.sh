@@ -300,17 +300,16 @@ ended_check() {
     fi
 }
 
-# The latest run of a commit on a runner, by the date at the start of the name, that has every
-# job of the runner's list; without such a run, the latest run.
+# The latest run of a commit on a runner, by the date at the start of the name, that has a job
+# of the runner's list; a run of only optional jobs does not count for the commit. Without such
+# a run, the latest run.
 latest() {
     runs="ls runs 2>/dev/null | grep -- '-$(printf '%.12s' "$2")-$1\$'"
     on "$1" "for run in \$($runs | sort -r); do
             jobs=\" \$(cat \"runs/\$run/jobs\" 2>/dev/null) \"
-            every=yes
             for job in $(jobs_of "$1"); do
-                case \"\$jobs\" in *\" \$job \"*) ;; *) every=no ;; esac
+                case \"\$jobs\" in *\" \$job \"*) echo \"\$run\"; exit 0 ;; esac
             done
-            if [ \$every = yes ]; then echo \"\$run\"; exit 0; fi
         done
         $runs | sort | tail -n 1" || true
 }

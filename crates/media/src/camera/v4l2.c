@@ -16,7 +16,7 @@
 #define MAX_BUFFERS 32
 
 struct camera_format {
-    uint32_t width, height, stride, fourcc, field, encoding, quantization;
+    uint32_t width, height, stride, fourcc, encoding;
     int32_t rate_error;
 };
 struct camera_request { uint32_t fourcc, width, height, numerator, denominator; };
@@ -142,9 +142,10 @@ int junto_camera_interval(struct camera *camera, uint32_t fourcc, uint32_t width
 }
 
 /* Sets the format and the frame interval, maps the buffers and starts streaming: 0 when it
- * streams, 1 when the driver set another size or pixel format, a negative errno value. The
- * format that the driver set is in *out, with the defaults of its colorspace resolved; the
- * caller checks it. A refused interval is reported in out->rate_error for the caller. */
+ * streams; 1, before any buffer is mapped, when the driver set another size or pixel format,
+ * an interlaced field or a range other than limited, so that the caller can ask for another
+ * mode; a negative errno value. The format that the driver set is in *out, with the defaults
+ * of its colorspace resolved. A refused interval is reported in out->rate_error. */
 int junto_camera_start(struct camera *camera, const struct camera_request *request, struct camera_format *out) {
     struct v4l2_format f = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE};
     f.fmt.pix.width = request->width;
@@ -161,9 +162,9 @@ int junto_camera_start(struct camera *camera, const struct camera_request *reque
     uint32_t quantization = pix->quantization;
     if (quantization == V4L2_QUANTIZATION_DEFAULT)
         quantization = V4L2_MAP_QUANTIZATION_DEFAULT(0, pix->colorspace, pix->ycbcr_enc);
-    *out = (struct camera_format){pix->width, pix->height, pix->bytesperline, pix->pixelformat,
-                                  pix->field, encoding, quantization, 0};
-    if (pix->width != request->width || pix->height != request->height || pix->pixelformat != request->fourcc)
+    *out = (struct camera_format){pix->width, pix->height, pix->bytesperline, pix->pixelformat, encoding, 0};
+    if (pix->width != request->width || pix->height != request->height || pix->pixelformat != request->fourcc ||
+        pix->field != V4L2_FIELD_NONE || quantization != V4L2_QUANTIZATION_LIM_RANGE)
         return 1;
     struct v4l2_streamparm rate = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE};
     if (call(camera, VIDIOC_G_PARM, &rate) == 0 && (rate.parm.capture.capability & V4L2_CAP_TIMEPERFRAME)) {

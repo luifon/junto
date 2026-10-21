@@ -11,7 +11,9 @@
 
 #include "v4l2.h"
 
-struct fake_mode { uint32_t fourcc, width, height, numerator, denominator; };
+/* refuse: S_FMT answers with another mode, as a driver that adjusts the request; full_range:
+ * S_FMT reports full-range quantization. */
+struct fake_mode { uint32_t fourcc, width, height, numerator, denominator, refuse, full_range; };
 /* One picture of the script. used UINT32_MAX: the size of the image. */
 struct fake_frame { uint32_t flags, used, index_offset; uint8_t value; };
 struct fake_device {
@@ -46,6 +48,9 @@ struct fake_system {
     const struct fake_device *devices;
     size_t count;
     struct fake_record *records;
+    /* The handle that holds the buffers of each device, as the queue of a V4L2 driver: -1
+     * when none. Another handle gets EBUSY for S_FMT and REQBUFS. */
+    int *owners;
     struct handle handles[HANDLES];
 };
 
@@ -85,6 +90,7 @@ static void fake_close(void *context, int fd) {
     pthread_mutex_lock(&system->lock);
     struct handle *h = handle(system, fd);
     if (h) {
+        if (system->owners[h->device] == fd) system->owners[h->device] = -1;
         system->records[h->device].closed++;
         release(h);
         h->used = 0;
@@ -129,9 +135,11 @@ static int of_size(const struct fake_mode *mode, const void *filter) {
     return mode->fourcc == key[0] && mode->width == key[1] && mode->height == key[2] && mode->numerator;
 }
 
-static int control(struct fake_system *system, struct handle *h, unsigned long request, void *argument) {
+static int control(struct fake_system *system, int fd, struct handle *h, unsigned long request, void *argument) {
     const struct fake_device *device = &system->devices[h->device];
     struct fake_record *record = &system->records[h->device];
+    int *owner = &system->owners[h->device];
+    if ((request == VIDIOC_S_FMT || request == VIDIOC_REQBUFS) && *owner != -1 && *owner != fd) return -EBUSY;
     switch (request) {
     case VIDIOC_QUERYCAP: {
         struct v4l2_capability *cap = argument;
@@ -172,10 +180,13 @@ static int control(struct fake_system *system, struct handle *h, unsigned long r
         struct v4l2_format *format = argument;
         if (format->type != V4L2_BUF_TYPE_VIDEO_CAPTURE || !device->mode_count) return -EINVAL;
         struct v4l2_pix_format *pix = &format->fmt.pix;
-        const struct fake_mode *mode = &device->modes[0];
+        const struct fake_mode *mode = NULL;
         for (size_t m = 0; m < device->mode_count; ++m)
             if (device->modes[m].fourcc == pix->pixelformat && device->modes[m].width == pix->width &&
-                device->modes[m].height == pix->height) { mode = &device->modes[m]; break; }
+                device->modes[m].height == pix->height && !device->modes[m].refuse) { mode = &device->modes[m]; break; }
+        for (size_t m = 0; m < device->mode_count && !mode; ++m)
+            if (!device->modes[m].refuse) mode = &device->modes[m];
+        if (!mode) mode = &device->modes[0];
         pix->pixelformat = mode->fourcc;
         pix->width = mode->width;
         pix->height = mode->height;
@@ -184,7 +195,7 @@ static int control(struct fake_system *system, struct handle *h, unsigned long r
         pix->sizeimage = h->sizeimage = image(mode->fourcc, mode->width, mode->height);
         pix->colorspace = device->colorspace;
         pix->ycbcr_enc = device->encoding;
-        pix->quantization = device->quantization;
+        pix->quantization = mode->full_range ? V4L2_QUANTIZATION_FULL_RANGE : device->quantization;
         record->fourcc = mode->fourcc;
         record->width = mode->width;
         record->height = mode->height;
@@ -206,7 +217,7 @@ static int control(struct fake_system *system, struct handle *h, unsigned long r
     case VIDIOC_REQBUFS: {
         struct v4l2_requestbuffers *request = argument;
         release(h);
-        if (!request->count) return 0;
+        if (!request->count) { *owner = -1; return 0; }
         uint32_t count = device->buffers ? device->buffers : request->count;
         if (count > MAX_BUFFERS) count = MAX_BUFFERS;
         for (uint32_t i = 0; i < count; ++i) {
@@ -216,6 +227,7 @@ static int control(struct fake_system *system, struct handle *h, unsigned long r
         }
         h->count = request->count = count;
         record->buffers = count;
+        *owner = fd;
         return 0;
     }
     case VIDIOC_QUERYBUF: {
@@ -261,7 +273,7 @@ static int fake_ioctl(void *context, int fd, unsigned long request, void *argume
     struct fake_system *system = of(context);
     pthread_mutex_lock(&system->lock);
     struct handle *h = handle(system, fd);
-    int result = h ? control(system, h, request, argument) : -EBADF;
+    int result = h ? control(system, fd, h, request, argument) : -EBADF;
     pthread_mutex_unlock(&system->lock);
     return result;
 }
@@ -302,7 +314,9 @@ struct fake_system *junto_fake_system(const struct fake_device *devices, size_t 
     struct fake_system *system = calloc(1, sizeof(*system));
     if (!system) return NULL;
     system->records = calloc(count ? count : 1, sizeof(*system->records));
-    if (!system->records) { free(system); return NULL; }
+    system->owners = malloc((count ? count : 1) * sizeof(*system->owners));
+    if (!system->records || !system->owners) { free(system->records); free(system->owners); free(system); return NULL; }
+    for (size_t d = 0; d < count; ++d) system->owners[d] = -1;
     pthread_mutex_init(&system->lock, NULL);
     system->devices = devices;
     system->count = count;
@@ -314,11 +328,4 @@ void junto_fake_record(struct fake_system *system, size_t device, struct fake_re
     pthread_mutex_lock(&system->lock);
     *out = system->records[device];
     pthread_mutex_unlock(&system->lock);
-}
-
-void junto_fake_free(struct fake_system *system) {
-    for (int h = 0; h < HANDLES; ++h) release(&system->handles[h]);
-    pthread_mutex_destroy(&system->lock);
-    free(system->records);
-    free(system);
 }

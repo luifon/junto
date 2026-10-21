@@ -38,12 +38,13 @@ fn reaches_minimum(mode: &Mode) -> bool {
         .is_none_or(|(n, d)| u64::from(n) >= u64::from(MINIMUM_RATE) * u64::from(d))
 }
 
+/// The modes at the capture sizes, best first: the modes of at least 24 frames per second by
+/// size, largest first; then the others by rate, highest first, then by size. Within one size
+/// and rate class: the best rate of `rate_order`, then a stated rate, then an uncompressed
+/// mode, because decoding costs processor time for each picture. A mode without a stated rate
+/// counts as reaching 24.
 #[cfg(any(test, target_os = "windows", target_os = "linux"))]
-/// The index of the mode to capture with: the largest capture size with a mode of at least 24
-/// frames per second; at that size the best rate of `rate_order`, then a stated rate, then an
-/// uncompressed mode. When no size reaches 24, the highest rate, then the larger size. A mode
-/// without a stated rate counts as reaching 24.
-pub(super) fn select(modes: &[Mode]) -> Option<usize> {
+pub(super) fn order(modes: &[Mode]) -> Vec<usize> {
     let presets = [(1280, 720), (640, 480), (352, 288)];
     let preset = |mode: &Mode| {
         presets
@@ -51,32 +52,39 @@ pub(super) fn select(modes: &[Mode]) -> Option<usize> {
             .position(|size| *size == (mode.width, mode.height))
     };
     let within_size = |a: &Mode, b: &Mode| {
-        b.rate
+        a.rate
             .is_none()
-            .cmp(&a.rate.is_none())
-            .reverse()
+            .cmp(&b.rate.is_none())
             .then_with(|| match (a.rate, b.rate) {
                 (Some(a), Some(b)) => rate_order(a, b),
                 _ => std::cmp::Ordering::Equal,
             })
             .then_with(|| a.compressed.cmp(&b.compressed))
     };
-    let candidates = || (0..modes.len()).filter(|index| preset(&modes[*index]).is_some());
-    let size = candidates()
-        .filter(|index| reaches_minimum(&modes[*index]))
-        .filter_map(|index| preset(&modes[index]))
-        .min();
-    if let Some(size) = size {
-        return candidates()
-            .filter(|index| preset(&modes[*index]) == Some(size) && reaches_minimum(&modes[*index]))
-            .min_by(|a, b| within_size(&modes[*a], &modes[*b]));
-    }
-    candidates().min_by(|a, b| {
-        let rate = |index: &usize| modes[*index].rate.unwrap_or((0, 1));
-        rate_order(rate(a), rate(b))
-            .then_with(|| preset(&modes[*a]).cmp(&preset(&modes[*b])))
-            .then_with(|| within_size(&modes[*a], &modes[*b]))
-    })
+    let mut indices: Vec<usize> = (0..modes.len())
+        .filter(|index| preset(&modes[*index]).is_some())
+        .collect();
+    indices.sort_by(|a, b| {
+        let (a, b) = (&modes[*a], &modes[*b]);
+        reaches_minimum(b)
+            .cmp(&reaches_minimum(a))
+            .then_with(|| {
+                if reaches_minimum(a) {
+                    preset(a).cmp(&preset(b))
+                } else {
+                    rate_order(a.rate.unwrap_or((0, 1)), b.rate.unwrap_or((0, 1)))
+                        .then_with(|| preset(a).cmp(&preset(b)))
+                }
+            })
+            .then_with(|| within_size(a, b))
+    });
+    indices
+}
+
+/// The index of the mode to capture with: the first of `order`.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn select(modes: &[Mode]) -> Option<usize> {
+    order(modes).first().copied()
 }
 
 #[cfg(test)]
@@ -169,6 +177,20 @@ mod tests {
             mode(1280, 720, Some((30, 1)), false),
         ];
         assert_eq!(select(&modes), Some(1));
+    }
+
+    #[test]
+    fn every_mode_at_a_capture_size_is_ordered_by_the_rule() {
+        let modes = [
+            mode(1280, 720, Some((30, 1)), true),
+            mode(1280, 720, Some((10, 1)), false),
+            mode(640, 480, Some((30, 1)), false),
+            mode(1920, 1080, Some((30, 1)), false),
+            mode(352, 288, Some((30, 1)), false),
+            mode(640, 480, Some((15, 1)), false),
+        ];
+        assert_eq!(order(&modes), [0, 2, 4, 5, 1]);
+        assert_eq!(select(&modes), Some(0));
     }
 
     #[test]

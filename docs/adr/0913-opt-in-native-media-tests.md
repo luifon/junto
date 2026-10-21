@@ -76,20 +76,29 @@ tests need permissions and must never select a physical sound output by fallback
   in memory at the rate of their media type: one offers NV12 at 1280 by 720 and YUY2 at
   640 by 480, both at 30 pictures per second; the other offers YUY2 at 1280 by 720 at 10
   and MJPEG at 1280 by 720 at 30, as common USB cameras do, so that capture takes MJPEG and
-  decodes it (ADR 0770). The check registers both classes as volatile keys of the machine,
-  because the Frame Server runs as a service and reads only the classes of the machine;
-  this needs an administrator. It starts each camera for the session of its process,
+  decodes it (ADR 0770). Each check registers two new class identifiers as volatile keys of the
+  machine, with the profile of each source as a value of its key, because the Frame Server
+  runs as a service and reads only the classes of the machine, and keeps the class of an
+  identifier that it loaded once, so that a later check with the same identifier would run the
+  earlier library; this needs an administrator. It starts each camera for the session of its process,
   captures from it, and checks the declared size of 1280 by 720, the asked rate of 30, the
-  colours of the four quarters of the source within 12 levels, and the measured rate. The
-  colours of the source stay inside RGB, so that its JPEG pictures, encoded from RGB, keep
-  them. It removes both cameras and both
-  keys at its end.
+  luma and chroma of the four quarters of the source within 4 levels, and the measured rate.
+  The quarters have strong chroma inside RGB, so that the JPEG pictures, encoded from RGB,
+  keep them, and a decoder output left in full range or in another matrix moves Cb and Cr by
+  about 8 levels or more. It removes both cameras and both
+  keys at its end. Windows does not replace a loaded library file, so each check registers
+  a copy of the library named by its process, and removes the copies of earlier checks that
+  the Frame Server no longer holds.
 - Linux capture is tested without a kernel driver on every commit: `v4l2_fake.c` is a V4L2
   device in memory behind the same table of system calls as the devices of the system. Its
   tests run `v4l2.c` and the Linux capture with programmed formats, frame sizes, intervals,
   colour metadata, buffer counts, damaged and short buffers, a buffer outside the mapped
-  ones, refused frame-rate requests and refused opens. Only the tests refer to the fake, so
-  the linker leaves it out of the product. A real device check of Linux capture needs a
+  ones, refused frame-rate requests, modes that the driver sets otherwise, and refused
+  opens. It keeps the queue of a device for the descriptor that holds its buffers and answers
+  busy to another, as V4L2 drivers do, so that a quick stop and start fails without the device
+  claim of ADR 0770. Each fake has device identities of its own. Only the tests refer to the
+  fake, so the linker leaves it out of the product; the Linux job checks the symbols of the
+  client for that (`llvm-nm`). A real device check of Linux capture needs a
   camera or a virtual V4L2 device on the CI host.
 - The `rust-linux` job and the job of macOS and Windows lint the media crate with the
   `native-device-tests` feature and all its targets, so that the device checks and the

@@ -1,6 +1,7 @@
 //! The V4L2 device in memory of `v4l2_fake.c`.
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{Node, System};
 
@@ -26,6 +27,10 @@ pub struct Mode {
     /// The frame interval, in seconds; 0 when the device states none.
     pub numerator: u32,
     pub denominator: u32,
+    /// The driver answers a request of this mode with another mode.
+    pub refuse: u32,
+    /// The driver reports full-range quantization for this mode.
+    pub full_range: u32,
 }
 
 pub fn mode(fourcc: u32, width: u32, height: u32, rate: u32) -> Mode {
@@ -35,6 +40,8 @@ pub fn mode(fourcc: u32, width: u32, height: u32, rate: u32) -> Mode {
         height,
         numerator: u32::from(rate != 0),
         denominator: rate,
+        refuse: 0,
+        full_range: 0,
     }
 }
 
@@ -126,6 +133,8 @@ impl Default for Spec {
 /// its test has ended.
 pub struct Fake {
     system: *mut c_void,
+    /// Each fake has device identities of its own: a capture holds its device in the process.
+    number: usize,
     paths: Vec<CString>,
     _specs: Vec<Spec>,
     _devices: Vec<Device>,
@@ -161,8 +170,10 @@ impl Fake {
         // SAFETY: the devices, their paths and settings live as long as the fake.
         let system = unsafe { junto_fake_system(devices.as_ptr(), devices.len()) };
         assert!(!system.is_null());
+        static NUMBER: AtomicUsize = AtomicUsize::new(0);
         Box::leak(Box::new(Self {
             system,
+            number: NUMBER.fetch_add(1, Ordering::Relaxed),
             paths,
             _specs: specs,
             _devices: devices,
@@ -178,7 +189,7 @@ impl Fake {
             .iter()
             .enumerate()
             .map(|(index, path)| Node {
-                identity: format!("/sys/devices/fake/video4linux/video{index}"),
+                identity: format!("/sys/devices/fake{}/video4linux/video{index}", self.number),
                 name: format!("Fake camera {index}"),
                 path: PathBuf::from(path.to_string_lossy().into_owned()),
             })

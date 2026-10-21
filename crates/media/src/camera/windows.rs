@@ -299,31 +299,45 @@ fn mode(media: &IMFMediaType) -> Option<Mode> {
     }
 }
 
-/// The index of the native type to capture with (`format::select`).
-fn choose_type(types: &[IMFMediaType]) -> Option<usize> {
+/// The indices of the native types that capture can read, best first (`format::order`), each
+/// with its rate.
+fn ordered(types: &[IMFMediaType]) -> Vec<(usize, Option<(u32, u32)>)> {
     let modes: Vec<(usize, Mode)> = types
         .iter()
         .enumerate()
         .filter_map(|(index, media)| Some((index, mode(media)?)))
         .collect();
     let listed: Vec<Mode> = modes.iter().map(|(_, mode)| *mode).collect();
-    super::format::select(&listed).map(|chosen| modes[chosen].0)
+    super::format::order(&listed)
+        .into_iter()
+        .map(|chosen| (modes[chosen].0, modes[chosen].1.rate))
+        .collect()
 }
 
-/// Sets the chosen native type. An MJPEG type is decoded by the reader's video processing to
-/// limited-range 601 NV12 of the same size and rate.
-fn configure(reader: &IMFSourceReader) -> Result<(Layout, Option<(u32, u32)>), CameraError> {
-    let mut types = Vec::new();
-    for index in 0..1024 {
-        // SAFETY: the reader owns the source and returns a retained type.
-        match unsafe { reader.GetNativeMediaType(VIDEO, index) } {
-            Ok(media) => types.push(media),
-            Err(e) if e.code() == MF_E_NO_MORE_TYPES => break,
-            Err(e) => return Err(error(e)),
+#[cfg(test)]
+fn choose_type(types: &[IMFMediaType]) -> Option<usize> {
+    ordered(types).first().map(|(index, _)| *index)
+}
+
+/// The result of `set` for the first type of `ordered` that it accepts, with the rate of the
+/// type; the failure of the last type when it accepts none.
+fn first_accepted<T>(
+    types: &[IMFMediaType],
+    mut set: impl FnMut(&IMFMediaType) -> Result<T, CameraError>,
+) -> Result<(T, Option<(u32, u32)>), CameraError> {
+    let mut failure = CameraError::Unsupported;
+    for (index, rate) in ordered(types) {
+        match set(&types[index]) {
+            Ok(value) => return Ok((value, rate)),
+            Err(error) => failure = error,
         }
     }
-    let media = &types[choose_type(&types).ok_or(CameraError::Unsupported)?];
-    let rate = mode(media).and_then(|mode| mode.rate);
+    Err(failure)
+}
+
+/// Sets a native type and returns the layout of the reader's output. An MJPEG type is decoded
+/// by the reader's video processing to limited-range 601 NV12 of the same size and rate.
+fn set_type(reader: &IMFSourceReader, media: &IMFMediaType) -> Result<Layout, CameraError> {
     // SAFETY: the source has advertised the type; there is no pending read yet. The output
     // type is owned here and copied by the reader.
     unsafe {
@@ -359,11 +373,22 @@ fn configure(reader: &IMFSourceReader) -> Result<(Layout, Option<(u32, u32)>), C
                 .SetCurrentMediaType(VIDEO, None, media)
                 .map_err(error)?;
         }
-        Ok((
-            layout(&reader.GetCurrentMediaType(VIDEO).map_err(error)?)?,
-            rate,
-        ))
+        layout(&reader.GetCurrentMediaType(VIDEO).map_err(error)?)
     }
+}
+
+/// Sets the first native type of the rule's order that the reader accepts.
+fn configure(reader: &IMFSourceReader) -> Result<(Layout, Option<(u32, u32)>), CameraError> {
+    let mut types = Vec::new();
+    for index in 0..1024 {
+        // SAFETY: the reader owns the source and returns a retained type.
+        match unsafe { reader.GetNativeMediaType(VIDEO, index) } {
+            Ok(media) => types.push(media),
+            Err(e) if e.code() == MF_E_NO_MORE_TYPES => break,
+            Err(e) => return Err(error(e)),
+        }
+    }
+    first_accepted(&types, |media| set_type(reader, media))
 }
 
 fn frame(
@@ -649,6 +674,39 @@ mod tests {
             video(&MFVideoFormat_YUY2, (640, 480), 30),
         ];
         assert_eq!(choose_type(&types), Some(1));
+    }
+
+    #[test]
+    fn a_type_that_the_reader_refuses_gives_way_to_the_next_of_the_order() {
+        initialize().unwrap();
+        let types = [
+            video(&MFVideoFormat_MJPG, (1280, 720), 30),
+            video(&MFVideoFormat_YUY2, (1280, 720), 10),
+            video(&MFVideoFormat_YUY2, (640, 480), 30),
+        ];
+        let mut tried = Vec::new();
+        let (size, rate) = first_accepted(&types, |media| {
+            // SAFETY: reading attributes of the test's own type.
+            let (subtype, size) = unsafe {
+                (
+                    media.GetGUID(&MF_MT_SUBTYPE).unwrap(),
+                    pair(media.GetUINT64(&MF_MT_FRAME_SIZE).unwrap()),
+                )
+            };
+            tried.push(size);
+            if subtype == MFVideoFormat_MJPG {
+                Err(CameraError::Unsupported)
+            } else {
+                Ok(size)
+            }
+        })
+        .unwrap();
+        assert_eq!((size, rate), ((640, 480), Some((30, 1))));
+        assert_eq!(tried, [(1280, 720), (640, 480)]);
+        assert_eq!(
+            first_accepted(&types, |_| Err::<(), _>(CameraError::Unsupported)).unwrap_err(),
+            CameraError::Unsupported
+        );
     }
 
     #[test]

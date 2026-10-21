@@ -32,9 +32,7 @@ struct Format {
     height: u32,
     stride: u32,
     fourcc: u32,
-    field: u32,
     encoding: u32,
-    quantization: u32,
     rate_error: i32,
 }
 
@@ -182,48 +180,49 @@ impl Camera {
         Ok(modes)
     }
 
-    /// Starts streaming in the mode that `format::select` chooses; returns the layout of its
-    /// pictures and the rate of the mode.
+    /// Starts streaming in the first mode of `format::order` that the driver sets as asked;
+    /// returns the layout of its pictures and the rate of the mode.
     fn start(&self) -> Result<(Layout, Option<(u32, u32)>), CameraError> {
         let modes = self.modes()?;
         let listed: Vec<Mode> = modes.iter().map(|(mode, _)| *mode).collect();
-        let (mode, fourcc) =
-            modes[super::format::select(&listed).ok_or(CameraError::Unsupported)?];
-        let (numerator, denominator) = mode.rate.map_or((1, 30), |(n, d)| (d, n));
-        let request = Request {
-            fourcc,
-            width: mode.width,
-            height: mode.height,
-            numerator,
-            denominator,
-        };
-        let mut format = Format::default();
-        // SAFETY: the camera is open on this thread; the request and format are valid.
-        let result = unsafe { junto_camera_start(self.0, &request, &mut format) };
-        if result < 0 {
-            return Err(error(result));
+        for index in super::format::order(&listed) {
+            let (mode, fourcc) = modes[index];
+            let (numerator, denominator) = mode.rate.map_or((1, 30), |(n, d)| (d, n));
+            let request = Request {
+                fourcc,
+                width: mode.width,
+                height: mode.height,
+                numerator,
+                denominator,
+            };
+            let mut format = Format::default();
+            // SAFETY: the camera is open on this thread; the request and format are valid.
+            let result = unsafe { junto_camera_start(self.0, &request, &mut format) };
+            if result < 0 {
+                return Err(error(result));
+            }
+            // The driver set another format: no buffer is mapped yet.
+            if result != 0 {
+                continue;
+            }
+            if let Some(failure) = v4l2::rate_failure(format.rate_error) {
+                return Err(failure);
+            }
+            let layout = Layout {
+                width: format.width,
+                height: format.height,
+                stride: format.stride as usize,
+                pixel: PIXELS
+                    .iter()
+                    .find(|(code, _)| *code == format.fourcc)
+                    .map(|(_, pixel)| *pixel)
+                    .ok_or(CameraError::Unsupported)?,
+                matrix: v4l2::matrix(format.encoding),
+            };
+            layout.length().ok_or(CameraError::Unsupported)?;
+            return Ok((layout, mode.rate));
         }
-        if let Some(failure) = v4l2::rate_failure(format.rate_error) {
-            return Err(failure);
-        }
-        const PROGRESSIVE: u32 = 1;
-        const LIMITED_RANGE: u32 = 2;
-        if result != 0 || format.field != PROGRESSIVE || format.quantization != LIMITED_RANGE {
-            return Err(CameraError::Unsupported);
-        }
-        let layout = Layout {
-            width: format.width,
-            height: format.height,
-            stride: format.stride as usize,
-            pixel: PIXELS
-                .iter()
-                .find(|(code, _)| *code == format.fourcc)
-                .map(|(_, pixel)| *pixel)
-                .ok_or(CameraError::Unsupported)?,
-            matrix: v4l2::matrix(format.encoding),
-        };
-        layout.length().ok_or(CameraError::Unsupported)?;
-        Ok((layout, mode.rate))
+        Err(CameraError::Unsupported)
     }
 
     /// The next buffer of the driver within 100 milliseconds.
@@ -719,6 +718,64 @@ mod tests {
                 .collect();
             assert_eq!(lumas, [100, 101, 102]);
         }
+    }
+
+    #[tokio::test]
+    async fn a_mode_that_the_driver_sets_otherwise_gives_way_to_the_next() {
+        let refused = super::fake::Mode {
+            refuse: 1,
+            ..mode(YUYV, 1280, 720, 30)
+        };
+        let full_range = super::fake::Mode {
+            full_range: 1,
+            ..mode(NV12, 1280, 720, 30)
+        };
+        for first in [refused, full_range] {
+            let fake = Fake::new(vec![Spec {
+                modes: vec![first, mode(YUYV, 640, 480, 30)],
+                ..Spec::default()
+            }]);
+            let (stream, receive) = capture_of(fake).await;
+            let stream = stream.unwrap();
+            assert_eq!((stream.width, stream.height), (640, 480));
+            pictures(&receive, 3);
+        }
+        // The refused mode is answered with the other one, which is full range.
+        let fake = Fake::new(vec![Spec {
+            modes: vec![
+                refused,
+                super::fake::Mode {
+                    full_range: 1,
+                    ..mode(NV12, 640, 480, 30)
+                },
+            ],
+            ..Spec::default()
+        }]);
+        assert_eq!(
+            capture_of(fake).await.0.unwrap_err(),
+            CameraError::Unsupported
+        );
+    }
+
+    /// The driver keeps the queue of a capture until its descriptor closes; a start of the
+    /// same device while the earlier capture still closes gets EBUSY from the driver.
+    #[tokio::test]
+    async fn a_quick_stop_and_start_of_a_device_waits_for_the_first_capture() {
+        let fake = Fake::new(vec![Spec {
+            frames: (0..5).map(|index| frame(100 + index)).collect(),
+            ..Spec::default()
+        }]);
+        let (stream, receive) = capture_of(fake).await;
+        let stream = stream.unwrap();
+        // The pictures of the device are used up: the capture waits in its poll.
+        pictures(&receive, 5);
+        drop(stream);
+        let (again, receive) = capture_of(fake).await;
+        let again = again.unwrap();
+        assert_eq!(pictures(&receive, 5)[0].2, 100);
+        drop(again);
+        let record = closed(fake, 0);
+        assert_eq!(record.closed, record.opened);
     }
 
     #[tokio::test]

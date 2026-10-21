@@ -3,21 +3,21 @@
 //! source generates its pictures in memory at the rate of the chosen media type: a brightness
 //! ramp that moves with each picture and four areas of different colour.
 
-#[path = "virtual_ids.rs"]
+#[path = "virtual_profiles.rs"]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-mod ids;
+mod profiles;
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod source {
-    use super::ids;
+    use super::profiles;
     use std::ffi::c_void;
     use std::sync::{Mutex, PoisonError, mpsc};
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
         CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_OUTOFMEMORY, E_POINTER,
-        ERROR_SET_NOT_FOUND, S_FALSE,
+        ERROR_SET_NOT_FOUND, ERROR_SUCCESS, S_FALSE,
     };
     use windows::Win32::Graphics::Imaging::{
         CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
@@ -32,9 +32,11 @@ mod source {
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
         IClassFactory, IClassFactory_Impl, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET,
     };
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
     use windows::Win32::UI::Shell::SHCreateMemStream;
     use windows::core::{
-        BOOL, Error, GUID, HRESULT, IUnknown, Interface, PCWSTR, PWSTR, Ref, Result, implement,
+        BOOL, Error, GUID, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, Ref, Result,
+        implement,
     };
 
     /// A COM object that Media Foundation uses from any thread.
@@ -50,6 +52,30 @@ mod source {
         rate: u32,
     }
 
+    /// The profile that the check stored under the key of `class`.
+    fn profile(class: &GUID) -> Option<String> {
+        let key = HSTRING::from(format!("SOFTWARE\\Classes\\CLSID\\{{{class:?}}}"));
+        let mut buffer = [0u16; 64];
+        let mut size = std::mem::size_of_val(&buffer) as u32;
+        // SAFETY: the buffer is writable for `size` bytes.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                &key,
+                &HSTRING::from(profiles::PROFILE),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                Some(&mut size),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return None;
+        }
+        let length = (size as usize / 2).saturating_sub(1).min(buffer.len());
+        Some(String::from_utf16_lossy(&buffer[..length]))
+    }
+
     fn kinds(class: &GUID) -> Option<Vec<Kind>> {
         let kind = |subtype, width, height, rate| Kind {
             subtype,
@@ -57,12 +83,13 @@ mod source {
             height,
             rate,
         };
-        if *class == GUID::from_u128(ids::UNCOMPRESSED) {
+        let profile = profile(class)?;
+        if profile == profiles::UNCOMPRESSED {
             Some(vec![
                 kind(MFVideoFormat_NV12, 1280, 720, 30),
                 kind(MFVideoFormat_YUY2, 640, 480, 30),
             ])
-        } else if *class == GUID::from_u128(ids::COMPRESSED) {
+        } else if profile == profiles::COMPRESSED {
             Some(vec![
                 kind(MFVideoFormat_YUY2, 1280, 720, 10),
                 kind(MFVideoFormat_MJPG, 1280, 720, 30),
@@ -115,14 +142,26 @@ mod source {
         }
     }
 
-    /// The limited-range 601 values of one pixel of picture `index`. Every combination is
-    /// inside RGB, so that the JPEG pictures, which are encoded from RGB, keep the colours.
+    /// The limited-range 601 values (Y, Cb, Cr) of the four quarters, top left, top right,
+    /// bottom left, bottom right. Each is inside RGB by at least 19 levels, so that the JPEG
+    /// pictures, which are encoded from RGB, keep them; a decoder that leaves full range or
+    /// uses another matrix moves Cb and Cr by about 8 levels or more.
+    const QUARTERS: [(u8, u8, u8); 4] = [
+        (150, 63, 63),
+        (130, 73, 183),
+        (110, 183, 73),
+        (100, 193, 193),
+    ];
+
+    /// The values of one pixel of picture `index`: the colour of its quarter, and in the top
+    /// eighth a brightness ramp that moves with each picture.
     fn pixel(kind: &Kind, x: u32, y: u32, index: u32) -> (u8, u8, u8) {
-        let ramp = (x + index * 8) % kind.width;
-        let luma = 64 + ramp * 112 / kind.width;
-        let cb = if x < kind.width / 2 { 110 } else { 150 };
-        let cr = if y < kind.height / 2 { 150 } else { 110 };
-        (luma as u8, cb, cr)
+        if y < kind.height / 8 {
+            let ramp = (x + index * 8) % kind.width;
+            return ((64 + ramp * 112 / kind.width) as u8, 128, 128);
+        }
+        let quarter = usize::from(x >= kind.width / 2) + 2 * usize::from(y >= kind.height / 2);
+        QUARTERS[quarter]
     }
 
     fn uncompressed(kind: &Kind, index: u32) -> Vec<u8> {

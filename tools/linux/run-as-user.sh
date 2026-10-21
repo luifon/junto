@@ -8,7 +8,7 @@ if [ "$uid" -eq 0 ]; then
     echo 'a non-root user is required' >&2
     exit 2
 fi
-user_home=/tmp/junto-user-$uid
+user_home=${TMPDIR:-/tmp}/junto-user-$uid
 mkdir -p "$user_home"
 while [ "${1:-}" != -- ]; do
     directory=${1:?writable directory or -- required}

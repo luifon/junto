@@ -22,6 +22,10 @@ step "Lint the device checks of the media crate"
 tools/linux-container.sh cargo clippy --locked -p junto-media --features native-device-tests --all-targets -- -D warnings
 step "Build the server used by process tests"
 tools/linux-container.sh cargo build --workspace --locked
+# The V4L2 device in memory of the camera tests is not linked into the client (ADR 0913); the
+# camera code itself is.
+step "The client holds the camera code and not the test camera device"
+tools/linux-container.sh sh -c 'llvm-nm-22 /target/debug/junto >/tmp/symbols && grep -q junto_camera_open /tmp/symbols && ! grep -q junto_fake_ /tmp/symbols'
 step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
 step "CI runner unit tests"

@@ -100,10 +100,12 @@ pub(super) static LAST_RATE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 const INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 30);
 
 /// Limits delivery to 30 pictures per second, from the time stamps of the pictures. A camera
-/// whose pictures arrive on average no faster than 32 per second keeps every picture. The
-/// pictures of a faster camera are taken at least one interval of 30 per second apart; a
-/// picture is taken when it is at most a quarter interval, and less than half its own gap,
-/// before its place, so that the gaps stay even.
+/// whose average gap is at least that of 30.5 pictures per second keeps every picture. A
+/// faster picture is taken when it is at its place, one interval after the place or the time
+/// of the last taken picture, whichever is later, so that the gaps stay even. For a camera
+/// whose gap is at most about half an interval, a picture up to a quarter interval, and less
+/// than half its own gap, before its place counts as at its place, so that the jitter of a
+/// camera of 60 does not move every taken picture by one gap.
 #[derive(Default)]
 pub(super) struct Pacer {
     last: Option<Duration>,
@@ -126,11 +128,16 @@ impl Pacer {
         };
         let gap = self.gap.map_or(gap, |average| (average * 7 + gap) / 8);
         self.gap = Some(gap);
-        if gap * 16 >= INTERVAL * 15 {
+        if gap * 61 >= INTERVAL * 60 {
             self.next = at + INTERVAL;
             return true;
         }
-        if at + (INTERVAL / 4).min(gap / 2) < self.next {
+        let early = if gap * 40 <= INTERVAL * 21 {
+            (INTERVAL / 4).min(gap / 2)
+        } else {
+            Duration::ZERO
+        };
+        if at + early < self.next {
             return false;
         }
         // A picture after its place moves the place of the next one, so that the gaps follow a
@@ -200,6 +207,44 @@ mod tests {
         assert_eq!(delivered.len(), 300);
         let delivered = paced(29.97, 10, |_| 0.0);
         assert_eq!(delivered.len(), 299);
+        let delivered = paced(30.4, 10, |_| 0.0);
+        assert_eq!(delivered.len(), 304);
+    }
+
+    /// A camera between 30.5 and twice 30 pictures per second gives every second or third
+    /// picture with even gaps, not more pictures with uneven gaps.
+    #[test]
+    fn a_camera_somewhat_faster_than_thirty_keeps_even_gaps() {
+        for (rate, count) in [(32.0, 160), (36.0, 180), (45.0, 225)] {
+            let delivered = paced(rate, 10, |_| 0.0);
+            assert!(
+                delivered.len().abs_diff(count) <= 1,
+                "{rate}: {}",
+                delivered.len()
+            );
+            let gap = Duration::from_secs_f64(10.0 / count as f64);
+            for pair in delivered.windows(2) {
+                let between = pair[1] - pair[0];
+                assert!(
+                    between.abs_diff(gap) < Duration::from_millis(1),
+                    "{rate}: {between:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_sixty_fps_camera_with_driver_jitter_gives_thirty_with_even_gaps() {
+        let pattern = [0.0, 0.2, -0.3, 0.1, -0.2, 0.3, -0.1];
+        let delivered = paced(60.0, 10, |index| pattern[index as usize % pattern.len()]);
+        assert!(delivered.len().abs_diff(300) <= 1, "{}", delivered.len());
+        for pair in delivered.windows(2) {
+            let between = pair[1] - pair[0];
+            assert!(
+                between.abs_diff(INTERVAL) < Duration::from_millis(2),
+                "{between:?}"
+            );
+        }
     }
 
     #[test]

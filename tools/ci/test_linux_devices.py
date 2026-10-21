@@ -82,7 +82,7 @@ esac''',
 
 
 class LinuxJob(unittest.TestCase):
-    def test_the_linux_job_lints_the_device_tests_of_the_media_crate(self):
+    def test_the_linux_job_lints_the_device_checks_and_keeps_the_test_device_out_of_the_client(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "tools/ci").mkdir(parents=True)
@@ -99,6 +99,11 @@ class LinuxJob(unittest.TestCase):
             steps = record.read_text().splitlines()
             self.assertIn("cargo clippy --locked -p junto-media --features native-device-tests "
                           "--all-targets -- -D warnings", steps)
+            symbols = [step for step in steps if "llvm-nm-22" in step]
+            self.assertEqual(len(symbols), 1, steps)
+            self.assertIn("! grep -q junto_fake_", symbols[0])
+            self.assertIn("grep -q junto_camera_open", symbols[0])
+            self.assertLess(steps.index("cargo build --workspace --locked"), steps.index(symbols[0]))
             self.assertLess(steps.index("cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings"),
                             steps.index("cargo clippy --locked -p junto-media --features native-device-tests "
                                         "--all-targets -- -D warnings"))
