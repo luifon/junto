@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real signing, update and documented archive recovery of macOS test bundles; no GUI is started.
+"""Real-client package lifecycle and failure cases of signed macOS fixture bundles.
 
 Builds junto-icon, junto-release and junto-recover with test keys and a test certificate pin in the target
 directory of the repository; a local caller holds tools/serial.sh."""
@@ -20,6 +20,7 @@ from create_identity import create, run
 from keychains import cleanup, signals
 from programs import outcome, program
 import release_tools
+import check_lifecycle
 
 
 def check():
@@ -137,6 +138,9 @@ def check():
                     assert result.returncode != 0, outcome(result)
                     assert version(installed) == "1.0.0"
             print("20 update and archive-recovery assertions passed", flush=True)
+            check_lifecycle.check(root, "macos", files, signing={
+                name: environment[name] for name in ["JUNTO_CODESIGN_IDENTITY", "JUNTO_CODESIGN_KEYCHAIN",
+                                                     "JUNTO_TEST_CERTIFICATE_FILE"]})
         finally:
             cleanup([keychain, root / "other-identity/signing.keychain-db"], before)
             assert run("security", "list-keychains", "-d", "user") == before

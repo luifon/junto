@@ -40,9 +40,15 @@ enum Parsed {
     Run(Arguments),
     Print(String),
     Rollback,
+    Update(String),
 }
 
-fn parse(mut values: impl Iterator<Item = String>) -> Result<Parsed, String> {
+/// `test_configuration`: whether this build is a test configuration, the only one that
+/// accepts `--update-from`.
+fn parse(
+    mut values: impl Iterator<Item = String>,
+    test_configuration: bool,
+) -> Result<Parsed, String> {
     let mut arguments = Arguments {
         data_dir: None,
         start: WindowStart::default(),
@@ -67,6 +73,15 @@ fn parse(mut values: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 arguments.start.activate = false;
             }
             "--rollback-update" => return Ok(Parsed::Rollback),
+            // The package checks update an installed test build from a local source, through
+            // the path of the update action of the window.
+            "--update-from" if test_configuration => {
+                let source = values.next().ok_or("--update-from needs an address")?;
+                return Ok(Parsed::Update(source));
+            }
+            "--update-from" => {
+                return Err("--update-from is accepted only by a test configuration".into());
+            }
             "--version" => {
                 return Ok(Parsed::Print(junto_client_core::releases::build_label()));
             }
@@ -98,8 +113,34 @@ fn data_dir(chosen: Option<PathBuf>) -> Result<PathBuf, String> {
     data_dir_of_this_user().map_err(|error| error.to_string())
 }
 
+fn update_from(source: &str) -> ExitCode {
+    use junto_client_core::releases::{self, install::Previous};
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(releases::Error::from)
+        .and_then(|runtime| runtime.block_on(releases::update_running_from(Some(source))));
+    match result {
+        Ok(installed) => {
+            println!("installed version {}", installed.version);
+            match installed.previous {
+                Previous::Kept(version) => println!("version {version} is kept for a rollback"),
+                Previous::Missing(reason) => println!("no previous version is kept: {reason}"),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    let arguments = match parse(std::env::args().skip(1)) {
+    let arguments = match parse(
+        std::env::args().skip(1),
+        junto_client_core::releases::TEST_CONFIGURATION,
+    ) {
         Ok(Parsed::Run(arguments)) => arguments,
         Ok(Parsed::Rollback) => {
             let result = junto_client_core::releases::PlatformInstaller::running()
@@ -115,6 +156,7 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Ok(Parsed::Update(source)) => return update_from(&source),
         Ok(Parsed::Print(text)) => {
             println!("{text}");
             return ExitCode::SUCCESS;
@@ -199,7 +241,24 @@ mod tests {
     use super::*;
 
     fn parsed(arguments: &[&str]) -> Result<Parsed, String> {
-        parse(arguments.iter().map(|argument| (*argument).to_owned()))
+        parse(
+            arguments.iter().map(|argument| (*argument).to_owned()),
+            false,
+        )
+    }
+
+    #[test]
+    fn only_a_test_configuration_updates_from_a_named_source() {
+        let arguments = || ["--update-from", "http://127.0.0.1:1/"].map(str::to_owned);
+        assert!(matches!(
+            parse(arguments().into_iter(), true),
+            Ok(Parsed::Update(source)) if source == "http://127.0.0.1:1/"
+        ));
+        assert!(matches!(
+            parse(arguments().into_iter(), false),
+            Err(problem) if problem.contains("test configuration")
+        ));
+        assert!(parse(["--update-from".to_owned()].into_iter(), true).is_err());
     }
 
     #[test]
