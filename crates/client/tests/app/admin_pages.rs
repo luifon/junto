@@ -2995,6 +2995,9 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
     assert_eq!(next.passed, MOST_AUDIT_ENTRIES);
     assert!(!next.at_bound && next.loaded > 0);
     assert!(next.rows.iter().all(|row| !first_ids.contains(&row.id)));
+    // The view starts at the first of the next entries.
+    window.settle();
+    assert!(in_view(&mut window, sel("admin-row-audit", next.rows[0].id)).is_some());
     // The rest of the list is read with "Load older": every entry of the log was shown.
     let end = load_older_until(&mut window, |page| !page.older && !page.continues);
     assert_eq!(end.passed + end.loaded, total);
@@ -3010,6 +3013,8 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
         newest.rows.first().map(|row| row.id),
         first_ids.first().copied()
     );
+    window.settle();
+    assert!(in_view(&mut window, sel("admin-row-audit", newest.rows[0].id)).is_some());
 }
 
 #[gpui::test]

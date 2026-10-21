@@ -8,6 +8,7 @@ use gpui::{
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
+use super::list::Row;
 use super::{
     Form, FormField, Mode, Question, group_label, line, named, page_title, refusal, row_action,
     sentence,
@@ -283,10 +284,9 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &GlossaryPage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = theme(cx);
         // A form or a question of a term that the list holds no longer at its position
         // closes: the list changed, and the form would change another term.
         if let Some(Mode::ChangeTerm(position) | Mode::RemoveTerm(position)) = self.admin.mode {
@@ -311,13 +311,83 @@ impl Shell {
         let held = page
             .held()
             .or(sending(view).then_some(text::admin::SENDING));
+        let terms = page.terms.loaded().cloned().unwrap_or_default();
+        // A row holds a control that takes the focus while the page takes changes, or while
+        // its form or question is open.
+        let open = |index: usize| {
+            matches!(
+                self.admin.mode,
+                Some(Mode::ChangeTerm(at) | Mode::RemoveTerm(at)) if at as usize == index
+            )
+        };
+        let list =
+            std::iter::once(
+                Row::new(
+                    "glossary-header",
+                    held.is_none()
+                        || matches!(page.terms, Listed::Failed(_))
+                        || self.admin.mode == Some(Mode::AddTerm),
+                )
+                .part(),
+            )
+            .chain(terms.iter().enumerate().map(|(index, term)| {
+                Row::new(format!("term-{term}"), held.is_none() || open(index))
+            }))
+            .chain(std::iter::once(Row::new("glossary-footer", false).part()))
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, _, cx| {
+                let theme = theme(cx);
+                if index == 0 {
+                    return this.render_glossary_header(&view, &page, &theme, cx);
+                }
+                if let Some(term) = terms.get(index - 1) {
+                    return this.render_term_row(
+                        &view,
+                        &page,
+                        index - 1,
+                        term,
+                        terms.len(),
+                        &theme,
+                        cx,
+                    );
+                }
+                // Below every row, so that a permission given or taken moves no control
+                // (ADR 0730).
+                div()
+                    .children((!page.may_manage).then(|| {
+                        sentence(txt::MANAGE_NEEDS, &theme)
+                            .mt(u(6.0))
+                            .debug_selector(|| "glossary-manage-needs".to_owned())
+                    }))
+                    .into_any_element()
+            },
+            window,
+            cx,
+        )
+    }
+
+    /// The title of the page, the form of a new term and the state of the list.
+    fn render_glossary_header(
+        &mut self,
+        view: &AdminView,
+        page: &GlossaryPage,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let held = page
+            .held()
+            .or(sending(view).then_some(text::admin::SENDING));
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::page_name(AdminPage::Glossary),
             txt::HELP,
-            &theme,
+            theme,
         ));
         // A new term goes to the end of the list: the rows above it do not move.
-        column = column.child(group_label(txt::NEW_TERM, &theme));
+        column = column.child(group_label(txt::NEW_TERM, theme));
         let add = match self.admin.mode {
             Some(Mode::AddTerm) => self.render_form(
                 Form {
@@ -330,7 +400,7 @@ impl Shell {
                     held: page.held(),
                     extra: Vec::new(),
                 },
-                &theme,
+                theme,
                 cx,
             ),
             _ => {
@@ -356,14 +426,14 @@ impl Shell {
             view.refused(AskKind::AddTerm),
             "glossary-add-refused",
         ));
-        column = column.child(group_label(txt::TERMS, &theme));
+        column = column.child(group_label(txt::TERMS, theme));
         match &page.terms {
             Listed::Loading => {
                 let reading = self.render_reading(
                     view.server_id,
                     AdminPart::Glossary(page.workspace_id),
                     None,
-                    &theme,
+                    theme,
                     cx,
                 );
                 column = column.child(reading);
@@ -373,41 +443,28 @@ impl Shell {
                     view.server_id,
                     AdminPart::Glossary(page.workspace_id),
                     Some(*failure),
-                    &theme,
+                    theme,
                     cx,
                 );
                 column = column.child(failed);
             }
             Listed::Loaded(terms) if terms.is_empty() => {
                 column = column.child(
-                    sentence(txt::EMPTY, &theme)
+                    sentence(txt::EMPTY, theme)
                         .py(u(6.0))
                         .debug_selector(|| "glossary-empty".to_owned()),
                 );
             }
             Listed::Loaded(terms) => {
                 column = column.child(
-                    sentence(txt::count(terms.len()), &theme)
+                    sentence(txt::count(terms.len()), theme)
                         .mb(u(4.0))
                         .debug_selector(|| "glossary-count".to_owned()),
                 );
                 if page.cut {
-                    column = column.child(sentence(txt::CUT, &theme).mb(u(4.0)));
-                }
-                let count = terms.len();
-                for (index, term) in terms.iter().enumerate() {
-                    let row = self.render_term_row(view, page, index, term, count, &theme, cx);
-                    column = column.child(row);
+                    column = column.child(sentence(txt::CUT, theme).mb(u(4.0)));
                 }
             }
-        }
-        // Below every row, so that a permission given or taken moves no control (ADR 0730).
-        if !page.may_manage {
-            column = column.child(
-                sentence(txt::MANAGE_NEEDS, &theme)
-                    .mt(u(6.0))
-                    .debug_selector(|| "glossary-manage-needs".to_owned()),
-            );
         }
         column.into_any_element()
     }

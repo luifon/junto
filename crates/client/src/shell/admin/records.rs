@@ -1575,6 +1575,11 @@ impl Shell {
                 .chain(std::iter::once(Row::new("audit-footer", true).part()))
                 .collect();
         self.admin.list.take(Some(view), list, window, cx);
+        // "Continue" and "Read again" start the view at the first entry of their read: the
+        // request ends with the read.
+        if page.state != AuditRead::Reading {
+            self.admin.list.end_restart();
+        }
         let page = page.clone();
         self.render_admin_list(
             move |this, index, window, cx| {
@@ -1847,6 +1852,7 @@ impl Shell {
                             .h(u(30.0))
                             .px(u(12.0))
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                this.admin.list.start_at_first_item();
                                 this.state.update(cx, |state, cx| {
                                     state.continue_audit(server_id, cx);
                                 });
@@ -1878,6 +1884,7 @@ impl Shell {
                             .px(u(10.0))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(scope) = scope {
+                                    this.admin.list.start_at_first_item();
                                     this.state.update(cx, |state, cx| {
                                         state.show_audit_log(server_id, scope, cx);
                                     });
