@@ -71,10 +71,20 @@ impl SignalProxy {
     pub async fn start() -> Self {
         let url = std::env::var("JUNTO_TEST_LIVEKIT_URL")
             .expect("JUNTO_TEST_LIVEKIT_URL names the LiveKit server of the test run");
-        let server: SocketAddr = url
+        Self::start_at(&url).await
+    }
+
+    /// A proxy in front of the signal port that `url` names. The host can be a name: in the
+    /// Linux build image the media server is the service `livekit`.
+    async fn start_at(url: &str) -> Self {
+        let authority = url
             .strip_prefix("ws://")
-            .and_then(|address| address.parse().ok())
-            .unwrap_or_else(|| panic!("{url} is not ws://<address>:<port>"));
+            .filter(|authority| !authority.contains('/'))
+            .unwrap_or_else(|| panic!("{url} is not ws://<host>:<port>"));
+        let server: Vec<SocketAddr> = tokio::net::lookup_host(authority)
+            .await
+            .unwrap_or_else(|e| panic!("the host of {url} is not resolved: {e}"))
+            .collect();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
         let shared = Arc::new(Mutex::new(Shared::default()));
@@ -82,7 +92,7 @@ impl SignalProxy {
             let shared = shared.clone();
             async move {
                 while let Ok((client, _)) = listener.accept().await {
-                    let Ok(upstream) = TcpStream::connect(server).await else {
+                    let Ok(upstream) = TcpStream::connect(server.as_slice()).await else {
                         continue;
                     };
                     let _ = client.set_nodelay(true);
@@ -279,4 +289,17 @@ async fn downward(mut from_server: OwnedReadHalf, link: Arc<Link>) {
     if !link.state.lock().unwrap().held() {
         let _ = link.to_client.lock().await.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn the_proxy_reaches_a_media_server_named_by_its_host_name() {
+    let server = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    let proxy = SignalProxy::start_at(&format!("ws://localhost:{port}")).await;
+    let mut client = TcpStream::connect(proxy.address).await.unwrap();
+    client.write_all(b"upgrade").await.unwrap();
+    let (mut upstream, _) = server.accept().await.unwrap();
+    let mut received = [0; 7];
+    upstream.read_exact(&mut received).await.unwrap();
+    assert_eq!(&received, b"upgrade");
 }

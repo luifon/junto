@@ -303,6 +303,9 @@ job() {
         linux:rust-linux)
             JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
                 JUNTO_LINUX_POSTGRES_CPUS=$postgres_cpus JUNTO_LINUX_MEMORY=8g tools/ci/rust-linux.sh ;;
+        linux:rust-linux-devices)
+            JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
+                JUNTO_LINUX_POSTGRES_CPUS=$postgres_cpus JUNTO_LINUX_MEMORY=8g tools/ci/rust-linux-devices.sh ;;
         linux:licences)
             JUNTO_CI_TOOLS=/target/ci-tools linux_container tools/ci/licences.sh ;;
         linux:transcription-worker)

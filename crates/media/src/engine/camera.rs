@@ -112,6 +112,29 @@ impl Drop for OwnCamera {
             .take();
     }
 }
+/// Reads the camera permission once, on a blocking thread because the Linux camera opens each
+/// device node to read it, asks for it when it was never asked, then starts capture.
+async fn open(
+    capture: Arc<dyn crate::camera::CameraCapture>,
+    device: Option<String>,
+    target: Arc<dyn CameraSink>,
+) -> Result<CaptureStream, CameraError> {
+    let reader = capture.clone();
+    let access = tokio::task::spawn_blocking(move || reader.access())
+        .await
+        .map_err(|_| CameraError::Failed("the camera permission was not read".into()))?;
+    let access = if access == CameraAccess::NotAsked {
+        capture.request_access().await
+    } else {
+        access
+    };
+    if access == CameraAccess::Allowed {
+        capture.start(device, target).await
+    } else {
+        Err(CameraError::NoPermission(access))
+    }
+}
+
 pub(super) struct RemoteCamera {
     account: AccountId,
     publication: RemoteTrackPublication,
@@ -153,16 +176,7 @@ impl Actor {
             self.internal.clone(),
         );
         let task = self.runtime.spawn(async move {
-            let access = if capture.access() == CameraAccess::NotAsked {
-                capture.request_access().await
-            } else {
-                capture.access()
-            };
-            let answer = if access == CameraAccess::Allowed {
-                capture.start(device, target).await
-            } else {
-                Err(CameraError::NoPermission(access))
-            };
+            let answer = open(capture, device, target).await;
             *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(answer);
             let _ = internal.send(Internal::CameraStarted(generation));
         });
@@ -519,6 +533,59 @@ fn start_error(connected: bool, allowed: bool) -> Option<CameraError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A camera that counts the reads of its permission and starts no capture.
+    struct Counting {
+        reads: AtomicUsize,
+        access: CameraAccess,
+    }
+    impl crate::camera::CameraCapture for Counting {
+        fn access(&self) -> CameraAccess {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.access
+        }
+        fn request_access(&self) -> crate::share::Pending<CameraAccess> {
+            Box::pin(async { CameraAccess::Allowed })
+        }
+        fn devices(&self) -> Result<Vec<crate::camera::CameraDevice>, CameraError> {
+            Ok(Vec::new())
+        }
+        fn start(
+            &self,
+            _: Option<String>,
+            _: Arc<dyn CameraSink>,
+        ) -> crate::share::Pending<Result<CaptureStream, CameraError>> {
+            Box::pin(async { Err(CameraError::DeviceGone) })
+        }
+    }
+
+    struct Ignored;
+    impl CameraSink for Ignored {
+        fn picture(&self, _: Arc<dyn VideoBuffer>) {}
+        fn ended(&self, _: CameraError) {}
+    }
+
+    /// The Linux camera opens every device node to read its permission.
+    #[tokio::test]
+    async fn a_start_reads_the_camera_permission_once() {
+        for (access, answer) in [
+            (CameraAccess::Allowed, CameraError::DeviceGone),
+            (CameraAccess::NotAsked, CameraError::DeviceGone),
+            (
+                CameraAccess::Refused,
+                CameraError::NoPermission(CameraAccess::Refused),
+            ),
+        ] {
+            let capture = Arc::new(Counting {
+                reads: AtomicUsize::new(0),
+                access,
+            });
+            let result = open(capture.clone(), None, Arc::new(Ignored)).await;
+            assert_eq!(result.unwrap_err(), answer);
+            assert_eq!(capture.reads.load(Ordering::Relaxed), 1, "{access:?}");
+        }
+    }
     /// A camera with a capture and a publication that the media server has not answered.
     fn publishing() -> OwnCamera {
         let (internal, _) = mpsc::unbounded_channel();

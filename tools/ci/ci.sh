@@ -29,6 +29,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # The jobs of each runner. A commit has passed CI when its latest run on each runner has
 # finished with every job of this list passed.
 linux_jobs="rust-linux licences transcription-worker layout-page"
+linux_optional_jobs="rust-linux-devices"
 macos_jobs="rust-macos deployment"
 windows_jobs="rust-windows"
 runners="linux macos windows"
@@ -206,10 +207,13 @@ start() {
     fi
 }
 
-# show <run>: prints the jobs of a run; returns 0 when every job passed, 1 when one failed,
-# 3 while the run has not finished.
+# show <run> [<job>...]: prints the jobs of a run; returns 0 when every job passed, 1 when one
+# failed, 3 while the run has not finished. With jobs, only these decide: the failure of
+# another job of the run is shown as optional.
 show() {
     run=$1
+    shift
+    deciding="$*" optional_failed=""
     case "$run" in
         *-linux) runner=linux ;;
         *-macos) runner=macos ;;
@@ -243,11 +247,15 @@ show() {
             if [ "$status" = 0 ]; then
                 printf '  %-22s passed   %s\n' "$job" "$time"
             else
-                result=1
+                kind=""
+                case " ${deciding:-$job} " in
+                    *" $job "*) result=1 ;;
+                    *) optional_failed=1 kind="  (optional)" ;;
+                esac
                 logs="$root/target/ci-logs/$run"
                 mkdir -p "$logs"
                 on "$runner" "cat 'runs/$run/logs/$job.log'" >"$logs/$job.log" || true
-                printf '  %-22s FAILED   %s  exit %s  log %s\n' "$job" "$time" "$status" "$logs/$job.log"
+                printf '  %-22s FAILED   %s  exit %s  log %s%s\n' "$job" "$time" "$status" "$logs/$job.log" "$kind"
             fi
         elif [ "$(printf '%s' "$current" | cut -f 1)" = "$job" ] && [ -z "$finished" ] && [ -n "$ended" ]; then
             printf '  %-22s ENDED    without a result, started %s\n' "$job" "$(printf '%s' "$current" | cut -f 2)"
@@ -273,7 +281,7 @@ show() {
         echo "  the runner ended with status $finished before its first job; the end of runs/$run/runner.log:"
         printf '%s\n' "$files" | sed -n 's/^runner\t/    /p'
         result=1
-    elif [ "$finished" != 0 ] && [ "$result" = 0 ]; then
+    elif [ "$finished" != 0 ] && [ "$result" = 0 ] && [ -z "$optional_failed" ]; then
         echo "  the runner ended with status $finished; see runs/$run/runner.log on the runner"
         result=1
     fi
@@ -292,9 +300,18 @@ ended_check() {
     fi
 }
 
-# The latest run of a commit on a runner, by the date at the start of the name.
+# The latest run of a commit on a runner, by the date at the start of the name, that has a job
+# of the runner's list; a run of only optional jobs does not count for the commit. Without such
+# a run, the latest run.
 latest() {
-    on "$1" "ls runs 2>/dev/null | grep -- '-$(printf '%.12s' "$2")-$1\$' | sort | tail -n 1" || true
+    runs="ls runs 2>/dev/null | grep -- '-$(printf '%.12s' "$2")-$1\$'"
+    on "$1" "for run in \$($runs | sort -r); do
+            jobs=\" \$(cat \"runs/\$run/jobs\" 2>/dev/null) \"
+            for job in $(jobs_of "$1"); do
+                case \"\$jobs\" in *\" \$job \"*) echo \"\$run\"; exit 0 ;; esac
+            done
+        done
+        $runs | sort | tail -n 1" || true
 }
 
 status() {
@@ -311,7 +328,8 @@ status() {
             continue
         fi
         result=0
-        (show "$run") || result=$?
+        # shellcheck disable=SC2046 # the list is words
+        (show "$run" $(jobs_of "$runner")) || result=$?
         if [ "$result" -eq 1 ]; then verdict=failed; fi
         if [ "$result" -ne 0 ] && [ "$verdict" = passed ]; then verdict=incomplete; fi
         # A run of only some jobs does not count for the commit.
@@ -355,6 +373,7 @@ run_remote() {
     started=""
     for runner in linux windows; do
         wanted=$(jobs_of "$runner") picked=""
+        if [ "$runner" = linux ]; then wanted="$wanted $linux_optional_jobs"; fi
         for job in "$@"; do
             case " $wanted " in *" $job "*) picked="$picked $job" ;; esac
         done
