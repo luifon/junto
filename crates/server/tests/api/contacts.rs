@@ -315,14 +315,16 @@ async fn the_profile_of_an_administrator_is_seen_by_the_accounts_that_may_write_
     assert!(!reached(&server, &ann).await.contains(&eve.account_id));
 }
 
-/// The rows that a list of contacts reads follow what the caller may reach, not the
-/// accounts that it may not see (ADR 0307). Ten thousand other accounts sort before the
+/// The rows that a list of contacts reads, for the candidates and for the decision on each
+/// account of the page, follow what the caller may reach, not the accounts that it may not
+/// see (ADR 0307). Ten thousand other accounts sort before the
 /// people of the test, hold a server role without the administrator permission and are
 /// members of a workspace of their own.
 #[tokio::test]
 async fn the_contacts_of_a_member_read_the_candidates_and_not_the_hidden_accounts() {
     use crate::plan_support::{analyze, explained, index_names, visited_rows};
     use junto_server::routes::contacts::{CONTACTS_OF_ADMINISTRATOR, CONTACTS_OF_MEMBER};
+    use junto_server::store::{CONTACT_STANDING, FELLOW_MEMBERS};
     let People {
         server,
         owner,
@@ -399,6 +401,28 @@ async fn the_contacts_of_a_member_read_the_candidates_and_not_the_hidden_account
         assert!(
             visited_rows(&plan[0]["Plan"]) < 100,
             "a member with {settings:?}: {plan}"
+        );
+        // The decision for each account of the page reads that account, its roles and the
+        // workspaces of the caller.
+        let page = [owner.account_id, bea.account_id, eve.account_id];
+        let plan: serde_json::Value = sqlx::query_scalar(explained(CONTACT_STANDING))
+            .bind(&page[..])
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        assert!(
+            visited_rows(&plan[0]["Plan"]) < 100,
+            "the standing with {settings:?}: {plan}"
+        );
+        let plan: serde_json::Value = sqlx::query_scalar(explained(FELLOW_MEMBERS))
+            .bind(ann.account_id)
+            .bind(&page[..])
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        assert!(
+            visited_rows(&plan[0]["Plan"]) < 100,
+            "the fellow members with {settings:?}: {plan}"
         );
         // An administrator reaches every account; a page reads its rows in the order of
         // the index.

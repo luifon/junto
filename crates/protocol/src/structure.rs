@@ -138,7 +138,10 @@ pub struct ChannelPlace {
     pub position: i32,
 }
 
-/// One channel of a change of the order: where the client read it, and where it goes.
+/// One channel of a change of the order: where the client read it, and where it goes. With
+/// `to` equal to `from`, the channel does not move: the server only checks that it is still
+/// at `from`. A client names so the channels next to the destination that it read, so that
+/// a change of their places since that read refuses the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
