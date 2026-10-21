@@ -89,13 +89,13 @@ cargo test --locked --workspace --test app -- updates::
 step "PostgreSQL for Windows"
 python3 tools/windows/with_test_postgres.py --fetch
 # The other window tests, against the PostgreSQL build for Windows of the version of the CI
-# image. Not here: the tests of live:: need LiveKit; the tests of recordings::, the files of
-# a message and the export of a channel need the server to store files, which it does on
-# Unix systems only (crates/server/src/recordings/files.rs).
+# image. Not here: the tests of live:: need LiveKit; the tests of recordings:: and
+# transcripts::, the files of a message and the export of a channel need the server to store
+# files, which it does on Unix systems only (crates/server/src/recordings/files.rs).
 step "Window tests with PostgreSQL"
 python3 -m unittest discover -s tools/windows -p "test_*.py"
 python3 tools/windows/with_test_postgres.py cargo test --locked --workspace --test app -- \
-    --skip updates:: --skip live:: --skip recordings:: \
+    --skip updates:: --skip live:: --skip recordings:: --skip transcripts:: \
     --skip messages::a_file_is_sent_with_a_message_and_saved_from_one \
     --skip messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops \
     --skip messages::a_pending_file_picker_cannot_retarget_an_upload \

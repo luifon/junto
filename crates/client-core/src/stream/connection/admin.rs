@@ -104,6 +104,18 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             .channel_permissions(channel_id)
             .await
             .map(AdminPayload::ChannelPermissions),
+        AdminPart::Glossary(workspace_id) => {
+            let glossary = api.glossary(workspace_id).await?;
+            // A server is not trusted to answer for the workspace that was asked for
+            // (ADR 0714).
+            if glossary.workspace_id != workspace_id {
+                return Err(ApiError::InvalidResponse {
+                    status: 200,
+                    reason: "the glossary of another workspace",
+                });
+            }
+            Ok(AdminPayload::Glossary(glossary.terms))
+        }
     }
 }
 
@@ -179,6 +191,18 @@ impl Client {
             if let Some(model) = &mut self.model {
                 model.set_admin(part, AdminSet::NotLoaded);
             }
+            self.start(Load::Part(Part::Admin(part)));
+        }
+    }
+
+    /// Reads a collection that a reader has open again, whatever its state. A state that is
+    /// stale is replaced by a snapshot, after which every open collection is read again.
+    pub(super) fn read_admin_now(&mut self, part: AdminPart) {
+        let held = self
+            .model
+            .as_ref()
+            .is_some_and(|model| !self.stale && in_state(model, part));
+        if held && self.wants_admin(part) {
             self.start(Load::Part(Part::Admin(part)));
         }
     }

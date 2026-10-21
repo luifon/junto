@@ -4,6 +4,7 @@
 
 mod archive;
 mod channels;
+mod glossary;
 mod list;
 mod notifications;
 pub mod overrides;
@@ -65,6 +66,12 @@ pub enum Mode {
     Days(AskKind),
     /// The question before the removal of the logo of the server.
     RemoveLogo,
+    /// A new term of the glossary (ADR 0616).
+    AddTerm,
+    /// The new text of the term at this position of the glossary.
+    ChangeTerm(u32),
+    /// The question before the removal of the term at this position.
+    RemoveTerm(u32),
     /// One limit of the files of messages is typed (ADR 0408).
     Limit(server::Limit),
 }
@@ -86,6 +93,9 @@ pub(crate) struct AdminUi {
     pub(crate) invalid: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The term of the glossary whose row shows the open form or question. The form
+    /// closes when the list holds another term at its position.
+    pub(crate) opened_term: Option<String>,
     /// The space of the rows with a form or a question (ADR 0730).
     pub(crate) space: FormSpace<Mode>,
     pub(crate) nav_scroll: ScrollHandle,
@@ -139,6 +149,7 @@ impl AdminUi {
             new_kind: ChannelKind::Text,
             invalid: None,
             sent: None,
+            opened_term: None,
             space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
@@ -317,6 +328,9 @@ pub(crate) struct Form {
     /// The label of the button that sends the form.
     pub send: &'static str,
     pub sending: bool,
+    /// Why the form takes no send now, such as a permission that was lost while it was
+    /// open: its button is disabled, and the reason stands in the slot of the form.
+    pub held: Option<&'static str>,
     pub help: Option<&'static str>,
     /// Controls between the field and the buttons.
     pub extra: Vec<AnyElement>,
@@ -387,6 +401,7 @@ impl Shell {
         self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
+        self.admin.opened_term = None;
         self.admin.space.release();
         self.admin.list.state.remeasure();
         for field in [self.admin.name.clone(), self.admin.value.clone()] {
@@ -411,6 +426,7 @@ impl Shell {
         self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
+        self.admin.opened_term = None;
         self.admin.space.release();
         self.admin.list.state.remeasure();
         let name = name.to_owned();
@@ -429,7 +445,9 @@ impl Shell {
                 | Mode::CreateCategory
                 | Mode::RenameCategory(_)
                 | Mode::CreateChannel(_)
-                | Mode::RenameChannel,
+                | Mode::RenameChannel
+                | Mode::AddTerm
+                | Mode::ChangeTerm(_),
             ) => self.focus_field(&self.admin.name.clone(), window, cx),
             Some(Mode::EnterCode | Mode::Days(_) | Mode::Limit(_)) => {
                 self.focus_field(&self.admin.value.clone(), window, cx);
@@ -489,6 +507,9 @@ impl Shell {
                 | Mode::RenameChannel,
             ) => self.submit_channel_form(&view, window, cx),
             Some(Mode::Days(_)) => self.submit_days(&view, window, cx),
+            Some(Mode::AddTerm | Mode::ChangeTerm(_)) => {
+                self.submit_glossary_form(&view, window, cx);
+            }
             Some(Mode::Limit(_)) => self.submit_limit(&view, cx),
             _ => {}
         }
@@ -528,6 +549,7 @@ impl Shell {
                 if let Some(mode) = self.admin.mode.take() {
                     self.admin.space.keep(mode);
                 }
+                self.admin.opened_term = None;
                 self.admin.invalid = None;
                 for field in [self.admin.name.clone(), self.admin.value.clone()] {
                     field.update(cx, |field, cx| field.set_value("", window, cx));
@@ -676,7 +698,7 @@ impl Shell {
                             .kind(ButtonKind::Primary)
                             .label(form.send)
                             .selector("admin-form-send")
-                            .disabled(form.sending)
+                            .disabled(form.sending || form.held.is_some())
                             .h(u(30.0))
                             .px(u(12.0))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -688,7 +710,11 @@ impl Shell {
                 crate::ui::notice_slot("admin-form-invalid-slot").children(
                     self.admin
                         .invalid
-                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid")),
+                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid"))
+                        .or_else(|| {
+                            form.held
+                                .map(|held| Notice::new(held).selector("admin-form-held"))
+                        }),
                 ),
             )
             .when_some(form.help, |column, help| {
@@ -920,6 +946,7 @@ impl Shell {
             ServerPage::Exports(page) => self.render_exports_page(view, page, window, cx),
             ServerPage::AuditLog(page) => self.render_audit_page(view, page, window, cx),
             ServerPage::Recordings(page) => self.render_recordings_page(view, page, window, cx),
+            ServerPage::Glossary(page) => self.render_glossary_page(view, page, window, cx),
             ServerPage::Roles(page) => self.render_roles_page(view, page, window, cx),
         }
     }

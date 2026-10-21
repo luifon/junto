@@ -297,11 +297,14 @@ pub struct Cards<'a> {
     pub channel_id: ChannelId,
     /// The names of the accounts of the server that the client holds.
     pub accounts: &'a HashMap<AccountId, String>,
-    /// The roles of the person allow the removal of a recording.
+    /// The roles of the person hold "manage recordings", and the channel is not
+    /// archived: the removal of a recording and a new request for its transcript.
     pub may_remove: bool,
     pub downloads: &'a HashMap<(ServerId, RecordingSegmentId), DownloadProgress>,
     pub texts: &'a HashMap<(ServerId, RecordingId), DownloadProgress>,
     pub removing: &'a HashSet<(ServerId, RecordingId)>,
+    /// The recordings whose transcript the person asked for again.
+    pub requesting: &'a HashSet<(ServerId, RecordingId)>,
     pub refused: &'a HashMap<(ServerId, RecordingId), String>,
 }
 
@@ -839,9 +842,11 @@ pub fn derive(source: &Source<'_>) -> Feed {
                         zone: source.zone,
                         today: source.today,
                         may_remove: cards.may_remove,
+                        may_request: cards.may_remove,
                         downloads: cards.downloads,
                         texts: cards.texts,
                         removing: cards.removing.contains(&(source.server_id, recording_id)),
+                        requesting: cards.requesting.contains(&(source.server_id, recording_id)),
                         refused: cards
                             .refused
                             .get(&(source.server_id, recording_id))
@@ -1694,6 +1699,7 @@ mod tests {
             downloads: &downloads,
             texts: &texts,
             removing: &removing,
+            requesting: &removing,
             refused: &refused,
         };
         let feed = derive(&Source {

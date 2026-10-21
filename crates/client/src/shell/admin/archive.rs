@@ -244,6 +244,7 @@ impl Shell {
                         send: text::SAVE,
                         sending: view.sending(what),
                         help: Some(help),
+                        held: None,
                         extra: vec![never.into_any_element()],
                     },
                     theme,

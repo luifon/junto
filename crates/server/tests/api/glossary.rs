@@ -166,3 +166,52 @@ async fn the_glossary_of_a_workspace_is_hidden_from_a_person_outside_it() {
         .ok(StatusCode::OK);
     assert!(other.terms.is_empty());
 }
+
+#[tokio::test]
+async fn a_change_made_from_an_older_list_is_refused_and_changes_nothing() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let path = format!("/api/v1/workspaces/{}/glossary", workspace.id);
+    server
+        .put(&owner, &path, &json!({ "terms": ["Quorvex", "Lumitrax"] }))
+        .await
+        .ok::<Glossary>(StatusCode::OK);
+
+    // A change from the list as it is now replaces it.
+    let read = json!(["Quorvex", "Lumitrax"]);
+    let added: Glossary = server
+        .put(
+            &owner,
+            &path,
+            &json!({ "terms": ["Quorvex", "Lumitrax", "Ysolde Varkonen"], "replaces": read }),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(added.terms, ["Quorvex", "Lumitrax", "Ysolde Varkonen"]);
+
+    // A second change from the same older list would remove the term that was added: it
+    // is refused, and nothing is stored, recorded or told.
+    let (events, entries) = (
+        server.count("events").await,
+        server.count("audit_entries").await,
+    );
+    for replaces in [
+        json!(["Quorvex", "Lumitrax"]),
+        json!(["Lumitrax", "Quorvex", "Ysolde Varkonen"]),
+        json!([]),
+    ] {
+        server
+            .put(
+                &owner,
+                &path,
+                &json!({ "terms": ["Lumitrax"], "replaces": replaces }),
+            )
+            .await
+            .error(ErrorCode::Conflict);
+    }
+    assert_eq!(server.count("events").await, events);
+    assert_eq!(server.count("audit_entries").await, entries);
+    let kept: Glossary = server.get(&owner, &path).await.ok(StatusCode::OK);
+    assert_eq!(kept.terms, ["Quorvex", "Lumitrax", "Ysolde Varkonen"]);
+}

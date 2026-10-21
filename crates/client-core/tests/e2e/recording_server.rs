@@ -49,9 +49,12 @@ const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 
 /// The stand-in for the transcription worker (ADR 0611). The server runs it as
 /// `<script> run <job> --out <transcript> --audio-root <directory of the recording>`. It
-/// writes the transcript that the test gave for that recording, and fails without one.
+/// writes the transcript that the test gave for that recording, and fails without one. For
+/// a recording that the test marked as refused it ends with the code of a refused job,
+/// which fails the transcript without a further run (ADR 0607).
 const WORKER_SCRIPT: &str = r#"#!/bin/sh
 here=$(dirname "$0")
+[ -f "$here/$(basename "$6").refuse" ] && exit 2
 given="$here/$(basename "$6").json"
 [ -f "$given" ] || exit 1
 cp "$given" "$4.tmp" && mv "$4.tmp" "$4"
@@ -93,8 +96,44 @@ pub struct Spoken {
     pub text: String,
 }
 
+/// What a transcript of the stand-in worker states beside its lines.
+#[derive(Debug, Clone, Default)]
+pub struct Written<'a> {
+    pub lines: &'a [Spoken],
+    /// The glossary terms that the worker gave to the speech model, and those that did not
+    /// fit. Together, in order, they are the glossary of the workspace when the job was
+    /// written.
+    pub glossary_used: &'a [&'a str],
+    pub glossary_cut: &'a [&'a str],
+    /// The microphone of this person was decoded only in part: its segment is damaged,
+    /// and the transcript covers a part of the sound.
+    pub damaged: Option<AccountId>,
+}
+
+/// How [`RecordingServer::record_with`] makes a recording.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecordPlan<'a> {
+    /// The language of the speech that the person who records sets.
+    pub language: Option<&'a str>,
+    /// The recorder ends the job of the shared sound of the person who records with an
+    /// error after one second, and the person stops sharing: the recording is saved in
+    /// part.
+    pub fail_shared_sound: bool,
+}
+
+/// The place of one person in the call of a voice channel, as the media server in memory
+/// holds it.
+#[derive(Debug, Clone)]
+pub struct Seat {
+    pub room: String,
+    pub identity: String,
+}
+
 pub struct RecordingServer {
     address: SocketAddr,
+    /// The address of one proxy, listed as a public origin, held open from the start until
+    /// [`RecordingServer::take_proxy`] takes it.
+    proxy: Mutex<Option<std::net::TcpListener>>,
     owner_code: String,
     state: AppState,
     clock: Arc<TestClock>,
@@ -173,6 +212,8 @@ impl RecordingServer {
         let clock = Arc::new(TestClock::default());
         let server_clock = clock.clone();
         let (shutdown, stopped) = oneshot::channel::<()>();
+        let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let proxy_address = proxy.local_addr().unwrap();
         let started = on_runtime(runtime.handle().clone(), move || async move {
             let admin_url = std::env::var(DATABASE_URL).unwrap_or_else(|_| {
                 panic!(
@@ -191,6 +232,7 @@ impl RecordingServer {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let origin = Origin::parse(&format!("http://{address}")).unwrap();
+            let proxy_origin = Origin::parse(&format!("http://{proxy_address}")).unwrap();
             let config = Config {
                 exports_directory: None,
                 migration_copy: junto_server::bootstrap::MigrationCopy::None,
@@ -199,7 +241,7 @@ impl RecordingServer {
                 attachments_directory: Some(attachments_directory),
                 database_url: String::new(),
                 listen_address: address,
-                public_origins: PublicOrigins::of(vec![origin]),
+                public_origins: PublicOrigins::of(vec![origin, proxy_origin]),
                 server_name: name,
                 trusted_proxies: Vec::new(),
                 log_format: LogFormat::Text,
@@ -260,6 +302,7 @@ impl RecordingServer {
         let (address, owner_code, state, media, recorder) = started.await;
         Self {
             address,
+            proxy: Mutex::new(Some(proxy)),
             owner_code,
             state,
             clock,
@@ -276,6 +319,18 @@ impl RecordingServer {
 
     pub fn address(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    /// The listener of the proxy address that the server lists as a public origin, and the
+    /// port of the server behind it. A server has one.
+    pub fn take_proxy(&self) -> (std::net::TcpListener, u16) {
+        let listener = self
+            .proxy
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the proxy of this server was taken before");
+        (listener, self.address.port())
     }
 
     /// The owner code of the first start of the server.
@@ -311,12 +366,78 @@ impl RecordingServer {
 
     /// One pass of the controller of recordings. Before it, the recorder ends the files
     /// of the tracks that have ended.
-    async fn tend(&self) {
+    pub async fn tend(&self) {
         self.recorder.work();
         self.on(|state| async move {
             control::tend_all(&state).await.unwrap();
         })
         .await;
+    }
+
+    /// A person enters the call of a voice channel with a microphone, and with the sound
+    /// of a screen when `shares_sound` is set. The media server in memory holds the place
+    /// of the person from then on.
+    pub async fn enter(
+        &self,
+        channel_id: ChannelId,
+        person: &ServerHandle,
+        shares_sound: bool,
+    ) -> Seat {
+        // The server lets a person into a call only while its checks reach the media
+        // server (ADR 0509).
+        self.check().await;
+        let join = person.api().join_channel_call(channel_id).await.unwrap();
+        let (room, identity) = self
+            .media
+            .connect(&join.token)
+            .expect("a token that the media server accepts");
+        self.check().await;
+        let publish = |source| {
+            let published = self
+                .media
+                .publish(&room, &identity, TrackKind::Audio, source);
+            assert!(published, "the person may not publish {source:?}");
+        };
+        publish(TrackSource::Microphone);
+        if shares_sound {
+            publish(TrackSource::ScreenShareAudio);
+        }
+        Seat { room, identity }
+    }
+
+    /// The people leave the call of their seats.
+    pub async fn leave(&self, people: &[(&ServerHandle, Seat)]) {
+        for (person, seat) in people {
+            person.api().leave_call().await.unwrap();
+            self.media.leave(&seat.room, &seat.identity);
+        }
+        self.check().await;
+    }
+
+    /// The clock of the server and of the recorder moves forward.
+    pub fn advance(&self, seconds: i64) {
+        self.clock.advance(time::Duration::seconds(seconds));
+    }
+
+    /// The passes of the controller that follow a stop: the stops, the ends of the jobs,
+    /// and the last questions about them. Then the files of the recording are processed.
+    pub async fn finish(&self) {
+        assert_eq!(
+            self.settle_recordings().await,
+            1,
+            "the files of one recording were processed"
+        );
+    }
+
+    /// The passes of the controller after a stop, and one pass of the processing of
+    /// files. Returns the number of recordings whose files were processed: a recording
+    /// that was stopped before the recorder started it has none.
+    pub async fn settle_recordings(&self) -> usize {
+        for _ in 0..3 {
+            self.tend().await;
+        }
+        self.on(|state| async move { process::run_once(&state).await.unwrap() })
+            .await
     }
 
     /// Makes a finished recording of the call of a voice channel and returns its
@@ -329,58 +450,74 @@ impl RecordingServer {
     /// The recording has the video of the composite, one audio file for each microphone,
     /// and one for the shared sound, each of two seconds.
     pub async fn record(&self, channel_id: ChannelId, people: &[&ServerHandle]) -> RecordingId {
+        self.record_with(channel_id, people, RecordPlan::default())
+            .await
+    }
+
+    /// [`RecordingServer::record`] with a language and a failed part.
+    pub async fn record_with(
+        &self,
+        channel_id: ChannelId,
+        people: &[&ServerHandle],
+        plan: RecordPlan<'_>,
+    ) -> RecordingId {
         let starter = people.first().expect("a person who records");
-        // The server lets a person into a call only while its checks reach the media
-        // server (ADR 0509).
-        self.check().await;
         let mut seats = Vec::new();
         for (position, person) in people.iter().enumerate() {
-            let join = person.api().join_channel_call(channel_id).await.unwrap();
-            let (room, identity) = self
-                .media
-                .connect(&join.token)
-                .expect("a token that the media server accepts");
-            self.check().await;
-            let publish = |source| {
-                let published = self
-                    .media
-                    .publish(&room, &identity, TrackKind::Audio, source);
-                assert!(published, "the person may not publish {source:?}");
-            };
-            publish(TrackSource::Microphone);
-            if position == 0 {
-                publish(TrackSource::ScreenShareAudio);
-            }
-            seats.push((room, identity));
+            seats.push(self.enter(channel_id, person, position == 0).await);
         }
 
         let started = starter
             .api()
-            .start_recording(channel_id, None)
+            .start_recording(channel_id, plan.language)
             .await
             .unwrap();
         self.tend().await;
-        // The recorder reports the length of the files that it writes.
-        self.clock
-            .advance(time::Duration::seconds(i64::from(samples::SECONDS)));
-        starter.api().stop_recording(channel_id).await.unwrap();
-        // The stops, the ends of the jobs, and the last questions about them.
-        for _ in 0..3 {
+        let mut left = i64::from(samples::SECONDS);
+        if plan.fail_shared_sound {
+            let seat = &seats[0];
+            let track_id = self
+                .media
+                .participants(&seat.room)
+                .into_iter()
+                .find(|participant| participant.identity == seat.identity)
+                .and_then(|participant| {
+                    participant
+                        .tracks
+                        .into_iter()
+                        .find(|track| track.source == TrackSource::ScreenShareAudio)
+                })
+                .map(|track| track.id)
+                .expect("the shared sound of the person who records");
+            let job = self
+                .recorder
+                .job_of_track(&track_id)
+                .pop()
+                .expect("the job of the shared sound");
+            self.advance(1);
+            left -= 1;
+            // The person stops sharing, so that the server starts no new job for the
+            // track.
+            self.media
+                .unpublish(&seat.room, &seat.identity, TrackSource::ScreenShareAudio);
+            self.recorder.fail(&job.id);
             self.tend().await;
         }
-        let processed = self
-            .on(|state| async move { process::run_once(&state).await.unwrap() })
-            .await;
-        assert_eq!(processed, 1, "the files of one recording were processed");
+        // The recorder reports the length of the files that it writes.
+        self.advance(left);
+        starter.api().stop_recording(channel_id).await.unwrap();
+        self.finish().await;
 
-        for (person, (room, identity)) in people.iter().zip(&seats) {
-            person.api().leave_call().await.unwrap();
-            self.media.leave(room, identity);
-        }
-        self.check().await;
+        let leaving: Vec<(&ServerHandle, Seat)> = people.iter().copied().zip(seats).collect();
+        self.leave(&leaving).await;
 
         let detail = starter.api().recording(started.id).await.unwrap();
-        assert_eq!(detail.recording.state, RecordingState::Ready, "{detail:?}");
+        let expected = if plan.fail_shared_sound {
+            RecordingState::PartlyFailed
+        } else {
+            RecordingState::Ready
+        };
+        assert_eq!(detail.recording.state, expected, "{detail:?}");
         self.recorded.lock().unwrap().push(detail);
         started.id
     }
@@ -393,6 +530,26 @@ impl RecordingServer {
     /// makes several recordings gives them their transcripts in the order in which it
     /// made them.
     pub async fn transcribe(&self, recording_id: RecordingId, lines: &[Spoken]) {
+        let written = Written {
+            lines,
+            ..Written::default()
+        };
+        let state = self.transcribe_written(recording_id, &written).await;
+        assert_eq!(
+            state, "ready",
+            "the transcript of the recording was not stored. The server runs the oldest job \
+             first: give the transcripts in the order of the recordings."
+        );
+    }
+
+    /// Gives a recording its transcript as [`RecordingServer::transcribe`] does, with the
+    /// glossary terms and the damaged file of `written`, and returns the state of the
+    /// transcript that the server stored.
+    pub async fn transcribe_written(
+        &self,
+        recording_id: RecordingId,
+        written: &Written<'_>,
+    ) -> String {
         let detail = self
             .recorded
             .lock()
@@ -401,27 +558,40 @@ impl RecordingServer {
             .find(|detail| detail.recording.id == recording_id)
             .cloned()
             .expect("a recording that this server made");
-        let written = serde_json::to_vec(&transcript_of(&detail, lines)).unwrap();
+        let written = serde_json::to_vec(&transcript_of(&detail, written)).unwrap();
         let given = self.worker.path().join(format!("{recording_id}.json"));
         std::fs::write(given, written).unwrap();
-        let state: String = self
-            .on(move |state| async move {
-                assert!(
-                    transcribe::run_once(&state).await.unwrap(),
-                    "the server took no transcription job"
-                );
-                sqlx::query_scalar("select state::text from transcripts where recording_id = $1")
-                    .bind(recording_id.as_uuid())
-                    .fetch_one(state.database.pool())
-                    .await
-                    .unwrap()
-            })
-            .await;
-        assert_eq!(
-            state, "ready",
-            "the transcript of the recording was not stored. The server runs the oldest job \
-             first: give the transcripts in the order of the recordings."
-        );
+        let refused = self.worker.path().join(format!("{recording_id}.refuse"));
+        if refused.exists() {
+            std::fs::remove_file(refused).unwrap();
+        }
+        self.run_transcription(recording_id).await
+    }
+
+    /// The worker refuses the job of the transcript of a recording: the transcript fails
+    /// without a further run.
+    pub async fn refuse_transcript(&self, recording_id: RecordingId) {
+        let refused = self.worker.path().join(format!("{recording_id}.refuse"));
+        std::fs::write(refused, b"").unwrap();
+        let state = self.run_transcription(recording_id).await;
+        assert_eq!(state, "failed");
+    }
+
+    /// One run of the transcription job that waits, and the state of the transcript of a
+    /// recording after it.
+    async fn run_transcription(&self, recording_id: RecordingId) -> String {
+        self.on(move |state| async move {
+            assert!(
+                transcribe::run_once(&state).await.unwrap(),
+                "the server took no transcription job"
+            );
+            sqlx::query_scalar("select state::text from transcripts where recording_id = $1")
+                .bind(recording_id.as_uuid())
+                .fetch_one(state.database.pool())
+                .await
+                .unwrap()
+        })
+        .await
     }
 }
 
@@ -437,7 +607,8 @@ fn audio(detail: &RecordingDetail) -> Vec<&RecordingSegment> {
 
 /// A transcript in the form of ADR 0611 for the job that the server writes for `detail`:
 /// one segment for each audio segment with a file, in their order, and the given lines.
-fn transcript_of(detail: &RecordingDetail, lines: &[Spoken]) -> Value {
+fn transcript_of(detail: &RecordingDetail, given: &Written<'_>) -> Value {
+    let lines = given.lines;
     let audio = audio(detail);
     let shared = |segment: &RecordingSegment| segment.source == SegmentSource::ScreenShareAudio;
     let participant = |segment: &RecordingSegment| segment.account_id.unwrap().to_string();
@@ -480,10 +651,20 @@ fn transcript_of(detail: &RecordingDetail, lines: &[Spoken]) -> Value {
                 .filter(|line| segment_of(line) == position)
                 .count();
             let length = segment.file.as_ref().unwrap().duration_ms;
+            let damaged = !shared(segment) && segment.account_id == given.damaged;
+            let (status, reason, processed) = match (damaged, own) {
+                (true, _) => (
+                    "damaged",
+                    json!({"code": "decode_incomplete", "message": "a part of the file"}),
+                    length / 2,
+                ),
+                (false, 0) => ("empty", Value::Null, length),
+                (false, _) => ("ok", Value::Null, length),
+            };
             json!({
                 "id": segment.id,
-                "status": if own == 0 { "empty" } else { "ok" },
-                "reason": null, "audio_ms": length, "processed_ms": length,
+                "status": status,
+                "reason": reason, "audio_ms": length, "processed_ms": processed,
                 "speech_ms": 0, "clips": own, "lines": own,
                 "speakers": if shared(segment) { "separated" } else { "not_applicable" },
                 "speakers_reason": null,
@@ -509,7 +690,8 @@ fn transcript_of(detail: &RecordingDetail, lines: &[Spoken]) -> Value {
             .collect::<Vec<_>>(),
         "lines": written,
         "segments": segments,
-        "glossary": {"token_limit": 200, "token_count": 0, "used": [], "cut": []},
+        "glossary": {"token_limit": 200, "token_count": 0,
+                     "used": given.glossary_used, "cut": given.glossary_cut},
         "speaker_separation": {
             "requested": !labels.is_empty(),
             "speakers": labels

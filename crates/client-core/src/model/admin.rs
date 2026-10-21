@@ -7,6 +7,7 @@
 //! then on, and is read again after a reload of the state (ADR 0207).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use junto_protocol::WorkspacePermission;
 use junto_protocol::access_token::AccessTokenInfo;
@@ -27,6 +28,9 @@ use crate::api::{ApiError, ErrorCategory};
 /// How many access tokens the client reads at most. An account holds at most 100
 /// (ADR 0210), and an administrator sees the tokens of every account.
 pub const MOST_TOKENS: usize = 2000;
+/// How many terms of the glossary of one workspace the client holds at most. A glossary has
+/// at most 200 terms (ADR 0607).
+pub const MOST_GLOSSARY_TERMS: usize = 200;
 
 /// Why a collection was not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -114,6 +118,18 @@ pub enum AdminPart {
     /// What the account may do with each role of one workspace: give it, take it, delete
     /// it (ADR 0311). The roles themselves are in the snapshot.
     RoleActions(WorkspaceId),
+    /// The glossary of one workspace (ADR 0603). Every member reads it.
+    Glossary(WorkspaceId),
+}
+
+/// The glossary of a workspace as the client holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GlossaryList {
+    /// The most important term first, at most [`MOST_GLOSSARY_TERMS`].
+    pub terms: Vec<String>,
+    /// The server gave more terms than the client holds. A change made from this list
+    /// would remove the others, so a reader makes none.
+    pub cut: bool,
 }
 
 /// The settings of a workspace that only an administrator reads.
@@ -144,6 +160,7 @@ pub(crate) enum AdminPayload {
     WorkspaceSettings(WorkspaceSettings),
     ChannelPermissions(Vec<WorkspacePermission>),
     RoleActions(Vec<ListedWorkspaceRole>),
+    Glossary(Vec<String>),
 }
 
 /// What the account may do with each role of one workspace or of the server, by role.
@@ -191,6 +208,12 @@ pub struct AdminModel {
     pub channel_permissions: Vec<(ChannelId, Collection<Vec<WorkspacePermission>>)>,
     /// What the account may do with the roles of the workspaces that a reader asked for.
     pub role_actions: Vec<(WorkspaceId, Collection<RoleActionList<WorkspaceRoleId>>)>,
+    /// The glossaries of the workspaces that a reader asked for.
+    pub glossaries: Vec<(WorkspaceId, Collection<GlossaryList>)>,
+    /// When the newest read of each collection started, and when the read that the
+    /// collection shows started. A reader that changed a collection knows from them whether
+    /// the collection shows a read that started after its change was answered.
+    pub read_times: Vec<(AdminPart, ReadTimes)>,
     /// The collections whose flags an event made stale and whose new read has not
     /// answered: their flags state nothing until then.
     pub flags_stale: Vec<AdminPart>,
@@ -198,6 +221,15 @@ pub struct AdminModel {
     /// that was archived while a reader had its messages open, and a channel that a
     /// reload carried for such a reader until the list of its workspace answers.
     pub archived_known: Vec<ArchivedChannel>,
+}
+
+/// When the reads of one collection started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReadTimes {
+    /// The start of the newest read.
+    pub started: Option<Instant>,
+    /// The start of the read whose answer the collection shows.
+    pub shown: Option<Instant>,
 }
 
 /// The state of a collection without its content.
@@ -297,6 +329,37 @@ impl AdminModel {
         keyed(&self.role_actions, workspace_id)
     }
 
+    /// When the reads of a collection started.
+    pub fn read_times(&self, part: AdminPart) -> ReadTimes {
+        self.read_times
+            .iter()
+            .find(|(held, _)| *held == part)
+            .map_or_else(ReadTimes::default, |(_, times)| *times)
+    }
+
+    fn note_read(&mut self, part: AdminPart, set: &AdminSet) {
+        let index = match self.read_times.iter().position(|(held, _)| *held == part) {
+            Some(index) => index,
+            None => {
+                self.read_times.push((part, ReadTimes::default()));
+                self.read_times.len() - 1
+            }
+        };
+        let Some((_, times)) = self.read_times.get_mut(index) else {
+            return;
+        };
+        match set {
+            AdminSet::Loading => times.started = Some(Instant::now()),
+            AdminSet::Loaded(_) => times.shown = times.started,
+            AdminSet::NotLoaded | AdminSet::Failed(_) => {}
+        }
+    }
+
+    /// The glossary of a workspace, while a reader has it open.
+    pub fn glossary(&self, workspace_id: WorkspaceId) -> &Collection<GlossaryList> {
+        keyed(&self.glossaries, workspace_id)
+    }
+
     /// What the account may do with one role of a workspace. Absent while the list is not
     /// read, and for a role that the list does not name.
     pub fn workspace_role_actions(
@@ -359,6 +422,7 @@ impl AdminModel {
                 state_of(self.channel_permissions(channel_id))
             }
             AdminPart::RoleActions(workspace_id) => state_of(self.role_actions(workspace_id)),
+            AdminPart::Glossary(workspace_id) => state_of(self.glossary(workspace_id)),
         }
     }
 
@@ -428,6 +492,7 @@ impl AdminModel {
         // What the account may do with the roles of a workspace follows its permissions
         // there (ADR 0764).
         reading_keyed(&mut self.role_actions, in_scope);
+        reading_keyed(&mut self.glossaries, in_scope);
         reading_keyed(&mut self.overrides, |channel_id| {
             channels.contains(&channel_id)
         });
@@ -447,6 +512,7 @@ impl AdminModel {
     }
 
     fn set(&mut self, part: AdminPart, set: AdminSet) {
+        self.note_read(part, &set);
         if set != AdminSet::Loading {
             self.flags_stale.retain(|held| *held != part);
         }
@@ -488,6 +554,9 @@ impl AdminModel {
                 }
                 AdminPart::RoleActions(workspace_id) => {
                     mark_keyed_loading(&mut self.role_actions, workspace_id);
+                }
+                AdminPart::Glossary(workspace_id) => {
+                    mark_keyed_loading(&mut self.glossaries, workspace_id);
                 }
             }
             return;
@@ -634,6 +703,17 @@ impl AdminModel {
                 });
                 set_keyed(&mut self.channel_permissions, channel_id, collection);
             }
+            AdminPart::Glossary(workspace_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::Glossary(mut terms) => {
+                        let cut = terms.len() > MOST_GLOSSARY_TERMS;
+                        terms.truncate(MOST_GLOSSARY_TERMS);
+                        Some(GlossaryList { terms, cut })
+                    }
+                    _ => None,
+                });
+                set_keyed(&mut self.glossaries, workspace_id, collection);
+            }
         }
     }
 
@@ -681,6 +761,7 @@ impl AdminModel {
     fn forget_workspace(&mut self, workspace_id: WorkspaceId, channels: &[ChannelId]) {
         self.archived.retain(|(held, _)| *held != workspace_id);
         self.role_actions.retain(|(held, _)| *held != workspace_id);
+        self.glossaries.retain(|(held, _)| *held != workspace_id);
         self.settings.retain(|(held, _)| *held != workspace_id);
         self.overrides.retain(|(held, _)| !channels.contains(held));
         self.channel_permissions
@@ -937,9 +1018,10 @@ impl AdminPart {
                 } => of == workspace_id,
                 _ => false,
             },
-            Self::WorkspaceSettings(_) | Self::DirectRetention | Self::RoleActions(_) => {
-                self.is_stale_after(event)
-            }
+            Self::WorkspaceSettings(_)
+            | Self::DirectRetention
+            | Self::RoleActions(_)
+            | Self::Glossary(_) => self.is_stale_after(event),
             // No event carries the list: a change of it is `permissions_changed`, which
             // replaces the state, and every open collection is read again then.
             Self::ChannelPermissions(_) => false,
@@ -969,6 +1051,10 @@ impl AdminPart {
                 Event::RetentionChanged { workspace_id: of },
             ) => *of == Some(*workspace_id),
             (Self::DirectRetention, Event::RetentionChanged { workspace_id: None }) => true,
+            // The event names the workspace and carries no term (ADR 0607).
+            (Self::Glossary(workspace_id), Event::GlossaryReplaced { workspace_id: of }) => {
+                of == workspace_id
+            }
             (Self::Accounts, Event::AccountStatusChanged { .. }) => true,
             (Self::Accounts | Self::ServerRoles, _) => server_order,
             (Self::RoleActions(workspace_id), event) => {
@@ -1005,7 +1091,8 @@ impl AdminPart {
         match self {
             Self::Archived(workspace_id)
             | Self::WorkspaceSettings(workspace_id)
-            | Self::RoleActions(workspace_id) => Some(*workspace_id),
+            | Self::RoleActions(workspace_id)
+            | Self::Glossary(workspace_id) => Some(*workspace_id),
             _ => None,
         }
     }
@@ -1209,6 +1296,12 @@ impl ServerModel {
                 .role_actions
                 .iter()
                 .map(|(of, _)| AdminPart::RoleActions(*of)),
+        )
+        .chain(
+            self.admin
+                .glossaries
+                .iter()
+                .map(|(of, _)| AdminPart::Glossary(*of)),
         )
         .collect();
         for part in parts {

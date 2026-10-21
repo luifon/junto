@@ -406,7 +406,7 @@ async fn all_refused(server: &TestServer, member: &Member, changes: &[Change]) {
             .await;
         assert_eq!(
             reply.code(),
-            ErrorCode::Conflict,
+            ErrorCode::ChannelArchived,
             "{}: {} {}",
             change.name,
             reply.status,
@@ -684,7 +684,7 @@ async fn rule_a07_a_restored_channel_takes_changes() {
             &text("refused"),
         )
         .await
-        .error(ErrorCode::Conflict);
+        .error(ErrorCode::ChannelArchived);
 
     let restored: Channel = restore(&server, &owner, channel.id)
         .await
@@ -1335,7 +1335,7 @@ async fn rule_a17_an_upload_of_an_archived_channel_takes_no_bytes() {
         server.post(owner, &complete(filled.id), &json!({})).await,
     ];
     for reply in refused {
-        assert_eq!(reply.code(), ErrorCode::Conflict, "{}", reply.text());
+        assert_eq!(reply.code(), ErrorCode::ChannelArchived, "{}", reply.text());
         assert!(reply.text().contains("archived"), "{}", reply.text());
     }
     assert_eq!(content_state(server).await, before);

@@ -248,7 +248,7 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
     // both events, and holds what the routes answer.
     let corrected = owner
         .api()
-        .correct_transcript_line(id, 1, "Hello, everyone.")
+        .correct_transcript_line(id, 1, "Hello, everyone.", None)
         .await
         .unwrap();
     assert_eq!(corrected.original_text.as_deref(), Some("Hello."));
@@ -259,7 +259,7 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
     assert_eq!(**model.recording(id).unwrap().line(1).unwrap(), corrected);
     let named = owner
         .api()
-        .rename_transcript_speaker(id, 1, "Noor")
+        .rename_transcript_speaker(id, 1, "Noor", None)
         .await
         .unwrap();
     assert_eq!(named.renamed_by, Some(owner_id));

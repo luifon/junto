@@ -10,15 +10,18 @@ use junto_client_core::protocol::ids::{
     AccountId, ChannelId, RecordingId, RecordingSegmentId, ServerId,
 };
 use junto_client_core::protocol::recording::{
-    FileCheck, RecordingFailure, RecordingState, SegmentSource,
+    FileCheck, RecordingDetail, RecordingFailure, RecordingSegment, RecordingState, SegmentSource,
+    SegmentState,
 };
 use junto_client_core::protocol::transcript::{
-    LineSource, TranscriptFailure, TranscriptLine, TranscriptState,
+    LineSource, SegmentTranscription, SpeakerSeparation, TranscriptFailure, TranscriptLine,
+    TranscriptState,
 };
 use junto_client_core::transfers::DownloadProgress;
 use time::{Date, OffsetDateTime};
 
 use super::feed::Zone;
+use super::transcript_work::TranscriptAsk;
 use crate::text;
 
 /// How many lines of its transcript a card shows. The side panel shows all of them.
@@ -67,6 +70,49 @@ pub enum JobShown {
     Failed(Option<RecordingFailure>),
 }
 
+/// The zone and the day by which the window states the time of a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct When {
+    pub zone: Zone,
+    pub today: Option<Date>,
+}
+
+impl When {
+    /// A moment as the window states it: the time of day, and the day.
+    fn shown(self, at: OffsetDateTime) -> String {
+        let local = self.zone.local(at);
+        format!(
+            "{} {:02}:{:02}",
+            text::day_or_today(local.date(), self.today),
+            local.hour(),
+            local.minute()
+        )
+    }
+}
+
+/// Who made a change of a transcript, and when (ADR 0603).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changed {
+    pub by: String,
+    pub at: String,
+}
+
+fn changed(
+    by: Option<AccountId>,
+    at: Option<OffsetDateTime>,
+    names: &HashMap<AccountId, String>,
+    when: When,
+) -> Option<Changed> {
+    let by = by.map(|by| name_of(by, names));
+    match (by, at) {
+        (None, None) => None,
+        (by, at) => Some(Changed {
+            by: by.unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+            at: at.map(|at| when.shown(at)).unwrap_or_default(),
+        }),
+    }
+}
+
 /// Where the sound of a transcript line comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineFrom {
@@ -96,6 +142,46 @@ pub struct LineRow {
     pub text: String,
     /// A person corrected the text of the line.
     pub corrected: bool,
+    /// The text that the worker wrote, when a person corrected the line.
+    pub original: Option<String>,
+    /// Who made the newest correction, and when.
+    pub changed: Option<Changed>,
+}
+
+/// One voice in the shared sound of a person (ADR 0614).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceRow {
+    pub number: u32,
+    /// `Speaker N`.
+    pub label: String,
+    /// The name that a person gave the voice.
+    pub name: Option<String>,
+    /// The person whose shared sound holds the voice.
+    pub of: String,
+    /// Who gave the name, and when.
+    pub changed: Option<Changed>,
+}
+
+/// What the transcript holds of one audio file of the recording (ADR 0611).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentResult {
+    /// The file: the microphone or the shared sound of a person.
+    pub title: String,
+    pub sentence: String,
+    /// The file was transcribed in part or not at all, or lines have no voice.
+    pub failed: bool,
+}
+
+/// One part of a recording: a file of the composite or of one track, with the time range
+/// that the recorder reported for it (ADR 0601).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartRow {
+    pub title: String,
+    pub state: String,
+    /// The times of day of its start and of its end. Absent when the recorder reported
+    /// neither.
+    pub span: Option<String>,
+    pub failed: bool,
 }
 
 /// The transcript of a recording.
@@ -118,6 +204,29 @@ pub struct TranscriptShown {
     /// The last read of lines or transcript metadata failed.
     pub failed: bool,
     pub refresh_failed: bool,
+    /// The voices of shared sound, in the order of their numbers.
+    pub voices: Vec<VoiceRow>,
+    /// The glossary terms that the speech model received, and those that did not fit in
+    /// its limit (ADR 0613).
+    pub used: Vec<String>,
+    pub cut: Vec<String>,
+    /// The result of each audio file.
+    pub segments: Vec<SegmentResult>,
+    /// The person can correct a line and name a voice: the channel is not archived. The
+    /// server decides (ADR 0603).
+    pub may_change: bool,
+    /// The correction or the name that the person sent, while it is on its way or after
+    /// the server refused it.
+    pub ask: Option<TranscriptAsk>,
+}
+
+/// What the derivation of a transcript reads beside the recording.
+#[derive(Clone, Copy)]
+pub struct TranscriptSource<'a> {
+    pub names: &'a HashMap<AccountId, String>,
+    pub when: When,
+    pub may_change: bool,
+    pub ask: Option<&'a TranscriptAsk>,
 }
 
 /// A recording as its card shows it.
@@ -139,6 +248,8 @@ pub struct CardDetail {
     pub bytes: Option<u64>,
     pub job: JobShown,
     pub files: Vec<FileRow>,
+    /// Every part of the recording with its time range.
+    pub parts: Vec<PartRow>,
     /// The video that "Open" plays: the first video file.
     pub video: Option<RecordingSegmentId>,
     pub transcript: TranscriptShown,
@@ -169,8 +280,25 @@ pub struct RecordingCard {
     pub may_remove: bool,
     /// The removal is on its way.
     pub removing: bool,
+    /// The person can ask for the transcript again: the files are processed, and the
+    /// recording has no transcript or a failed one (ADR 0607).
+    pub request: TranscriptRequest,
     /// Why the server did not do what the person asked for with the recording.
     pub refused: Option<String>,
+}
+
+/// Whether a card offers a new request for its transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptRequest {
+    /// The recording has a transcript, one is on its way, or its files are not processed.
+    NotOffered,
+    /// The roles of the person do not hold "manage recordings", or the channel is
+    /// archived.
+    NotAllowed,
+    Allowed {
+        /// The request is on its way.
+        sending: bool,
+    },
 }
 
 /// What the derivation of a card reads.
@@ -187,10 +315,15 @@ pub struct CardSource<'a> {
     pub zone: Zone,
     pub today: Option<Date>,
     pub may_remove: bool,
+    /// The roles of the person allow a new request for a transcript, and the channel is
+    /// not archived.
+    pub may_request: bool,
     pub downloads: &'a HashMap<(ServerId, RecordingSegmentId), DownloadProgress>,
     /// The downloads of transcripts as text.
     pub texts: &'a HashMap<(ServerId, RecordingId), DownloadProgress>,
     pub removing: bool,
+    /// The new request for the transcript is on its way.
+    pub requesting: bool,
     pub refused: Option<&'a str>,
 }
 
@@ -240,6 +373,7 @@ pub fn line_row(
     open: &OpenRecording,
     line: &TranscriptLine,
     names: &HashMap<AccountId, String>,
+    when: When,
 ) -> LineRow {
     let person = name_of(line.account_id, names);
     let voice = line.speaker.filter(|_| line.source == LineSource::Shared);
@@ -265,6 +399,11 @@ pub fn line_row(
         },
         text: line.text.clone(),
         corrected: line.original_text.is_some(),
+        original: line.original_text.clone(),
+        changed: line
+            .original_text
+            .as_ref()
+            .and_then(|_| changed(line.corrected_by, line.corrected_at, names, when)),
     }
 }
 
@@ -273,17 +412,124 @@ fn first_lines(
     open: &OpenRecording,
     held: &TranscriptLines,
     names: &HashMap<AccountId, String>,
+    when: When,
 ) -> Vec<LineRow> {
     held.lines
         .iter()
         .take(SHOWN_LINES)
-        .map(|line| line_row(open, line, names))
+        .map(|line| line_row(open, line, names, when))
+        .collect()
+}
+
+/// The title of an audio file of a recording, by its person.
+fn segment_title(segment: Option<&RecordingSegment>, names: &HashMap<AccountId, String>) -> String {
+    let person = segment
+        .and_then(|segment| segment.account_id)
+        .map(|account_id| name_of(account_id, names));
+    match segment.map(|segment| segment.source) {
+        Some(SegmentSource::Composite) => text::RECORDING_VIDEO.to_owned(),
+        Some(SegmentSource::ScreenShareAudio) => text::recording_share_sound(person.as_deref()),
+        Some(SegmentSource::Microphone) => text::recording_microphone(person.as_deref()),
+        None => text::transcripts::UNKNOWN_FILE.to_owned(),
+    }
+}
+
+/// The result of each audio file of a transcript.
+fn segment_results(
+    open: &OpenRecording,
+    transcript: &junto_client_core::protocol::transcript::Transcript,
+    names: &HashMap<AccountId, String>,
+) -> Vec<SegmentResult> {
+    let segments = open
+        .detail
+        .loaded()
+        .map(|detail| detail.segments.as_slice());
+    transcript
+        .segments
+        .iter()
+        .map(|result| {
+            let segment = segments
+                .and_then(|segments| segments.iter().find(|held| held.id == result.segment_id));
+            let lines_missing_voice = matches!(
+                result.speakers,
+                SpeakerSeparation::Unassigned | SpeakerSeparation::Failed
+            );
+            SegmentResult {
+                title: segment_title(segment, names),
+                sentence: text::transcripts::segment_result(result),
+                failed: !matches!(
+                    result.status,
+                    SegmentTranscription::Ok | SegmentTranscription::Empty
+                ) || lines_missing_voice,
+            }
+        })
+        .collect()
+}
+
+/// The voices of shared sound of a transcript.
+fn voices(
+    transcript: &junto_client_core::protocol::transcript::Transcript,
+    names: &HashMap<AccountId, String>,
+    when: When,
+) -> Vec<VoiceRow> {
+    let mut voices: Vec<VoiceRow> = transcript
+        .speakers
+        .iter()
+        .map(|speaker| VoiceRow {
+            number: speaker.number,
+            label: text::speaker_label(speaker.number),
+            name: speaker.name.clone(),
+            of: name_of(speaker.account_id, names),
+            changed: speaker
+                .name
+                .as_ref()
+                .and_then(|_| changed(speaker.renamed_by, speaker.renamed_at, names, when)),
+        })
+        .collect();
+    voices.sort_by_key(|voice| voice.number);
+    voices
+}
+
+/// Every part of a recording, in the order in which they were asked for, with the time
+/// range that the recorder reported.
+fn parts(detail: &RecordingDetail, names: &HashMap<AccountId, String>, zone: Zone) -> Vec<PartRow> {
+    let clock = |at: OffsetDateTime| {
+        let at = zone.local(at);
+        format!("{:02}:{:02}:{:02}", at.hour(), at.minute(), at.second())
+    };
+    detail
+        .segments
+        .iter()
+        .map(|segment| {
+            let span = match (segment.started_at, segment.ended_at) {
+                (None, None) => None,
+                (started, ended) => Some(text::transcripts::part_span(
+                    started.map(clock).as_deref(),
+                    ended.map(clock).as_deref(),
+                )),
+            };
+            let failed = segment.state == SegmentState::Failed
+                || segment
+                    .file
+                    .as_ref()
+                    .is_some_and(|file| file.check == FileCheck::Failed)
+                || (segment.state == SegmentState::Ended
+                    && segment.file.is_none()
+                    && detail.recording.bytes.is_some());
+            PartRow {
+                title: segment_title(Some(segment), names),
+                state: text::transcripts::part_state(segment, detail.recording.bytes.is_some()),
+                span,
+                failed,
+            }
+        })
         .collect()
 }
 
 /// The transcript of an open recording as the card and the side panel show it, with
 /// its first lines. The side panel derives each further line when it draws it.
-pub fn transcript(open: &OpenRecording, names: &HashMap<AccountId, String>) -> TranscriptShown {
+pub fn transcript(open: &OpenRecording, source: TranscriptSource<'_>) -> TranscriptShown {
+    let names = source.names;
     let held = open.transcript.loaded();
     TranscriptShown {
         state: held.map_or(TranscriptState::None, |held| held.state),
@@ -291,12 +537,18 @@ pub fn transcript(open: &OpenRecording, names: &HashMap<AccountId, String>) -> T
         total: held.map_or(0, |held| held.lines),
         language: held.map(|held| held.language.clone()).unwrap_or_default(),
         held: open.lines.lines.len(),
-        lines: first_lines(open, &open.lines, names),
+        lines: first_lines(open, &open.lines, names, source.when),
         more: open.lines.more,
         more_before: open.lines.more_before,
         reading: open.lines.reading,
         failed: open.lines.failed.is_some() || open.failed.is_some(),
         refresh_failed: open.failed.is_some(),
+        voices: held.map_or_else(Vec::new, |held| voices(held, names, source.when)),
+        used: held.map_or_else(Vec::new, |held| held.glossary.used.clone()),
+        cut: held.map_or_else(Vec::new, |held| held.glossary.cut.clone()),
+        segments: held.map_or_else(Vec::new, |held| segment_results(open, held, names)),
+        may_change: source.may_change,
+        ask: source.ask.cloned(),
     }
 }
 
@@ -320,21 +572,36 @@ pub fn card(source: &CardSource<'_>) -> RecordingCard {
             (Loadable::Loading | Loadable::NotLoaded, None) => CardState::Reading,
         },
     };
+    let request = match &state {
+        CardState::Shown(detail)
+            if matches!(detail.job, JobShown::Ready | JobShown::PartlyFailed { .. })
+                && matches!(
+                    detail.transcript.state,
+                    TranscriptState::None | TranscriptState::Failed
+                ) =>
+        {
+            if source.may_request {
+                TranscriptRequest::Allowed {
+                    sending: source.requesting,
+                }
+            } else {
+                TranscriptRequest::NotAllowed
+            }
+        }
+        _ => TranscriptRequest::NotOffered,
+    };
     RecordingCard {
         server_id: source.server_id,
         recording_id: source.recording_id,
         state,
         may_remove: source.may_remove,
         removing: source.removing,
+        request,
         refused: source.refused.map(str::to_owned),
     }
 }
 
-fn shown(
-    source: &CardSource<'_>,
-    open: &OpenRecording,
-    detail: &junto_client_core::protocol::recording::RecordingDetail,
-) -> CardDetail {
+fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail) -> CardDetail {
     let recording = &detail.recording;
     let names = source.names;
     let local = |at: OffsetDateTime| source.zone.local(at);
@@ -434,8 +701,22 @@ fn shown(
             .iter()
             .find(|file| file.kind == FileKind::Video)
             .map(|file| file.segment_id),
+        parts: parts(detail, names, source.zone),
         files,
-        transcript: transcript(open, names),
+        transcript: transcript(
+            open,
+            TranscriptSource {
+                names,
+                when: When {
+                    zone: source.zone,
+                    today: source.today,
+                },
+                // The card shows no control that changes the transcript: the side panel
+                // has them.
+                may_change: false,
+                ask: None,
+            },
+        ),
         text_stem: format!("{stamp} transcript"),
         text_download: source
             .texts

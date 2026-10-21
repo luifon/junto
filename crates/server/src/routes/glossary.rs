@@ -21,7 +21,7 @@ use crate::state::AppState;
 use crate::{read, transact};
 
 /// The terms of a request, each with the space at its start and end removed.
-fn terms(body: SetGlossary, most: u32) -> ApiResult<Vec<String>> {
+fn terms(body: &SetGlossary, most: u32) -> ApiResult<Vec<String>> {
     let most = usize::try_from(most).unwrap_or(usize::MAX);
     if body.terms.len() > most {
         return Err(ApiError::invalid(format!(
@@ -77,7 +77,8 @@ pub async fn get_glossary(
 
 /// Replaces the glossary of a workspace. The caller holds `manage_glossary`. The speech
 /// model reads the first terms that fit in its limit; a transcript states which terms it
-/// used (ADR 0613).
+/// used (ADR 0613). With `replaces`, the glossary is replaced only while it holds exactly
+/// those terms; otherwise the answer is `conflict` and nothing changes (ADR 0607).
 #[utoipa::path(
     put,
     path = "/api/v1/workspaces/{workspace_id}/glossary",
@@ -93,7 +94,7 @@ pub async fn set_glossary(
     ApiPath(workspace_id): ApiPath<WorkspaceId>,
     ApiJson(body): ApiJson<SetGlossary>,
 ) -> ApiResult<Json<Glossary>> {
-    let terms = terms(body, app.config.limits.recordings.most_glossary_terms)?;
+    let terms = terms(&body, app.config.limits.recordings.most_glossary_terms)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -103,6 +104,13 @@ pub async fn set_glossary(
             scope: &scope,
             permission: WorkspacePermission::ManageGlossary,
         })?;
+        if let Some(read) = &body.replaces
+            && *read != transcripts::glossary(connection, workspace_id).await?
+        {
+            return Err(ApiError::conflict(
+                "the glossary changed after the terms in \"replaces\" were read",
+            ));
+        }
         transcripts::replace_glossary(connection, workspace_id, &terms).await?;
         let entry = AuditEvent::GlossaryReplaced {
             terms: u32::try_from(terms.len()).unwrap_or(u32::MAX),
@@ -125,21 +133,22 @@ mod tests {
     fn set(terms: &[&str]) -> SetGlossary {
         SetGlossary {
             terms: terms.iter().map(|term| (*term).to_owned()).collect(),
+            replaces: None,
         }
     }
 
     #[test]
     fn terms_are_trimmed_bounded_and_distinct() {
         assert_eq!(
-            terms(set(&[" Quorvex ", "Ysolde Varkonen"]), 200).unwrap(),
+            terms(&set(&[" Quorvex ", "Ysolde Varkonen"]), 200).unwrap(),
             ["Quorvex", "Ysolde Varkonen"]
         );
-        assert!(terms(set(&[]), 200).unwrap().is_empty());
-        assert!(terms(set(&["a", "b", "c"]), 2).is_err());
-        assert!(terms(set(&["a", " a"]), 200).is_err());
+        assert!(terms(&set(&[]), 200).unwrap().is_empty());
+        assert!(terms(&set(&["a", "b", "c"]), 2).is_err());
+        assert!(terms(&set(&["a", " a"]), 200).is_err());
         for refused in ["", "   ", "<|notimestamps|>", "a\nb"] {
-            assert!(terms(set(&["fine", refused]), 200).is_err(), "{refused:?}");
+            assert!(terms(&set(&["fine", refused]), 200).is_err(), "{refused:?}");
         }
-        assert!(terms(set(&[&"a".repeat(201)]), 200).is_err());
+        assert!(terms(&set(&[&"a".repeat(201)]), 200).is_err());
     }
 }

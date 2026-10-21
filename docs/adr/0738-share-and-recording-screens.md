@@ -37,7 +37,7 @@ Recording:
 
 - The header of the voice channel of the call shows, after its title: "Record" when no recording runs; the mark "REC" with "starting…" while the server asks the recorder; the mark with the time since the recorder started, "visible to everyone", and "Stop" while it runs; "The recording stops" on that button after its end was asked for.
 - A person whose roles do not hold "record calls" sees "Record" disabled with the statement of the missing permission, and the mark of a recording without "Stop". The server decides each request, because an override of the channel can differ from the roles; a refusal is told by a notice.
-- A recording is started with the language `auto`.
+- "Record" opens the languages of the speech, and the choice starts the recording with `auto` or with one language. While the recorder starts it, "Cancel" stands after the mark at the place of "Stop" (ADR 0616).
 - When a recording of the call ends without a person asking for it, or with a part or all of it not saved, the header shows "Recording failed" or "Recording stopped", "Details" with what happened, the time range that the server has, and what the person can do, and "Record" for a new one. The application reads this from the events of the server, for the call of this device, and keeps it until the person asks for a new recording, a new recording starts, or the call ends. The answer to a request changes only the statement about that request: the event of a failure can arrive before the answer to the request that started the recording. An answer that arrives after its call has ended tells nothing.
 - A person outside the call sees the mark without a time.
 

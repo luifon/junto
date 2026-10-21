@@ -25,6 +25,7 @@ pub mod admin;
 pub mod book;
 pub mod followed;
 pub mod people;
+pub mod transcripts;
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
@@ -1376,6 +1377,9 @@ pub fn refusal(code: ErrorCode) -> String {
         }
         ErrorCode::NotFound => "The server does not know what was asked for.",
         ErrorCode::Conflict => "The request does not fit the present state of the server.",
+        ErrorCode::ChannelArchived => {
+            "The channel is archived. It takes no change until it is restored."
+        }
         ErrorCode::LastDevice => {
             "This is the only device of the account. The last device cannot be removed."
         }
@@ -2389,16 +2393,7 @@ pub fn lines_shown(shown: usize, total: u32) -> String {
 pub fn transcript_language(code: &str) -> String {
     let name = match code {
         "auto" => "detected for each line",
-        "en" => "English",
-        "pt" => "Portuguese",
-        "es" => "Spanish",
-        "de" => "German",
-        "fr" => "French",
-        "it" => "Italian",
-        "nl" => "Dutch",
-        "ja" => "Japanese",
-        "zh" => "Chinese",
-        other => other,
+        other => transcripts::language_name(other).unwrap_or(other),
     };
     format!("Language: {name}")
 }

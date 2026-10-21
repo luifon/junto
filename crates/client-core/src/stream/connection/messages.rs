@@ -1026,7 +1026,8 @@ impl Client {
             | Command::TranscriptLinesAround { .. }
             | Command::OpenAdmin { .. }
             | Command::ReleaseAdmin(_)
-            | Command::ReadAdminAgain(_) => {}
+            | Command::ReadAdminAgain(_)
+            | Command::ReadAdminNow(_) => {}
         }
     }
 

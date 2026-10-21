@@ -26,6 +26,7 @@ SYSTEMS = {"macos": "Darwin", "windows": "MINGW64_NT-10.0-26100"}
 WINDOW_TESTS = "cargo test --locked --workspace --test app --"
 WINDOWS_ONLY_SKIPS = [
     "recordings::",
+    "transcripts::",
     "messages::a_file_is_sent_with_a_message_and_saved_from_one",
     "messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops",
     "messages::a_pending_file_picker_cannot_retarget_an_upload",
