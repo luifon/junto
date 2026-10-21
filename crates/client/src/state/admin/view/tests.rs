@@ -911,7 +911,7 @@ fn the_main_area_shows_a_selected_archived_channel_as_archived() {
     assert_eq!(state.archived_at, archived.archived_at);
     assert_eq!(state.deletes_at, archived.deletes_at);
     assert!(state.may_restore);
-    assert!(workspace.feed.is_some());
+    assert!(view.lists().unwrap().feed.is_some());
 
     // Another selection shows a channel of the list, which is not archived.
     let view = crate::state::view::derive(&[server], &Selection::default(), &Scene::known());
@@ -1122,7 +1122,7 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
             .channels
             .insert((scene.server_id, scene.studio), scene.daily);
         let view = crate::state::view::derive(&[server], &selection, &Scene::known());
-        let feed = view.workspace().unwrap().feed.as_ref().unwrap();
+        let feed = view.lists().unwrap().feed.as_ref().unwrap();
         let card = feed
             .rows
             .iter()

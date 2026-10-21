@@ -632,8 +632,8 @@ fn a_failed_archived_list_is_stated_with_a_retry_in_the_search_and_the_notices(
     let notices = |window: &mut Window| {
         window
             .view()
-            .workspace()
-            .and_then(|workspace| workspace.notices.clone())
+            .lists()
+            .and_then(|lists| lists.notices.clone())
             .map_or(0, |panel| panel.rows.len())
     };
     assert_eq!(notices(&mut window), 0);

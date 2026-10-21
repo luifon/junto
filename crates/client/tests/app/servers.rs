@@ -274,7 +274,7 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
     window.until_ready();
     assert_eq!(window.view().selected.unwrap().name, "Harbor");
     window.until_message("Ping, @Luca");
-    let directs = window.view().workspace().unwrap().directs.clone();
+    let directs = window.view().lists().unwrap().directs.clone();
     assert_eq!(directs.len(), 1);
     assert_eq!(directs[0].id, conversation);
     assert!(directs[0].unread.any());
@@ -286,8 +286,8 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
         }
         let view = window.view();
         if view
-            .workspace()
-            .is_some_and(|workspace| workspace.conversation.is_some())
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_some())
             && !view.servers[1].head_unread.any()
             && view.servers[1].unread.any()
         {
@@ -342,8 +342,8 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
     window.until_ready();
     window.until("the second server shows what arrived", |window| {
         let view = window.view();
-        view.workspace().is_some_and(|workspace| {
-            workspace
+        view.lists().is_some_and(|lists| {
+            lists
                 .directs
                 .iter()
                 .any(|direct| direct.id == conversation && direct.unread.any())

@@ -5,14 +5,15 @@ use gpui::{
     AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
     Role, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
+use junto_client_core::protocol::ids::ServerId;
 use junto_client_core::protocol::structure::ChannelKind;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::person_drop::PersonDrag;
 use crate::state::view::{
-    Content, Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, ServerStatus,
-    ShellView, VoiceState, WorkspaceView,
+    Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, SelectedServer, ServerLists,
+    ServerStatus, ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -20,6 +21,10 @@ use crate::ui::{
     Avatar, Band, BandKind, Button, ButtonKind, CategoryHeader, ChannelRow, ChannelState,
     OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
 };
+
+/// The rows of direct conversations that the channel column shows at once when it has the
+/// height. More scroll in their list.
+const DIRECT_ROWS: f32 = 5.0;
 
 /// The lit segments of the meter of a person who speaks in a call that this device is not
 /// in. The server tells who speaks there and no level (ADR 0513).
@@ -163,17 +168,9 @@ impl Shell {
                 )
             });
 
-        let list: AnyElement = match (&view.selected, workspace) {
-            (Some(_), Some(workspace)) => self
-                .render_channel_list(view, workspace, &theme, window, cx)
-                .into_any_element(),
-            (Some(server), None) if matches!(server.content, Content::NoWorkspace) => div()
-                .flex_1()
-                .px(u(14.0))
-                .pt(u(12.0))
-                .typeface(theme.types.small, &theme)
-                .ink(colors.ink_2)
-                .child(text::NO_WORKSPACES)
+        let list: AnyElement = match (&view.selected, view.lists()) {
+            (Some(server), Some(lists)) => self
+                .render_channel_list(view, server, lists, &theme, window, cx)
                 .into_any_element(),
             _ => div().flex_1().into_any_element(),
         };
@@ -233,14 +230,96 @@ impl Shell {
             .child(self.render_profile_strip(view, &theme, cx))
     }
 
+    /// The lists of the selected server: the entry of its notices, the channels of the
+    /// shown workspace, and its direct conversations. Without a workspace the column
+    /// states that the account sees none, and keeps the notices and the direct
+    /// conversations (ADR 0741).
     fn render_channel_list(
+        &mut self,
+        view: &ShellView,
+        server: &SelectedServer,
+        lists: &ServerLists,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let colors = theme.colors;
+        let workspace = lists.workspace.as_ref();
+        let in_call = lists.call.is_some();
+        let (channels, entries) = match workspace {
+            Some(workspace) => self.channel_rows(view, workspace, theme, window, cx),
+            None => (
+                vec![
+                    div()
+                        .flex_none()
+                        .px(u(14.0))
+                        .pt(u(12.0))
+                        .typeface(theme.types.small, theme)
+                        .ink(colors.ink_2)
+                        .debug_selector(|| "no-workspace-note".to_owned())
+                        .child(text::NO_WORKSPACES)
+                        .into_any_element(),
+                ],
+                Vec::new(),
+            ),
+        };
+        let label: SharedString = match workspace {
+            Some(workspace) => workspace.name.clone().into(),
+            None => server.name.clone().into(),
+        };
+        // The part of the server, the notices and the direct conversations, has a height of
+        // its own at the top of the column, and the lists of the workspace take the rest.
+        // A change of the workspaces or of the channels moves none of its controls, and a
+        // conversation that arrives moves no channel. In a short column its list of
+        // conversations gives up rows down to one, and the channels keep one row too
+        // (ADR 0730).
+        let row = theme.metrics.channel_row_height;
+        let server_part = div()
+            .id("server-lists")
+            .debug_selector(|| "server-lists".to_owned())
+            .flex()
+            .flex_col()
+            .flex_grow_0()
+            .flex_shrink_1()
+            .pt(u(6.0))
+            .pb(u(4.0))
+            .border_b_1()
+            .border_color(Hsla::from(colors.rule))
+            .child(self.render_notices_row(lists, in_call, cx))
+            .children(self.direct_rows(server.id, lists, theme, cx));
+        let list = div().flex().flex_col().flex_1().min_h(u(row)).child(
+            ScrollArea::new("channel-list", &self.channels_scroll, label)
+                .selector("channel-list")
+                .children(channels)
+                .child(div().flex_none().h(u(8.0))),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(server_part)
+            .child(list)
+            .child(
+                div()
+                    .id("channel-entry-notices")
+                    .flex_none()
+                    .max_h(u(180.0))
+                    .overflow_y_scroll()
+                    .children(entries),
+            )
+    }
+
+    /// The sections of the channels of a workspace with their threads and the people in
+    /// their voice channels, and the entry boxes of its voice channels.
+    fn channel_rows(
         &mut self,
         view: &ShellView,
         workspace: &WorkspaceView,
         theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> (Vec<AnyElement>, Vec<AnyElement>) {
         let colors = theme.colors;
         let workspace_id = workspace.id;
         let server_id = view.selected.as_ref().map(|server| server.id);
@@ -252,13 +331,12 @@ impl Shell {
                 .map(|menu| (menu, open.moving)),
             _ => None,
         };
-        // The channel and the conversation whose menu is open.
-        let (channel_menu, direct_menu) = match &self.layer {
-            Layer::ChannelMenu(channel_id) => (Some(*channel_id), None),
-            Layer::DirectMenu(conversation_id) => (None, Some(*conversation_id)),
-            _ => (None, None),
+        // The channel whose menu is open.
+        let channel_menu = match &self.layer {
+            Layer::ChannelMenu(channel_id) => Some(*channel_id),
+            _ => None,
         };
-        let mut rows: Vec<AnyElement> = vec![self.render_notices_row(workspace, cx)];
+        let mut rows: Vec<AnyElement> = Vec::new();
         let mut entries = Vec::new();
         let mut channel_index = 0usize;
         for (position, section) in workspace.sections.iter().enumerate() {
@@ -486,22 +564,38 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        // The direct conversations of the server, after the channels of the workspace.
-        rows.push(CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element());
+        (rows, entries)
+    }
+
+    /// The section of the direct conversations of the server: its title, "New direct
+    /// message", and the conversations in a list of a fixed height.
+    fn direct_rows(
+        &mut self,
+        server_id: ServerId,
+        lists: &ServerLists,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let faces = self.shown_faces();
+        // The conversation whose menu is open.
+        let direct_menu = match &self.layer {
+            Layer::DirectMenu(conversation_id) => Some(*conversation_id),
+            _ => None,
+        };
+        let mut rows = vec![CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element()];
         // A new conversation, with an account that the server lists for the person
         // (ADR 0307). It stands before the conversations, so that a conversation that
         // arrives does not move it.
-        if let Some(server_id) = server_id {
-            rows.push(
-                ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
-                    .selector("new-direct")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_new_direct(server_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        for (index, direct) in workspace.directs.iter().enumerate() {
+        rows.push(
+            ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
+                .selector("new-direct")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_new_direct(server_id, window, cx);
+                }))
+                .into_any_element(),
+        );
+        let mut conversations: Vec<AnyElement> = Vec::new();
+        for (index, direct) in lists.directs.iter().enumerate() {
             let conversation_id = direct.id;
             let name: SharedString = direct
                 .name
@@ -519,20 +613,15 @@ impl Shell {
                     this.open_direct_menu(conversation_id, window, cx);
                 }))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    let Some(server_id) = server_id else {
-                        return;
-                    };
                     this.state.update(cx, |state, cx| {
                         state.select_conversation(server_id, conversation_id, cx);
                     });
                 }));
-            let menu = server_id
-                .filter(|_| direct_menu == Some(conversation_id))
-                .map(|server_id| {
-                    let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
-                    self.render_direct_menu(server_id, direct.account_id, name, &direct.mute, cx)
-                });
-            rows.push(
+            let menu = (direct_menu == Some(conversation_id)).then(|| {
+                let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+                self.render_direct_menu(server_id, direct.account_id, name, &direct.mute, cx)
+            });
+            conversations.push(
                 div()
                     .relative()
                     .flex_none()
@@ -542,29 +631,22 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        let list = ScrollArea::new(
-            "channel-list",
-            &self.channels_scroll,
-            workspace.name.clone(),
-        )
-        .selector("channel-list")
-        .child(div().flex_none().h(u(6.0)))
-        .children(rows)
-        .child(div().flex_none().h(u(8.0)));
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(list)
-            .child(
-                div()
-                    .id("channel-entry-notices")
-                    .flex_none()
-                    .max_h(u(180.0))
-                    .overflow_y_scroll()
-                    .children(entries),
-            )
+        rows.push(
+            div()
+                .flex()
+                .flex_col()
+                .flex_grow_0()
+                .flex_shrink_1()
+                .flex_basis(u(theme.metrics.channel_row_height * DIRECT_ROWS))
+                .min_h(u(theme.metrics.channel_row_height))
+                .child(
+                    ScrollArea::new("direct-list", &self.directs_scroll, text::DIRECT_MESSAGES)
+                        .selector("direct-list")
+                        .children(conversations),
+                )
+                .into_any_element(),
+        );
+        rows
     }
 
     fn render_profile_strip(

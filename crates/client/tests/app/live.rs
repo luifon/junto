@@ -434,8 +434,8 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     window.until("the settings show the microphone", |window| {
         window
             .view()
-            .workspace()
-            .and_then(|workspace| workspace.call.clone())
+            .lists()
+            .and_then(|lists| lists.call.clone())
             .is_some_and(|panel| {
                 panel.audio.microphone == MicrophoneLine::Running
                     && panel.audio.input_level > 5
@@ -669,8 +669,8 @@ fn own_share(window: &mut Window) -> OwnShare {
 fn stage(window: &mut Window) -> Option<ShareStage> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .and_then(|panel| panel.stage)
 }
 
