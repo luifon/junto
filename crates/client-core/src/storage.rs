@@ -344,10 +344,10 @@ impl Dir {
         self.entry(name, "create")?;
         let path = self.path.join(name);
         let created = self.write_temporary(name, bytes).and_then(|temporary| {
-            let linked = self.handle.link_new(&temporary, name);
+            let named = self.handle.name_new(&temporary, name);
             let _ = self.handle.remove(&temporary);
             self.handle.sync()?;
-            linked
+            named
         });
         created.map_err(|error| StorageError::io("create", &path, error))
     }
@@ -640,6 +640,47 @@ mod tests {
         assert!(private.remove("device.key").unwrap());
         assert!(!private.remove("device.key").unwrap());
         assert!(names(&private).is_empty());
+    }
+
+    /// While the creation gave the file a second name, the write failed with access denied in
+    /// about two rounds of a thousand (ADR 0711), so the test repeats the sequence.
+    #[cfg(windows)]
+    #[test]
+    fn a_created_file_is_replaced_at_once() {
+        let (_directory, private) = private();
+        for round in 0..3000 {
+            let name = format!("{round}.key");
+            assert!(private.create(&name, b"created").unwrap());
+            private
+                .write(&name, b"replaced")
+                .unwrap_or_else(|error| panic!("round {round}: {error}"));
+            assert_eq!(fs::read(private.path().join(&name)).unwrap(), b"replaced");
+        }
+    }
+
+    /// Under a directory of 210 characters a key file has a path of 253 characters and its
+    /// temporary file one of 275; a directory of 300 characters exceeds every limit of 260.
+    #[test]
+    fn files_are_created_and_replaced_under_a_long_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let name = "01a1573f-ee85-7317-99e1-5a267782172e.key";
+        for length in [210, 300] {
+            let mut path = directory.path().join(format!("{length}"));
+            while path.as_os_str().len() < length {
+                let missing = length - path.as_os_str().len() - 1;
+                path.push("d".repeat(missing.clamp(1, 60)));
+            }
+            assert_eq!(path.as_os_str().len(), length);
+            let private = Dir::open(&path).unwrap();
+            let nested = private.subdirectory("k").unwrap();
+            assert!(nested.create(name, b"created").unwrap());
+            nested.write(name, b"replaced").unwrap();
+            let mut buffer = [0u8; 16];
+            assert_eq!(nested.read_private(name, &mut buffer).unwrap(), Some(8));
+            assert_eq!(&buffer[..8], b"replaced");
+            drop(nested.lock().unwrap());
+            assert!(nested.remove(name).unwrap());
+        }
     }
 
     #[test]
