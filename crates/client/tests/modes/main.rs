@@ -458,8 +458,8 @@ fn run_mode(mode: Mode) -> ExitCode {
         window.until("the end of the long channel is drawn", |window| {
             window
                 .view()
-                .workspace()
-                .and_then(|workspace| workspace.feed.as_ref())
+                .lists()
+                .and_then(|lists| lists.feed.as_ref())
                 .is_some_and(|feed| feed.loaded)
                 && window.in_shell(|shell, _, _| {
                     shell.feed_bounds(junto_client::shell::Pane::Main).is_some()
@@ -885,8 +885,8 @@ fn occupants(window: &mut Window) -> usize {
 fn share_stage(window: &mut Window) -> Option<junto_client::state::view::ShareStage> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .and_then(|panel| panel.stage)
 }
 

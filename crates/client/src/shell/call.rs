@@ -678,8 +678,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
-        let feed = match view.workspace() {
-            Some(workspace) => self.render_feed(workspace, true, Vec::new(), window, cx),
+        let feed = match view.lists() {
+            Some(lists) => self.render_feed(lists, true, Vec::new(), window, cx),
             None => div().flex_1().into_any_element(),
         };
         div()

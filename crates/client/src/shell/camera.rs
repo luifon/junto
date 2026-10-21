@@ -61,7 +61,7 @@ impl super::Shell {
         self.view.as_ref().is_some_and(|view| {
             view.call.as_ref().is_some_and(|call| call.shown)
                 || (view.selected.as_ref().is_some_and(|server| server.id == active.target.server_id)
-                    && view.workspace().and_then(|workspace| workspace.conversation.as_ref()).is_some_and(|conversation| {
+                    && view.lists().and_then(|lists| lists.conversation.as_ref()).is_some_and(|conversation| {
                         matches!(active.target.place, junto_client_core::protocol::call::CallPlace::Direct {low_account_id, high_account_id} if low_account_id == conversation.account_id || high_account_id == conversation.account_id)
                     }))
         })

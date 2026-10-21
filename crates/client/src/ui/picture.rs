@@ -49,11 +49,9 @@ impl DrawnPicture {
                     let size = gpui::size(buffer.get_width().into(), buffer.get_height().into());
                     let fitted = gpui::ObjectFit::Contain.get_bounds(bounds, size);
                     #[cfg(feature = "test-support")]
-                    PAINTED.with_borrow_mut(|painted| {
-                        painted.push(PaintedSurface {
-                            bounds: fitted,
-                            size: (buffer.get_width(), buffer.get_height()),
-                        })
+                    painted(PaintedSurface {
+                        bounds: fitted,
+                        size: (buffer.get_width(), buffer.get_height()),
                     });
                     window.paint_surface(fitted, buffer.clone());
                 },
@@ -76,13 +74,69 @@ pub struct PaintedSurface {
 
 #[cfg(all(target_os = "macos", feature = "test-support"))]
 thread_local! {
-    static PAINTED: std::cell::RefCell<Vec<PaintedSurface>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    /// The paints of pixel buffers of this thread while a [`PaintRecord`] lives. Without
+    /// one a paint is not kept, so that a run of the window that measures its memory and
+    /// its time, which is built with the support of the tests, keeps nothing (ADR 0774).
+    static PAINTED: std::cell::RefCell<Option<Vec<PaintedSurface>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-/// The pixel buffers that the windows of this thread painted since the last call, in the
-/// order of their paint.
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+fn painted(surface: PaintedSurface) {
+    PAINTED.with_borrow_mut(|painted| {
+        if let Some(painted) = painted {
+            painted.push(surface);
+        }
+    });
+}
+
+/// Keeps the paints of pixel buffers of this thread until it is dropped.
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+#[must_use]
+pub struct PaintRecord(());
+
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+impl Drop for PaintRecord {
+    fn drop(&mut self) {
+        PAINTED.set(None);
+    }
+}
+
+/// Starts to keep the paints of pixel buffers of this thread.
+#[cfg(all(target_os = "macos", feature = "test-support"))]
+pub fn record_painted_surfaces() -> PaintRecord {
+    PAINTED.set(Some(Vec::new()));
+    PaintRecord(())
+}
+
+/// The pixel buffers that the windows of this thread painted since the last call while a
+/// [`PaintRecord`] lives, in the order of their paint.
 #[cfg(all(target_os = "macos", feature = "test-support"))]
 pub fn take_painted_surfaces() -> Vec<PaintedSurface> {
-    PAINTED.with_borrow_mut(std::mem::take)
+    PAINTED.with_borrow_mut(|painted| painted.as_mut().map(std::mem::take).unwrap_or_default())
+}
+
+#[cfg(all(test, target_os = "macos", feature = "test-support"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_paint_is_kept_only_while_a_record_lives() {
+        let surface = PaintedSurface {
+            bounds: gpui::Bounds::default(),
+            size: (64, 36),
+        };
+        painted(surface);
+        assert!(take_painted_surfaces().is_empty());
+        let record = record_painted_surfaces();
+        painted(surface);
+        painted(surface);
+        assert_eq!(take_painted_surfaces(), [surface, surface]);
+        assert!(take_painted_surfaces().is_empty());
+        painted(surface);
+        drop(record);
+        painted(surface);
+        assert!(take_painted_surfaces().is_empty());
+        assert!(PAINTED.with_borrow(Option::is_none));
+    }
 }

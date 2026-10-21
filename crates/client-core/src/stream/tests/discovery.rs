@@ -369,6 +369,49 @@ async fn a_notice_event_reads_the_notices_and_the_messages_that_they_name() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_refused_cursor_of_older_notices_reads_the_first_page_again() {
+    let room = room().await;
+    let rig = &room.rig;
+    let notice = |message: &Message| Notification {
+        id: message.id.as_uuid(),
+        message_id: message.id,
+        kind: NotificationKind::Mention,
+        created_at: crate::model::tests::time(),
+        read_at: None,
+    };
+    let held = room.held(9, "@you");
+    let first = notice(&held);
+    room.chat(|chat| {
+        chat.notices = vec![first.clone()];
+        chat.notices_more = true;
+    });
+    room.peer
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: held.id,
+            },
+        )
+        .await;
+    rig.model_when("the first page", |model| {
+        model.notices.len() == 1 && model.notices_more
+    })
+    .await;
+    assert_eq!(rig.http.count("/notifications"), 1);
+
+    // The server no longer takes the held notice as a cursor, as a notice of a deleted
+    // place: the page after it is refused, and the first page is read again.
+    room.chat(|chat| {
+        chat.refused_cursors = vec![first.id];
+        chat.notices_more = false;
+    });
+    rig.live.read_more_notices();
+    rig.model_when("the first page again", |model| !model.notices_more)
+        .await;
+    assert_eq!(rig.http.count("/notifications"), 3);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_changed_notification_setting_reloads_the_state() {
     let mut room = room().await;
     let general = room.rig.scene.general;

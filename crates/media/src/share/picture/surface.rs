@@ -57,10 +57,11 @@ pub(super) fn convert(planes: &I420Buffer, mirror: bool) -> Option<CVPixelBuffer
         let columns = width.div_ceil(2);
         for row in 0..height.div_ceil(2) {
             let target = std::slice::from_raw_parts_mut(base.add(row * stride), columns * 2);
+            let (u, v) = (&u[row * us as usize..], &v[row * vs as usize..]);
             for column in 0..columns {
-                let source = if mirror { columns - column - 1 } else { column };
-                target[column * 2] = chroma(u[row * us as usize + source]);
-                target[column * 2 + 1] = chroma(v[row * vs as usize + source]);
+                let (first, second) = sources(width, column, mirror);
+                target[column * 2] = chroma(mean(u[first], u[second]));
+                target[column * 2 + 1] = chroma(mean(v[first], v[second]));
             }
         }
     }
@@ -68,9 +69,34 @@ pub(super) fn convert(planes: &I420Buffer, mirror: bool) -> Option<CVPixelBuffer
     Some(buffer)
 }
 
-fn luma(value: u8) -> u8 {
+/// The colour columns of the source that the two pixels of the colour column `column` of
+/// the pixel buffer show. Without the mirror both are `column`. A mirror of an even width
+/// keeps the two pixels of a column together. A mirror of an odd width moves the pixels by
+/// one against the columns of colour: the two pixels of a column of the buffer come from
+/// two neighbouring columns of the source, and the last column of the buffer holds one
+/// pixel. The buffer takes the mean of the two, as a picture mirrored at its full size and
+/// then reduced to one colour value for two pixels has.
+pub(super) fn sources(width: usize, column: usize, mirror: bool) -> (usize, usize) {
+    if !mirror {
+        return (column, column);
+    }
+    let first = width - 1 - column * 2;
+    let second = if column * 2 + 1 < width {
+        first - 1
+    } else {
+        first
+    };
+    (first / 2, second / 2)
+}
+
+fn mean(one: u8, other: u8) -> u8 {
+    ((u16::from(one) + u16::from(other)).div_ceil(2)) as u8
+}
+
+pub(super) fn luma(value: u8) -> u8 {
     ((i32::from(value) - 16) * 255 / 219).clamp(0, 255) as u8
 }
-fn chroma(value: u8) -> u8 {
+
+pub(super) fn chroma(value: u8) -> u8 {
     ((i32::from(value) - 128) * 255 / 224 + 128).clamp(0, 255) as u8
 }

@@ -211,8 +211,14 @@ impl AppState {
         let Some((server_id, _)) = self.contacts.open else {
             return;
         };
+        // The name of the chosen row is kept for a refusal (ADR 0741).
+        let name = self
+            .contacts_view()
+            .and_then(|view| view.rows)
+            .and_then(|rows| rows.into_iter().find(|row| row.account_id == account_id))
+            .map(|row| row.name);
         self.contacts.close();
-        self.open_conversation(server_id, account_id, cx);
+        self.ask_conversation(server_id, account_id, name, cx);
     }
 
     fn read_contacts(&mut self, cx: &mut Context<Self>) {

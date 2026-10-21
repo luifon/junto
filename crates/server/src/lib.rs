@@ -36,6 +36,7 @@ pub mod state;
 pub mod storage;
 pub mod store;
 pub mod structure;
+pub mod telemetry;
 pub mod tokens;
 pub mod validate;
 
@@ -164,6 +165,7 @@ pub async fn serve_with(
     shutdown: impl Future<Output = ()> + Send + 'static,
     tasks: Tasks,
 ) -> std::io::Result<()> {
+    let telemetry = telemetry::Telemetry::start(state.config.otel_endpoint.clone()).await?;
     let watcher = tokio::spawn(events::watcher::run(state.clone()));
     let mut running = Vec::new();
     if tasks.calls && state.calls.media().is_some() {
@@ -180,7 +182,12 @@ pub async fn serve_with(
         shutdown.await;
         stopping.streams.shut_down();
     };
-    let service = routes::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let router = routes::router(state.clone());
+    let router = match &telemetry {
+        Some(telemetry) => telemetry.instrument(router),
+        None => router,
+    };
+    let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let served = axum::serve(listener, service)
         .with_graceful_shutdown(stop)
         .await;
@@ -189,6 +196,9 @@ pub async fn serve_with(
     watcher.abort();
     for task in running {
         task.abort();
+    }
+    if let Some(telemetry) = telemetry {
+        telemetry.shutdown().await;
     }
     served
 }

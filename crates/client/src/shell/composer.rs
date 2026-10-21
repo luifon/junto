@@ -470,22 +470,21 @@ impl Shell {
         let desk = |place: Option<PlaceId>| -> Option<Desk> {
             Some((view.selected.as_ref()?.id, view.person.account_id?, place?))
         };
-        let workspace = view.workspace();
         let shown = view.shown();
-        let main: SharedString = workspace
-            .map(
-                |workspace| match (&workspace.conversation, &workspace.channel) {
-                    (Some(conversation), _) => text::direct_placeholder(
-                        conversation.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
-                    ),
-                    (None, Some(channel)) => {
-                        text::message_placeholder(&channel.name, channel.kind == ChannelKind::Voice)
-                    }
-                    (None, None) => String::new(),
-                },
-            )
-            .unwrap_or_default()
-            .into();
+        let conversation = view.lists().and_then(|lists| lists.conversation.as_ref());
+        let channel = view
+            .workspace()
+            .and_then(|workspace| workspace.channel.as_ref());
+        let main: SharedString = match (conversation, channel) {
+            (Some(conversation), _) => text::direct_placeholder(
+                conversation.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+            ),
+            (None, Some(channel)) => {
+                text::message_placeholder(&channel.name, channel.kind == ChannelKind::Voice)
+            }
+            (None, None) => String::new(),
+        }
+        .into();
         self.pen_follows(Pane::Main, desk(shown.place()), main, window, cx);
         let thread = desk(shown.thread_place());
         self.pen_follows(
@@ -584,18 +583,22 @@ impl Shell {
         let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();
         };
-        let Some(workspace) = view.workspace() else {
-            return Vec::new();
-        };
         match self.composer_place(pane).map(|(_, place)| place) {
-            Some(PlaceId::Direct(conversation_id)) => workspace
-                .directs
-                .iter()
-                .chain(&workspace.conversation)
-                .find(|row| row.id == conversation_id)
+            Some(PlaceId::Direct(conversation_id)) => view
+                .lists()
+                .and_then(|lists| {
+                    lists
+                        .directs
+                        .iter()
+                        .chain(&lists.conversation)
+                        .find(|row| row.id == conversation_id)
+                })
                 .map(|row| direct_candidates(row, &open.query))
                 .unwrap_or_default(),
-            _ => candidates(workspace, view.person.account_id, &open.query),
+            _ => view
+                .workspace()
+                .map(|workspace| candidates(workspace, view.person.account_id, &open.query))
+                .unwrap_or_default(),
         }
     }
 
@@ -1053,11 +1056,9 @@ impl Shell {
         let draft = self
             .view
             .as_ref()
-            .and_then(|view| view.workspace())
-            .map(|workspace| match (pane, &workspace.thread) {
-                (Pane::Thread, Some(thread)) => thread.draft.clone(),
-                (Pane::Thread, None) => Vec::new(),
-                (Pane::Main, _) => workspace.draft.clone(),
+            .and_then(|view| match pane {
+                Pane::Main => Some(view.lists()?.draft.clone()),
+                Pane::Thread => Some(view.workspace()?.thread.as_ref()?.draft.clone()),
             })
             .unwrap_or_default();
         if draft

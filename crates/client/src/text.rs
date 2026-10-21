@@ -48,6 +48,8 @@ pub const ADDRESS_HELP: &str = "Enter the address your admin gave you.";
 pub const ADDRESS_ASKING: &str = "Asking the server…";
 pub const WORKSPACES: &str = "Workspaces";
 pub const NO_WORKSPACES: &str = "No workspace is visible to your account.";
+pub const NO_WORKSPACE_MEMBERS: &str =
+    "No workspace is visible to your account, so there is no member list.";
 pub const SHOW_SERVER: &str = "Show this server";
 
 // The state of a server, as the line under its name.
@@ -1559,6 +1561,11 @@ pub const CONTACTS: &str = "People you can write to";
 pub const NO_CONTACTS: &str = "Nobody with this name can receive your messages.";
 pub const CONTACTS_NOT_READ: &str = "The people could not be read.";
 pub const MORE_CONTACTS: &str = "Show more";
+/// The statement of a direct conversation with a person that the server did not open, with
+/// its reason.
+pub fn conversation_not_opened(name: &str, reason: &str) -> String {
+    format!("The conversation with {name} was not opened. {reason}")
+}
 pub const NO_CONTACT: &str =
     "You cannot write to this person: you share no workspace with them on this server.";
 pub const CONVERSATION_CLOSED: &str = "You and this person share no workspace on this server any more. The messages are kept \
@@ -2123,8 +2130,6 @@ pub const ARCHIVED_RESULTS_NOT_READ: &str =
     "The archived channels could not be read, so their results are not listed.";
 pub const SHOW_MORE_RESULTS: &str = "Show more results";
 pub const READING_MORE_RESULTS: &str = "Reading more…";
-pub const SEARCH_MESSAGES: &str = "Messages";
-pub const SEARCH_TRANSCRIPTS: &str = "Transcripts";
 pub const FILTER_CHANNEL: &str = "Channel";
 pub const FILTER_AUTHOR: &str = "Author";
 pub const FILTER_DATE: &str = "Date";

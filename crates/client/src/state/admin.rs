@@ -2,6 +2,7 @@
 //! open, which collections of the client core that page needs, and the one request of
 //! the person that is on its way or was refused.
 
+mod moves;
 mod notifications;
 mod overrides;
 mod people;
@@ -226,6 +227,8 @@ pub struct AdminState {
     /// The roles whose permissions the person changed and whose change the state does
     /// not show yet (ADR 0791).
     pub(crate) role_changes: roles::RoleChanges,
+    /// The moves of channels that the person sent and that the state does not show yet.
+    pub(crate) channel_moves: moves::ChannelMoves,
 }
 
 /// The request that an answer belongs to.
@@ -257,6 +260,7 @@ impl AdminState {
             // The list of the recordings belongs to its page. A late answer finds no
             // list that waits for it.
             self.recordings = recordings::RecordingList::default();
+            self.channel_moves.release();
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
@@ -273,6 +277,7 @@ impl AdminState {
         self.made = None;
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
+        self.channel_moves.release();
     }
 
     /// Binds the open layer to the account that its server shows now. A layer that was
@@ -293,6 +298,7 @@ impl AdminState {
                 self.close();
                 // The changes that wait belong to the account of before.
                 self.role_changes.forget();
+                self.channel_moves.forget();
                 true
             }
         }
@@ -369,6 +375,8 @@ impl AppState {
     /// Puts away what was told about the last request.
     pub fn dismiss_admin_ask(&mut self, cx: &mut Context<Self>) {
         self.admin.ask = None;
+        // An act of the person ends the drawing of a refused move (ADR 0730).
+        self.admin.channel_moves.release();
         cx.notify();
     }
 
@@ -478,6 +486,7 @@ impl AppState {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
         self.settle_role_changes();
+        self.settle_channel_moves();
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();

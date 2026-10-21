@@ -265,8 +265,8 @@ fn an_administrator_changes_the_limits_of_files_and_the_window_of_a_member_follo
     member.until("the member holds the new limits", |window| {
         window
             .view()
-            .workspace()
-            .and_then(|workspace| workspace.feed.as_ref())
+            .lists()
+            .and_then(|lists| lists.feed.as_ref())
             .and_then(|feed| feed.limits.clone())
             == Some(changed.clone())
     });

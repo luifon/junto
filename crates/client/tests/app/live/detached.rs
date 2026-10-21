@@ -479,8 +479,8 @@ fn the_detached_call_draws_the_notices_and_the_bars_of_its_call(cx: &mut TestApp
 fn panel_people(window: &mut Window) -> Vec<Occupant> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .map(|panel| panel.people)
         .unwrap_or_default()
 }
@@ -599,8 +599,8 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     call.click("device-choice-1");
     call.until("the microphone is chosen", |call| {
         call.view()
-            .workspace()
-            .and_then(|workspace| workspace.call.clone())
+            .lists()
+            .and_then(|lists| lists.call.clone())
             .is_some_and(|panel| panel.audio.inputs[1].selected)
     });
 
@@ -702,8 +702,8 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
         call.shows("call-chat")
             && call
                 .view()
-                .workspace()
-                .and_then(|workspace| workspace.conversation.as_ref().map(|row| row.account_id))
+                .lists()
+                .and_then(|lists| lists.conversation.as_ref().map(|row| row.account_id))
                 == Some(other)
     });
     call.until_message("From the main window");

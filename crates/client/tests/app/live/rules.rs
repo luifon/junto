@@ -257,10 +257,7 @@ fn voice_of(window: &mut Window) -> VoiceState {
 }
 
 fn panel(window: &mut Window) -> Option<CallPanel> {
-    window
-        .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+    window.view().lists().and_then(|lists| lists.call.clone())
 }
 
 fn room_view(window: &mut Window) -> Option<RoomView> {

@@ -24,6 +24,10 @@ Configuration:
 - The server reads its settings from environment variables with the prefix `JUNTO_`: `DATABASE_URL` (required), `LISTEN_ADDRESS` (default `127.0.0.1:8080`), `SERVER_NAME` (default `Junto`), `TRUSTED_PROXIES` (a comma-separated list of IP addresses, default empty), `LOG_FORMAT` (`json` or `text`, default `json`), `LOG_LEVEL` (default `info`) and `STOP_WITH_PROCESS` (the number of a process, default none).
 - `SERVER_NAME` is used at the first start only. The name is stored in the database afterwards.
 - An invalid value stops the start with a message that names the variable.
+- `JUNTO_OTEL_ENDPOINT` optionally enables request traces and metrics to an
+  administrator-operated collector; its transport, bounds and privacy rules are
+  in ADR 0007. An unset or empty value disables export. `JUNTO_OTEL_CA_FILE`
+  optionally adds a PEM CA bundle for an HTTPS collector with an internal authority.
 
 Process:
 
@@ -34,7 +38,7 @@ Process:
 - A task of the server process removes expired rows once per minute (ADR 0009).
 - Log records are structured and go to standard error. Each request produces one record with the method, the path, the status and the duration. Request bodies and headers are not logged.
 - The owner code goes to standard output as plain text and is never a log record.
-- A notice with a one-time code, at the start and from `issue-owner-code`, is one write to standard output, so that a reader of standard output gets the notice in one read; `println!` writes a text with several lines in parts. Docker reads the standard output and the standard error of a container separately and stores each line as its own entry, and `docker compose logs` writes the entries of both into one stream: in that stream a record of standard error can be between two lines of the notice, also after one write. A program that reads the code therefore reads standard output alone (see Consequences). Test: `first_start::the_binary_writes_the_notice_of_the_owner_code_in_one_write` and `the_host_command_writes_the_notice_of_the_owner_code_in_one_write` make the standard output of the binary a datagram socket, which receives each write as one datagram.
+- A notice with a one-time code, at the start and from `issue-owner-code`, is one write to standard output, so that no other write of the process to standard output is between its lines; `println!` writes a text with several lines in parts. One write does not give one read: a reader of a pipe can receive the notice in several parts, and a buffer smaller than the notice always does, so a program that reads the code reads until the end of the notice. Docker reads the standard output and the standard error of a container separately and stores each line as its own entry, and `docker compose logs` writes the entries of both into one stream: in that stream a record of standard error can be between two lines of the notice, also after one write. A program that reads the code therefore reads standard output alone (see Consequences). Test: `first_start::the_binary_writes_the_notice_of_the_owner_code_in_one_write` and `the_host_command_writes_the_notice_of_the_owner_code_in_one_write` make the standard output of the binary a datagram socket, which receives each write as one datagram.
 - SIGINT and SIGTERM stop the listener. Open requests are finished before the process exits.
 - With `STOP_WITH_PROCESS`, the end of the process with that number, which must be the process that started the server, stops the listener as SIGTERM does, also when that process was killed (ADR 0915). The deployments do not set it.
 - Every request has a time limit of 30 seconds. A request that reaches it gets the error `timeout` (ADR 0205) and its transaction is rolled back.

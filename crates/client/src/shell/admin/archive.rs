@@ -145,7 +145,7 @@ impl Shell {
     ) {
         let target = self.view.as_ref().and_then(|view| {
             let server_id = view.selected.as_ref()?.id;
-            Some((server_id, view.workspace()?.conversation.as_ref()?.id))
+            Some((server_id, view.lists()?.conversation.as_ref()?.id))
         });
         if let Some((server_id, conversation_id)) = target {
             self.open_server_admin(AdminPage::Exports, window, cx);
