@@ -831,13 +831,14 @@ impl Shell {
     }
 
     /// The roles that an account holds or can be given, one switch each, under the row
-    /// of the account in a list of people.
+    /// of the account in a list of people. `page_held` holds every switch with its
+    /// reason, as while a request of the page offers no release (ADR 0730).
     pub(crate) fn render_role_choices(
         &mut self,
         view: &AdminView,
-        account_id: AccountId,
-        account: &str,
+        (account_id, account): (AccountId, &str),
         choices: &[RoleChoice],
+        page_held: Option<&'static str>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -861,8 +862,9 @@ impl Shell {
             let what = AskKind::AssignRole(role, account_id);
             refused = refused.or(view.refused(what));
             let blocked = choice.blocked.map(txt::no_assignment);
-            let held: Option<&'static str> =
-                blocked.or(view.sending(what).then_some(text::admin::SENDING));
+            let held: Option<&'static str> = blocked
+                .or(view.sending(what).then_some(text::admin::SENDING))
+                .or(page_held);
             let toggle = Toggle::new(
                 ("account-role", role.number()),
                 txt::role_label(&choice.name, account),

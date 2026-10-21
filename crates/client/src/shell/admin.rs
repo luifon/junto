@@ -500,6 +500,19 @@ impl Shell {
         };
         match view.asked(what) {
             Some(crate::state::admin::AskState::Sending) => {}
+            // A refused move stays drawn with its refusal in its row until the person acts
+            // (ADR 0761): the form of "Move to" closes, and its row keeps the height that it
+            // had with the form.
+            Some(crate::state::admin::AskState::Refused(_))
+                if matches!(what, AskKind::MoveChannels(_))
+                    && matches!(self.admin.mode, Some(Mode::MoveChannel(_))) =>
+            {
+                self.admin.sent = None;
+                if let Some(mode) = self.admin.mode.take() {
+                    self.admin.space.keep(mode);
+                }
+                self.admin.move_group = None;
+            }
             Some(crate::state::admin::AskState::Refused(_)) => self.admin.sent = None,
             None => {
                 self.admin.sent = None;

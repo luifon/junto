@@ -6,7 +6,9 @@ use junto_client_core::protocol::events::Cursor;
 use junto_client_core::protocol::ids::{ConversationId, StreamEpoch};
 use junto_client_core::protocol::message::Conversation;
 use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
-use junto_client_core::protocol::structure::{Channel, Workspace, WorkspaceMember};
+use junto_client_core::protocol::structure::{
+    ArchivedChannel, Channel, Workspace, WorkspaceMember,
+};
 use time::{Duration, UtcOffset};
 
 use super::*;
@@ -250,10 +252,10 @@ fn results_are_listed_as_messages_and_as_transcript_lines_with_their_places() {
     let message_id = in_general.message_id.unwrap();
     let panel = scene.panel(scene.search("retention", vec![in_general, spoken, elsewhere, direct]));
     assert_eq!(panel.state, SearchShown::Results);
-    assert_eq!((panel.messages.len(), panel.transcripts.len()), (2, 1));
+    assert_eq!((panel.messages().len(), panel.transcripts().len()), (2, 1));
     assert!(!panel.more);
 
-    let first = &panel.messages[0];
+    let first = panel.messages()[0];
     assert_eq!(
         first.place,
         Whereabouts::Channel {
@@ -273,7 +275,7 @@ fn results_are_listed_as_messages_and_as_transcript_lines_with_their_places() {
     assert_eq!(first.marks, vec![4..13]);
     assert_eq!(first.target, ResultTarget::Message(message_id));
 
-    let second = &panel.messages[1];
+    let second = panel.messages()[1];
     assert_eq!(
         second.place,
         Whereabouts::Direct {
@@ -282,7 +284,7 @@ fn results_are_listed_as_messages_and_as_transcript_lines_with_their_places() {
     );
     assert_eq!(second.day, "Tuesday, 6 October");
 
-    let line = &panel.transcripts[0];
+    let line = panel.transcripts()[0];
     assert_eq!(
         line.place,
         Whereabouts::Channel {
@@ -326,7 +328,7 @@ fn the_panel_tells_a_search_that_runs_found_nothing_was_refused_or_failed() {
     search.hits = vec![scene.hit(scene.general.as_uuid(), "retention", 1)];
     let panel = scene.panel(search.clone());
     assert_eq!(panel.state, SearchShown::Searching);
-    assert_eq!(panel.messages.len(), 1);
+    assert_eq!(panel.messages().len(), 1);
     // Every result lies in a place that the state does not hold any more.
     search.progress = Progress::Done;
     search.hits = vec![scene.hit(Uuid::now_v7(), "retention", 1)];
@@ -404,7 +406,7 @@ fn a_search_at_its_bound_says_that_the_server_has_more_and_offers_no_page() {
     let mut search = scene.search("retention", hits);
     search.more = true;
     let panel = scene.panel(search.clone());
-    assert_eq!(panel.messages.len(), MOST_HITS);
+    assert_eq!(panel.messages().len(), MOST_HITS);
     assert!(panel.more && !panel.can_read_more);
     search.hits.truncate(50);
     let panel = scene.panel(search);
@@ -445,7 +447,7 @@ fn a_result_leads_to_its_place_and_position_and_a_line_shows_its_time() {
     let mut spoken = scene.spoken("Diego writes the retention spec", 212);
     spoken.start_ms = Some(3_723_000);
     let panel = scene.panel(scene.search("retention", vec![spoken]));
-    assert_eq!(panel.transcripts[0].time, "01:02:03");
+    assert_eq!(panel.transcripts()[0].time, "01:02:03");
 }
 
 #[test]
@@ -493,7 +495,7 @@ fn a_page_with_a_result_of_an_unknown_archived_channel_waits_for_the_archived_li
         1,
         studio,
     );
-    let count = |panel: &SearchPanel| panel.messages.len() + panel.transcripts.len();
+    let count = |panel: &SearchPanel| panel.messages().len() + panel.transcripts().len();
 
     // A page is listed whole: the transcript line of the first page is not listed while
     // the message of an unknown channel of the same page waits for the archived list.
@@ -545,4 +547,68 @@ fn a_page_with_a_result_of_an_unknown_archived_channel_waits_for_the_archived_li
     let panel = scene.panel(scene.search("retention", vec![first, old, later]));
     assert_eq!(count(&panel), 2);
     assert!(panel.archive_failed.is_empty() && !panel.reading_more);
+}
+
+#[test]
+fn the_results_of_a_later_page_follow_the_listed_ones_in_the_order_of_the_server() {
+    let mut scene = scene();
+    let archived = ChannelId::generate();
+    let in_page = |mut hit: Hit, page: u32| {
+        hit.page = page;
+        hit.workspace_id = Some(scene.studio);
+        hit
+    };
+    let spoken = in_page(scene.spoken("retention aloud", 3), 0);
+    let written = in_page(
+        scene.hit(scene.general.as_uuid(), "retention written", 4),
+        0,
+    );
+    let old = in_page(scene.hit(archived.as_uuid(), "retention, archived", 5), 1);
+    let later = in_page(scene.hit(scene.general.as_uuid(), "retention later", 6), 1);
+    let texts = |panel: &SearchPanel| -> Vec<String> {
+        panel.results.iter().map(|row| row.text.clone()).collect()
+    };
+
+    // The first page lists the line of a transcript before a message, as the server
+    // ranks them.
+    let pages = vec![spoken.clone(), written.clone(), old.clone(), later.clone()];
+    let panel = scene.panel(scene.search("retention", pages.clone()));
+    assert_eq!(texts(&panel), ["retention aloud", "retention written"]);
+    assert!(panel.reading_more);
+
+    // The archived list answers: the second page joins the list after the first one, and
+    // its messages do not go before the line of the transcript.
+    let channel = Channel {
+        id: archived,
+        workspace_id: scene.studio,
+        category_id: None,
+        kind: ChannelKind::Text,
+        name: "old".to_owned(),
+        position: 9,
+        permanent_messages: false,
+        user_limit: None,
+        hides_occupants: false,
+    };
+    Arc::make_mut(&mut scene.model.admin).archived = vec![(
+        scene.studio,
+        Collection::Loaded(vec![ArchivedChannel {
+            channel,
+            archived_at: OffsetDateTime::UNIX_EPOCH,
+            deletes_at: None,
+        }]),
+    )];
+    let panel = scene.panel(scene.search("retention", pages));
+    assert_eq!(
+        texts(&panel),
+        [
+            "retention aloud",
+            "retention written",
+            "retention, archived",
+            "retention later"
+        ]
+    );
+    assert!(matches!(
+        panel.results[0].target,
+        ResultTarget::Transcript { .. }
+    ));
 }

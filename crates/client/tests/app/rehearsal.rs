@@ -782,7 +782,7 @@ impl Rehearsal {
         search_for(b, &format!("kestrel{tag}"));
         let panel = until_searched(b);
         assert_eq!(panel.state, SearchShown::Results);
-        let targets: Vec<ResultTarget> = panel.messages.iter().map(|row| row.target).collect();
+        let targets: Vec<ResultTarget> = panel.messages().iter().map(|row| row.target).collect();
         assert_eq!(targets, [ResultTarget::Message(message)]);
         b.click_named(format!("search-result:{message}"));
         let text_channel = b.until_value("the result leads to its message", |window| {
@@ -797,9 +797,9 @@ impl Rehearsal {
         if let Some(word) = spoken_word {
             search_for(b, word);
             let panel = until_searched(b);
-            assert_eq!(panel.messages.len(), 0);
-            assert!(!panel.transcripts.is_empty(), "{panel:?}");
-            assert!(panel.transcripts.iter().all(|line| line.author == B_NAME));
+            assert_eq!(panel.messages().len(), 0);
+            assert!(!panel.transcripts().is_empty(), "{panel:?}");
+            assert!(panel.transcripts().iter().all(|line| line.author == B_NAME));
             b.click("search-transcript-0");
             b.until("the result opens its recording", |window| {
                 selected_channel(window) == voice_channel(window)

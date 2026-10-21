@@ -240,7 +240,9 @@ mod tests {
     /// The pixel buffer that the window draws on macOS gives the colours of the BGRA
     /// picture, when its values are read with the matrix of the surface shader of gpui
     /// (full-range BT.601), also at an odd size, where the last column and row of colour
-    /// cover one pixel.
+    /// cover one pixel. Every pixel is compared. A mirror of an odd width puts two pixels of
+    /// two colour columns of the source into one colour column of the buffer: that column
+    /// holds the mean of the two, and its pixels are compared where the two are equal.
     #[cfg(target_os = "macos")]
     #[test]
     #[allow(unsafe_code)]
@@ -258,30 +260,79 @@ mod tests {
                 channel(y + 1.772 * cb - 0.886),
             )
         }
-        let pixels = crate::share::synthetic::two_colours(63, 35, (200, 60, 30), (40, 90, 210));
+        let (width, height) = (63_usize, 35_usize);
+        let pixels = crate::share::synthetic::two_colours(
+            width as u32,
+            height as u32,
+            (200, 60, 30),
+            (40, 90, 210),
+        );
+        let (y_plane, u_plane, v_plane) = pixels.data();
+        let (ys, us, vs) = pixels.strides();
+        let (ys, us, vs) = (ys as usize, us as usize, vs as usize);
         for mirrored in [false, true] {
             let picture = VideoPicture::new(&pixels, mirrored, (63, 35)).unwrap();
             let buffer = picture.surface().unwrap();
-            assert_eq!((buffer.get_width(), buffer.get_height()), (63, 35));
+            assert_eq!((buffer.get_width(), buffer.get_height()), (width, height));
             assert_eq!(buffer.lock_base_address(0), 0);
-            let sample = |x: usize, y: usize| unsafe {
-                let luma = buffer.get_base_address_of_plane(0).cast::<u8>();
-                let chroma = buffer.get_base_address_of_plane(1).cast::<u8>();
-                let at = y / 2 * buffer.get_bytes_per_row_of_plane(1) + x / 2 * 2;
-                shader(
-                    *luma.add(y * buffer.get_bytes_per_row_of_plane(0) + x),
-                    *chroma.add(at),
-                    *chroma.add(at + 1),
+            let (luma, chroma, luma_stride, chroma_stride) = unsafe {
+                (
+                    buffer.get_base_address_of_plane(0).cast::<u8>(),
+                    buffer.get_base_address_of_plane(1).cast::<u8>(),
+                    buffer.get_bytes_per_row_of_plane(0),
+                    buffer.get_bytes_per_row_of_plane(1),
                 )
             };
-            for (x, y) in [(2, 2), (20, 17), (44, 9), (62, 34), (62, 0), (0, 34)] {
-                let surface = sample(x as usize, y as usize);
-                let bgra = picture.pixel(x, y).unwrap();
-                let far = |a: u8, b: u8| a.abs_diff(b) > 4;
-                assert!(
-                    !(far(surface.0, bgra.0) || far(surface.1, bgra.1) || far(surface.2, bgra.2)),
-                    "mirrored {mirrored}, ({x}, {y}): pixel buffer {surface:?}, BGRA {bgra:?}"
-                );
+            for y in 0..height {
+                for x in 0..width {
+                    let source = if mirrored { width - 1 - x } else { x };
+                    let held = unsafe { *luma.add(y * luma_stride + x) };
+                    assert_eq!(
+                        held,
+                        surface::luma(y_plane[y * ys + source]),
+                        "mirrored {mirrored}, brightness of ({x}, {y})"
+                    );
+                    let at = y / 2 * chroma_stride + x / 2 * 2;
+                    let (cb, cr) = unsafe { (*chroma.add(at), *chroma.add(at + 1)) };
+                    // The source pixels of the two pixels of this colour column.
+                    let pair: Vec<usize> = [x / 2 * 2, x / 2 * 2 + 1]
+                        .into_iter()
+                        .filter(|column| *column < width)
+                        .map(|column| if mirrored { width - 1 - column } else { column })
+                        .collect();
+                    let colour = |plane: &[u8], stride: usize, column: usize| {
+                        plane[y / 2 * stride + column / 2]
+                    };
+                    let mean = |plane: &[u8], stride: usize| {
+                        let sum: u16 = pair
+                            .iter()
+                            .map(|column| u16::from(colour(plane, stride, *column)))
+                            .sum();
+                        sum.div_ceil(pair.len() as u16) as u8
+                    };
+                    assert_eq!(
+                        (cb, cr),
+                        (
+                            surface::chroma(mean(u_plane, us)),
+                            surface::chroma(mean(v_plane, vs))
+                        ),
+                        "mirrored {mirrored}, colour of ({x}, {y})"
+                    );
+                    let equal = pair.iter().all(|column| {
+                        colour(u_plane, us, *column) == colour(u_plane, us, pair[0])
+                            && colour(v_plane, vs, *column) == colour(v_plane, vs, pair[0])
+                    });
+                    if !equal {
+                        continue;
+                    }
+                    let shown = shader(held, cb, cr);
+                    let bgra = picture.pixel(x as u32, y as u32).unwrap();
+                    let far = |a: u8, b: u8| a.abs_diff(b) > 4;
+                    assert!(
+                        !(far(shown.0, bgra.0) || far(shown.1, bgra.1) || far(shown.2, bgra.2)),
+                        "mirrored {mirrored}, ({x}, {y}): pixel buffer {shown:?}, BGRA {bgra:?}"
+                    );
+                }
             }
             assert_eq!(buffer.unlock_base_address(0), 0);
         }

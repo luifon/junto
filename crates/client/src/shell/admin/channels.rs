@@ -93,7 +93,7 @@ fn drop_target(
                     return;
                 }
                 let channel_id = drag.channel_id;
-                if let Some(moves) = plans.plan(channel_id, category_id, to) {
+                if let Ok(moves) = plans.plan(channel_id, category_id, to) {
                     this.state.update(cx, |state, cx| {
                         state.move_channels(server_id, workspace_id, channel_id, moves, cx);
                     });
@@ -246,21 +246,24 @@ impl Shell {
                 None => text::admin::PLACE_FIRST.to_owned(),
             };
             let moves = page.plan(channel_id, category_id, to);
-            let enabled = moves.is_some() && !sending;
             let mut button = Button::new(("channel-place", to))
                 .label(label)
-                .disabled(!enabled)
+                .disabled(moves.is_err() || sending)
                 .h(u(28.0))
                 .px(u(10.0));
-            if let Some(moves) = moves {
-                button = button.on_click(Self::moves_listener(
-                    server_id,
-                    workspace_id,
-                    channel_id,
-                    moves,
-                    true,
-                    cx,
-                ));
+            match moves {
+                Ok(moves) => {
+                    button = button.on_click(Self::moves_listener(
+                        server_id,
+                        workspace_id,
+                        channel_id,
+                        moves,
+                        true,
+                        cx,
+                    ));
+                }
+                // A place that is not offered states why.
+                Err(reason) => button = button.tooltip(text::admin::unplanned(reason)),
             }
             row = row.child(named(format!("channel-place-{to}"), button));
         }
@@ -616,6 +619,11 @@ impl Shell {
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
         let channel_id = row.id;
         let number = channel_id.as_uuid().as_u128() as u64;
+        let refused = page
+            .refusal
+            .as_ref()
+            .filter(|(moved, _)| *moved == channel_id)
+            .map(|(_, reason)| reason.clone());
         let content: AnyElement = match self.admin.mode {
             Some(Mode::MoveChannel(id)) if id == channel_id => match self.admin.move_group {
                 None => self.render_group_choice(page, theme, cx).into_any_element(),
@@ -623,6 +631,50 @@ impl Shell {
                     .render_place_choice(view, page, channel_id, category_id, theme, cx)
                     .into_any_element(),
             },
+            // A refused move is stated in the row of the moved channel, where the page draws
+            // it, in place of the actions of the row: the row keeps its height, and no row
+            // moves at the refusal (ADR 0730). The form of "Move to" stays until its answer
+            // closes it, and its row then keeps the height of the form.
+            _ if refused.is_some() => {
+                let reason: SharedString = refused.unwrap_or_default().into();
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(icon(kind_icon(row.kind), 15.0, theme.colors.ink_2))
+                    .child(
+                        div()
+                            .flex_none()
+                            .typeface(theme.types.control, theme)
+                            .ink(theme.colors.ink)
+                            .child(row.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("channel-move-refused")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .typeface(theme.types.small, theme)
+                            .ink(theme.colors.cinnabar_ink)
+                            .tooltip(crate::ui::tooltip(reason.clone()))
+                            .debug_selector(|| "channel-move-refused".to_owned())
+                            .child(reason),
+                    )
+                    .child(
+                        Button::new("channel-move-refused-dismiss")
+                            .label(text::DISMISS)
+                            .selector("channel-move-refused-dismiss")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_admin_mode(None, "", window, cx);
+                            })),
+                    )
+                    .into_any_element()
+            }
             _ => {
                 let detail: Option<SharedString> =
                     row.permanent.then(|| text::admin::PERMANENT_MARK.into());
@@ -660,7 +712,7 @@ impl Shell {
                     } else {
                         Some(index + 1)
                     };
-                    to.and_then(|to| page.plan(channel_id, row.category_id, to))
+                    to.and_then(|to| page.plan(channel_id, row.category_id, to).ok())
                         .unwrap_or_default()
                 };
                 div()
@@ -678,7 +730,7 @@ impl Shell {
                         format!("channel-up-{channel_id}"),
                         row.first
                             .then_some(text::admin::FIRST_ALREADY)
-                            .or((!row.moves_up).then_some(text::admin::MOVE_NEEDS)),
+                            .or(row.moves_up.err().map(text::admin::unplanned)),
                         Self::moves_listener(
                             server_id,
                             workspace_id,
@@ -694,7 +746,7 @@ impl Shell {
                         format!("channel-down-{channel_id}"),
                         row.last
                             .then_some(text::admin::LAST_ALREADY)
-                            .or((!row.moves_down).then_some(text::admin::MOVE_NEEDS)),
+                            .or(row.moves_down.err().map(text::admin::unplanned)),
                         Self::moves_listener(
                             server_id,
                             workspace_id,
@@ -750,8 +802,7 @@ impl Shell {
                 ),
             ))
             .children(refusal(
-                view.refused(AskKind::UpdateChannel(channel_id))
-                    .or(view.refused(AskKind::MoveChannels(channel_id))),
+                view.refused(AskKind::UpdateChannel(channel_id)),
                 "channel-refused",
             ))
             .into_any_element()
@@ -892,11 +943,34 @@ impl Shell {
             ),
         };
         column = column.child(self.mode_row(&[Mode::CreateCategory], new_category));
+        // A refused move of a channel that the page no longer lists, such as one deleted
+        // meanwhile, is stated at the end of the page with its Close button: the page offers
+        // no move while a refused move is drawn (ADR 0761), and the end of the page grows
+        // without moving a row above it (ADR 0730).
+        let orphan = page
+            .refusal
+            .as_ref()
+            .filter(|(moved, _)| page.channel(*moved).is_none())
+            .map(|(_, reason)| {
+                div().flex_none().mt(u(8.0)).child(
+                    Notice::error(reason.clone())
+                        .selector("channel-move-refused-page")
+                        .action(
+                            Button::new("channel-move-refused-page-dismiss")
+                                .label(text::DISMISS)
+                                .selector("channel-move-refused-page-dismiss")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_admin_mode(None, "", window, cx);
+                                })),
+                        ),
+                )
+            });
         column
             .children(refusal(
                 view.refused(AskKind::CreateCategory),
                 "category-create-refused",
             ))
+            .children(orphan)
             .into_any_element()
     }
 

@@ -373,7 +373,7 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(text::NOTICES_READING)
                 .into_any_element()
-        } else if panel.rows.is_empty() {
+        } else if panel.rows.is_empty() && !panel.more {
             StatePanel::new(text::NO_NOTICES_TITLE, text::NO_NOTICES)
                 .selector("no-notices")
                 .into_any_element()

@@ -151,6 +151,9 @@ pub struct ChannelMove {
     pub to: ChannelPlace,
 }
 
+/// The most channels that one [`MoveChannels`] names.
+pub const MOST_CHANNEL_MOVES: usize = 200;
+
 /// A change of the order of the channels of one workspace, applied whole or not at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

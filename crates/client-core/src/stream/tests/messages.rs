@@ -37,6 +37,10 @@ pub(super) struct Chat {
     /// The channels that the threads were forked into.
     pub(super) forks: Vec<ChannelId>,
     pub(super) notices: Vec<Notification>,
+    /// The server holds notices after the listed ones.
+    pub(super) notices_more: bool,
+    /// The notices that the server refuses as the cursor of a page.
+    pub(super) refused_cursors: Vec<uuid::Uuid>,
     /// The read positions of threads that the client sent, in their order.
     pub(super) thread_marked: Vec<(MessageId, u64)>,
     /// The answer to the next read position of a thread: a state that the server made
@@ -178,11 +182,28 @@ impl Chat {
             ));
         }
         if path.ends_with("/notifications") {
+            let refused = request.url.query_pairs().any(|(name, value)| {
+                name == "before"
+                    && self
+                        .refused_cursors
+                        .iter()
+                        .any(|cursor| cursor.to_string() == value)
+            });
+            if refused {
+                return Some(Ok(HttpResponse {
+                    status: 400,
+                    retry_after: None,
+                    body: br#"{"error":{"code":"invalid_request","message":"invalid notification cursor"}}"#
+                        .to_vec()
+                        .into(),
+                    receipt: crate::api::Receipt::NotStated,
+                }));
+            }
             return Some(json(
                 200,
                 &NotificationPage {
                     notifications: self.notices.clone(),
-                    has_more: false,
+                    has_more: self.notices_more,
                 },
             ));
         }
