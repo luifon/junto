@@ -117,9 +117,11 @@ impl Handle {
         fs::rename(self.path.join(from), self.path.join(to))
     }
 
-    /// Gives `from` the second name `to`. False when `to` exists.
-    pub(super) fn link_new(&self, from: &str, to: &str) -> io::Result<bool> {
-        match fs::hard_link(self.path.join(from), self.path.join(to)) {
+    /// Renames `from` to `to` when no file has the name `to`. False when `to` exists. A
+    /// hard link is not used: after one, the system kept the file open for up to a second, and
+    /// a rename over the file failed with access denied during that time (ADR 0711).
+    pub(super) fn name_new(&self, from: &str, to: &str) -> io::Result<bool> {
+        match windows_acl::rename_new(&self.path.join(from), &self.path.join(to)) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
             Err(error) => Err(error),

@@ -135,7 +135,7 @@ impl Handle {
     }
 
     /// Gives `from` the second name `to`. False when `to` exists.
-    pub(super) fn link_new(&self, from: &str, to: &str) -> io::Result<bool> {
+    pub(super) fn name_new(&self, from: &str, to: &str) -> io::Result<bool> {
         let linked =
             rustix::fs::linkat(&self.directory, from, &self.directory, to, AtFlags::empty());
         match linked {

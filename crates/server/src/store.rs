@@ -440,6 +440,19 @@ pub async fn announce_profile(
     Ok(profile)
 }
 
+/// The accounts of `$2` that share a workspace with the account `$1`: for each workspace of
+/// `$1` and each account named, one lookup by the key of the membership, so the rows read
+/// follow those two lists and not the other members of the workspaces (ADR 0307).
+pub const FELLOW_MEMBERS: &str = "select distinct asked.id
+     from unnest($2::uuid[]) asked(id)
+     cross join lateral (
+         select workspace_id from workspace_members where account_id = $1 offset 0
+     ) mine
+     cross join lateral (
+         select account_id from workspace_members
+         where workspace_id = mine.workspace_id and account_id = asked.id offset 0
+     ) theirs";
+
 /// The accounts in `account_ids` that are members of a workspace that `account_id` is a
 /// member of.
 pub async fn fellow_members(
@@ -447,16 +460,11 @@ pub async fn fellow_members(
     account_id: AccountId,
     account_ids: &[AccountId],
 ) -> ApiResult<HashSet<AccountId>> {
-    let fellows: Vec<AccountId> = sqlx::query_scalar(
-        "select distinct theirs.account_id
-         from workspace_members mine
-         join workspace_members theirs on theirs.workspace_id = mine.workspace_id
-         where mine.account_id = $1 and theirs.account_id = any($2)",
-    )
-    .bind(account_id)
-    .bind(account_ids)
-    .fetch_all(connection)
-    .await?;
+    let fellows: Vec<AccountId> = sqlx::query_scalar(FELLOW_MEMBERS)
+        .bind(account_id)
+        .bind(account_ids)
+        .fetch_all(connection)
+        .await?;
     Ok(fellows.into_iter().collect())
 }
 
@@ -761,24 +769,39 @@ pub async fn recover(
     Ok(notice)
 }
 
+/// The active accounts of `$1`, each with whether it owns the server and the permissions of
+/// each server role that it holds. Each lookup is a lateral subquery with `offset 0`, a
+/// lookup by key for each account named: a join could become a merge or a hash join that
+/// reads every role assignment, so that the time of a list of contacts would depend on
+/// accounts that the caller may not see (ADR 0307).
+pub const CONTACT_STANDING: &str = "select a.id, coalesce(a.id = s.owner_account_id, false),
+            coalesce(held.permissions, '{}')
+     from unnest($1::uuid[]) asked(id)
+     cross join lateral (
+         select id, status from accounts where id = asked.id offset 0
+     ) a
+     cross join server_state s
+     cross join lateral (
+         select array_agg(r.permissions) as permissions
+         from (
+             select role_id from account_server_roles where account_id = a.id offset 0
+         ) assigned
+         cross join lateral (
+             select permissions from server_roles where id = assigned.role_id offset 0
+         ) r
+     ) held
+     where a.status = 'active'";
+
 /// Contact standing for a set of peers, loaded without a query per conversation.
 pub async fn contacts(
     connection: &mut PgConnection,
     access: &Access,
     accounts: &[AccountId],
 ) -> ApiResult<HashMap<AccountId, Contact>> {
-    let rows: Vec<(AccountId, bool, Vec<i64>)> = sqlx::query_as(
-        "select a.id,coalesce(a.id=s.owner_account_id,false),
-                coalesce(array_agg(r.permissions) filter(where r.id is not null),'{}')
-         from accounts a cross join server_state s
-         left join account_server_roles held on held.account_id=a.id
-         left join server_roles r on r.id=held.role_id
-         where a.id=any($1) and a.status='active'
-         group by a.id,s.owner_account_id",
-    )
-    .bind(accounts)
-    .fetch_all(&mut *connection)
-    .await?;
+    let rows: Vec<(AccountId, bool, Vec<i64>)> = sqlx::query_as(CONTACT_STANDING)
+        .bind(accounts)
+        .fetch_all(&mut *connection)
+        .await?;
     let fellows = fellow_members(connection, access.account_id, accounts).await?;
     rows.into_iter()
         .map(|(id, owner, roles)| {
