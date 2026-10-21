@@ -9,7 +9,7 @@ use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::WorkspaceId;
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 
-use crate::admin_pages::{click_in_page, open_page, sel};
+use crate::admin_pages::{click_in_page, open_page, reveal_under_form, sel, under_form};
 use crate::harness::{Admin, Window, World, member};
 use crate::support::{FaultProxy, TestServer};
 use crate::transcripts::give_everyone;
@@ -106,13 +106,24 @@ fn a_member_reads_the_glossary_and_a_person_who_manages_it_adds_changes_orders_a
     window.until("the page takes changes", settled);
     click_in_page(&mut window, sel("glossary-change", 1));
     window.in_shell(|shell, window, cx| shell.type_admin_name("Lumitrax Ltd", window, cx));
-    let under = window.cx.debug_bounds("glossary-row-2").unwrap();
+    // The list draws the rows in view: the button that sends the form and the row under
+    // the form are brought into view together. The row of the changed term has the key of
+    // its new text.
+    let under = reveal_under_form(
+        &mut window,
+        "admin-form-send",
+        "term-Lumitrax",
+        "glossary-row-2",
+    );
     click_in_page(&mut window, "admin-form-send");
     window.until("the changed term", |window| {
         terms(window) == Some(list(&["Quorvex", "Lumitrax Ltd", "Ysolde Varkonen"]))
             && !window.shows("glossary-term")
     });
-    assert_eq!(window.cx.debug_bounds("glossary-row-2").unwrap(), under);
+    assert_eq!(
+        under_form(&mut window, "term-Lumitrax Ltd", "glossary-row-2"),
+        under
+    );
 
     // The last term moves up by one place.
     window.until("the page takes changes", settled);
@@ -243,7 +254,12 @@ fn a_change_of_another_person_closes_a_form_and_moves_no_row_under_it(cx: &mut T
     } = manager_on_the_page(cx, &["Quorvex", "Lumitrax", "Ysolde Varkonen"]);
     click_in_page(&mut window, sel("glossary-change", 1));
     assert!(window.shows("glossary-term"));
-    let under = window.cx.debug_bounds("glossary-row-2").unwrap();
+    let under = reveal_under_form(
+        &mut window,
+        "admin-form-send",
+        "term-Lumitrax",
+        "glossary-row-2",
+    );
     let changed = list(&["Quorvex", "Lumitrax Ltd", "Ysolde Varkonen"]);
     world
         .run(
@@ -256,7 +272,10 @@ fn a_change_of_another_person_closes_a_form_and_moves_no_row_under_it(cx: &mut T
     window.until("the form of the changed term is closed", |window| {
         terms(window) == Some(changed.clone()) && !window.shows("glossary-term")
     });
-    assert_eq!(window.cx.debug_bounds("glossary-row-2").unwrap(), under);
+    assert_eq!(
+        under_form(&mut window, "term-Lumitrax Ltd", "glossary-row-2"),
+        under
+    );
 }
 
 /// The permission is taken while the form of a new term is open: the form takes no send,

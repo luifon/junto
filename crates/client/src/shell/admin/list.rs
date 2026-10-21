@@ -142,6 +142,8 @@ enum Target {
     Last,
     /// The element of the row.
     Row,
+    /// No move: the row that holds the focus is shown.
+    Keep,
 }
 
 /// A row that the keyboard moves the focus to, once the row is drawn in view.
@@ -179,20 +181,21 @@ pub(crate) struct PageList {
     pub(crate) requested_end: bool,
     rows: Rc<Vec<Entry>>,
     items: usize,
-    interactive: bool,
     pending: Option<Pending>,
     view: Option<AdminView>,
     /// The element that holds the list, its entries and its scroll bar.
     area: FocusHandle,
     /// The tab stops before and after the rows. They are drawn while the focus is outside
-    /// the rows, so that Tab and Shift+Tab enter the list when no row in view has a
-    /// control.
+    /// the rows of a list that has rows, so that Tab and Shift+Tab enter the list when no
+    /// row in view has a control.
     start: FocusHandle,
     finish: FocusHandle,
     frame: Rc<Frame>,
     /// The tab stop before (true) or after (false) the rows that the focus reached and that
     /// the list has answered.
     entered: Option<bool>,
+    /// The next change of the rows starts the view at the first item.
+    restart: bool,
 }
 
 impl PageList {
@@ -203,7 +206,6 @@ impl PageList {
             requested_end: false,
             rows: Rc::default(),
             items: 0,
-            interactive: false,
             pending: None,
             view: None,
             area: cx.focus_handle().tab_stop(false),
@@ -211,12 +213,13 @@ impl PageList {
             finish: cx.focus_handle().tab_stop(true),
             frame: Rc::default(),
             entered: None,
+            restart: false,
         }
     }
 
     /// Takes the rows of the page for this frame. A row whose key stays keeps its focus
     /// handle and its measured height. Each run of removed or added rows is replaced on its
-    /// own, and the scroll position stays on the first row in view that stays in place.
+    /// own, and the view keeps the first row in view, or its place (ADR 0761).
     pub(crate) fn take(
         &mut self,
         view: Option<&AdminView>,
@@ -232,6 +235,14 @@ impl PageList {
             });
         if !unchanged {
             self.replace(rows, window, cx);
+            if std::mem::take(&mut self.restart)
+                && let Some(first) = self.rows.iter().position(|entry| entry.position.is_some())
+            {
+                self.state.scroll_to(ListOffset {
+                    item_ix: first,
+                    offset_in_item: px(0.0),
+                });
+            }
         }
         if self.view.as_ref() != view {
             self.state.remeasure_items(0..self.rows.len());
@@ -285,25 +296,6 @@ impl PageList {
         for &(before, after) in &kept {
             moved_to[before] = Some(after);
         }
-        let top = self.state.logical_scroll_top();
-        let anchor = (top.item_ix..old.len()).find_map(|index| {
-            moved_to[index].map(|after| ListOffset {
-                item_ix: after,
-                offset_in_item: if index == top.item_ix {
-                    top.offset_in_item
-                } else {
-                    px(0.0)
-                },
-            })
-        });
-        // A focused row that moved, such as by a move with the keyboard.
-        let mut stays = vec![false; entries.len()];
-        for &(_, after) in &kept {
-            stays[after] = true;
-        }
-        let focused = entries.iter().enumerate().position(|(index, entry)| {
-            !stays[index] && found[index].is_some() && entry.focus.contains_focused(window, cx)
-        });
 
         // Each run between two rows that stay is replaced, the last run first, so that the
         // places of the runs before it stay valid.
@@ -320,6 +312,58 @@ impl PageList {
                 old_start != old_end || new_start != new_end
             })
             .collect();
+
+        // Where the view goes, read before the change: the first row in view stays at its
+        // place when it stays in place. When it is removed, the row after the removed rows
+        // stays where it was in view; when rows replace it, the first of them goes to the
+        // top of the view.
+        let viewport = self.state.viewport_bounds();
+        let shown = |index: usize| {
+            self.state
+                .bounds_for_item(index)
+                .filter(|bounds| bounds.intersects(&viewport))
+        };
+        let top = self.state.logical_scroll_top();
+        let anchor = if top.item_ix >= old.len() {
+            None
+        } else if let Some(after) = moved_to[top.item_ix] {
+            Some((
+                ListOffset {
+                    item_ix: after,
+                    offset_in_item: top.offset_in_item,
+                },
+                px(0.0),
+            ))
+        } else {
+            runs.iter()
+                .find(|((old_start, _), (old_end, _))| {
+                    (*old_start..*old_end).contains(&top.item_ix)
+                })
+                .map(|&((_, new_start), (old_end, new_end))| {
+                    let next = (new_start == new_end && old_end < old.len())
+                        .then(|| shown(old_end))
+                        .flatten();
+                    let above = next.map_or(px(0.0), |bounds| bounds.top() - viewport.top());
+                    (
+                        ListOffset {
+                            item_ix: new_start,
+                            offset_in_item: px(0.0),
+                        },
+                        above,
+                    )
+                })
+        };
+        // A focused row in view that moves, such as by a move with the keyboard, is shown
+        // after the change. A focused row out of view stays out of view.
+        let focused = old
+            .iter()
+            .position(|entry| entry.focus.contains_focused(window, cx))
+            .filter(|&index| shown(index).is_some())
+            .and_then(|index| {
+                let after = found.iter().position(|&before| before == Some(index))?;
+                (moved_to[index] != Some(index)).then_some(after)
+            });
+
         for &((old_start, new_start), (old_end, new_end)) in runs.iter().rev() {
             self.state.splice_focusable(
                 old_start..old_end,
@@ -332,18 +376,19 @@ impl PageList {
             if let Some((_, rem)) = self.frame.measured.get() {
                 self.estimate(rem);
             }
-            if top.item_ix < old.len()
-                && let Some(anchor) = anchor
-            {
-                self.state.scroll_to(anchor);
-            }
-            if let Some(index) = focused {
-                self.state.scroll_to_reveal_item(index);
+            if let Some((offset, above)) = anchor {
+                self.state.scroll_to(offset);
+                self.state.scroll_by(-above);
             }
         }
         self.items = position;
-        self.interactive = entries.iter().any(|entry| entry.interactive);
         self.rows = Rc::new(entries);
+        if let Some(index) = focused
+            && self.pending.is_none()
+        {
+            let from = window.focused(cx);
+            self.pend(index, Target::Keep, from);
+        }
     }
 
     /// Gives every row that was not laid out the estimated height at this rem size.
@@ -375,6 +420,17 @@ impl PageList {
             from,
             frames: ATTEMPTS,
         });
+    }
+
+    /// The next change of the rows starts the view at the first item of the list, such as
+    /// after the person reads the list again. [`Self::end_restart`] ends the request when
+    /// the read ended without a change.
+    pub(crate) fn start_at_first_item(&mut self) {
+        self.restart = true;
+    }
+
+    pub(crate) fn end_restart(&mut self) {
+        self.restart = false;
     }
 
     #[cfg(feature = "test-support")]
@@ -519,18 +575,33 @@ fn enter(list: &mut PageList, window: &Window, cx: &App) {
     }
     list.entered = reached;
     let Some(forward) = reached else { return };
-    let (first, target) = if forward {
-        (
-            list.rows.iter().position(|entry| entry.interactive),
-            Target::First,
-        )
+    let rows = &list.rows;
+    let control = if forward {
+        rows.iter().position(|entry| entry.interactive)
     } else {
-        (
-            list.rows.iter().rposition(|entry| entry.interactive),
-            Target::Last,
-        )
+        rows.iter().rposition(|entry| entry.interactive)
     };
-    if let Some(index) = first {
+    // Without a row that can hold a control, the focus goes to the first or the last item
+    // of the list itself, from which the keys scroll the list.
+    let (index, target) = match control {
+        Some(index) => (
+            Some(index),
+            if forward { Target::First } else { Target::Last },
+        ),
+        None if forward => (
+            rows.iter()
+                .position(|entry| entry.position.is_some())
+                .or((!rows.is_empty()).then_some(0)),
+            Target::Row,
+        ),
+        None => (
+            rows.iter()
+                .rposition(|entry| entry.position.is_some())
+                .or(rows.len().checked_sub(1)),
+            Target::Row,
+        ),
+    };
+    if let Some(index) = index {
         list.pend(index, target, window.focused(cx));
     }
 }
@@ -561,6 +632,7 @@ fn resume<V: ListHost>(host: &mut V, painted: bool, window: &mut Window, cx: &mu
     list.state.scroll_to_reveal_item(index);
     cx.notify();
     let forward = match pending.target {
+        Target::Keep => return,
         Target::Row => {
             window.focus(&entry.focus, cx);
             return;
@@ -622,7 +694,7 @@ pub(crate) fn element<V: ListHost>(
     let in_rows = page.area.contains_focused(window, cx)
         && !page.start.is_focused(window)
         && !page.finish.is_focused(window);
-    let entries = page.interactive && !in_rows;
+    let entries = !page.rows.is_empty() && !in_rows;
     let (area, start, finish) = (page.area.clone(), page.start.clone(), page.finish.clone());
     let colors = theme(cx).colors;
 
@@ -892,6 +964,7 @@ mod tests {
         key: String,
         height: f32,
         control: bool,
+        part: bool,
     }
 
     fn line(index: usize, height: f32, control: bool) -> Line {
@@ -899,7 +972,28 @@ mod tests {
             key: format!("r{index:04}"),
             height,
             control,
+            part: false,
         }
+    }
+
+    /// A page with a header, `count` entries whose keys start with `prefix`, and a footer,
+    /// as the audit log.
+    fn page(prefix: &str, count: usize) -> Vec<Line> {
+        let part = |key: &str| Line {
+            key: key.to_owned(),
+            height: 60.0,
+            control: true,
+            part: true,
+        };
+        std::iter::once(part("header"))
+            .chain((0..count).map(|index| Line {
+                key: format!("{prefix}{index:04}"),
+                height: 30.0,
+                control: true,
+                part: false,
+            }))
+            .chain(std::iter::once(part("footer")))
+            .collect()
     }
 
     fn selector(name: String) -> &'static str {
@@ -941,7 +1035,10 @@ mod tests {
             let rows = self
                 .lines
                 .iter()
-                .map(|line| Row::new(line.key.clone(), line.control))
+                .map(|line| {
+                    let row = Row::new(line.key.clone(), line.control);
+                    if line.part { row.part() } else { row }
+                })
                 .collect();
             self.list.take(None, rows, window, cx);
             let lines = self.lines.clone();
@@ -1275,6 +1372,102 @@ mod tests {
             host.list.state.scroll_px_offset_for_scrollbar()
         });
         assert_eq!(offset.y, px(-64.0));
+    }
+
+    /// Check of the corrections, point 2: the focused control of a row that moves one place
+    /// down, out of the view, keeps the keys, and its row is shown.
+    #[gpui::test]
+    fn a_focused_row_moved_one_place_down_out_of_view_is_shown(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..200).map(|index| line(index, 30.0, true)).collect();
+        let (host, cx) = open(cx, lines.clone());
+        let last = (0..20)
+            .rev()
+            .find(|&index| in_view(cx, &format!("r{index:04}")))
+            .unwrap();
+        let key = format!("r{last:04}");
+        focus(&host, cx, |host| host.controls[&key].clone());
+        let mut moved = lines.clone();
+        moved.swap(last, last + 1);
+        host.update(cx, |host, cx| host.set(moved, cx));
+        settle(cx);
+        assert!(in_view(cx, &key));
+        assert_eq!(pressed_after_enter(&host, cx), [key]);
+    }
+
+    /// Check of the corrections, N1: a focused row out of view that another change moves
+    /// moves no row in view.
+    #[gpui::test]
+    fn a_focused_row_out_of_view_that_moves_moves_no_row_in_view(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, true)).collect();
+        let (host, cx) = open(cx, lines.clone());
+        focus(&host, cx, |host| host.controls["r0002"].clone());
+        scroll_to(&host, cx, 900, 10.0);
+        let before = cx.debug_bounds("row-r0905");
+        assert!(before.is_some());
+        let mut moved = lines.clone();
+        let row = moved.remove(2);
+        moved.push(row);
+        host.update(cx, |host, cx| host.set(moved, cx));
+        settle(cx);
+        assert_eq!(cx.debug_bounds("row-r0905"), before);
+        assert_eq!(pressed_after_enter(&host, cx), ["r0002"]);
+    }
+
+    /// Check of the corrections, point 4: Tab and Shift+Tab enter a list whose rows hold no
+    /// control at its first or its last row, from which the keys scroll the list.
+    #[gpui::test]
+    fn tab_enters_a_list_without_controls_at_its_first_or_last_row(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, false)).collect();
+        let (host, cx) = open(cx, lines);
+        let focused = |host: &Entity<Host>, cx: &mut VisualTestContext, key: &str| {
+            let handle = host.read_with(cx, |host, _| host.list.row_focus(key).unwrap());
+            cx.update(|window, _| handle.is_focused(window))
+        };
+        focus(&host, cx, |host| host.before.clone());
+        press(cx, "tab");
+        assert!(focused(&host, cx, "r0000"));
+        press(cx, "end");
+        assert!(in_view(cx, "r1999"));
+        focus(&host, cx, |host| host.after.clone());
+        press(cx, "shift-tab");
+        assert!(focused(&host, cx, "r1999"));
+        press(cx, "home");
+        assert!(in_view(cx, "r0000"));
+    }
+
+    /// Check of the corrections, N2: rows that replace the rows in view, as the entries
+    /// after "Continue", start at the top of the view with the first of them, also when a
+    /// row that stays, such as the footer, is in view.
+    #[gpui::test]
+    fn rows_that_replace_the_rows_in_view_start_at_the_top_of_the_view(cx: &mut TestAppContext) {
+        let (host, cx) = open(cx, page("a", 50));
+        host.update(cx, |host, _| host.list.state.scroll_to_end());
+        redraw(&host, cx);
+        assert!(in_view(cx, "footer"));
+        host.update(cx, |host, cx| host.set(page("b", 50), cx));
+        settle(cx);
+        let top = host.read_with(cx, |host, _| host.list.state.logical_scroll_top());
+        assert_eq!((top.item_ix, top.offset_in_item), (1, px(0.0)));
+        assert!(in_view(cx, "b0000"));
+    }
+
+    /// Check of the corrections, N2: after the page asks for it, as at "Read again", the
+    /// next change of the rows starts the view at the first item, also when the change only
+    /// removes rows.
+    #[gpui::test]
+    fn a_read_again_starts_the_view_at_the_first_item(cx: &mut TestAppContext) {
+        let (host, cx) = open(cx, page("a", 500));
+        host.update(cx, |host, _| host.list.state.scroll_to_end());
+        redraw(&host, cx);
+        assert!(in_view(cx, "footer"));
+        host.update(cx, |host, cx| {
+            host.list.start_at_first_item();
+            host.set(page("a", 50), cx);
+        });
+        settle(cx);
+        let top = host.read_with(cx, |host, _| host.list.state.logical_scroll_top());
+        assert_eq!((top.item_ix, top.offset_in_item), (1, px(0.0)));
+        assert!(in_view(cx, "a0000"));
     }
 
     #[test]
