@@ -240,8 +240,10 @@ _ZLIB = [r"this software is provided as is without any express or implied warran
 # the phrases that its text holds and the phrases that it does not hold, on the text in lower
 # case with each run of other characters than letters and digits as one space. The phrases
 # come from the terms of each licence in the SPDX License List 3.27.0, not only from its
-# heading, so that a file with a heading or a reference only is no licence text. The texts in
+# heading and the headings of its sections: each licence has a phrase of at least
+# OPERATIVE_WORDS words, so that a file with headings or a reference only is no licence text. The texts in
 # licence-texts/ and LICENSE are identified by them (test_licences.py).
+OPERATIVE_WORDS = 10
 LICENCE_PHRASES = {
     "Apache-2.0": ([r"apache license version 2 0 january 2004",
                     r"2 grant of copyright license subject to the terms and conditions of this license each "
@@ -265,10 +267,21 @@ LICENCE_PHRASES = {
     "Unlicense": ([r"this is free and unencumbered software released into the public domain",
                    r"anyone is free to copy modify publish use compile sell or distribute this software",
                    r"the software is provided as is without warranty of any kind"], []),
-    "MPL-2.0": ([r"mozilla public license version 2 0", r"2 license grants and conditions",
-                 r"3 responsibilities", r"6 disclaimer of warranty", r"10 versions of the license"], []),
-    "CC0-1.0": ([r"cc0 1 0 universal", r"statement of purpose", r"2 waiver",
-                 r"4 limitations and disclaimers"], []),
+    "MPL-2.0": ([r"mozilla public license version 2 0",
+                 r"2 1 grants each contributor hereby grants you a world wide royalty free non exclusive license",
+                 r"3 1 distribution of source form all distribution of covered software in source code form "
+                 r"including any modifications that you create or to which you contribute must be under the terms "
+                 r"of this license",
+                 r"6 disclaimer of warranty covered software is provided under this license on an as is basis "
+                 r"without warranty of any kind",
+                 r"10 1 new versions mozilla foundation is the license steward"], []),
+    "CC0-1.0": ([r"cc0 1 0 universal",
+                 r"statement of purpose the laws of most jurisdictions throughout the world automatically confer "
+                 r"exclusive copyright and related rights",
+                 r"2 waiver to the greatest extent permitted by but not in contravention of applicable law affirmer "
+                 r"hereby overtly fully permanently irrevocably and unconditionally waives abandons and surrenders",
+                 r"3 public license fallback should any part of the waiver for any reason be judged legally invalid",
+                 r"4 limitations and disclaimers a no trademark or patent rights held by affirmer are waived"], []),
     "BSL-1.0": ([r"boost software license version 1 0 august 17th 2003",
                  r"permission is hereby granted free of charge to any person or organization obtaining a copy of the "
                  r"software and accompanying documentation covered by this license",
