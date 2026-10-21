@@ -336,7 +336,8 @@ job() {
                     npx --no-install playwright install-deps chromium && cd /src &&
                     exec tools/linux/run-as-user.sh 1000 1000 /src /cache -- tools/ci/layout-page.sh'  ;;
         macos:rust-macos)
-            CARGO_TARGET_DIR="$directory/cargo-target" tools/ci/rust-other-systems.sh ;;
+            CARGO_TARGET_DIR="$directory/cargo-target" JUNTO_TEST_POSTGRES_DOWNLOADS="$directory/postgres" \
+                tools/ci/rust-other-systems.sh ;;
         macos:deployment)
             tools/ci/deployment.sh ;;
         windows:rust-windows)
