@@ -848,10 +848,21 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
         controls.map(|selector| window.cx.debug_bounds(selector).unwrap())
     };
     let pressed = bounds(&mut window);
+    let snapshots = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.method == "GET" && seen.path.ends_with("/snapshot"))
+            .count()
+    };
+    let read = snapshots(&proxy);
     proxy.release_requests();
     window.until("the server refused the move", |window| {
         window.shows("channel-move-refused")
     });
+    // The refusal says that the page read an old order: the state is read again, while the
+    // events still wait at the proxy.
+    window.until("the state is read again", |_| snapshots(&proxy) > read);
 
     // The move stays where it is drawn, with the refusal at its row: no control moved, and
     // the page offers no move until the person puts the refusal away.
@@ -864,12 +875,19 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
     let mut server_now = before.clone();
     server_now.insert(last, (before[&last].0, before[&last].1 + 50));
     assert_eq!(server_places(&world, &owner, default), server_now);
-    proxy.release_events();
-    window.click("channel-move-refused-dismiss");
+    assert_eq!(bounds(&mut window), pressed);
+    // Close shows the order of the state that was read again, with the events still held.
+    crate::admin_pages::click_in_page(&mut window, "channel-move-refused-dismiss");
     window.until("the page shows the order of the state", |window| {
         !window.shows("channel-move-refused")
             && group_order(window, None).ends_with(&[x, next, last])
     });
+    let page = channels_page(&mut window).unwrap();
+    assert_eq!(
+        page.channel(last).unwrap().place.position,
+        before[&last].1 + 50
+    );
+    proxy.release_events();
     assert_eq!(server_places(&world, &owner, default), server_now);
 }
 
@@ -932,4 +950,134 @@ fn a_move_changes_the_order_at_the_press_and_no_row_moves_at_its_answer(cx: &mut
     assert_eq!(bounds(&mut window), pressed);
     assert!(group_order(&mut window, None).ends_with(&[b, a, c]));
     assert!(!window.shows("channel-refused"));
+}
+
+#[gpui::test]
+fn a_refused_move_to_keeps_the_height_of_its_form(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &proxy.address());
+    let a = owner.channel(&world, default, "a");
+    // Long names, so that the places of "Move to" take several lines.
+    let others: Vec<ChannelId> = (0..10)
+        .map(|number| {
+            owner.channel(
+                &world,
+                default,
+                &format!("a channel with a long name, number {number}"),
+            )
+        })
+        .collect();
+    window.until("the page shows the channels", |window| {
+        group_order(window, None).ends_with(&others)
+    });
+
+    // "Move to" of "a", after the third of the others.
+    window.click_named(format!("channel-move-{a}"));
+    window.click("channel-group-none");
+    let place = {
+        let order = group_order(&mut window, None);
+        let rest: Vec<ChannelId> = order.into_iter().filter(|id| *id != a).collect();
+        rest.iter().position(|id| *id == others[2]).unwrap() + 1
+    };
+    let place = crate::admin_pages::sel("channel-place", place);
+
+    // Another administrator moves the channel after the place far down while the events
+    // wait: the page sends a move from an old order, which the server refuses.
+    proxy.hold_events();
+    let position = server_places(&world, &owner, default)[&others[3]].1;
+    let moved = UpdateChannel {
+        position: Some(position + 100),
+        ..UpdateChannel::default()
+    };
+    world
+        .run(owner.handle.api().update_channel(others[3], &moved))
+        .unwrap();
+    proxy.hold_request("PATCH", "/channels/positions");
+    window.click(place);
+    window.until("the page shows the move", |window| {
+        let order = group_order(window, None);
+        let at = |id: ChannelId| order.iter().position(|held| *held == id);
+        at(a) == at(others[2]).map(|at| at + 1)
+    });
+    let rows = [others[3], others[4]].map(|id| selector(format!("channel-line-{id}")));
+    let bounds = |window: &mut Window| {
+        window.settle();
+        rows.map(|selector| window.cx.debug_bounds(selector).unwrap())
+    };
+    let pressed = bounds(&mut window);
+    let form = window
+        .cx
+        .debug_bounds(selector(format!("channel-line-{a}")))
+        .unwrap();
+    assert!(
+        form.size.height > gpui::px(80.0),
+        "the places of the form take several lines: {form:?}"
+    );
+
+    // The refusal closes the form; its row keeps the height of the form, and no row under
+    // it moves.
+    proxy.release_requests();
+    window.until("the server refused the move", |window| {
+        window.shows("channel-move-refused") && !window.shows(place)
+    });
+    assert_eq!(bounds(&mut window), pressed);
+    crate::admin_pages::click_in_page(&mut window, "channel-move-refused-dismiss");
+    window.until("the refusal is put away", |window| {
+        !window.shows("channel-move-refused")
+    });
+    proxy.release_events();
+}
+
+#[gpui::test]
+fn a_refused_move_of_a_channel_that_is_gone_is_stated_on_the_page(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &proxy.address());
+    let x = owner.channel(&world, default, "x");
+    let next = owner.channel(&world, default, "next");
+    let last = owner.channel(&world, default, "last");
+    window.until("the page shows the three channels", |window| {
+        group_order(window, None).ends_with(&[x, next, last])
+            && channels_page(window)
+                .is_some_and(|page| page.channel(x).is_some_and(|line| line.moves_down.is_ok()))
+    });
+
+    // "Down" of "x" waits at the proxy while another administrator deletes "x"; the page
+    // loses its row, and then the server refuses the move.
+    proxy.hold_request("PATCH", "/channels/positions");
+    window.click_named(format!("channel-down-{x}"));
+    window.until("the request waits", |_| {
+        proxy
+            .all()
+            .iter()
+            .any(|seen| seen.method == "PATCH" && seen.path.ends_with("/channels/positions"))
+    });
+    world.run(owner.handle.api().delete_channel(x)).unwrap();
+    window.until("the page lost the channel", |window| {
+        channels_page(window).is_some_and(|page| page.channel(x).is_none())
+    });
+    proxy.release_requests();
+
+    // The refusal has no row: the page states it at its end, with Close, and offers no move
+    // until the person puts it away.
+    window.until("the page states the refusal", |window| {
+        window.shows("channel-move-refused-page")
+    });
+    assert_eq!(
+        channels_page(&mut window)
+            .unwrap()
+            .channel(last)
+            .unwrap()
+            .moves_up,
+        Err(junto_client::state::admin::view::Unplanned::RefusalShown)
+    );
+    crate::admin_pages::click_in_page(&mut window, "channel-move-refused-page-dismiss");
+    window.until("the page offers moves again", |window| {
+        !window.shows("channel-move-refused-page")
+            && channels_page(window)
+                .is_some_and(|page| page.channel(last).is_some_and(|line| line.moves_up.is_ok()))
+    });
 }

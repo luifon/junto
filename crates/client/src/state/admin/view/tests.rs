@@ -1284,6 +1284,76 @@ fn a_move_names_where_each_channel_was_read_and_needs_every_channel_that_it_chan
 }
 
 #[test]
+fn a_move_takes_the_way_that_changes_only_channels_that_the_person_manages() {
+    // "a" and "b" share position 0 and "c" is at 1; the person manages "z" and "b" only.
+    // Between "a" and "b", "z" takes 0 and "b" moves to 1, beside "c": "a" and "c" stay.
+    let projects = CategoryId::generate();
+    let id = |value: u128| ChannelId::from_uuid(uuid::Uuid::from_u128(value));
+    let (a, b, c, z) = (id(1), id(2), id(3), id(26));
+    let line =
+        |id: ChannelId, category_id: Option<CategoryId>, position: i32, may_manage| ChannelLine {
+            id,
+            name: "channel".to_owned(),
+            kind: ChannelKind::Text,
+            category_id,
+            position,
+            place: ChannelPlace {
+                category_id,
+                position,
+            },
+            permanent: false,
+            first: false,
+            last: false,
+            may_manage,
+            moves_up: Err(Unplanned::Nothing),
+            moves_down: Err(Unplanned::Nothing),
+        };
+    let page = ChannelsPage {
+        workspace_id: WorkspaceId::generate(),
+        workspace_name: "Studio".to_owned(),
+        may_manage: true,
+        groups: vec![
+            ChannelGroup {
+                category: None,
+                channels: vec![line(z, None, 0, true)],
+            },
+            ChannelGroup {
+                category: Some(CategoryLine {
+                    id: projects,
+                    name: "Projects".to_owned(),
+                    position: 0,
+                    first: true,
+                    last: true,
+                }),
+                channels: vec![
+                    line(a, Some(projects), 0, false),
+                    line(b, Some(projects), 0, true),
+                    line(c, Some(projects), 1, false),
+                ],
+            },
+        ],
+        refusal: None,
+    };
+    let at = |position| ChannelPlace {
+        category_id: Some(projects),
+        position,
+    };
+    let moves = page.plan(z, Some(projects), 1).unwrap();
+    let changed: Vec<(ChannelId, ChannelPlace)> = moves
+        .iter()
+        .filter(|held| held.to != held.from)
+        .map(|held| (held.channel_id, held.to))
+        .collect();
+    assert_eq!(changed, [(z, at(0)), (b, at(1))]);
+    // "a" before the place and "b" after it are checked; "b" through its own move.
+    assert!(
+        moves
+            .iter()
+            .any(|held| held.channel_id == a && held.to == held.from)
+    );
+}
+
+#[test]
 fn a_move_names_at_most_the_channels_that_one_request_names() {
     // "x" without a category, and a category of 401 channels at consecutive positions, all
     // managed by the person, whose identifiers fall by 2 from one channel to the next: "x"

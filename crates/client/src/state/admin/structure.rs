@@ -2,7 +2,7 @@
 //! categories, channels, the archive and the retention.
 
 use gpui::Context;
-use junto_client_core::api::{ApiError, ServerApi};
+use junto_client_core::api::{ApiError, ErrorCategory, ServerApi};
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::discovery::Retention;
 use junto_client_core::protocol::ids::{
@@ -38,8 +38,9 @@ pub fn placed<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> Vec
 /// `moving` takes a position next to one of its new neighbours: the position of the entry
 /// before it or one above, or the position of the entry after it or one below; with no
 /// neighbour, position 0. An entry after it whose order would no longer follow moves up to
-/// the position above the entry before it, and so on until the order follows; an entry
-/// before it moves down in the same way. A way that would pass the bounds of a 32-bit
+/// the lowest position at which it follows the entry before it: that entry's position when
+/// its identifier comes after, else the one above; and so on until the order follows. An
+/// entry before it moves down in the same way. A way that would pass the bounds of a 32-bit
 /// position is not offered. The position that `moving` leaves in its own group is free, and
 /// two entries can share a position, which their identifiers order. Of two ways with as
 /// many changes, the one that gives `moving` a position of its own comes first, and then
@@ -82,7 +83,14 @@ pub fn placings<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> V
             if key(*entry) > key(last) {
                 break;
             }
-            match last.1.checked_add(1) {
+            // The lowest position at which the entry follows: the position of the entry
+            // before it when its identifier comes after, else the one above.
+            let lowest = if entry.0 > last.0 {
+                Some(last.1)
+            } else {
+                last.1.checked_add(1)
+            };
+            match lowest {
                 Some(position) => {
                     last = (entry.0, position);
                     way.push(last);
@@ -99,7 +107,12 @@ pub fn placings<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> V
             if !fits || key(*entry) < key(first) {
                 break;
             }
-            match first.1.checked_sub(1) {
+            let highest = if entry.0 < first.0 {
+                Some(first.1)
+            } else {
+                first.1.checked_sub(1)
+            };
+            match highest {
                 Some(position) => {
                     first = (entry.0, position);
                     way.push(first);
@@ -377,12 +390,12 @@ impl AppState {
             what,
             |api| async move {
                 let answer = api.move_channels(workspace_id, &moves).await;
-                let _ = told.send(
-                    answer
-                        .as_ref()
-                        .copied()
-                        .map_err(|error| text::admin::refusal(what, error)),
-                );
+                let _ = told.send(answer.as_ref().copied().map_err(|error| {
+                    (
+                        text::admin::refusal(what, error),
+                        error.category() == Some(ErrorCategory::Conflict),
+                    )
+                }));
                 answer
             },
             |_, _, _| {},
@@ -412,7 +425,19 @@ impl AppState {
                         }
                         this.settle_channel_moves();
                     }
-                    Ok(Err(reason)) => this.admin.channel_moves.refused(number, reason),
+                    Ok(Err((reason, conflict))) => {
+                        this.admin.channel_moves.refused(number, reason);
+                        // The page read an order that the server no longer holds: the state
+                        // is read again now, and the page shows it when the person puts the
+                        // refusal away.
+                        if conflict && let Some(server) = this.client.server(server_id) {
+                            let refreshing = server.live().refresh();
+                            cx.spawn(async move |_, _| {
+                                let _ = refreshing.await;
+                            })
+                            .detach();
+                        }
+                    }
                     // The request was dropped with its server: nothing is drawn of it.
                     Err(_) => this.admin.channel_moves.dropped(number),
                 }
@@ -641,6 +666,22 @@ mod tests {
         assert_eq!(placed(&order, 0, 200), [(0, 1)]);
         // Equal positions in the group it goes to: only "x" changes.
         assert_eq!(placed(&[('a', 2), ('b', 2)], 'x', 2), [('x', 3)]);
+    }
+
+    #[test]
+    fn a_moved_entry_keeps_a_shared_position_when_the_identifiers_allow_it() {
+        // "a" and "b" share position 0, "c" is at 1. "z" between "a" and "b" takes 0; "b"
+        // must follow "z" and moves to 1, where it comes before "c": "c" stays.
+        let order = [('a', 0), ('b', 0), ('c', 1)];
+        let ways = placings(&order, 'z', 1);
+        assert!(ways.contains(&vec![('z', 0), ('b', 1)]), "{ways:?}");
+        assert!(ways.iter().all(|way| way.len() >= 2), "{ways:?}");
+        // "c" between "b" and "d", both at 6: at 6 nothing else changes. Above, "d" keeps
+        // the position of "c"; below, "b" takes it.
+        let ways = placings(&[('b', 6), ('d', 6)], 'c', 1);
+        assert_eq!(ways[0], [('c', 6)]);
+        assert!(ways.contains(&vec![('c', 7), ('d', 7)]), "{ways:?}");
+        assert!(ways.contains(&vec![('c', 5), ('b', 5)]), "{ways:?}");
     }
 
     #[test]

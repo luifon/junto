@@ -31,6 +31,10 @@ struct Waiting {
     /// The moves that change a channel. A later move of the same channel that the state
     /// holds takes the move of that channel out of an earlier request.
     moves: Vec<ChannelMove>,
+    /// The moves that only check the place of a channel. They are drawn while the request
+    /// is refused, so that the state read again after a conflict changes nothing that the
+    /// page drew before the person puts the refusal away.
+    checks: Vec<ChannelMove>,
     /// The receipt of the answer. Absent while the request is on its way.
     answered: Option<Awaited>,
     /// Why the server refused the request.
@@ -43,7 +47,13 @@ impl ChannelMoves {
         self.waiting
             .iter()
             .filter(|held| held.server_id == server_id && held.workspace_id == workspace_id)
-            .flat_map(|held| held.moves.iter().copied())
+            .flat_map(|held| {
+                let checks = held.refused.is_some().then_some(&held.checks);
+                held.moves
+                    .iter()
+                    .chain(checks.into_iter().flatten())
+                    .copied()
+            })
             .collect()
     }
 
@@ -62,7 +72,7 @@ impl ChannelMoves {
     }
 
     /// Notes the moves of one request, and returns its number. A move that only checks the
-    /// place of a channel changes nothing and is not drawn.
+    /// place of a channel changes nothing and is drawn only while the request is refused.
     pub(crate) fn begin(
         &mut self,
         server_id: ServerId,
@@ -79,6 +89,11 @@ impl ChannelMoves {
             moves: moves
                 .iter()
                 .filter(|held| held.to != held.from)
+                .copied()
+                .collect(),
+            checks: moves
+                .iter()
+                .filter(|held| held.to == held.from)
                 .copied()
                 .collect(),
             answered: None,
@@ -245,10 +260,22 @@ mod tests {
         let (server_id, workspace_id) = (ServerId::generate(), WorkspaceId::generate());
         let x = ChannelId::generate();
         let mut moves = ChannelMoves::default();
-        let number = moves.begin(server_id, workspace_id, x, &[moved(x, 0, 5)]);
+        let y = ChannelId::generate();
+        let number = moves.begin(
+            server_id,
+            workspace_id,
+            x,
+            &[moved(x, 0, 5), moved(y, 5, 5)],
+        );
+        // While it waits, the check of "y" is not drawn: "y" is where the state has it.
+        assert_eq!(moves.of(server_id, workspace_id), [moved(x, 0, 5)]);
+        // Refused, both stay where the page drew them, also over a state read again.
         moves.refused(number, "No longer there.".to_owned());
         moves.settle(|_, _| Some(&model));
-        assert_eq!(moves.of(server_id, workspace_id), [moved(x, 0, 5)]);
+        assert_eq!(
+            moves.of(server_id, workspace_id),
+            [moved(x, 0, 5), moved(y, 5, 5)]
+        );
         assert_eq!(
             moves.refusal(server_id, workspace_id),
             Some((x, "No longer there.".to_owned()))

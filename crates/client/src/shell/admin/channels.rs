@@ -625,9 +625,16 @@ impl Shell {
             .filter(|(moved, _)| *moved == channel_id)
             .map(|(_, reason)| reason.clone());
         let content: AnyElement = match self.admin.mode {
+            Some(Mode::MoveChannel(id)) if id == channel_id => match self.admin.move_group {
+                None => self.render_group_choice(page, theme, cx).into_any_element(),
+                Some(category_id) => self
+                    .render_place_choice(view, page, channel_id, category_id, theme, cx)
+                    .into_any_element(),
+            },
             // A refused move is stated in the row of the moved channel, where the page draws
             // it, in place of the actions of the row: the row keeps its height, and no row
-            // moves at the refusal (ADR 0730).
+            // moves at the refusal (ADR 0730). The form of "Move to" stays until its answer
+            // closes it, and its row then keeps the height of the form.
             _ if refused.is_some() => {
                 let reason: SharedString = refused.unwrap_or_default().into();
                 div()
@@ -662,19 +669,12 @@ impl Shell {
                             .selector("channel-move-refused-dismiss")
                             .h(u(28.0))
                             .px(u(10.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.dismiss_admin_ask(cx));
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_admin_mode(None, "", window, cx);
                             })),
                     )
                     .into_any_element()
             }
-            Some(Mode::MoveChannel(id)) if id == channel_id => match self.admin.move_group {
-                None => self.render_group_choice(page, theme, cx).into_any_element(),
-                Some(category_id) => self
-                    .render_place_choice(view, page, channel_id, category_id, theme, cx)
-                    .into_any_element(),
-            },
             _ => {
                 let detail: Option<SharedString> =
                     row.permanent.then(|| text::admin::PERMANENT_MARK.into());
@@ -943,11 +943,34 @@ impl Shell {
             ),
         };
         column = column.child(self.mode_row(&[Mode::CreateCategory], new_category));
+        // A refused move of a channel that the page no longer lists, such as one deleted
+        // meanwhile, is stated at the end of the page with its Close button: the page offers
+        // no move while a refused move is drawn (ADR 0761), and the end of the page grows
+        // without moving a row above it (ADR 0730).
+        let orphan = page
+            .refusal
+            .as_ref()
+            .filter(|(moved, _)| page.channel(*moved).is_none())
+            .map(|(_, reason)| {
+                div().flex_none().mt(u(8.0)).child(
+                    Notice::error(reason.clone())
+                        .selector("channel-move-refused-page")
+                        .action(
+                            Button::new("channel-move-refused-page-dismiss")
+                                .label(text::DISMISS)
+                                .selector("channel-move-refused-page-dismiss")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_admin_mode(None, "", window, cx);
+                                })),
+                        ),
+                )
+            });
         column
             .children(refusal(
                 view.refused(AskKind::CreateCategory),
                 "category-create-refused",
             ))
+            .children(orphan)
             .into_any_element()
     }
 
