@@ -22,8 +22,8 @@ use crate::ui::{
     OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
 };
 
-/// The rows of direct conversations that the channel column shows at once. More scroll in
-/// their list.
+/// The rows of direct conversations that the channel column shows at once when it has the
+/// height. More scroll in their list.
 const DIRECT_ROWS: f32 = 5.0;
 
 /// The lit segments of the meter of a person who speaks in a call that this device is not
@@ -270,23 +270,29 @@ impl Shell {
         // The part of the server, the notices and the direct conversations, has a height of
         // its own at the top of the column, and the lists of the workspace take the rest.
         // A change of the workspaces or of the channels moves none of its controls, and a
-        // conversation that arrives moves no channel (ADR 0730).
+        // conversation that arrives moves no channel. In a short column its list of
+        // conversations gives up rows down to one, and the channels keep one row too
+        // (ADR 0730).
+        let row = theme.metrics.channel_row_height;
         let server_part = div()
             .id("server-lists")
             .debug_selector(|| "server-lists".to_owned())
             .flex()
             .flex_col()
-            .flex_none()
+            .flex_grow_0()
+            .flex_shrink_1()
             .pt(u(6.0))
             .pb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
             .child(self.render_notices_row(lists, in_call, cx))
             .children(self.direct_rows(server.id, lists, theme, cx));
-        let list = ScrollArea::new("channel-list", &self.channels_scroll, label)
-            .selector("channel-list")
-            .children(channels)
-            .child(div().flex_none().h(u(8.0)));
+        let list = div().flex().flex_col().flex_1().min_h(u(row)).child(
+            ScrollArea::new("channel-list", &self.channels_scroll, label)
+                .selector("channel-list")
+                .children(channels)
+                .child(div().flex_none().h(u(8.0))),
+        );
         div()
             .flex()
             .flex_col()
@@ -629,8 +635,10 @@ impl Shell {
             div()
                 .flex()
                 .flex_col()
-                .flex_none()
-                .h(u(theme.metrics.channel_row_height * DIRECT_ROWS))
+                .flex_grow_0()
+                .flex_shrink_1()
+                .flex_basis(u(theme.metrics.channel_row_height * DIRECT_ROWS))
+                .min_h(u(theme.metrics.channel_row_height))
                 .child(
                     ScrollArea::new("direct-list", &self.directs_scroll, text::DIRECT_MESSAGES)
                         .selector("direct-list")

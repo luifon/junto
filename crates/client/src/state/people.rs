@@ -907,6 +907,14 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
         }
         if let Some(lists) = lists {
             people.extend(lists.directs.iter().map(|direct| direct.account_id));
+            // The account of a conversation that the server did not open is named in the
+            // statement of the refusal.
+            people.extend(
+                lists
+                    .conversation_refused
+                    .iter()
+                    .map(|refusal| refusal.account_id),
+            );
         }
         if let Some(Members::Loaded(members)) = view.workspace().map(|workspace| &workspace.members)
         {

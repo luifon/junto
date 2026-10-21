@@ -12,9 +12,9 @@ use junto_client_core::protocol::message::SendMessage;
 use junto_client_core::protocol::roles::CreateServerRole;
 
 use crate::admin_pages::{default_workspace, invite, joined};
-use crate::harness::{Window, World, member};
+use crate::harness::{Window, World, member, named};
 use crate::messages::document;
-use crate::support::logged_in;
+use crate::support::{FaultProxy, logged_in};
 
 impl Window {
     /// Opens the chooser of a new direct conversation and types a part of a name.
@@ -394,8 +394,14 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
+    let ada_id = logged_in(&admin.handle);
     let api = admin.handle.api();
-    let eve_code = invite(&world, &admin.handle, Vec::new());
+    // Eve administers the server and is a member of a second workspace only, so that Luca
+    // reaches her only while she administers it.
+    let second = world
+        .run(api.create_workspace("Second".to_owned()))
+        .unwrap();
+    let eve_code = invite(&world, &admin.handle, vec![second.id]);
     let (_eve_device, eve) = joined(&world, &server, &eve_code, "Eve");
     let eve_id = logged_in(&eve);
     let operators = world
@@ -404,11 +410,68 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
             permissions: vec![ServerPermission::Administrator],
         }))
         .unwrap();
-    world
-        .run(api.assign_server_role(eve_id, operators.id))
-        .unwrap();
-    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    // Luca reaches the server through a proxy that can hold the opening of a conversation.
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Luca");
+    window.find_server(&proxy.address());
+    window.join_with_code(admin.invite(&world, 1).expose());
+    window.until_ready();
     let luca_id = window.view().person.account_id.unwrap();
+    let general = window.selected_channel();
+    let with_ada = write_to(&world, &admin.handle, luca_id, "Hello from Ada");
+    let ada_row = crate::harness::selector(format!("direct-row:{with_ada}"));
+    window.until("the conversation with Ada is listed", |window| {
+        window.shows(ada_row)
+    });
+    window.click(ada_row);
+    window.until_message("Hello from Ada");
+    // Eve is offered while she administers the server, and stops before Luca chooses her.
+    let choose_eve = |window: &mut Window| {
+        world
+            .run(api.assign_server_role(eve_id, operators.id))
+            .unwrap();
+        window.search_contacts("Eve");
+        window.until_offered(eve_id);
+        world
+            .run(api.unassign_server_role(eve_id, operators.id))
+            .unwrap();
+        window.choose_contact(eve_id);
+        // The window reads the name of Eve from her profile.
+        window.until("the refusal is stated with the name", |window| {
+            window.shows("conversation-refused-notice")
+                && window.view().lists().is_some_and(|lists| {
+                    lists
+                        .conversation_refused
+                        .as_ref()
+                        .is_some_and(|refusal| refusal.name.is_some())
+                })
+        });
+        window
+            .view()
+            .lists()
+            .and_then(|lists| lists.conversation_refused.clone())
+            .map(|refusal| (refusal.account_id, refusal.name, refusal.reason))
+    };
+    let of_eve = Some((
+        eve_id,
+        Some("Eve".to_owned()),
+        junto_client::text::NO_CONTACT.to_owned(),
+    ));
+
+    // The refusal names Eve under the conversation with Ada, and belongs to that place: it
+    // goes when Luca opens a channel.
+    assert_eq!(choose_eve(&mut window), of_eve);
+    assert_eq!(
+        window.conversation_with(),
+        Some((ada_id, Some("Ada".to_owned())))
+    );
+    window.click_channel("general");
+    window.until("the channel is shown", |window| {
+        window.view().shown().channel == Some(general)
+    });
+    assert!(!window.shows("conversation-refused-notice"));
+
+    // Without a workspace the refusal is stated as well, and "Close" puts it away.
     let default = default_workspace(&world, &admin.handle);
     world
         .run(api.remove_workspace_member(default, luca_id, &Default::default()))
@@ -416,26 +479,49 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
     window.until("the window shows no workspace", |window| {
         window.shows("no-workspace")
     });
-
-    // Eve is offered, and stops administering the server before Luca chooses her: the
-    // server refuses the conversation, and the main area states why.
-    window.search_contacts("Eve");
-    window.until_offered(eve_id);
-    world
-        .run(api.unassign_server_role(eve_id, operators.id))
-        .unwrap();
-    window.choose_contact(eve_id);
-    window.until("the refusal is stated", |window| {
-        window.shows("conversation-refused-notice")
+    // The removal is stated by a notice of its own, which the refusal does not move.
+    window.until("the notice of the removal", |window| {
+        window.shows("moderation-notice")
     });
-    assert!(window.conversation_with().is_none());
-    assert_eq!(
+    window.cx.run_until_parked();
+    let removal = window.cx.debug_bounds("moderation-notice");
+    assert_eq!(choose_eve(&mut window), of_eve);
+    window.cx.run_until_parked();
+    assert_eq!(window.cx.debug_bounds("moderation-notice"), removal);
+    window.click("conversation-refusal-close");
+    assert!(!window.shows("conversation-refused-notice"));
+
+    // "Try again" while the server holds the answer: the statement stays at its place, and
+    // its controls take no click.
+    assert_eq!(choose_eve(&mut window), of_eve);
+    let opens = |proxy: &FaultProxy| {
+        proxy
+            .seen("/api/v1/conversations")
+            .iter()
+            .filter(|seen| seen.method == "POST")
+            .count()
+    };
+    let before = opens(&proxy);
+    window.cx.run_until_parked();
+    let place = window.cx.debug_bounds("conversation-refused-notice");
+    proxy.hold_request("POST", "/conversations");
+    window.click("conversation-retry");
+    window.until("the request reached the proxy", |_| {
+        opens(&proxy) == before + 1
+    });
+    window.click("conversation-retry");
+    window.click("conversation-refusal-close");
+    window.cx.run_until_parked();
+    assert_eq!(window.cx.debug_bounds("conversation-refused-notice"), place);
+    assert_eq!(opens(&proxy), before + 1);
+    proxy.release();
+    window.until("the answer is the same refusal", |window| {
         window
             .view()
             .lists()
-            .and_then(|lists| lists.conversation_refused.clone()),
-        Some((eve_id, junto_client::text::NO_CONTACT.to_owned()))
-    );
+            .is_some_and(|lists| lists.conversation_asked.is_none())
+    });
+    assert!(window.shows("conversation-refused-notice"));
 
     // Once Eve administers the server again, "Try again" opens the conversation.
     world
@@ -443,7 +529,89 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
         .unwrap();
     window.click("conversation-retry");
     window.until("the conversation with Eve is shown", |window| {
-        window.conversation_with() == Some((eve_id, Some("Eve".to_owned())))
+        window.conversation_with().map(|(account_id, _)| account_id) == Some(eve_id)
     });
     assert!(!window.shows("conversation-refused-notice"));
+}
+
+#[gpui::test]
+fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_least_size(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::call::CallPlace;
+    use junto_media::calls::{ActiveCall, CallTarget, Phase};
+    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let ada_id = logged_in(&admin.handle);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca_id = window.view().person.account_id.unwrap();
+    let with_ada = write_to(&world, &admin.handle, luca_id, "Hello from Ada");
+    let ada_row = crate::harness::selector(format!("direct-row:{with_ada}"));
+    window.until("the conversation is listed", |window| window.shows(ada_row));
+    window.click(ada_row);
+    window.until_message("Hello from Ada");
+    window.cx.run_until_parked();
+    let top = window.cx.debug_bounds("server-lists").unwrap().origin;
+
+    // A direct call with Ada whose microphone the system refuses: the strip of the call and
+    // the warning stand under the lists of the column.
+    let server_id = window.view().selected.unwrap().id;
+    crate::calls::show_call(
+        &mut window,
+        ActiveCall {
+            camera: junto_media::camera::CameraState::Off,
+            cameras: Vec::new(),
+            target: CallTarget {
+                server_id,
+                place: CallPlace::direct(luca_id, ada_id),
+            },
+            identity: "seat".to_owned(),
+            phase: Phase::Connected,
+            interrupted_at: None,
+            microphone: MicrophoneState::NoPermission,
+            access: junto_media::permission::MicrophoneAccess::Refused,
+            input_device: None,
+            output: OutputState::Running,
+            output_device: None,
+            microphone_block: None,
+            sound_block: None,
+            share: ShareState::Off,
+            shares: Vec::new(),
+            watched: None,
+        },
+    );
+    window
+        .cx
+        .simulate_resize(gpui::size(gpui::px(720.0), gpui::px(480.0)));
+    window.until("the call and the warning are drawn", |window| {
+        window.shows("leave-call") && window.shows("sound-warning")
+    });
+    window.cx.run_until_parked();
+    let bounds = |window: &mut Window, name: &'static str| {
+        window
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"))
+    };
+    // Every control of the column stays in the window, the part of the server keeps its top,
+    // and its list of conversations keeps at least one row.
+    let height = gpui::px(480.0);
+    for name in ["profile-strip", "leave-call", "sound-warning", "new-direct"] {
+        let drawn = bounds(&mut window, name);
+        assert!(
+            drawn.bottom() <= height,
+            "{name} ends at {:?}",
+            drawn.bottom()
+        );
+    }
+    assert_eq!(bounds(&mut window, "server-lists").origin.y, top.y);
+    let list = bounds(&mut window, "direct-list");
+    assert!(list.size.height >= gpui::px(28.0), "{list:?}");
+    // The channels keep at least one row too.
+    let channels = bounds(&mut window, "channel-list");
+    assert!(channels.size.height >= gpui::px(28.0), "{channels:?}");
+    assert!(bounds(&mut window, ada_row).bottom() <= list.bottom());
 }

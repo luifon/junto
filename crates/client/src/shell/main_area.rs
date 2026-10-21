@@ -856,57 +856,6 @@ impl Shell {
                         .into_any_element()
                 }),
         );
-        // A direct conversation that the server did not open, unless the member list
-        // beside the conversation states it at the member (ADR 0741).
-        if let Some(lists) = view.lists()
-            && let Some((account_id, reason)) = &lists.conversation_refused
-            && !self.refusal_at_member(view, *account_id)
-        {
-            let account_id = *account_id;
-            let asked = lists.conversation_asked == Some(account_id);
-            notices.push(
-                div()
-                    .flex_none()
-                    .px(u(16.0))
-                    .pt(u(10.0))
-                    .child(
-                        Notice::error(text::conversation_not_opened(reason))
-                            .selector("conversation-refused-notice")
-                            .action(
-                                div()
-                                    .flex()
-                                    .gap(u(6.0))
-                                    .child(
-                                        Button::new("conversation-retry")
-                                            .label(text::TRY_AGAIN)
-                                            .icon(Icon::Retry)
-                                            .disabled(asked)
-                                            .selector("conversation-retry")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.state.update(cx, |state, cx| {
-                                                    state.open_conversation(
-                                                        server_id, account_id, cx,
-                                                    );
-                                                });
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("conversation-refusal-close")
-                                            .kind(ButtonKind::Ghost)
-                                            .label(text::DISMISS)
-                                            .disabled(asked)
-                                            .selector("conversation-refusal-close")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.state.update(cx, |state, cx| {
-                                                    state.dismiss_conversation_refusal(cx);
-                                                });
-                                            })),
-                                    ),
-                            ),
-                    )
-                    .into_any_element(),
-            );
-        }
         // The private moderation notices of the account (ADR 0120).
         notices.extend(server.moderation.iter().map(|line| {
             let notice_id = line.id;
@@ -982,6 +931,59 @@ impl Shell {
             );
         }
         let _ = theme;
+        // A direct conversation that the server did not open, unless the member list
+        // beside the conversation states it at the member (ADR 0741). It comes after the
+        // other notices, so that its arrival and its end move none of them (ADR 0730).
+        if let Some(lists) = view.lists()
+            && let Some(refusal) = &lists.conversation_refused
+            && !self.refusal_at_member(view, refusal.account_id)
+        {
+            let account_id = refusal.account_id;
+            let asked = lists.conversation_asked == Some(account_id);
+            notices.push(
+                div()
+                    .flex_none()
+                    .px(u(16.0))
+                    .pt(u(10.0))
+                    .child(
+                        Notice::error(text::conversation_not_opened(
+                            refusal.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+                            &refusal.reason,
+                        ))
+                        .selector("conversation-refused-notice")
+                        .action(
+                            div()
+                                .flex()
+                                .gap(u(6.0))
+                                .child(
+                                    Button::new("conversation-retry")
+                                        .label(text::TRY_AGAIN)
+                                        .icon(Icon::Retry)
+                                        .disabled(asked)
+                                        .selector("conversation-retry")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.state.update(cx, |state, cx| {
+                                                state.open_conversation(server_id, account_id, cx);
+                                            });
+                                        })),
+                                )
+                                .child(
+                                    Button::new("conversation-refusal-close")
+                                        .kind(ButtonKind::Ghost)
+                                        .label(text::DISMISS)
+                                        .disabled(asked)
+                                        .selector("conversation-refusal-close")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.state.update(cx, |state, cx| {
+                                                state.dismiss_conversation_refusal(cx);
+                                            });
+                                        })),
+                                ),
+                        ),
+                    )
+                    .into_any_element(),
+            );
+        }
         notices
     }
 
@@ -1266,14 +1268,14 @@ impl Shell {
                     });
                     let refusal = refused
                         .as_ref()
-                        .filter(|(asked, _)| *asked == account_id)
-                        .map(|(_, reason)| {
+                        .filter(|refusal| refusal.account_id == account_id)
+                        .map(|refusal| {
                             div()
                                 .debug_selector(|| "conversation-refused".to_owned())
                                 .typeface(theme.types.small, theme)
                                 .line_height(u(17.0))
                                 .ink(colors.cinnabar_ink)
-                                .child(SharedString::from(reason.clone()))
+                                .child(SharedString::from(refusal.reason.clone()))
                         });
                     div()
                         .id(("member", index))

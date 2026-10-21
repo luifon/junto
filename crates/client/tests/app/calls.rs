@@ -327,7 +327,7 @@ fn connected_call(window: &mut Window, channel: &str) -> junto_media::calls::Act
 }
 
 /// The window draws this call of this device, without a media server.
-fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
+pub(crate) fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
     use junto_client::state::view::MediaSnapshot;
     use junto_media::calls::CallsView;
 

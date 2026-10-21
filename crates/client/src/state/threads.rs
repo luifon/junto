@@ -10,7 +10,7 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, Mes
 use junto_client_core::protocol::structure::ChannelKind;
 
 use super::AppState;
-use super::view::{ForkAsked, ForkState};
+use super::view::{ForkAsked, ForkState, Refused};
 use crate::text;
 
 /// Why the server did not fork a thread, as the dialog states it (ADR 0409).
@@ -184,6 +184,25 @@ impl AppState {
         account_id: AccountId,
         cx: &mut Context<Self>,
     ) {
+        // Asked again after a refusal: the name that the refusal kept.
+        let name = self
+            .known
+            .conversation_refused
+            .as_ref()
+            .filter(|refused| refused.server_id == server_id && refused.account_id == account_id)
+            .and_then(|refused| refused.name.clone());
+        self.ask_conversation(server_id, account_id, name, cx);
+    }
+
+    /// As [`AppState::open_conversation`], with the name of the account that the window
+    /// knows now, which a refusal keeps.
+    pub(super) fn ask_conversation(
+        &mut self,
+        server_id: ServerId,
+        account_id: AccountId,
+        name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
@@ -206,7 +225,9 @@ impl AppState {
             .known
             .conversation_refused
             .as_ref()
-            .is_some_and(|(server, account, _)| *server != server_id || *account != account_id)
+            .is_some_and(|refused| {
+                refused.server_id != server_id || refused.account_id != account_id
+            })
         {
             self.known.conversation_refused = None;
         }
@@ -241,7 +262,14 @@ impl AppState {
                             Some(ErrorCategory::NotFound) => text::NO_CONTACT.to_owned(),
                             _ => text::flow_error(&FlowError::from(&error)),
                         };
-                        this.known.conversation_refused = Some((server_id, account_id, reason));
+                        // The refusal is stated where the person is when it arrives.
+                        this.known.conversation_refused = Some(Refused {
+                            server_id,
+                            account_id,
+                            name,
+                            reason,
+                            place: this.shown.place(),
+                        });
                     }
                 }
                 this.changed(cx);
@@ -266,7 +294,14 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.known.fork = fork;
-        self.known.conversation_refused = conversation_refused;
+        self.known.conversation_refused =
+            conversation_refused.map(|(server_id, account_id, reason)| Refused {
+                server_id,
+                account_id,
+                name: None,
+                reason,
+                place: self.shown.place(),
+            });
         self.changed(cx);
     }
 }

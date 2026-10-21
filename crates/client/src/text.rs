@@ -1561,9 +1561,10 @@ pub const CONTACTS: &str = "People you can write to";
 pub const NO_CONTACTS: &str = "Nobody with this name can receive your messages.";
 pub const CONTACTS_NOT_READ: &str = "The people could not be read.";
 pub const MORE_CONTACTS: &str = "Show more";
-/// The statement of a direct conversation that the server did not open, with its reason.
-pub fn conversation_not_opened(reason: &str) -> String {
-    format!("The conversation was not opened. {reason}")
+/// The statement of a direct conversation with a person that the server did not open, with
+/// its reason.
+pub fn conversation_not_opened(name: &str, reason: &str) -> String {
+    format!("The conversation with {name} was not opened. {reason}")
 }
 pub const NO_CONTACT: &str =
     "You cannot write to this person: you share no workspace with them on this server.";

@@ -196,9 +196,8 @@ pub struct Known {
     /// The follow state of the thread of the side panel, the followed threads of the
     /// shown channel, and the roots that were read for their titles (ADR 0412, ADR 0413).
     pub followed: super::followed::Followed,
-    /// Why the server did not open a direct conversation, with the account that was asked
-    /// for.
-    pub conversation_refused: Option<(ServerId, AccountId, String)>,
+    /// The direct conversation that the server did not open last.
+    pub conversation_refused: Option<Refused>,
     /// The account whose direct conversation the server was asked for, while the answer
     /// is on its way.
     pub conversation_asked: Option<(ServerId, AccountId)>,
@@ -1031,7 +1030,7 @@ pub struct ServerLists {
     /// The direct conversation that the main area shows in place of a channel.
     pub conversation: Option<DirectRow>,
     /// Why the server did not open a direct conversation, with the account asked for.
-    pub conversation_refused: Option<(AccountId, String)>,
+    pub conversation_refused: Option<ConversationRefusal>,
     /// The account whose direct conversation the server was asked for, while the answer
     /// is on its way.
     pub conversation_asked: Option<AccountId>,
@@ -1103,6 +1102,32 @@ impl CallPanel {
                 .unwrap_or(crate::text::UNKNOWN_PERSON),
         }
     }
+}
+
+/// A direct conversation that the server did not open, as the state of the window keeps it
+/// (ADR 0741).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub server_id: ServerId,
+    /// The account that was asked for.
+    pub account_id: AccountId,
+    /// The name of the account that the window knew when the person asked, such as the name
+    /// of the row that the person chose. A refusal can take away the right to read the
+    /// profile of the account.
+    pub name: Option<String>,
+    pub reason: String,
+    /// The place of the main area where the refusal is stated. It goes when the main area
+    /// shows another place.
+    pub place: Option<PlaceId>,
+}
+
+/// A direct conversation that the server did not open, as the main area states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationRefusal {
+    pub account_id: AccountId,
+    /// Absent while the client has not read the name of the account.
+    pub name: Option<String>,
+    pub reason: String,
 }
 
 /// The selected workspace of the selected server.
@@ -2259,8 +2284,13 @@ fn server_lists(
         conversation_refused: known
             .conversation_refused
             .as_ref()
-            .filter(|(server, _, _)| *server == server_id)
-            .map(|(_, account_id, reason)| (*account_id, reason.clone())),
+            .filter(|refused| refused.server_id == server_id)
+            .map(|refused| ConversationRefusal {
+                account_id: refused.account_id,
+                name: name_of(server_id, refused.account_id, workspace, model, known)
+                    .or_else(|| refused.name.clone()),
+                reason: refused.reason.clone(),
+            }),
         conversation_asked: known
             .conversation_asked
             .filter(|(server, _)| *server == server_id)
