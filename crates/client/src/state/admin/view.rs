@@ -130,9 +130,11 @@ pub enum Unplanned {
     /// Each way of the move changes a channel in which the person does not hold "manage
     /// channel" (ADR 0761).
     NotManaged,
-    /// Each way of the move that the person may send changes more channels than one
+    /// Each way of the move that the person may send names more channels than one
     /// request names (ADR 0304).
     TooMany,
+    /// A refused move is drawn: its order is not the order of the state.
+    RefusalShown,
 }
 
 /// The channels of one category, or the channels without a category.
@@ -150,6 +152,10 @@ pub struct ChannelsPage {
     pub may_manage: bool,
     /// The channels without a category first, then each category in its order.
     pub groups: Vec<ChannelGroup>,
+    /// A move that the server refused, drawn at its place until the person acts again:
+    /// the moved channel, at whose row the refusal is stated, and the reason. While it is
+    /// drawn, the page offers no move (ADR 0730).
+    pub refusal: Option<(ChannelId, String)>,
 }
 
 impl ChannelsPage {
@@ -177,24 +183,41 @@ impl ChannelsPage {
     /// computed from this page alone, the moved channel first: the way with the fewest
     /// changed channels (see [`placings`](crate::state::admin::structure::placings)) in
     /// which the person holds "manage channel" in every channel whose position or category
-    /// changes (ADR 0761), and which names at most the channels that one request names
-    /// (ADR 0304). The drag, Up, Down and the places of "Move to" all use it, so they
-    /// offer the same destinations.
+    /// changes (ADR 0761). The channels next to the place, as the page read them, follow as
+    /// moves that only check where they are, so that the server refuses a move computed from
+    /// an order that changed (ADR 0304); such a check needs "view channel" alone. The moves
+    /// name at most the channels that one request names. The drag, Up, Down and the places
+    /// of "Move to" all use it, so they offer the same destinations.
     pub fn plan(
         &self,
         channel_id: ChannelId,
         category_id: Option<CategoryId>,
         to: usize,
     ) -> Result<Vec<ChannelMove>, Unplanned> {
-        let moving = self.channel(channel_id).ok_or(Unplanned::Nothing)?;
+        if self.refusal.is_some() {
+            return Err(Unplanned::RefusalShown);
+        }
+        self.channel(channel_id).ok_or(Unplanned::Nothing)?;
         let group = self.group(category_id).ok_or(Unplanned::Nothing)?;
         let order: Vec<(ChannelId, i32)> = group
             .channels
             .iter()
             .map(|line| (line.id, line.position))
             .collect();
-        let ways =
-            crate::state::admin::structure::placings(&order, channel_id, moving.position, to);
+        let others: Vec<&ChannelLine> = group
+            .channels
+            .iter()
+            .filter(|line| line.id != channel_id)
+            .collect();
+        let at = to.min(others.len());
+        let neighbours: Vec<&ChannelLine> = at
+            .checked_sub(1)
+            .and_then(|before| others.get(before))
+            .into_iter()
+            .chain(others.get(at))
+            .copied()
+            .collect();
+        let ways = crate::state::admin::structure::placings(&order, channel_id, to);
         let mut refused = Unplanned::Nothing;
         for changes in ways {
             let lines: Option<Vec<&ChannelLine>> = changes
@@ -207,10 +230,6 @@ impl ChannelsPage {
                 }
                 continue;
             };
-            if changes.len() > MOST_CHANNEL_MOVES {
-                refused = Unplanned::TooMany;
-                continue;
-            }
             let mut moves: Vec<ChannelMove> = changes
                 .iter()
                 .zip(lines)
@@ -226,6 +245,19 @@ impl ChannelsPage {
             if let Some(at) = moves.iter().position(|held| held.channel_id == channel_id) {
                 let own = moves.remove(at);
                 moves.insert(0, own);
+            }
+            for line in &neighbours {
+                if moves.iter().all(|held| held.channel_id != line.id) {
+                    moves.push(ChannelMove {
+                        channel_id: line.id,
+                        from: line.place,
+                        to: line.place,
+                    });
+                }
+            }
+            if moves.len() > MOST_CHANNEL_MOVES {
+                refused = Unplanned::TooMany;
+                continue;
             }
             return Ok(moves);
         }
@@ -648,7 +680,11 @@ fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> Workspace
 /// first: the page shows each such channel at the place that its newest move asks for,
 /// and states that place as the one where the channel is, so the order changes at the
 /// action of the person and not at the answer or at the events (ADR 0730).
-fn channels_page(workspace: &WorkspaceModel, waiting: &[ChannelMove]) -> ChannelsPage {
+fn channels_page(
+    workspace: &WorkspaceModel,
+    waiting: &[ChannelMove],
+    refusal: Option<(ChannelId, String)>,
+) -> ChannelsPage {
     let in_category = |category_id: Option<CategoryId>| {
         category_id.filter(|id| workspace.categories.iter().any(|held| held.id == *id))
     };
@@ -718,6 +754,7 @@ fn channels_page(workspace: &WorkspaceModel, waiting: &[ChannelMove]) -> Channel
         workspace_name: workspace.workspace.name.clone(),
         may_manage: holds_workspace(workspace, WorkspacePermission::ManageChannel),
         groups,
+        refusal,
     };
     // A move by one place is the move to the place before or after, with the same rule of
     // positions and permissions as a drag.
@@ -908,6 +945,9 @@ pub fn derive(
                 (AdminPage::Channels, Some(workspace)) => ServerPage::Channels(channels_page(
                     workspace,
                     &admin.channel_moves.of(server_id, workspace.workspace.id),
+                    admin
+                        .channel_moves
+                        .refusal(server_id, workspace.workspace.id),
                 )),
                 (AdminPage::Archive, Some(workspace)) => {
                     ServerPage::Archive(archive_page(model, workspace, known))

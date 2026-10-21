@@ -260,6 +260,7 @@ impl AdminState {
             // The list of the recordings belongs to its page. A late answer finds no
             // list that waits for it.
             self.recordings = recordings::RecordingList::default();
+            self.channel_moves.release();
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
@@ -276,6 +277,7 @@ impl AdminState {
         self.made = None;
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
+        self.channel_moves.release();
     }
 
     /// Binds the open layer to the account that its server shows now. A layer that was
@@ -373,6 +375,8 @@ impl AppState {
     /// Puts away what was told about the last request.
     pub fn dismiss_admin_ask(&mut self, cx: &mut Context<Self>) {
         self.admin.ask = None;
+        // An act of the person ends the drawing of a refused move (ADR 0730).
+        self.admin.channel_moves.release();
         cx.notify();
     }
 

@@ -17,56 +17,34 @@ use junto_client_core::protocol::structure::{
 use super::{AskKind, Made};
 use crate::state::AppState;
 use crate::state::receipts::Awaited;
-
-/// Every entry of `order` with its place as its position, without the entries that hold
-/// it already.
-fn renumbered<Id: Copy + PartialEq>(order: &[(Id, i32)], held: &[(Id, i32)]) -> Vec<(Id, i32)> {
-    order
-        .iter()
-        .enumerate()
-        .filter_map(|(place, (id, _))| {
-            let position = i32::try_from(place).unwrap_or(i32::MAX);
-            let before = held.iter().find(|(of, _)| of == id).map(|(_, at)| *at);
-            (before != Some(position)).then_some((*id, position))
-        })
-        .collect()
-}
+use crate::text;
 
 /// The new positions that put `moving` at the place `to` of a group, whose entries are
 /// `order` in their shown order, with the fewest changed entries. Empty when nothing
 /// moves. See [`placings`].
-pub fn placed<Id: Copy + PartialEq>(
-    order: &[(Id, i32)],
-    moving: Id,
-    held: i32,
-    to: usize,
-) -> Vec<(Id, i32)> {
-    placings(order, moving, held, to)
+pub fn placed<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> Vec<(Id, i32)> {
+    placings(order, moving, to)
         .into_iter()
         .next()
         .unwrap_or_default()
 }
 
-/// The ways to put `moving` at the place `to` of a group, whose entries are `order` in
-/// their shown order, each as the new positions of the entries that change, the way with
-/// the fewest changes first. `order` holds `moving` when it moves inside its group, and
-/// `held` is its position before. Empty when nothing moves.
+/// The ways to put `moving` at the place `to` of a group, each as the new positions of the
+/// entries that change, the way with the fewest changes first. `order` holds the entries in
+/// their shown order, which is the order of their position and then of their identifier, as
+/// the state and the server order them; it holds `moving` when `moving` moves inside its
+/// group. Empty when nothing moves.
 ///
-/// When the other entries have distinct positions, `moving` takes a free position between
-/// its new neighbours, and no other entry changes. Without one, it takes the position after
-/// the entry before it, and the entries after it move up by one until the first free
-/// position; or it takes the position before the entry after it, and the entries before
-/// it move down by one until the first free position. A position can be below 0, so the
-/// first place is always free. The position that `moving` leaves in its own group is
-/// free. An entry that comes from another group is
-/// named also when its position stays, because its group changes. When two other entries
-/// share a position, every entry of the group gets its place as its position.
-pub fn placings<Id: Copy + PartialEq>(
-    order: &[(Id, i32)],
-    moving: Id,
-    held: i32,
-    to: usize,
-) -> Vec<Vec<(Id, i32)>> {
+/// `moving` takes a position next to one of its new neighbours: the position of the entry
+/// before it or one above, or the position of the entry after it or one below; with no
+/// neighbour, position 0. An entry after it whose order would no longer follow moves up to
+/// the position above the entry before it, and so on until the order follows; an entry
+/// before it moves down in the same way. A way that would pass the bounds of a 32-bit
+/// position is not offered. The position that `moving` leaves in its own group is free, and
+/// two entries can share a position, which their identifiers order. Of two ways with as
+/// many changes, the one that gives `moving` a position of its own comes first, and then
+/// the one that moves the entries after it.
+pub fn placings<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> Vec<Vec<(Id, i32)>> {
     let from = order.iter().position(|(id, _)| *id == moving);
     let others: Vec<(Id, i32)> = order
         .iter()
@@ -77,66 +55,75 @@ pub fn placings<Id: Copy + PartialEq>(
     if from == Some(at) {
         return Vec::new();
     }
-    if !others.windows(2).all(|pair| pair[0].1 < pair[1].1) {
-        let mut next = others;
-        next.insert(at, (moving, held));
-        return vec![renumbered(&next, order)];
+    let (before, after) = (&others[..at], &others[at..]);
+    let key = |(id, position): (Id, i32)| (position, id);
+    let mut starts: Vec<i32> = Vec::new();
+    match (before.last(), after.first()) {
+        (None, None) => starts.push(0),
+        (previous, next) => {
+            if let Some((_, position)) = previous {
+                starts.extend(position.checked_add(1));
+            }
+            if let Some((_, position)) = next {
+                starts.extend(position.checked_sub(1));
+            }
+            starts.extend(previous.map(|(_, position)| *position));
+            starts.extend(next.map(|(_, position)| *position));
+        }
     }
-    let before = at.checked_sub(1).map(|place| others[place].1);
-    let after = others.get(at).map(|(_, position)| *position);
-    let mut ways: Vec<Vec<(Id, i32)>> = Vec::new();
-    let free = match (before, after) {
-        (None, None) => Some(0),
-        (Some(before), None) => before.checked_add(1),
-        (None, Some(after)) => after.checked_sub(1),
-        (Some(before), Some(after)) => before.checked_add(1).filter(|position| *position < after),
-    };
-    if let Some(position) = free {
-        ways.push(vec![(moving, position)]);
-    }
-    // The entries after the place move up.
-    if let Some(start) = before.map_or(Some(0), |before| before.checked_add(1)) {
+    starts.dedup();
+    let mut ways: Vec<(Vec<(Id, i32)>, bool)> = Vec::new();
+    for start in starts {
         let mut way = vec![(moving, start)];
-        let mut last = Some(start);
-        for (id, position) in &others[at..] {
-            match last {
-                Some(below) if *position > below => break,
-                Some(below) => {
-                    last = below.checked_add(1);
-                    if let Some(next) = last {
-                        way.push((*id, next));
-                    }
+        let mut fits = true;
+        // The entries after the place move up while they would not follow.
+        let mut last = (moving, start);
+        for entry in after {
+            if key(*entry) > key(last) {
+                break;
+            }
+            match last.1.checked_add(1) {
+                Some(position) => {
+                    last = (entry.0, position);
+                    way.push(last);
                 }
-                None => break,
+                None => {
+                    fits = false;
+                    break;
+                }
             }
         }
-        if last.is_some() {
-            ways.push(way);
-        }
-    }
-    // The entries before the place move down.
-    if let Some(start) = after.and_then(|after| after.checked_sub(1)) {
-        let mut way = vec![(moving, start)];
-        let mut first = Some(start);
-        for (id, position) in others[..at].iter().rev() {
-            match first {
-                Some(above) if *position < above => break,
-                Some(above) => {
-                    first = above.checked_sub(1);
-                    if let Some(next) = first {
-                        way.push((*id, next));
-                    }
+        // The entries before it move down while they would not come before.
+        let mut first = (moving, start);
+        for entry in before.iter().rev() {
+            if !fits || key(*entry) < key(first) {
+                break;
+            }
+            match first.1.checked_sub(1) {
+                Some(position) => {
+                    first = (entry.0, position);
+                    way.push(first);
                 }
-                None => break,
+                None => {
+                    fits = false;
+                    break;
+                }
             }
         }
-        if first.is_some() {
-            ways.push(way);
+        if !fits {
+            continue;
+        }
+        let shared = others.iter().any(|(_, position)| *position == start);
+        ways.push((way, shared));
+    }
+    ways.sort_by_key(|(way, shared)| (way.len(), *shared));
+    let mut found: Vec<Vec<(Id, i32)>> = Vec::with_capacity(ways.len());
+    for (way, _) in ways {
+        if !found.contains(&way) {
+            found.push(way);
         }
     }
-    ways.sort_by_key(Vec::len);
-    ways.dedup();
-    ways
+    found
 }
 
 async fn move_categories(
@@ -290,7 +277,7 @@ impl AppState {
         let Some(to) = to else {
             return;
         };
-        let changes = placed(&order, category_id, order[index].1, to);
+        let changes = placed(&order, category_id, to);
         if changes.is_empty() {
             return;
         }
@@ -381,27 +368,33 @@ impl AppState {
         let number = self
             .admin
             .channel_moves
-            .begin(server_id, workspace_id, moves.clone());
+            .begin(server_id, workspace_id, channel_id, &moves);
         let moves = MoveChannels { moves };
+        let what = AskKind::MoveChannels(channel_id);
         let (told, outcome) = futures_channel::oneshot::channel();
         self.admin_ask(
             server_id,
-            AskKind::MoveChannels(channel_id),
+            what,
             |api| async move {
                 let answer = api.move_channels(workspace_id, &moves).await;
-                let _ = told.send(answer.as_ref().ok().copied());
+                let _ = told.send(
+                    answer
+                        .as_ref()
+                        .copied()
+                        .map_err(|error| text::admin::refusal(what, error)),
+                );
                 answer
             },
             |_, _, _| {},
             cx,
         );
-        // The page tells the refusal of its newest request only. The moves of every
-        // failed request wait no more, also of one that the page tells nothing about.
+        // The page states the refusal of every refused move at its drawn place, also of
+        // one that is not the newest request of the page (ADR 0730).
         cx.spawn(async move |this, cx| {
-            let receipt = outcome.await.ok().flatten();
+            let outcome = outcome.await;
             let _ = this.update(cx, |this, cx| {
-                match receipt {
-                    Some(receipt) => {
+                match outcome {
+                    Ok(Ok(receipt)) => {
                         this.admin.channel_moves.answered(number, receipt);
                         let model = this
                             .client
@@ -419,12 +412,20 @@ impl AppState {
                         }
                         this.settle_channel_moves();
                     }
-                    None => this.admin.channel_moves.failed(number),
+                    Ok(Err(reason)) => this.admin.channel_moves.refused(number, reason),
+                    // The request was dropped with its server: nothing is drawn of it.
+                    Err(_) => this.admin.channel_moves.dropped(number),
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// The person acted on the layer: a refused move is no longer drawn.
+    pub fn release_refused_moves(&mut self, cx: &mut Context<Self>) {
+        self.admin.channel_moves.release();
+        cx.notify();
     }
 
     /// The moves of channels that the state shows now wait no more.
@@ -618,44 +619,67 @@ mod tests {
     fn an_entry_moved_inside_its_group_changes_the_fewest_entries() {
         let order = [('a', 0), ('b', 4), ('c', 9), ('d', 12)];
         // Down: "a" after "c", where a position is free.
-        assert_eq!(placed(&order, 'a', 0, 2), [('a', 10)]);
+        assert_eq!(placed(&order, 'a', 2), [('a', 10)]);
         // Up: "d" to the first place, below the first one.
-        assert_eq!(placed(&order, 'd', 12, 0), [('d', -1)]);
+        assert_eq!(placed(&order, 'd', 0), [('d', -1)]);
         // A drop at its own place moves nothing.
-        assert!(placed(&order, 'b', 4, 1).is_empty());
-        assert!(placings(&order, 'b', 4, 1).is_empty());
+        assert!(placings(&order, 'b', 1).is_empty());
         // A place after the end is the end.
-        assert_eq!(placed(&order, 'c', 9, 10), [('c', 13)]);
-        // Without a free position the entries after the place move up to the first free
-        // one, or the entries before it move down to the position that the entry left.
-        let order = [('a', 0), ('b', 1), ('c', 2), ('d', 3)];
-        assert_eq!(
-            placings(&order, 'a', 0, 2),
-            [vec![('a', 3), ('d', 4)], vec![('a', 2), ('c', 1), ('b', 0)]]
-        );
-        assert_eq!(
-            placings(&order, 'c', 2, 0),
-            [vec![('c', -1)], vec![('c', 0), ('a', 1), ('b', 2)]]
-        );
-        // Equal positions: every entry gets its place.
-        let order = [('a', 1), ('b', 1), ('c', 1)];
-        assert_eq!(placed(&order, 'c', 1, 0), [('c', 0), ('b', 2)]);
+        assert_eq!(placed(&order, 'c', 10), [('c', 13)]);
     }
 
     #[test]
-    fn a_move_at_the_end_of_a_long_group_changes_one_entry() {
-        let order: Vec<(u32, i32)> = (0..=200).map(|at| (at, at as i32)).collect();
-        assert_eq!(placed(&order, 0, 0, 200), [(0, 201)]);
-        assert_eq!(placed(&order, 200, 200, 0), [(200, -1)]);
-        // In the middle of a run without a free position, each way moves the entries to the
-        // next free position: here 200 entries each.
-        let order: Vec<(u32, i32)> = (0..=400).map(|at| (at, at as i32)).collect();
-        let ways = placings(&order, 0, 0, 200);
-        assert_eq!(ways.len(), 2);
-        assert!(
-            ways.iter().all(|way| way.len() == 201),
-            "{:?}",
-            ways[0].len()
+    fn an_entry_shares_a_position_when_the_identifiers_keep_the_order() {
+        // No position is free between "b" at 1 and "c" at 2. "x" after "b" at position 1
+        // still comes after it, because the identifiers order equal positions.
+        let order = [('a', 0), ('b', 1), ('c', 2)];
+        assert_eq!(placed(&order, 'x', 2), [('x', 1)]);
+        // 201 entries at position 0: one more after them takes position 1 alone, and the
+        // first of them goes to the end alone.
+        let order: Vec<(u32, i32)> = (0..=200).map(|id| (id, 0)).collect();
+        assert_eq!(placed(&order, 1000, 201), [(1000, 1)]);
+        assert_eq!(placed(&order, 0, 200), [(0, 1)]);
+        // Equal positions in the group it goes to: only "x" changes.
+        assert_eq!(placed(&[('a', 2), ('b', 2)], 'x', 2), [('x', 3)]);
+    }
+
+    #[test]
+    fn without_a_free_place_the_entries_move_to_the_next_free_position() {
+        // "b" fits neither at the position of "c" before it nor at the one of "a" after it:
+        // "a" moves up, or "c" moves down.
+        let order = [('c', 1), ('a', 2)];
+        assert_eq!(
+            placings(&order, 'b', 1),
+            [vec![('b', 2), ('a', 3)], vec![('b', 1), ('c', 0)]]
+        );
+        // A run of consecutive positions: the entries after the place move up to the next
+        // free position, here 200 of them.
+        let order: Vec<(u32, i32)> = (0..=400).map(|at| (2 * (1000 - at), at as i32)).collect();
+        let ways = placings(&order, 1599, 201);
+        assert_eq!(ways[0].len(), 201, "{:?}", &ways[0][..3]);
+        assert!(ways.iter().all(|way| way.len() > 200));
+    }
+
+    #[test]
+    fn a_move_at_the_bounds_of_a_position_changes_the_fewest_entries() {
+        // After an entry at the highest position: the same position, or that entry one
+        // below.
+        assert_eq!(placed(&[('a', i32::MAX)], 'b', 1), [('b', i32::MAX)]);
+        assert_eq!(
+            placed(&[('c', i32::MAX)], 'b', 1),
+            [('b', i32::MAX), ('c', i32::MAX - 1)]
+        );
+        // Before entries at the lowest positions: only the first one moves up.
+        let order = [('a', i32::MIN), ('c', i32::MIN + 1), ('d', i32::MIN + 2)];
+        assert_eq!(
+            placed(&order, 'b', 0),
+            [('b', i32::MIN), ('a', i32::MIN + 1)]
+        );
+        // A way that would pass the bound is not offered.
+        let order = [('c', i32::MAX - 1), ('a', i32::MAX)];
+        assert_eq!(
+            placings(&order, 'b', 1),
+            [vec![('b', i32::MAX - 1), ('c', i32::MAX - 2)]]
         );
     }
 
@@ -663,31 +687,12 @@ mod tests {
     fn an_entry_from_another_group_takes_a_free_position_or_moves_the_fewest_entries() {
         let order = [('a', 0), ('b', 4), ('c', 5)];
         // Between "a" and "b" a position is free.
-        assert_eq!(placed(&order, 'x', 7, 1), [('x', 1)]);
+        assert_eq!(placed(&order, 'x', 1), [('x', 1)]);
         // At the end, and in an empty group.
-        assert_eq!(placed(&order, 'x', 7, 3), [('x', 6)]);
-        assert_eq!(placed::<char>(&[], 'x', 7, 0), [('x', 0)]);
-        // The entry is named although its position stays: its group changes.
-        assert_eq!(placed(&order, 'x', 6, 3), [('x', 6)]);
+        assert_eq!(placed(&order, 'x', 3), [('x', 6)]);
+        assert_eq!(placed::<char>(&[], 'x', 0), [('x', 0)]);
         // Before the first one, the position below it.
-        assert_eq!(placed(&[('a', 3)], 'x', 9, 0), [('x', 2)]);
-        assert_eq!(placed(&[('a', 0)], 'x', 9, 0), [('x', -1)]);
-        // No free position between "b" and "c": "c" moves up, or "b" moves down.
-        assert_eq!(
-            placings(&order, 'x', 7, 2),
-            [vec![('x', 5), ('c', 6)], vec![('x', 4), ('b', 3)]]
-        );
-        // The first place.
-        assert_eq!(placed(&order, 'x', 7, 0), [('x', -1)]);
-        // Equal positions in the group it goes to.
-        assert_eq!(
-            placed(&[('a', 2), ('b', 2)], 'x', 0, 2),
-            [('a', 0), ('b', 1), ('x', 2)]
-        );
-        // A position at the bound of the type is not passed.
-        assert_eq!(
-            placings(&[('a', i32::MAX)], 'x', 0, 1),
-            Vec::<Vec<(char, i32)>>::new()
-        );
+        assert_eq!(placed(&[('a', 3)], 'x', 0), [('x', 2)]);
+        assert_eq!(placed(&order, 'x', 0), [('x', -1)]);
     }
 }

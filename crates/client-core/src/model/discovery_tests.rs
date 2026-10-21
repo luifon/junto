@@ -526,6 +526,12 @@ fn notices_that_an_event_takes_whole_are_read_again_when_the_server_holds_more()
         model.replay_reads(Part::Notices, [&channel_deleted]),
         [Part::Notices]
     );
+    // The same for a page of older notices: its last notice would be the next cursor.
+    let older = notice(MessageId::generate());
+    assert_eq!(
+        model.replay_reads(Part::MoreNotices(older.id), [&deleted]),
+        [Part::Notices]
+    );
 }
 
 #[test]

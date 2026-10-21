@@ -9,7 +9,7 @@ use junto_client::state::view::ServerStatus;
 use junto_client_core::ServerHandle;
 use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
-use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
+use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, UpdateChannel};
 
 use crate::harness::{Admin, Window, World, member, named, selector};
 use crate::support::{Device, FaultProxy, join, logged_in};
@@ -807,44 +807,70 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn a_move_that_the_server_refuses_for_one_channel_moves_no_channel(cx: &mut TestAppContext) {
+fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
+    cx: &mut TestAppContext,
+) {
     let world = World::new();
     let server = world.server("Acme Studio");
-    // The window reaches the server through a proxy, which holds the events of a change of
-    // the permissions while the page still shows the order of before.
+    // The window reaches the server through a proxy, which holds the events of a move by
+    // another administrator while the page still shows the order of before.
     let proxy = world.run(FaultProxy::start(&server));
     let (_directory, mut window, owner, default) = arranger(cx, &world, &server, &proxy.address());
     let x = owner.channel(&world, default, "x");
     let next = owner.channel(&world, default, "next");
     let last = owner.channel(&world, default, "last");
     window.until("the page shows the three channels", |window| {
-        channels_page(window).is_some_and(|page| {
-            page.channel(x).is_some_and(|line| line.moves_down.is_ok())
-                && page.channel(last).is_some_and(|line| line.may_manage)
-        })
+        group_order(window, None).ends_with(&[x, next, last])
+            && channels_page(window)
+                .is_some_and(|page| page.channel(x).is_some_and(|line| line.moves_down.is_ok()))
     });
     let before = server_places(&world, &owner, default);
-    assert!(before[&x].1 + 1 == before[&next].1 && before[&next].1 + 1 == before[&last].1);
 
-    // The member loses "manage channel" in "last"; the window does not know it yet. No
-    // position is free between "next" and "last": "Down" puts "x" at the position of
-    // "last", which moves up by one.
+    // Another administrator moves "last" far down; the window does not know it yet. "Down"
+    // puts "x" between "next" and "last" as the page read them, and checks both: the
+    // server refuses the move, because "last" is no longer where the page read it.
     proxy.hold_events();
-    deny_managing(&world, &owner, default, last);
+    let moved = UpdateChannel {
+        position: Some(before[&last].1 + 50),
+        ..UpdateChannel::default()
+    };
+    world
+        .run(owner.handle.api().update_channel(last, &moved))
+        .unwrap();
+    proxy.hold_request("PATCH", "/channels/positions");
     window.click_named(format!("channel-down-{x}"));
-    window.until("the server refused the move", |window| {
-        window.shows("channel-refused")
+    window.until("the page shows the move", |window| {
+        group_order(window, None).ends_with(&[next, x, last])
     });
-    assert_eq!(server_places(&world, &owner, default), before);
-    proxy.release_events();
-    window.until(
-        "the page shows that the member may not change the channel",
-        |window| {
-            channels_page(window)
-                .is_some_and(|page| page.channel(last).is_some_and(|line| !line.may_manage))
-        },
+    let controls = [x, next, last].map(|id| selector(format!("channel-line-{id}")));
+    let bounds = |window: &mut Window| {
+        window.settle();
+        controls.map(|selector| window.cx.debug_bounds(selector).unwrap())
+    };
+    let pressed = bounds(&mut window);
+    proxy.release_requests();
+    window.until("the server refused the move", |window| {
+        window.shows("channel-move-refused")
+    });
+
+    // The move stays where it is drawn, with the refusal at its row: no control moved, and
+    // the page offers no move until the person puts the refusal away.
+    assert_eq!(bounds(&mut window), pressed);
+    let page = channels_page(&mut window).unwrap();
+    assert_eq!(
+        page.channel(next).unwrap().moves_up,
+        Err(junto_client::state::admin::view::Unplanned::RefusalShown)
     );
-    assert_eq!(server_places(&world, &owner, default), before);
+    let mut server_now = before.clone();
+    server_now.insert(last, (before[&last].0, before[&last].1 + 50));
+    assert_eq!(server_places(&world, &owner, default), server_now);
+    proxy.release_events();
+    window.click("channel-move-refused-dismiss");
+    window.until("the page shows the order of the state", |window| {
+        !window.shows("channel-move-refused")
+            && group_order(window, None).ends_with(&[x, next, last])
+    });
+    assert_eq!(server_places(&world, &owner, default), server_now);
 }
 
 #[gpui::test]

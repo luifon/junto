@@ -619,7 +619,56 @@ impl Shell {
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
         let channel_id = row.id;
         let number = channel_id.as_uuid().as_u128() as u64;
+        let refused = page
+            .refusal
+            .as_ref()
+            .filter(|(moved, _)| *moved == channel_id)
+            .map(|(_, reason)| reason.clone());
         let content: AnyElement = match self.admin.mode {
+            // A refused move is stated in the row of the moved channel, where the page draws
+            // it, in place of the actions of the row: the row keeps its height, and no row
+            // moves at the refusal (ADR 0730).
+            _ if refused.is_some() => {
+                let reason: SharedString = refused.unwrap_or_default().into();
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(icon(kind_icon(row.kind), 15.0, theme.colors.ink_2))
+                    .child(
+                        div()
+                            .flex_none()
+                            .typeface(theme.types.control, theme)
+                            .ink(theme.colors.ink)
+                            .child(row.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("channel-move-refused")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .typeface(theme.types.small, theme)
+                            .ink(theme.colors.cinnabar_ink)
+                            .tooltip(crate::ui::tooltip(reason.clone()))
+                            .debug_selector(|| "channel-move-refused".to_owned())
+                            .child(reason),
+                    )
+                    .child(
+                        Button::new("channel-move-refused-dismiss")
+                            .label(text::DISMISS)
+                            .selector("channel-move-refused-dismiss")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.dismiss_admin_ask(cx));
+                            })),
+                    )
+                    .into_any_element()
+            }
             Some(Mode::MoveChannel(id)) if id == channel_id => match self.admin.move_group {
                 None => self.render_group_choice(page, theme, cx).into_any_element(),
                 Some(category_id) => self
@@ -753,8 +802,7 @@ impl Shell {
                 ),
             ))
             .children(refusal(
-                view.refused(AskKind::UpdateChannel(channel_id))
-                    .or(view.refused(AskKind::MoveChannels(channel_id))),
+                view.refused(AskKind::UpdateChannel(channel_id)),
                 "channel-refused",
             ))
             .into_any_element()

@@ -44,6 +44,8 @@ pub const CHANNEL_MANAGE_NEEDS: &str = "You do not hold “manage channel” in 
 pub const MOVE_TOO_MANY: &str =
     "The move changes the places of more than 200 channels, and one change takes 200 at most.";
 pub const MOVE_HERE_ALREADY: &str = "The channel is at this place already.";
+pub const MOVE_REFUSAL_SHOWN: &str =
+    "The page shows a move that the server refused. Put the refusal away first.";
 pub const LAST_ALREADY: &str = "It is the last one.";
 pub const NAME_EMPTY: &str = "Type a name.";
 
@@ -253,6 +255,7 @@ pub fn unplanned(reason: Unplanned) -> &'static str {
         Unplanned::Nothing => MOVE_HERE_ALREADY,
         Unplanned::NotManaged => MOVE_NEEDS,
         Unplanned::TooMany => MOVE_TOO_MANY,
+        Unplanned::RefusalShown => MOVE_REFUSAL_SHOWN,
     }
 }
 

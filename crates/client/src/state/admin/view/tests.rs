@@ -1169,8 +1169,13 @@ fn every_member_has_the_page_of_the_recordings_of_the_shown_workspace() {
 
 /// A page of the channels: "x" without a category, which the person manages, and the
 /// category "Projects" with the channels at `positions`, which the person does not manage.
-fn page_of_moves(positions: &[i32]) -> (ChannelsPage, ChannelId, CategoryId, Vec<ChannelId>) {
-    let x = ChannelId::generate();
+/// The identifiers order equal positions: "x" is 75, and the channels of `positions` have
+/// the identifiers that `ids` states.
+fn page_of_moves(
+    positions: &[i32],
+    ids: &[u128],
+) -> (ChannelsPage, ChannelId, CategoryId, Vec<ChannelId>) {
+    let x = ChannelId::from_uuid(uuid::Uuid::from_u128(75));
     let projects = CategoryId::generate();
     let line = |id, name: &str, category_id, position, may_manage| ChannelLine {
         id,
@@ -1189,7 +1194,10 @@ fn page_of_moves(positions: &[i32]) -> (ChannelsPage, ChannelId, CategoryId, Vec
         moves_up: Err(Unplanned::Nothing),
         moves_down: Err(Unplanned::Nothing),
     };
-    let others: Vec<ChannelId> = positions.iter().map(|_| ChannelId::generate()).collect();
+    let others: Vec<ChannelId> = ids
+        .iter()
+        .map(|id| ChannelId::from_uuid(uuid::Uuid::from_u128(*id)))
+        .collect();
     let page = ChannelsPage {
         workspace_id: WorkspaceId::generate(),
         workspace_name: "Studio".to_owned(),
@@ -1214,6 +1222,7 @@ fn page_of_moves(positions: &[i32]) -> (ChannelsPage, ChannelId, CategoryId, Vec
                     .collect(),
             },
         ],
+        refusal: None,
     };
     (page, x, projects, others)
 }
@@ -1221,78 +1230,129 @@ fn page_of_moves(positions: &[i32]) -> (ChannelsPage, ChannelId, CategoryId, Vec
 #[test]
 fn a_move_names_where_each_channel_was_read_and_needs_every_channel_that_it_changes() {
     // Between two channels that the person does not manage there is a free position: only
-    // the moved channel changes, and the move is offered.
-    let (page, x, projects, _) = page_of_moves(&[10, 20]);
+    // the moved channel changes, and the move is offered. The two channels next to the
+    // place follow as checks of where the page read them, which need no "manage channel".
+    let (page, x, projects, others) = page_of_moves(&[10, 20], &[100, 50]);
     let between = page.plan(x, Some(projects), 1).unwrap();
+    let at = |position| ChannelPlace {
+        category_id: Some(projects),
+        position,
+    };
+    let check = |channel_id, position| ChannelMove {
+        channel_id,
+        from: at(position),
+        to: at(position),
+    };
     assert_eq!(
         between,
-        [ChannelMove {
-            channel_id: x,
-            from: ChannelPlace {
-                category_id: None,
-                position: 0,
+        [
+            ChannelMove {
+                channel_id: x,
+                from: ChannelPlace {
+                    category_id: None,
+                    position: 0,
+                },
+                to: at(11),
             },
-            to: ChannelPlace {
-                category_id: Some(projects),
-                position: 11,
-            },
-        }]
+            check(others[0], 10),
+            check(others[1], 20),
+        ]
     );
-    assert!(page.takes(x, Some(projects), 1));
-    // Every place of the group is offered: before the first, between, after the last.
+    // Every place of the group is offered: before the first, between, after the last. At
+    // an end one channel is next to the place.
     assert!((0..=2).all(|to| page.takes(x, Some(projects), to)));
-    // Without a free position the other channels would change: no move is offered.
-    let (page, x, projects, _) = page_of_moves(&[10, 11]);
+    assert_eq!(
+        page.plan(x, Some(projects), 2).unwrap()[1..],
+        [check(others[1], 20)]
+    );
+    // Without a free position, and with identifiers that do not order "x" beside either
+    // channel at its position, the other channels would change: no move is offered.
+    let (page, x, projects, _) = page_of_moves(&[10, 11], &[100, 50]);
     assert_eq!(page.plan(x, Some(projects), 1), Err(Unplanned::NotManaged));
     assert!(!page.takes(x, Some(projects), 1));
+    // With identifiers that order "x" after the first channel, it shares its position.
+    let (page, x, projects, _) = page_of_moves(&[10, 11], &[60, 50]);
+    assert_eq!(
+        page.plan(x, Some(projects), 1).unwrap()[0].to,
+        ChannelPlace {
+            category_id: Some(projects),
+            position: 10,
+        }
+    );
     // A drop at its own place moves nothing.
     assert_eq!(page.plan(x, None, 0), Err(Unplanned::Nothing));
 }
 
 #[test]
 fn a_move_names_at_most_the_channels_that_one_request_names() {
-    // One group of 401 channels at consecutive positions, all managed by the person.
-    let lines: Vec<ChannelLine> = (0..=400)
-        .map(|position| ChannelLine {
-            id: ChannelId::generate(),
-            name: format!("c{position}"),
-            kind: ChannelKind::Text,
-            category_id: None,
+    // "x" without a category, and a category of 401 channels at consecutive positions, all
+    // managed by the person, whose identifiers fall by 2 from one channel to the next: "x"
+    // fits beside no channel at its position at the place 201.
+    let projects = CategoryId::generate();
+    let id = |value: u128| ChannelId::from_uuid(uuid::Uuid::from_u128(value));
+    let line = |id: ChannelId, category_id: Option<CategoryId>, position: i32| ChannelLine {
+        id,
+        name: format!("c{position}"),
+        kind: ChannelKind::Text,
+        category_id,
+        position,
+        place: ChannelPlace {
+            category_id,
             position,
-            place: ChannelPlace {
-                category_id: None,
-                position,
-            },
-            permanent: false,
-            first: false,
-            last: false,
-            may_manage: true,
-            moves_up: Err(Unplanned::Nothing),
-            moves_down: Err(Unplanned::Nothing),
-        })
-        .collect();
-    let first = lines[0].id;
+        },
+        permanent: false,
+        first: false,
+        last: false,
+        may_manage: true,
+        moves_up: Err(Unplanned::Nothing),
+        moves_down: Err(Unplanned::Nothing),
+    };
+    let x = id(1599);
     let page = ChannelsPage {
         workspace_id: WorkspaceId::generate(),
         workspace_name: "Studio".to_owned(),
         may_manage: true,
-        groups: vec![ChannelGroup {
-            category: None,
-            channels: lines,
-        }],
+        groups: vec![
+            ChannelGroup {
+                category: None,
+                channels: vec![line(x, None, 0)],
+            },
+            ChannelGroup {
+                category: Some(CategoryLine {
+                    id: projects,
+                    name: "Projects".to_owned(),
+                    position: 0,
+                    first: true,
+                    last: true,
+                }),
+                channels: (0..=400)
+                    .map(|at| line(id(2 * (1000 - at as u128)), Some(projects), at))
+                    .collect(),
+            },
+        ],
+        refusal: None,
     };
-    // To the end and to the first place: a free position, one move.
-    assert_eq!(page.plan(first, None, 400).unwrap().len(), 1);
-    let last = page.groups[0].channels[400].id;
-    assert_eq!(page.plan(last, None, 0).unwrap().len(), 1);
-    // Into the run, the fewest moves: the 150 channels after the place move up.
-    assert_eq!(page.plan(first, None, 250).unwrap().len(), 151);
-    // Into the middle, every way moves 200 channels besides the moved one: more than one
-    // request names, so the place is not offered, and the page states why.
-    assert_eq!(page.plan(first, None, 200), Err(Unplanned::TooMany));
-    assert!(!page.takes(first, None, 200));
+    // To the end and to the first place: one move, and the check of the channel next to it.
+    assert_eq!(page.plan(x, Some(projects), 401).unwrap().len(), 2);
+    assert_eq!(page.plan(x, Some(projects), 0).unwrap().len(), 2);
+    // Elsewhere "x" shares the position of a channel next to it: one move and two checks.
+    assert_eq!(page.plan(x, Some(projects), 300).unwrap().len(), 3);
+    // At the place 201, every way moves at least 200 channels besides "x", and with the two
+    // checks the request would name more than 200: the place is not offered, and the page
+    // states why.
+    assert_eq!(page.plan(x, Some(projects), 201), Err(Unplanned::TooMany));
+    assert!(!page.takes(x, Some(projects), 201));
     assert!(
         crate::text::admin::MOVE_TOO_MANY.contains(&MOST_CHANNEL_MOVES.to_string()),
         "the reason names the bound of the route"
+    );
+    // While a refused move is drawn, no move is offered.
+    let shown = ChannelsPage {
+        refusal: Some((x, "refused".to_owned())),
+        ..page
+    };
+    assert_eq!(
+        shown.plan(x, Some(projects), 401),
+        Err(Unplanned::RefusalShown)
     );
 }

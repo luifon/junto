@@ -242,7 +242,15 @@ impl Part {
             Self::Admin(part) => part.concerns(event),
             // The answer to a page that was asked for before every notice was read states
             // its notices as unread: the event is applied to them after the answer.
-            Self::MoreNotices(_) => matches!(event, Event::NotificationsRead { .. }),
+            // A page read before a deletion can hold the notices of the deleted places, and
+            // its last notice would be refused as the cursor of the next page: the first
+            // page is read again (`replay_reads`).
+            Self::MoreNotices(_) => matches!(
+                event,
+                Event::NotificationsRead { .. }
+                    | Event::ChannelDeleted { .. }
+                    | Event::WorkspaceDeleted { .. }
+            ),
             // A page after the loaded ones is added only while the list before it is the
             // one that the request continued; no event changes its answer.
             Self::MoreThreads => false,
@@ -1007,14 +1015,14 @@ impl ServerModel {
             if !part.concerns(event, self) {
                 continue;
             }
-            if part == Part::Notices
+            if matches!(part, Part::Notices | Part::MoreNotices(_))
                 && matches!(
                     event,
                     Event::ChannelDeleted { .. } | Event::WorkspaceDeleted { .. }
                 )
             {
-                if !reads.contains(&part) {
-                    reads.push(part);
+                if !reads.contains(&Part::Notices) {
+                    reads.push(Part::Notices);
                 }
                 continue;
             }
