@@ -42,8 +42,26 @@ Checks (`packaging/check_linux.py`, in the build image):
 - The tarball: its entries, the owner, no links, the bundled libraries exactly, no library of the host, the description, the licences, a licence file that lists every crate of the programs and holds the WebRTC licence and the copyright files of the bundled libraries; the search path; with an empty `LD_LIBRARY_PATH` every bundled library loads from the package and every other one from the host.
 - The first frame of the tarball's client under X11 and Wayland, and of the AppImage under X11, with `--check-startup` on the virtual displays of ADR 0750. The container has no FUSE: the AppImage runs with `APPIMAGE_EXTRACT_AND_RUN=1`.
 - The menu entry script, and the files of the AppImage after `--appimage-extract`, with its licence file, which also holds the licences of its runtime, and the source of the runtime, which builds the runtime of the AppImage again, byte for byte. The icon theme of the tarball, of the AppImage and of the installed menu entry, and `.DirIcon`, equal the renderings of the icon program.
-- An update of a running directory package from a local source and its rollback with the recovery program, with test programs; a read-only location, a changed archive and a second rollback are refused.
+- An update of a running fixture directory package from a local source and its rollback with the recovery program; a read-only location, a changed archive and a second rollback are refused.
 - The Rust tests `tests/linux_packages.rs` replace an AppImage that is open and a directory with the Linux system tools, and roll both back.
+
+- The real-client lifecycle (`packaging/check_lifecycle.py`) builds the same checkout twice,
+  with temporary test keys and the workspace version followed by its next patch version.
+  It installs the first tarball and AppImage, updates each from signed real-client packages,
+  and restores each with the standalone recovery program from its previous release record.
+  At all three stages the compiled version and the first frame are checked under X11 and
+  Wayland, with a new empty data directory for every start.
+- The AppImage update is driven by the ignored Rust test `real_appimage_package_update`,
+  called only by the package check with the real package path, version and test public keys.
+  It supplies the running version to the production installer as the client does; the
+  external release tool cannot infer an AppImage version from its file. The existing
+  synthetic-file Rust tests retain their coverage of open-file replacement.
+- The lifecycle uses FUSE when the container exposes a readable and writable `/dev/fuse`
+  and a `fusermount` executable. Otherwise it states the missing prerequisite and uses
+  extract-and-run with extraction under its temporary directory. A startup failure when
+  those prerequisites are present fails the check. Each start has a 120-second bound;
+  timeout ends its process group, including its virtual display. No package, menu entry,
+  data directory or extraction is installed outside the temporary directory.
 
 ## Consequences
 

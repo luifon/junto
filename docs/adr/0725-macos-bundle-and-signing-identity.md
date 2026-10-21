@@ -22,7 +22,34 @@ ADR 0704 requires one bundle identifier and one self-signed code-signing certifi
 
 ## Consequences
 
-- Two test bundles with different version fields and one test certificate have equal designated requirements. An ad-hoc signature has a different requirement. The test uses temporary bundles and never starts them.
+- Two test bundles with different version fields and one test certificate have equal designated requirements. An ad-hoc signature has a different requirement. The identity comparison uses temporary fixture bundles.
 - A release certificate expiring requires an explicit decision about permission identity; automatic update signing key rotation cannot repair it.
 - The first launch of a downloaded copy remains blocked as described by ADR 0704. A quarantined downloaded product bundle, a clean-system install and real system notifications remain untested.
-- `packaging/check_start.py` starts the executable of a bundle with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires exit code 0 and the line `Junto first frame rendered`. The macOS CI job assembles the unsigned bundle of the debug build of each commit and runs this check on it (ADR 0905). No check starts the window of a signed product bundle.
+- `packaging/check_start.py` starts the executable of a bundle with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires exit code 0 and the line `Junto first frame rendered`. The macOS CI job assembles the unsigned bundle of the debug build of each commit and runs this check on it (ADR 0905). `packaging/check_update.py` also checks the signed real-client lifecycle below.
+
+
+Package lifecycle check (`packaging/check_update.py`, `packaging/check_lifecycle.py`):
+
+- Build the real client, recovery program and release tool from the same checkout twice,
+  first with the workspace version and then with the patch version raised by one. Compile
+  temporary release and freshness public keys into both builds with the test configuration;
+  use the temporary signing identity and certificate pin of the packaging checks. No tracked
+  key, certificate pin, manifest or lockfile is changed.
+- Assemble and sign both bundles, create the first-install ZIP with `ditto`, and extract it
+  into the temporary installation directory. Start the installed client with an empty data
+  directory, `--no-activate` and `--check-startup`. Require its compiled version, exit code 0
+  and the first-frame line.
+- Serve both signed releases on a loopback source. Update with the first build's release
+  tool, start the updated client with another empty data directory, roll back with the
+  recovery program kept in the previous release record, and start the restored client with
+  a third empty data directory. Check the compiled version at each stage and the same
+  designated signing requirement throughout.
+- Each start has a 120-second bound. A timeout terminates the process group and reports the
+  captured output. Interrupt, termination and hangup signals stop the active command group.
+  Unix commands inherit the CI run lock descriptor so an interrupted runner cannot release
+  its build cache while a command still uses it (ADR 0905). Temporary packages, profiles,
+  keys and release files are removed, and the
+  keychain search list is restored. The checks use no real release key or signing identity.
+- Fixture checks remain for invalid signatures, a read-only installation, a damaged archive
+  and a second rollback. Download quarantine, system permission continuity and a clean
+  machine remain separate checks.

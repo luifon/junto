@@ -30,7 +30,19 @@ The options:
 Checks (`packaging/check_windows.py`, in the Windows job of CI):
 
 - The ZIP of the client build: its entries and no library; a licence file that lists every crate of the programs and holds the WebRTC licence; the icon group 1 of `junto.exe` with the rendering of the icon at each size (ADR 0756); extraction into a folder; `junto.exe --version`; the first frame with `--check-startup`.
-- With test programs: an update from a local source while the installed program runs, the requests of the update, the new program in place, the mark of the staging directory; then the rollback with the recovery program, a changed archive and a second rollback refused, and no staging directory left.
+- With fixture programs: an update from a local source while the installed program runs, the requests of the update, the new program in place, the mark of the staging directory; then the rollback with the recovery program, a changed archive and a second rollback refused, and no staging directory left.
+
+- The real-client lifecycle (`packaging/check_lifecycle.py`): build the same checkout with
+  the workspace version and with its patch version raised by one, using temporary release
+  and freshness keys compiled into both builds. Assemble both ZIP packages, extract the
+  first into a temporary installation directory, update it from the local signed release
+  source with the first build's release tool, and roll it back with the recovery program
+  kept in the previous release record. At installation, after updating and after recovery,
+  require the client's compiled version and first rendered frame with a separate empty
+  data directory. The fixture test separately covers replacement while a program runs.
+- Each real-client start is bounded to 120 seconds. On timeout the process tree is ended;
+  error dialogs are disabled for child processes. Packages, profiles, signing keys and
+  update records remain under the temporary directory, whose removal must succeed.
 
 ## Consequences
 

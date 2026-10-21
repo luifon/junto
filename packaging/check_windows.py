@@ -18,6 +18,7 @@ import zipfile
 import icons
 import licences
 import release_tools
+import check_lifecycle
 import windows
 from programs import outcome
 
@@ -190,9 +191,15 @@ class Check:
         left = [path.name for path in update.iterdir() if path.name.startswith(("stage-", "finished-"))]
         expect(not left, f"staging directories were left: {left}")
 
+    @step("real client packages: install, first frame, update, first frame, rollback, first frame")
+    def real_client_lifecycle(self):
+        check_lifecycle.check(self.root / "real-client", "windows", self.files)
+
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="junto-windows-package-", ignore_cleanup_errors=True) as temporary:
+    import ctypes
+    ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+    with tempfile.TemporaryDirectory(prefix="junto-windows-package-") as temporary:
         check = Check(pathlib.Path(temporary))
         try:
             for number, (name, function) in enumerate(STEPS, 1):
