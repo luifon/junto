@@ -119,12 +119,7 @@ fn update_from(source: &str) -> ExitCode {
         .enable_all()
         .build()
         .map_err(releases::Error::from)
-        .and_then(|runtime| {
-            runtime.block_on(releases::update_running_from(
-                Some(source),
-                releases::TEST_CONFIGURATION,
-            ))
-        });
+        .and_then(|runtime| runtime.block_on(releases::update_running_from(Some(source))));
     match result {
         Ok(installed) => {
             println!("installed version {}", installed.version);

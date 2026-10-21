@@ -52,21 +52,14 @@ impl install::Installer<Tools> {
 /// Downloads the newest release from the source of this build and installs it over the
 /// installation that this process runs from.
 pub async fn update_running() -> Result<install::Installed, Error> {
-    update_running_from(None, TEST_CONFIGURATION).await
+    update_running_from(None).await
 }
 
 /// [`update_running`] from the source at `base` instead of the compiled source, with the
 /// compiled keys. Only a test configuration accepts another source: the package checks
 /// serve their releases on an address that is known only when they run.
-pub async fn update_running_from(
-    base: Option<&str>,
-    test_configuration: bool,
-) -> Result<install::Installed, Error> {
-    if base.is_some() && !test_configuration {
-        return Err(Error::Invalid(
-            "only a test configuration accepts another release source",
-        ));
-    }
+pub async fn update_running_from(base: Option<&str>) -> Result<install::Installed, Error> {
+    accept_source(base, TEST_CONFIGURATION)?;
     let installer = PlatformInstaller::running()?;
     installer.location()?;
     let current = installer.installed_version()?;
@@ -103,6 +96,15 @@ pub async fn update<S: install::System + Send + 'static>(
     tokio::task::spawn_blocking(move || installer.install(&mut archive, fetched))
         .await
         .map_err(|_| Error::Invalid("installer task stopped"))?
+}
+
+fn accept_source(base: Option<&str>, test_configuration: bool) -> Result<(), Error> {
+    if base.is_some() && !test_configuration {
+        return Err(Error::Invalid(
+            "only a test configuration accepts another release source",
+        ));
+    }
+    Ok(())
 }
 
 pub const TEST_CONFIGURATION: bool = env!("JUNTO_TEST_CONFIGURATION").as_bytes()[0] == b'1';
@@ -986,5 +988,21 @@ mod timing_tests {
             Err(Error::Timeout)
         ));
         assert_eq!(start.elapsed(), Duration::from_secs(180));
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_test_configuration_accepts_another_release_source() {
+        let other = Some("http://127.0.0.1:9/");
+        assert!(matches!(
+            accept_source(other, false),
+            Err(Error::Invalid(reason)) if reason.contains("test configuration")
+        ));
+        assert!(accept_source(other, true).is_ok());
+        assert!(accept_source(None, false).is_ok());
     }
 }

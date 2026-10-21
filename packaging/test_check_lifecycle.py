@@ -174,6 +174,23 @@ class LifecycleTests(unittest.TestCase):
         except ProcessLookupError:
             pass
 
+    @unittest.skipIf(os.name == "nt", "a program leaves the process group only on Unix")
+    def test_a_command_whose_output_a_program_outside_the_group_keeps_open_fails_in_bounded_time(self):
+        program = ("import subprocess, sys; "
+                   "other = subprocess.Popen([sys.executable, '-c', 'import signal; signal.alarm(10); signal.pause()'], "
+                   "start_new_session=True); "
+                   "print('output so far', other.pid, flush=True)")
+        with mock.patch.object(check_lifecycle, "DRAIN_BOUND", 1):
+            with self.assertRaises(AssertionError) as raised:
+                check_lifecycle.command([sys.executable, "-c", program], timeout=20)
+        message = str(raised.exception)
+        self.assertIn("kept its output open", message)
+        self.assertIn("output so far", message)
+        try:
+            os.kill(int(message.split("output so far ", 1)[1].split()[0]), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
     def test_output_is_read_as_utf8_and_bytes_that_are_not_utf8_are_replaced(self):
         program = "import sys; sys.stdout.buffer.write('\u00e9 '.encode() + bytes([0x81, 0x8d, 0x8f, 0x90, 0x9d]))"
         output = check_lifecycle.command([sys.executable, "-c", program])

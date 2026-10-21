@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import tomllib
 import zipfile
@@ -22,10 +23,15 @@ ROOT = release_tools.REPOSITORY
 # that the build of the commit in the shared target directory, which later steps start, stays
 # as it is.
 TARGET = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve() / "lifecycle"
-# The bound of one start until the first frame. On Linux it also holds the start of the display
-# and its window manager and, without FUSE, the extraction of the AppImage.
+# The bound of one start until the first frame, and of --version. On Linux it also holds the
+# start of the display and its window manager and, without FUSE, the extraction of the AppImage
+# (ADR 0754).
 START_BOUND = 300 if sys.platform.startswith("linux") else 120
-# How long the output of a command that timed out is read after its processes were ended.
+# The bound of the update by the installed client: it downloads, verifies and extracts the new
+# release and the installed one, two archives of a debug build; an AppImage without FUSE also
+# extracts itself first. The checks print the time that each update and start took.
+UPDATE_BOUND = 300
+# How long the output of a command is read after its processes were ended.
 DRAIN_BOUND = 30
 # The check runs in a folder whose name has a space and a character outside ASCII.
 FOLDER = "real client é"
@@ -85,8 +91,7 @@ class Processes:
         else:
             options["start_new_session"] = True
         try:
-            self.child = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                          encoding="utf-8", errors="replace", **options)
+            self.child = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
         except BaseException:
             self.close()
             raise
@@ -179,39 +184,56 @@ def run_command(arguments, timeout, running, received, options):
     processes = Processes(arguments, options)
     child = processes.child
     running.append(processes)
+    readers = [Reader(child.stdout), Reader(child.stderr)]
+    timed_out = False
     try:
         if received:
             processes.end()
         try:
-            output, errors = child.communicate(timeout=timeout)
+            child.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            processes.end()
-            output, errors = drain(child)
-            child.wait(timeout=DRAIN_BOUND)
-            raise AssertionError(f"command timed out after {timeout} seconds: " + outcome(
-                subprocess.CompletedProcess(arguments, child.returncode, output, errors))) from None
+            timed_out = True
     finally:
         processes.end()
         if child.poll() is None:
             child.wait(timeout=DRAIN_BOUND)
         processes.close()
+    complete = all([reader.finish() for reader in readers])
     if received:
         raise SystemExit(128 + received[0])
-    result = subprocess.CompletedProcess(arguments, child.returncode, output, errors)
+    result = subprocess.CompletedProcess(arguments, child.returncode, readers[0].text(), readers[1].text())
+    if timed_out:
+        raise AssertionError(f"command timed out after {timeout} seconds: " + outcome(result))
+    if not complete:
+        raise AssertionError("a program outside the processes of the command kept its output open: "
+                             + outcome(result))
     if result.returncode:
         raise AssertionError(outcome(result))
-    return output + errors
+    return result.stdout + result.stderr
 
 
-def drain(child):
-    """The output of a command whose processes were ended. A program outside the process group
-    can keep the pipes open; then the output read so far is kept and the pipes are closed."""
-    try:
-        return child.communicate(timeout=DRAIN_BOUND)
-    except subprocess.TimeoutExpired as expired:
-        for stream in (child.stdout, child.stderr):
-            stream.close()
-        return expired.stdout, expired.stderr
+class Reader:
+    """Reads one pipe of a command on a thread of its own, so that a program outside the
+    processes of the command that keeps the pipe open cannot hold the check: after
+    DRAIN_BOUND the output read so far is used and the thread is left to end with the pipe."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.parts = []
+        self.thread = threading.Thread(target=self.read, daemon=True)
+        self.thread.start()
+
+    def read(self):
+        while chunk := os.read(self.stream.fileno(), 1 << 16):
+            self.parts.append(chunk)
+
+    def finish(self):
+        """Waits at most DRAIN_BOUND for the end of the pipe; whether it ended."""
+        self.thread.join(DRAIN_BOUND)
+        return not self.thread.is_alive()
+
+    def text(self):
+        return b"".join(list(self.parts)).decode("utf-8", errors="replace")
 
 
 def remove_tree(path, attempts=10, interval=3):
@@ -233,20 +255,24 @@ def remove_tree(path, attempts=10, interval=3):
             time.sleep(interval)
 
 
-def start(arguments, version, data, *, environment=None):
+def start(arguments, version, data, *, display=(), environment=None):
+    """Checks the version of the client, then starts it with an empty profile until its first
+    frame; `display` is the command that runs the start on a virtual display."""
     if data.exists() and any(data.iterdir()):
         raise AssertionError("the startup data directory must be empty")
     if os.name != "nt":
         data.mkdir(mode=0o700, parents=True, exist_ok=True)
         data.chmod(0o700)
-    label = command([*arguments, "--version"], env=environment)
+    label = command([*arguments, "--version"], env=environment, timeout=START_BOUND)
     if version + " (test configuration)" not in label.splitlines():
         raise AssertionError(f"wrong client version: {label}")
-    output = command([*arguments, "--data-dir", data, "--no-activate", "--check-startup"],
+    began = time.monotonic()
+    output = command([*display, *arguments, "--data-dir", data, "--no-activate", "--check-startup"],
                      env=environment, timeout=START_BOUND)
     if "Junto first frame rendered" not in output.splitlines():
         raise AssertionError("the client did not render its first frame: " + output)
-    print(f"    version {version}: first frame with an empty profile", flush=True)
+    print(f"    version {version}: first frame with an empty profile in {time.monotonic() - began:.1f} s",
+          flush=True)
 
 
 def fuse_environment(root, device=pathlib.Path("/dev/fuse"), which=shutil.which):
@@ -416,15 +442,18 @@ def check(parent, system, files, *, signing=None):
                 if requirement(application) != expected:
                     raise AssertionError("the signing requirement changed")
             for backend in (["x11", "wayland"] if system == "linux" else [None]):
-                prefix = [ROOT / "tools/linux/display.sh", backend] if backend else []
-                start([*prefix, binary], built[index], work / f"data-{stage}-{backend}", environment=runtime)
+                display = [ROOT / "tools/linux/display.sh", backend] if backend else []
+                start([binary], built[index], work / f"data-{stage}-{backend}", display=display,
+                      environment=runtime)
 
         started("installed", 0)
         with release_tools.source(source) as (server, address):
             # The installed client updates itself, as the update action of its window does.
-            output = command([binary, "--update-from", address], env=runtime)
+            began = time.monotonic()
+            output = command([binary, "--update-from", address], env=runtime, timeout=UPDATE_BOUND)
             if f"installed version {built[1]}" not in output.splitlines():
                 raise AssertionError("the client did not report the update: " + output)
+            print(f"    updated to {built[1]} by the installed client in {time.monotonic() - began:.1f} s", flush=True)
             if server.paths != requests(system, kind, arch, built):
                 raise AssertionError(f"unexpected release requests: {server.paths}")
         started("updated", 1)
