@@ -676,6 +676,7 @@ impl Config {
     pub const TRUSTED_PROXIES: &'static str = "JUNTO_TRUSTED_PROXIES";
     pub const LOG_FORMAT: &'static str = "JUNTO_LOG_FORMAT";
     pub const LOG_LEVEL: &'static str = "JUNTO_LOG_LEVEL";
+    pub const OTEL_CA_FILE: &'static str = "JUNTO_OTEL_CA_FILE";
     pub const OTEL_ENDPOINT: &'static str = "JUNTO_OTEL_ENDPOINT";
     pub const LIVEKIT_API_URL: &'static str = "JUNTO_LIVEKIT_API_URL";
     pub const LIVEKIT_URL: &'static str = "JUNTO_LIVEKIT_URL";
@@ -791,6 +792,14 @@ impl Config {
                     .map_err(|reason| invalid(Self::OTEL_ENDPOINT, reason.to_owned()))
             })
             .transpose()?;
+
+        let otel_endpoint = otel_endpoint.map(|endpoint| {
+            if let Some(path) = value(Self::OTEL_CA_FILE) {
+                endpoint.with_ca_file(path.into())
+            } else {
+                endpoint
+            }
+        });
 
         let limits = Limits::default();
         let media_names = [
@@ -1127,6 +1136,40 @@ mod tests {
         .unwrap();
         assert!(config.otel_endpoint.is_some());
         assert!(!format!("{config:?}").contains("collector.example.test"));
+    }
+
+    #[tokio::test]
+    async fn telemetry_ca_errors_name_only_the_setting() {
+        let config = Config::from_lookup(lookup(&[
+            ("JUNTO_DATABASE_URL", "postgres://db.example.test/junto"),
+            ("JUNTO_OTEL_ENDPOINT", "http://collector.example.test"),
+            ("JUNTO_OTEL_CA_FILE", "missing-secret-ca-bundle.pem"),
+        ]))
+        .unwrap();
+        assert!(!format!("{config:?}").contains("missing-secret"));
+        match crate::telemetry::Telemetry::start(config.otel_endpoint).await {
+            Err(error) => {
+                assert!(error.to_string().contains("JUNTO_OTEL_CA_FILE"));
+                assert!(!error.to_string().contains("missing-secret"));
+            }
+            Ok(telemetry) => {
+                if let Some(telemetry) = telemetry {
+                    telemetry.shutdown().await;
+                }
+                panic!("an enabled exporter must reject an unreadable CA file");
+            }
+        }
+        let config = Config::from_lookup(lookup(&[
+            ("JUNTO_DATABASE_URL", "postgres://db.example.test/junto"),
+            ("JUNTO_OTEL_CA_FILE", "missing-secret-ca-bundle.pem"),
+        ]))
+        .unwrap();
+        assert!(
+            crate::telemetry::Telemetry::start(config.otel_endpoint)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

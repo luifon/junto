@@ -26,7 +26,8 @@ Configuration:
 - An invalid value stops the start with a message that names the variable.
 - `JUNTO_OTEL_ENDPOINT` optionally enables request traces and metrics to an
   administrator-operated collector; its transport, bounds and privacy rules are
-  in ADR 0007. An unset or empty value disables export.
+  in ADR 0007. An unset or empty value disables export. `JUNTO_OTEL_CA_FILE`
+  optionally adds a PEM CA bundle for an HTTPS collector with an internal authority.
 
 Process:
 

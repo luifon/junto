@@ -22,26 +22,35 @@ Server export:
   no exporter, background export thread or monitoring connection. A URL with
   credentials, a query or a fragment is refused without printing its value.
 - Traces and metrics use OTLP/HTTP JSON at `<base>/v1/traces` and
-  `<base>/v1/metrics`. HTTP reuses the application's transport dependencies, and
-  JSON permits inspection of the exported data without a protocol decoder.
-  HTTPS checks the system trust store. The exporter follows no redirects and uses
+  `<base>/v1/metrics`. JSON permits inspection of the exported data without a protocol decoder.
+  HTTPS checks the system trust store. `JUNTO_OTEL_CA_FILE` optionally adds a PEM
+  CA bundle, read only when export is enabled; its path and contents are never logged. The exporter follows no redirects and uses
   no proxy, so data goes only to the configured destination.
 - The server image carries the CA bundle and its copyright notice from its
   existing Debian build stage, pinned by the Debian snapshot, for HTTPS collectors.
-- OpenTelemetry API and SDK 0.31.0, OTLP 0.31.1 and its HTTP client reqwest 0.12.28
-  are pinned. This set shares the TLS dependencies of the client and needs no
-  additional system TLS library in the server image.
-- The lock uses rustls-webpki 0.103.16 to reject distrusted intermediate public
-  keys (RUSTSEC-2026-0382).
-- Every completed HTTP response produces one server span named `HTTP request`,
+- OpenTelemetry API, SDK and protocol encoder 0.31.0 and HTTP client reqwest 0.12.28
+  are pinned. The exporter adds reqwest 0.12 alongside the server's reqwest 0.13,
+  and adds rustls and ring, already used by the desktop client, to the server.
+  The reqwest 0.13 rustls transport introduces a platform verifier with a
+  CDLA-Permissive-2.0 CA-bundle dependency outside the licence allowlist. Retaining
+  0.12 avoids a new licence exception and needs no system TLS library.
+  The SDK's protocol encoder supplies OTLP JSON types through its generated
+  protobuf model (prost and tonic message support), without a gRPC transport.
+  A fixed HTTP transport
+  avoids the OTLP builder's implicit environment settings. Standard `OTEL_*`
+  exporter settings do not add headers, compression, destinations or retries.
+- Every HTTP request that enters the middleware produces one server span named `HTTP request`,
   an increment of the cumulative counter `http.server.request.count` (unit
   `{request}`), and an observation of `http.server.request.duration` (unit `s`).
   Duration ends at response headers, before a streamed body or an upgraded
-  connection ends. Status codes 500 to 599 mark the span as an error.
+  connection ends. Status codes 500 to 599 mark the span as an error. If its
+  future is cancelled before response headers, dropping the request records both
+  metrics and ends the span with error status and `error.type=cancelled` instead
+  of a response status code.
 - The duration histogram has boundaries at 0.005, 0.01, 0.025, 0.05, 0.075, 0.1,
   0.25, 0.5, 0.75, 1, 2.5, 5 and 10 seconds.
 - Span and metric attributes are limited to `http.request.method`,
-  `http.route` and `http.response.status_code`. The method is a standard HTTP
+  `http.route` and `http.response.status_code` (or the fixed cancellation attribute). The method is a standard HTTP
   method or `_OTHER`; the route is the router's template or `unmatched`. The only
   resource attribute is the constant `service.name=junto-server`. No environment
   resource detector runs.
@@ -50,20 +59,29 @@ Server export:
   Request spans are created directly, independently of the logging subscriber,
   so other libraries and application log fields cannot add data to them.
   Logs continue to use standard error and owner codes use standard output
-  (ADR 0008); forwarding logs is outside this exporter.
-- Export runs on SDK background threads every five seconds, or when a span batch
+  (ADR 0008); forwarding logs is outside this exporter because request logs
+  contain raw paths that can identify accounts, messages or recordings.
+- Export uses three background threads: the SDK span processor, the metric reader,
+  and the blocking HTTP client's separate asynchronous runtime. It runs every five seconds, or when a span batch
   reaches 256. The queue holds at most 1024 finished spans and drops further spans
-  without waiting. Each metric has a cardinality limit of 4096, with an overflow
+  without waiting. An atomic admission count bounds queued spans and counts
+  drops without logging on the request thread. Each metric has a cardinality limit of 4096, with an overflow
   series for additional combinations; that series has only the fixed attribute
   `otel.metric.overflow=true`. Requests update aggregates without waiting for
   the network.
-- Each export attempt has a two-second timeout and no retry. Failed span batches
+- Each export attempt has a two-second timeout and no retry. Response bodies are
+  capped at 64 KiB; partial rejections are reported as export failures. Failed span batches
   are lost; metrics are cumulative and are collected again at the next interval.
+  Failed exports and full span queues produce fixed local warnings, at most once
+  per minute per signal and warning kind. Drop warnings include only a count.
+  These warnings contain no endpoint, certificate path, transport error or
+  collector response.
   Graceful shutdown attempts to flush both providers off the asynchronous runtime
   threads. An unavailable collector does not prevent serving requests.
-- Compose passes the optional endpoint to the server. It installs no collector:
+- Compose passes the optional endpoint and CA-file path to the server. An
+  administrator supplying an internal CA mounts its PEM file read-only. It installs no collector:
   the administrator runs one separately and makes it reachable from the server.
-- Unit tests use an in-process HTTP collector to inspect both signals, aggregation,
+- Unit tests use in-process HTTP and HTTPS collectors to inspect both signals, aggregation,
   privacy and behavior with a blocked collector and full queue. An API test checks
   the running server and its final export on shutdown.
 

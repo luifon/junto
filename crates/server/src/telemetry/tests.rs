@@ -35,6 +35,7 @@ fn telemetry_endpoint_has_no_credentials_query_or_fragment() {
 struct Collector {
     endpoint: String,
     requests: Arc<Mutex<Vec<(String, Value)>>>,
+    headers: Arc<Mutex<Vec<axum::http::HeaderMap>>>,
     entered: Arc<Notify>,
     release: Arc<Semaphore>,
     task: tokio::task::JoinHandle<()>,
@@ -42,7 +43,16 @@ struct Collector {
 
 impl Collector {
     async fn start(blocked: bool) -> Self {
+        Self::with_status(blocked, StatusCode::OK).await
+    }
+
+    async fn with_status(blocked: bool, status: StatusCode) -> Self {
+        Self::with_response(blocked, status, json!({"error": "secret-response-body"})).await
+    }
+
+    async fn with_response(blocked: bool, status: StatusCode, reply: Value) -> Self {
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let headers = Arc::new(Mutex::new(Vec::new()));
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Semaphore::new(0));
         let app = Router::new()
@@ -50,13 +60,19 @@ impl Collector {
                 "/v1/{signal}",
                 post({
                     let requests = requests.clone();
+                    let headers = headers.clone();
                     let entered = entered.clone();
                     let release = release.clone();
-                    move |axum::extract::Path(signal): axum::extract::Path<String>, body: Bytes| {
+                    move |axum::extract::Path(signal): axum::extract::Path<String>,
+                          incoming: axum::http::HeaderMap,
+                          body: Bytes| {
+                        let reply = reply.clone();
+                        let headers = headers.clone();
                         let requests = requests.clone();
                         let entered = entered.clone();
                         let release = release.clone();
                         async move {
+                            headers.lock().await.push(incoming);
                             requests
                                 .lock()
                                 .await
@@ -65,7 +81,7 @@ impl Collector {
                             if blocked {
                                 let _ = release.acquire().await;
                             }
-                            axum::Json(json!({}))
+                            (status, axum::Json(reply))
                         }
                     }
                 }),
@@ -77,6 +93,7 @@ impl Collector {
         Self {
             endpoint,
             requests,
+            headers,
             entered,
             release,
             task,
@@ -304,7 +321,7 @@ async fn telemetry_bounds_the_number_of_metric_attribute_combinations() {
         .filter(|metric| metric["name"] == "http.server.request.count")
         .flat_map(|metric| metric["sum"]["dataPoints"].as_array().unwrap())
         .collect();
-    assert!(points.len() <= CARDINALITY + 1);
+    assert_eq!(points.len(), CARDINALITY + 1);
     assert!(points.iter().any(|point| {
         attributes(&point["attributes"]).get("otel.metric.overflow")
             == Some(&json!({"boolValue": true}))
@@ -315,8 +332,11 @@ async fn telemetry_bounds_the_number_of_metric_attribute_combinations() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn telemetry_requests_continue_while_a_metric_export_is_blocked() {
+    if bounded_child("telemetry_requests_continue_while_a_metric_export_is_blocked").await {
+        return;
+    }
     let collector = Collector::start(true).await;
     let telemetry = runtime(&collector).await;
     telemetry.instruments.requests.add(1, &[]);
@@ -336,14 +356,19 @@ async fn telemetry_requests_continue_while_a_metric_export_is_blocked() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     task.abort();
     collector.release.close();
-    flushing.await.unwrap().unwrap();
+    let _ = flushing.await.unwrap();
     telemetry.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn telemetry_drops_spans_when_a_collector_stops_reading() {
+    if bounded_child("telemetry_drops_spans_when_a_collector_stops_reading").await {
+        return;
+    }
+    use tracing::instrument::WithSubscriber;
+    let logs = LogCapture::default();
     let collector = Collector::start(true).await;
-    let telemetry = runtime(&collector).await;
+    let telemetry = runtime(&collector).with_subscriber(logs.subscriber()).await;
     let instruments = telemetry.instruments.clone();
     for _ in 0..BATCH_SIZE {
         instruments.tracer.start("request").end();
@@ -372,6 +397,7 @@ async fn telemetry_drops_spans_when_a_collector_stops_reading() {
     task.abort();
     collector.release.close();
     telemetry.shutdown().await;
+    assert_eq!(logs.text().matches("monitoring span queue full").count(), 1);
     let exports = collector.requests.lock().await;
     let count: usize = exports
         .iter()
@@ -385,3 +411,252 @@ async fn telemetry_drops_spans_when_a_collector_stops_reading() {
         "a full queue must drop spans"
     );
 }
+
+#[tokio::test]
+async fn telemetry_ignores_standard_exporter_environment() {
+    const CHILD: &str = "JUNTO_TEST_OTEL_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for compression in [None, Some("gzip"), Some("zstd")] {
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "telemetry::tests::telemetry_ignores_standard_exporter_environment",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env(
+                    "OTEL_EXPORTER_OTLP_HEADERS",
+                    "authorization=secret-general-header",
+                )
+                .env(
+                    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                    "x-secret=secret-trace-header",
+                )
+                .env(
+                    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                    "x-secret=secret-metric-header",
+                )
+                .env(
+                    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                    "http://invalid.invalid",
+                )
+                .env(
+                    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                    "http://invalid.invalid",
+                )
+                .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+                .env("OTEL_EXPORTER_OTLP_TIMEOUT", "0")
+                .env(
+                    "OTEL_EXPORTER_OTLP_CERTIFICATE",
+                    "missing-secret-certificate.pem",
+                )
+                .env("OTEL_RESOURCE_ATTRIBUTES", "secret=secret-resource")
+                .env("OTEL_SERVICE_NAME", "secret-service")
+                .env("OTEL_TRACES_SAMPLER", "always_off")
+                .kill_on_drop(true);
+            for key in [
+                "OTEL_EXPORTER_OTLP_COMPRESSION",
+                "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
+                "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
+            ] {
+                if let Some(value) = compression {
+                    command.env(key, value);
+                } else {
+                    command.env_remove(key);
+                }
+            }
+            run_child(command).await;
+        }
+        return;
+    }
+    let collector = Collector::start(false).await;
+    let telemetry = runtime(&collector).await;
+    telemetry.instruments.tracer.start("request").end();
+    telemetry.instruments.requests.add(1, &[]);
+    telemetry.shutdown().await;
+    assert_eq!(collector.requests.lock().await.len(), 2);
+    assert!(
+        !serde_json::to_string(&*collector.requests.lock().await)
+            .unwrap()
+            .contains("secret")
+    );
+    for headers in collector.headers.lock().await.iter() {
+        assert!(!headers.contains_key("authorization"));
+        assert!(!headers.contains_key("x-secret"));
+        assert!(!headers.contains_key("content-encoding"));
+    }
+}
+
+#[tokio::test]
+async fn telemetry_counts_cancelled_requests() {
+    use tower::ServiceExt;
+    let collector = Collector::start(false).await;
+    let telemetry = runtime(&collector).await;
+    let entered = Arc::new(Notify::new());
+    let router = telemetry.instrument(Router::new().route(
+        "/cancel",
+        get({
+            let entered = entered.clone();
+            move || {
+                let entered = entered.clone();
+                async move {
+                    entered.notify_one();
+                    std::future::pending::<StatusCode>().await
+                }
+            }
+        }),
+    ));
+    let request = tokio::spawn(
+        router.oneshot(
+            Request::builder()
+                .uri("/cancel")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        ),
+    );
+    entered.notified().await;
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    telemetry.shutdown().await;
+    let exports = collector.requests.lock().await;
+    let span = &exports
+        .iter()
+        .find(|(signal, _)| signal == "traces")
+        .unwrap()
+        .1["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert_eq!(span["status"]["code"], 2);
+    let attrs = attributes(&span["attributes"]);
+    assert_eq!(attrs["error.type"]["stringValue"], "cancelled");
+    assert!(!attrs.contains_key("http.response.status_code"));
+    let metrics = &exports
+        .iter()
+        .find(|(signal, _)| signal == "metrics")
+        .unwrap()
+        .1["resourceMetrics"][0]["scopeMetrics"][0]["metrics"];
+    for metric in metrics.as_array().unwrap() {
+        let point = if metric["name"] == "http.server.request.count" {
+            let point = &metric["sum"]["dataPoints"][0];
+            assert_eq!(integer(&point["asInt"]), 1);
+            point
+        } else {
+            let point = &metric["histogram"]["dataPoints"][0];
+            assert_eq!(integer(&point["count"]), 1);
+            point
+        };
+        assert_eq!(
+            attributes(&point["attributes"])["error.type"]["stringValue"],
+            "cancelled"
+        );
+    }
+}
+
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for LogCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl LogCapture {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+    fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + 'static {
+        let capture = self.clone();
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || capture.clone())
+            .finish()
+    }
+}
+
+#[tokio::test]
+async fn telemetry_reports_export_failures_without_collector_data() {
+    use tracing::instrument::WithSubscriber;
+    let logs = LogCapture::default();
+    async {
+        let collector = Collector::with_status(false, StatusCode::BAD_REQUEST).await;
+        let telemetry = runtime(&collector).await;
+        for _ in 0..3 {
+            telemetry.instruments.tracer.start("request").end();
+            telemetry.instruments.requests.add(1, &[]);
+            let traces = telemetry.traces.clone();
+            let metrics = telemetry.metrics.clone();
+            tokio::task::spawn_blocking(move || {
+                assert!(traces.force_flush().is_err());
+                assert!(metrics.force_flush().is_err());
+            })
+            .await
+            .unwrap();
+        }
+        let text = logs.text();
+        assert_eq!(
+            text.matches("monitoring export failed").count(),
+            2,
+            "{text}"
+        );
+        assert!(text.contains("traces"));
+        assert!(text.contains("metrics"));
+        assert!(!text.contains(&collector.endpoint));
+        assert!(!text.contains("secret-response-body"));
+        telemetry.shutdown().await;
+    }
+    .with_subscriber(logs.subscriber())
+    .await;
+}
+
+async fn bounded_child(name: &str) -> bool {
+    const CHILD: &str = "JUNTO_TEST_OTEL_BLOCK_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        return false;
+    }
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            &format!("telemetry::tests::{name}"),
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .kill_on_drop(true);
+    run_child(command).await;
+    true
+}
+
+async fn run_child(mut command: tokio::process::Command) {
+    let mut child = command.spawn().unwrap();
+    match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
+        Ok(status) => assert!(status.unwrap().success(), "exporter subprocess failed"),
+        Err(_) => {
+            child.kill().await.unwrap();
+            child.wait().await.unwrap();
+            panic!("exporter subprocess exceeded its execution bound");
+        }
+    }
+}
+
+#[tokio::test]
+async fn telemetry_reports_collector_partial_rejections() {
+    use tracing::instrument::WithSubscriber;
+    let logs = LogCapture::default();
+    let collector = Collector::with_response(false, StatusCode::OK, json!({
+        "partialSuccess": {"rejectedSpans": "1", "rejectedDataPoints": "1", "errorMessage": "secret-rejection"}
+    })).await;
+    let telemetry = runtime(&collector).with_subscriber(logs.subscriber()).await;
+    telemetry.instruments.tracer.start("request").end();
+    telemetry.instruments.requests.add(1, &[]);
+    telemetry.shutdown().await;
+    let text = logs.text();
+    assert_eq!(text.matches("monitoring export failed").count(), 2);
+    assert!(!text.contains("secret-rejection"));
+    assert!(!text.contains(&collector.endpoint));
+}
+
+#[path = "transport_tests.rs"]
+mod transport;

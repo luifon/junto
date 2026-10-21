@@ -38,15 +38,34 @@ export; the server opens no monitoring connection. The URL accepts HTTP or HTTPS
 an optional path prefix, but no credentials, query or fragment. Use HTTP only on a
 private network; HTTPS verifies the collector against the system trust store. The
 exporter uses the configured destination directly, without proxies or redirects.
-Compose passes the variable to the server; it does not install a collector.
+Standard `OTEL_*` exporter settings are ignored, including headers and compression.
+Compose passes the endpoint to the server; it does not install a collector.
+
+For an internal CA, set `JUNTO_OTEL_CA_FILE` to a readable PEM CA bundle. These
+certificates supplement the system trust store. Compose passes this path; mount the
+file read-only in an override file, for example:
+
+```yaml
+services:
+  server:
+    volumes:
+      - ./collector-ca.pem:/run/collector-ca.pem:ro
+```
+
+Set `JUNTO_OTEL_CA_FILE=/run/collector-ca.pem` in the deployment environment. An
+unreadable or invalid bundle prevents startup when export is enabled, with a message
+that names the setting without its value. Export disabled means the file is not read.
 
 The server sends OTLP/HTTP JSON to `<base>/v1/traces` and `<base>/v1/metrics` every
-five seconds. Each completed HTTP response produces one server span, one increment of
+five seconds. Each HTTP request that enters the middleware produces one server span, one increment of
 `http.server.request.count`, and one observation of `http.server.request.duration`
 in seconds. Duration ends when the response headers are ready; it excludes streaming
 the body and the lifetime of an upgraded WebSocket. Server errors mark the span as an
 error. Attributes contain only the standard HTTP method (other methods are `_OTHER`),
 the route template (`unmatched` for an unknown route), and the response status.
+If the request future is cancelled before response headers, both metrics are still
+recorded and the span has error status. The fixed `error.type=cancelled` replaces the
+response-status attribute.
 The only resource attribute is the fixed `service.name=junto-server`.
 
 No request or response content, identifiers, names, raw paths, queries, headers,
@@ -60,6 +79,9 @@ That series carries only `otel.metric.overflow=true`.
 An export attempt has a two-second timeout and is not retried. A failed export loses
 its spans; cumulative metrics remain available at the next collection. Graceful
 shutdown attempts a final export. A collector outage does not delay HTTP requests.
+Export failures and queue drops produce warnings on standard error, limited to one
+per minute per signal and warning kind. Warnings contain no destination or collector
+response; queue warnings give the number of dropped spans since the previous warning.
 
 ## Event stream
 
