@@ -15,59 +15,126 @@
 
 #include "livekit/exception.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
-#if !defined(_MSC_VER)
+#if defined(_MSC_VER)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <cxxabi.h>
+#include <unistd.h>
+
+#include <cerrno>
 #endif
 
 namespace livekit_ffi {
 namespace {
 
-const char* current_type(const char* windows_type) noexcept {
+// One line of standard error in memory of the stack; text that does not fit is cut. It is
+// written to the handle of standard error, not through the stream stderr of the C library, whose
+// lock another thread can hold for ever, and it is formatted without an allocation.
+class Line {
+ public:
+  void add(const char* text) noexcept {
+    for (; text != nullptr && *text != '\0' && length_ < sizeof(text_) - 1; ++text) {
+      text_[length_++] = *text;
+    }
+  }
+
+  void write() noexcept {
+    text_[length_++] = '\n';
+    std::size_t sent = 0;
+#if defined(_MSC_VER)
+    HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD written = 0;
+    while (output != nullptr && output != INVALID_HANDLE_VALUE && sent < length_ &&
+           WriteFile(output, text_ + sent, static_cast<DWORD>(length_ - sent), &written,
+                     nullptr) &&
+           written > 0) {
+      sent += written;
+    }
+#else
+    while (sent < length_) {
+      ssize_t written = ::write(STDERR_FILENO, text_ + sent, length_ - sent);
+      if (written > 0) {
+        sent += static_cast<std::size_t>(written);
+      } else if (written < 0 && errno == EINTR) {
+        continue;
+      } else {
+        break;
+      }
+    }
+#endif
+    length_ = 0;
+  }
+
+ private:
+  char text_[2048];
+  std::size_t length_ = 0;
+};
+
+// The names as the compiler wrote them, which need no allocation: on Windows the decorated
+// name, because name() of MSVC allocates the undecorated one.
+const char* written_name(const std::type_info& type) noexcept {
+#if defined(_MSC_VER)
+  return type.raw_name();
+#else
+  return type.name();
+#endif
+}
+
+const std::type_info* current_type(const std::type_info* windows_type) noexcept {
 #if defined(_MSC_VER)
   return windows_type;
 #else
   static_cast<void>(windows_type);
-  const std::type_info* type = abi::__cxa_current_exception_type();
-  return type != nullptr ? type->name() : nullptr;
+  return abi::__cxa_current_exception_type();
+#endif
+}
+
+// The readable name of a type. It can allocate, and the demangler of libc++abi ends the process
+// when an allocation fails, so it is read only after the first line.
+const char* readable_name(const std::type_info& type) noexcept {
+#if defined(_MSC_VER)
+  return type.name();
+#else
+  int status = 0;
+  const char* name = abi::__cxa_demangle(type.name(), nullptr, nullptr, &status);
+  return name != nullptr ? name : type.name();
 #endif
 }
 
 }  // namespace
 
-// The first line is written without an allocation, so that it is written also when the memory
-// of the process is exhausted: an exception of an allocation inside this noexcept function
-// would end the process through std::terminate before the line. It has the names as the
-// compiler wrote them. The readable names of the second line need memory: abi::__cxa_demangle
-// ends the process when an allocation fails, so that line comes after the first one.
-void end_at_foreign_exception(const char* bridge_function,
-                              const char* windows_type,
+void end_at_foreign_exception(const std::type_info& bridge_function,
+                              const std::type_info* windows_type,
                               const char* message) noexcept {
 #if defined(_MSC_VER)
   // abort() of the C++ runtime would also show a message box and report the fault to Windows.
   // This comes first, so that a fault in the steps below does not show it either.
   _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
-  const char* type = current_type(windows_type);
-  std::fprintf(stderr,
-               "livekit_ffi: the bridge function %s ended with a C++ exception that is not "
-               "livekit_ffi::Exception, of type %s%s%s; the process ends\n",
-               bridge_function, type != nullptr ? type : "not known",
-               message != nullptr ? ": " : "", message != nullptr ? message : "");
-  std::fflush(stderr);
-#if !defined(_MSC_VER)
-  int status = 0;
-  const char* readable_function = abi::__cxa_demangle(bridge_function, nullptr, nullptr, &status);
-  const char* readable_type =
-      type != nullptr ? abi::__cxa_demangle(type, nullptr, nullptr, &status) : nullptr;
-  std::fprintf(stderr, "livekit_ffi: readable names: the bridge function %s, the type %s\n",
-               readable_function != nullptr ? readable_function : bridge_function,
-               readable_type != nullptr ? readable_type : (type != nullptr ? type : "not known"));
-  std::fflush(stderr);
-#endif
+  const std::type_info* type = current_type(windows_type);
+  Line line;
+  line.add("livekit_ffi: the bridge function ");
+  line.add(written_name(bridge_function));
+  line.add(" ended with a C++ exception that is not livekit_ffi::Exception, of type ");
+  line.add(type != nullptr ? written_name(*type) : "not known");
+  if (message != nullptr) {
+    line.add(": ");
+    line.add(message);
+  }
+  line.add("; the process ends");
+  line.write();
+  line.add("livekit_ffi: readable names: the bridge function ");
+  line.add(readable_name(bridge_function));
+  line.add(", the type ");
+  line.add(type != nullptr ? readable_name(*type) : "not known");
+  line.write();
   std::abort();
 }
 
@@ -81,6 +148,14 @@ void throw_runtime_exception(std::size_t index) {
 
 void throw_value() {
   throw 1;
+}
+
+void hold_standard_error() {
+#if defined(_MSC_VER)
+  _lock_file(stderr);
+#else
+  flockfile(stderr);
+#endif
 }
 
 }  // namespace livekit_ffi

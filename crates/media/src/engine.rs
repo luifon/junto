@@ -1899,6 +1899,19 @@ mod tests {
         if let Ok(call) = std::env::var(NATIVE_THROW) {
             let returned = match call.as_str() {
                 "runtime" => ffi::throw_runtime_exception(0).is_err(),
+                "locked" => {
+                    // Another thread holds the stream stderr of the C library for ever.
+                    let (held, holding) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        ffi::hold_standard_error();
+                        let _ = held.send(());
+                        loop {
+                            std::thread::park();
+                        }
+                    });
+                    let _ = holding.recv();
+                    ffi::throw_value().is_err()
+                }
                 #[cfg(target_os = "linux")]
                 "exhausted" => {
                     exhaust_memory();
@@ -1911,7 +1924,8 @@ mod tests {
         // On Linux the C++ library is the one inside the WebRTC library, built without
         // exceptions: it ends the process where another C++ library throws. "exhausted" throws
         // when no allocation succeeds any longer: the first line must not need one, and the
-        // line of the readable names, which needs memory, may be missing. Each case: the call,
+        // line of the readable names, which needs memory, may be missing. "locked" throws while
+        // another thread holds the stream stderr of the C library: the lines must not use it. Each case: the call,
         // the bridge function, a text of the type in the first line, and the readable type of the second
         // line when there is one.
         let cases: &[(&str, &str, &str, Option<&str>)] = &[
@@ -1927,14 +1941,28 @@ mod tests {
                 "runtime",
                 "throw_runtime_exception",
                 "of type not known;",
-                None,
+                Some("not known"),
             ),
             #[cfg(unix)]
             ("value", "throw_value", "of type i;", Some("int")),
+            #[cfg(unix)]
+            ("locked", "throw_value", "of type i;", Some("int")),
             #[cfg(target_os = "linux")]
             ("exhausted", "throw_value", "of type i;", None),
             #[cfg(windows)]
-            ("value", "throw_value", "of type not known;", None),
+            (
+                "value",
+                "throw_value",
+                "of type not known;",
+                Some("not known"),
+            ),
+            #[cfg(windows)]
+            (
+                "locked",
+                "throw_value",
+                "of type not known;",
+                Some("not known"),
+            ),
         ];
         for (call, function, type_text, readable_type) in cases {
             let program = std::env::current_exe().unwrap_or_else(|error| panic!("{error}"));
@@ -1967,6 +1995,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{call}: no line of the wrapper\n{stderr}"));
             assert!(line.contains(function), "{call}: {line}");
             assert!(line.contains(type_text), "{call}: {line}");
+            // On Windows the first line has the decorated name of raw_name(), which needs no
+            // allocation; name() undecorates the name into memory that it allocates.
+            #[cfg(windows)]
+            assert!(line.contains(" .?A"), "{call}: {line}");
             if let Some(readable_type) = readable_type {
                 let names = stderr
                     .lines()

@@ -38,17 +38,19 @@ class Exception final : public std::exception {
 };
 
 // Writes one line that names the bridge function, the type of the current exception and its
-// message to standard error, on macOS and Linux a second line with the readable names, and ends
-// the process with std::abort(). Called only inside a catch clause. `windows_type` and `message` are null when they are not known: on macOS and Linux the
-// C++ ABI gives the type of the current exception, on Windows only the type of a std::exception
-// is known.
-[[noreturn]] void end_at_foreign_exception(const char* bridge_function,
-                                           const char* windows_type,
+// message to standard error, then a line with the readable names, and ends the process with
+// std::abort(). Called only inside a catch clause. Its arguments need no allocation, so that the
+// catch can call it when the memory of the process is exhausted: `bridge_function` and
+// `windows_type` are type_info objects, whose names it reads itself. `windows_type` and
+// `message` are null when they are not known: on macOS and Linux the C++ ABI gives the type of
+// the current exception, on Windows only the type of a std::exception is known.
+[[noreturn]] void end_at_foreign_exception(const std::type_info& bridge_function,
+                                           const std::type_info* windows_type,
                                            const char* message) noexcept;
 
-inline const char* windows_type(const std::exception& e) {
+inline const std::type_info* windows_type(const std::exception& e) {
 #if defined(_MSC_VER)
-  return typeid(e).name();
+  return &typeid(e);
 #else
   static_cast<void>(e);
   return nullptr;
@@ -58,6 +60,9 @@ inline const char* windows_type(const std::exception& e) {
 // Test functions of the bridge.
 void throw_runtime_exception(std::size_t index);
 void throw_value();
+// Takes the lock of the stream stderr of the C library and keeps it: another thread that writes
+// to that stream waits for ever.
+void hold_standard_error();
 
 }  // namespace livekit_ffi
 
@@ -77,10 +82,9 @@ static void trycatch(Try&& func, Fail&& fail) noexcept try {
 } catch (const ::livekit_ffi::Exception& e) {
   fail(e.what());
 } catch (const ::std::exception& e) {
-  ::livekit_ffi::end_at_foreign_exception(typeid(Try).name(),
-                                          ::livekit_ffi::windows_type(e), e.what());
+  ::livekit_ffi::end_at_foreign_exception(typeid(Try), ::livekit_ffi::windows_type(e), e.what());
 } catch (...) {
-  ::livekit_ffi::end_at_foreign_exception(typeid(Try).name(), nullptr, nullptr);
+  ::livekit_ffi::end_at_foreign_exception(typeid(Try), nullptr, nullptr);
 }
 
 }  // namespace behavior
