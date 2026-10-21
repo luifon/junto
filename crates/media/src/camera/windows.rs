@@ -400,15 +400,12 @@ fn capture(
         }
         if let Some(sample) = event.sample {
             last_picture = Instant::now();
-            if last_delivery
-                .is_none_or(|last: Instant| last.elapsed() >= Duration::from_secs_f64(1.0 / 30.0))
-            {
+            if worker::frame_due(&mut last_delivery, last_picture) {
                 let picture = frame(&sample, layout)?;
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Ok((layout.width, layout.height)));
                 }
                 delivery.picture(Arc::new(picture));
-                last_delivery = Some(Instant::now());
             }
         }
         read()?;

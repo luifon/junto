@@ -171,9 +171,7 @@ fn capture(
             continue;
         }
         last_picture = Instant::now();
-        if last_delivery
-            .is_some_and(|last: Instant| last.elapsed() < Duration::from_secs_f64(1.0 / 30.0))
-        {
+        if !worker::frame_due(&mut last_delivery, last_picture) {
             continue;
         }
         let frame = layout.convert(&bytes)?;
@@ -181,7 +179,6 @@ fn capture(
             let _ = ready.send(Ok((layout.width, layout.height)));
         }
         delivery.picture(Arc::new(frame));
-        last_delivery = Some(Instant::now());
     }
     Ok(())
 }

@@ -86,7 +86,7 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGWindow", "CGColorSpace", "CGDisplayStream"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# The capture of a screen, a window and the sound of applications, and the start of the
+# Camera capture, the capture of a screen, a window and the sound of applications, and the start of the
 # applications that the client opens by the shell (ADR 0706), with the version of the
 # bindings that gpui and cpal link.
 windows = { version = "0.62.2", features = ["Devices_Enumeration", "Foundation", "Graphics", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_MediaFoundation", "Win32_Media_Multimedia", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_Variant", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
@@ -125,7 +125,7 @@ webrtc-sys = "=0.3.48"
 
 # The workspace forbids unsafe code. This crate denies it and allows it only in modules
 # that call the platform APIs: macOS permissions and capture, the Windows capture, and
-# Linux audio initialisation.
+# Linux audio initialisation and camera capture.
 [lints.rust]
 unsafe_code = "deny"
 

@@ -85,7 +85,7 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
 
 ## Continuous integration: `tools/ci/` (ADR 0905)
 
-- Each job is one script: `rust-linux.sh`, `rust-other-systems.sh` (macOS and Windows), `licences.sh`, `layout-page.sh`, `transcription-worker.sh`, `deployment.sh`. The images and tool versions of the jobs are in `tools/ci/pins.sh`.
+- Each job is one script: `rust-linux.sh`, the optional `rust-linux-devices.sh`, `rust-other-systems.sh` (macOS and Windows), `licences.sh`, `layout-page.sh`, `transcription-worker.sh`, `deployment.sh`. The images and tool versions of the jobs are in `tools/ci/pins.sh`.
 - `.github/workflows/ci.yml` calls the same scripts. Each action is named by its commit hash.
 - CI runs on three machines of the project and is started with `tools/ci/ci.sh`:
   - `ci.sh run <commit>` sends the commit to the Linux host and to the Windows machine over SSH and starts their jobs: on Linux `rust-linux`, `licences`, `transcription-worker`, `layout-page`; on Windows `rust-windows`.

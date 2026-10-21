@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use super::{CameraError, CameraSink};
@@ -52,6 +52,15 @@ impl Drop for Running {
 
 pub(super) type Ready = oneshot::Sender<Result<(u32, u32), CameraError>>;
 
+pub(super) fn frame_due(last: &mut Option<Instant>, arrived: Instant) -> bool {
+    let interval = Duration::from_nanos(1_000_000_000 / 30);
+    if last.is_some_and(|last| arrived.saturating_duration_since(last) < interval) {
+        return false;
+    }
+    *last = Some(arrived);
+    true
+}
+
 pub(super) async fn start(
     sink: Arc<dyn CameraSink>,
     capture: impl FnOnce(Arc<Delivery>, Ready) + Send + 'static,
@@ -79,6 +88,19 @@ pub(super) async fn start(
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn thirty_fps_is_measured_from_arrival_and_faster_frames_are_discarded() {
+        let start = Instant::now();
+        let interval = Duration::from_nanos(1_000_000_000 / 30);
+        let mut last = None;
+        for index in 0..30 {
+            let arrived = start + interval * index;
+            assert!(frame_due(&mut last, arrived));
+            assert!(!frame_due(&mut last, arrived + Duration::from_millis(10)));
+        }
+        assert!(frame_due(&mut last, start + Duration::from_secs(5)));
+    }
 
     #[derive(Default)]
     struct Sink {

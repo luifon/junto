@@ -69,7 +69,8 @@ tests need permissions and must never select a physical sound output by fallback
 
 ## Consequences
 
-Native stages require an operator, installed virtual audio and a visible desktop.
+The macOS native stages require an operator, installed virtual audio and a visible desktop.
+The Windows and Linux camera check requires an explicitly authorized, accessible camera.
 They are separate from default CI and from generated-media regression tests. Native results
 do not establish packaged-app permission identity, acoustic quality, physical
 device reconnection or behavior on other operating systems.
