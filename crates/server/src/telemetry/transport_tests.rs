@@ -115,20 +115,8 @@ async fn telemetry_https_requires_trusted_ca() {
                     let received = received.clone();
                     connections.spawn(async move {
                         let Ok(mut stream) = acceptor.accept(socket).await else { return };
-                        let mut header = Vec::new();
-                        while !header.ends_with(b"\r\n\r\n") {
-                            header.push(stream.read_u8().await.unwrap());
-                            assert!(header.len() < 8192);
-                        }
-                        let header = String::from_utf8(header).unwrap();
-                        let length: usize = header.lines().find_map(|line| {
-                            let (key, value) = line.split_once(':')?;
-                            key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
-                        }).unwrap();
-                        assert!(length < 1024 * 1024);
-                        let mut body = vec![0; length];
-                        stream.read_exact(&mut body).await.unwrap();
-                        received.lock().await.push((header.lines().next().unwrap().to_owned(), serde_json::from_slice::<Value>(&body).unwrap()));
+                        let (line, body) = read_request(&mut stream).await.unwrap();
+                        received.lock().await.push((line, serde_json::from_slice::<Value>(&body).unwrap()));
                         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
                         stream.shutdown().await.unwrap();
                     });
@@ -253,4 +241,90 @@ async fn telemetry_bounds_a_trickling_response() {
         result.is_err(),
         "a response that trickles past the export deadline must fail"
     );
+}
+
+async fn read_request(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> Option<(String, Vec<u8>)> {
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        header.push(stream.read_u8().await.ok()?);
+        assert!(header.len() < 8192);
+    }
+    let header = String::from_utf8(header).unwrap();
+    let length: usize = header
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().unwrap())
+        })
+        .unwrap();
+    assert!(length < 1024 * 1024);
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body).await.unwrap();
+    Some((header.lines().next().unwrap().to_owned(), body))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn telemetry_reconnects_after_the_collector_closes_an_idle_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let task = tokio::spawn({
+        let requests = requests.clone();
+        async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let requests = requests.clone();
+                tokio::spawn(async move {
+                    while let Ok(Some(_)) =
+                        tokio::time::timeout(Duration::from_millis(200), read_request(&mut socket))
+                            .await
+                    {
+                        requests.fetch_add(1, Ordering::Relaxed);
+                        socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+                            .await
+                            .unwrap();
+                    }
+                });
+            }
+        }
+    });
+    let telemetry = Telemetry::start(Some(endpoint)).await.unwrap().unwrap();
+    for export in 0..2 {
+        if export > 0 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        telemetry.instruments.requests.add(1, &[]);
+        let metrics = telemetry.metrics.clone();
+        let result = tokio::task::spawn_blocking(move || metrics.force_flush())
+            .await
+            .unwrap();
+        assert!(result.is_ok(), "metric export {export} failed");
+    }
+    telemetry.shutdown().await;
+    task.abort();
+    assert!(requests.load(Ordering::Relaxed) >= 2);
+}
+
+#[tokio::test]
+async fn telemetry_caps_the_collector_response() {
+    for (size, accepted) in [
+        (export::RESPONSE_LIMIT, true),
+        (export::RESPONSE_LIMIT + 1, false),
+    ] {
+        let reply = json!({ "padding": " ".repeat(size - 14) });
+        assert_eq!(serde_json::to_vec(&reply).unwrap().len(), size);
+        let collector = Collector::with_response(false, StatusCode::OK, reply).await;
+        let telemetry = runtime(&collector).await;
+        telemetry.instruments.requests.add(1, &[]);
+        let metrics = telemetry.metrics.clone();
+        let result = tokio::task::spawn_blocking(move || metrics.force_flush())
+            .await
+            .unwrap();
+        telemetry.shutdown().await;
+        assert_eq!(result.is_ok(), accepted, "response of {size} bytes");
+    }
 }

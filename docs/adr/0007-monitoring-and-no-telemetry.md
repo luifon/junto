@@ -31,7 +31,7 @@ Server export:
 - OpenTelemetry API, SDK and protocol encoder 0.33.1 are pinned. SDK 0.33.1
   counts a span queued immediately before a flush as pending, so the flush exports it.
 - The exporter sends with the hyper 1 client of hyper-util over hyper-rustls 0.27,
-  with rustls on the ring provider. The exporter passes ring to its own TLS
+  with rustls on the ring provider, over HTTP/1.1 only. The exporter passes ring to its own TLS
   configuration, so no process-wide provider is installed and no other HTTP client
   depends on the exporter. Trust is the system store, read with rustls-native-certs,
   and the optional CA file. These crates are already in the workspace for the
@@ -61,8 +61,8 @@ Server export:
   metrics and ends the span with error status and `error.type=cancelled` instead
   of a response status code.
 - The duration histogram has boundaries at 0.005, 0.01, 0.025, 0.05, 0.075, 0.1,
-  0.25, 0.5, 0.75, 1, 2.5, 5 and 10 seconds. A metric view sets them, because the
-  SDK ignores the boundaries an instrument advises when a view matches it.
+  0.25, 0.5, 0.75, 1, 2.5, 5 and 10 seconds. The metric view sets them together
+  with the cardinality limit, so the settings of each metric stream are in one place.
 - Span and metric attributes are limited to `http.request.method`,
   `http.route` and `http.response.status_code` (or the fixed cancellation attribute). The method is a standard HTTP
   method or `_OTHER`; the route is the router's template or `unmatched`. The only
@@ -75,10 +75,12 @@ Server export:
   Logs continue to use standard error and owner codes use standard output
   (ADR 0008); forwarding logs is outside this exporter because request logs
   contain raw paths that can identify accounts, messages or recordings.
-- Export uses two background threads: the SDK span processor and the metric reader.
-  Each exports with a single-thread asynchronous runtime of its own, not with the
-  server's runtime; a host name in the endpoint is resolved on at most one more
-  thread per runtime, which ends when it is idle. Export runs every five seconds, or when a span batch
+- Export uses three background threads: the SDK span processor, the metric reader,
+  and the one worker thread of the exporter's asynchronous runtime, which is separate
+  from the server's runtime. The worker runs the kept connections between exports, so
+  a connection that the collector closes while idle is removed before the next export.
+  A host name in the endpoint is resolved on at most one more thread, which ends when
+  it is idle. Export runs every five seconds, or when a span batch
   reaches 256. The queue holds at most 1024 finished spans and drops further spans
   without waiting. An atomic admission count bounds queued spans and counts
   drops without logging on the request thread. Each metric has a cardinality limit of 4096, with an overflow
@@ -102,7 +104,8 @@ Server export:
   administrator supplying an internal CA mounts its PEM file read-only. It installs no collector:
   the administrator runs one separately and makes it reachable from the server.
 - Unit tests use in-process HTTP and HTTPS collectors to inspect both signals, aggregation,
-  privacy and behavior with a blocked collector, a slowly sent response and a full
+  privacy and behavior with a blocked collector, a slowly sent response, a response
+  larger than the 64 KiB cap, a collector that closes idle connections and a full
   queue. The periodic reader can export more than once during a test, so metric
   assertions read the last cumulative export, and tests that count exports require
   at least one per signal. One test forces a collection before shutdown so that it

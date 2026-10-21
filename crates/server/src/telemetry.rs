@@ -85,14 +85,16 @@ impl Telemetry {
     }
 
     fn build(endpoint: Endpoint, dispatch: tracing::Dispatch) -> std::io::Result<Self> {
-        let tls = export::tls_config(endpoint.ca_file.as_deref())?;
+        let transport = export::Transport::new(endpoint.ca_file.as_deref())?;
         let queue = std::sync::Arc::new(export::Queue::default());
         let traces = export::Traces {
-            http: export::Http::new(tls.clone(), &endpoint, "traces", dispatch.clone())?,
+            http: export::Http::new(transport.clone(), &endpoint, "traces", dispatch.clone())?,
             queue: queue.clone(),
             resource: Default::default(),
         };
-        let metrics = export::Metrics(export::Http::new(tls, &endpoint, "metrics", dispatch)?);
+        let metrics = export::Metrics(export::Http::new(
+            transport, &endpoint, "metrics", dispatch,
+        )?);
         let resource = Resource::builder_empty()
             .with_attribute(KeyValue::new("service.name", "junto-server"))
             .build();

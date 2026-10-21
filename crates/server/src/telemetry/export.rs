@@ -84,9 +84,51 @@ impl Diagnostics {
     }
 }
 
-const RESPONSE_LIMIT: usize = 64 * 1024;
+pub(super) const RESPONSE_LIMIT: usize = 64 * 1024;
 
-pub(super) fn tls_config(ca_file: Option<&Path>) -> std::io::Result<Arc<ClientConfig>> {
+#[derive(Clone)]
+pub(super) struct Transport {
+    client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    runtime: Arc<Background>,
+}
+
+struct Background(Option<tokio::runtime::Runtime>);
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+impl Transport {
+    pub(super) fn new(ca_file: Option<&Path>) -> std::io::Result<Self> {
+        let tls = tls_config(ca_file)?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .thread_name("monitoring-export")
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(|_| std::io::Error::other("monitoring HTTP client initialization failed"))?;
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let client = Client::builder(TokioExecutor::new())
+            .pool_timer(TokioTimer::new())
+            .build(connector);
+        Ok(Self {
+            client,
+            runtime: Arc::new(Background(Some(runtime))),
+        })
+    }
+}
+
+fn tls_config(ca_file: Option<&Path>) -> std::io::Result<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
     if let Some(path) = ca_file {
@@ -104,17 +146,17 @@ pub(super) fn tls_config(ca_file: Option<&Path>) -> std::io::Result<Arc<ClientCo
             return Err(invalid());
         }
     }
-    let config = ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| std::io::Error::other("monitoring TLS initialization failed"))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(Arc::new(config))
+    Ok(
+        ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|_| std::io::Error::other("monitoring TLS initialization failed"))?
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
 }
 
 pub(super) struct Http {
-    client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
-    runtime: Option<tokio::runtime::Runtime>,
+    transport: Transport,
     url: hyper::Uri,
     signal: &'static str,
     diagnostics: Diagnostics,
@@ -130,30 +172,17 @@ impl std::fmt::Debug for Http {
 
 impl Http {
     pub(super) fn new(
-        tls: Arc<ClientConfig>,
+        transport: Transport,
         endpoint: &super::Endpoint,
         signal: &'static str,
         dispatch: tracing::Dispatch,
     ) -> std::io::Result<Self> {
-        let failed = || std::io::Error::other("monitoring HTTP client initialization failed");
-        let url = endpoint.export_url(signal).parse().map_err(|_| failed())?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .max_blocking_threads(1)
-            .build()
-            .map_err(|_| failed())?;
-        let connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(ClientConfig::clone(&tls))
-            .https_or_http()
-            .enable_http1()
-            .build();
-        let client = Client::builder(TokioExecutor::new())
-            .pool_timer(TokioTimer::new())
-            .build(connector);
+        let url = endpoint
+            .export_url(signal)
+            .parse()
+            .map_err(|_| std::io::Error::other("monitoring HTTP client initialization failed"))?;
         Ok(Self {
-            client,
-            runtime: Some(runtime),
+            transport,
             url,
             signal,
             diagnostics: Diagnostics::new(dispatch),
@@ -179,7 +208,7 @@ impl Http {
             .body(Full::new(Bytes::from(body)))
             .ok()?;
         let exchange = async {
-            let response = self.client.request(request).await.ok()?;
+            let response = self.transport.client.request(request).await.ok()?;
             if !response.status().is_success() {
                 return None;
             }
@@ -189,18 +218,10 @@ impl Http {
                 .ok()?;
             Some(body.to_bytes())
         };
-        let runtime = self.runtime.as_ref()?;
+        let runtime = self.transport.runtime.0.as_ref()?;
         runtime
             .block_on(async { tokio::time::timeout(super::EXPORT_TIMEOUT, exchange).await })
             .ok()?
-    }
-}
-
-impl Drop for Http {
-    fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_background();
-        }
     }
 }
 
