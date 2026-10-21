@@ -259,6 +259,7 @@ pub struct Shell {
     // The positions of the lists that scroll.
     pub(crate) servers_scroll: ScrollHandle,
     pub(crate) channels_scroll: ScrollHandle,
+    pub(crate) directs_scroll: ScrollHandle,
     pub(crate) members_scroll: ScrollHandle,
     pub(crate) call_members_scroll: ScrollHandle,
     pub(crate) call_settings_scroll: ScrollHandle,
@@ -607,6 +608,7 @@ impl Shell {
             view: None,
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
+            directs_scroll: ScrollHandle::new(),
             members_scroll: ScrollHandle::new(),
             call_members_scroll: ScrollHandle::new(),
             call_settings_scroll: ScrollHandle::new(),

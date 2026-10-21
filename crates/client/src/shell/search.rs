@@ -28,6 +28,9 @@ pub enum FilterKind {
     Date,
 }
 
+/// The width of the search field in the header, in design pixels.
+pub(crate) const SEARCH_FIELD_WIDTH: f32 = 190.0;
+
 impl Shell {
     /// Puts text into the search field of the header, as typing does.
     pub fn type_search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -108,7 +111,7 @@ impl Shell {
         };
         div()
             .flex_none()
-            .w(u(190.0))
+            .w(u(SEARCH_FIELD_WIDTH))
             .child(field)
             .into_any_element()
     }

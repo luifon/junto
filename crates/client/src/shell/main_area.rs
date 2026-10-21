@@ -7,15 +7,17 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
+use junto_client_core::protocol::ids::AccountId;
 use junto_client_core::protocol::structure::ChannelKind;
 
+use super::search::SEARCH_FIELD_WIDTH;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use junto_media::calls::Phase;
 
 use crate::state::view::{
     CallPanel, ChannelRow, Members, PanelPlace, RecordingControl, RecordingShown, Relation,
-    SelectedServer, ServerLists, ServerStatus, ShellView, VoiceState, WorkspaceView,
+    SelectedServer, ServerLists, ServerStatus, ShellView, VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -52,7 +54,7 @@ impl Shell {
         // The call of this device, when its voice channel or the direct conversation of its
         // direct-message call is the shown place.
         let call = lists.and_then(|lists| lists.call.as_ref());
-        let members_open = self.members_open && workspace.is_some() && call.is_none();
+        let members_open = self.members_open && lists.is_some() && call.is_none();
         let server_id = view.selected.as_ref().map(|server| server.id);
         // The side panel shows one thing: a thread, the pinned messages, the notices of
         // the server, a search, or the members. Without a workspace only the notices.
@@ -80,9 +82,7 @@ impl Shell {
                     (None, None, None, Some(search)) => {
                         Some(this.render_search_panel(search, window, cx))
                     }
-                    _ => shown
-                        .filter(|_| members_open)
-                        .map(|shown| this.render_members(lists, shown, &theme, cx)),
+                    _ => members_open.then(|| this.render_members(lists, &theme, cx)),
                 }
             };
 
@@ -463,7 +463,7 @@ impl Shell {
                         })),
                 )
             })
-            .when(view.workspace().is_some() && call.is_none(), |header| {
+            .when(view.lists().is_some() && call.is_none(), |header| {
                 header.child(
                     Button::new("members")
                         .icon(Icon::People)
@@ -494,8 +494,18 @@ impl Shell {
                         })),
                 )
             })
-            .when(view.workspace().is_some() && call.is_none(), |header| {
-                header.child(self.render_search_field(cx))
+            // Without a workspace there is no search (ADR 0743): its place stays empty, so
+            // that the controls before it do not move when a workspace goes or comes
+            // (ADR 0730).
+            .when(view.lists().is_some() && call.is_none(), |header| {
+                header.child(match view.workspace() {
+                    Some(_) => self.render_search_field(cx),
+                    None => div()
+                        .flex_none()
+                        .w(u(SEARCH_FIELD_WIDTH))
+                        .debug_selector(|| "search-place".to_owned())
+                        .into_any_element(),
+                })
             })
     }
 
@@ -846,6 +856,57 @@ impl Shell {
                         .into_any_element()
                 }),
         );
+        // A direct conversation that the server did not open, unless the member list
+        // beside the conversation states it at the member (ADR 0741).
+        if let Some(lists) = view.lists()
+            && let Some((account_id, reason)) = &lists.conversation_refused
+            && !self.refusal_at_member(view, *account_id)
+        {
+            let account_id = *account_id;
+            let asked = lists.conversation_asked == Some(account_id);
+            notices.push(
+                div()
+                    .flex_none()
+                    .px(u(16.0))
+                    .pt(u(10.0))
+                    .child(
+                        Notice::error(text::conversation_not_opened(reason))
+                            .selector("conversation-refused-notice")
+                            .action(
+                                div()
+                                    .flex()
+                                    .gap(u(6.0))
+                                    .child(
+                                        Button::new("conversation-retry")
+                                            .label(text::TRY_AGAIN)
+                                            .icon(Icon::Retry)
+                                            .disabled(asked)
+                                            .selector("conversation-retry")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.state.update(cx, |state, cx| {
+                                                    state.open_conversation(
+                                                        server_id, account_id, cx,
+                                                    );
+                                                });
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("conversation-refusal-close")
+                                            .kind(ButtonKind::Ghost)
+                                            .label(text::DISMISS)
+                                            .disabled(asked)
+                                            .selector("conversation-refusal-close")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.state.update(cx, |state, cx| {
+                                                    state.dismiss_conversation_refusal(cx);
+                                                });
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
         // The private moderation notices of the account (ADR 0120).
         notices.extend(server.moderation.iter().map(|line| {
             let notice_id = line.id;
@@ -1084,18 +1145,44 @@ impl Shell {
         panel.error(error.filter(|_| shows_error))
     }
 
+    /// The side panel shows the member list with this account, which states the refusal of
+    /// its conversation at its row.
+    fn refusal_at_member(&self, view: &ShellView, account_id: AccountId) -> bool {
+        let Some(lists) = view.lists() else {
+            return false;
+        };
+        let Some(workspace) = &lists.workspace else {
+            return false;
+        };
+        self.members_open
+            && lists.call.is_none()
+            && lists.notices.is_none()
+            && workspace.thread.is_none()
+            && workspace.pins.is_none()
+            && workspace.transcript.is_none()
+            && workspace.search.is_none()
+            && matches!(&workspace.members, Members::Loaded(members)
+                if members.iter().any(|member| member.account_id == account_id))
+    }
+
+    /// The members of the shown workspace in the side panel. Without a workspace the panel
+    /// states that there is none, so that the main area keeps its width (ADR 0730).
     fn render_members(
         &mut self,
         lists: &ServerLists,
-        workspace: &WorkspaceView,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
         let faces = self.shown_faces();
         let header = SideHeader::new(text::MEMBERS)
             .icon(Icon::People)
-            .note(workspace.name.clone())
+            .note(
+                workspace
+                    .map(|workspace| workspace.name.clone())
+                    .unwrap_or_default(),
+            )
             .trailing(
                 Button::new("close-members")
                     .kind(ButtonKind::Ghost)
@@ -1115,7 +1202,16 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(text)
         };
-        let body: AnyElement = match &workspace.members {
+        let Some(members) = workspace.map(|workspace| &workspace.members) else {
+            return self.side_panel(
+                header,
+                note(text::NO_WORKSPACE_MEMBERS)
+                    .debug_selector(|| "no-workspace-members".to_owned())
+                    .into_any_element(),
+                theme,
+            );
+        };
+        let body: AnyElement = match members {
             Members::NotLoaded | Members::Loading => note(text::MEMBERS_LOADING).into_any_element(),
             Members::Failed => div()
                 .flex()
@@ -1254,6 +1350,12 @@ impl Shell {
                     .into_any_element()
             }
         };
+        self.side_panel(header, body, theme)
+    }
+
+    /// The side panel of the members with its header and its body.
+    fn side_panel(&self, header: SideHeader, body: AnyElement, theme: &Theme) -> AnyElement {
+        let colors = theme.colors;
         div()
             .id("side-panel")
             .role(Role::Complementary)

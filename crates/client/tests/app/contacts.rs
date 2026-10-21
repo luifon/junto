@@ -301,3 +301,149 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
     window.send("An answer from Luca");
     assert_eq!(message_count(&world, &eve, with_eve), 2);
 }
+
+impl Window {
+    /// The bounds of the parts of the window that a change of the workspaces of the account
+    /// must not move, by their names.
+    fn bounds_of(
+        &mut self,
+        names: &[&'static str],
+    ) -> Vec<(&'static str, Option<gpui::Bounds<gpui::Pixels>>)> {
+        self.cx.run_until_parked();
+        names
+            .iter()
+            .map(|name| (*name, self.cx.debug_bounds(name)))
+            .collect()
+    }
+}
+
+#[gpui::test]
+fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca_id = window.view().person.account_id.unwrap();
+    let default = default_workspace(&world, &admin.handle);
+
+    // Luca reads the conversation that Ada started, with the member list beside it.
+    let with_ada = write_to(&world, &admin.handle, luca_id, "Hello from Ada");
+    let row = crate::harness::selector(format!("direct-row:{with_ada}"));
+    window.until("the conversation is listed", |window| window.shows(row));
+    window.click(row);
+    window.until_message("Hello from Ada");
+    window.click("members-button");
+    window.until("the member list is beside the conversation", |window| {
+        window.shows("side-panel")
+            && window.view().workspace().is_some_and(|workspace| {
+                matches!(
+                    workspace.members,
+                    junto_client::state::view::Members::Loaded(_)
+                )
+            })
+    });
+    let parts = [
+        "notices-row",
+        "new-direct",
+        row,
+        "channel-title",
+        "export-conversation",
+        "members-button",
+        "message-list",
+        "composer",
+        "side-panel",
+    ];
+    let before = window.bounds_of(&parts);
+    assert!(
+        before.iter().all(|(_, bounds)| bounds.is_some()),
+        "{before:?}"
+    );
+
+    // The last workspace goes: the direct section, the conversation, its header and the
+    // side panel stay where they are (ADR 0730).
+    world
+        .run(api.remove_workspace_member(default, luca_id, &Default::default()))
+        .unwrap();
+    window.until("the window shows no workspace", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.workspace.is_none())
+    });
+    assert_eq!(window.bounds_of(&parts), before);
+    assert!(window.shows("no-workspace-note"));
+
+    // A workspace comes back: nothing of it moves either.
+    world
+        .run(api.add_workspace_member(default, luca_id))
+        .unwrap();
+    window.until("the window shows the workspace again", |window| {
+        window.view().workspace().is_some()
+    });
+    assert_eq!(window.bounds_of(&parts), before);
+    assert!(!window.shows("no-workspace-note"));
+}
+
+#[gpui::test]
+fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_with_a_retry(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let eve_code = invite(&world, &admin.handle, Vec::new());
+    let (_eve_device, eve) = joined(&world, &server, &eve_code, "Eve");
+    let eve_id = logged_in(&eve);
+    let operators = world
+        .run(api.create_server_role(&CreateServerRole {
+            name: "Operators".to_owned(),
+            permissions: vec![ServerPermission::Administrator],
+        }))
+        .unwrap();
+    world
+        .run(api.assign_server_role(eve_id, operators.id))
+        .unwrap();
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca_id = window.view().person.account_id.unwrap();
+    let default = default_workspace(&world, &admin.handle);
+    world
+        .run(api.remove_workspace_member(default, luca_id, &Default::default()))
+        .unwrap();
+    window.until("the window shows no workspace", |window| {
+        window.shows("no-workspace")
+    });
+
+    // Eve is offered, and stops administering the server before Luca chooses her: the
+    // server refuses the conversation, and the main area states why.
+    window.search_contacts("Eve");
+    window.until_offered(eve_id);
+    world
+        .run(api.unassign_server_role(eve_id, operators.id))
+        .unwrap();
+    window.choose_contact(eve_id);
+    window.until("the refusal is stated", |window| {
+        window.shows("conversation-refused-notice")
+    });
+    assert!(window.conversation_with().is_none());
+    assert_eq!(
+        window
+            .view()
+            .lists()
+            .and_then(|lists| lists.conversation_refused.clone()),
+        Some((eve_id, junto_client::text::NO_CONTACT.to_owned()))
+    );
+
+    // Once Eve administers the server again, "Try again" opens the conversation.
+    world
+        .run(api.assign_server_role(eve_id, operators.id))
+        .unwrap();
+    window.click("conversation-retry");
+    window.until("the conversation with Eve is shown", |window| {
+        window.conversation_with() == Some((eve_id, Some("Eve".to_owned())))
+    });
+    assert!(!window.shows("conversation-refused-notice"));
+}

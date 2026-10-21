@@ -200,7 +200,16 @@ impl AppState {
         let api = server.api();
         self.conversation_asks += 1;
         let number = self.conversation_asks;
-        self.known.conversation_refused = None;
+        // The refusal of the same account stays drawn while it is asked again, so that the
+        // control that asks again does not leave the place under the pointer (ADR 0730).
+        if self
+            .known
+            .conversation_refused
+            .as_ref()
+            .is_some_and(|(server, account, _)| *server != server_id || *account != account_id)
+        {
+            self.known.conversation_refused = None;
+        }
         self.known.conversation_asked = Some((server_id, account_id));
         // The answer does not take the person away from a place that they selected
         // after this request.
@@ -213,6 +222,9 @@ impl AppState {
                 }
                 this.known.conversation_asked = None;
                 let stayed = this.navigations == navigations;
+                if asked.is_ok() {
+                    this.known.conversation_refused = None;
+                }
                 match asked {
                     // The conversation is shown when the state of the server holds it,
                     // which the event of the server brings.

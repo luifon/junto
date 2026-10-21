@@ -22,6 +22,10 @@ use crate::ui::{
     OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
 };
 
+/// The rows of direct conversations that the channel column shows at once. More scroll in
+/// their list.
+const DIRECT_ROWS: f32 = 5.0;
+
 /// The lit segments of the meter of a person who speaks in a call that this device is not
 /// in. The server tells who speaks there and no level (ADR 0513).
 const SPEAKING_SEGMENTS: usize = 3;
@@ -259,23 +263,36 @@ impl Shell {
                 Vec::new(),
             ),
         };
-        let mut rows: Vec<AnyElement> = vec![self.render_notices_row(lists, in_call, cx)];
-        rows.extend(channels);
-        rows.extend(self.direct_rows(server.id, lists, cx));
         let label: SharedString = match workspace {
             Some(workspace) => workspace.name.clone().into(),
             None => server.name.clone().into(),
         };
+        // The part of the server, the notices and the direct conversations, has a height of
+        // its own at the top of the column, and the lists of the workspace take the rest.
+        // A change of the workspaces or of the channels moves none of its controls, and a
+        // conversation that arrives moves no channel (ADR 0730).
+        let server_part = div()
+            .id("server-lists")
+            .debug_selector(|| "server-lists".to_owned())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .pt(u(6.0))
+            .pb(u(4.0))
+            .border_b_1()
+            .border_color(Hsla::from(colors.rule))
+            .child(self.render_notices_row(lists, in_call, cx))
+            .children(self.direct_rows(server.id, lists, theme, cx));
         let list = ScrollArea::new("channel-list", &self.channels_scroll, label)
             .selector("channel-list")
-            .child(div().flex_none().h(u(6.0)))
-            .children(rows)
+            .children(channels)
             .child(div().flex_none().h(u(8.0)));
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(server_part)
             .child(list)
             .child(
                 div()
@@ -544,12 +561,13 @@ impl Shell {
         (rows, entries)
     }
 
-    /// The section of the direct conversations of the server, after the channels of the
-    /// workspace when there is one.
+    /// The section of the direct conversations of the server: its title, "New direct
+    /// message", and the conversations in a list of a fixed height.
     fn direct_rows(
         &mut self,
         server_id: ServerId,
         lists: &ServerLists,
+        theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let faces = self.shown_faces();
@@ -570,6 +588,7 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
+        let mut conversations: Vec<AnyElement> = Vec::new();
         for (index, direct) in lists.directs.iter().enumerate() {
             let conversation_id = direct.id;
             let name: SharedString = direct
@@ -596,7 +615,7 @@ impl Shell {
                 let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
                 self.render_direct_menu(server_id, direct.account_id, name, &direct.mute, cx)
             });
-            rows.push(
+            conversations.push(
                 div()
                     .relative()
                     .flex_none()
@@ -606,6 +625,19 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        rows.push(
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .h(u(theme.metrics.channel_row_height * DIRECT_ROWS))
+                .child(
+                    ScrollArea::new("direct-list", &self.directs_scroll, text::DIRECT_MESSAGES)
+                        .selector("direct-list")
+                        .children(conversations),
+                )
+                .into_any_element(),
+        );
         rows
     }
 
