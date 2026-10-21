@@ -549,19 +549,23 @@ pub async fn move_channels(
         let access = Access::open(connection, &bearer, now).await?;
         // Every channel is checked against the state before the first change, so that a
         // later move is not compared with a position that an earlier move wrote.
+        // A channel that the caller does not see is `not_found` before any other check, so
+        // that the answer does not tell whether it exists or in which workspace it is.
         for held in &body.moves {
             let (record, scope) = access.channel(connection, held.channel_id).await?;
+            access.require(Request::Channel {
+                scope: &scope,
+                permission: WorkspacePermission::ViewChannel,
+            })?;
             if record.channel.workspace_id != workspace_id {
                 return Err(ApiError::invalid("a channel is not in this workspace"));
             }
-            access.require(Request::Channel {
-                scope: &scope,
-                permission: if held.to == held.from {
-                    WorkspacePermission::ViewChannel
-                } else {
-                    WorkspacePermission::ManageChannel
-                },
-            })?;
+            if held.to != held.from {
+                access.require(Request::Channel {
+                    scope: &scope,
+                    permission: WorkspacePermission::ManageChannel,
+                })?;
+            }
             record.require_open()?;
             if record.channel.category_id != held.from.category_id
                 || record.channel.position != held.from.position

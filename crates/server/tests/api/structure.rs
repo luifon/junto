@@ -1421,7 +1421,7 @@ async fn channels_are_moved_together_or_not_at_all() {
 /// A page drops "x" after "b", between "b" at 10 and "c" at 20, and sends the two neighbours
 /// as checks. Another administrator moved "b" first: the move of "x" alone would still apply
 /// and put "x" before both channels, so the check refuses it. A check needs "view channel"
-/// only and writes nothing.
+/// only and writes nothing, and a channel that the caller does not see is `not_found`.
 #[tokio::test]
 async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
     let server = TestServer::start().await;
@@ -1493,13 +1493,43 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
             .await
             .unwrap()
     };
+    // The event identifier and the channel of each `channel_updated` event.
+    let updated = || async {
+        sqlx::query_as::<_, (uuid::Uuid, String)>(
+            "select id, payload -> 'channel' ->> 'id' from events where kind = 'channel_updated'",
+        )
+        .fetch_all(&server.db)
+        .await
+        .unwrap()
+    };
 
-    // A check of a channel that the manager does not see refuses the request.
+    // A check of a channel that the manager does not see refuses the request with
+    // `not_found`, as an unknown channel does, also when the request names another workspace:
+    // the answer does not tell that the channel exists or where.
     server
         .patch(&manager, &path, &drop(&hidden, 40))
         .await
         .error(ErrorCode::NotFound);
     assert_eq!(place_of(x.id).await, (None, 30));
+    let other: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Other" }))
+        .await
+        .ok(StatusCode::CREATED);
+    let other_path = format!("/api/v1/workspaces/{}/channels/positions", other.id);
+    let check = |id: ChannelId, read: i32| json!({ "moves": [{ "channel_id": id, "from": at(read), "to": at(read) }] });
+    for path in [&path, &other_path] {
+        for id in [hidden.id, ChannelId::generate()] {
+            server
+                .patch(&manager, path, &check(id, 40))
+                .await
+                .error(ErrorCode::NotFound);
+        }
+    }
+    // A channel that the manager sees, named with another workspace, is refused as such.
+    server
+        .patch(&manager, &other_path, &check(c.id, 20))
+        .await
+        .error(ErrorCode::InvalidRequest);
 
     // The other administrator moves "b"; the page still read it at 10.
     server
@@ -1516,9 +1546,25 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
         .error(ErrorCode::Conflict);
     assert_eq!(place_of(x.id).await, (None, 30));
 
-    // From the current page the drop applies. The checks change nothing, so "x" has the only
-    // audit entry, and "c", which the manager may not change, is checked.
+    // A request of checks only changes nothing: no audit entry and no event.
     let entries = audit_entries().await;
+    let events = updated().await;
+    server
+        .patch(
+            &manager,
+            &path,
+            &json!({ "moves": [
+                { "channel_id": b.id, "from": at(40), "to": at(40) },
+                { "channel_id": c.id, "from": at(20), "to": at(20) },
+            ]}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(audit_entries().await, entries);
+    assert_eq!(updated().await, events);
+
+    // From the current page the drop applies. The checks change nothing, so "x" has the only
+    // audit entry and the only event, and "c", which the manager may not change, is checked.
     server
         .patch(&manager, &path, &drop(&b, 40))
         .await
@@ -1527,4 +1573,11 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
     assert_eq!(place_of(b.id).await, (None, 40));
     assert_eq!(place_of(c.id).await, (None, 20));
     assert_eq!(audit_entries().await, entries + 1);
+    let new_events: Vec<String> = updated()
+        .await
+        .into_iter()
+        .filter(|event| !events.contains(event))
+        .map(|(_, channel)| channel)
+        .collect();
+    assert_eq!(new_events, [x.id.to_string()]);
 }

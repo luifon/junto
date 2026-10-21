@@ -158,7 +158,7 @@ start() {
             # the file "started".
             printf '%s\n' "cd '$here' && : >started && exec sh run-jobs.sh '$windows_dir' '$run' windows '$here/commit.bundle' $* </dev/null >runner.log 2>&1" \
                 >"$files/start.sh"
-            windows_bash "mkdir -p '$here'" \
+            windows_bash "mkdir -p '$here' && echo '$commit' >'$here/commit' && echo '$*' >'$here/jobs'" \
                 && windows_ssh scp -q "$files/commit.bundle" "$files/run-jobs.sh" "$files/start-run.ps1" \
                     "$files/start.sh" "$windows_host:$here/" \
                 || {
@@ -191,12 +191,15 @@ start() {
         git -C "$root" push --quiet --receive-pack="flock '$dir/repo.lock' git-receive-pack" \
             "$host:$dir/repo.git" "$commit:refs/ci/$run"
         remote "mkdir -p '$dir/runs/$run' && cd '$dir/runs/$run' &&
+            echo '$commit' >commit && echo '$*' >jobs &&
             git --git-dir='$dir/repo.git' show '$commit:tools/ci/run-jobs.sh' >run-jobs.sh &&
             { setsid nohup sh run-jobs.sh '$dir' '$run' linux '$dir/repo.git' $* </dev/null >runner.log 2>&1 & }"
         echo "$run"
     else
         git -C "$root" update-ref "refs/ci/$run" "$commit"
         mkdir -p "$local_dir/runs/$run"
+        echo "$commit" >"$local_dir/runs/$run/commit"
+        echo "$*" >"$local_dir/runs/$run/jobs"
         git -C "$root" show "$commit:tools/ci/run-jobs.sh" >"$local_dir/runs/$run/run-jobs.sh"
         echo "$run"
         status=0
@@ -311,6 +314,8 @@ runs_of() {
 
 # A commit has passed CI when each job of each runner passed in the latest run of the commit on
 # that runner that has the job, so a run of only the jobs that failed completes an earlier run.
+# The start of a run writes its jobs before the runner starts; a run whose jobs cannot be read
+# has every job of its runner, so that it is not passed and an earlier run does not decide them.
 status() {
     case "$1" in
         *-linux | *-macos | *-windows) (show "$1"); return ;;
@@ -323,10 +328,10 @@ status() {
         # of the runs.
         decided=""
         for job in $(jobs_of "$runner"); do
-            run=$(printf '%s\n' "$listed" | awk -F '\t' -v job="$job" '{ n = split($2, jobs, " "); for (i = 1; i <= n; i++) if (jobs[i] == job) last = $1 } END { print last }')
+            run=$(printf '%s\n' "$listed" | awk -F '\t' -v job="$job" '$1 != "" { n = split($2, jobs, " "); if (n == 0) last = $1; for (i = 1; i <= n; i++) if (jobs[i] == job) last = $1 } END { print last }')
             if [ -z "$run" ]; then
                 echo "$runner: no run of $commit has $job"
-                verdict=incomplete
+                [ "$verdict" = failed ] || verdict=incomplete
                 continue
             fi
             decided="$decided$run $job

@@ -91,7 +91,7 @@ class WindowsRunner(unittest.TestCase):
                       self.log("ssh"))
         copied = self.root / "machine" / here
         self.assertEqual(sorted(path.name for path in copied.iterdir()),
-                         ["commit.bundle", "run-jobs.sh", "start-run.ps1", "start.sh"])
+                         ["commit", "commit.bundle", "jobs", "run-jobs.sh", "start-run.ps1", "start.sh"])
         self.assertEqual((copied / "start.sh").read_text(),
                          f"cd '{here}' && : >started && exec sh run-jobs.sh 'C:/ci' '{run}' windows "
                          f"'{here}/commit.bundle' rust-windows </dev/null >runner.log 2>&1\n")
@@ -170,6 +170,8 @@ class WindowsRunner(unittest.TestCase):
         runs = list((self.root / "machine" / "C:" / "ci" / "runs").iterdir())
         self.assertEqual(len(runs), 1)
         self.assertEqual((runs[0] / "finished").read_text(), "1\n")
+        # The jobs of the run are recorded before the copy, so status does not take an earlier run.
+        self.assertEqual((runs[0] / "jobs").read_text(), "rust-windows\n")
         self.assertFalse((runs[0] / "commit.bundle").exists())
         self.assertEqual(self.ci("status", runs[0].name).returncode, 1)
         self.assertEqual(self.ci("forget", runs[0].name).returncode, 0)
@@ -289,6 +291,34 @@ class CommitStatus(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(f"commit {self.commit}: failed", result.stdout)
         self.assertRegex(result.stdout, r"licences +FAILED")
+
+    # A later start that failed before its runner wrote the jobs: the earlier pass does not decide them.
+    def test_a_later_run_without_its_jobs_is_not_passed(self):
+        self.run_of("linux", "20261020T100000Z", ["rust-linux", "licences", "transcription-worker", "layout-page"],
+                    dict.fromkeys(["rust-linux", "licences", "transcription-worker", "layout-page"], 0))
+        self.passed_elsewhere()
+        failed = self.run_of("windows", "20261020T110000Z", ["rust-windows"], {})
+        here = self.directories["windows"] / "runs" / failed
+        for name in ("jobs", "record.tsv"):
+            (here / name).unlink()
+        (here / "finished").write_text("2\n")
+        (here / "runner.log").write_text("the run cannot start: the screen is locked\n")
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"run {failed}", result.stdout)
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+
+    # A failure of one runner stays the verdict when a later runner lacks a job.
+    def test_a_failed_job_stays_failed_when_another_job_has_no_run(self):
+        linux = ["rust-linux", "licences", "transcription-worker", "layout-page"]
+        self.run_of("linux", "20261020T100000Z", linux, {"rust-linux": 0, "licences": 1,
+                                                          "transcription-worker": 0, "layout-page": 0})
+        self.run_of("macos", "20261020T100000Z", ["rust-macos"], {"rust-macos": 0})
+        self.run_of("windows", "20261020T100000Z", ["rust-windows"], {"rust-windows": 0})
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"macos: no run of {self.commit} has deployment", result.stdout)
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
 
     def test_a_job_without_a_run_leaves_the_commit_incomplete(self):
         self.passed_elsewhere()
