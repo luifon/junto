@@ -264,6 +264,7 @@ impl Shell {
         ui.removing = None;
         ui.remove_sent = false;
         ui.space.release();
+        self.admin.list.state.remeasure();
         ui.new_token.reset();
         ui.audit_asked = None;
         ui.audit_menu = None;
@@ -288,6 +289,7 @@ impl Shell {
         self.admin.records.token_invalid = None;
         self.admin.records.token_sent = false;
         self.admin.records.space.release();
+        self.admin.list.state.remeasure();
         self.admin.records.new_token.release();
         self.reset_token_form(window, cx);
         self.state
@@ -405,6 +407,7 @@ impl Shell {
         self.admin.records.removing = export_id;
         self.admin.records.remove_sent = false;
         self.admin.records.space.release();
+        self.admin.list.state.remeasure();
         self.admin.records.new_token.release();
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
@@ -475,6 +478,7 @@ impl Shell {
                         // height and the new token takes its place in the list.
                         this.admin.records.copied = None;
                         this.admin.records.space.release();
+                        this.admin.list.state.remeasure();
                         this.admin.records.new_token.release();
                         this.state
                             .update(cx, |state, cx| state.dismiss_admin_made(cx));
@@ -694,6 +698,59 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_token_form(view, window, cx);
+        if !page.may_create {
+            self.put_away_token_form();
+        }
+        let rows: Vec<TokenLine> = page
+            .tokens
+            .loaded()
+            .map(|listed| {
+                self.admin
+                    .records
+                    .new_token
+                    .drawn(listed, |row| row.id)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let keys = std::iter::once("tokens-header".to_owned())
+            .chain(rows.iter().map(|row| format!("token-{}", row.id)))
+            .chain(std::iter::once("tokens-footer".to_owned()))
+            .collect();
+        self.admin.list.take(view, keys, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                let theme = theme(cx);
+                if index == 0 {
+                    return this.render_tokens_header(&view, &page, &rows, window, cx);
+                }
+                if let Some(row) = rows.get(index - 1) {
+                    return this.render_token_row(&view, row, &theme, cx);
+                }
+                if page.more {
+                    sentence(txt::more_tokens(rows.len()), &theme)
+                        .mt(u(6.0))
+                        .debug_selector(|| "tokens-more".to_owned())
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            },
+            cx,
+        )
+    }
+
+    fn render_tokens_header(
+        &mut self,
+        view: &AdminView,
+        page: &TokensPage,
+        rows: &[TokenLine],
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let server_id = view.server_id;
         let mut column = div()
@@ -709,9 +766,6 @@ impl Shell {
         column = column.child(group_label(txt::NEW_TOKEN, &theme));
         // A person who is no administrator any more gets no form, also when it was open:
         // the form is put away for good, and its row keeps its height.
-        if !page.may_create {
-            self.put_away_token_form();
-        }
         // The secret that the answer carries is drawn in the row of the form, in the place
         // of the form, so that the answer moves no control under the row (ADR 0730).
         let secret = page
@@ -758,7 +812,6 @@ impl Shell {
                     column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx));
             }
             Listed::Loaded(listed) => {
-                let rows = self.admin.records.new_token.drawn(listed, |row| row.id);
                 let none = sentence(txt::no_tokens(page.may_create), &theme).py(u(6.0));
                 if listed.is_empty() {
                     column = column.child(none.debug_selector(|| "no-tokens".to_owned()));
@@ -768,16 +821,6 @@ impl Shell {
                     column = column.child(
                         none.invisible()
                             .debug_selector(|| "no-tokens-space".to_owned()),
-                    );
-                }
-                for row in &rows {
-                    column = column.child(self.render_token_row(view, row, &theme, cx));
-                }
-                if page.more {
-                    column = column.child(
-                        sentence(txt::more_tokens(rows.len()), &theme)
-                            .mt(u(6.0))
-                            .debug_selector(|| "tokens-more".to_owned()),
                     );
                 }
             }
@@ -934,6 +977,32 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_export_question(view);
+        let rows = page.exports.loaded().cloned().unwrap_or_default();
+        let keys = std::iter::once("exports-header".to_owned())
+            .chain(rows.iter().map(|row| format!("export-{}", row.id)))
+            .collect();
+        self.admin.list.take(view, keys, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                if index == 0 {
+                    this.render_exports_header(&view, &page, window, cx)
+                } else {
+                    this.render_export_row(&view, &rows[index - 1], &theme(cx), cx)
+                }
+            },
+            cx,
+        )
+    }
+
+    fn render_exports_header(
+        &mut self,
+        view: &AdminView,
+        page: &ExportsPage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let server_id = view.server_id;
         let mut column = div()
@@ -974,11 +1043,7 @@ impl Shell {
                         .debug_selector(|| "no-exports".to_owned()),
                 );
             }
-            Listed::Loaded(rows) => {
-                for row in rows {
-                    column = column.child(self.render_export_row(view, row, &theme, cx));
-                }
-            }
+            Listed::Loaded(_) => {}
         }
         column.into_any_element()
     }
@@ -1478,7 +1543,6 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = theme(cx);
         let server_id = view.server_id;
         // The page reads the log that it shows when it is drawn first. The read is asked
         // for once for each log: a read that cannot start does not ask again with every
@@ -1494,7 +1558,39 @@ impl Shell {
                 });
             });
         }
-        let reading = matches!(page.state, AuditRead::NotRead | AuditRead::Reading);
+        let keys = std::iter::once("audit-header".to_owned())
+            .chain(page.rows.iter().map(|row| format!("audit-{}", row.id)))
+            .chain(std::iter::once("audit-footer".to_owned()))
+            .collect();
+        self.admin.list.take(view, keys, cx);
+        self.admin.list.interactive = std::iter::once(true)
+            .chain(page.rows.iter().map(|row| row.deleted_workspace.is_some()))
+            .chain(std::iter::once(true))
+            .collect();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                let theme = theme(cx);
+                if index == 0 {
+                    return this.render_audit_header(server_id, &page, window, cx);
+                }
+                if let Some(row) = page.rows.get(index - 1) {
+                    return this.render_audit_entry(server_id, row, &theme, cx);
+                }
+                this.render_audit_footer(server_id, &page, cx)
+            },
+            cx,
+        )
+    }
+
+    fn render_audit_header(
+        &mut self,
+        server_id: ServerId,
+        page: &AuditPage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
         let mut column = div().flex().flex_col().gap(u(8.0)).child(page_title(
             text::admin::page_name(AdminPage::AuditLog),
             txt::AUDIT_HELP,
@@ -1613,31 +1709,48 @@ impl Shell {
                     ),
             );
         }
-        // The entries.
-        let mut entries = div().flex().flex_col().flex_none();
-        for row in &page.rows {
-            // The entry of the deletion of a workspace opens the log of that workspace.
-            let action = row.deleted_workspace.clone().map(|(workspace_id, name)| {
-                row_action(
-                    ("audit-deleted-log", row.id.as_uuid().as_u128() as u64),
-                    txt::READ_ITS_LOG,
-                    format!("audit-deleted-log-{workspace_id}"),
-                    None,
-                    cx.listener(move |this, _, _, cx| {
-                        let scope = AuditScope::DeletedWorkspace(workspace_id);
-                        this.admin.records.audit_asked = Some((server_id, scope));
-                        this.admin.records.audit_menu = None;
-                        let name = name.clone();
-                        this.state.update(cx, |state, cx| {
-                            state.show_deleted_workspace_log(server_id, workspace_id, name, cx);
-                        });
-                    }),
-                )
-                .into_any_element()
-            });
-            entries = entries.child(audit_row(row, action, &theme));
-        }
-        column = column.child(entries);
+        column.mb(u(8.0)).into_any_element()
+    }
+
+    fn render_audit_entry(
+        &mut self,
+        server_id: ServerId,
+        row: &AuditLine,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // The entry of the deletion of a workspace opens the log of that workspace.
+        let action = row.deleted_workspace.clone().map(|(workspace_id, name)| {
+            row_action(
+                ("audit-deleted-log", row.id.as_uuid().as_u128() as u64),
+                txt::READ_ITS_LOG,
+                format!("audit-deleted-log-{workspace_id}"),
+                None,
+                cx.listener(move |this, _, _, cx| {
+                    let scope = AuditScope::DeletedWorkspace(workspace_id);
+                    this.admin.records.audit_asked = Some((server_id, scope));
+                    this.admin.records.audit_menu = None;
+                    let name = name.clone();
+                    this.state.update(cx, |state, cx| {
+                        state.show_deleted_workspace_log(server_id, workspace_id, name, cx);
+                    });
+                }),
+            )
+            .into_any_element()
+        });
+        audit_row(row, action, theme)
+    }
+
+    fn render_audit_footer(
+        &mut self,
+        server_id: ServerId,
+        page: &AuditPage,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let filter = page.filter;
+        let reading = matches!(page.state, AuditRead::NotRead | AuditRead::Reading);
+        let mut column = div().flex().flex_col().gap(u(8.0)).mt(u(8.0));
         if page.loaded == 0 && page.state == AuditRead::Loaded {
             column = column.child(if filter.is_set() {
                 sentence(txt::NO_ENTRIES_FILTERED, &theme)

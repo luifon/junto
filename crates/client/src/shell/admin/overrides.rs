@@ -268,6 +268,46 @@ impl Shell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let rows = page.roles.loaded().cloned().unwrap_or_default();
+        let keys = std::iter::once("permissions-header".to_owned())
+            .chain(rows.iter().map(|row| format!("override-{}", row.id)))
+            .collect();
+        self.admin.list.take(view, keys, cx);
+        let view = view.clone();
+        let settings = settings.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                if index == 0 {
+                    return this.render_permissions_header(&view, &settings, &page, window, cx);
+                }
+                let expanded = match this.admin.overrides.expanded {
+                    Expanded::First => rows.first().map(|role| role.id),
+                    Expanded::Role(role_id) => Some(role_id),
+                    Expanded::Nothing => None,
+                };
+                let row = &rows[index - 1];
+                this.render_override_role(
+                    &view,
+                    settings.channel_id,
+                    row,
+                    expanded == Some(row.id),
+                    &theme(cx),
+                    cx,
+                )
+            },
+            cx,
+        )
+    }
+
+    fn render_permissions_header(
+        &mut self,
+        view: &AdminView,
+        settings: &ChannelSettings,
+        page: &PermissionsPage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let channel_id = settings.channel_id;
         let mut column = div()
@@ -285,8 +325,8 @@ impl Shell {
             column = column.child(sentence(text::admin::overrides::ARCHIVED, &theme).mt(u(3.0)));
         }
         let part = AdminPart::Overrides(channel_id);
-        let roles = match &page.roles {
-            Listed::Loaded(roles) => roles,
+        match &page.roles {
+            Listed::Loaded(_) => {}
             Listed::Loading => {
                 return column
                     .child(self.render_reading(view.server_id, part, None, &theme, cx))
@@ -298,17 +338,7 @@ impl Shell {
                     .into_any_element();
             }
         };
-        let expanded = match self.admin.overrides.expanded {
-            Expanded::First => roles.first().map(|role| role.id),
-            Expanded::Role(role_id) => Some(role_id),
-            Expanded::Nothing => None,
-        };
         column = column.child(group_label(text::admin::overrides::ROLES, &theme));
-        for role in roles {
-            let shown = expanded == Some(role.id);
-            column =
-                column.child(self.render_override_role(view, channel_id, role, shown, &theme, cx));
-        }
         column.into_any_element()
     }
 }

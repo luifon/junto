@@ -282,27 +282,57 @@ pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
     window
         .cx
         .simulate_click(element.center(), Modifiers::none());
-    window.cx.run_until_parked();
+    window.park();
     true
 }
 
 /// The bounds of an element of the open page of the administration when it is drawn
 /// inside the visible part of the page. An element outside that part is brought nearer
 /// with the wheel, as a person does.
-fn try_reveal(window: &mut Window, selector: &'static str) -> Option<gpui::Bounds<gpui::Pixels>> {
-    window.cx.run_until_parked();
+pub(crate) fn try_reveal(
+    window: &mut Window,
+    selector: &'static str,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    window.park();
     let page = window.cx.debug_bounds("admin-page")?;
-    let element = window.cx.debug_bounds(selector)?;
+    let Some(element) = window.cx.debug_bounds(selector) else {
+        if window.in_shell(|shell, _, _| shell.admin_page_at_end()) {
+            window.in_shell(|shell, _, cx| {
+                shell.scroll_admin_page_to_start();
+                cx.notify();
+            });
+        } else {
+            window.cx.simulate_event(ScrollWheelEvent {
+                position: page.center(),
+                delta: ScrollDelta::Pixels(point(px(0.0), -page.size.height * 0.8)),
+                ..Default::default()
+            });
+        }
+        return None;
+    };
     if element.top() >= page.top() && element.bottom() <= page.bottom() {
         return Some(element);
     }
-    let distance = page.center().y - element.center().y;
+    let distance = if element.top() < page.top() {
+        page.top() - element.top()
+    } else {
+        page.bottom() - element.bottom()
+    };
     window.cx.simulate_event(ScrollWheelEvent {
         position: page.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), distance)),
         ..Default::default()
     });
     None
+}
+
+pub(crate) fn reveal_in_page(
+    window: &mut Window,
+    selector: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
+    awaited(window, &format!("{selector} is in view"), |window| {
+        try_reveal(window, selector)
+    })
 }
 
 /// Clicks an element of the open page of the administration. The click waits for an
@@ -1553,7 +1583,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     assert!(created.sentence.contains("created"), "{}", created.sentence);
     assert_eq!(created.group, AuditGroup::Structure);
     assert_eq!(created.channel, Some(About::Named("# plans".to_owned())));
-    assert!(window.shows(sel("audit-row", created.id)));
+    reveal_in_page(&mut window, sel("audit-row", created.id));
     for row in &all.rows {
         for text in [row.sentence.clone(), audit_head(row)] {
             assert!(
@@ -1774,6 +1804,8 @@ fn an_answer_to_a_question_about_an_account_moves_no_row_under_it(cx: &mut TestA
             |window| try_reveal(window, "account-confirm").is_some(),
         );
         let row = sel("account-row", asked);
+        reveal_in_page(&mut window, under);
+        reveal_in_page(&mut window, "account-confirm");
         let before = window.cx.debug_bounds(under).unwrap();
         let (row_before, page_before) = (
             window.cx.debug_bounds(row).unwrap(),
@@ -1837,7 +1869,7 @@ fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut Test
         window.until("the form of a new invite is open", |window| {
             try_reveal(window, "invite-create").is_some()
         });
-        let before = window.cx.debug_bounds(under).unwrap();
+        let before = reveal_in_page(&mut window, under);
         let listed = invites(&mut window).len();
         // In the first round the state of the server brings the new invite while the
         // answer waits at the proxy. In the second, the answer is not held.
@@ -1877,6 +1909,7 @@ fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut Test
         window.until("the new invite has its row", |window| {
             !window.shows("invite-code") && window.shows(sel("invite-row", made))
         });
+        reveal_in_page(&mut window, under);
         let new_row = window.cx.debug_bounds(sel("invite-row", made)).unwrap();
         assert!(new_row.origin.y < window.cx.debug_bounds(under).unwrap().origin.y);
     }
@@ -1918,7 +1951,7 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
         });
         window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
         window.settle();
-        let before = window.cx.debug_bounds(under).unwrap();
+        let before = reveal_in_page(&mut window, under);
         let listed = tokens(&mut window).len();
         // In the first round the state of the server brings the new token while the
         // answer waits at the proxy. In the second, the answer is not held.
@@ -1958,6 +1991,7 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
         window.until("the new token has its row", |window| {
             !window.shows("token-secret") && window.shows(sel("token-row", made))
         });
+        reveal_in_page(&mut window, under);
         let new_row = window.cx.debug_bounds(sel("token-row", made)).unwrap();
         assert!(new_row.origin.y < window.cx.debug_bounds(under).unwrap().origin.y);
     }
@@ -2167,7 +2201,7 @@ fn a_new_row_that_the_state_brings_after_its_result_is_put_away_moves_no_row_und
         window.until("the result is put away", |window| {
             !window.shows(page.result)
         });
-        let before = window.cx.debug_bounds(under).unwrap();
+        let before = reveal_in_page(&mut window, under);
         proxy.release();
         window.until("the state has the new row", |window| {
             page.rows(window).unwrap_or_default().contains(&made)
@@ -2185,7 +2219,7 @@ fn a_new_row_that_the_state_brings_after_its_result_is_put_away_moves_no_row_und
 
         // The person opens the form: the row joins the list.
         page.open_form(&mut window);
-        assert!(window.shows(sel(page.row, &made)));
+        reveal_in_page(&mut window, sel(page.row, &made));
         click_in_page(&mut window, page.cancel);
     }
 }
@@ -2254,7 +2288,7 @@ fn the_form_of_a_new_row_stays_while_its_request_is_sent(cx: &mut TestAppContext
         proxy.hold_answer_ending("POST", page.request);
         click_in_page(&mut window, page.create);
         window.until("the answer waits", |_| proxy.answers_waiting() == 1);
-        let before = window.cx.debug_bounds(under).unwrap();
+        let before = reveal_in_page(&mut window, under);
 
         for (selector, what) in [
             (page.cancel, "Cancel"),
@@ -2315,7 +2349,7 @@ fn a_second_new_row_keeps_the_first_one_out_of_the_list_until_a_release(cx: &mut
         // The person opens the form again, a release while the state does not hold the
         // first row, and sends it.
         page.open_form(&mut window);
-        let before = window.cx.debug_bounds(under).unwrap();
+        let before = reveal_in_page(&mut window, under);
         click_in_page(&mut window, page.create);
         window.until("the second result is shown", |window| {
             idle(window)
@@ -2436,16 +2470,13 @@ fn the_first_row_joins_the_list_at_its_done_while_a_second_request_is_sent(
 
         // Done of the first result: the first row joins the list at this press.
         click_in_page(&mut window, page.done);
-        window.until("the first row is in the list", |window| {
-            window.shows(sel(page.row, &first))
-        });
-        let before = window.cx.debug_bounds(under).unwrap();
+        reveal_in_page(&mut window, sel(page.row, &first));
+        let before = reveal_in_page(&mut window, under);
         proxy.release();
         window.until(
             "the second result is shown and the state has the second row",
             |window| {
                 idle(window)
-                    && window.shows(page.result)
                     && page.made(window).is_some_and(|made| {
                         made != first && page.rows(window).unwrap_or_default().contains(&made)
                     })
@@ -2460,10 +2491,9 @@ fn the_first_row_joins_the_list_at_its_done_while_a_second_request_is_sent(
             page.nav
         );
         assert!(!window.shows(sel(page.row, &second)));
+        reveal_in_page(&mut window, page.result);
         click_in_page(&mut window, page.done);
-        window.until("the second row is in the list", |window| {
-            window.shows(sel(page.row, &second))
-        });
+        reveal_in_page(&mut window, sel(page.row, &second));
     }
 }
 
@@ -2555,6 +2585,103 @@ fn server_entries(world: &World, server: &TestServer) -> usize {
     })
 }
 
+#[test]
+fn two_thousand_audit_entries_are_read_without_exhausting_the_server_connections() {
+    let world = World::new();
+    let server = world.server("Audit pages");
+    let owner = world.owner(&server);
+    let started = std::time::Instant::now();
+    write_audit_entries(
+        &world,
+        &server,
+        logged_in(&owner.handle),
+        2_060,
+        OffsetDateTime::now_utc(),
+    );
+    println!("inserting 2060 audit entries: {:?}", started.elapsed());
+    let expected = server_entries(&world, &server);
+    let started = std::time::Instant::now();
+    let mut query = AuditFilterQuery {
+        limit: Some(50),
+        ..Default::default()
+    };
+    let mut ids = Vec::new();
+    let mut longest = std::time::Duration::ZERO;
+    loop {
+        let request = std::time::Instant::now();
+        let page = world
+            .run(owner.handle.api().server_audit_log(&query))
+            .unwrap();
+        longest = longest.max(request.elapsed());
+        assert!(page.entries.len() <= 50);
+        ids.extend(page.entries.iter().map(|entry| entry.id));
+        query.before = page.next_before;
+        if query.before.is_none() {
+            break;
+        }
+    }
+    println!(
+        "reading {} audit entries: {:?}, longest page {:?}",
+        ids.len(),
+        started.elapsed(),
+        longest
+    );
+    assert_eq!(ids.len(), expected);
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), expected);
+    assert!(ids.windows(2).all(|pair| pair[0] > pair[1]));
+}
+
+#[gpui::test]
+fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
+    use sqlx::ConnectOptions;
+    let world = World::new();
+    let server = world.server("People list");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into accounts (id, name, status, created_at)
+            select gen_random_uuid(), 'Member ' || lpad(n::text, 4, '0'), 'active', now()
+            from generate_series(1, 2000) as n",
+        )
+        .execute(&mut database)
+        .await
+        .unwrap();
+    });
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        server_page!(window, People).is_some_and(|page| {
+            page.accounts
+                .loaded()
+                .is_some_and(|rows| rows.len() == 2001)
+        })
+    });
+    let rows = server_page!(&mut window, People)
+        .unwrap()
+        .accounts
+        .loaded()
+        .unwrap()
+        .clone();
+    let count = |window: &mut Window| {
+        rows.iter()
+            .filter(|row| window.cx.debug_bounds(sel("account-row", row.id)).is_some())
+            .count()
+    };
+    assert!(count(&mut window) < 100);
+    let last = sel("account-row", rows.last().unwrap().id);
+    assert!(!window.shows(last));
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to_end();
+        cx.notify();
+    });
+    window.until("the last account is drawn", |window| window.shows(last));
+    assert!(count(&mut window) < 100);
+}
+
 /// Presses "Load older" of the audit log, one page at a time, until `done` holds for the
 /// loaded page.
 fn load_older_until(
@@ -2611,6 +2738,40 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
     let full = load_older_until(&mut window, |page| page.at_bound);
     assert_eq!(full.loaded, MOST_AUDIT_ENTRIES);
     assert!(full.continues && !full.older && full.passed == 0);
+    let drawn = full
+        .rows
+        .iter()
+        .filter(|row| window.cx.debug_bounds(sel("audit-row", row.id)).is_some())
+        .count();
+    assert!(drawn < 100, "the audit page laid out {drawn} rows");
+    window.in_shell(|shell, window, cx| shell.focus_admin_page(window, cx));
+    let in_view = |window: &mut Window, selector| {
+        let viewport = window.cx.debug_bounds("admin-page").unwrap();
+        window.cx.debug_bounds(selector).is_some_and(|bounds| {
+            bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom()
+        })
+    };
+    for _ in 0..80 {
+        if in_view(&mut window, "audit-reload") {
+            break;
+        }
+        window.press("tab");
+    }
+    assert!(
+        in_view(&mut window, "audit-reload"),
+        "Tab reaches the footer past 2000 rows"
+    );
+    for _ in 0..80 {
+        if in_view(&mut window, "audit-period") {
+            break;
+        }
+        window.press("shift-tab");
+    }
+    assert!(
+        in_view(&mut window, "audit-period"),
+        "Shift+Tab returns to the filters"
+    );
+    reveal_in_page(&mut window, "audit-continue");
     assert!(window.shows("audit-bound") && !window.shows("audit-older"));
     let first_ids: Vec<_> = full.rows.iter().map(|row| row.id).collect();
 
@@ -2626,7 +2787,7 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
     // The rest of the list is read with "Load older": every entry of the log was shown.
     let end = load_older_until(&mut window, |page| !page.older && !page.continues);
     assert_eq!(end.passed + end.loaded, total);
-    assert!(window.shows("audit-count"));
+    reveal_in_page(&mut window, "audit-count");
 
     // "Read again" returns to the newest entries.
     click_in_page(&mut window, "audit-reload");
@@ -2689,7 +2850,7 @@ fn an_administrator_reads_the_log_of_a_deleted_workspace_from_the_entry_of_its_d
         .find(|row| row.sentence.contains("created") && row.channel.is_some())
         .unwrap();
     assert_eq!(created.channel, Some(About::Unknown));
-    assert!(window.shows(sel("audit-row", created.id)));
+    reveal_in_page(&mut window, sel("audit-row", created.id));
     let held = world
         .run(
             owner

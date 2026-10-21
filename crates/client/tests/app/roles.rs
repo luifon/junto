@@ -117,8 +117,7 @@ fn send_role_form(window: &mut Window, name: &str) {
 /// Drags the handle of one role onto the row of another, as the pointer does. Returns
 /// whether a drag started.
 fn drag_role(window: &mut Window, from: &'static str, to: &'static str) -> bool {
-    let scroll = window.in_shell(|shell, _, _| shell.admin_scroll_handle());
-    let start = window.reveal(&scroll, from).center();
+    let start = crate::admin_pages::reveal_in_page(window, from).center();
     window
         .cx
         .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
@@ -128,7 +127,7 @@ fn drag_role(window: &mut Window, from: &'static str, to: &'static str) -> bool 
         Modifiers::none(),
     );
     let started = window.cx.update(|_, cx| cx.has_active_drag());
-    let end = window.reveal(&scroll, to).center();
+    let end = crate::admin_pages::reveal_in_page(window, to).center();
     window
         .cx
         .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
@@ -751,7 +750,7 @@ fn an_answer_to_the_form_of_a_new_role_moves_no_row_of_a_role(cx: &mut TestAppCo
     window.until("the answer waits and the new role is drawn", |window| {
         proxy.answers_waiting() == 1 && role_names(window).contains(&"Helpers".to_owned())
     });
-    let before = window.cx.debug_bounds(row).unwrap();
+    let before = crate::admin_pages::reveal_in_page(&mut window, row);
     proxy.release();
     window.until("the form is closed", |window| {
         idle(window) && !window.shows("role-name")

@@ -291,7 +291,7 @@ The calls to ScreenCaptureKit are not run by a test. The parts of the macOS capt
 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 ```
 
-The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, `messages`, `threads`, `discovery` (notices, notification settings, search) `recorded` (the card of a recording and the transcript), or `cameras` (camera states, direct calls and the detached window). The set `frames` writes no picture: it draws the window with 50 and with 10,000 messages and prints the time of a frame without a change, after a scroll, and after a new message (ADR 0740). Run it with `--release` for times that say something about the application.
+The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, `messages`, `threads`, `discovery` (notices, notification settings, search) `recorded` (the card of a recording and the transcript), or `cameras` (camera states, direct calls and the detached window). The set `frames` writes no picture: it draws the window with 50 and with 10,000 messages and prints the time of a frame without a change, after a scroll, and after a new message (ADR 0740). Run it with `--release` for times that say something about the application. The set `audit-frames` measures unchanged and scrolled frames with 50 and 2,000 audit entries, with five warm-up frames and 60 measured frames per case.
 
 ## Layout of the crate
 

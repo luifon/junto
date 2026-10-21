@@ -70,6 +70,51 @@ pub(crate) fn measure(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn measure_audit(studio: &mut Studio) -> Result<(), String> {
+    for count in [50, 2_000] {
+        let (window, shell, _) = studio.open(
+            Screen::new("audit-frames", super::admin::with_names()),
+            Box::new(move |shell, window, cx| {
+                super::admin::prepare_audit_rows(shell, count, window, cx);
+            }),
+        )?;
+        let mut same = Vec::new();
+        let mut moved = Vec::new();
+        for scrolling in [false, true] {
+            for step in 0..65 {
+                let started = Instant::now();
+                studio
+                    .cx
+                    .update_window(window.into(), |_, window, cx| {
+                        if scrolling {
+                            shell.update(cx, |shell, _| {
+                                shell.scroll_admin_page_by(gpui::px(if step % 2 == 0 {
+                                    360.0
+                                } else {
+                                    -240.0
+                                }));
+                            });
+                        }
+                        window.refresh();
+                    })
+                    .map_err(|error| format!("{error:#}"))?;
+                studio.cx.run_until_parked();
+                if step >= 5 {
+                    if scrolling { &mut moved } else { &mut same }.push(started.elapsed());
+                }
+            }
+        }
+        println!("audit with {count} rows: {}", Times(same).line("unchanged"));
+        println!("audit with {count} rows: {}", Times(moved).line("scrolled"));
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.remove_window())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+    }
+    Ok(())
+}
+
 fn measure_with(studio: &mut Studio, count: u32) -> Result<(), String> {
     let prepare_messages: super::Prepare = Box::new(|shell: &mut Shell, _, cx| {
         prepare(shell, none(), cx);

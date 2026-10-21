@@ -1582,13 +1582,38 @@ fn draw_records(studio: &mut Studio) -> Result<(), String> {
 
 /// "Acme Studio" for the audit log, for an administrator, with what the entries name:
 /// the categories, the archived channels and the server roles.
-fn with_names() -> Vec<ServerSnapshot> {
+pub(super) fn with_names() -> Vec<ServerSnapshot> {
     servers(|model| {
         administrator(model);
         structure(model);
         read_archived(model, archived());
         collections(model).server_roles = Collection::Loaded(server_roles());
     })
+}
+
+pub(super) fn prepare_audit_rows(
+    shell: &mut Shell,
+    count: usize,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<Shell>,
+) {
+    open_page(shell, AdminPage::AuditLog, window, cx);
+    let mut log = Log::new(None);
+    for index in 0..count {
+        log.entry(
+            index as i64,
+            Some("Ana"),
+            AuditEvent::AccountUnbanned {
+                account_id: person("Bruno"),
+            },
+        );
+    }
+    show_records(
+        shell,
+        AuditLog::loaded(id(ACME), AuditScope::Server, log.entries, false),
+        ExportFiles::default(),
+        cx,
+    );
 }
 
 /// Shows the audit log of a scope of "Acme Studio" in the open administration.

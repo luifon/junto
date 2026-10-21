@@ -366,42 +366,43 @@ impl Shell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let rows = page.channels.loaded().cloned().unwrap_or_default();
+        let keys = std::iter::once("archive-header".to_owned())
+            .chain(rows.iter().map(|row| format!("archived-{}", row.id)))
+            .chain(std::iter::once("archive-footer".to_owned()))
+            .collect();
+        self.admin.list.take(view, keys, cx);
+        self.admin.list.interactive = std::iter::once(matches!(page.channels, Listed::Failed(_)))
+            .chain(rows.iter().map(|_| page.may_manage))
+            .chain(std::iter::once(true))
+            .collect();
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                if index == 0 {
+                    return this.render_archive_header(&view, &page, window, cx);
+                }
+                if let Some(row) = rows.get(index - 1) {
+                    return this.render_archived_row(&view, &page, row, &theme(cx), cx);
+                }
+                this.render_archive_footer(&view, &page, cx)
+            },
+            cx,
+        )
+    }
+
+    fn render_archive_footer(
+        &mut self,
+        view: &AdminView,
+        page: &ArchivePage,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
-        let mut column = div()
-            .flex()
-            .flex_col()
-            .child(page_title(
-                text::admin::page_name(AdminPage::Archive),
-                text::admin::ARCHIVE_PAGE_HELP,
-                &theme,
-            ))
-            .child(group_label(text::admin::ARCHIVED_CHANNELS, &theme));
-        match &page.channels {
-            Listed::Loading => {
-                let part = AdminPart::Archived(workspace_id);
-                column = column.child(self.render_reading(server_id, part, None, &theme, cx));
-            }
-            Listed::Failed(failure) => {
-                let part = AdminPart::Archived(workspace_id);
-                column =
-                    column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx));
-            }
-            Listed::Loaded(rows) if rows.is_empty() => {
-                column = column.child(
-                    sentence(text::admin::NO_ARCHIVED, &theme)
-                        .py(u(6.0))
-                        .debug_selector(|| "no-archived".to_owned()),
-                );
-            }
-            Listed::Loaded(rows) => {
-                for row in rows {
-                    column = column.child(self.render_archived_row(view, page, row, &theme, cx));
-                }
-                if !page.may_manage {
-                    column = column.child(sentence(text::admin::RESTORE_NEEDS, &theme).mt(u(6.0)));
-                }
-            }
+        let mut column = div().flex().flex_col();
+        if !page.may_manage && page.channels.loaded().is_some_and(|rows| !rows.is_empty()) {
+            column = column.child(sentence(text::admin::RESTORE_NEEDS, &theme).mt(u(6.0)));
         }
         if let Some(settings) = &page.settings {
             column = column.child(group_label(text::admin::RETENTION, &theme));
@@ -479,6 +480,46 @@ impl Shell {
                     cx,
                 )),
             };
+        }
+        column.into_any_element()
+    }
+
+    fn render_archive_header(
+        &mut self,
+        view: &AdminView,
+        page: &ArchivePage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let (server_id, workspace_id) = (view.server_id, page.workspace_id);
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .child(page_title(
+                text::admin::page_name(AdminPage::Archive),
+                text::admin::ARCHIVE_PAGE_HELP,
+                &theme,
+            ))
+            .child(group_label(text::admin::ARCHIVED_CHANNELS, &theme));
+        match &page.channels {
+            Listed::Loading => {
+                let part = AdminPart::Archived(workspace_id);
+                column = column.child(self.render_reading(server_id, part, None, &theme, cx));
+            }
+            Listed::Failed(failure) => {
+                let part = AdminPart::Archived(workspace_id);
+                column =
+                    column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx));
+            }
+            Listed::Loaded(rows) if rows.is_empty() => {
+                column = column.child(
+                    sentence(text::admin::NO_ARCHIVED, &theme)
+                        .py(u(6.0))
+                        .debug_selector(|| "no-archived".to_owned()),
+                );
+            }
+            Listed::Loaded(_) => {}
         }
         column.into_any_element()
     }

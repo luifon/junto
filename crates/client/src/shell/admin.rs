@@ -4,6 +4,7 @@
 
 mod archive;
 mod channels;
+mod list;
 mod notifications;
 pub mod overrides;
 pub mod people;
@@ -89,6 +90,7 @@ pub(crate) struct AdminUi {
     pub(crate) space: FormSpace<Mode>,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) page_scroll: ScrollHandle,
+    pub(crate) list: list::PageList,
     pub(crate) overrides: overrides::Ui,
     pub(crate) people: people::Ui,
     pub(crate) records: records::Ui,
@@ -98,6 +100,7 @@ pub(crate) struct AdminUi {
 
 impl AdminUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
+        list::init(cx);
         let name = Field::state(text::admin::NAME_FIELD, window, cx);
         let value = Field::state("", window, cx);
         let mut subscriptions = vec![
@@ -139,6 +142,7 @@ impl AdminUi {
             space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
+            list: list::PageList::default(),
             overrides,
             people,
             records,
@@ -378,11 +382,13 @@ impl Shell {
 
     /// The fields and the open forms of the layer belong to the page that was shown.
     pub(crate) fn reset_admin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.admin.list = list::PageList::default();
         self.admin.mode = None;
         self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
         self.admin.space.release();
+        self.admin.list.state.remeasure();
         for field in [self.admin.name.clone(), self.admin.value.clone()] {
             field.update(cx, |field, cx| field.set_value("", window, cx));
         }
@@ -406,6 +412,7 @@ impl Shell {
         self.admin.invalid = None;
         self.admin.sent = None;
         self.admin.space.release();
+        self.admin.list.state.remeasure();
         let name = name.to_owned();
         self.admin
             .name
@@ -685,6 +692,7 @@ impl Shell {
             return div().into_any_element();
         };
         self.settle_admin_form(&view, window, cx);
+        self.admin.list.drawn = false;
         let theme = theme(cx);
         let colors = theme.colors;
         let focus: FocusHandle = self.layer_focus().clone();
@@ -708,6 +716,23 @@ impl Shell {
                 self.render_channel_nav(settings, &theme, cx),
                 self.render_channel_page(&view, settings, window, cx),
             ),
+        };
+        let virtual_page = self.admin.list.drawn;
+        let page = if virtual_page {
+            page
+        } else {
+            ScrollArea::new("admin-page", &self.admin.page_scroll, title)
+                .selector("admin-page")
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .pt(u(14.0))
+                        .px(u(18.0))
+                        .pb(u(18.0))
+                        .child(page),
+                )
+                .into_any_element()
         };
         let header = SideHeader::new(title).icon(Icon::Gear).note(note).trailing(
             Button::new("admin-close")
@@ -767,19 +792,13 @@ impl Shell {
                             ),
                     )
                     .child(
-                        div().flex().flex_col().flex_1().min_w_0().h_full().child(
-                            ScrollArea::new("admin-page", &self.admin.page_scroll, title)
-                                .selector("admin-page")
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .pt(u(14.0))
-                                        .px(u(18.0))
-                                        .pb(u(18.0))
-                                        .child(page),
-                                ),
-                        ),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(page),
                     ),
             )
             .focus_trap("admin-trap", &focus);

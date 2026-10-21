@@ -23,6 +23,15 @@ One layer:
 - The layer belongs to the account that its server showed when it opened. When that server shows another account, or none, the layer closes and keeps nothing of the account before.
 - The window holds open the collections that the open page shows and releases them when the page changes. A collection that is on its way or was not read is stated in place of its rows, with "Try again" after a failure.
 
+The lists of a page:
+
+- Audit entries, recordings, accounts, members and addable accounts, invites, join requests, access tokens, exports, workspaces, categories and channels, archived channels and roles use the variable-height list of gpui. The header and footer belong to that list. It lays out the visible rows and a bounded area beside them, rather than all loaded rows; a focused row remains available for keyboard input. Loading 2,000 audit entries must not lay out 2,000 rows on every frame.
+- Each row has a stable key. Inserting or removing rows retains the scroll position of unchanged rows. A height estimate makes the scrollbar usable before every row has been measured; the actual height replaces it when the row is laid out. Changes of the page data invalidate measurements with an absolute scroll anchor.
+- Tab and Shift+Tab reach controls in rows outside the viewport by revealing the next row with controls before transferring focus. The row is revealed again after its actual height is known. Page Up, Page Down, Home and End scroll the list. The layer continues to hold focus, and the row controls keep their pointer handlers and drag targets.
+- A form keeps its measured space independently of whether its row is currently visible (ADR 0730). Releasing that space invalidates list measurements. The suppression of a newly created invite or token remains independent of which rows are visible.
+- Window tests load 2,000 audit entries and 2,000 accounts and check that fewer than 100 rows are laid out. The audit test also traverses the filters and footer with the keyboard, continues beyond the retained entries and reloads. Existing form-answer tests compare the positions of visible controls, and the channel and role tests exercise drag and keyboard moves.
+- `JUNTO_SCREENS_ONLY=audit-frames` measures unchanged and scrolled frames with 50 and 2,000 entries through the real window renderer. Each case discards five warm-up frames and reports the median and longest of 60 measured frames. A separate server test reads more pages than the connection pool can hold and checks complete, unique, descending results, to distinguish drawing cost from audit pagination.
+
 Pages:
 
 - Workspaces: the list with the default workspace and the membership of the account, a new workspace, a new name, the deletion, and an invite code that enters further workspaces (ADR 0115).

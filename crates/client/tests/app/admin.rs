@@ -569,8 +569,7 @@ fn group_order(
 /// does. Returns whether a drag started.
 fn drag_channel(window: &mut Window, from: &'static str, to: &'static str) -> bool {
     use gpui::{Modifiers, MouseButton, point, px};
-    let scroll = window.in_shell(|shell, _, _| shell.admin_scroll_handle());
-    let start = window.reveal(&scroll, from).center();
+    let start = crate::admin_pages::reveal_in_page(window, from).center();
     window
         .cx
         .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
@@ -580,7 +579,7 @@ fn drag_channel(window: &mut Window, from: &'static str, to: &'static str) -> bo
         Modifiers::none(),
     );
     let started = window.cx.update(|_, cx| cx.has_active_drag());
-    let end = window.reveal(&scroll, to).center();
+    let end = crate::admin_pages::reveal_in_page(window, to).center();
     window
         .cx
         .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
