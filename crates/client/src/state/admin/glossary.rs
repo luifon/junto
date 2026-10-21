@@ -1,13 +1,20 @@
 //! What the application does for the glossary of a workspace (ADR 0616): a change of the
-//! person is made from the list that the state holds, and is sent as the whole new list
-//! with the list that it changes, so that the server refuses it when another person changed
-//! the glossary meanwhile (ADR 0607).
+//! person is made from the list that the page shows, and is sent as the whole new list with
+//! the list that it changes, so that the server refuses it when another person changed the
+//! glossary meanwhile (ADR 0607).
+//!
+//! The answer of a change carries the glossary after it. The page shows that list until the
+//! state shows a read of the glossary that started after the answer arrived: such a read
+//! holds the change, or a later one. A refused change puts the answered list away.
+
+use std::time::Instant;
 
 use gpui::Context;
-use junto_client_core::model::GlossaryList;
+use junto_client_core::model::{AdminPart, GlossaryList, ServerModel};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
-use super::{AdminOpen, AdminPage, AskKind};
+use super::{AdminOpen, AdminPage, AskKind, AskState};
 use crate::state::AppState;
 use crate::text;
 
@@ -50,13 +57,44 @@ impl GlossaryChange {
     }
 }
 
-/// The glossary that a change of the person replaced. The page takes no further change
-/// while the state still holds that list: a change made from it would be refused.
+/// The glossary that the answer to the last change of the person carried, and when the
+/// answer arrived.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sent {
+pub struct Answered {
     pub server_id: ServerId,
     pub workspace_id: WorkspaceId,
     pub terms: Vec<String>,
+    pub at: Instant,
+}
+
+impl Answered {
+    /// The glossary of the workspace as the page shows it: the answered list, while the
+    /// collection shows no read that started after the answer arrived.
+    pub fn over<'a>(
+        answered: Option<&'a Self>,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        model: &'a ServerModel,
+    ) -> Option<&'a [String]> {
+        let part = AdminPart::Glossary(workspace_id);
+        let newer = answered
+            .filter(|held| held.server_id == server_id && held.workspace_id == workspace_id)
+            .filter(|held| {
+                model
+                    .admin
+                    .read_times(part)
+                    .shown
+                    .is_none_or(|shown| shown <= held.at)
+            });
+        match newer {
+            Some(held) => Some(held.terms.as_slice()),
+            None => model
+                .admin
+                .glossary(workspace_id)
+                .loaded()
+                .map(|held| held.terms.as_slice()),
+        }
+    }
 }
 
 /// Why a term cannot be in the glossary `terms`, where the term at `except` is the one that
@@ -136,14 +174,42 @@ pub fn changed(
 }
 
 impl AppState {
-    /// The glossary of a workspace as the state holds it now.
-    fn held_glossary(
+    /// The glossary of a workspace as the page shows it now (see [`Answered::over`]), and
+    /// whether the client holds it in part.
+    fn shown_glossary(
         &self,
         server_id: ServerId,
         workspace_id: WorkspaceId,
     ) -> Option<GlossaryList> {
         let model = self.client.server(server_id)?.live().view().model?;
-        model.admin.glossary(workspace_id).loaded().cloned()
+        let cut = model
+            .admin
+            .glossary(workspace_id)
+            .loaded()
+            .is_some_and(|held| held.cut);
+        let terms = Answered::over(
+            self.admin.glossary_answered.as_ref(),
+            server_id,
+            workspace_id,
+            &model,
+        )?;
+        Some(GlossaryList {
+            terms: terms.to_vec(),
+            cut,
+        })
+    }
+
+    /// The roles of the person in the workspace hold "manage glossary". The server decides.
+    fn manages_glossary(&self, server_id: ServerId, workspace_id: WorkspaceId) -> bool {
+        self.client
+            .server(server_id)
+            .and_then(|server| server.live().view().model)
+            .and_then(|model| {
+                model
+                    .workspace(workspace_id)
+                    .map(|workspace| workspace.holds(WorkspacePermission::ManageGlossary))
+            })
+            .unwrap_or(false)
     }
 
     /// Changes the glossary of the shown workspace. The new list is made from the list
@@ -157,7 +223,11 @@ impl AppState {
         change: GlossaryChange,
         cx: &mut Context<Self>,
     ) -> Result<bool, &'static str> {
-        let Some(held) = self.held_glossary(server_id, workspace_id) else {
+        // The permission can be lost while a form is open.
+        if !self.manages_glossary(server_id, workspace_id) {
+            return Err(text::admin::glossary::MANAGE_NEEDS);
+        }
+        let Some(held) = self.shown_glossary(server_id, workspace_id) else {
             return Err(text::admin::glossary::NOT_READ);
         };
         // A list that the client holds in part would lose the terms that it does not hold.
@@ -168,35 +238,58 @@ impl AppState {
             return Ok(false);
         };
         let base = held.terms;
-        let sent = Sent {
-            server_id,
-            workspace_id,
-            terms: base.clone(),
-        };
         self.admin_ask(
             server_id,
             change.ask(),
             move |api| async move { api.set_glossary(workspace_id, &terms, Some(&base)).await },
-            move |this, _, _| this.admin.glossary_sent = Some(sent),
+            move |this, glossary, _| {
+                this.admin.glossary_answered = Some(Answered {
+                    server_id,
+                    workspace_id,
+                    terms: glossary.terms,
+                    at: Instant::now(),
+                });
+            },
             cx,
         );
         Ok(true)
     }
 
-    /// The state holds another glossary than the one that the last change replaced: the
-    /// change, or a later one, has arrived, and the page takes changes again.
-    pub(super) fn settle_glossary_sent(&mut self) {
-        let Some(sent) = &self.admin.glossary_sent else {
+    /// Puts the answered glossary away when the page does not show it any more: another
+    /// page is open, the state shows a read that started after the answer, or the server
+    /// refused a later change of the page.
+    pub(super) fn settle_glossary_answered(&mut self) {
+        let Some(answered) = &self.admin.glossary_answered else {
             return;
         };
         let open = self.admin.open
             == Some(AdminOpen::Server {
-                server_id: sent.server_id,
+                server_id: answered.server_id,
                 page: AdminPage::Glossary,
             });
-        let held = self.held_glossary(sent.server_id, sent.workspace_id);
-        if !open || held.is_none_or(|held| held.terms != sent.terms) {
-            self.admin.glossary_sent = None;
+        let refused = self.admin.ask.as_ref().is_some_and(|ask| {
+            matches!(ask.state, AskState::Refused(_))
+                && matches!(
+                    ask.what,
+                    AskKind::AddTerm
+                        | AskKind::ChangeTerm(_)
+                        | AskKind::RemoveTerm(_)
+                        | AskKind::MoveTerm(_)
+                )
+        });
+        let read_after = self
+            .client
+            .server(answered.server_id)
+            .and_then(|server| server.live().view().model)
+            .is_none_or(|model| {
+                model
+                    .admin
+                    .read_times(AdminPart::Glossary(answered.workspace_id))
+                    .shown
+                    .is_some_and(|shown| shown > answered.at)
+            });
+        if !open || refused || read_after {
+            self.admin.glossary_answered = None;
         }
     }
 }

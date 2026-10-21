@@ -223,9 +223,9 @@ pub struct AdminState {
     /// The roles whose permissions the person changed and whose change the state does
     /// not show yet (ADR 0791).
     pub(crate) role_changes: roles::RoleChanges,
-    /// The glossary that the last change of the person replaced, while the state still
-    /// shows it (ADR 0616).
-    pub(crate) glossary_sent: Option<glossary::Sent>,
+    /// The glossary that the answer to the last change of the person carried, while the
+    /// state shows no read of it that started after the answer (ADR 0616).
+    pub(crate) glossary_answered: Option<glossary::Answered>,
 }
 
 /// The request that an answer belongs to.
@@ -257,7 +257,7 @@ impl AdminState {
             // The list of the recordings belongs to its page. A late answer finds no
             // list that waits for it.
             self.recordings = recordings::RecordingList::default();
-            self.glossary_sent = None;
+            self.glossary_answered = None;
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
@@ -274,7 +274,7 @@ impl AdminState {
         self.made = None;
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
-        self.glossary_sent = None;
+        self.glossary_answered = None;
     }
 
     /// Binds the open layer to the account that its server shows now. A layer that was
@@ -426,7 +426,7 @@ impl AppState {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
         self.settle_role_changes();
-        self.settle_glossary_sent();
+        self.settle_glossary_answered();
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();

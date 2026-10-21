@@ -5,10 +5,12 @@
 use gpui::TestAppContext;
 use junto_client::state::admin::view::{Listed, Scope, ServerPage};
 use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::ids::WorkspaceId;
+use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 
 use crate::admin_pages::{click_in_page, open_page, sel};
-use crate::harness::{Window, World, member};
-use crate::support::FaultProxy;
+use crate::harness::{Admin, Window, World, member};
+use crate::support::{FaultProxy, TestServer};
 use crate::transcripts::give_everyone;
 
 /// The glossary page of the shown workspace as the window draws it.
@@ -146,4 +148,189 @@ fn a_member_reads_the_glossary_and_a_person_who_manages_it_adds_changes_orders_a
     window.until("the glossary of the other person", |window| {
         terms(window) == Some(list(&["Kestrel"]))
     });
+}
+
+/// A member window on the glossary page of the default workspace, through a proxy, with
+/// the terms given and "manage glossary" given to every member.
+struct Page {
+    world: World,
+    _server: TestServer,
+    proxy: FaultProxy,
+    admin: Admin,
+    _directory: tempfile::TempDir,
+    window: Window,
+    workspace_id: WorkspaceId,
+}
+
+fn manager_on_the_page(cx: &mut TestAppContext, given: &[&str]) -> Page {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let workspace_id = window.view().workspace().unwrap().id;
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .set_glossary(workspace_id, &list(given), None),
+        )
+        .unwrap();
+    give_everyone(
+        &world,
+        &admin,
+        workspace_id,
+        WorkspacePermission::ManageGlossary,
+    );
+    window.open_administration();
+    open_page(&mut window, "admin-nav-glossary", |window| {
+        glossary_page(window).is_some()
+    });
+    window.until("the page takes changes", |window| {
+        terms(window) == Some(list(given))
+            && glossary_page(window).is_some_and(|page| page.held().is_none())
+    });
+    Page {
+        world,
+        _server: server,
+        proxy,
+        admin,
+        _directory: directory,
+        window,
+        workspace_id,
+    }
+}
+
+/// Takes a permission from the role "everyone" of the workspace, as the owner does.
+fn take_from_everyone(
+    world: &World,
+    admin: &Admin,
+    workspace_id: WorkspaceId,
+    permission: WorkspacePermission,
+) {
+    let api = admin.handle.api();
+    let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap();
+    let permissions = everyone
+        .permissions
+        .iter()
+        .copied()
+        .filter(|held| *held != permission)
+        .collect();
+    let update = UpdateWorkspaceRole {
+        name: None,
+        permissions: Some(permissions),
+    };
+    world
+        .run(api.update_workspace_role(workspace_id, everyone.id, &update))
+        .unwrap();
+}
+
+/// Another person changes the term of an open form: the form closes, and its row keeps the
+/// height of the form until the person acts, so the rows under it do not move (ADR 0730).
+#[gpui::test]
+fn a_change_of_another_person_closes_a_form_and_moves_no_row_under_it(cx: &mut TestAppContext) {
+    let Page {
+        world,
+        admin,
+        mut window,
+        workspace_id,
+        _server,
+        _directory,
+        proxy: _proxy,
+    } = manager_on_the_page(cx, &["Quorvex", "Lumitrax", "Ysolde Varkonen"]);
+    click_in_page(&mut window, sel("glossary-change", 1));
+    assert!(window.shows("glossary-term"));
+    let under = window.cx.debug_bounds("glossary-row-2").unwrap();
+    let changed = list(&["Quorvex", "Lumitrax Ltd", "Ysolde Varkonen"]);
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .set_glossary(workspace_id, &changed, None),
+        )
+        .unwrap();
+    window.until("the form of the changed term is closed", |window| {
+        terms(window) == Some(changed.clone()) && !window.shows("glossary-term")
+    });
+    assert_eq!(window.cx.debug_bounds("glossary-row-2").unwrap(), under);
+}
+
+/// The permission is taken while the form of a new term is open: the form takes no send,
+/// says why, and an Enter in its field sends nothing.
+#[gpui::test]
+fn a_form_that_the_permission_was_taken_from_sends_nothing(cx: &mut TestAppContext) {
+    let Page {
+        world,
+        admin,
+        mut window,
+        workspace_id,
+        _server,
+        _directory,
+        proxy: _proxy,
+    } = manager_on_the_page(cx, &["Quorvex"]);
+    click_in_page(&mut window, "glossary-add");
+    window.in_shell(|shell, window, cx| shell.type_admin_name("Kestrel", window, cx));
+    assert!(!window.shows("admin-form-held"));
+    take_from_everyone(
+        &world,
+        &admin,
+        workspace_id,
+        WorkspacePermission::ManageGlossary,
+    );
+    window.until("the form states that it takes no send", |window| {
+        glossary_page(window).is_some_and(|page| !page.may_manage)
+            && window.shows("admin-form-held")
+    });
+    window.in_shell(|shell, window, cx| shell.submit_admin_form(window, cx));
+    assert!(window.shows("admin-form-invalid"));
+    let stored = world
+        .run(admin.handle.api().glossary(workspace_id))
+        .unwrap()
+        .terms;
+    assert_eq!(stored, list(&["Quorvex"]));
+}
+
+/// The change of the person is answered, and another person puts the list back before the
+/// window has read it: the page shows the list of the server and takes changes again.
+#[gpui::test]
+fn a_change_that_another_person_undid_leaves_the_page_taking_changes(cx: &mut TestAppContext) {
+    let Page {
+        world,
+        proxy,
+        admin,
+        mut window,
+        workspace_id,
+        _server,
+        _directory,
+    } = manager_on_the_page(cx, &["Quorvex", "Lumitrax"]);
+    proxy.hold_events();
+    click_in_page(&mut window, "glossary-add");
+    window.in_shell(|shell, window, cx| shell.type_admin_name("Kestrel", window, cx));
+    click_in_page(&mut window, "admin-form-send");
+    // The answer carries the new list, which the page shows before the state has it.
+    window.until("the answered list", |window| {
+        terms(window) == Some(list(&["Quorvex", "Lumitrax", "Kestrel"]))
+            && !window.shows("glossary-term")
+    });
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .set_glossary(workspace_id, &list(&["Quorvex", "Lumitrax"]), None),
+        )
+        .unwrap();
+    proxy.release_events();
+    window.until(
+        "the list of the server, and the page takes changes",
+        |window| {
+            terms(window) == Some(list(&["Quorvex", "Lumitrax"]))
+                && glossary_page(window).is_some_and(|page| page.held().is_none())
+        },
+    );
+    click_in_page(&mut window, "glossary-add");
+    assert!(window.shows("glossary-term"));
 }

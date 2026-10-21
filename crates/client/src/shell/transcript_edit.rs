@@ -11,6 +11,7 @@ use gpui::{
     prelude::FluentBuilder,
 };
 use gpui_base::input::InputState;
+use junto_client_core::model::OpenRecording;
 use junto_client_core::protocol::ids::{RecordingId, ServerId};
 
 use super::Shell;
@@ -41,6 +42,24 @@ pub(crate) struct TranscriptEdit {
     pub(crate) originals: HashSet<(RecordingId, u32)>,
     /// The recording whose details the panel shows.
     pub(crate) details: Option<RecordingId>,
+    /// The value that the open form was made from: the text of the line, or the name of
+    /// the voice (`None`: no name). It is sent with the change, and the server refuses a
+    /// change when the line or the voice has another value (ADR 0607).
+    pub(crate) read: Option<String>,
+    /// Another person changed the line or the name while the form was open.
+    pub(crate) incoming: Option<Incoming>,
+    /// The owner of the server whose transcript the panel showed (ADR 0745). Nothing of the
+    /// panel stays for another owner.
+    pub(crate) owner: Option<junto_client_core::book::Owner>,
+}
+
+/// What the form tells about a change of another person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Incoming {
+    /// The person had not changed the text: the form holds the new value.
+    Taken,
+    /// The person had changed the text: it stays, and the new value is told.
+    Kept(String),
 }
 
 impl TranscriptEdit {
@@ -66,28 +85,36 @@ impl TranscriptEdit {
             space: FormSpace::default(),
             originals: HashSet::new(),
             details: None,
+            read: None,
+            incoming: None,
+            owner: None,
         };
         (edit, subscription)
     }
 }
 
 impl Shell {
-    /// Opens the form of a change with the text that the panel shows now.
+    /// Opens the form of a change with the value that the panel shows now: the text of the
+    /// line, or the name of the voice (`None`: no name).
     pub fn open_transcript_form(
         &mut self,
         server_id: ServerId,
         recording_id: RecordingId,
         what: TranscriptChange,
-        shown: &str,
+        shown: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let owner = self.state.read(cx).owner_of(server_id);
         let edit = &mut self.transcript_edit;
         edit.open = Some((server_id, (recording_id, what)));
         edit.invalid = None;
         edit.sent = false;
+        edit.incoming = None;
+        edit.read = shown.map(str::to_owned);
+        edit.owner = owner;
         edit.space.release();
-        let shown = shown.to_owned();
+        let shown = shown.unwrap_or_default().to_owned();
         let field = edit.field.clone();
         field.update(cx, |field, cx| field.set_value(shown, window, cx));
         self.focus_field(&field, window, cx);
@@ -102,6 +129,8 @@ impl Shell {
         let open = self.transcript_edit.open.take();
         self.transcript_edit.invalid = None;
         self.transcript_edit.sent = false;
+        self.transcript_edit.incoming = None;
+        self.transcript_edit.read = None;
         self.transcript_edit.space.release();
         let field = self.transcript_edit.field.clone();
         field.update(cx, |field, cx| field.set_value("", window, cx));
@@ -123,8 +152,9 @@ impl Shell {
             return;
         }
         let typed = self.transcript_edit.field.read(cx).value().to_string();
+        let read = self.transcript_edit.read.clone();
         let sent = self.state.update(cx, |state, cx| {
-            state.change_transcript(server_id, recording_id, what, &typed, cx)
+            state.change_transcript(server_id, recording_id, what, &typed, read, cx)
         });
         match sent {
             Ok(true) => self.transcript_edit.sent = true,
@@ -134,23 +164,73 @@ impl Shell {
         cx.notify();
     }
 
-    /// Follows the answer of the sent form: the server did it, and the form closes with
-    /// its row keeping the height that it had; or the server refused it, and the form
-    /// stays with the reason.
+    /// Follows the state for the open form. Nothing of the panel stays for another owner
+    /// of the server. A change of another person while the form is open is shown in it,
+    /// and the form is made from that value from then on. The answer of the sent form: the
+    /// server did it, and the form closes with its row keeping the height that it had; or
+    /// the server refused it, and the form stays with the reason.
     pub(crate) fn settle_transcript_form(
         &mut self,
+        server_id: ServerId,
         recording_id: RecordingId,
         transcript: &TranscriptShown,
+        open: &OpenRecording,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let owner = self.state.read(cx).owner_of(server_id);
         let edit = &mut self.transcript_edit;
-        // The panel shows another recording: what was open belongs to the one before.
-        if edit.open.is_some_and(|(_, (of, _))| of != recording_id) {
+        // A draft, a shown original and open details belong to the owner that made them
+        // (ADR 0745): another account of the server, or none, gets none of them.
+        if edit.owner != owner {
+            edit.owner = owner;
             edit.open = None;
             edit.sent = false;
             edit.invalid = None;
+            edit.incoming = None;
+            edit.read = None;
+            edit.originals.clear();
+            edit.details = None;
             edit.space.release();
+            let field = edit.field.clone();
+            field.update(cx, |field, cx| field.set_value("", window, cx));
+        }
+        let edit = &mut self.transcript_edit;
+        // The panel shows another recording: what was open belongs to the one before.
+        if edit
+            .open
+            .is_some_and(|(of_server, (of, _))| of != recording_id || of_server != server_id)
+        {
+            edit.open = None;
+            edit.sent = false;
+            edit.invalid = None;
+            edit.incoming = None;
+            edit.read = None;
+            edit.space.release();
+        }
+        // A change of another person while the form is open and not sent.
+        if let Some((_, (_, what))) = edit.open.filter(|_| !edit.sent) {
+            let now = match what {
+                TranscriptChange::Line(position) => {
+                    open.line(position).map(|line| Some(line.text.clone()))
+                }
+                TranscriptChange::Speaker(number) => {
+                    open.speaker(number).map(|speaker| speaker.name.clone())
+                }
+            };
+            if let Some(now) = now.filter(|now| *now != edit.read) {
+                let draft = edit.field.read(cx).value().trim().to_owned();
+                let untouched = draft == edit.read.clone().unwrap_or_default();
+                edit.incoming = Some(if untouched {
+                    let field = edit.field.clone();
+                    let value = now.clone().unwrap_or_default();
+                    field.update(cx, |field, cx| field.set_value(value, window, cx));
+                    Incoming::Taken
+                } else {
+                    Incoming::Kept(now.clone().unwrap_or_default())
+                });
+                edit.read = now;
+            }
         }
         if edit.details.is_some_and(|of| of != recording_id) {
             edit.details = None;
@@ -166,6 +246,8 @@ impl Shell {
                 edit.open = None;
                 edit.sent = false;
                 edit.invalid = None;
+                edit.incoming = None;
+                edit.read = None;
                 edit.space.keep(key);
                 let field = edit.field.clone();
                 field.update(cx, |field, cx| field.set_value("", window, cx));
@@ -221,6 +303,17 @@ impl Shell {
                 refused.map(|reason| {
                     Notice::error(reason)
                         .selector("transcript-form-refused")
+                        .into_any_element()
+                })
+            })
+            .or_else(|| {
+                self.transcript_edit.incoming.as_ref().map(|incoming| {
+                    let sentence = match incoming {
+                        Incoming::Taken => txt::CHANGED_TAKEN.to_owned(),
+                        Incoming::Kept(now) => txt::changed_kept(now),
+                    };
+                    Notice::new(sentence)
+                        .selector("transcript-form-changed")
                         .into_any_element()
                 })
             });
@@ -362,7 +455,7 @@ impl Shell {
                         server_id,
                         recording_id,
                         TranscriptChange::Line(line),
-                        &shown,
+                        Some(&shown),
                         window,
                         cx,
                     );
@@ -430,7 +523,7 @@ impl Shell {
             let (sending, refused) = Self::form_state(transcript, key);
             self.transcript_form(txt::VOICE_NAME, sending, refused, theme, cx)
         } else {
-            let shown = voice.name.clone().unwrap_or_default();
+            let shown = voice.name.clone();
             div()
                 .flex()
                 .items_start()
@@ -492,7 +585,7 @@ impl Shell {
                                         server_id,
                                         recording_id,
                                         TranscriptChange::Speaker(number),
-                                        &shown,
+                                        shown.as_deref(),
                                         window,
                                         cx,
                                     );
@@ -612,6 +705,11 @@ impl Shell {
 }
 
 impl Shell {
+    /// The text of the field of the open form of the transcript panel.
+    pub fn transcript_text(&self, cx: &gpui::App) -> String {
+        self.transcript_edit.field.read(cx).value().to_string()
+    }
+
     /// Puts text into the field of the open form of the transcript panel, as typing does.
     pub fn type_transcript_text(
         &mut self,

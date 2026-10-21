@@ -2,12 +2,13 @@
 //! receives before it transcribes a recording of the workspace, the most important first
 //! (ADR 0603). Every member reads it; a person with "manage glossary" changes it.
 
-use junto_client_core::model::{ServerModel, WorkspaceModel};
+use junto_client_core::model::{Collection, ServerModel, WorkspaceModel};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
 use super::{Listed, holds_workspace};
 use crate::state::admin::AdminState;
+use crate::state::admin::glossary::Answered;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlossaryPage {
@@ -20,9 +21,6 @@ pub struct GlossaryPage {
     pub cut: bool,
     /// The person holds "manage glossary" in the workspace. The server decides.
     pub may_manage: bool,
-    /// A change of the person was done, and the state does not show it yet: a further
-    /// change made from the list of now would be refused.
-    pub following: bool,
 }
 
 impl GlossaryPage {
@@ -35,8 +33,6 @@ impl GlossaryPage {
             Some(glossary::CUT)
         } else if self.terms.loaded().is_none() {
             Some(glossary::NOT_READ)
-        } else if self.following {
-            Some(glossary::FOLLOWING)
         } else {
             None
         }
@@ -52,17 +48,22 @@ pub fn derive(
 ) -> GlossaryPage {
     let workspace_id = workspace.workspace.id;
     let held = model.admin.glossary(workspace_id);
-    let following = admin.glossary_sent.as_ref().is_some_and(|sent| {
-        sent.server_id == server_id
-            && sent.workspace_id == workspace_id
-            && held.loaded().is_some_and(|held| held.terms == sent.terms)
-    });
+    // The answer to the last change of the person is newer than the state until the state
+    // shows a read that started after it (ADR 0616).
+    let answered = Answered::over(
+        admin.glossary_answered.as_ref(),
+        server_id,
+        workspace_id,
+        model,
+    );
     GlossaryPage {
         workspace_id,
         workspace_name: workspace.workspace.name.clone(),
-        terms: Listed::of(held, |held| held.terms.clone()),
+        terms: match (held, answered) {
+            (Collection::Loaded(_), Some(terms)) => Listed::Loaded(terms.to_vec()),
+            _ => Listed::of(held, |held| held.terms.clone()),
+        },
         cut: held.loaded().is_some_and(|held| held.cut),
         may_manage: holds_workspace(workspace, WorkspacePermission::ManageGlossary),
-        following,
     }
 }

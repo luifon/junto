@@ -164,30 +164,38 @@ impl ServerApi {
 
     /// Corrects one line of a transcript. Every account that may read the recording can
     /// do this. The text has 1 to 2000 characters. The answer carries the text that the
-    /// worker wrote as `original_text`.
+    /// worker wrote as `original_text`. With `replaces`, the text that the caller read,
+    /// the server stores the correction only while the line shows that text, and answers
+    /// `conflict` otherwise (ADR 0607).
     pub async fn correct_transcript_line(
         &self,
         recording_id: RecordingId,
         line: u32,
         text: &str,
+        replaces: Option<&str>,
     ) -> Result<TranscriptLine, ApiError> {
         let path = format!("{}/lines/{line}", transcript_of(recording_id));
         let body = CorrectLine {
             text: text.to_owned(),
+            replaces: replaces.map(str::to_owned),
         };
         self.send(Method::Put, path, &body).await
     }
 
-    /// Gives a name to the voice with the label `Speaker <number>` in one recording.
+    /// Gives a name to the voice with the label `Speaker <number>` in one recording. With
+    /// `replaces`, the name that the caller read (`Some(None)`: no name), the server stores
+    /// the name only while the voice has that name, and answers `conflict` otherwise.
     pub async fn rename_transcript_speaker(
         &self,
         recording_id: RecordingId,
         number: u32,
         name: &str,
+        replaces: Option<Option<&str>>,
     ) -> Result<TranscriptSpeaker, ApiError> {
         let path = format!("{}/speakers/{number}", transcript_of(recording_id));
         let body = RenameSpeaker {
             name: name.to_owned(),
+            replaces: replaces.map(|read| read.map(str::to_owned)),
         };
         self.send(Method::Put, path, &body).await
     }
@@ -444,12 +452,24 @@ mod tests {
         let mut corrected = line(4, "eleven seconds");
         corrected.original_text = Some("a leaven seconds".to_owned());
         let renamed = speaker(2, Some("Noor"));
-        let (fixed, api) = played(vec![json(&corrected), json(&renamed), json(&held)]);
+        let (fixed, api) = played(vec![
+            json(&corrected),
+            json(&renamed),
+            json(&renamed),
+            json(&held),
+        ]);
         let path = format!("/api/v1/recordings/{id}/transcript");
 
-        let read = api.correct_transcript_line(id, 4, "eleven seconds").await;
+        let read = api
+            .correct_transcript_line(id, 4, "eleven seconds", Some("a leaven seconds"))
+            .await;
         assert_eq!(read.unwrap(), corrected);
-        let read = api.rename_transcript_speaker(id, 2, "Noor").await;
+        let read = api.rename_transcript_speaker(id, 2, "Noor", None).await;
+        assert_eq!(read.unwrap(), renamed);
+        // A voice without a name is named from no name: the field is `null`.
+        let read = api
+            .rename_transcript_speaker(id, 2, "Noor", Some(None))
+            .await;
         assert_eq!(read.unwrap(), renamed);
         assert_eq!(api.request_transcript(id).await.unwrap(), held);
         let sent = |method, path: String, body: &str| Asked {
@@ -463,12 +483,17 @@ mod tests {
                 sent(
                     Method::Put,
                     format!("{path}/lines/4"),
-                    r#"{"text":"eleven seconds"}"#
+                    r#"{"text":"eleven seconds","replaces":"a leaven seconds"}"#
                 ),
                 sent(
                     Method::Put,
                     format!("{path}/speakers/2"),
                     r#"{"name":"Noor"}"#
+                ),
+                sent(
+                    Method::Put,
+                    format!("{path}/speakers/2"),
+                    r#"{"name":"Noor","replaces":null}"#
                 ),
                 sent(Method::Post, path, ""),
             ]

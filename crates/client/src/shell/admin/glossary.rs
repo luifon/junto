@@ -95,6 +95,12 @@ impl Shell {
         else {
             return;
         };
+        // A form can stay open while the permission is lost or the list is read again.
+        if let Some(held) = page.held() {
+            self.admin.invalid = Some(held);
+            cx.notify();
+            return;
+        }
         let typed = self.admin_name(cx);
         let change = match self.admin.mode {
             Some(Mode::AddTerm) => GlossaryChange::Add(typed),
@@ -134,6 +140,7 @@ impl Shell {
                         send: text::SAVE,
                         sending: view.sending(AskKind::ChangeTerm(position)),
                         help: None,
+                        held: page.held(),
                         extra: Vec::new(),
                     },
                     theme,
@@ -291,9 +298,14 @@ impl Shell {
             if shown.is_none_or(|term| self.admin.opened_term.as_deref() != Some(term.as_str()))
                 && self.admin.sent.is_none()
             {
-                self.admin.mode = None;
+                // The change of another person closes the form at a time that the person
+                // does not choose: the row keeps the height of the form until the person
+                // acts (ADR 0730).
+                if let Some(mode) = self.admin.mode.take() {
+                    self.admin.space.keep(mode);
+                }
                 self.admin.opened_term = None;
-                self.admin.space.release();
+                self.admin.invalid = None;
             }
         }
         let held = page
@@ -315,6 +327,7 @@ impl Shell {
                     send: txt::ADD,
                     sending: view.sending(AskKind::AddTerm),
                     help: None,
+                    held: page.held(),
                     extra: Vec::new(),
                 },
                 &theme,

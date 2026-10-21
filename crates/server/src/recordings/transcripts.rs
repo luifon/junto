@@ -640,10 +640,11 @@ pub async fn rename_speaker(
     recording_id: RecordingId,
     number: u32,
     name: &str,
+    replaces: Option<Option<&str>>,
     by: AccountId,
-) -> ApiResult<Option<TranscriptSpeaker>> {
+) -> ApiResult<Result<TranscriptSpeaker, NotRenamed>> {
     let Ok(speaker) = i32::try_from(number) else {
-        return Ok(None);
+        return Ok(Err(NotRenamed::NoSpeaker));
     };
     let known: Option<i32> = sqlx::query_scalar(
         "select speaker from transcript_speakers
@@ -654,7 +655,17 @@ pub async fn rename_speaker(
     .fetch_optional(&mut *connection)
     .await?;
     if known.is_none() {
-        return Ok(None);
+        return Ok(Err(NotRenamed::NoSpeaker));
+    }
+    if let Some(read) = replaces {
+        let named = speakers(&mut *connection, recording_id, Some(number))
+            .await?
+            .into_iter()
+            .next()
+            .and_then(|held| held.name);
+        if named.as_deref() != read {
+            return Ok(Err(NotRenamed::Changed));
+        }
     }
     sqlx::query(
         "insert into transcript_speaker_names
@@ -672,7 +683,17 @@ pub async fn rename_speaker(
     Ok(speakers(connection, recording_id, Some(number))
         .await?
         .into_iter()
-        .next())
+        .next()
+        .ok_or(NotRenamed::NoSpeaker))
+}
+
+/// Why a name of a voice was not stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRenamed {
+    /// The transcript has no voice with the number.
+    NoSpeaker,
+    /// The voice has another name than the one that the caller read.
+    Changed,
 }
 
 /// The transcript of a recording without its lines.
@@ -861,6 +882,18 @@ pub enum NotCorrected {
     NoLine,
     /// The line has as many corrections as the server keeps.
     Full,
+    /// The line shows another text than the one that the caller read.
+    Changed,
+}
+
+/// A correction of one line, as a person sends it.
+#[derive(Debug, Clone, Copy)]
+pub struct Correction<'a> {
+    pub text: &'a str,
+    /// The text of the line that the person read. The correction is stored only while the
+    /// line shows it.
+    pub replaces: Option<&'a str>,
+    pub by: AccountId,
 }
 
 /// Stores a correction of one line and returns the line with it.
@@ -869,10 +902,10 @@ pub async fn correct(
     now: OffsetDateTime,
     recording_id: RecordingId,
     position: u32,
-    text: &str,
-    by: AccountId,
+    correction: Correction<'_>,
     most: u32,
 ) -> ApiResult<Result<TranscriptLine, NotCorrected>> {
+    let Correction { text, replaces, by } = correction;
     let Ok(position) = i32::try_from(position) else {
         return Ok(Err(NotCorrected::NoLine));
     };
@@ -885,6 +918,14 @@ pub async fn correct(
     .await?;
     if known.is_none() {
         return Ok(Err(NotCorrected::NoLine));
+    }
+    if let Some(read) = replaces
+        && shown_line(&mut *connection, recording_id, position)
+            .await?
+            .text
+            != read
+    {
+        return Ok(Err(NotCorrected::Changed));
     }
     let made: i64 = sqlx::query_scalar(
         "select count(*) from transcript_corrections where recording_id = $1 and line = $2",
@@ -909,6 +950,15 @@ pub async fn correct(
     .bind(now)
     .execute(&mut *connection)
     .await?;
+    shown_line(connection, recording_id, position).await.map(Ok)
+}
+
+/// One line with its newest correction.
+async fn shown_line(
+    connection: &mut PgConnection,
+    recording_id: RecordingId,
+    position: i32,
+) -> ApiResult<TranscriptLine> {
     let record: LineRecord = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {LINE_COLUMNS} from transcript_lines l {NEWEST_CORRECTION}
          where l.recording_id = $1 and l.line = $2"
@@ -917,5 +967,5 @@ pub async fn correct(
     .bind(position)
     .fetch_one(connection)
     .await?;
-    line(record).map(Ok)
+    line(record)
 }

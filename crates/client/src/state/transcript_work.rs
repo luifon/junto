@@ -71,8 +71,9 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The sentence of a refusal of a correction or of a name.
-fn change_refusal(what: TranscriptChange, error: &ApiError) -> String {
+/// The sentence of a refusal of a correction or of a name. `archived`: the channel of the
+/// recording is archived, which the server answers with a conflict too.
+fn change_refusal(what: TranscriptChange, error: &ApiError, archived: bool) -> String {
     let fixed = match (error.code(), error.category()) {
         (Some(ErrorCode::LimitReached), _) => text::transcripts::CORRECTIONS_FULL,
         (Some(ErrorCode::InvalidRequest), _) => match what {
@@ -80,7 +81,10 @@ fn change_refusal(what: TranscriptChange, error: &ApiError) -> String {
             TranscriptChange::Speaker(_) => text::transcripts::NAME_REFUSED,
         },
         // A recording of an archived channel takes no change (ADR 0410).
-        (_, Some(ErrorCategory::Conflict)) => text::transcripts::ARCHIVED,
+        (_, Some(ErrorCategory::Conflict)) if archived => text::transcripts::ARCHIVED,
+        // The line or the voice shows another value than the one that the change was
+        // made from (ADR 0607).
+        (_, Some(ErrorCategory::Conflict)) => text::transcripts::CHANGED_MEANWHILE,
         (_, Some(ErrorCategory::NotAllowed)) => text::transcripts::CHANGE_NOT_ALLOWED,
         (_, Some(ErrorCategory::NotFound)) => text::transcripts::CHANGE_GONE,
         _ => return text::flow_error(&FlowError::from(error)),
@@ -100,6 +104,12 @@ fn request_refusal(error: &ApiError) -> String {
 }
 
 impl AppState {
+    /// The owner of what the client stores of a server now (ADR 0745). A form of the window
+    /// belongs to the owner that opened it.
+    pub fn owner_of(&self, server_id: ServerId) -> Option<junto_client_core::book::Owner> {
+        self.client.server(server_id)?.owner()
+    }
+
     /// The recording is held open and belongs to a channel of the lists: an archived
     /// channel takes no change (ADR 0410).
     fn changeable_recording(&self, server_id: ServerId, recording_id: RecordingId) -> bool {
@@ -115,7 +125,7 @@ impl AppState {
     }
 
     /// The text of a line or the name of a voice as the state holds it now.
-    fn shown_now(
+    pub(crate) fn shown_now(
         &self,
         server_id: ServerId,
         recording_id: RecordingId,
@@ -129,15 +139,18 @@ impl AppState {
         }
     }
 
-    /// Sends a correction of a line or a name of a voice. Returns whether a request was
-    /// sent, or why it was not: a text that the server would refuse, or one that changes
-    /// nothing, sends nothing.
+    /// Sends a correction of a line or a name of a voice. `read` is the value that the
+    /// change was made from: the text of the line, or the name of the voice (`None`: no
+    /// name). The server stores the change only while the line or the voice still has that
+    /// value (ADR 0607). Returns whether a request was sent, or why it was not: a text that
+    /// the server would refuse, or one equal to the value of now, sends nothing.
     pub fn change_transcript(
         &mut self,
         server_id: ServerId,
         recording_id: RecordingId,
         what: TranscriptChange,
         typed: &str,
+        read: Option<String>,
         cx: &mut Context<Self>,
     ) -> Result<bool, &'static str> {
         let typed = typed.trim().to_owned();
@@ -172,11 +185,11 @@ impl AppState {
         cx.spawn(async move |this, cx| {
             let answer = match what {
                 TranscriptChange::Line(position) => api
-                    .correct_transcript_line(recording_id, position, &typed)
+                    .correct_transcript_line(recording_id, position, &typed, read.as_deref())
                     .await
                     .map(|_| ()),
                 TranscriptChange::Speaker(label) => api
-                    .rename_transcript_speaker(recording_id, label, &typed)
+                    .rename_transcript_speaker(recording_id, label, &typed, Some(read.as_deref()))
                     .await
                     .map(|_| ()),
             };
@@ -196,11 +209,12 @@ impl AppState {
                         this.known.transcript_asks.remove(&key);
                     }
                     Err(error) => {
+                        let archived = !this.changeable_recording(server_id, recording_id);
                         this.known.transcript_asks.insert(
                             key,
                             TranscriptAsk {
                                 what,
-                                state: ChangeState::Refused(change_refusal(what, &error)),
+                                state: ChangeState::Refused(change_refusal(what, &error, archived)),
                                 number,
                             },
                         );

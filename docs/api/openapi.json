@@ -13899,6 +13899,13 @@
           "text"
         ],
         "properties": {
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text of the line that the caller read: the newest correction, or the text of\nthe worker. When given, the server stores the correction only while the line shows\nthis text, and answers `conflict` otherwise, so that a correction made from an older\ntext does not replace a correction of another person without a word (ADR 0607)."
+          },
           "text": {
             "type": "string",
             "description": "The corrected text: 1 to 2000 characters without control characters."
@@ -16385,6 +16392,13 @@
           "name": {
             "type": "string",
             "description": "The name of the voice: 1 to 64 characters."
+          },
+          "replaces": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the voice that the caller read: a name, or `null` for a voice without a\nname. When given, the server stores the name only while the voice has this name, and\nanswers `conflict` otherwise (ADR 0607). Absent: the name is stored in any case."
           }
         }
       },

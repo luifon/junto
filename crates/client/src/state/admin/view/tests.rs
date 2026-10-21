@@ -1220,25 +1220,35 @@ fn every_member_reads_the_glossary_and_the_page_tells_why_it_takes_no_change() {
     assert_eq!(page.terms, Listed::Loaded(terms.clone()));
     assert_eq!(page.held(), None);
 
-    // After a change of the person, the page waits while the state shows the list that
-    // the change replaced.
-    let mut admin = AdminState {
-        glossary_sent: Some(crate::state::admin::glossary::Sent {
+    // After a change of the person, the page shows the list of its answer until the state
+    // shows a read that started after the answer arrived.
+    let answered_at = std::time::Instant::now();
+    let admin = AdminState {
+        glossary_answered: Some(crate::state::admin::glossary::Answered {
             server_id: scene.server_id,
             workspace_id: scene.studio,
-            terms: terms.clone(),
+            terms: vec!["Quorvex".to_owned()],
+            at: answered_at,
         }),
         ..AdminState::default()
     };
-    let page = glossary(&scene, &admin);
-    assert!(page.following);
-    assert_eq!(page.held(), Some(crate::text::admin::glossary::FOLLOWING));
-    admin.glossary_sent = Some(crate::state::admin::glossary::Sent {
-        server_id: scene.server_id,
-        workspace_id: scene.studio,
-        terms: vec!["Quorvex".to_owned()],
-    });
-    assert!(!glossary(&scene, &admin).following);
+    let part = AdminPart::Glossary(scene.studio);
+    let read = |shown| junto_client_core::model::ReadTimes {
+        started: shown,
+        shown,
+    };
+    for shown in [None, Some(answered_at)] {
+        scene.admin.read_times = vec![(part, read(shown))];
+        let page = glossary(&scene, &admin);
+        assert_eq!(page.terms, Listed::Loaded(vec!["Quorvex".to_owned()]));
+        assert_eq!(page.held(), None);
+    }
+    let later = answered_at + std::time::Duration::from_millis(1);
+    scene.admin.read_times = vec![(part, read(Some(later)))];
+    assert_eq!(
+        glossary(&scene, &admin).terms,
+        Listed::Loaded(terms.clone())
+    );
 
     // A list that the client holds in part takes no change.
     scene.admin.glossaries = vec![(

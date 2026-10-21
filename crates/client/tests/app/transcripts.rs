@@ -214,6 +214,7 @@ fn a_member_corrects_a_line_names_a_voice_and_reads_who_changed_them(cx: &mut Te
         own,
         ada,
         voice,
+        _directory,
         ..
     } = scene(cx);
     let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
@@ -292,12 +293,12 @@ fn a_member_corrects_a_line_names_a_voice_and_reads_who_changed_them(cx: &mut Te
 
     // A correction of another person reaches the window by its event, with its author.
     world
-        .run(
-            admin
-                .handle
-                .api()
-                .correct_transcript_line(recording_id, 2, "Can everyone hear me?"),
-        )
+        .run(admin.handle.api().correct_transcript_line(
+            recording_id,
+            2,
+            "Can everyone hear me?",
+            None,
+        ))
         .unwrap();
     window.until("the correction of the other person", |window| {
         window.panel_line(2).is_some_and(|row| {
@@ -324,6 +325,7 @@ fn the_details_of_a_transcript_state_its_glossary_terms_and_the_result_of_each_a
         ada,
         voice,
         workspace_id,
+        _directory,
         ..
     } = scene(cx);
     let glossary = ["Quorvex".to_owned(), "Lumitrax".to_owned()];
@@ -408,6 +410,7 @@ fn a_failed_transcript_is_asked_for_again_from_its_card(cx: &mut TestAppContext)
         own,
         voice,
         workspace_id,
+        _directory,
         ..
     } = scene(cx);
     let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
@@ -470,6 +473,7 @@ fn the_parts_of_a_recording_saved_in_part_state_their_time_ranges(cx: &mut TestA
         mut window,
         luca,
         voice,
+        _directory,
         ..
     } = scene(cx);
     let plan = RecordPlan {
@@ -619,6 +623,7 @@ fn a_recording_starts_in_a_chosen_language_and_is_cancelled_while_the_recorder_s
         luca,
         voice,
         workspace_id,
+        _directory,
         ..
     } = scene(cx);
     give_everyone(
@@ -690,4 +695,135 @@ fn a_recording_starts_in_a_chosen_language_and_is_cancelled_while_the_recorder_s
     window.click("stop-recording");
     window.until("the server takes the stop", |_| stopped(&world));
     world.run(server.leave(&[(&luca, seat)]));
+}
+
+impl Window {
+    fn transcript_field(&mut self) -> String {
+        self.in_shell(|shell, _, cx| shell.transcript_text(cx))
+    }
+}
+
+/// Another person corrects a line or names a voice while the form of the person is open:
+/// the form shows the change. A form that the person did not change takes the new text and
+/// sends nothing; a changed text is sent from the value of now, and replaces it.
+#[gpui::test]
+fn a_change_of_another_person_while_a_form_is_open_is_shown_in_the_form(cx: &mut TestAppContext) {
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        own,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let said = [
+        spoken(ada, Some(1), 100, "Thank you all for joining."),
+        spoken(own, None, 130, "We start with the review."),
+        spoken(ada, None, 160, "Can you hear me?"),
+        spoken(own, None, 190, "Yes."),
+    ];
+    world.run(server.transcribe(recording_id, &said));
+    open_panel(&mut window, recording_id, 4);
+    let api = admin.handle.api();
+    let stored = |world: &World, line: usize| {
+        world
+            .run(api.transcript_lines(recording_id, None, None))
+            .unwrap()
+            .lines[line]
+            .clone()
+    };
+
+    // The person opens the form and changes nothing. The other correction arrives in the
+    // form; Save then sends nothing, and the correction of the other person stays.
+    window.click_named("correct-line:2".to_owned());
+    world
+        .run(api.correct_transcript_line(recording_id, 2, "Can everyone hear me?", None))
+        .unwrap();
+    window.until("the change of the other person in the form", |window| {
+        window.shows("transcript-form-changed")
+            && window.transcript_field() == "Can everyone hear me?"
+    });
+    window.click("transcript-form-send");
+    assert!(!window.shows("transcript-form-field"));
+    let kept = stored(&world, 2);
+    assert_eq!(
+        (kept.text.as_str(), kept.corrected_by),
+        ("Can everyone hear me?", Some(ada))
+    );
+
+    // The person types a correction, and another one arrives: the text of the person
+    // stays, the form tells the other text, and Save replaces it from that text.
+    window.click_named("correct-line:3".to_owned());
+    window.type_transcript("Yes, I can.");
+    world
+        .run(api.correct_transcript_line(recording_id, 3, "Yes, we can.", None))
+        .unwrap();
+    window.until("the other text is told in the form", |window| {
+        window.shows("transcript-form-changed") && window.transcript_field() == "Yes, I can."
+    });
+    window.click("transcript-form-send");
+    window.until("the correction of the person", |window| {
+        window.panel_line(3).is_some_and(|row| {
+            row.text == "Yes, I can."
+                && row
+                    .changed
+                    .as_ref()
+                    .is_some_and(|changed| changed.by == "Luca")
+        })
+    });
+
+    // A voice that another person names while its form is open, without a name before.
+    window.click("transcript-details");
+    window.click_named("name-voice:1".to_owned());
+    world
+        .run(api.rename_transcript_speaker(recording_id, 1, "Noor", None))
+        .unwrap();
+    window.until("the name of the other person in the form", |window| {
+        window.shows("transcript-form-changed") && window.transcript_field() == "Noor"
+    });
+}
+
+/// The account of the window is removed while a correction is open, and the person joins
+/// again with another account: nothing of the draft of the first account is shown.
+#[gpui::test]
+fn a_draft_of_a_correction_does_not_stay_for_another_account(cx: &mut TestAppContext) {
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        own,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let said = [
+        spoken(ada, None, 100, "Good morning."),
+        spoken(own, None, 130, "Hello."),
+    ];
+    world.run(server.transcribe(recording_id, &said));
+    open_panel(&mut window, recording_id, 2);
+    window.click_named("correct-line:1".to_owned());
+    window.type_transcript("A draft of the first account");
+
+    world.run(admin.handle.api().remove_account(own)).unwrap();
+    window.until("the removal is shown", |window| window.shows("no-account"));
+    let code = admin.invite(&world, 1);
+    window.click("join-server");
+    window.join_with_code(code.expose());
+    window.until_ready();
+    assert_ne!(window.own_account(), own);
+
+    open_panel(&mut window, recording_id, 2);
+    assert!(!window.shows("transcript-form-field"));
+    window.click_named("correct-line:1".to_owned());
+    assert_eq!(window.transcript_field(), "Hello.");
 }

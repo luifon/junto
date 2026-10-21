@@ -14,6 +14,8 @@ Routes:
 
 - The API object of a server has one function for each route that a member uses: the recordings of a workspace, one recording with its segments, its removal, the transcript, a new request for the transcript, the lines of the transcript, the transcript as text, the correction of a line, the name of a speaker, the file of a segment from a byte on, and the glossary of a workspace with its replacement from the list that was read (ADR 0616).
 - The glossary of a workspace is a collection of the administration (ADR 0760): read when a reader opens it, read again after `glossary_replaced` of its workspace, and held up to 200 terms, with the mark that a longer answer was cut (ADR 0616).
+- Each collection of the administration states when its newest read started and when the read that it shows started, by the monotonic clock of the machine. A reader that changed a collection learns from it whether the collection shows a read that started after its change was answered (ADR 0616).
+- The correction of a line and the name of a voice take the value that the change was made from (ADR 0607).
 
 State (ADR 0719):
 

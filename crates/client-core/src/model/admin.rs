@@ -7,6 +7,7 @@
 //! then on, and is read again after a reload of the state (ADR 0207).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use junto_protocol::WorkspacePermission;
 use junto_protocol::access_token::AccessTokenInfo;
@@ -203,6 +204,10 @@ pub struct AdminModel {
     pub role_actions: Vec<(WorkspaceId, Collection<RoleActionList<WorkspaceRoleId>>)>,
     /// The glossaries of the workspaces that a reader asked for.
     pub glossaries: Vec<(WorkspaceId, Collection<GlossaryList>)>,
+    /// When the newest read of each collection started, and when the read that the
+    /// collection shows started. A reader that changed a collection knows from them whether
+    /// the collection shows a read that started after its change was answered.
+    pub read_times: Vec<(AdminPart, ReadTimes)>,
     /// The collections whose flags an event made stale and whose new read has not
     /// answered: their flags state nothing until then.
     pub flags_stale: Vec<AdminPart>,
@@ -210,6 +215,15 @@ pub struct AdminModel {
     /// that was archived while a reader had its messages open, and a channel that a
     /// reload carried for such a reader until the list of its workspace answers.
     pub archived_known: Vec<ArchivedChannel>,
+}
+
+/// When the reads of one collection started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReadTimes {
+    /// The start of the newest read.
+    pub started: Option<Instant>,
+    /// The start of the read whose answer the collection shows.
+    pub shown: Option<Instant>,
 }
 
 /// The state of a collection without its content.
@@ -307,6 +321,32 @@ impl AdminModel {
         workspace_id: WorkspaceId,
     ) -> &Collection<RoleActionList<WorkspaceRoleId>> {
         keyed(&self.role_actions, workspace_id)
+    }
+
+    /// When the reads of a collection started.
+    pub fn read_times(&self, part: AdminPart) -> ReadTimes {
+        self.read_times
+            .iter()
+            .find(|(held, _)| *held == part)
+            .map_or_else(ReadTimes::default, |(_, times)| *times)
+    }
+
+    fn note_read(&mut self, part: AdminPart, set: &AdminSet) {
+        let index = match self.read_times.iter().position(|(held, _)| *held == part) {
+            Some(index) => index,
+            None => {
+                self.read_times.push((part, ReadTimes::default()));
+                self.read_times.len() - 1
+            }
+        };
+        let Some((_, times)) = self.read_times.get_mut(index) else {
+            return;
+        };
+        match set {
+            AdminSet::Loading => times.started = Some(Instant::now()),
+            AdminSet::Loaded(_) => times.shown = times.started,
+            AdminSet::NotLoaded | AdminSet::Failed(_) => {}
+        }
     }
 
     /// The glossary of a workspace, while a reader has it open.
@@ -465,6 +505,7 @@ impl AdminModel {
     }
 
     fn set(&mut self, part: AdminPart, set: AdminSet) {
+        self.note_read(part, &set);
         if set != AdminSet::Loading {
             self.flags_stale.retain(|held| *held != part);
         }

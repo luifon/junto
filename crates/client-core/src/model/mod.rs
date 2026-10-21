@@ -59,7 +59,7 @@ use time::OffsetDateTime;
 
 pub use admin::{
     AdminModel, AdminPart, Collection, CollectionState, GlossaryList, LoadFailure,
-    MOST_GLOSSARY_TERMS, MOST_TOKENS, WorkspaceSettings,
+    MOST_GLOSSARY_TERMS, MOST_TOKENS, ReadTimes, WorkspaceSettings,
 };
 pub(crate) use admin::{AdminPayload, AdminSet};
 pub(crate) use apply::{Follow, Part};

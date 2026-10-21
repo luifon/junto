@@ -1618,7 +1618,7 @@ impl Shell {
                 names,
                 when,
             } => {
-                self.settle_transcript_form(recording_id, transcript, window, cx);
+                self.settle_transcript_form(server_id, recording_id, transcript, open, window, cx);
                 self.transcript_lines(server_id, panel, transcript, open, names, *when, &theme, cx)
             }
         };

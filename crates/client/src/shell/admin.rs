@@ -318,6 +318,9 @@ pub(crate) struct Form {
     /// The label of the button that sends the form.
     pub send: &'static str,
     pub sending: bool,
+    /// Why the form takes no send now, such as a permission that was lost while it was
+    /// open: its button is disabled, and the reason stands in the slot of the form.
+    pub held: Option<&'static str>,
     pub help: Option<&'static str>,
     /// Controls between the field and the buttons.
     pub extra: Vec<AnyElement>,
@@ -666,7 +669,7 @@ impl Shell {
                             .kind(ButtonKind::Primary)
                             .label(form.send)
                             .selector("admin-form-send")
-                            .disabled(form.sending)
+                            .disabled(form.sending || form.held.is_some())
                             .h(u(30.0))
                             .px(u(12.0))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -678,7 +681,11 @@ impl Shell {
                 crate::ui::notice_slot("admin-form-invalid-slot").children(
                     self.admin
                         .invalid
-                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid")),
+                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid"))
+                        .or_else(|| {
+                            form.held
+                                .map(|held| Notice::new(held).selector("admin-form-held"))
+                        }),
                 ),
             )
             .when_some(form.help, |column, help| {

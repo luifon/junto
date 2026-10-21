@@ -263,6 +263,12 @@ pub struct TranscriptLineQuery {
 pub struct CorrectLine {
     /// The corrected text: 1 to 2000 characters without control characters.
     pub text: String,
+    /// The text of the line that the caller read: the newest correction, or the text of
+    /// the worker. When given, the server stores the correction only while the line shows
+    /// this text, and answers `conflict` otherwise, so that a correction made from an older
+    /// text does not replace a correction of another person without a word (ADR 0607).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,6 +276,25 @@ pub struct CorrectLine {
 pub struct RenameSpeaker {
     /// The name of the voice: 1 to 64 characters.
     pub name: String,
+    /// The name of the voice that the caller read: a name, or `null` for a voice without a
+    /// name. When given, the server stores the name only while the voice has this name, and
+    /// answers `conflict` otherwise (ADR 0607). Absent: the name is stored in any case.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, nullable))]
+    pub replaces: Option<Option<String>>,
+}
+
+/// A field that is present, also with the value `null`: `null` reads as `Some(None)`, and an
+/// absent field as `None` through `default`.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// The glossary of a workspace: names and terms that the speech model receives before it
@@ -321,6 +346,30 @@ mod tests {
             serde_json::to_value(SegmentReason::NotARegularFile).unwrap(),
             "not_a_regular_file"
         );
+    }
+
+    #[test]
+    fn the_name_that_a_rename_replaces_tells_a_voice_without_a_name_from_no_precondition() {
+        let read = |json: &str| {
+            serde_json::from_str::<RenameSpeaker>(json)
+                .unwrap()
+                .replaces
+        };
+        assert_eq!(read(r#"{"name":"Noor"}"#), None);
+        assert_eq!(read(r#"{"name":"Noor","replaces":null}"#), Some(None));
+        assert_eq!(
+            read(r#"{"name":"Noor","replaces":"Speaker"}"#),
+            Some(Some("Speaker".to_owned()))
+        );
+        let written = |replaces| {
+            serde_json::to_string(&RenameSpeaker {
+                name: "Noor".to_owned(),
+                replaces,
+            })
+            .unwrap()
+        };
+        assert_eq!(written(None), r#"{"name":"Noor"}"#);
+        assert_eq!(written(Some(None)), r#"{"name":"Noor","replaces":null}"#);
     }
 
     #[test]

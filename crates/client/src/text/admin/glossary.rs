@@ -13,7 +13,6 @@ pub const MANAGE_NEEDS: &str = "You do not hold “manage glossary” in this wo
 pub const CUT: &str = "The server holds more terms than this application reads. Change the \
      glossary with another client.";
 pub const NOT_READ: &str = "The glossary is not read yet.";
-pub const FOLLOWING: &str = "The server did the last change. The list shows it in a moment.";
 pub const TERM_EMPTY: &str = "Type a term.";
 pub const TERM_LONG: &str = "A term has at most 200 characters.";
 pub const TERM_CHARACTERS: &str =

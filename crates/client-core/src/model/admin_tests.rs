@@ -1031,3 +1031,23 @@ fn a_glossary_is_read_again_after_its_event_withdrawn_with_its_workspace_and_gon
     });
     assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
 }
+
+#[test]
+fn a_collection_states_when_the_read_that_it_shows_started() {
+    let scene = scene();
+    let mut model = scene.model();
+    let part = AdminPart::Glossary(scene.workspace_id);
+    assert_eq!(model.admin.read_times(part), ReadTimes::default());
+    model.set_admin(part, AdminSet::Loading);
+    let first = model.admin.read_times(part);
+    assert!(first.started.is_some() && first.shown.is_none());
+    model.set_admin(part, AdminSet::Loaded(AdminPayload::Glossary(Vec::new())));
+    assert_eq!(model.admin.read_times(part).shown, first.started);
+    // A second read is on its way: the collection still shows the first one.
+    model.set_admin(part, AdminSet::Loading);
+    let second = model.admin.read_times(part);
+    assert!(second.started >= first.started);
+    assert_eq!(second.shown, first.started);
+    model.set_admin(part, AdminSet::Loaded(AdminPayload::Glossary(Vec::new())));
+    assert_eq!(model.admin.read_times(part).shown, second.started);
+}

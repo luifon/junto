@@ -645,7 +645,7 @@ fn draw_changes(studio: &mut Studio) -> Result<(), String> {
             panel(shell, cx);
             let shown = "Before that: the demo invite for Marta goes out today.";
             let what = TranscriptChange::Line(1);
-            shell.open_transcript_form(server_id(), recording_id(), what, shown, window, cx);
+            shell.open_transcript_form(server_id(), recording_id(), what, Some(shown), window, cx);
         },
     )?;
     studio.draw(
@@ -661,7 +661,7 @@ fn draw_changes(studio: &mut Studio) -> Result<(), String> {
             panel(shell, cx);
             shell.toggle_transcript_details(recording_id(), cx);
             let what = TranscriptChange::Speaker(2);
-            shell.open_transcript_form(server_id(), recording_id(), what, "", window, cx);
+            shell.open_transcript_form(server_id(), recording_id(), what, None, window, cx);
         },
     )?;
     studio.draw(
