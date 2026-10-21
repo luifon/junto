@@ -71,16 +71,18 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The sentence of a refusal of a correction or of a name. `archived`: the channel of the
-/// recording is archived, which the server answers with a conflict too.
+/// The sentence of a refusal of a correction or of a name. `archived`: the state shows the
+/// channel of the recording as archived, for a server that answers an archived channel with
+/// `conflict`.
 fn change_refusal(what: TranscriptChange, error: &ApiError, archived: bool) -> String {
     let fixed = match (error.code(), error.category()) {
+        // A recording of an archived channel takes no change (ADR 0410).
+        (Some(ErrorCode::ChannelArchived), _) => text::transcripts::ARCHIVED,
         (Some(ErrorCode::LimitReached), _) => text::transcripts::CORRECTIONS_FULL,
         (Some(ErrorCode::InvalidRequest), _) => match what {
             TranscriptChange::Line(_) => text::transcripts::CORRECTION_REFUSED,
             TranscriptChange::Speaker(_) => text::transcripts::NAME_REFUSED,
         },
-        // A recording of an archived channel takes no change (ADR 0410).
         (_, Some(ErrorCategory::Conflict)) if archived => text::transcripts::ARCHIVED,
         // The line or the voice shows another value than the one that the change was
         // made from (ADR 0607).
@@ -94,6 +96,9 @@ fn change_refusal(what: TranscriptChange, error: &ApiError, archived: bool) -> S
 
 /// The sentence of a refusal of a new request for a transcript.
 fn request_refusal(error: &ApiError) -> String {
+    if error.code() == Some(ErrorCode::ChannelArchived) {
+        return text::transcripts::ARCHIVED.to_owned();
+    }
     let fixed = match error.category() {
         Some(ErrorCategory::NotAllowed) => text::transcripts::REQUEST_NOT_ALLOWED,
         Some(ErrorCategory::Conflict) => text::transcripts::REQUEST_CONFLICT,
@@ -268,9 +273,14 @@ impl AppState {
         }
         self.known.recording_refused.remove(&key);
         let api = server.api();
+        let owner = self.owner_of(server_id);
         cx.spawn(async move |this, cx| {
             let asked = api.request_transcript(recording_id).await;
             let _ = this.update(cx, |this, cx| {
+                // The answer to a request of the owner before is told to nobody (ADR 0745).
+                if this.owner_of(server_id) != owner {
+                    return;
+                }
                 this.known.transcripts_requesting.remove(&key);
                 if let Err(error) = asked {
                     this.known
@@ -287,7 +297,39 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use junto_client_core::api::Rejection;
+
     use super::*;
+
+    fn rejected(code: ErrorCode) -> ApiError {
+        ApiError::Rejected(Rejection {
+            code,
+            status: code.http_status(),
+            retry_after: None,
+            message: "a sentence of the server".to_owned(),
+            left: None,
+        })
+    }
+
+    /// The server tells an archived channel by its own code: a correction refused for it is
+    /// not told as a value that changed meanwhile, also while the state shows the channel
+    /// as active.
+    #[test]
+    fn a_refusal_for_an_archived_channel_is_told_apart_from_a_stale_value() {
+        let line = TranscriptChange::Line(0);
+        assert_eq!(
+            change_refusal(line, &rejected(ErrorCode::ChannelArchived), false),
+            text::transcripts::ARCHIVED
+        );
+        assert_eq!(
+            change_refusal(line, &rejected(ErrorCode::Conflict), false),
+            text::transcripts::CHANGED_MEANWHILE
+        );
+        assert_eq!(
+            change_refusal(line, &rejected(ErrorCode::Conflict), true),
+            text::transcripts::ARCHIVED
+        );
+    }
 
     #[test]
     fn a_correction_and_a_name_follow_the_rules_of_the_server() {

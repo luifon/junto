@@ -46,16 +46,17 @@ pub(crate) struct TranscriptEdit {
     /// the voice (`None`: no name). It is sent with the change, and the server refuses a
     /// change when the line or the voice has another value (ADR 0607).
     pub(crate) read: Option<String>,
-    /// Another person changed the line or the name while the form was open.
+    /// The line or the name changed on the server while the form was open.
     pub(crate) incoming: Option<Incoming>,
     /// The owner of the server whose transcript the panel showed (ADR 0745). Nothing of the
     /// panel stays for another owner.
     pub(crate) owner: Option<junto_client_core::book::Owner>,
 }
 
-/// What the form tells about a change of another person.
+/// What the form tells about a change that arrived while it was open: of another person, or
+/// of the same account on another device.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Incoming {
+pub enum Incoming {
     /// The person had not changed the text: the form holds the new value.
     Taken,
     /// The person had changed the text: it stays, and the new value is told.
@@ -157,7 +158,10 @@ impl Shell {
             state.change_transcript(server_id, recording_id, what, &typed, read, cx)
         });
         match sent {
-            Ok(true) => self.transcript_edit.sent = true,
+            Ok(true) => {
+                self.transcript_edit.sent = true;
+                self.transcript_edit.incoming = None;
+            }
             Ok(false) => self.close_transcript_form(window, cx),
             Err(problem) => self.transcript_edit.invalid = Some(problem),
         }
@@ -291,6 +295,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let field = self.transcript_edit.field.clone();
+        // A change that arrived after a refusal is newer than the refusal: a refusal because
+        // the value changed meanwhile is answered by the new value, which a second Save
+        // replaces (ADR 0616). A send puts away the change that the form named.
         let told = self
             .transcript_edit
             .invalid
@@ -300,13 +307,6 @@ impl Shell {
                     .into_any_element()
             })
             .or_else(|| {
-                refused.map(|reason| {
-                    Notice::error(reason)
-                        .selector("transcript-form-refused")
-                        .into_any_element()
-                })
-            })
-            .or_else(|| {
                 self.transcript_edit.incoming.as_ref().map(|incoming| {
                     let sentence = match incoming {
                         Incoming::Taken => txt::CHANGED_TAKEN.to_owned(),
@@ -314,6 +314,13 @@ impl Shell {
                     };
                     Notice::new(sentence)
                         .selector("transcript-form-changed")
+                        .into_any_element()
+                })
+            })
+            .or_else(|| {
+                refused.map(|reason| {
+                    Notice::error(reason)
+                        .selector("transcript-form-refused")
                         .into_any_element()
                 })
             });
@@ -705,6 +712,12 @@ impl Shell {
 }
 
 impl Shell {
+    /// What the open form of the transcript panel tells about a change that arrived while
+    /// it was open.
+    pub fn transcript_incoming(&self) -> Option<Incoming> {
+        self.transcript_edit.incoming.clone()
+    }
+
     /// The text of the field of the open form of the transcript panel.
     pub fn transcript_text(&self, cx: &gpui::App) -> String {
         self.transcript_edit.field.read(cx).value().to_string()

@@ -19,7 +19,7 @@ Routes:
 What an archived channel allows:
 
 - It is in no channel list and not in the snapshot. A person who sees the channel reads everything of it: history, threads, pins, search, attachments, recordings, transcripts and its audit entries. Read positions and personal notification settings still change.
-- Every change of its content and of its settings gets `conflict`: sending, editing and deleting a message, reactions, pins, thread replies, forks, new uploads, the bytes and the completion of an upload that was started before, every route of its call, the start and the removal of a recording, corrections, speaker names and requests of a transcript, the channel settings and the call settings. The owner of an unfinished upload still reads its state and gives it up.
+- Every change of its content and of its settings gets `channel_archived` (409), a code of its own so that a client tells the archive apart from a value that changed meanwhile, which is `conflict`: sending, editing and deleting a message, reactions, pins, thread replies, forks, new uploads, the bytes and the completion of an upload that was started before, every route of its call, the start and the removal of a recording, corrections, speaker names and requests of a transcript, the channel settings and the call settings. The owner of an unfinished upload still reads its state and gives it up.
 - Its overrides can be changed, it can be exported (ADR 0411), restored and deleted. Deletion follows the rule of every channel (ADR 0407).
 - The call of an archived voice channel ends at the next admission check: nobody may be at the place (ADR 0509). A recording ends with its call.
 - A restored channel is a channel of the list again and takes every change.

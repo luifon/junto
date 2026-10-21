@@ -367,13 +367,20 @@ impl AppState {
             self.known.quoted.retain(|key, _| key.0 != server_id);
             self.asked_quotes.retain(|key, _| key.0 != server_id);
             self.forget_recording_downloads_of(server_id);
-            // A change of a transcript that the owner before sent is told to nobody.
+            // A request about a recording that the owner before sent, and a refusal of one,
+            // are told to nobody.
             self.known
                 .transcript_asks
                 .retain(|key, _| key.0 != server_id);
             self.known
                 .transcripts_requesting
                 .retain(|key| key.0 != server_id);
+            self.known
+                .recordings_removing
+                .retain(|key| key.0 != server_id);
+            self.known
+                .recording_refused
+                .retain(|key, _| key.0 != server_id);
             // The remembered choices of the server belong to the owner too.
             self.selection.workspaces.remove(&server_id);
             self.selection

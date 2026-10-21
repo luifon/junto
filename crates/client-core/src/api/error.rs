@@ -73,6 +73,7 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         | ErrorCode::ExceedsOwnPermissions => ErrorCategory::NotAllowed,
         ErrorCode::NotFound => ErrorCategory::NotFound,
         ErrorCode::Conflict
+        | ErrorCode::ChannelArchived
         | ErrorCode::LastDevice
         | ErrorCode::LimitReached
         | ErrorCode::KeyAlreadyRegistered
@@ -370,6 +371,7 @@ mod tests {
             (ErrorCode::ExceedsOwnPermissions, C::NotAllowed),
             (ErrorCode::NotFound, C::NotFound),
             (ErrorCode::Conflict, C::Conflict),
+            (ErrorCode::ChannelArchived, C::Conflict),
             (ErrorCode::LastDevice, C::Conflict),
             (ErrorCode::LimitReached, C::Conflict),
             (ErrorCode::KeyAlreadyRegistered, C::Conflict),

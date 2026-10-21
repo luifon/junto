@@ -36,14 +36,15 @@ pub const ARCHIVED: &str =
     "The channel of this recording is archived. Its transcript takes no change.";
 pub const CHANGE_NOT_ALLOWED: &str = "Your account may not change this transcript.";
 pub const CHANGE_GONE: &str = "The server holds this line or this voice no longer.";
-pub const CHANGED_MEANWHILE: &str = "Another person changed this after the form was opened. \
-     The form shows the change when it arrives; save again to replace it.";
+pub const CHANGED_MEANWHILE: &str = "This changed on the server after the form was opened. \
+     The form shows the new value when it arrives; save again to replace it.";
 pub const CHANGED_TAKEN: &str =
-    "Another person changed this meanwhile. The form holds the new text.";
+    "This changed on the server meanwhile. The form holds the new text.";
 
-/// Another person changed the line or the name while the person edited it.
+/// The line or the name changed on the server while the person edited it: by another person,
+/// or by the same account on another device.
 pub fn changed_kept(now: &str) -> String {
-    format!("Another person changed this meanwhile to “{now}”. Save replaces it with your text.")
+    format!("This changed on the server meanwhile to “{now}”. Save replaces it with your text.")
 }
 pub const REQUEST_NOT_ALLOWED: &str = "You do not hold “manage recordings” in this channel. The server did not ask for a \
      transcript.";

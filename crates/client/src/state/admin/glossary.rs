@@ -3,9 +3,10 @@
 //! the list that it changes, so that the server refuses it when another person changed the
 //! glossary meanwhile (ADR 0607).
 //!
-//! The answer of a change carries the glossary after it. The page shows that list until the
-//! state shows a read of the glossary that started after the answer arrived: such a read
-//! holds the change, or a later one. A refused change puts the answered list away.
+//! The answer of a change carries the glossary after it, and the glossary is read again when
+//! it arrives. The page shows the answered list until the state shows a read of the glossary
+//! that started after the answer arrived: such a read holds the change, or a later one. A
+//! refused change puts the answered list away.
 
 use std::time::Instant;
 
@@ -249,6 +250,14 @@ impl AppState {
                     terms: glossary.terms,
                     at: Instant::now(),
                 });
+                // Every read that started before the answer can be older than the change,
+                // and a later change of another person can have no event left to come: a
+                // read that starts now holds the change or a later one.
+                if let Some(server) = this.client.server(server_id) {
+                    server
+                        .live()
+                        .read_admin_now(AdminPart::Glossary(workspace_id));
+                }
             },
             cx,
         );

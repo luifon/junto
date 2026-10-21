@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
+use junto_client::shell::Incoming;
 use junto_client::state::feed::FeedRow;
 use junto_client::state::recorded::{
     CardDetail, CardState, JobShown, LineRow, RecordingCard, TranscriptRequest, TranscriptShown,
@@ -34,7 +35,7 @@ use crate::admin_pages::awaited;
 use crate::calls::voice_channel;
 use crate::harness::{Admin, Window, World, member};
 use crate::recording_server::{RecordPlan, RecordingServer, Seat, Spoken, Written};
-use crate::support::{Device, logged_in};
+use crate::support::{Device, FaultProxy, logged_in};
 
 /// The owner of a server of recordings, as a client without a window.
 fn owner(world: &World, server: &RecordingServer) -> Admin {
@@ -101,8 +102,29 @@ struct Scene {
 fn scene(cx: &mut TestAppContext) -> Scene {
     let world = World::new();
     let server = world.run(RecordingServer::start("Acme Studio"));
+    let address = server.address();
+    scene_at(cx, world, server, &address)
+}
+
+/// The scene with the window reaching the server through a proxy, so that a test holds its
+/// requests and its event stream. The owner works on the server directly.
+fn scene_through_proxy(cx: &mut TestAppContext) -> (Scene, FaultProxy) {
+    let world = World::new();
+    let server = world.run(RecordingServer::start("Acme Studio"));
+    let (listener, port) = server.take_proxy();
+    let proxy = world.run(FaultProxy::start_on(listener, port));
+    let address = proxy.address();
+    (scene_at(cx, world, server, &address), proxy)
+}
+
+fn scene_at(
+    cx: &mut TestAppContext,
+    world: World,
+    server: RecordingServer,
+    address: &str,
+) -> Scene {
     let admin = owner(&world, &server);
-    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (directory, mut window) = member(cx, &world, address, &admin, "Luca");
     let server_id = window.view().selected.unwrap().id;
     let own = window.own_account();
     let ada = logged_in(&admin.handle);
@@ -788,6 +810,76 @@ fn a_change_of_another_person_while_a_form_is_open_is_shown_in_the_form(cx: &mut
     });
 }
 
+/// The window does not follow the server while another person corrects the line of an open
+/// form: the server refuses the stale correction, and when the change arrives the form names
+/// the new text in place of the refusal. A second Save replaces it knowingly (ADR 0616).
+#[gpui::test]
+fn a_correction_refused_as_stale_shows_the_new_text_when_it_arrives(cx: &mut TestAppContext) {
+    let (
+        Scene {
+            world,
+            server,
+            admin,
+            mut window,
+            luca,
+            own,
+            ada,
+            voice,
+            _directory,
+            ..
+        },
+        proxy,
+    ) = scene_through_proxy(cx);
+    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let said = [
+        spoken(ada, None, 100, "Good morning."),
+        spoken(own, None, 130, "Can you hear me?"),
+    ];
+    world.run(server.transcribe(recording_id, &said));
+    open_panel(&mut window, recording_id, 2);
+    window.click_named("correct-line:1".to_owned());
+    window.type_transcript("Can you all hear me?");
+
+    proxy.hold_events();
+    world
+        .run(admin.handle.api().correct_transcript_line(
+            recording_id,
+            1,
+            "Can everyone hear me?",
+            None,
+        ))
+        .unwrap();
+    window.click("transcript-form-send");
+    window.until("the refusal of the stale correction", |window| {
+        window.shows("transcript-form-refused")
+    });
+    proxy.release_events();
+    window.until("the new text in the form", |window| {
+        window
+            .panel_line(1)
+            .is_some_and(|row| row.text == "Can everyone hear me?")
+            && window.shows("transcript-form-changed")
+    });
+    assert!(!window.shows("transcript-form-refused"));
+    assert_eq!(window.transcript_field(), "Can you all hear me?");
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.transcript_incoming()),
+        Some(Incoming::Kept("Can everyone hear me?".to_owned()))
+    );
+
+    window.click("transcript-form-send");
+    window.until("the correction of the person", |window| {
+        !window.shows("transcript-form-field")
+            && window.panel_line(1).is_some_and(|row| {
+                row.text == "Can you all hear me?"
+                    && row
+                        .changed
+                        .as_ref()
+                        .is_some_and(|changed| changed.by == "Luca")
+            })
+    });
+}
+
 /// The account of the window is removed while a correction is open, and the person joins
 /// again with another account: nothing of the draft of the first account is shown.
 #[gpui::test]
@@ -826,4 +918,78 @@ fn a_draft_of_a_correction_does_not_stay_for_another_account(cx: &mut TestAppCon
     assert!(!window.shows("transcript-form-field"));
     window.click_named("correct-line:1".to_owned());
     assert_eq!(window.transcript_field(), "Hello.");
+}
+
+/// The account of the window asks for a failed transcript again and is removed while the
+/// request waits at the proxy. The answer of that request is told to nobody: the card of the
+/// next account of the window states no refusal (ADR 0745).
+#[gpui::test]
+fn the_answer_to_a_request_of_a_removed_account_is_told_to_nobody(cx: &mut TestAppContext) {
+    let (
+        Scene {
+            world,
+            server,
+            admin,
+            mut window,
+            luca,
+            own,
+            voice,
+            workspace_id,
+            _directory,
+            ..
+        },
+        proxy,
+    ) = scene_through_proxy(cx);
+    give_everyone(
+        &world,
+        &admin,
+        workspace_id,
+        WorkspacePermission::ManageRecordings,
+    );
+    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.refuse_transcript(recording_id));
+    window.click_channel("Daily");
+    window.until("the person may ask for the transcript", |window| {
+        window.recording_card(recording_id).is_some_and(|card| {
+            card.request == TranscriptRequest::Allowed { sending: false }
+                && matches!(card.state, CardState::Shown(_))
+        }) && window.shows("request-transcript")
+    });
+    proxy.hold_request("POST", "/transcript");
+    window.click("request-transcript");
+    let asked = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .into_iter()
+            .find(|seen| seen.method == "POST" && seen.path.ends_with("/transcript"))
+    };
+    window.until("the request waits at the proxy", |_| {
+        asked(&proxy).is_some()
+    });
+
+    world.run(admin.handle.api().remove_account(own)).unwrap();
+    window.until("the removal is shown", |window| window.shows("no-account"));
+    let code = admin.invite(&world, 1);
+    window.click("join-server");
+    window.join_with_code(code.expose());
+    window.until_ready();
+    assert_ne!(window.own_account(), own);
+    window.click_channel("Daily");
+    window.until("the card for the next account", |window| {
+        window
+            .recording_card(recording_id)
+            .is_some_and(|card| matches!(card.state, CardState::Shown(_)))
+    });
+
+    // The request reaches the server with the session of the removed account.
+    proxy.release();
+    window.until("the server answered the request", |_| {
+        asked(&proxy).is_some_and(|seen| seen.answer.is_some())
+    });
+    // A message of the next account goes to the server and comes back after that answer.
+    window.write("After the request");
+    window.until_message("After the request");
+    let card = window.recording_card(recording_id).unwrap();
+    assert_eq!(card.refused, None);
+    assert_eq!(card.request, TranscriptRequest::Allowed { sending: false });
 }

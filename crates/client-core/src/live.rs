@@ -176,6 +176,8 @@ pub(crate) enum Command {
     ReleaseAdmin(AdminPart),
     /// Reads again a collection whose last read failed.
     ReadAdminAgain(AdminPart),
+    /// Reads again a collection that a reader has open, also a loaded one.
+    ReadAdminNow(AdminPart),
 }
 
 /// What the stream client of one server and its readers share.

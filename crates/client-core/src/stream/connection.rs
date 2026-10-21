@@ -1420,6 +1420,7 @@ impl Client {
             Command::OpenAdmin { part, reply } => self.open_admin(part, reply),
             Command::ReleaseAdmin(part) => self.release_admin(part),
             Command::ReadAdminAgain(part) => self.read_admin_again(part),
+            Command::ReadAdminNow(part) => self.read_admin_now(part),
             command => self.message_command(command),
         }
     }

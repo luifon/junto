@@ -195,6 +195,18 @@ impl Client {
         }
     }
 
+    /// Reads a collection that a reader has open again, whatever its state. A state that is
+    /// stale is replaced by a snapshot, after which every open collection is read again.
+    pub(super) fn read_admin_now(&mut self, part: AdminPart) {
+        let held = self
+            .model
+            .as_ref()
+            .is_some_and(|model| !self.stale && in_state(model, part));
+        if held && self.wants_admin(part) {
+            self.start(Load::Part(Part::Admin(part)));
+        }
+    }
+
     pub(super) fn wants_admin(&self, part: AdminPart) -> bool {
         self.admin.wanted.contains_key(&part)
     }

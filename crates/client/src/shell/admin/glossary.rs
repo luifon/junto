@@ -348,13 +348,7 @@ impl Shell {
                     Some(reason) => button.tooltip(reason),
                     None => button,
                 };
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex().flex_none().child(button))
-                    .children(
-                        (!page.may_manage).then(|| sentence(txt::MANAGE_NEEDS, &theme).mt(u(5.0))),
-                    )
+                div().flex().flex_none().child(button)
             }
         };
         column = column.child(self.mode_row(&[Mode::AddTerm], add));
@@ -406,6 +400,14 @@ impl Shell {
                     column = column.child(row);
                 }
             }
+        }
+        // Below every row, so that a permission given or taken moves no control (ADR 0730).
+        if !page.may_manage {
+            column = column.child(
+                sentence(txt::MANAGE_NEEDS, &theme)
+                    .mt(u(6.0))
+                    .debug_selector(|| "glossary-manage-needs".to_owned()),
+            );
         }
         column.into_any_element()
     }

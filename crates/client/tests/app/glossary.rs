@@ -3,6 +3,7 @@
 //! terms. A change made from an older list is refused by the server.
 
 use gpui::TestAppContext;
+use junto_client::state::admin::AskKind;
 use junto_client::state::admin::view::{Listed, Scope, ServerPage};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::WorkspaceId;
@@ -333,4 +334,93 @@ fn a_change_that_another_person_undid_leaves_the_page_taking_changes(cx: &mut Te
     );
     click_in_page(&mut window, "glossary-add");
     assert!(window.shows("glossary-term"));
+}
+
+/// A permission given or taken while the page is open moves no row: the sentence that tells
+/// that the roles do not hold "manage glossary" stands below the list (ADR 0730).
+#[gpui::test]
+fn a_permission_given_or_taken_moves_no_row_of_the_page(cx: &mut TestAppContext) {
+    let Page {
+        world,
+        admin,
+        mut window,
+        workspace_id,
+        _server,
+        _directory,
+        proxy: _proxy,
+    } = manager_on_the_page(cx, &["Quorvex", "Lumitrax"]);
+    let rows = |window: &mut Window| {
+        (
+            window.cx.debug_bounds("glossary-row-0").unwrap(),
+            window.cx.debug_bounds("glossary-row-1").unwrap(),
+        )
+    };
+    let shown = rows(&mut window);
+    assert!(!window.shows("glossary-manage-needs"));
+    take_from_everyone(
+        &world,
+        &admin,
+        workspace_id,
+        WorkspacePermission::ManageGlossary,
+    );
+    window.until("the page takes no change", |window| {
+        glossary_page(window).is_some_and(|page| !page.may_manage)
+    });
+    assert_eq!(rows(&mut window), shown);
+    assert!(window.shows("glossary-manage-needs"));
+    give_everyone(
+        &world,
+        &admin,
+        workspace_id,
+        WorkspacePermission::ManageGlossary,
+    );
+    window.until("the page takes changes", |window| {
+        glossary_page(window).is_some_and(|page| page.held().is_none())
+    });
+    assert_eq!(rows(&mut window), shown);
+    assert!(!window.shows("glossary-manage-needs"));
+}
+
+/// The answer to a change of the person arrives late: the event of the change, a change of
+/// another person and their reads all came before it. The page shows the list of the server,
+/// with the change of the other person, and no older list (ADR 0616).
+#[gpui::test]
+fn a_late_answer_does_not_hide_a_later_change_of_another_person(cx: &mut TestAppContext) {
+    let Page {
+        world,
+        proxy,
+        admin,
+        mut window,
+        workspace_id,
+        _server,
+        _directory,
+    } = manager_on_the_page(cx, &["Quorvex", "Lumitrax"]);
+    proxy.hold_answer_ending("PUT", "/glossary");
+    click_in_page(&mut window, "glossary-add");
+    window.in_shell(|shell, window, cx| shell.type_admin_name("Kestrel", window, cx));
+    click_in_page(&mut window, "admin-form-send");
+    window.until("the server did the change", |window| {
+        proxy.answers_waiting() == 1
+            && terms(window) == Some(list(&["Quorvex", "Lumitrax", "Kestrel"]))
+    });
+    let later = list(&["Quorvex", "Lumitrax", "Kestrel", "Tern"]);
+    world
+        .run(admin.handle.api().set_glossary(workspace_id, &later, None))
+        .unwrap();
+    window.until("the change of the other person", |window| {
+        terms(window) == Some(later.clone())
+    });
+    proxy.release();
+    window.until("the answer of the change", |window| {
+        window
+            .admin()
+            .is_some_and(|view| !view.sending(AskKind::AddTerm))
+    });
+    window.until(
+        "the list of the server, and the page takes changes",
+        |window| {
+            terms(window) == Some(later.clone())
+                && glossary_page(window).is_some_and(|page| page.held().is_none())
+        },
+    );
 }

@@ -131,6 +131,9 @@ pub struct Seat {
 
 pub struct RecordingServer {
     address: SocketAddr,
+    /// The address of one proxy, listed as a public origin, held open from the start until
+    /// [`RecordingServer::take_proxy`] takes it.
+    proxy: Mutex<Option<std::net::TcpListener>>,
     owner_code: String,
     state: AppState,
     clock: Arc<TestClock>,
@@ -209,6 +212,8 @@ impl RecordingServer {
         let clock = Arc::new(TestClock::default());
         let server_clock = clock.clone();
         let (shutdown, stopped) = oneshot::channel::<()>();
+        let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let proxy_address = proxy.local_addr().unwrap();
         let started = on_runtime(runtime.handle().clone(), move || async move {
             let admin_url = std::env::var(DATABASE_URL).unwrap_or_else(|_| {
                 panic!(
@@ -227,6 +232,7 @@ impl RecordingServer {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let origin = Origin::parse(&format!("http://{address}")).unwrap();
+            let proxy_origin = Origin::parse(&format!("http://{proxy_address}")).unwrap();
             let config = Config {
                 exports_directory: None,
                 migration_copy: junto_server::bootstrap::MigrationCopy::None,
@@ -235,7 +241,7 @@ impl RecordingServer {
                 attachments_directory: Some(attachments_directory),
                 database_url: String::new(),
                 listen_address: address,
-                public_origins: PublicOrigins::of(vec![origin]),
+                public_origins: PublicOrigins::of(vec![origin, proxy_origin]),
                 server_name: name,
                 trusted_proxies: Vec::new(),
                 log_format: LogFormat::Text,
@@ -295,6 +301,7 @@ impl RecordingServer {
         let (address, owner_code, state, media, recorder) = started.await;
         Self {
             address,
+            proxy: Mutex::new(Some(proxy)),
             owner_code,
             state,
             clock,
@@ -311,6 +318,18 @@ impl RecordingServer {
 
     pub fn address(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    /// The listener of the proxy address that the server lists as a public origin, and the
+    /// port of the server behind it. A server has one.
+    pub fn take_proxy(&self) -> (std::net::TcpListener, u16) {
+        let listener = self
+            .proxy
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the proxy of this server was taken before");
+        (listener, self.address.port())
     }
 
     /// The owner code of the first start of the server.

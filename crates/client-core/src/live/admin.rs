@@ -38,4 +38,12 @@ impl LiveServer {
     pub fn read_admin_again(&self, part: AdminPart) {
         self.shared.send(Command::ReadAdminAgain(part));
     }
+
+    /// Reads again a collection that a reader has open, also when it is loaded: the reader
+    /// knows of a change that can be newer than every read that started before this call.
+    /// A loaded collection keeps its values until the read answers, and
+    /// [`crate::model::ReadTimes`] states when the read that the state shows started.
+    pub fn read_admin_now(&self, part: AdminPart) {
+        self.shared.send(Command::ReadAdminNow(part));
+    }
 }

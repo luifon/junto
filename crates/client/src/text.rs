@@ -1375,6 +1375,9 @@ pub fn refusal(code: ErrorCode) -> String {
         }
         ErrorCode::NotFound => "The server does not know what was asked for.",
         ErrorCode::Conflict => "The request does not fit the present state of the server.",
+        ErrorCode::ChannelArchived => {
+            "The channel is archived. It takes no change until it is restored."
+        }
         ErrorCode::LastDevice => {
             "This is the only device of the account. The last device cannot be removed."
         }
