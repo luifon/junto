@@ -31,5 +31,9 @@ pub mod ffi {
 
         /// Takes the lock of the stream `stderr` of the C library and keeps it.
         fn hold_standard_error();
+
+        /// Throws a subclass of `std::exception` other than `livekit_ffi::Exception`, with the
+        /// message "a test error".
+        fn throw_test_error() -> Result<()>;
     }
 }

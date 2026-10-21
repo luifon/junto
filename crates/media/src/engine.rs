@@ -1899,6 +1899,7 @@ mod tests {
         if let Ok(call) = std::env::var(NATIVE_THROW) {
             let returned = match call.as_str() {
                 "runtime" => ffi::throw_runtime_exception(0).is_err(),
+                "known" => ffi::throw_test_error().is_err(),
                 "locked" => {
                     // Another thread holds the stream stderr of the C library for ever.
                     let (held, holding) = std::sync::mpsc::channel();
@@ -1925,9 +1926,10 @@ mod tests {
         // exceptions: it ends the process where another C++ library throws. "exhausted" throws
         // when no allocation succeeds any longer: the first line must not need one, and the
         // line of the readable names, which needs memory, may be missing. "locked" throws while
-        // another thread holds the stream stderr of the C library: the lines must not use it. Each case: the call,
-        // the bridge function, a text of the type in the first line, and the readable type of the second
-        // line when there is one.
+        // another thread holds the stream stderr of the C library: the lines must not use it.
+        // "known" throws a subclass of std::exception: its type and its message are in the
+        // first line. Each case: the call, the bridge function, a text of the type in the first
+        // line, and the readable type of the second line when there is one.
         let cases: &[(&str, &str, &str, Option<&str>)] = &[
             #[cfg(target_os = "macos")]
             (
@@ -1947,6 +1949,13 @@ mod tests {
             ("value", "throw_value", "of type i;", Some("int")),
             #[cfg(unix)]
             ("locked", "throw_value", "of type i;", Some("int")),
+            #[cfg(unix)]
+            (
+                "known",
+                "throw_test_error",
+                "9TestErrorE: a test error;",
+                Some("livekit_ffi::TestError"),
+            ),
             #[cfg(target_os = "linux")]
             ("exhausted", "throw_value", "of type i;", None),
             #[cfg(windows)]
@@ -1962,6 +1971,13 @@ mod tests {
                 "throw_value",
                 "of type not known;",
                 Some("not known"),
+            ),
+            #[cfg(windows)]
+            (
+                "known",
+                "throw_test_error",
+                "of type .?AVTestError@livekit_ffi@@: a test error;",
+                Some("class livekit_ffi::TestError"),
             ),
         ];
         for (call, function, type_text, readable_type) in cases {

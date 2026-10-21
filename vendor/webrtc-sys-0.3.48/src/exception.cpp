@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <vector>
 
 #if defined(_MSC_VER)
@@ -87,13 +88,21 @@ const char* written_name(const std::type_info& type) noexcept {
 #endif
 }
 
-const std::type_info* current_type(const std::type_info* windows_type) noexcept {
+const std::type_info* current_type(const std::exception* exception) noexcept {
 #if defined(_MSC_VER)
-  return windows_type;
+  return exception != nullptr ? &typeid(*exception) : nullptr;
 #else
-  static_cast<void>(windows_type);
+  static_cast<void>(exception);
   return abi::__cxa_current_exception_type();
 #endif
+}
+
+// The handler of std::terminate while the process ends: the default handler of libc++abi writes
+// through the stream stderr, whose lock another thread can hold, so a failure in the second line
+// (the demangler calls std::terminate when it cannot allocate) would keep the process from
+// ending.
+[[noreturn]] void abort_only() noexcept {
+  std::abort();
 }
 
 // The readable name of a type. It can allocate, and the demangler of libc++abi ends the process
@@ -111,14 +120,15 @@ const char* readable_name(const std::type_info& type) noexcept {
 }  // namespace
 
 void end_at_foreign_exception(const std::type_info& bridge_function,
-                              const std::type_info* windows_type,
-                              const char* message) noexcept {
+                              const std::exception* exception) noexcept {
 #if defined(_MSC_VER)
   // abort() of the C++ runtime would also show a message box and report the fault to Windows.
   // This comes first, so that a fault in the steps below does not show it either.
   _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
-  const std::type_info* type = current_type(windows_type);
+  std::set_terminate(abort_only);
+  const std::type_info* type = current_type(exception);
+  const char* message = exception != nullptr ? exception->what() : nullptr;
   Line line;
   line.add("livekit_ffi: the bridge function ");
   line.add(written_name(bridge_function));
@@ -146,8 +156,17 @@ void throw_runtime_exception(std::size_t index) {
   static_cast<void>(empty.at(index));
 }
 
+class TestError final : public std::exception {
+ public:
+  const char* what() const noexcept override { return "a test error"; }
+};
+
 void throw_value() {
   throw 1;
+}
+
+void throw_test_error() {
+  throw TestError();
 }
 
 void hold_standard_error() {
