@@ -403,6 +403,7 @@ fn capture(
     let start = Instant::now();
     let mut last_picture = start;
     let mut pacer = worker::Pacer::default();
+    let mut sequence = None;
     while !delivery.stopped() {
         let Some(buffer) = camera.next()? else {
             if last_picture.elapsed() >= Duration::from_secs(5) {
@@ -410,7 +411,12 @@ fn capture(
             }
             continue;
         };
-        match v4l2::buffer(&buffer, bytes.len()) {
+        let kind = v4l2::buffer(&buffer, bytes.len());
+        if kind != Buffer::Invalid {
+            let lost = v4l2::lost(sequence.replace(buffer.sequence), buffer.sequence);
+            worker::count(&chosen.id, u64::from(kind == Buffer::Copy), Some(lost));
+        }
+        match kind {
             Buffer::Invalid => {
                 return Err(CameraError::Failed(
                     "the camera driver returned a buffer outside the capture".into(),
@@ -530,20 +536,15 @@ mod tests {
             Frame {
                 flags: ERROR_FLAG,
                 used: 10,
-                index_offset: 0,
-                value: 50,
+                ..frame(50)
             },
             Frame {
-                flags: 0,
                 used: 0,
-                index_offset: 0,
-                value: 60,
+                ..frame(60)
             },
             Frame {
                 flags: ERROR_FLAG,
-                used: FULL,
-                index_offset: 0,
-                value: 70,
+                ..frame(70)
             },
         ];
         frames.extend((0..10).map(|index| frame(100 + index)));
@@ -561,6 +562,37 @@ mod tests {
         drop(stream);
         let record = closed(fake, 0);
         assert_eq!(record.closed, record.opened);
+    }
+
+    /// The device check compares the pictures that capture delivers with those that the
+    /// driver gave and those that it lost.
+    #[cfg(feature = "native-device-tests")]
+    #[tokio::test]
+    async fn received_and_lost_pictures_are_counted_for_the_device_check() {
+        let mut frames: Vec<Frame> = (0..6).map(|index| frame(100 + index)).collect();
+        frames[3].lost = 2;
+        frames[4].flags = ERROR_FLAG;
+        let fake = Fake::new(vec![Spec {
+            frames,
+            ..Spec::default()
+        }]);
+        let device = fake.nodes()[0].identity.clone();
+        let (stream, receive) = capture_of(fake).await;
+        let stream = stream.unwrap();
+        let lumas: Vec<u8> = pictures(&receive, 5)
+            .into_iter()
+            .map(|(_, _, luma)| luma)
+            .collect();
+        assert_eq!(lumas, [100, 101, 102, 103, 105]);
+        drop(stream);
+        closed(fake, 0);
+        assert_eq!(
+            crate::camera::native_counts_for_test(&device),
+            crate::camera::NativeCounts {
+                received: 5,
+                lost: Some(2),
+            }
+        );
     }
 
     #[tokio::test]

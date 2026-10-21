@@ -51,6 +51,8 @@ pub struct Frame {
     pub flags: u32,
     pub used: u32,
     pub index_offset: u32,
+    /// The pictures that the driver lost before this one.
+    pub lost: u32,
     pub value: u8,
 }
 
@@ -59,6 +61,7 @@ pub fn frame(value: u8) -> Frame {
         flags: 0,
         used: FULL,
         index_offset: 0,
+        lost: 0,
         value,
     }
 }

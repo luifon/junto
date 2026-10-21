@@ -14,8 +14,9 @@
 /* refuse: S_FMT answers with another mode, as a driver that adjusts the request; full_range:
  * S_FMT reports full-range quantization. */
 struct fake_mode { uint32_t fourcc, width, height, numerator, denominator, refuse, full_range; };
-/* One picture of the script. used UINT32_MAX: the size of the image. */
-struct fake_frame { uint32_t flags, used, index_offset; uint8_t value; };
+/* One picture of the script. used UINT32_MAX: the size of the image. lost: the pictures that
+ * the driver lost before this one, which its sequence number skips. */
+struct fake_frame { uint32_t flags, used, index_offset, lost; uint8_t value; };
 struct fake_device {
     const char *path;
     int open_error;
@@ -38,7 +39,7 @@ struct fake_record {
 struct handle {
     int used;
     size_t device;
-    uint32_t sizeimage, count, streaming, queued[MAX_BUFFERS];
+    uint32_t sizeimage, count, streaming, sequence, queued[MAX_BUFFERS];
     void *memory[MAX_BUFFERS];
     size_t next;
 };
@@ -243,7 +244,7 @@ static int control(struct fake_system *system, int fd, struct handle *h, unsigne
         h->queued[buffer->index] = 1;
         return 0;
     }
-    case VIDIOC_STREAMON: h->streaming = 1; return 0;
+    case VIDIOC_STREAMON: h->streaming = 1; h->sequence = 0; return 0;
     case VIDIOC_STREAMOFF: h->streaming = 0; return 0;
     case VIDIOC_DQBUF: {
         struct v4l2_buffer *buffer = argument;
@@ -259,6 +260,8 @@ static int control(struct fake_system *system, int fd, struct handle *h, unsigne
             buffer->flags = frame->flags | V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
             buffer->timestamp.tv_sec = (long)(h->next / 30);
             buffer->timestamp.tv_usec = (long)(h->next % 30) * 33333;
+            h->sequence += frame->lost;
+            buffer->sequence = h->sequence++;
             /* A dequeued buffer with a wrong index is lost to the driver as well. */
             return 0;
         }

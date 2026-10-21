@@ -10,7 +10,9 @@ mod profiles;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod check {
-    use junto_media::camera::{CameraCapture, CameraError, CameraSink, native_rate_for_test};
+    use junto_media::camera::{
+        CameraCapture, CameraError, CameraSink, native_counts_for_test, native_rate_for_test,
+    };
     use livekit::webrtc::video_frame::VideoBuffer;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -97,9 +99,12 @@ mod check {
     }
 
     /// Captures from the camera `id`: thirty pictures of the declared size whose planes hold
-    /// a picture, then three seconds whose rate is at least 80 percent of the rate that the
-    /// driver was asked for, limited to 30. `expected` checks the size and the colours of a
-    /// known source.
+    /// a picture, then three seconds in which the driver loses no picture for lack of a
+    /// buffer and capture delivers the pictures that the limit of 30 per second keeps of
+    /// those that the driver gave. `expected` checks the size and the colours of a known
+    /// source, and that it gives at least 80 percent of the rate that the driver was asked
+    /// for. A real camera may give fewer pictures than it was asked for: it lowers its rate
+    /// for a longer exposure in low light, so its rate is only printed.
     pub async fn capture(
         camera: &Arc<dyn CameraCapture>,
         id: String,
@@ -115,7 +120,7 @@ mod check {
         ) {
             return Err("an absent camera did not fail as gone".into());
         }
-        let stream = camera.start(Some(id), sink).await?;
+        let stream = camera.start(Some(id.clone()), sink).await?;
         let size = (stream.width, stream.height);
         if let Some(expected) = expected
             && expected.size != size
@@ -158,25 +163,58 @@ mod check {
             .into());
         }
         let asked = native_rate_for_test().map(|(n, d)| f64::from(n) / f64::from(d));
+        let before = native_counts_for_test(&id);
         let start = Instant::now();
         let mut count = 0u32;
         while start.elapsed() < Duration::from_secs(3) {
             next(&mut receive).await?;
             count += 1;
         }
-        let measured = f64::from(count) / start.elapsed().as_secs_f64();
+        let seconds = start.elapsed().as_secs_f64();
+        let after = native_counts_for_test(&id);
         drop(stream);
+        let received = after.received - before.received;
+        let lost = after.lost.map(|lost| lost - before.lost.unwrap_or(0));
+        let source = received as f64 / seconds;
+        let measured = f64::from(count) / seconds;
         println!(
-            "Received 30 checked pictures at {} by {}; {measured:.1} per second for a driver rate of {}; capture stopped",
+            "Received 30 checked pictures at {} by {}; {measured:.1} per second of {source:.1} that the driver gave ({}) for a driver rate of {}; capture stopped",
             size.0,
             size.1,
+            lost.map_or("the driver numbers no pictures".into(), |lost| format!(
+                "{lost} lost"
+            )),
             asked.map_or("not stated".into(), |rate| format!("{rate:.2}"))
         );
+        if let Some(lost) = lost
+            && lost > 0
+        {
+            return Err(format!(
+                "the driver lost {lost} pictures for lack of a buffer: capture did not keep up"
+            )
+            .into());
+        }
+        // The limit keeps every picture up to 30.5 per second, else every second, third or
+        // later one, with even gaps (ADR 0770). Two pictures may be between the driver and
+        // this receiver at either end of the measured time.
+        let kept = received as f64 / (source / 30.5).ceil().max(1.0);
+        if f64::from(count) + 2.0 < 0.95 * kept || f64::from(count) > kept + 2.0 {
+            return Err(format!(
+                "{count} pictures delivered of {received} that the driver gave; the limit keeps {kept:.0}"
+            )
+            .into());
+        }
         if let Some(asked) = asked {
             let limit = asked.min(30.0);
-            if measured < 0.8 * limit || measured > limit + 1.0 {
-                return Err(
-                    format!("{measured:.1} pictures per second for a limit of {limit:.2}").into(),
+            if expected.is_some() && source < 0.8 * limit {
+                return Err(format!(
+                    "the source gave {source:.1} pictures per second for a limit of {limit:.2}"
+                )
+                .into());
+            }
+            if source < 0.8 * limit {
+                println!(
+                    "The camera gave fewer pictures than its driver rate; a camera lowers its rate for a longer exposure in low light."
                 );
             }
         }

@@ -102,9 +102,10 @@ JUNTO_TEST_CAMERA_DEVICE=1 cargo run -p junto-media --features native-device-tes
 ```
 
 `JUNTO_TEST_CAMERA_INDEX` selects an index in the current list (default zero). Capture
-requires a device, checks the size and the content of thirty pictures, and then the rate
-over three seconds against the rate that capture asked the driver for (a real camera
-needs light to keep its rate). No permission dialog is requested.
+requires a device, checks the size and the content of thirty pictures, and then, over
+three seconds, that the driver lost no picture (Linux) and that capture delivered the
+pictures that the limit of 30 per second keeps of those that the driver gave. It prints the
+rate of the camera, which a camera lowers in low light. No permission dialog is requested.
 
 On Windows 11, as an administrator, the same check runs against two virtual cameras of
 Media Foundation, one of them through the MJPEG decoder, without a real camera:

@@ -511,6 +511,7 @@ fn capture(
             let at = u64::try_from(event.timestamp)
                 .map(|units| Duration::from_nanos(units.saturating_mul(100)))
                 .unwrap_or(last_picture - start);
+            worker::count(&chosen.id, 1, None);
             if pacer.due(at) {
                 let picture = frame(&sample, layout)?;
                 if let Some(ready) = ready.take() {

@@ -21,7 +21,7 @@ struct camera_format {
 };
 struct camera_request { uint32_t fourcc, width, height, numerator, denominator; };
 struct camera_range { uint32_t kind, values[6]; };
-struct camera_buffer { uint32_t index, used, flags, count, length; uint64_t timestamp; };
+struct camera_buffer { uint32_t index, used, flags, count, length, sequence; uint64_t timestamp; };
 
 struct mapping { void *data; size_t length; };
 struct camera {
@@ -205,7 +205,7 @@ int junto_camera_next(struct camera *camera, int timeout, struct camera_buffer *
     if ((buffer.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC)
         timestamp = (uint64_t)buffer.timestamp.tv_sec * 1000000000u + (uint64_t)buffer.timestamp.tv_usec * 1000u;
     uint32_t length = buffer.index < camera->count ? (uint32_t)camera->buffers[buffer.index].length : 0;
-    *out = (struct camera_buffer){buffer.index, buffer.bytesused, buffer.flags, camera->count, length, timestamp};
+    *out = (struct camera_buffer){buffer.index, buffer.bytesused, buffer.flags, camera->count, length, buffer.sequence, timestamp};
     return 1;
 }
 

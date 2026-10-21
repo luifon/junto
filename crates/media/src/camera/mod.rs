@@ -220,6 +220,26 @@ pub fn native_rate_for_test() -> Option<(u32, u32)> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The counts of pictures of the native captures of the camera `device` in the process so far.
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "native-device-tests"
+))]
+pub fn native_counts_for_test(device: &str) -> NativeCounts {
+    worker::COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(id, _)| id == device)
+        .map_or_else(NativeCounts::default, |(_, counts)| *counts)
+}
+
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "native-device-tests"
+))]
+pub use worker::Counts as NativeCounts;
+
 /// For the native stage: whether a camera buffer delivered without conversion is in the 601
 /// matrix of the publication path. `None` for a buffer that the camera code converted.
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]

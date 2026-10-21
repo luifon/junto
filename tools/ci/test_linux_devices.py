@@ -107,6 +107,9 @@ class LinuxJob(unittest.TestCase):
             self.assertLess(steps.index("cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings"),
                             steps.index("cargo clippy --locked -p junto-media --features native-device-tests "
                                         "--all-targets -- -D warnings"))
+            # The camera unit tests that read the counts of the device check (ADR 0913).
+            self.assertIn("cargo test --locked -p junto-media --features native-device-tests --lib camera::",
+                          steps)
 
 
 if __name__ == "__main__":

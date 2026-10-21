@@ -97,6 +97,49 @@ pub(super) type Ready = oneshot::Sender<Result<Started, CameraError>>;
 #[cfg(feature = "native-device-tests")]
 pub(super) static LAST_RATE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 
+/// The pictures of each device in the process, for the device check: those that native
+/// capture received complete, before the limit of 30 per second, and those that the driver
+/// lost for lack of a queued buffer, when the driver numbers its pictures.
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "native-device-tests"
+))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub received: u64,
+    pub lost: Option<u64>,
+}
+
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "native-device-tests"
+))]
+pub(super) static COUNTS: Mutex<Vec<(String, Counts)>> = Mutex::new(Vec::new());
+
+/// Counts `received` complete pictures and `lost` pictures of `device` for the device check;
+/// nothing without the `native-device-tests` feature.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub(super) fn count(device: &str, received: u64, lost: Option<u32>) {
+    #[cfg(feature = "native-device-tests")]
+    {
+        let mut all = COUNTS.lock().unwrap_or_else(PoisonError::into_inner);
+        let index = match all.iter().position(|(id, _)| id == device) {
+            Some(index) => index,
+            None => {
+                all.push((device.to_owned(), Counts::default()));
+                all.len() - 1
+            }
+        };
+        let counts = &mut all[index].1;
+        counts.received += received;
+        if let Some(lost) = lost {
+            counts.lost = Some(counts.lost.unwrap_or(0) + u64::from(lost));
+        }
+    }
+    #[cfg(not(feature = "native-device-tests"))]
+    let _ = (device, received, lost);
+}
+
 const INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 30);
 
 /// Limits delivery to 30 pictures per second, from the time stamps of the pictures. A camera

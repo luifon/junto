@@ -12,6 +12,8 @@ pub(super) struct Dequeued {
     /// The count of mapped buffers and the length of each.
     pub count: u32,
     pub length: u32,
+    /// The number that the driver gives each picture of the stream, from 0.
+    pub sequence: u32,
     /// The time stamp of a monotonic clock in nanoseconds; 0 when the driver states none.
     pub timestamp: u64,
 }
@@ -26,6 +28,14 @@ pub(super) enum Buffer {
     Discard,
     /// A buffer that names no mapping of the capture: the driver does not follow the API.
     Invalid,
+}
+
+/// The pictures that the driver lost between the buffer numbered `last` and the one numbered
+/// `sequence`: a driver numbers each picture of its camera and skips the number of a picture
+/// for which no buffer was queued. A number that is not larger starts the count again.
+pub(super) fn lost(last: Option<u32>, sequence: u32) -> u32 {
+    last.and_then(|last| sequence.checked_sub(last))
+        .map_or(0, |step| step.saturating_sub(1))
 }
 
 /// What to do with a returned buffer whose picture needs `needed` bytes.
@@ -138,8 +148,18 @@ mod tests {
             flags,
             count: 4,
             length: 1000,
+            sequence: 0,
             timestamp: 0,
         }
+    }
+
+    #[test]
+    fn a_skipped_sequence_number_is_a_lost_picture() {
+        assert_eq!(lost(None, 7), 0);
+        assert_eq!(lost(Some(3), 4), 0);
+        assert_eq!(lost(Some(3), 6), 2);
+        assert_eq!(lost(Some(9), 0), 0);
+        assert_eq!(lost(Some(5), 5), 0);
     }
 
     #[test]

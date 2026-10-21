@@ -28,6 +28,10 @@ step "The client holds the camera code and not the test camera device"
 tools/linux-container.sh sh -c 'llvm-nm-22 /target/debug/junto >/tmp/symbols && grep -q junto_camera_open /tmp/symbols && ! grep -q junto_fake_ /tmp/symbols'
 step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
+# The camera unit tests with the counts that the device checks read (ADR 0913); they open no
+# device.
+step "Camera unit tests of the device checks"
+tools/linux-container.sh cargo test --locked -p junto-media --features native-device-tests --lib camera::
 step "CI runner unit tests"
 tools/linux-container.sh python3 -m unittest discover -s tools/ci -p "test_*.py"
 step "Container runner unit tests"

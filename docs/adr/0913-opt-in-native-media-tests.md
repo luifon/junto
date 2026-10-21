@@ -62,10 +62,17 @@ tests need permissions and must never select a physical sound output by fallback
   `--list` opens no capture. Capturing requires `JUNTO_TEST_CAMERA_DEVICE=1`, uses an
   explicitly selected listed device, and checks thirty pictures: each has the dimensions
   of the production stream, a luma plane with more than one value and chroma planes that
-  are not empty. It then counts the pictures of three seconds; the rate must be at least
-  80 percent of the rate that capture asked the driver for, limited to 30, and at most one
-  above that limit. A camera in a dark room can lower its rate below the requested one, so
-  a real camera needs light for this check. It requests no permission dialog and saves no
+  are not empty. It then counts the pictures of three seconds, with the counts of the
+  production capture of the device that the feature adds: the pictures that the driver
+  gave complete, and, on Linux, the pictures that the driver lost, from the gaps in the
+  V4L2 sequence numbers, which a driver skips for a picture that found no queued buffer.
+  The driver must lose no picture, so that capture keeps up with the camera, and the
+  delivered pictures must be those that the limit of 30 per second keeps of the pictures
+  that the driver gave (ADR 0770). A known source must also give at least 80 percent of
+  the rate that capture asked the driver for, limited to 30. A real camera may give fewer
+  pictures than asked: a USB camera with exposure priority lowers its rate for a longer
+  exposure in low light, so for it the rate is printed and does not decide. Media Foundation does not number its samples, so on Windows the
+  check of lost pictures is absent. It requests no permission dialog and saves no
   pictures. The optional `rust-linux-devices` job of ADR 0905 authorizes this step
   explicitly; ordinary CI and its ignored tests retain synthetic devices. Linux device
   passthrough exposes only video character devices and their groups. The streaming API
@@ -93,8 +100,8 @@ tests need permissions and must never select a physical sound output by fallback
   device in memory behind the same table of system calls as the devices of the system. Its
   tests run `v4l2.c` and the Linux capture with programmed formats, frame sizes, intervals,
   colour metadata, buffer counts, damaged and short buffers, a buffer outside the mapped
-  ones, refused frame-rate requests, modes that the driver sets otherwise, and refused
-  opens. It keeps the queue of a device for the descriptor that holds its buffers and answers
+  ones, refused frame-rate requests, modes that the driver sets otherwise, pictures that
+  the driver lost, and refused opens. It keeps the queue of a device for the descriptor that holds its buffers and answers
   busy to another, as V4L2 drivers do, so that a quick stop and start fails without the device
   claim of ADR 0770. Each fake has device identities of its own. Only the tests refer to the
   fake, so the linker leaves it out of the product; the Linux job checks the symbols of the
