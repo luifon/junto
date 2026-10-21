@@ -9,8 +9,8 @@ use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{
     Category, ChangeChannelOverride, Channel, ChannelKind, ChannelList, ChannelOverride,
-    ChannelPermissions, CreateCategory, CreateChannel, MoveChannels, OverrideState,
-    SetChannelOverride, UpdateCategory, UpdateChannel,
+    ChannelPermissions, CreateCategory, CreateChannel, MOST_CHANNEL_MOVES, MoveChannels,
+    OverrideState, SetChannelOverride, UpdateCategory, UpdateChannel,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -511,13 +511,12 @@ pub async fn update_channel(
     .map(Json)
 }
 
-/// The most channels that one change of the order names.
-const MOST_MOVES: usize = 200;
-
 /// Changes the category and the position of channels of one workspace in one transaction:
 /// all of them or none. Each move states where the client read the channel; when one of
-/// them is no longer there, the answer is `conflict` and nothing changes. Each channel
-/// needs "manage channel", as on the route of one channel.
+/// them is no longer there, the answer is `conflict` and nothing changes. A move whose `to`
+/// equals its `from` is a check only: it changes nothing and needs "view channel", so that a
+/// client names the channels next to the destination that it read (ADR 0304). Each other
+/// channel needs "manage channel", as on the route of one channel.
 #[utoipa::path(
     patch,
     path = "/api/v1/workspaces/{workspace_id}/channels/positions",
@@ -533,9 +532,9 @@ pub async fn move_channels(
     ApiPath(workspace_id): ApiPath<WorkspaceId>,
     ApiJson(body): ApiJson<MoveChannels>,
 ) -> ApiResult<StatusCode> {
-    if body.moves.is_empty() || body.moves.len() > MOST_MOVES {
+    if body.moves.is_empty() || body.moves.len() > MOST_CHANNEL_MOVES {
         return Err(ApiError::invalid(format!(
-            "moves must name 1 to {MOST_MOVES} channels"
+            "moves must name 1 to {MOST_CHANNEL_MOVES} channels"
         )));
     }
     let mut named = std::collections::HashSet::new();
@@ -547,15 +546,23 @@ pub async fn move_channels(
         let access = Access::open(connection, &bearer, now).await?;
         // Every channel is checked against the state before the first change, so that a
         // later move is not compared with a position that an earlier move wrote.
+        // A channel that the caller does not see is `not_found` before any other check, so
+        // that the answer does not tell whether it exists or in which workspace it is.
         for held in &body.moves {
             let (record, scope) = access.channel(connection, held.channel_id).await?;
+            access.require(Request::Channel {
+                scope: &scope,
+                permission: WorkspacePermission::ViewChannel,
+            })?;
             if record.channel.workspace_id != workspace_id {
                 return Err(ApiError::invalid("a channel is not in this workspace"));
             }
-            access.require(Request::Channel {
-                scope: &scope,
-                permission: WorkspacePermission::ManageChannel,
-            })?;
+            if held.to != held.from {
+                access.require(Request::Channel {
+                    scope: &scope,
+                    permission: WorkspacePermission::ManageChannel,
+                })?;
+            }
             record.require_open()?;
             if record.channel.category_id != held.from.category_id
                 || record.channel.position != held.from.position
@@ -565,7 +572,7 @@ pub async fn move_channels(
                 ));
             }
         }
-        for held in &body.moves {
+        for held in body.moves.iter().filter(|held| held.to != held.from) {
             let change = UpdateChannel {
                 category_id: Some(held.to.category_id),
                 position: Some(held.to.position),

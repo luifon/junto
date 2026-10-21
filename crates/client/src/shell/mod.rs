@@ -266,6 +266,7 @@ pub struct Shell {
     // The positions of the lists that scroll.
     pub(crate) servers_scroll: ScrollHandle,
     pub(crate) channels_scroll: ScrollHandle,
+    pub(crate) directs_scroll: ScrollHandle,
     pub(crate) members_scroll: ScrollHandle,
     pub(crate) call_members_scroll: ScrollHandle,
     pub(crate) call_settings_scroll: ScrollHandle,
@@ -509,10 +510,7 @@ impl Shell {
                 this.drop_stale_layer(&view, window, cx);
                 // The list of the members who can be invited belongs to the call that
                 // the window shows.
-                if view
-                    .workspace()
-                    .is_none_or(|workspace| workspace.call.is_none())
-                {
+                if view.lists().is_none_or(|lists| lists.call.is_none()) {
                     this.invite_open = false;
                 }
                 // A search that ended empties its field.
@@ -627,6 +625,7 @@ impl Shell {
             view: None,
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
+            directs_scroll: ScrollHandle::new(),
             members_scroll: ScrollHandle::new(),
             call_members_scroll: ScrollHandle::new(),
             call_settings_scroll: ScrollHandle::new(),
@@ -1236,9 +1235,7 @@ impl Shell {
             // The list of devices belongs to the sound settings of the call.
             Layer::DeviceMenu(_) => {
                 self.call_tab != CallTab::Settings
-                    || view
-                        .workspace()
-                        .is_none_or(|workspace| workspace.call.is_none())
+                    || view.lists().is_none_or(|lists| lists.call.is_none())
             }
             // The observer of the state closes the dialog of a share by its call and seat.
             Layer::SharePicker(_) => false,
@@ -1256,13 +1253,15 @@ impl Shell {
                         })
                     })
                 };
-                let workspace = view.workspace();
-                let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
-                !held(workspace.and_then(|workspace| workspace.feed.as_ref()))
+                let thread = view
+                    .workspace()
+                    .and_then(|workspace| workspace.thread.as_ref());
+                !held(view.lists().and_then(|lists| lists.feed.as_ref()))
                     && !held(thread.and_then(|thread| thread.feed.as_ref()))
                     && thread.is_none_or(|thread| thread.root_id != *message_id)
             }
-            Layer::Emoji(EmojiTarget::Compose(Pane::Main)) => view.workspace().is_none(),
+            // The main area shows no channel and no conversation.
+            Layer::Emoji(EmojiTarget::Compose(Pane::Main)) => view.shown().place().is_none(),
             // The thread of the side panel was closed.
             Layer::Emoji(EmojiTarget::Compose(Pane::Thread)) => view
                 .workspace()
@@ -1281,12 +1280,9 @@ impl Shell {
                     .flat_map(|section| &section.rows)
                     .any(|row| row.id == *channel_id)
             }),
-            Layer::DirectMenu(conversation_id) => view.workspace().is_none_or(|workspace| {
-                !workspace
-                    .directs
-                    .iter()
-                    .any(|row| row.id == *conversation_id)
-            }),
+            Layer::DirectMenu(conversation_id) => view
+                .lists()
+                .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == *conversation_id)),
             // The scope of the dialog is gone.
             Layer::Notify => view.notify.is_none(),
             Layer::SearchFilter(_) => view
@@ -1297,8 +1293,8 @@ impl Shell {
                 !view.may_remove_recording(*server_id, *recording_id)
             }
             Layer::RecordingFiles(recording_id) | Layer::RecordingParts(recording_id) => !view
-                .workspace()
-                .and_then(|workspace| workspace.feed.as_ref())
+                .lists()
+                .and_then(|lists| lists.feed.as_ref())
                 .is_some_and(|feed| {
                     feed.rows.iter().any(|row| {
                         matches!(row, crate::state::feed::FeedRow::Recording(row)

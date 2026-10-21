@@ -2061,6 +2061,18 @@ impl AppState {
             self.selection.transcript = None;
             self.known.transcript_line = None;
         }
+        // A refusal of a direct conversation belongs to the place where it is stated
+        // (ADR 0741).
+        if self
+            .known
+            .conversation_refused
+            .as_ref()
+            .is_some_and(|refused| {
+                shown.server != Some(refused.server_id) || shown.place() != refused.place
+            })
+        {
+            self.known.conversation_refused = None;
+        }
         // The notices belong to a server: they close when another server is shown. They
         // stay under a thread and under the pinned messages.
         if self.selection.notices.is_some() && self.selection.notices != shown.server {

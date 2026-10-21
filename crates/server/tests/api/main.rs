@@ -55,6 +55,7 @@ mod stream_support;
 mod structure;
 mod structure_changes;
 mod support;
+mod telemetry;
 mod time_limits;
 mod transcriber_real;
 mod transcripts;

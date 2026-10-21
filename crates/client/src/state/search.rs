@@ -257,8 +257,9 @@ pub struct SearchPanel {
     pub server_id: ServerId,
     pub text: String,
     pub state: SearchShown,
-    pub messages: Vec<ResultRow>,
-    pub transcripts: Vec<ResultRow>,
+    /// The listed results, messages and lines of transcripts, in the order of the server:
+    /// the results of a later page follow those of the pages before (ADR 0743).
+    pub results: Vec<ResultRow>,
     /// The server has results after the read ones.
     pub more: bool,
     /// The panel offers the page after the read ones.
@@ -277,6 +278,24 @@ pub struct SearchPanel {
     /// The workspaces whose archived list could not be read: their results of archived
     /// channels are not listed until a read succeeds.
     pub archive_failed: Vec<WorkspaceId>,
+}
+
+impl SearchPanel {
+    /// The listed results that are messages, in their order.
+    pub fn messages(&self) -> Vec<&ResultRow> {
+        self.results
+            .iter()
+            .filter(|row| matches!(row.target, ResultTarget::Message(_)))
+            .collect()
+    }
+
+    /// The listed results that are lines of transcripts, in their order.
+    pub fn transcripts(&self) -> Vec<&ResultRow> {
+        self.results
+            .iter()
+            .filter(|row| matches!(row.target, ResultTarget::Transcript { .. }))
+            .collect()
+    }
 }
 
 /// The words that a search looks for: the words and the words of the phrases of the
@@ -431,11 +450,11 @@ pub fn search_panel(
             .cloned()
             .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
     };
-    let (mut messages, mut transcripts) = (Vec::new(), Vec::new());
+    let mut results = Vec::new();
     // A page is listed when every result of it is placed: a result whose archived channel
     // the state does not know yet holds back its page and the later ones until the
-    // archived list of its workspace answers. A page then appears whole, as when it
-    // arrives, so no row of a listed page moves (ADR 0730).
+    // archived list of its workspace answers. A page then appears whole after the pages
+    // before it, as when it arrives, so no listed row moves (ADR 0730).
     let withheld = search
         .hits
         .iter()
@@ -476,12 +495,12 @@ pub fn search_panel(
             target,
         };
         match (hit.message_id, hit.recording_id, hit.line, channel) {
-            (Some(message_id), _, _, _) => messages.push(row(
+            (Some(message_id), _, _, _) => results.push(row(
                 format!("{:02}:{:02}", local.hour(), local.minute()),
                 ResultTarget::Message(message_id),
             )),
             (None, Some(recording_id), Some(line), Some((workspace_id, channel_id))) => {
-                transcripts.push(row(
+                results.push(row(
                     // The time of the line from the start of the recording; a server that
                     // states none gives the number of the line.
                     hit.start_ms
@@ -497,7 +516,7 @@ pub fn search_panel(
             _ => {}
         }
     }
-    let found = !messages.is_empty() || !transcripts.is_empty();
+    let found = !results.is_empty();
     let state = match &search.progress {
         Progress::Searching => SearchShown::Searching,
         // The first page waits for its places.
@@ -538,8 +557,7 @@ pub fn search_panel(
         server_id,
         text: search.text.clone(),
         state,
-        messages,
-        transcripts,
+        results,
         more: search.more,
         // A later page that waits for its places is shown as a page on its way.
         can_read_more: (search.more && search.hits.len() < MOST_HITS)

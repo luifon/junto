@@ -246,6 +246,7 @@ impl RecordingServer {
                 trusted_proxies: Vec::new(),
                 log_format: LogFormat::Text,
                 log_level: tracing::Level::ERROR,
+                otel_endpoint: None,
                 media: None,
                 recorder: Some(recorder_settings.clone()),
                 limits: Limits::default(),

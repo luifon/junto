@@ -9746,7 +9746,7 @@
         "tags": [
           "channels"
         ],
-        "summary": "Changes the category and the position of channels of one workspace in one transaction:\nall of them or none. Each move states where the client read the channel; when one of\nthem is no longer there, the answer is `conflict` and nothing changes. Each channel\nneeds \"manage channel\", as on the route of one channel.",
+        "summary": "Changes the category and the position of channels of one workspace in one transaction:\nall of them or none. Each move states where the client read the channel; when one of\nthem is no longer there, the answer is `conflict` and nothing changes. A move whose `to`\nequals its `from` is a check only: it changes nothing and needs \"view channel\", so that a\nclient names the channels next to the destination that it read (ADR 0304). Each other\nchannel needs \"manage channel\", as on the route of one channel.",
         "operationId": "move_channels",
         "parameters": [
           {
@@ -13925,7 +13925,7 @@
       },
       "ChannelMove": {
         "type": "object",
-        "description": "One channel of a change of the order: where the client read it, and where it goes.",
+        "description": "One channel of a change of the order: where the client read it, and where it goes. With\n`to` equal to `from`, the channel does not move: the server only checks that it is still\nat `from`. A client names so the channels next to the destination that it read, so that\na change of their places since that read refuses the request.",
         "required": [
           "channel_id",
           "from",

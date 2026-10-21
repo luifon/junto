@@ -24,7 +24,7 @@ use crate::state::notices::{
     Agreement, Jump, Mute, MuteFor, NoticeRow, NoticesPanel, NotifyPanel, QuietView, Whereabouts,
     clock_text, parse_clock,
 };
-use crate::state::view::{ShellView, WorkspaceView};
+use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -209,7 +209,7 @@ impl Shell {
         let Some((server_id, open)) = view
             .selected
             .as_ref()
-            .and_then(|server| Some((server.id, view.workspace()?.notices.is_some())))
+            .and_then(|server| Some((server.id, view.lists()?.notices.is_some())))
         else {
             return;
         };
@@ -224,25 +224,25 @@ impl Shell {
     }
 
     /// The entry of the channel column that opens the notices of the server, with the
-    /// count of the notices that the person has not read.
+    /// count of the notices that the person has not read. `in_call`: the main area shows
+    /// the call of this device, whose side panel is the panel of the call.
     pub(crate) fn render_notices_row(
         &mut self,
-        workspace: &WorkspaceView,
+        lists: &ServerLists,
+        in_call: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let unread = workspace.unread_notices;
+        let unread = lists.unread_notices;
         let sign = (unread > 0).then(|| UnreadSign {
             mentions: Some(text::unread_count(unread as u64).into()),
             label: text::unread_notices(unread).into(),
         });
-        // The side panel of the call of this device is the panel of the call.
-        let in_call = workspace.call.is_some();
         div()
             .flex_none()
             .debug_selector(|| "notices-row".to_owned())
             .child(
                 ChannelRow::new("notices-row", Icon::Bell, text::NOTIFICATIONS)
-                    .selected(workspace.notices.is_some())
+                    .selected(lists.notices.is_some())
                     .unread(sign)
                     .unavailable(in_call.then_some(text::NOTICES_IN_CALL))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_notices(cx))),
@@ -373,7 +373,7 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(text::NOTICES_READING)
                 .into_any_element()
-        } else if panel.rows.is_empty() {
+        } else if panel.rows.is_empty() && !panel.more {
             StatePanel::new(text::NO_NOTICES_TITLE, text::NO_NOTICES)
                 .selector("no-notices")
                 .into_any_element()

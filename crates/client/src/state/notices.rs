@@ -370,9 +370,12 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
         // panel offers "Mark all as read" for them (ADR 0742).
         unread: unread_notices(model),
         rows,
-        // The control after the rows is not drawn while rows wait to be added before it.
-        more: model.notices_more && !placing,
-        reading,
+        // The control after the rows is not drawn while rows wait to be added before it,
+        // and not while no notice is held to continue from.
+        more: model.notices_more && !placing && !model.notices.is_empty(),
+        // A list without a notice that the server says goes on is read again from its
+        // first page.
+        reading: reading || (model.notices.is_empty() && model.notices_more),
         archive_failed,
         marking: known.marking_all.contains_key(&server_id),
         failed: known.notices_failed.get(&server_id).cloned(),

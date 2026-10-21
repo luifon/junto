@@ -292,8 +292,8 @@ impl Rehearsal {
             window.until("the messages of the text channel are read", |window| {
                 window
                     .view()
-                    .workspace()
-                    .and_then(|workspace| workspace.feed.as_ref())
+                    .lists()
+                    .and_then(|lists| lists.feed.as_ref())
                     .is_some_and(|feed| feed.loaded)
             });
         }
@@ -785,7 +785,7 @@ impl Rehearsal {
         search_for(b, &format!("kestrel{tag}"));
         let panel = until_searched(b);
         assert_eq!(panel.state, SearchShown::Results);
-        let targets: Vec<ResultTarget> = panel.messages.iter().map(|row| row.target).collect();
+        let targets: Vec<ResultTarget> = panel.messages().iter().map(|row| row.target).collect();
         assert_eq!(targets, [ResultTarget::Message(message)]);
         b.click_named(format!("search-result:{message}"));
         let text_channel = b.until_value("the result leads to its message", |window| {
@@ -800,9 +800,9 @@ impl Rehearsal {
         if let Some(word) = spoken_word {
             search_for(b, word);
             let panel = until_searched(b);
-            assert_eq!(panel.messages.len(), 0);
-            assert!(!panel.transcripts.is_empty(), "{panel:?}");
-            assert!(panel.transcripts.iter().all(|line| line.author == B_NAME));
+            assert_eq!(panel.messages().len(), 0);
+            assert!(!panel.transcripts().is_empty(), "{panel:?}");
+            assert!(panel.transcripts().iter().all(|line| line.author == B_NAME));
             b.click("search-transcript-0");
             b.until("the result opens its recording", |window| {
                 selected_channel(window) == voice_channel(window)
@@ -940,7 +940,7 @@ fn invite_line(
 }
 
 fn feed_rows(window: &mut Window) -> Option<junto_client::state::feed::Feed> {
-    window.view().workspace()?.feed.clone()
+    window.view().lists()?.feed.clone()
 }
 
 fn messages(window: &mut Window) -> Vec<MessageRow> {
@@ -1106,8 +1106,8 @@ fn own_share(window: &mut Window) -> OwnShare {
 fn stage(window: &mut Window) -> Option<ShareStage> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .and_then(|panel| panel.stage)
 }
 

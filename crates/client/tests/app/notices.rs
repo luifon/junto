@@ -77,17 +77,15 @@ impl Window {
             .read_with(&self.cx, |state, _| state.kept_notifications())
     }
 
-    fn notices(&mut self) -> Option<NoticesPanel> {
-        self.view().workspace()?.notices.clone()
+    pub(crate) fn notices(&mut self) -> Option<NoticesPanel> {
+        self.view().lists()?.notices.clone()
     }
 
-    fn unread_notices(&mut self) -> usize {
-        self.view()
-            .workspace()
-            .map_or(0, |workspace| workspace.unread_notices)
+    pub(crate) fn unread_notices(&mut self) -> usize {
+        self.view().lists().map_or(0, |lists| lists.unread_notices)
     }
 
-    fn open_notices(&mut self) {
+    pub(crate) fn open_notices(&mut self) {
         self.click("notices-row");
         self.until("the notices are listed", |window| {
             window
@@ -886,4 +884,56 @@ fn a_notice_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
                 .any(|row| row.message.id == archived.id && row.target)
     });
     assert!(window.shows("notices-panel"));
+}
+
+#[gpui::test]
+fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_held_notice(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    admin.mention(&world, general, "older, ", own);
+
+    // A second workspace with a channel that holds the newest 50 notices: they fill the
+    // first page, and the notice of the first workspace lies on the next page.
+    let api = admin.handle.api();
+    let lab = world
+        .run(api.create_workspace("Lab".to_owned()))
+        .unwrap()
+        .id;
+    world.run(api.add_workspace_member(lab, own)).unwrap();
+    let bench = world
+        .run(api.create_channel(
+            lab,
+            &CreateChannel {
+                name: "bench".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: None,
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    for number in 1..=50 {
+        admin.mention(&world, bench, &format!("bench {number}, "), own);
+    }
+    window.open_notices();
+    window.until("the first page holds the notices of the bench", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.len() == 50
+                && panel.more
+                && panel.rows.iter().all(|row| row.text.starts_with("bench"))
+        })
+    });
+
+    // The workspace is deleted: its notices leave, and none is left to continue from. The
+    // list is read again, and the older notice of the first workspace is listed.
+    world.run(api.delete_workspace(lab)).unwrap();
+    window.until("the older notice is listed", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.len() == 1 && panel.rows[0].text == "older, @Luca" && !panel.more
+        })
+    });
+    assert!(!window.shows("no-notices"));
 }

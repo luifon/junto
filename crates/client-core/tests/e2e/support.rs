@@ -633,6 +633,14 @@ impl FaultProxy {
         self.released.send_modify(|releases| *releases += 1);
     }
 
+    /// Passes on the requests that [`FaultProxy::hold_request`] holds, and holds no further
+    /// one. Answers and events that wait keep waiting.
+    #[allow(dead_code)]
+    pub fn release_requests(&self) {
+        self.state.lock().unwrap().held_requests.clear();
+        self.released.send_modify(|releases| *releases += 1);
+    }
+
     /// Passes on every request, every answer and the events that wait, and holds no further
     /// one.
     pub fn release(&self) {
