@@ -63,11 +63,19 @@ impl Chip {
         Self {
             text: text.into(),
             icon: None,
+            shrinks: false,
         }
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// The flag gets narrower than its text where the place is too narrow, and its text
+    /// ends with an ellipsis.
+    pub fn shrinks(mut self) -> Self {
+        self.shrinks = true;
         self
     }
 }
@@ -110,6 +118,7 @@ pub struct Flag {
     kind: FlagKind,
     text: SharedString,
     icon: Option<Icon>,
+    shrinks: bool,
 }
 
 impl Flag {
@@ -133,7 +142,13 @@ impl RenderOnce for Flag {
         let colors = theme.colors;
         let flag = div()
             .flex()
-            .flex_none()
+            .map(|flag| {
+                if self.shrinks {
+                    flag.min_w_0().overflow_hidden()
+                } else {
+                    flag.flex_none()
+                }
+            })
             .items_center()
             .gap(u(6.0))
             .h(u(28.0))
@@ -154,8 +169,16 @@ impl RenderOnce for Flag {
                 .border_color(Hsla::from(colors.cinnabar_wash_rule)),
         }
         .ink(text)
-        .when_some(self.icon, |flag, shown| flag.child(icon(shown, 15.0, text)))
-        .child(self.text)
+        .when_some(self.icon, |flag, shown| {
+            flag.child(div().flex_none().child(icon(shown, 15.0, text)))
+        })
+        .map(|flag| {
+            if self.shrinks {
+                flag.child(div().min_w_0().truncate().child(self.text))
+            } else {
+                flag.child(self.text)
+            }
+        })
     }
 }
 
