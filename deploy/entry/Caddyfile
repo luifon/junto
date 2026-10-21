@@ -4,6 +4,11 @@
 {
 	admin off
 	email {$JUNTO_ACME_EMAIL}
+	# At its start Caddy cleans its storage while it obtains the certificates, and it deleted
+	# the folder of a certificate that it was saving; the name then had no certificate until
+	# the next try 60 seconds later. The three certificates are renewed in place, so the
+	# storage has nothing to clean.
+	storage_clean_interval off
 	# Empty in a deployment. "local_certs" in the test of this file: the entry then signs
 	# the certificates itself and asks no certificate authority.
 	{$JUNTO_ENTRY_CERTIFICATES}
