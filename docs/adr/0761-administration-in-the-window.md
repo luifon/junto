@@ -32,6 +32,8 @@ The lists of a page:
 - Window tests load 2,000 audit entries and 2,000 accounts and check that fewer than 100 rows are laid out. The audit test also traverses the filters and footer with the keyboard, continues beyond the retained entries and reloads. Existing form-answer tests compare the positions of visible controls, and the channel and role tests exercise drag and keyboard moves.
 - `JUNTO_SCREENS_ONLY=audit-frames` measures unchanged and scrolled frames with 50 and 2,000 entries through the real window renderer. Each case discards five warm-up frames and reports the median and longest of 60 measured frames. A separate server test reads more pages than the connection pool can hold and checks complete, unique, descending results, to distinguish drawing cost from audit pagination.
 
+In a release headless run on macOS, 2,000 entries took a median 220.62 ms per unchanged frame and 221.96 ms per scrolled frame before the change, and 4.28 ms and 4.53 ms after it. The longest measured frames changed from 250.85 ms and 276.69 ms to 4.82 ms and 5.59 ms. With 50 entries, the medians changed from 9.19 ms and 8.64 ms to 3.08 ms and 3.23 ms. These are measurements of the fixed screen fixture, not a limit promised for every server or machine.
+
 Pages:
 
 - Workspaces: the list with the default workspace and the membership of the account, a new workspace, a new name, the deletion, and an invite code that enters further workspaces (ADR 0115).
