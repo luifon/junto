@@ -363,8 +363,9 @@ fn a_permission_given_or_taken_moves_no_row_of_the_page(cx: &mut TestAppContext)
         workspace_id,
         WorkspacePermission::ManageGlossary,
     );
-    window.until("the page takes no change", |window| {
-        glossary_page(window).is_some_and(|page| !page.may_manage)
+    // The change of the permission replaces the state, and the glossary is read again.
+    window.until("the page takes no change, with the list read", |window| {
+        glossary_page(window).is_some_and(|page| !page.may_manage && page.terms.loaded().is_some())
     });
     assert_eq!(rows(&mut window), shown);
     assert!(window.shows("glossary-manage-needs"));
