@@ -97,6 +97,17 @@ fi
 same "PostgreSQL version of the tests in CI on Linux and on Windows" \
     "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
     "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
+same "PostgreSQL version of the tests in CI on Linux and on macOS" \
+    "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
+    "$(pin JUNTO_CI_POSTGRES_BUILD | sed -n 's/^\([0-9.]*\)-[0-9]*$/\1/p')"
+# The macOS job downloads the PostgreSQL build for macOS (ADR 0916); the program that downloads
+# it checks the SHA-256 of the file against tools/ci/pins.sh.
+if pin JUNTO_CI_POSTGRES_MACOS_SHA256 | grep -qx '[0-9a-f]\{64\}' \
+    && grep -q 'sha256_of(partial)' tools/with_native_postgres.py; then
+    echo "ok    the PostgreSQL download of the macOS tests is checked by its SHA-256"
+else
+    fail "tools/with_native_postgres.py downloads PostgreSQL without a SHA-256 in $pins"
+fi
 # The tools of the Windows CI machine (ADR 0905): each download of the setup has a SHA-256 of
 # its own and is fetched through the function that checks it; its Python has the minor
 # version of the Python image.

@@ -878,6 +878,7 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
                     .map(|occupant| occupant.account_id),
             );
             if let Some(call) = &workspace.call {
+                people.extend(call.people.iter().map(|person| person.account_id));
                 people.extend(
                     call.stage
                         .iter()

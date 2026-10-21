@@ -239,6 +239,9 @@ pub const MEETING_PARTICIPANT_HELP: &str =
     "Every other microphone is closed. Raise a hand to speak.";
 pub const RAISED_A_HAND: &str = " raised a hand";
 pub const ALLOW: &str = "Allow";
+pub const LOWER_HAND_OF_PERSON: &str = "Lower hand";
+pub const LOWER_HAND_HELP: &str = "The microphone stays as it is.";
+pub const NO_RAISED_HAND: &str = "No hand is raised.";
 pub const MAY_SPEAK_NOT_OPEN: &str = " may speak and has not opened the microphone";
 pub const YOU_MAY_SPEAK: &str = "You may speak";
 pub const UNMUTE: &str = "Unmute";
@@ -298,6 +301,10 @@ pub fn meeting_run_by(presenter: Option<&str>) -> String {
 
 pub fn allow_help(name: &str) -> String {
     format!("{name} gets the prompt “You may speak” and opens the microphone without your help.")
+}
+
+pub fn lower_hand_help(name: &str) -> String {
+    format!("Lower the hand of {name}. The microphone of {name} stays closed.")
 }
 
 /// "and 2 more", after the first raised hand.
@@ -803,6 +810,7 @@ pub fn connection_dropped(at: Option<time::OffsetDateTime>, channel: &str) -> St
 // The panel of a call.
 pub const CHAT: &str = "Chat";
 pub const VOICE_CHANNEL_CHAT: &str = "voice channel chat";
+pub const DIRECT_CALL_CHAT: &str = "direct messages";
 pub const CLOSE_PANEL: &str = "Close the panel";
 pub const IN_THE_CALL: &str = "In the call";
 pub const NOT_IN_THE_CALL: &str = "Not in the call";
@@ -2500,6 +2508,11 @@ pub const CAMERA: &str = "Camera";
 
 pub const DIRECT_CALL: &str = "Direct call";
 pub const CALLING: &str = "Calling…";
+
+/// "Calling Ada…": the stage of a direct-message call while it rings.
+pub fn calling(name: Option<&str>) -> String {
+    format!("Calling {}…", name.unwrap_or(UNKNOWN_PERSON))
+}
 pub const MISSED_CALL: &str = "Missed call";
 pub const DIRECT_CALL_DECLINED: &str = "Call declined";
 pub const DIRECT_CALL_CANCELLED: &str = "Call cancelled";

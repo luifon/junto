@@ -167,6 +167,9 @@ pub struct Known {
     /// this device created there (ADR 0717).
     pub preset_refused: HashSet<ServerId>,
     pub media: MediaSnapshot,
+    /// The call window draws the call. The main window then shows the direct conversation
+    /// of a direct-message call as a conversation, in the whole main area (ADR 0735).
+    pub call_in_own_window: bool,
     /// The last recording of the call of this device that failed or that the server
     /// stopped, with the server of that call. The state of a server holds a recording
     /// only while it runs (ADR 0719).
@@ -692,6 +695,8 @@ pub struct VoiceState {
     pub hidden: bool,
     pub locked: bool,
     pub meeting: bool,
+    /// The person of this device is inside the call and runs its meeting mode.
+    pub presents: bool,
     pub recording: bool,
     pub user_limit: Option<u32>,
     pub full: bool,
@@ -977,13 +982,15 @@ pub struct RecordingControl {
     pub busy: bool,
 }
 
-/// The call of this device, when the main area shows its voice channel.
+/// The call of this device, when the main area shows its place: its voice channel, or the
+/// direct conversation of a direct-message call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallPanel {
     pub phase: Phase,
     /// The time of day in UTC at which the media connection was interrupted.
     pub interrupted_at: Option<OffsetDateTime>,
-    pub outside: Vec<OutsideMember>,
+    /// The people in the call, as its tiles and its member list show them.
+    pub people: Vec<Occupant>,
     pub audio: AudioSettings,
     /// The shares of the call. Absent while nobody shares.
     pub stage: Option<ShareStage>,
@@ -991,8 +998,78 @@ pub struct CallPanel {
     pub hide_without_video: bool,
     pub share_resolution: ShareResolution,
     pub share_frame_rate: u32,
+    pub place: PanelPlace,
+}
+
+/// What a call has beyond its people and its media, by its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelPlace {
+    /// The call of a voice channel: its room and its recording.
+    Channel(Box<ChannelCall>),
+    /// A direct-message call (ADR 0501). It has no room and no recording.
+    Direct(DirectCall),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelCall {
+    /// The name of the voice channel.
+    pub name: String,
+    pub outside: Vec<OutsideMember>,
     pub recording: RecordingControl,
     pub room: RoomView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectCall {
+    /// The other account of the call.
+    pub other: AccountId,
+    /// Absent while the client has not read the name of the account.
+    pub name: Option<String>,
+    /// The other account has a place in the call. Before that the call rings.
+    pub joined: bool,
+}
+
+impl CallPanel {
+    /// The parts of the call of a voice channel. Absent in a direct-message call.
+    pub fn channel(&self) -> Option<&ChannelCall> {
+        match &self.place {
+            PanelPlace::Channel(channel) => Some(channel),
+            PanelPlace::Direct(_) => None,
+        }
+    }
+
+    pub fn room(&self) -> Option<&RoomView> {
+        self.channel().map(|channel| &channel.room)
+    }
+
+    pub fn recording(&self) -> Option<&RecordingControl> {
+        self.channel().map(|channel| &channel.recording)
+    }
+
+    /// The members of the workspace outside the call of a voice channel.
+    pub fn outside(&self) -> &[OutsideMember] {
+        self.channel()
+            .map(|channel| channel.outside.as_slice())
+            .unwrap_or_default()
+    }
+
+    pub fn direct(&self) -> Option<&DirectCall> {
+        match &self.place {
+            PanelPlace::Channel(_) => None,
+            PanelPlace::Direct(direct) => Some(direct),
+        }
+    }
+
+    /// The name of the place of the call: the voice channel, or the other person.
+    pub fn place_name(&self) -> &str {
+        match &self.place {
+            PanelPlace::Channel(channel) => &channel.name,
+            PanelPlace::Direct(direct) => direct
+                .name
+                .as_deref()
+                .unwrap_or(crate::text::UNKNOWN_PERSON),
+        }
+    }
 }
 
 /// The selected workspace of the selected server.
@@ -1004,7 +1081,8 @@ pub struct WorkspaceView {
     /// The selected channel, as the main area shows it.
     pub channel: Option<ChannelRow>,
     pub members: Members,
-    /// Present when the selected channel is the voice channel of the call of this device.
+    /// Present when the selected channel is the voice channel of the call of this device,
+    /// or the shown direct conversation is the place of its direct-message call.
     pub call: Option<CallPanel>,
     /// What the person holds in the shown channel, and in the workspace while no channel
     /// is shown.
@@ -1107,6 +1185,9 @@ pub struct PersonMenu {
     pub microphone_blocked: Option<bool>,
     /// With "deafen members": whether the sound of the person is blocked now.
     pub sound_blocked: Option<bool>,
+    /// With "mute members", or for the presenter of meeting mode in that call: whether the
+    /// hand of the person is raised now (ADR 0516).
+    pub hand_raised: Option<bool>,
     pub disconnect: bool,
 }
 
@@ -1191,6 +1272,8 @@ impl ShellView {
                 .mute
                 .then_some(matches!(occupant.microphone, Microphone::Held(_))),
             sound_blocked: allowed.deafen.then_some(occupant.sound_blocked),
+            hand_raised: (allowed.mute || row.voice.as_ref().is_some_and(|voice| voice.presents))
+                .then_some(occupant.hand_raised),
             disconnect: allowed.disconnect,
         })
     }
@@ -1408,14 +1491,16 @@ impl ShellView {
         else {
             return;
         };
-        // The rows of the channel list, and the shown channel, which holds a copy of its row.
+        // The rows of the channel list, the shown channel, which holds a copy of its row,
+        // and the people of the panel of the call, which are a copy too.
         let occupants = workspace
             .sections
             .iter_mut()
             .flat_map(|section| &mut section.rows)
             .chain(workspace.channel.as_mut())
             .filter_map(|row| row.voice.as_mut())
-            .flat_map(|voice| &mut voice.occupants);
+            .flat_map(|voice| &mut voice.occupants)
+            .chain(workspace.call.iter_mut().flat_map(|call| &mut call.people));
         for occupant in occupants {
             // Only an occupant of the call of this device has a measured level. The others
             // show the marks of the server.
@@ -1557,28 +1642,18 @@ fn name_of(
         .or_else(|| known.people.name(server_id, account_id))
 }
 
-fn voice_state(
+/// The people of a call as the window shows them: the participants that the server lists,
+/// and the person of this device from the moment the device has its place.
+fn call_people(
     server_id: ServerId,
-    channel: &ChannelModel,
+    call: Option<&junto_client_core::model::CallModel>,
+    active: Option<&ActiveCall>,
     workspace: &WorkspaceModel,
     model: &ServerModel,
     known: &Known,
-) -> VoiceState {
+) -> Vec<Occupant> {
     let own = model.account.id;
     let media = &known.media;
-    let target = target_of(server_id, workspace, channel);
-    let active = media
-        .calls
-        .call
-        .as_ref()
-        .filter(|call| call.target == target);
-    let relation = if active.is_some() {
-        Relation::Inside
-    } else if media.calls.joining == Some(target) {
-        Relation::Joining
-    } else {
-        Relation::Outside
-    };
     let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
     let own_presence = match active.map(|call| call.phase) {
         Some(Phase::Connecting | Phase::Entering) => Presence::Connecting,
@@ -1628,40 +1703,10 @@ fn voice_state(
             volume: VOLUME_DEFAULT_PERCENT,
         }
     };
-    let entry = known
-        .entry
-        .as_ref()
-        .filter(|entry| entry.server_id == server_id && entry.channel_id == channel.channel.id)
-        .filter(|_| relation == Relation::Outside)
-        .map(|entry| entry.state);
-    // What the server answered to the last join of this voice channel.
-    let refused = match &media.calls.outcome {
-        Some(Outcome::JoinFailed {
-            target: failed,
-            error: FlowError::Refused { code, .. },
-        }) if *failed == target => match code {
-            ErrorCode::CallLocked => Some(Closed::Locked),
-            ErrorCode::CallFull => Some(Closed::Full),
-            _ => None,
-        },
-        _ => None,
-    };
-    let outside = relation == Relation::Outside;
-    let Some(call) = &channel.call else {
-        return VoiceState {
-            relation,
-            in_use: channel.in_use,
-            // The server tells nothing of a call in use only when that call hides who is
-            // inside. The setting of the channel holds for its next call (ADR 0517).
-            hidden: channel.in_use,
-            entry,
-            closed: refused.filter(|_| outside && channel.in_use),
-            user_limit: channel.channel.user_limit,
-            occupants: active
-                .map(|active| vec![own_row(active, None, unlisted)])
-                .unwrap_or_default(),
-            ..VoiceState::default()
-        };
+    let Some(call) = call else {
+        return active
+            .map(|active| vec![own_row(active, None, unlisted)])
+            .unwrap_or_default();
     };
     let mut occupants: Vec<Occupant> = call
         .participants
@@ -1714,6 +1759,72 @@ fn voice_state(
     {
         occupants.push(own_row(active, None, unlisted));
     }
+    occupants
+}
+
+fn voice_state(
+    server_id: ServerId,
+    channel: &ChannelModel,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> VoiceState {
+    let own = model.account.id;
+    let media = &known.media;
+    let target = target_of(server_id, workspace, channel);
+    let active = media
+        .calls
+        .call
+        .as_ref()
+        .filter(|call| call.target == target);
+    let relation = if active.is_some() {
+        Relation::Inside
+    } else if media.calls.joining == Some(target) {
+        Relation::Joining
+    } else {
+        Relation::Outside
+    };
+    let occupants = call_people(
+        server_id,
+        channel.call.as_ref(),
+        active,
+        workspace,
+        model,
+        known,
+    );
+    let entry = known
+        .entry
+        .as_ref()
+        .filter(|entry| entry.server_id == server_id && entry.channel_id == channel.channel.id)
+        .filter(|_| relation == Relation::Outside)
+        .map(|entry| entry.state);
+    // What the server answered to the last join of this voice channel.
+    let refused = match &media.calls.outcome {
+        Some(Outcome::JoinFailed {
+            target: failed,
+            error: FlowError::Refused { code, .. },
+        }) if *failed == target => match code {
+            ErrorCode::CallLocked => Some(Closed::Locked),
+            ErrorCode::CallFull => Some(Closed::Full),
+            _ => None,
+        },
+        _ => None,
+    };
+    let outside = relation == Relation::Outside;
+    let Some(call) = &channel.call else {
+        return VoiceState {
+            relation,
+            in_use: channel.in_use,
+            // The server tells nothing of a call in use only when that call hides who is
+            // inside. The setting of the channel holds for its next call (ADR 0517).
+            hidden: channel.in_use,
+            entry,
+            closed: refused.filter(|_| outside && channel.in_use),
+            user_limit: channel.channel.user_limit,
+            occupants,
+            ..VoiceState::default()
+        };
+    };
     let in_use = channel.in_use;
     // A lock can be in the state before the first person of a call is seen (ADR 0719). It
     // is shown only for a channel in use.
@@ -1728,6 +1839,12 @@ fn voice_state(
         hidden: false,
         locked,
         meeting: in_use && call.meeting.is_some(),
+        presents: in_use
+            && active.is_some()
+            && call
+                .meeting
+                .as_ref()
+                .is_some_and(|meeting| meeting.presenter == own),
         recording: in_use && call.recording.is_some(),
         user_limit: channel.channel.user_limit,
         full,
@@ -2120,7 +2237,22 @@ fn workspace_view(
                 .is_some_and(|voice| voice.relation == Relation::Inside)
         })
         .zip(known.media.calls.call.as_ref())
-        .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known));
+        .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known))
+        .or_else(|| {
+            // The direct conversation of the direct-message call of this device, unless
+            // the call window draws the call.
+            if known.call_in_own_window {
+                return None;
+            }
+            let other = conversation.as_ref()?.account_id;
+            let active = known.media.calls.call.as_ref().filter(|active| {
+                active.target.server_id == server_id
+                    && active.target.place == CallPlace::direct(model.account.id, other)
+            })?;
+            Some(direct_panel(
+                server_id, other, active, workspace, model, known,
+            ))
+        });
     let allowed = channel
         .as_ref()
         .map_or_else(|| allowed(&workspace.permissions), |row| row.allowed);
@@ -2570,7 +2702,6 @@ fn call_panel(
     model: &ServerModel,
     known: &Known,
 ) -> CallPanel {
-    let media = &known.media;
     let call = model.call_at(&active.target.place);
     let inside = |account_id: AccountId| {
         row.voice.as_ref().is_some_and(|voice| {
@@ -2620,14 +2751,66 @@ fn call_panel(
             .cmp(&other.name.to_lowercase())
             .then(one.account_id.cmp(&other.account_id))
     });
-    CallPanel {
-        phase: active.phase,
-        interrupted_at: active.interrupted_at,
+    let people = row
+        .voice
+        .as_ref()
+        .map(|voice| voice.occupants.clone())
+        .unwrap_or_default();
+    let place = PanelPlace::Channel(Box::new(ChannelCall {
+        name: row.name.clone(),
         outside: if active.phase == Phase::Connected {
             outside
         } else {
             Vec::new()
         },
+        recording: recording_control(
+            server_id,
+            call.map(|call| call.id),
+            call.and_then(|call| call.recording.as_ref()),
+            row.allowed.record,
+            known,
+        ),
+        room: room_view(server_id, row, active, workspace, model, known),
+    }));
+    media_panel(server_id, active, workspace, model, known, people, place)
+}
+
+/// The call of this device in the direct conversation with `other` that the main area
+/// shows.
+fn direct_panel(
+    server_id: ServerId,
+    other: AccountId,
+    active: &ActiveCall,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> CallPanel {
+    let call = model.call_at(&active.target.place);
+    let people = call_people(server_id, call, Some(active), workspace, model, known);
+    let place = PanelPlace::Direct(DirectCall {
+        other,
+        name: name_of(server_id, other, workspace, model, known),
+        joined: call.is_some_and(|call| call.participant(other).is_some()),
+    });
+    media_panel(server_id, active, workspace, model, known, people, place)
+}
+
+/// The panel of a call with its people and its place, and what every call has: its phase,
+/// its sound settings, its shares and the settings of the view and of the own share.
+fn media_panel(
+    server_id: ServerId,
+    active: &ActiveCall,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+    people: Vec<Occupant>,
+    place: PanelPlace,
+) -> CallPanel {
+    let media = &known.media;
+    CallPanel {
+        phase: active.phase,
+        interrupted_at: active.interrupted_at,
+        people,
         audio: AudioSettings {
             inputs: device_choices(&media.devices.inputs, media.voice.input_device.as_deref()),
             outputs: device_choices(&media.devices.outputs, media.voice.output_device.as_deref()),
@@ -2646,14 +2829,7 @@ fn call_panel(
         hide_without_video: media.voice.hide_people_without_video,
         share_resolution: media.voice.share_resolution,
         share_frame_rate: media.voice.share_frame_rate,
-        recording: recording_control(
-            server_id,
-            call.map(|call| call.id),
-            call.and_then(|call| call.recording.as_ref()),
-            row.allowed.record,
-            known,
-        ),
-        room: room_view(server_id, row, active, workspace, model, known),
+        place,
     }
 }
 
