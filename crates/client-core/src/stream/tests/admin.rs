@@ -18,7 +18,8 @@ use super::*;
 use crate::api::ApiError;
 use crate::model::message_tests::message;
 use crate::model::{
-    AdminPart, Collection, CollectionState, LoadFailure, MOST_TOKENS, PlaceId, WorkspaceSettings,
+    AdminPart, Collection, CollectionState, GlossaryList, LoadFailure, MOST_GLOSSARY_TERMS,
+    MOST_TOKENS, PlaceId, WorkspaceSettings,
 };
 
 /// The size of the page of access tokens that the client asks for.
@@ -45,6 +46,8 @@ struct AdminRoutes {
     settings: Option<WorkspaceSettings>,
     /// The workspace permissions that the route of one channel states for the account.
     permissions: Vec<junto_protocol::WorkspacePermission>,
+    /// The glossary that the route of every workspace answers.
+    glossary: Option<junto_protocol::transcript::Glossary>,
     /// The next requests whose path ends with the text get no answer.
     lost: Vec<&'static str>,
 }
@@ -130,6 +133,8 @@ impl AdminRoutes {
             json(&self.settings.as_ref().unwrap().file_retention)
         } else if ends("/recording-retention") {
             json(&self.settings.as_ref().unwrap().recording_retention)
+        } else if ends("/glossary") {
+            json(self.glossary.as_ref().unwrap())
         } else {
             return None;
         };
@@ -843,6 +848,163 @@ async fn a_change_of_the_retention_during_the_first_read_starts_one_more_read_af
     .await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(counts(&rig, SETTINGS), [2, 2, 2]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_glossary_of_a_workspace_is_read_again_after_its_event_and_held_up_to_a_bound() {
+    let (rig, peer, admin) = served_rig().await;
+    let workspace_id = rig.scene.workspace_id;
+    let part = AdminPart::Glossary(workspace_id);
+    let terms = |terms: &[&str]| -> Vec<String> { terms.iter().map(|t| (*t).to_owned()).collect() };
+    let glossary = |workspace_id, held: &[&str]| junto_protocol::transcript::Glossary {
+        workspace_id,
+        terms: terms(held),
+    };
+    admin.lock().unwrap().glossary = Some(glossary(workspace_id, &["Quorvex", "Lumitrax"]));
+    soon("the glossary", rig.live.open_admin(part))
+        .await
+        .unwrap();
+    assert_eq!(
+        rig.model().admin.glossary(workspace_id),
+        &Collection::Loaded(GlossaryList {
+            terms: terms(&["Quorvex", "Lumitrax"]),
+            cut: false,
+        })
+    );
+    assert_eq!(rig.http.count("/glossary"), 1);
+
+    // The event names the workspace and carries no term: the glossary is read again, and
+    // the list of before stays while the read is on its way.
+    admin.lock().unwrap().glossary = Some(glossary(workspace_id, &["Lumitrax"]));
+    let gate = rig.http.hold("/glossary");
+    peer.event(41, Event::GlossaryReplaced { workspace_id })
+        .await;
+    asked(&rig, "/glossary", 2).await;
+    let model = rig
+        .model_when("the event", |model| model.cursor.position == 41)
+        .await;
+    assert_eq!(
+        model.admin.glossary(workspace_id).loaded().unwrap().terms,
+        terms(&["Quorvex", "Lumitrax"])
+    );
+    gate.add_permits(64);
+    rig.model_when("the new glossary", |model| {
+        model
+            .admin
+            .glossary(workspace_id)
+            .loaded()
+            .is_some_and(|held| held.terms == terms(&["Lumitrax"]))
+    })
+    .await;
+
+    // The glossary of another workspace is not read again.
+    peer.event(
+        42,
+        Event::GlossaryReplaced {
+            workspace_id: WorkspaceId::generate(),
+        },
+    )
+    .await;
+    rig.model_when("the event", |model| model.cursor.position == 42)
+        .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(rig.http.count("/glossary"), 2);
+
+    // A server that gives more terms than a glossary has: the client holds the first
+    // ones and states that the list is cut.
+    let many: Vec<String> = (0..=MOST_GLOSSARY_TERMS)
+        .map(|number| format!("term {number}"))
+        .collect();
+    admin.lock().unwrap().glossary = Some(junto_protocol::transcript::Glossary {
+        workspace_id,
+        terms: many.clone(),
+    });
+    peer.event(43, Event::GlossaryReplaced { workspace_id })
+        .await;
+    let model = rig
+        .model_when("the long glossary", |model| {
+            model
+                .admin
+                .glossary(workspace_id)
+                .loaded()
+                .is_some_and(|held| held.cut)
+        })
+        .await;
+    let held = model.admin.glossary(workspace_id).loaded().unwrap();
+    assert_eq!(held.terms, many[..MOST_GLOSSARY_TERMS]);
+
+    // An answer for another workspace is not taken (ADR 0714).
+    admin.lock().unwrap().glossary = Some(glossary(WorkspaceId::generate(), &["Other"]));
+    peer.event(44, Event::GlossaryReplaced { workspace_id })
+        .await;
+    rig.model_when("the refused answer", |model| {
+        matches!(model.admin.glossary(workspace_id), Collection::Failed(_))
+    })
+    .await;
+
+    // The last reader releases it: the state drops it.
+    rig.live.release_admin(part);
+    rig.model_when("the glossary is released", |model| {
+        model.admin.glossary(workspace_id).is_not_loaded()
+    })
+    .await;
+}
+
+/// A reader that knows of a change newer than the reads that started so far asks for a read
+/// now: a loaded collection is read again and keeps its values while the read is on its way.
+#[tokio::test(start_paused = true)]
+async fn a_loaded_collection_is_read_now_when_a_reader_asks_and_keeps_its_values_meanwhile() {
+    let (rig, _peer, admin) = served_rig().await;
+    let workspace_id = rig.scene.workspace_id;
+    let part = AdminPart::Glossary(workspace_id);
+    let terms = |terms: &[&str]| -> Vec<String> { terms.iter().map(|t| (*t).to_owned()).collect() };
+    let glossary = |held: &[&str]| junto_protocol::transcript::Glossary {
+        workspace_id,
+        terms: terms(held),
+    };
+    admin.lock().unwrap().glossary = Some(glossary(&["Quorvex"]));
+    soon("the glossary", rig.live.open_admin(part))
+        .await
+        .unwrap();
+    let first = rig.model().admin.read_times(part);
+    assert_eq!(rig.http.count("/glossary"), 1);
+
+    admin.lock().unwrap().glossary = Some(glossary(&["Quorvex", "Kestrel"]));
+    let gate = rig.http.hold("/glossary");
+    rig.live.read_admin_now(part);
+    asked(&rig, "/glossary", 2).await;
+    let model = rig
+        .model_when("the read starts", |model| {
+            model.admin.read_times(part).started != first.started
+        })
+        .await;
+    assert_eq!(
+        model.admin.glossary(workspace_id).loaded().unwrap().terms,
+        terms(&["Quorvex"])
+    );
+    assert_eq!(model.admin.read_times(part).shown, first.shown);
+    gate.add_permits(64);
+    let model = rig
+        .model_when("the read of now", |model| {
+            model
+                .admin
+                .glossary(workspace_id)
+                .loaded()
+                .is_some_and(|held| held.terms == terms(&["Quorvex", "Kestrel"]))
+        })
+        .await;
+    let times = model.admin.read_times(part);
+    assert_eq!(times.shown, times.started);
+
+    // A collection that no reader has open is not read.
+    rig.live.release_admin(part);
+    rig.model_when("the glossary is released", |model| {
+        model.admin.glossary(workspace_id).is_not_loaded()
+    })
+    .await;
+    rig.live.read_admin_now(part);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(rig.http.count("/glossary"), 2);
 }
 
 #[tokio::test(start_paused = true)]

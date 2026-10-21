@@ -19,7 +19,8 @@ use junto_client::state::view::ServerSnapshot;
 use junto_client::text;
 use junto_client_core::api::{ApiError, Rejection, TransportError, TransportErrorKind};
 use junto_client_core::model::{
-    AdminModel, Collection, LoadFailure, Loadable, ServerModel, Timeline, WorkspaceSettings,
+    AdminModel, Collection, GlossaryList, LoadFailure, Loadable, ServerModel, Timeline,
+    WorkspaceSettings,
 };
 use junto_client_core::protocol::access_token::{AccessTokenInfo, TokenAction};
 use junto_client_core::protocol::account::{AccountStatus, AccountSummary};
@@ -1582,13 +1583,48 @@ fn draw_records(studio: &mut Studio) -> Result<(), String> {
 
 /// "Acme Studio" for the audit log, for an administrator, with what the entries name:
 /// the categories, the archived channels and the server roles.
-fn with_names() -> Vec<ServerSnapshot> {
+pub(super) fn with_names() -> Vec<ServerSnapshot> {
     servers(|model| {
         administrator(model);
         structure(model);
         read_archived(model, archived());
         collections(model).server_roles = Collection::Loaded(server_roles());
     })
+}
+
+/// Opens the audit log with `count` entries, the newest first.
+pub(super) fn prepare_audit_rows(
+    shell: &mut Shell,
+    count: usize,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<Shell>,
+) {
+    open_page(shell, AdminPage::AuditLog, window, cx);
+    show_audit_rows(shell, audit_rows(count, 0), cx);
+}
+
+/// The audit log of the server with `count` entries, the newest first, after `newer`
+/// entries arrived since the first log. An entry keeps its identifier in every log.
+pub(super) fn audit_rows(count: usize, newer: usize) -> AuditLog {
+    let entries = (newer..newer + count)
+        .rev()
+        .map(|number| AuditEntry {
+            id: id(AUDIT + number as u32),
+            occurred_at: at() - Duration::minutes(10_000 - number as i64),
+            actor_id: Some(person("Ana")),
+            access_token_id: None,
+            workspace_id: None,
+            channel_id: None,
+            event: AuditEvent::AccountUnbanned {
+                account_id: person("Bruno"),
+            },
+        })
+        .collect();
+    AuditLog::loaded(id(ACME), AuditScope::Server, entries, false)
+}
+
+pub(super) fn show_audit_rows(shell: &mut Shell, log: AuditLog, cx: &mut gpui::Context<Shell>) {
+    show_records(shell, log, ExportFiles::default(), cx);
 }
 
 /// Shows the audit log of a scope of "Acme Studio" in the open administration.
@@ -1772,7 +1808,70 @@ fn draw_notifications(studio: &mut Studio) -> Result<(), String> {
     )
 }
 
+/// The glossary page (ADR 0616): for a member, for a person who manages it, with the form
+/// of a changed term, the question before a removal, and a list that the client holds in
+/// part.
+fn draw_glossary(studio: &mut Studio) -> Result<(), String> {
+    let glossary = |manages: bool, cut: bool| {
+        servers(move |model| {
+            if manages {
+                lead(model, &[WorkspacePermission::ManageGlossary]);
+            }
+            let terms = [
+                "Marta Lindqvist",
+                "mixdown",
+                "staging",
+                "Quorvex",
+                "retention spec",
+            ];
+            collections(model).glossaries = vec![(
+                id(STUDIO),
+                Collection::Loaded(GlossaryList {
+                    terms: terms.iter().map(|term| (*term).to_owned()).collect(),
+                    cut,
+                }),
+            )];
+        })
+    };
+    let page = |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+        open_page(shell, AdminPage::Glossary, window, cx);
+    };
+    studio.draw(
+        Screen::new("admin-glossary-member", glossary(false, false)),
+        page,
+    )?;
+    studio.draw(
+        Screen::new("admin-glossary-manager", glossary(true, false)),
+        page,
+    )?;
+    studio.draw(
+        Screen::new("admin-glossary-cut", glossary(true, true)),
+        page,
+    )?;
+    studio.draw(
+        Screen::new("admin-glossary-change-form", glossary(true, false)),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Glossary, window, cx);
+            shell.open_term_mode(Mode::ChangeTerm(1), "mixdown", window, cx);
+        },
+    )?;
+    studio.draw(Screen::new("admin-glossary-loading", servers(|_| {})), page)?;
+    studio.draw(
+        Screen::new("admin-glossary-refused", glossary(true, false)),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Glossary, window, cx);
+            tell(
+                shell,
+                refused(AskKind::MoveTerm(2), ErrorCode::Conflict),
+                None,
+                cx,
+            );
+        },
+    )
+}
+
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
+    draw_glossary(studio)?;
     draw_notifications(studio)?;
     draw_workspaces(studio)?;
     draw_channels(studio)?;

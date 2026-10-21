@@ -2,6 +2,7 @@
 //! workspace, a new name, the deletion, and the invite code that enters a further
 //! workspace.
 
+use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
     Window, div,
@@ -100,6 +101,7 @@ impl Shell {
                         send: text::SAVE,
                         sending: view.sending(AskKind::RenameWorkspace(workspace_id)),
                         help: None,
+                        held: None,
                         extra: Vec::new(),
                     },
                     theme,
@@ -203,18 +205,49 @@ impl Shell {
         &mut self,
         view: &AdminView,
         page: &WorkspacesPage,
-        _window: &mut Window,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let list = std::iter::once(Row::new("workspaces-header", true).part())
+            .chain(
+                page.rows
+                    .iter()
+                    .map(|row| Row::new(format!("workspace-{}", row.id), true)),
+            )
+            .chain(std::iter::once(Row::new("workspaces-footer", true).part()))
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = page.clone();
+        self.render_admin_list(
+            move |this, index, _, cx| {
+                let theme = theme(cx);
+                if index == 0 {
+                    return page_title(
+                        text::admin::page_name(crate::state::admin::AdminPage::Workspaces),
+                        text::admin::WORKSPACES_HELP,
+                        &theme,
+                    )
+                    .into_any_element();
+                }
+                if let Some(row) = page.rows.get(index - 1) {
+                    return this.render_workspace_row(&view, &page, row, &theme, cx);
+                }
+                this.render_workspaces_footer(&view, &page, cx)
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_workspaces_footer(
+        &mut self,
+        view: &AdminView,
+        page: &WorkspacesPage,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
-        let mut column = div().flex().flex_col().child(page_title(
-            text::admin::page_name(crate::state::admin::AdminPage::Workspaces),
-            text::admin::WORKSPACES_HELP,
-            &theme,
-        ));
-        for row in &page.rows {
-            column = column.child(self.render_workspace_row(view, page, row, &theme, cx));
-        }
+        let mut column = div().flex().flex_col();
         column = column.child(
             sentence(
                 if page.may_manage {
@@ -237,6 +270,7 @@ impl Shell {
                     send: text::admin::CREATE,
                     sending: view.sending(AskKind::CreateWorkspace),
                     help: None,
+                    held: None,
                     extra: Vec::new(),
                 },
                 &theme,
@@ -277,6 +311,7 @@ impl Shell {
                     send: text::admin::ENTER,
                     sending: view.sending(AskKind::RedeemInvite),
                     help: Some(text::admin::ENTER_CODE_HELP),
+                    held: None,
                     extra: Vec::new(),
                 },
                 &theme,

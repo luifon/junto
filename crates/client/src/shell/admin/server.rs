@@ -186,6 +186,7 @@ impl Shell {
                     field_selector: "limit-field",
                     send: text::SAVE,
                     sending,
+                    held: None,
                     help: Some(range),
                     extra: Vec::new(),
                 },

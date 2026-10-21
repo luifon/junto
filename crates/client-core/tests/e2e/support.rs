@@ -525,6 +525,15 @@ impl FaultProxy {
         Self::serve_on(TcpListener::from_std(listener).unwrap(), server.port)
     }
 
+    /// The proxy on `listener`, in front of the server at `upstream_port`: a server of the
+    /// tests that runs in the test process lists the address of `listener` as a public
+    /// origin.
+    #[allow(dead_code)]
+    pub async fn start_on(listener: StdListener, upstream_port: u16) -> Self {
+        listener.set_nonblocking(true).unwrap();
+        Self::serve_on(TcpListener::from_std(listener).unwrap(), upstream_port)
+    }
+
     /// A proxy at an address that the server does not list as a public origin.
     pub async fn start_unlisted(server: &TestServer) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -621,6 +630,14 @@ impl FaultProxy {
     #[allow(dead_code)]
     pub fn release_events(&self) {
         self.state.lock().unwrap().events_held = false;
+        self.released.send_modify(|releases| *releases += 1);
+    }
+
+    /// Passes on the requests that [`FaultProxy::hold_request`] holds, and holds no further
+    /// one. Answers and events that wait keep waiting.
+    #[allow(dead_code)]
+    pub fn release_requests(&self) {
+        self.state.lock().unwrap().held_requests.clear();
         self.released.send_modify(|releases| *releases += 1);
     }
 

@@ -23,8 +23,9 @@ use crate::state::RecordedFile;
 use crate::state::feed::RecordingRow;
 use crate::state::recorded::{
     CardDetail, CardState, FileKind, FileRow, LineFrom, LineRow, RecordingCard, SHOWN_LINES,
-    TranscriptShown, line_row,
+    TranscriptRequest, TranscriptShown, When, line_row,
 };
+use crate::state::transcript_work::TranscriptChange;
 use crate::state::view::{TranscriptPanel, TranscriptPanelState};
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -368,6 +369,37 @@ impl Shell {
     /// One line of a transcript (view G of the design): its time, its speaker with the
     /// source of the sound, and its text.
     fn transcript_line(row: &LineRow, wide: bool, marked: bool, theme: &Theme) -> AnyElement {
+        let corrected = row.corrected.then(|| {
+            div()
+                .flex_none()
+                .text_size(u(12.5))
+                .font_weight(FontWeight::NORMAL)
+                .ink(theme.colors.ink_3)
+                .child(text::LINE_CORRECTED)
+                .into_any_element()
+        });
+        let spoken = div()
+            .flex_1()
+            .min_w_0()
+            .text_size(u(14.5))
+            .line_height(u(22.0))
+            .ink(theme.colors.ink)
+            .child(SharedString::from(row.text.clone()))
+            .into_any_element();
+        Self::line_frame(row, wide, marked, theme, corrected, spoken, None)
+    }
+
+    /// A line of a transcript with the parts that the card or the side panel give it: the
+    /// mark of a correction beside the speaker, the text, and a control at the right.
+    fn line_frame(
+        row: &LineRow,
+        wide: bool,
+        marked: bool,
+        theme: &Theme,
+        corrected: Option<AnyElement>,
+        spoken: AnyElement,
+        trailing: Option<AnyElement>,
+    ) -> AnyElement {
         let colors = theme.colors;
         let line = row.line;
         let source: SharedString = match &row.source {
@@ -414,16 +446,7 @@ impl Shell {
                     .when_some(row.was.clone(), |name, was| {
                         name.child(Chip::new(text::was_speaker(&was)))
                     })
-                    .when(row.corrected, |name| {
-                        name.child(
-                            div()
-                                .flex_none()
-                                .text_size(u(12.5))
-                                .font_weight(FontWeight::NORMAL)
-                                .ink(colors.ink_3)
-                                .child(text::LINE_CORRECTED),
-                        )
-                    }),
+                    .children(corrected),
             )
             .child(
                 div()
@@ -432,13 +455,6 @@ impl Shell {
                     .ink(colors.ink_2)
                     .child(source),
             );
-        let spoken = div()
-            .flex_1()
-            .min_w_0()
-            .text_size(u(14.5))
-            .line_height(u(22.0))
-            .ink(colors.ink)
-            .child(SharedString::from(row.text.clone()));
         let time = div()
             .flex_none()
             .w(u(68.0))
@@ -481,6 +497,7 @@ impl Shell {
                 .child(mark)
                 .child(who)
                 .child(spoken)
+                .children(trailing)
                 .into_any_element()
         } else {
             // In the side panel the text stands under the speaker.
@@ -488,6 +505,7 @@ impl Shell {
                 .child(time)
                 .child(mark)
                 .child(div().flex_1().min_w_0().child(who).child(spoken))
+                .children(trailing)
                 .into_any_element()
         }
     }
@@ -540,6 +558,7 @@ impl Shell {
                 .when(ready && !transcript.language.is_empty(), |header| {
                     header.child(Chip::new(text::transcript_language(&transcript.language)))
                 })
+                .children(self.request_transcript_button(card, transcript, cx))
                 .into_any_element(),
         ];
         if !ready {
@@ -591,6 +610,156 @@ impl Shell {
                 .into_any_element(),
         );
         parts
+    }
+
+    /// The control that asks for the transcript again, at the end of the title line of the
+    /// transcript. The line keeps its height when the control comes and goes.
+    fn request_transcript_button(
+        &mut self,
+        card: &RecordingCard,
+        transcript: &TranscriptShown,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (server_id, recording_id) = (card.server_id, card.recording_id);
+        let label = if transcript.state == TranscriptState::Failed {
+            text::transcripts::REQUEST_AGAIN
+        } else {
+            text::transcripts::REQUEST
+        };
+        let button = Button::new("request-transcript")
+            .icon(Icon::Retry)
+            .selector("request-transcript")
+            .h(u(26.0))
+            .px(u(8.0));
+        let button = match card.request {
+            TranscriptRequest::NotOffered => return None,
+            TranscriptRequest::NotAllowed => button
+                .label(label)
+                .tooltip(text::transcripts::REQUEST_NEEDS)
+                .disabled(true),
+            TranscriptRequest::Allowed { sending } => button
+                .label(if sending {
+                    text::transcripts::REQUESTING
+                } else {
+                    label
+                })
+                .tooltip(text::transcripts::REQUEST_HELP)
+                .disabled(sending)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.request_transcript(server_id, recording_id, cx);
+                    });
+                })),
+        };
+        Some(
+            div()
+                .flex()
+                .flex_1()
+                .justify_end()
+                .child(button)
+                .into_any_element(),
+        )
+    }
+
+    /// Opens the parts of a recording with their time ranges, at its card.
+    pub fn open_recording_parts(
+        &mut self,
+        recording_id: RecordingId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if std::mem::take(&mut self.recording_parts_closed_by_press) {
+            return;
+        }
+        self.open_layer(Layer::RecordingParts(recording_id), window, cx);
+    }
+
+    /// The parts of a recording: each file of the composite and of each track, its state,
+    /// and the time range that the recorder reported for it (ADR 0601). It floats over the
+    /// chat, so the rows of the chat do not move.
+    fn render_recording_parts(
+        &mut self,
+        detail: &CardDetail,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let mut items: Vec<AnyElement> =
+            vec![menu_label(text::transcripts::PARTS_HELP, false, cx).into_any_element()];
+        for (index, part) in detail.parts.iter().enumerate() {
+            items.push(
+                div()
+                    .debug_selector(move || format!("recording-part:{index}"))
+                    .flex()
+                    .items_start()
+                    .gap(u(6.0))
+                    .px(u(12.0))
+                    .py(u(5.0))
+                    .text_size(u(13.0))
+                    .line_height(u(18.0))
+                    .when(part.failed, |row| {
+                        row.child(div().mt(u(2.0)).child(icon(
+                            Icon::Warning,
+                            13.0,
+                            colors.cinnabar,
+                        )))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .ink(colors.ink)
+                                    .child(SharedString::from(part.title.clone())),
+                            )
+                            .child(
+                                div()
+                                    .ink(if part.failed {
+                                        colors.cinnabar_ink
+                                    } else {
+                                        colors.ink_2
+                                    })
+                                    .child(SharedString::from(part.state.clone())),
+                            )
+                            .when_some(part.span.clone(), |column, span| {
+                                column.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("recording-part-span:{index}")
+                                        })
+                                        .font_family(theme.fonts.mono.clone())
+                                        .ink(colors.ink_2)
+                                        .child(SharedString::from(span)),
+                                )
+                            }),
+                    )
+                    .into_any_element(),
+            );
+        }
+        div()
+            .absolute()
+            .left_0()
+            .top(u(32.0))
+            .child(deferred(
+                anchored().snap_to_window().child(
+                    Menu::new(
+                        "recording-parts-list",
+                        text::transcripts::PARTS_HELP,
+                        self.layer_focus(),
+                    )
+                    .width(380.0)
+                    .selector("recording-parts-list")
+                    .on_close(Self::handler(cx, |this, window, cx| {
+                        this.recording_parts_closed_by_press = !window.last_input_was_keyboard();
+                        this.close_layer(window, cx);
+                    }))
+                    .children(items)
+                    .child(div().h(u(6.0))),
+                ),
+            ))
+            .into_any_element()
     }
 
     /// The card of a finished recording, in place of the system line that posted it.
@@ -823,6 +992,28 @@ impl Shell {
                             cx,
                         );
                     }))
+                    .into_any_element(),
+            );
+        }
+        if !detail.parts.is_empty() {
+            let parts_open =
+                matches!(&self.layer, Layer::RecordingParts(open) if *open == recording_id);
+            let list = parts_open.then(|| self.render_recording_parts(detail, cx));
+            actions.push(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(
+                        Button::new(("recording-parts", index))
+                            .icon(Icon::List)
+                            .label(text::transcripts::parts(detail.parts.len()))
+                            .tooltip(text::transcripts::PARTS_HELP)
+                            .selector("recording-parts")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_recording_parts(recording_id, window, cx);
+                            })),
+                    )
+                    .children(list)
                     .into_any_element(),
             );
         }
@@ -1101,6 +1292,93 @@ impl Shell {
             .into_any_element()
     }
 
+    /// One line of the transcript in the side panel, with the control that corrects it
+    /// and its original text, or with the form that corrects it.
+    #[allow(clippy::too_many_arguments)]
+    fn panel_line(
+        &mut self,
+        server_id: ServerId,
+        recording_id: RecordingId,
+        row: &LineRow,
+        transcript: &TranscriptShown,
+        marked: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let corrected = row
+            .corrected
+            .then(|| self.corrected_mark(recording_id, row.line, theme, cx));
+        let (body, control) = self.line_body(server_id, recording_id, row, transcript, theme, cx);
+        let key = (recording_id, TranscriptChange::Line(row.line));
+        let open = self.transcript_edit.open.map(|(_, open)| open);
+        let line = Self::line_frame(row, false, marked, theme, corrected, body, control);
+        self.transcript_edit
+            .space
+            .row(open, &[key], line)
+            .into_any_element()
+    }
+
+    /// The head of the transcript list: the count of the lines, the language, and the
+    /// control that shows the details, with the details under it.
+    fn transcript_head(
+        &mut self,
+        server_id: ServerId,
+        recording_id: RecordingId,
+        transcript: &TranscriptShown,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let details_open = self.transcript_edit.details == Some(recording_id);
+        // The count and the language wrap in the width of the panel, and the control that
+        // shows the details stands under them: no part of the head is wider than the panel.
+        let head = div()
+            .flex()
+            .flex_col()
+            .gap(u(6.0))
+            .px(u(14.0))
+            .py(u(8.0))
+            .text_size(u(13.0))
+            .ink(colors.ink_2)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(SharedString::from(text::lines(transcript.total)))
+                    .when(!transcript.language.is_empty(), |line| {
+                        line.child(Chip::new(text::transcript_language(&transcript.language)))
+                    }),
+            )
+            .child(
+                div().flex().child(
+                    Button::new("transcript-details")
+                        .icon(if details_open {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        })
+                        .label(text::transcripts::DETAILS)
+                        .tooltip(text::transcripts::DETAILS_HELP)
+                        .selector("transcript-details")
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_transcript_details(recording_id, cx);
+                        })),
+                ),
+            );
+        let details = details_open
+            .then(|| self.transcript_details(server_id, recording_id, transcript, theme, cx));
+        div()
+            .flex()
+            .flex_col()
+            .child(head)
+            .children(details)
+            .into_any_element()
+    }
+
     /// The lines of a transcript in the side panel, as a list that draws the rows in
     /// view: a transcript has up to 20,000 read lines.
     #[allow(clippy::too_many_arguments)]
@@ -1111,6 +1389,7 @@ impl Shell {
         transcript: &TranscriptShown,
         open: &Arc<OpenRecording>,
         names: &Arc<HashMap<AccountId, String>>,
+        when: When,
         look: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1128,35 +1407,26 @@ impl Shell {
             None => self.transcript_list.went = None,
         }
         let state = self.transcript_list.list.clone();
-        let (total, language, reading, earlier) = (
-            transcript.total,
-            transcript.language.clone(),
-            transcript.reading,
-            transcript.more_before,
-        );
+        let (reading, earlier) = (transcript.reading, transcript.more_before);
         let (open, names, marked) = (open.clone(), names.clone(), panel.line);
+        let shown = Arc::new(transcript.clone());
         let render =
-            cx.processor(move |_: &mut Self, index: usize, _, cx| {
+            cx.processor(move |this: &mut Self, index: usize, _, cx| {
                 let theme = theme(cx);
-                let colors = theme.colors;
                 if index == 0 {
-                    return div()
-                        .flex()
-                        .items_center()
-                        .gap(u(8.0))
-                        .px(u(14.0))
-                        .py(u(8.0))
-                        .text_size(u(13.0))
-                        .ink(colors.ink_2)
-                        .child(SharedString::from(text::lines(total)))
-                        .when(!language.is_empty(), |line| {
-                            line.child(Chip::new(text::transcript_language(&language)))
-                        })
-                        .into_any_element();
+                    return this.transcript_head(server_id, recording_id, &shown, &theme, cx);
                 }
                 if let Some(line) = open.lines.lines.get(index - 1) {
-                    let row = line_row(&open, line, &names);
-                    return Self::transcript_line(&row, false, marked == Some(row.line), &theme);
+                    let row = line_row(&open, line, &names, when);
+                    return this.panel_line(
+                        server_id,
+                        recording_id,
+                        &row,
+                        &shown,
+                        marked == Some(row.line),
+                        &theme,
+                        cx,
+                    );
                 }
                 if index == lines + 1 {
                     return div()
@@ -1265,6 +1535,7 @@ impl Shell {
         &mut self,
         server_id: ServerId,
         panel: &TranscriptPanel,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1345,7 +1616,11 @@ impl Shell {
                 transcript,
                 open,
                 names,
-            } => self.transcript_lines(server_id, panel, transcript, open, names, &theme, cx),
+                when,
+            } => {
+                self.settle_transcript_form(server_id, recording_id, transcript, open, window, cx);
+                self.transcript_lines(server_id, panel, transcript, open, names, *when, &theme, cx)
+            }
         };
         side_panel(&theme, text::TRANSCRIPT, "transcript-panel")
             .child(header)

@@ -256,7 +256,7 @@ fn the_message_of_another_person_offers_deletion_and_pin_by_the_list_of_its_chan
             &shown(server.id, scene, scene.general),
             &Known::default(),
         );
-        let feed = view.workspace().unwrap().feed.clone().unwrap();
+        let feed = view.lists().unwrap().feed.clone().unwrap();
         feed.rows
             .iter()
             .find_map(|row| match row {
@@ -294,7 +294,7 @@ fn the_controls_of_a_call_read_the_list_of_the_voice_channel_of_the_call() {
             &shown(server.id, scene, daily),
             &known,
         );
-        view.workspace().unwrap().call.clone().unwrap()
+        view.lists().unwrap().call.clone().unwrap()
     };
     let shown_panel = panel(&scene);
     assert!(!shown_panel.recording().unwrap().may_record);

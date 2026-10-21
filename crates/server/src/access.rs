@@ -58,7 +58,10 @@ impl ChannelRecord {
 }
 
 pub fn archived() -> ApiError {
-    ApiError::conflict("the channel is archived and takes no change; restore it first")
+    ApiError::new(
+        ErrorCode::ChannelArchived,
+        "the channel is archived and takes no change; restore it first",
+    )
 }
 
 type ChannelRow = (

@@ -870,23 +870,28 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
     });
     if let Some((server_id, account)) = account {
         let mut people = Vec::new();
-        if let Some(workspace) = view.workspace() {
+        let lists = view.lists();
+        if let Some(workspace) = lists.and_then(|lists| lists.workspace.as_ref()) {
             let rows = workspace.sections.iter().flat_map(|section| &section.rows);
             people.extend(
                 rows.filter_map(|row| row.voice.as_ref())
                     .flat_map(|voice| &voice.occupants)
                     .map(|occupant| occupant.account_id),
             );
-            if let Some(call) = &workspace.call {
-                people.extend(call.people.iter().map(|person| person.account_id));
-                people.extend(
-                    call.stage
-                        .iter()
-                        .flat_map(|stage| &stage.shares)
-                        .map(|share| share.account_id),
-                );
-            }
-            feed_people(workspace.feed.as_ref(), &mut people);
+        }
+        if let Some(call) = lists.and_then(|lists| lists.call.as_ref()) {
+            people.extend(call.people.iter().map(|person| person.account_id));
+            people.extend(
+                call.stage
+                    .iter()
+                    .flat_map(|stage| &stage.shares)
+                    .map(|share| share.account_id),
+            );
+        }
+        if let Some(lists) = lists {
+            feed_people(lists.feed.as_ref(), &mut people);
+        }
+        if let Some(workspace) = view.workspace() {
             if let Some(thread) = &workspace.thread {
                 if let Some(root) = &thread.root {
                     message_people(root, &mut people);
@@ -899,10 +904,21 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
                     message_people(row, &mut people);
                 }
             }
-            people.extend(workspace.directs.iter().map(|direct| direct.account_id));
-            if let Members::Loaded(members) = &workspace.members {
-                people.extend(members.iter().map(|member| member.account_id));
-            }
+        }
+        if let Some(lists) = lists {
+            people.extend(lists.directs.iter().map(|direct| direct.account_id));
+            // The account of a conversation that the server did not open is named in the
+            // statement of the refusal.
+            people.extend(
+                lists
+                    .conversation_refused
+                    .iter()
+                    .map(|refusal| refusal.account_id),
+            );
+        }
+        if let Some(Members::Loaded(members)) = view.workspace().map(|workspace| &workspace.members)
+        {
+            people.extend(members.iter().map(|member| member.account_id));
         }
         wanted.insert(
             server_id,

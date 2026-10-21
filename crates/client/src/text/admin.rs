@@ -1,6 +1,7 @@
 //! The text of the administration of a server and of the settings of a channel
 //! (ADR 0761).
 
+pub mod glossary;
 pub mod notifications;
 pub mod overrides;
 pub mod people;
@@ -17,7 +18,7 @@ use junto_client_core::protocol::structure::ChannelKind;
 use time::OffsetDateTime;
 
 use crate::assets::Icon;
-use crate::state::admin::view::NavTitle;
+use crate::state::admin::view::{NavTitle, Unplanned};
 use crate::state::admin::{AdminPage, AskKind, ChannelPage};
 
 pub const TITLE: &str = "Administration";
@@ -41,6 +42,11 @@ pub const FIRST_ALREADY: &str = "It is the first one.";
 pub const MOVE_NEEDS: &str =
     "The move changes a channel in which you do not hold “manage channel”.";
 pub const CHANNEL_MANAGE_NEEDS: &str = "You do not hold “manage channel” in this channel.";
+pub const MOVE_TOO_MANY: &str =
+    "The move changes the places of more than 200 channels, and one change takes 200 at most.";
+pub const MOVE_HERE_ALREADY: &str = "The channel is at this place already.";
+pub const MOVE_REFUSAL_SHOWN: &str =
+    "The page shows a move that the server refused. Put the refusal away first.";
 pub const LAST_ALREADY: &str = "It is the last one.";
 pub const NAME_EMPTY: &str = "Type a name.";
 
@@ -68,6 +74,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Members => "Members",
         AdminPage::Notifications => "Notifications",
         AdminPage::Recordings => "Recordings",
+        AdminPage::Glossary => "Glossary",
         AdminPage::Exports => "Exports",
     }
 }
@@ -85,6 +92,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::Archive => Icon::Lock,
         AdminPage::Notifications => Icon::Chat,
         AdminPage::Recordings => Icon::Record,
+        AdminPage::Glossary => Icon::List,
         AdminPage::Exports => Icon::Download,
     }
 }
@@ -106,6 +114,7 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Members => "admin-nav-members",
         AdminPage::Notifications => "admin-nav-notifications",
         AdminPage::Recordings => "admin-nav-recordings",
+        AdminPage::Glossary => "admin-nav-glossary",
         AdminPage::Exports => "admin-nav-exports",
     }
 }
@@ -244,6 +253,16 @@ pub const PLACE_FIRST: &str = "At the start";
 pub const OTHER_CATEGORY: &str = "Another category";
 
 /// A place of a channel after another channel of its new category.
+/// Why a place is not offered to a channel.
+pub fn unplanned(reason: Unplanned) -> &'static str {
+    match reason {
+        Unplanned::Nothing => MOVE_HERE_ALREADY,
+        Unplanned::NotManaged => MOVE_NEEDS,
+        Unplanned::TooMany => MOVE_TOO_MANY,
+        Unplanned::RefusalShown => MOVE_REFUSAL_SHOWN,
+    }
+}
+
 pub fn place_after(name: &str) -> String {
     format!("After {name}")
 }
@@ -369,6 +388,10 @@ fn conflict(what: AskKind) -> &'static str {
         AskKind::RevokeInvite(_) => "The invite is revoked already.",
         AskKind::DeleteRole(_) => "Every member holds the “everyone” role. It is not deleted.",
         AskKind::AssignRole(..) => "The account is banned or removed. It gets no role.",
+        AskKind::AddTerm
+        | AskKind::ChangeTerm(_)
+        | AskKind::RemoveTerm(_)
+        | AskKind::MoveTerm(_) => glossary::CHANGED_MEANWHILE,
         _ => {
             "The server refused, because its state has changed. Close this page and open it again."
         }
@@ -383,6 +406,7 @@ fn limit(what: AskKind) -> &'static str {
         }
         AskKind::CreateRole(_) => "This level has 250 roles, which is the most. Delete one first.",
         AskKind::AssignRole(..) => "The account holds 64 roles, which is the most.",
+        AskKind::AddTerm => glossary::FULL,
         _ => "A limit of the server is reached.",
     }
 }
@@ -409,6 +433,10 @@ fn invalid(what: AskKind) -> &'static str {
         AskKind::MoveRole(_) => {
             "The order of the roles has changed. The role is where the list shows it now."
         }
+        AskKind::AddTerm
+        | AskKind::ChangeTerm(_)
+        | AskKind::RemoveTerm(_)
+        | AskKind::MoveTerm(_) => glossary::INVALID,
         _ => "The server did not accept the values.",
     }
 }

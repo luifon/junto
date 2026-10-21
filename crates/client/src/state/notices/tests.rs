@@ -354,8 +354,11 @@ fn the_list_tells_a_mark_that_runs_and_one_that_failed() {
         .notices_failed
         .insert(scene.server_id, "No answer.".to_owned());
     let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
-    assert!(panel.marking && panel.more && panel.rows.is_empty());
+    assert!(panel.marking && panel.rows.is_empty());
     assert_eq!(panel.failed.as_deref(), Some("No answer."));
+    // No notice is held to continue from, and the server holds more: the list is read
+    // again from its first page, and no "Show older" is offered.
+    assert!(panel.reading && !panel.more);
     // Another server tells nothing here.
     let other = notices_panel(ServerId::generate(), &scene.model, &scene.known);
     assert!(!other.marking && other.failed.is_none());

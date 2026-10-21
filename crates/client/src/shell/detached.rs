@@ -187,9 +187,7 @@ impl Shell {
         // The frame sets this again when it draws the list of messages.
         self.feed.drawn = false;
         let theme = theme(cx);
-        let panel = view
-            .workspace()
-            .and_then(|workspace| workspace.call.as_ref());
+        let panel = view.lists().and_then(|lists| lists.call.as_ref());
         // The panel of the call lies beside the stage when both fit, and over it otherwise.
         let beside =
             super::logical_width(window) >= theme.metrics.call_panel_width + STAGE_BESIDE_PANEL;

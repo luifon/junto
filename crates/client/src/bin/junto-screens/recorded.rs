@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use junto_client::shell::Shell;
+use junto_client::state::transcript_work::TranscriptChange;
 use junto_client::state::view::{Known, ServerSnapshot};
 use junto_client::text;
 use junto_client_core::model::{
@@ -13,13 +14,15 @@ use junto_client_core::model::{
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, RecordingId, RecordingSegmentId, ServerId};
+use junto_client_core::protocol::recording::SegmentFailure;
 use junto_client_core::protocol::recording::{
     FileCheck, FileProblem, Recording, RecordingDetail, RecordingFailure, RecordingSegment,
     RecordingState, SegmentFile, SegmentSource, SegmentState,
 };
 use junto_client_core::protocol::transcript::{
-    GlossaryUse, LineSource, Transcript, TranscriptFailure, TranscriptLine, TranscriptSpeaker,
-    TranscriptState,
+    GlossaryUse, LineSource, SegmentReason, SegmentTranscription, SpeakerSeparation,
+    SpeakersReason, Transcript, TranscriptFailure, TranscriptLine, TranscriptSegment,
+    TranscriptSpeaker, TranscriptState,
 };
 use junto_client_core::transfers::{DownloadProgress, DownloadStage, TransferFailure};
 use time::Duration;
@@ -551,6 +554,132 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         ),
         transcript(None),
     )?;
+    draw_changes(studio)?;
     let _: AccountId = person("Luca");
     Ok(())
+}
+
+/// The recording of view G with a corrected line, the glossary terms of its transcript,
+/// a damaged audio file, voices without a label for some lines, and a part that failed.
+fn changed() -> OpenRecording {
+    let mut held = open(RecordingState::PartlyFailed, TranscriptState::Partial);
+    let corrected = Arc::make_mut(&mut held.lines.lines[4]);
+    corrected.original_text =
+        Some("The mix down takes a leaven seconds now, down from ninety-six.".to_owned());
+    corrected.corrected_by = Some(person("Luca"));
+    corrected.corrected_at = Some(started() + Duration::minutes(50));
+    if let Loadable::Loaded(transcript) = &mut held.transcript {
+        transcript.glossary = GlossaryUse {
+            used: vec![
+                "Marta".to_owned(),
+                "mixdown".to_owned(),
+                "staging".to_owned(),
+            ],
+            cut: vec!["Quorvex".to_owned()],
+        };
+        let result = |number, status, reason, speakers, speakers_reason| TranscriptSegment {
+            segment_id: segment_id(number),
+            status,
+            reason,
+            audio_ms: Some(2_380_000),
+            processed_ms: Some(1_200_000),
+            lines: 40,
+            speakers,
+            speakers_reason,
+        };
+        transcript.segments = vec![
+            result(
+                1,
+                SegmentTranscription::Ok,
+                None,
+                SpeakerSeparation::NotApplicable,
+                None,
+            ),
+            result(
+                2,
+                SegmentTranscription::Damaged,
+                Some(SegmentReason::DecodeIncomplete),
+                SpeakerSeparation::NotApplicable,
+                None,
+            ),
+            result(
+                6,
+                SegmentTranscription::Ok,
+                None,
+                SpeakerSeparation::Unassigned,
+                Some(SpeakersReason::NoVoiceWindow),
+            ),
+        ];
+    }
+    // The microphone of Luca was lost after 20 minutes.
+    if let Loadable::Loaded(detail) = &mut held.detail
+        && let Some(lost) = detail.segments.get_mut(5)
+    {
+        lost.state = SegmentState::Failed;
+        lost.failure = Some(SegmentFailure::RecorderLost);
+        lost.ended_at = Some(started() + Duration::seconds(1_200));
+        lost.file = None;
+    }
+    held
+}
+
+/// The changes of a transcript (ADR 0616): the original text of a corrected line, the
+/// form that corrects a line, the details with the voices and the result of each audio
+/// file, the form that names a voice, the parts of a recording, and a new request for a
+/// transcript.
+fn draw_changes(studio: &mut Studio) -> Result<(), String> {
+    let panel = |shell: &mut Shell, cx: &mut gpui::Context<Shell>| {
+        show(shell, |_| {}, cx);
+        shell.open_transcript(server_id(), recording_id(), None, cx);
+    };
+    studio.draw(
+        Screen::new("transcript-original", acme(Some(changed()), |_| {})),
+        move |shell, _, cx| {
+            panel(shell, cx);
+            shell.toggle_original(recording_id(), 4, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("transcript-correct-form", acme(Some(changed()), |_| {})),
+        move |shell, window, cx| {
+            panel(shell, cx);
+            let shown = "Before that: the demo invite for Marta goes out today.";
+            let what = TranscriptChange::Line(1);
+            shell.open_transcript_form(server_id(), recording_id(), what, Some(shown), window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("transcript-details", acme(Some(changed()), |_| {})),
+        move |shell, _, cx| {
+            panel(shell, cx);
+            shell.toggle_transcript_details(recording_id(), cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("transcript-name-voice", acme(Some(changed()), |_| {})),
+        move |shell, window, cx| {
+            panel(shell, cx);
+            shell.toggle_transcript_details(recording_id(), cx);
+            let what = TranscriptChange::Speaker(2);
+            shell.open_transcript_form(server_id(), recording_id(), what, None, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("recording-parts", acme(Some(changed()), |_| {})),
+        |shell, window, cx| {
+            show(shell, |_| {}, cx);
+            shell.open_recording_parts(recording_id(), window, cx);
+        },
+    )?;
+    let mut failed = open(RecordingState::Ready, TranscriptState::Failed);
+    if let Loadable::Loaded(transcript) = &mut failed.transcript {
+        transcript.failure = Some(TranscriptFailure::JobRefused);
+    }
+    studio.draw(
+        Screen::new(
+            "recording-transcript-request",
+            acme(Some(failed), may_remove),
+        ),
+        |shell, _, cx| show(shell, |_| {}, cx),
+    )
 }

@@ -201,10 +201,14 @@ prepare_checkout() {
         && git -C "$checkout" gc --auto --quiet
 }
 # checked_checkout: the checkout holds exactly the commit of the run: its HEAD is that commit, and
-# Git sees no changed, added, removed or ignored file.
+# Git sees no changed, added, removed or ignored file. Git compares the content of a file only when
+# its recorded time is not older than the index, and otherwise trusts the time that the checkout
+# recorded; read-tree gives an index without recorded times, so status compares the content of
+# every file.
 checked_checkout() {
     head=$(git -C "$checkout" rev-parse HEAD 2>/dev/null) || head=""
-    changes=$(git -C "$checkout" status --porcelain --ignored 2>&1) || changes="git status failed: $changes"
+    changes=$(git -C "$checkout" read-tree HEAD 2>&1 && git -C "$checkout" status --porcelain --ignored 2>&1) \
+        || changes="git status failed: $changes"
     if [ "$head" != "$(cat "$here/commit")" ]; then
         echo "the checkout holds ${head:-no commit}, not the commit $(cat "$here/commit") of the run" >&2
         return 1

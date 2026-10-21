@@ -29,7 +29,7 @@ use crate::events;
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
 use crate::proof;
 use crate::recordings::store::{self, RecordingRow};
-use crate::recordings::transcripts::{self, NotCorrected, Window};
+use crate::recordings::transcripts::{self, Correction, NotCorrected, NotRenamed, Window};
 use crate::routes::recordings::{changeable, readable};
 use crate::state::AppState;
 use crate::validate;
@@ -272,8 +272,13 @@ pub async fn correct_transcript_line(
         let access = Access::open(connection, &bearer, now).await?;
         let (recording, _) = changeable(connection, &access, recording_id, false).await?;
         let by = access.account_id;
+        let correction = Correction {
+            text: &text,
+            replaces: body.replaces.as_deref(),
+            by,
+        };
         let corrected =
-            transcripts::correct(connection, now, recording_id, position, &text, by, most).await?;
+            transcripts::correct(connection, now, recording_id, position, correction, most).await?;
         let line = match corrected {
             Ok(line) => line,
             Err(NotCorrected::NoLine) => return Err(ApiError::not_found()),
@@ -281,6 +286,11 @@ pub async fn correct_transcript_line(
                 return Err(ApiError::limit_reached(format!(
                     "the line has {most} corrections, which is the most that the server keeps"
                 )));
+            }
+            Err(NotCorrected::Changed) => {
+                return Err(ApiError::conflict(
+                    "the line shows another text than the one in \"replaces\"",
+                ));
             }
         };
         let event = Event::TranscriptLineCorrected {
@@ -323,9 +333,19 @@ pub async fn rename_transcript_speaker(
         let access = Access::open(connection, &bearer, now).await?;
         let (recording, _) = changeable(connection, &access, recording_id, false).await?;
         let by = access.account_id;
-        let speaker = transcripts::rename_speaker(connection, now, recording_id, number, &name, by)
-            .await?
-            .ok_or_else(ApiError::not_found)?;
+        let read = body.replaces.as_ref().map(Option::as_deref);
+        let renamed =
+            transcripts::rename_speaker(connection, now, recording_id, number, &name, read, by)
+                .await?;
+        let speaker = match renamed {
+            Ok(speaker) => speaker,
+            Err(NotRenamed::NoSpeaker) => return Err(ApiError::not_found()),
+            Err(NotRenamed::Changed) => {
+                return Err(ApiError::conflict(
+                    "the voice has another name than the one in \"replaces\"",
+                ));
+            }
+        };
         let event = Event::TranscriptSpeakerRenamed {
             recording_id,
             workspace_id: recording.workspace_id,
@@ -528,6 +548,7 @@ mod tests {
     fn a_correction_is_trimmed_and_bounded() {
         let body = |text: &str| CorrectLine {
             text: text.to_owned(),
+            replaces: None,
         };
         assert_eq!(
             correction(&body("  eleven seconds ")).unwrap(),

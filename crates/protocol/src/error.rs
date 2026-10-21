@@ -28,6 +28,10 @@ pub enum ErrorCode {
     ExceedsOwnPermissions,
     NotFound,
     Conflict,
+    /// The channel is archived, which takes no change of its content and its settings
+    /// (ADR 0410). A conflict whose cause is the archive, so that a client tells it apart
+    /// from a value that changed meanwhile.
+    ChannelArchived,
     LastDevice,
     LimitReached,
     KeyAlreadyRegistered,
@@ -97,6 +101,7 @@ impl ErrorCode {
         Self::ExceedsOwnPermissions,
         Self::NotFound,
         Self::Conflict,
+        Self::ChannelArchived,
         Self::LastDevice,
         Self::LimitReached,
         Self::KeyAlreadyRegistered,
@@ -151,6 +156,7 @@ impl ErrorCode {
             | Self::OriginRejected => 403,
             Self::NotFound | Self::InviteNotFound | Self::LinkCodeInvalid => 404,
             Self::Conflict
+            | Self::ChannelArchived
             | Self::LastDevice
             | Self::LimitReached
             | Self::KeyAlreadyRegistered

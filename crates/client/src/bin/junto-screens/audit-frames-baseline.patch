@@ -1,0 +1,166 @@
+diff --git a/crates/client/src/bin/junto-screens.rs b/crates/client/src/bin/junto-screens.rs
+index 88ad2c3..8d5bc63 100644
+--- a/crates/client/src/bin/junto-screens.rs
++++ b/crates/client/src/bin/junto-screens.rs
+@@ -2744,6 +2744,7 @@ fn run(out: &Path) -> Result<(), String> {
+         Some("recorded") => recorded::draw(&mut studio),
+         // Not a picture: the time of a frame with 10,000 loaded messages.
+         Some("frames") => frames::measure(&mut studio),
++        Some("audit-frames") => frames::measure_audit(&mut studio),
+         Some("admin") => admin::draw(&mut studio),
+         Some("people") => people::draw(&mut studio),
+         Some("roles") => roles::draw(&mut studio),
+diff --git a/crates/client/src/bin/junto-screens/admin.rs b/crates/client/src/bin/junto-screens/admin.rs
+index 689b871..8a33567 100644
+--- a/crates/client/src/bin/junto-screens/admin.rs
++++ b/crates/client/src/bin/junto-screens/admin.rs
+@@ -1582,7 +1582,7 @@ fn draw_records(studio: &mut Studio) -> Result<(), String> {
+ 
+ /// "Acme Studio" for the audit log, for an administrator, with what the entries name:
+ /// the categories, the archived channels and the server roles.
+-fn with_names() -> Vec<ServerSnapshot> {
++pub(super) fn with_names() -> Vec<ServerSnapshot> {
+     servers(|model| {
+         administrator(model);
+         structure(model);
+@@ -1591,6 +1591,41 @@ fn with_names() -> Vec<ServerSnapshot> {
+     })
+ }
+ 
++/// Opens the audit log with `count` entries, the newest first.
++pub(super) fn prepare_audit_rows(
++    shell: &mut Shell,
++    count: usize,
++    window: &mut gpui::Window,
++    cx: &mut gpui::Context<Shell>,
++) {
++    open_page(shell, AdminPage::AuditLog, window, cx);
++    show_audit_rows(shell, audit_rows(count, 0), cx);
++}
++
++/// The audit log of the server with `count` entries, the newest first, after `newer`
++/// entries arrived since the first log. An entry keeps its identifier in every log.
++pub(super) fn audit_rows(count: usize, newer: usize) -> AuditLog {
++    let entries = (newer..newer + count)
++        .rev()
++        .map(|number| AuditEntry {
++            id: id(AUDIT + number as u32),
++            occurred_at: at() - Duration::minutes(10_000 - number as i64),
++            actor_id: Some(person("Ana")),
++            access_token_id: None,
++            workspace_id: None,
++            channel_id: None,
++            event: AuditEvent::AccountUnbanned {
++                account_id: person("Bruno"),
++            },
++        })
++        .collect();
++    AuditLog::loaded(id(ACME), AuditScope::Server, entries, false)
++}
++
++pub(super) fn show_audit_rows(shell: &mut Shell, log: AuditLog, cx: &mut gpui::Context<Shell>) {
++    show_records(shell, log, ExportFiles::default(), cx);
++}
++
+ /// Shows the audit log of a scope of "Acme Studio" in the open administration.
+ fn show_log(
+     shell: &mut Shell,
+diff --git a/crates/client/src/bin/junto-screens/frames.rs b/crates/client/src/bin/junto-screens/frames.rs
+index 2cb05b3..a0b066b 100644
+--- a/crates/client/src/bin/junto-screens/frames.rs
++++ b/crates/client/src/bin/junto-screens/frames.rs
+@@ -70,6 +70,66 @@ pub(crate) fn measure(studio: &mut Studio) -> Result<(), String> {
+     Ok(())
+ }
+ 
++/// The frames of the audit log of the administration with 50 and with 2,000 entries
++/// (ADR 0761): without a change, after a scroll by the wheel, after a jump of the scroll
++/// bar to a distant place, and after a newer entry arrives at the top of the log.
++pub(crate) fn measure_audit(studio: &mut Studio) -> Result<(), String> {
++    const WARM_UP: usize = 5;
++    const STEPS: usize = WARM_UP + 60;
++    for count in [50, 2_000] {
++        let (window, shell, _) = studio.open(
++            Screen::new("audit-frames", super::admin::with_names()),
++            Box::new(move |shell, window, cx| {
++                super::admin::prepare_audit_rows(shell, count, window, cx);
++            }),
++        )?;
++        // Each log of the change has one newer entry than the log before. They are built
++        // before the frames are measured.
++        let mut logs: Vec<_> = (1..=STEPS)
++            .map(|newer| Some(super::admin::audit_rows(count, newer)))
++            .collect();
++        for case in ["unchanged", "scrolled", "jumped", "changed"] {
++            let mut times = Vec::new();
++            for (step, slot) in logs.iter_mut().enumerate() {
++                let log = if case == "changed" { slot.take() } else { None };
++                let started = Instant::now();
++                studio
++                    .cx
++                    .update_window(window.into(), |_, window, cx| {
++                        shell.update(cx, |shell, cx| match (case, log) {
++                            ("scrolled", _) => {
++                                shell.scroll_admin_page_by(gpui::px(if step % 2 == 0 {
++                                    360.0
++                                } else {
++                                    -240.0
++                                }))
++                            }
++                            // 101 places spread over the list, each once.
++                            ("jumped", _) => {
++                                shell.scroll_admin_page_to((step * 37 % 101) as f32 / 100.0)
++                            }
++                            (_, Some(log)) => super::admin::show_audit_rows(shell, log, cx),
++                            _ => {}
++                        });
++                        window.refresh();
++                    })
++                    .map_err(|error| format!("{error:#}"))?;
++                studio.cx.run_until_parked();
++                if step >= WARM_UP {
++                    times.push(started.elapsed());
++                }
++            }
++            println!("audit with {count} rows: {}", Times(times).line(case));
++        }
++        studio
++            .cx
++            .update_window(window.into(), |_, window, _| window.remove_window())
++            .map_err(|error| format!("{error:#}"))?;
++        studio.cx.run_until_parked();
++    }
++    Ok(())
++}
++
+ fn measure_with(studio: &mut Studio, count: u32) -> Result<(), String> {
+     let prepare_messages: super::Prepare = Box::new(|shell: &mut Shell, _, cx| {
+         prepare(shell, none(), cx);
+diff --git a/crates/client/src/shell/admin/recordings.rs b/crates/client/src/shell/admin/recordings.rs
+index 9af384d..ce3d3cf 100644
+--- a/crates/client/src/shell/admin/recordings.rs
++++ b/crates/client/src/shell/admin/recordings.rs
+@@ -82,6 +82,23 @@ impl Shell {
+         self.admin.page_scroll.scroll_to_bottom();
+     }
+ 
++    #[cfg(feature = "test-support")]
++    pub fn scroll_admin_page_by(&mut self, distance: gpui::Pixels) {
++        let mut offset = self.admin.page_scroll.offset();
++        offset.y -= distance;
++        self.admin.page_scroll.set_offset(offset);
++    }
++
++    /// Moves the open page of the administration to a place between its start (0) and its
++    /// end (1), as a drag of the scroll bar does. The screen tool uses it.
++    #[cfg(feature = "test-support")]
++    pub fn scroll_admin_page_to(&mut self, fraction: f32) {
++        let end = self.admin.page_scroll.max_offset().y;
++        self.admin
++            .page_scroll
++            .set_offset(gpui::point(gpui::px(0.0), -end * fraction));
++    }
++
+     pub(crate) fn render_recordings_page(
+         &mut self,
+         view: &AdminView,

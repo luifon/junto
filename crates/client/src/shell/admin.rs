@@ -4,6 +4,8 @@
 
 mod archive;
 mod channels;
+mod glossary;
+mod list;
 mod notifications;
 pub mod overrides;
 pub mod people;
@@ -64,6 +66,12 @@ pub enum Mode {
     Days(AskKind),
     /// The question before the removal of the logo of the server.
     RemoveLogo,
+    /// A new term of the glossary (ADR 0616).
+    AddTerm,
+    /// The new text of the term at this position of the glossary.
+    ChangeTerm(u32),
+    /// The question before the removal of the term at this position.
+    RemoveTerm(u32),
     /// One limit of the files of messages is typed (ADR 0408).
     Limit(server::Limit),
 }
@@ -85,10 +93,14 @@ pub(crate) struct AdminUi {
     pub(crate) invalid: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The term of the glossary whose row shows the open form or question. The form
+    /// closes when the list holds another term at its position.
+    pub(crate) opened_term: Option<String>,
     /// The space of the rows with a form or a question (ADR 0730).
     pub(crate) space: FormSpace<Mode>,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) page_scroll: ScrollHandle,
+    pub(crate) list: list::PageList,
     pub(crate) overrides: overrides::Ui,
     pub(crate) people: people::Ui,
     pub(crate) records: records::Ui,
@@ -98,6 +110,7 @@ pub(crate) struct AdminUi {
 
 impl AdminUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
+        list::init(cx);
         let name = Field::state(text::admin::NAME_FIELD, window, cx);
         let value = Field::state("", window, cx);
         let mut subscriptions = vec![
@@ -136,9 +149,11 @@ impl AdminUi {
             new_kind: ChannelKind::Text,
             invalid: None,
             sent: None,
+            opened_term: None,
             space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
+            list: list::PageList::new(cx),
             overrides,
             people,
             records,
@@ -313,6 +328,9 @@ pub(crate) struct Form {
     /// The label of the button that sends the form.
     pub send: &'static str,
     pub sending: bool,
+    /// Why the form takes no send now, such as a permission that was lost while it was
+    /// open: its button is disabled, and the reason stands in the slot of the form.
+    pub held: Option<&'static str>,
     pub help: Option<&'static str>,
     /// Controls between the field and the buttons.
     pub extra: Vec<AnyElement>,
@@ -378,11 +396,14 @@ impl Shell {
 
     /// The fields and the open forms of the layer belong to the page that was shown.
     pub(crate) fn reset_admin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.admin.list = list::PageList::new(cx);
         self.admin.mode = None;
         self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
+        self.admin.opened_term = None;
         self.admin.space.release();
+        self.admin.list.state.remeasure();
         for field in [self.admin.name.clone(), self.admin.value.clone()] {
             field.update(cx, |field, cx| field.set_value("", window, cx));
         }
@@ -405,7 +426,9 @@ impl Shell {
         self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
+        self.admin.opened_term = None;
         self.admin.space.release();
+        self.admin.list.state.remeasure();
         let name = name.to_owned();
         self.admin
             .name
@@ -422,7 +445,9 @@ impl Shell {
                 | Mode::CreateCategory
                 | Mode::RenameCategory(_)
                 | Mode::CreateChannel(_)
-                | Mode::RenameChannel,
+                | Mode::RenameChannel
+                | Mode::AddTerm
+                | Mode::ChangeTerm(_),
             ) => self.focus_field(&self.admin.name.clone(), window, cx),
             Some(Mode::EnterCode | Mode::Days(_) | Mode::Limit(_)) => {
                 self.focus_field(&self.admin.value.clone(), window, cx);
@@ -482,6 +507,9 @@ impl Shell {
                 | Mode::RenameChannel,
             ) => self.submit_channel_form(&view, window, cx),
             Some(Mode::Days(_)) => self.submit_days(&view, window, cx),
+            Some(Mode::AddTerm | Mode::ChangeTerm(_)) => {
+                self.submit_glossary_form(&view, window, cx);
+            }
             Some(Mode::Limit(_)) => self.submit_limit(&view, cx),
             _ => {}
         }
@@ -500,6 +528,19 @@ impl Shell {
         };
         match view.asked(what) {
             Some(crate::state::admin::AskState::Sending) => {}
+            // A refused move stays drawn with its refusal in its row until the person acts
+            // (ADR 0761): the form of "Move to" closes, and its row keeps the height that it
+            // had with the form.
+            Some(crate::state::admin::AskState::Refused(_))
+                if matches!(what, AskKind::MoveChannels(_))
+                    && matches!(self.admin.mode, Some(Mode::MoveChannel(_))) =>
+            {
+                self.admin.sent = None;
+                if let Some(mode) = self.admin.mode.take() {
+                    self.admin.space.keep(mode);
+                }
+                self.admin.move_group = None;
+            }
             Some(crate::state::admin::AskState::Refused(_)) => self.admin.sent = None,
             None => {
                 self.admin.sent = None;
@@ -508,6 +549,7 @@ impl Shell {
                 if let Some(mode) = self.admin.mode.take() {
                     self.admin.space.keep(mode);
                 }
+                self.admin.opened_term = None;
                 self.admin.invalid = None;
                 for field in [self.admin.name.clone(), self.admin.value.clone()] {
                     field.update(cx, |field, cx| field.set_value("", window, cx));
@@ -656,7 +698,7 @@ impl Shell {
                             .kind(ButtonKind::Primary)
                             .label(form.send)
                             .selector("admin-form-send")
-                            .disabled(form.sending)
+                            .disabled(form.sending || form.held.is_some())
                             .h(u(30.0))
                             .px(u(12.0))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -668,7 +710,11 @@ impl Shell {
                 crate::ui::notice_slot("admin-form-invalid-slot").children(
                     self.admin
                         .invalid
-                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid")),
+                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid"))
+                        .or_else(|| {
+                            form.held
+                                .map(|held| Notice::new(held).selector("admin-form-held"))
+                        }),
                 ),
             )
             .when_some(form.help, |column, help| {
@@ -685,6 +731,7 @@ impl Shell {
             return div().into_any_element();
         };
         self.settle_admin_form(&view, window, cx);
+        self.admin.list.drawn = false;
         let theme = theme(cx);
         let colors = theme.colors;
         let focus: FocusHandle = self.layer_focus().clone();
@@ -708,6 +755,23 @@ impl Shell {
                 self.render_channel_nav(settings, &theme, cx),
                 self.render_channel_page(&view, settings, window, cx),
             ),
+        };
+        let virtual_page = self.admin.list.drawn;
+        let page = if virtual_page {
+            page
+        } else {
+            ScrollArea::new("admin-page", &self.admin.page_scroll, title)
+                .selector("admin-page")
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .pt(u(14.0))
+                        .px(u(18.0))
+                        .pb(u(18.0))
+                        .child(page),
+                )
+                .into_any_element()
         };
         let header = SideHeader::new(title).icon(Icon::Gear).note(note).trailing(
             Button::new("admin-close")
@@ -767,19 +831,13 @@ impl Shell {
                             ),
                     )
                     .child(
-                        div().flex().flex_col().flex_1().min_w_0().h_full().child(
-                            ScrollArea::new("admin-page", &self.admin.page_scroll, title)
-                                .selector("admin-page")
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .pt(u(14.0))
-                                        .px(u(18.0))
-                                        .pb(u(18.0))
-                                        .child(page),
-                                ),
-                        ),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(page),
                     ),
             )
             .focus_trap("admin-trap", &focus);
@@ -888,6 +946,7 @@ impl Shell {
             ServerPage::Exports(page) => self.render_exports_page(view, page, window, cx),
             ServerPage::AuditLog(page) => self.render_audit_page(view, page, window, cx),
             ServerPage::Recordings(page) => self.render_recordings_page(view, page, window, cx),
+            ServerPage::Glossary(page) => self.render_glossary_page(view, page, window, cx),
             ServerPage::Roles(page) => self.render_roles_page(view, page, window, cx),
         }
     }

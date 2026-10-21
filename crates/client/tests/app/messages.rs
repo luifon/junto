@@ -46,7 +46,7 @@ impl Admin {
 
 impl Window {
     pub fn feed(&mut self) -> Option<Feed> {
-        self.view().workspace()?.feed.clone()
+        self.view().lists()?.feed.clone()
     }
 
     /// The messages of people that the window draws, in their order.
@@ -344,12 +344,12 @@ fn files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops(
     window.until("the files are in the draft", |window| {
         window
             .view()
-            .workspace()
-            .is_some_and(|workspace| workspace.draft.len() == names.len())
+            .lists()
+            .is_some_and(|lists| lists.draft.len() == names.len())
     });
     let drafted: Vec<String> = window
         .view()
-        .workspace()
+        .lists()
         .unwrap()
         .draft
         .iter()
@@ -388,10 +388,10 @@ fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
     // The file is attached before the send: its upload starts, and the composer shows it.
     window.in_shell(|shell, _, cx| shell.attach_paths(Pane::Main, vec![path.clone()], cx));
     window.until("the upload is complete", |window| {
-        window.view().workspace().is_some_and(|workspace| {
-            workspace.draft.len() == 1
-                && workspace.draft[0].name == "timings.csv"
-                && matches!(workspace.draft[0].progress.stage, UploadStage::Complete(_))
+        window.view().lists().is_some_and(|lists| {
+            lists.draft.len() == 1
+                && lists.draft[0].name == "timings.csv"
+                && matches!(lists.draft[0].progress.stage, UploadStage::Complete(_))
         })
     });
     assert!(window.shows_named("draft-file:0".to_owned()));
@@ -400,7 +400,7 @@ fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
         shell.attach_paths(Pane::Main, vec![files.path().join("missing.bin")], cx);
     });
     assert!(window.shows("compose-problem"));
-    assert_eq!(window.view().workspace().unwrap().draft.len(), 1);
+    assert_eq!(window.view().lists().unwrap().draft.len(), 1);
 
     // The message is sent with its file.
     window.write("The timings");
@@ -411,7 +411,7 @@ fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
         (attachment.name.as_str(), attachment.bytes),
         ("timings.csv", 40_000)
     );
-    assert!(window.view().workspace().unwrap().draft.is_empty());
+    assert!(window.view().lists().unwrap().draft.is_empty());
     assert!(window.shows_named("file:0".to_owned()));
 
     // The file is saved to the download directory under a name that no file has.
@@ -909,7 +909,7 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
         window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
     );
-    assert!(window.view().workspace().unwrap().draft.is_empty());
+    assert!(window.view().lists().unwrap().draft.is_empty());
     window.write("a message on the second server");
     let sent = window.until_message("a message on the second server");
     assert!(sent.message.attachments.is_empty());
@@ -925,7 +925,7 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
     window.until("the first server is shown again", |window| {
         shows(window, "Acme Studio")
     });
-    assert!(window.view().workspace().unwrap().draft.is_empty());
+    assert!(window.view().lists().unwrap().draft.is_empty());
 
     // The same holds for another place of one server: the dialog is opened in the text
     // channel and answered in the chat of the voice channel.
@@ -952,7 +952,7 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
         window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
     );
-    assert!(window.view().workspace().unwrap().draft.is_empty());
+    assert!(window.view().lists().unwrap().draft.is_empty());
     let text_row = window
         .channels()
         .into_iter()
@@ -965,7 +965,7 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
             .is_some_and(|feed| feed.loaded && feed.place == PlaceId::Channel(text_channel))
             && window.shows("composer")
     });
-    assert!(window.view().workspace().unwrap().draft.is_empty());
+    assert!(window.view().lists().unwrap().draft.is_empty());
 
     // A dialog that is answered while the composer still shows its place attaches.
     window.click("attach-file");
@@ -974,9 +974,9 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
         .cx
         .simulate_path_prompt_response(move |_| Some(vec![chosen]));
     window.until("the upload to the first server is complete", |window| {
-        window.view().workspace().is_some_and(|workspace| {
-            workspace.draft.len() == 1
-                && matches!(workspace.draft[0].progress.stage, UploadStage::Complete(_))
+        window.view().lists().is_some_and(|lists| {
+            lists.draft.len() == 1
+                && matches!(lists.draft[0].progress.stage, UploadStage::Complete(_))
         })
     });
     assert_eq!(uploads(&proxy), 0);
@@ -1468,9 +1468,9 @@ fn a_message_whose_files_the_retention_removed_says_so(cx: &mut TestAppContext) 
     std::fs::write(&path, b"the first draft").unwrap();
     window.in_shell(|shell, _, cx| shell.attach_paths(Pane::Main, vec![path.clone()], cx));
     window.until("the upload is complete", |window| {
-        window.view().workspace().is_some_and(|workspace| {
-            workspace.draft.len() == 1
-                && matches!(workspace.draft[0].progress.stage, UploadStage::Complete(_))
+        window.view().lists().is_some_and(|lists| {
+            lists.draft.len() == 1
+                && matches!(lists.draft[0].progress.stage, UploadStage::Complete(_))
         })
     });
     window.write("The draft");

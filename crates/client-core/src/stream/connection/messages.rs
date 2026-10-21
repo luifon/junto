@@ -818,6 +818,12 @@ impl Client {
                 let error = std::sync::Arc::new(error);
                 self.answer_pins(channel_id, || Err(LoadError::Request(error.clone())));
             }
+            // The server takes only a notice that the account reads now as the cursor of a
+            // page. A refused cursor, such as a notice of a place that was deleted, would
+            // refuse every further page: the notices are read again from their first page.
+            Part::MoreNotices(_) if error.category() == Some(ErrorCategory::ClientFault) => {
+                self.read(Part::Notices);
+            }
             Part::Recording(recording_id) => self.recording_unread(recording_id, error),
             Part::TranscriptLines(recording_id) => {
                 model.fail_transcript_lines(recording_id, ReadFailure::of(&error));
@@ -1020,7 +1026,8 @@ impl Client {
             | Command::TranscriptLinesAround { .. }
             | Command::OpenAdmin { .. }
             | Command::ReleaseAdmin(_)
-            | Command::ReadAdminAgain(_) => {}
+            | Command::ReadAdminAgain(_)
+            | Command::ReadAdminNow(_) => {}
         }
     }
 

@@ -1320,6 +1320,15 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         recording_screen("recording-none", true, |_| {}),
         with_picture(),
     )?;
+    // "Record" opens the languages of the speech (ADR 0616).
+    let picture = with_picture();
+    studio.draw(
+        recording_screen("recording-languages", true, |_| {}),
+        move |shell, window, cx| {
+            picture(shell, window, cx);
+            shell.open_record_languages(window, cx);
+        },
+    )?;
     studio.draw(
         recording_screen("recording-starting", true, |call| {
             call.recording = Some(recording(|recording| {
@@ -2744,6 +2753,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("recorded") => recorded::draw(&mut studio),
         // Not a picture: the time of a frame with 10,000 loaded messages.
         Some("frames") => frames::measure(&mut studio),
+        Some("audit-frames") => frames::measure_audit(&mut studio),
         Some("admin") => admin::draw(&mut studio),
         Some("people") => people::draw(&mut studio),
         Some("roles") => roles::draw(&mut studio),

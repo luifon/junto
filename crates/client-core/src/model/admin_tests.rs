@@ -1032,3 +1032,59 @@ fn the_flags_of_the_server_are_held_by_their_read_and_read_again_after_a_change_
         None
     );
 }
+
+#[test]
+fn a_glossary_is_read_again_after_its_event_withdrawn_with_its_workspace_and_gone_with_it() {
+    let scene = scene();
+    let mut model = scene.model();
+    let part = AdminPart::Glossary(scene.workspace_id);
+    let replaced = Event::GlossaryReplaced {
+        workspace_id: scene.workspace_id,
+    };
+    // No reader has the glossary open: nothing is read.
+    assert_eq!(model.apply(&replaced), Follow::default());
+
+    let terms = vec!["Quorvex".to_owned()];
+    loaded(&mut model, part, AdminPayload::Glossary(terms.clone()));
+    assert_eq!(model.apply(&replaced).load, [Part::Admin(part)]);
+    assert!(part.concerns(&replaced) && part.is_stale_after(&replaced));
+    let other = Event::GlossaryReplaced {
+        workspace_id: WorkspaceId::generate(),
+    };
+    assert!(!part.is_stale_after(&other));
+    assert_eq!(model.apply(&other), Follow::default());
+    assert_eq!(part.workspace(), Some(scene.workspace_id));
+
+    // A change of what the account may see in the workspace shows the glossary as being
+    // read until the next state reads it.
+    model.withdraw(Some(scene.workspace_id));
+    assert_eq!(model.admin.state(part), CollectionState::Loading);
+    loaded(&mut model, part, AdminPayload::Glossary(terms));
+    model.withdraw(Some(WorkspaceId::generate()));
+    assert_eq!(model.admin.state(part), CollectionState::Loaded);
+
+    model.apply(&Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    });
+    assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
+}
+
+#[test]
+fn a_collection_states_when_the_read_that_it_shows_started() {
+    let scene = scene();
+    let mut model = scene.model();
+    let part = AdminPart::Glossary(scene.workspace_id);
+    assert_eq!(model.admin.read_times(part), ReadTimes::default());
+    model.set_admin(part, AdminSet::Loading);
+    let first = model.admin.read_times(part);
+    assert!(first.started.is_some() && first.shown.is_none());
+    model.set_admin(part, AdminSet::Loaded(AdminPayload::Glossary(Vec::new())));
+    assert_eq!(model.admin.read_times(part).shown, first.started);
+    // A second read is on its way: the collection still shows the first one.
+    model.set_admin(part, AdminSet::Loading);
+    let second = model.admin.read_times(part);
+    assert!(second.started >= first.started);
+    assert_eq!(second.shown, first.started);
+    model.set_admin(part, AdminSet::Loaded(AdminPayload::Glossary(Vec::new())));
+    assert_eq!(model.admin.read_times(part).shown, second.started);
+}

@@ -46,7 +46,7 @@ Removal:
 
 - The prediction of "Remove" reads the roles of the workspace and not the overrides of the channel: a person who holds "manage recordings" only through an override of the voice channel sees the control disabled.
 - The window has no list of the recordings of a workspace: the approved design draws none. The route is in the client core (ADR 0723).
-- The correction of a line and the name of a speaker are drawn in the design and are not built in the window. The client core has their routes, and the window follows a correction and a name that another client made.
+- The correction of a line, the name of a voice, the original text with who changed it, the details of a transcript, the new request for a transcript and the parts of a recording are in ADR 0616. The window follows a correction and a name that another client made.
 - A person in a call reads the card of an earlier recording of that voice channel after the call.
 - The state holds one range of lines without a hole: lines read around a line replace the lines from the start, and the person reads on in both directions. The bound of 20,000 lines drops lines at the end when lines are added before them.
 - The card draws no frame of the video. A thumbnail from the server would be needed for the picture of the design.

@@ -376,6 +376,19 @@ class Recovery(unittest.TestCase):
             self.assertEqual(len((root / "record").read_text().splitlines()), 3)
 
 
+# Git, with the index of the working tree of "git -C <directory> status" dated one hour ahead.
+LATER_INDEX = """#!/usr/bin/env python3
+import os, sys, time
+arguments = sys.argv[1:]
+if "status" in arguments and "-C" in arguments:
+    index = os.path.join(arguments[arguments.index("-C") + 1], ".git", "index")
+    if os.path.exists(index):
+        later = time.time() + 3600
+        os.utime(index, (later, later))
+os.execv({git!r}, [{git!r}, *arguments])
+"""
+
+
 class CheckoutFailure(unittest.TestCase):
     """A failed Git step of the checkout stops the run or makes it create the checkout again; the
     jobs never test the files of another commit under the name of this one."""
@@ -392,10 +405,13 @@ class CheckoutFailure(unittest.TestCase):
         subprocess.run([*git, "update-ref", "refs/ci/second-run", "HEAD"], check=True)
         return repository
 
-    def run_both(self, root, repository, between):
+    def run_both(self, root, repository, between, fakes=None):
         directory = root / "runner"
         environment = prepared(directory, dict(os.environ, JUNTO_CI_RUN_LOCK=str(root / "machine.lock"),
                                                RUN_RECORD=str(root / "record")))
+        for name, text in (fakes or {}).items():
+            (root / "bin" / name).write_text(text)
+            (root / "bin" / name).chmod(0o755)
         results = []
         for run in ("sample-run", "second-run"):
             if run == "second-run":
@@ -425,8 +441,10 @@ class CheckoutFailure(unittest.TestCase):
                                   capture_output=True, text=True).stdout.strip()
             self.assertEqual(head, (directory / "runs" / "second-run" / "commit").read_text().strip())
 
-    # A file that Git reports as changed right after the checkout: the jobs would not test the
-    # files of the commit.
+    # A file that Git reports as changed when it compares the content: the jobs would not test
+    # the files of the commit. Git compares the content of a file whose recorded time is not
+    # older than the index, and otherwise trusts the time; the wrapper dates the index one hour
+    # ahead before "git status", as a checkout that crossed the start of a second leaves it.
     def test_a_checkout_that_differs_from_the_commit_starts_no_job(self):
         with tempfile.TemporaryDirectory(prefix="junto-ci-differs-") as temporary:
             root = Path(temporary)
@@ -440,7 +458,8 @@ class CheckoutFailure(unittest.TestCase):
             subprocess.run([*git, "add", ".gitattributes"], check=True)
             subprocess.run([*git, "commit", "--quiet", "-m", "Text"], env=dict(os.environ, **IDENTITY), check=True)
             subprocess.run([*git, "update-ref", "refs/ci/second-run", "HEAD"], check=True)
-            directory, results = self.run_both(root, repository, lambda _: None)
+            directory, results = self.run_both(root, repository, lambda _: None,
+                                               {"git": LATER_INDEX.format(git=shutil.which("git"))})
             self.assertEqual(results[0].returncode, 0, results[0].stdout + results[0].stderr)
             self.assertEqual(results[1].returncode, 1, results[1].stdout + results[1].stderr)
             self.assertIn("the checkout differs from the commit of the run", results[1].stderr)

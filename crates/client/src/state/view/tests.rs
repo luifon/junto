@@ -377,7 +377,7 @@ fn pending_upload_progress_is_scoped_to_server() {
             ..Selection::default()
         };
         let view = derive(&servers, &selection, &known);
-        let uploads = &view.workspace().unwrap().uploads;
+        let uploads = &view.lists().unwrap().uploads;
         assert_eq!(uploads.len(), 1);
         assert_eq!(uploads.get(&1), Some(&expected));
     }
@@ -986,14 +986,11 @@ fn recoveries_and_a_stale_state_are_shown_with_the_lists() {
     assert!(view.workspace().is_some());
     assert_eq!(view.servers[0].workspaces.len(), 2);
 
-    // An account that sees no workspace.
+    // An account that sees no workspace: the server still shows its lists.
     let mut scene = scene;
     scene.snapshot.workspaces.clear();
     let view = derive_one(&scene.server());
-    assert_eq!(
-        view.selected.as_ref().unwrap().content,
-        Content::NoWorkspace
-    );
+    assert!(view.lists().is_some_and(|lists| lists.workspace.is_none()));
 }
 
 #[test]
@@ -1061,7 +1058,7 @@ fn the_state_of_another_account_is_not_shown_as_the_state_of_the_account_of_the_
     }
 }
 
-mod calls {
+pub(super) mod calls {
     use std::time::Duration;
 
     use junto_client_core::protocol::call::LeaveReason;
@@ -1087,7 +1084,7 @@ mod calls {
         }
     }
 
-    fn active(target: CallTarget) -> ActiveCall {
+    pub(in crate::state::view) fn active(target: CallTarget) -> ActiveCall {
         ActiveCall {
             camera: junto_media::camera::CameraState::Off,
             cameras: Vec::new(),
@@ -1271,7 +1268,7 @@ mod calls {
         assert_eq!(requests.get(), 1);
     }
 
-    fn in_call(call: ActiveCall) -> Known {
+    pub(in crate::state::view) fn in_call(call: ActiveCall) -> Known {
         Known {
             media: MediaSnapshot {
                 calls: CallsView {
@@ -1338,7 +1335,7 @@ mod calls {
             assert_eq!(view.call.as_ref().unwrap().hand_raised, None);
             assert!(
                 !view
-                    .workspace()
+                    .lists()
                     .unwrap()
                     .call
                     .as_ref()
@@ -1363,7 +1360,7 @@ mod calls {
         assert_eq!(view.entry_prompts.len(), 1);
         assert!(view.call.as_ref().unwrap().hand_raised.is_some());
         assert!(
-            view.workspace()
+            view.lists()
                 .unwrap()
                 .call
                 .as_ref()
@@ -1412,7 +1409,7 @@ mod calls {
         let shown = occupant(&outside, "Daily", ben);
         assert_eq!(shown.microphone, Microphone::Open { speaking: true });
         assert_eq!((shown.level, shown.volume), (None, 100));
-        assert!(outside.workspace().unwrap().call.is_none());
+        assert!(outside.lists().unwrap().call.is_none());
         assert_eq!(
             (outside.call.clone(), outside.call_notice.clone()),
             (None, None)
@@ -1443,7 +1440,7 @@ mod calls {
         assert!(shown.is_self);
         assert_eq!(shown.microphone, Microphone::Open { speaking: true });
         assert_eq!(shown.level, Some(2));
-        let panel = inside.workspace().unwrap().call.clone().unwrap();
+        let panel = inside.lists().unwrap().call.clone().unwrap();
         assert_eq!(
             (panel.phase, panel.audio.input_level),
             (Phase::Connected, 7)
@@ -1456,7 +1453,7 @@ mod calls {
 
         // Another channel is shown: the strip stays, and the main area has no call.
         let elsewhere = derive(servers, &selected(&server, &scene, general), &known);
-        assert!(elsewhere.workspace().unwrap().call.is_none());
+        assert!(elsewhere.lists().unwrap().call.is_none());
         let strip = elsewhere.call.unwrap();
         assert_eq!((strip.name.as_deref(), strip.shown), (Some("Daily"), false));
         // A clock of this machine that is behind the server shows no negative time.
@@ -1577,8 +1574,8 @@ mod calls {
         // is shown, and the row of the thread says that it cannot be opened.
         let known = in_call(active(target(&server, &scene, daily)));
         let inside = derive(servers, &selection, &known);
+        assert!(inside.lists().unwrap().call.is_some());
         let workspace = inside.workspace().unwrap();
-        assert!(workspace.call.is_some());
         assert!(workspace.thread.is_none() && workspace.pins.is_none());
         assert_eq!(inside.shown().thread, None);
         assert!(!entry(&inside).available);
@@ -1616,7 +1613,7 @@ mod calls {
         assert_eq!(shown.presence, Presence::Connecting);
         assert_eq!(occupant(&view, "Daily", ana).presence, Presence::Here);
         assert_eq!(
-            view.workspace().unwrap().call.as_ref().unwrap().phase,
+            view.lists().unwrap().call.as_ref().unwrap().phase,
             Phase::Connecting
         );
 
@@ -1665,7 +1662,7 @@ mod calls {
             occupant(&view, "Daily", own).presence,
             Presence::Reconnecting
         );
-        let panel = view.workspace().unwrap().call.clone().unwrap();
+        let panel = view.lists().unwrap().call.clone().unwrap();
         assert_eq!(
             (panel.phase, panel.interrupted_at),
             (Phase::Reconnecting, Some(time()))
@@ -1783,7 +1780,7 @@ mod calls {
             voice(joining.workspace().unwrap(), "HR").relation,
             Relation::Outside
         );
-        assert!(joining.call.is_none() && joining.workspace().unwrap().call.is_none());
+        assert!(joining.call.is_none() && joining.lists().unwrap().call.is_none());
 
         let locked = FlowError::refused(ErrorCode::CallLocked);
         let refused = with(&|calls| {
@@ -1873,7 +1870,7 @@ mod calls {
             &selected(&server, &scene, daily),
             &known,
         );
-        let audio = view.workspace().unwrap().call.clone().unwrap().audio;
+        let audio = view.lists().unwrap().call.clone().unwrap().audio;
         let listed = |choices: &[DeviceChoice]| -> Vec<(Option<String>, String, bool)> {
             choices
                 .iter()
@@ -1912,7 +1909,7 @@ mod calls {
             &selected(&server, &scene, daily),
             &known,
         );
-        let audio = view.workspace().unwrap().call.clone().unwrap().audio;
+        let audio = view.lists().unwrap().call.clone().unwrap().audio;
         assert!(audio.inputs[0].selected && audio.outputs[0].selected);
         assert_eq!(
             audio.inputs.iter().filter(|choice| choice.selected).count(),
@@ -1956,7 +1953,7 @@ mod calls {
             &known,
         );
         let outside = view
-            .workspace()
+            .lists()
             .unwrap()
             .call
             .clone()
@@ -1989,7 +1986,7 @@ mod calls {
     }
 
     fn panel(view: &ShellView) -> CallPanel {
-        view.workspace().unwrap().call.clone().unwrap()
+        view.lists().unwrap().call.clone().unwrap()
     }
 
     #[test]

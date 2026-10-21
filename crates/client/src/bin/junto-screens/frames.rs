@@ -70,6 +70,66 @@ pub(crate) fn measure(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
+/// The frames of the audit log of the administration with 50 and with 2,000 entries
+/// (ADR 0761): without a change, after a scroll by the wheel, after a jump of the scroll
+/// bar to a distant place, and after a newer entry arrives at the top of the log.
+pub(crate) fn measure_audit(studio: &mut Studio) -> Result<(), String> {
+    const WARM_UP: usize = 5;
+    const STEPS: usize = WARM_UP + 60;
+    for count in [50, 2_000] {
+        let (window, shell, _) = studio.open(
+            Screen::new("audit-frames", super::admin::with_names()),
+            Box::new(move |shell, window, cx| {
+                super::admin::prepare_audit_rows(shell, count, window, cx);
+            }),
+        )?;
+        // Each log of the change has one newer entry than the log before. They are built
+        // before the frames are measured.
+        let mut logs: Vec<_> = (1..=STEPS)
+            .map(|newer| Some(super::admin::audit_rows(count, newer)))
+            .collect();
+        for case in ["unchanged", "scrolled", "jumped", "changed"] {
+            let mut times = Vec::new();
+            for (step, slot) in logs.iter_mut().enumerate() {
+                let log = if case == "changed" { slot.take() } else { None };
+                let started = Instant::now();
+                studio
+                    .cx
+                    .update_window(window.into(), |_, window, cx| {
+                        shell.update(cx, |shell, cx| match (case, log) {
+                            ("scrolled", _) => {
+                                shell.scroll_admin_page_by(gpui::px(if step % 2 == 0 {
+                                    360.0
+                                } else {
+                                    -240.0
+                                }))
+                            }
+                            // 101 places spread over the list, each once.
+                            ("jumped", _) => {
+                                shell.scroll_admin_page_to((step * 37 % 101) as f32 / 100.0)
+                            }
+                            (_, Some(log)) => super::admin::show_audit_rows(shell, log, cx),
+                            _ => {}
+                        });
+                        window.refresh();
+                    })
+                    .map_err(|error| format!("{error:#}"))?;
+                studio.cx.run_until_parked();
+                if step >= WARM_UP {
+                    times.push(started.elapsed());
+                }
+            }
+            println!("audit with {count} rows: {}", Times(times).line(case));
+        }
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.remove_window())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+    }
+    Ok(())
+}
+
 fn measure_with(studio: &mut Studio, count: u32) -> Result<(), String> {
     let prepare_messages: super::Prepare = Box::new(|shell: &mut Shell, _, cx| {
         prepare(shell, none(), cx);

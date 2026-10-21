@@ -3,6 +3,7 @@
 //! and the move of a role; and the roles of one account in the lists of people. A role
 //! that the person cannot act on states why in its row.
 
+use super::list::Row;
 use std::sync::Arc;
 
 use gpui::{
@@ -131,6 +132,7 @@ impl Shell {
         ui.invalid = None;
         ui.sent = None;
         ui.space.release();
+        self.admin.list.state.remeasure();
         let field = ui.name.clone();
         field.update(cx, |field, cx| field.set_value("", window, cx));
     }
@@ -148,6 +150,7 @@ impl Shell {
         self.admin.roles.invalid = None;
         self.admin.roles.sent = None;
         self.admin.roles.space.release();
+        self.admin.list.state.remeasure();
         let name = name.to_owned();
         let field = self.admin.roles.name.clone();
         field.update(cx, |field, cx| field.set_value(name, window, cx));
@@ -719,6 +722,36 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.settle_roles(view, window, cx);
+        let rows = page.roles.loaded().cloned().unwrap_or_default();
+        let list = std::iter::once(Row::new("roles-header", true).part())
+            .chain(
+                rows.iter()
+                    .map(|row| Row::new(format!("role-{:?}", row.role), true)),
+            )
+            .collect();
+        self.admin.list.take(Some(view), list, window, cx);
+        let view = view.clone();
+        let page = Arc::new(page.clone());
+        self.render_admin_list(
+            move |this, index, window, cx| {
+                if index == 0 {
+                    this.render_roles_header(&view, &page, window, cx)
+                } else {
+                    this.render_role(&view, &page, &rows[index - 1], index - 1, &theme(cx), cx)
+                }
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn render_roles_header(
+        &mut self,
+        view: &AdminView,
+        page: &RolesPage,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let level = page.level;
         let (title, help): (&'static str, SharedString) = match &page.workspace_name {
@@ -823,21 +856,18 @@ impl Shell {
                     .debug_selector(|| "roles-none".to_owned()),
             );
         }
-        let shared = Arc::new(page.clone());
-        for (index, row) in rows.iter().enumerate() {
-            column = column.child(self.render_role(view, &shared, row, index, &theme, cx));
-        }
         column.into_any_element()
     }
 
     /// The roles that an account holds or can be given, one switch each, under the row
-    /// of the account in a list of people.
+    /// of the account in a list of people. `page_held` holds every switch with its
+    /// reason, as while a request of the page offers no release (ADR 0730).
     pub(crate) fn render_role_choices(
         &mut self,
         view: &AdminView,
-        account_id: AccountId,
-        account: &str,
+        (account_id, account): (AccountId, &str),
         choices: &[RoleChoice],
+        page_held: Option<&'static str>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -861,8 +891,9 @@ impl Shell {
             let what = AskKind::AssignRole(role, account_id);
             refused = refused.or(view.refused(what));
             let blocked = choice.blocked.map(txt::no_assignment);
-            let held: Option<&'static str> =
-                blocked.or(view.sending(what).then_some(text::admin::SENDING));
+            let held: Option<&'static str> = blocked
+                .or(view.sending(what).then_some(text::admin::SENDING))
+                .or(page_held);
             let toggle = Toggle::new(
                 ("account-role", role.number()),
                 txt::role_label(&choice.name, account),

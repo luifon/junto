@@ -4,8 +4,8 @@
 use junto_protocol::ids::{RecordingId, RecordingSegmentId, WorkspaceId};
 use junto_protocol::recording::{Recording, RecordingDetail, RecordingPage};
 use junto_protocol::transcript::{
-    CorrectLine, RenameSpeaker, Transcript, TranscriptLine, TranscriptLinePage,
-    TranscriptLineQuery, TranscriptSpeaker,
+    CorrectLine, Glossary, RenameSpeaker, SetGlossary, Transcript, TranscriptLine,
+    TranscriptLinePage, TranscriptLineQuery, TranscriptSpeaker,
 };
 
 use super::client::read_json;
@@ -164,31 +164,64 @@ impl ServerApi {
 
     /// Corrects one line of a transcript. Every account that may read the recording can
     /// do this. The text has 1 to 2000 characters. The answer carries the text that the
-    /// worker wrote as `original_text`.
+    /// worker wrote as `original_text`. With `replaces`, the text that the caller read,
+    /// the server stores the correction only while the line shows that text, and answers
+    /// `conflict` otherwise (ADR 0607).
     pub async fn correct_transcript_line(
         &self,
         recording_id: RecordingId,
         line: u32,
         text: &str,
+        replaces: Option<&str>,
     ) -> Result<TranscriptLine, ApiError> {
         let path = format!("{}/lines/{line}", transcript_of(recording_id));
         let body = CorrectLine {
             text: text.to_owned(),
+            replaces: replaces.map(str::to_owned),
         };
         self.send(Method::Put, path, &body).await
     }
 
-    /// Gives a name to the voice with the label `Speaker <number>` in one recording.
+    /// Gives a name to the voice with the label `Speaker <number>` in one recording. With
+    /// `replaces`, the name that the caller read (`Some(None)`: no name), the server stores
+    /// the name only while the voice has that name, and answers `conflict` otherwise.
     pub async fn rename_transcript_speaker(
         &self,
         recording_id: RecordingId,
         number: u32,
         name: &str,
+        replaces: Option<Option<&str>>,
     ) -> Result<TranscriptSpeaker, ApiError> {
         let path = format!("{}/speakers/{number}", transcript_of(recording_id));
         let body = RenameSpeaker {
             name: name.to_owned(),
+            replaces: replaces.map(|read| read.map(str::to_owned)),
         };
+        self.send(Method::Put, path, &body).await
+    }
+
+    // The glossary of a workspace.
+
+    /// The glossary of a workspace, the most important term first. Every member reads it.
+    pub async fn glossary(&self, workspace_id: WorkspaceId) -> Result<Glossary, ApiError> {
+        self.get(format!("/workspaces/{workspace_id}/glossary"))
+            .await
+    }
+
+    /// Replaces the glossary of a workspace with `terms`, in this order. The caller needs
+    /// "manage glossary". With `replaces`, the server replaces the glossary only while it
+    /// holds exactly those terms, and answers `conflict` otherwise (ADR 0607).
+    pub async fn set_glossary(
+        &self,
+        workspace_id: WorkspaceId,
+        terms: &[String],
+        replaces: Option<&[String]>,
+    ) -> Result<Glossary, ApiError> {
+        let body = SetGlossary {
+            terms: terms.to_vec(),
+            replaces: replaces.map(<[String]>::to_vec),
+        };
+        let path = format!("/workspaces/{workspace_id}/glossary");
         self.send(Method::Put, path, &body).await
     }
 }
@@ -419,12 +452,24 @@ mod tests {
         let mut corrected = line(4, "eleven seconds");
         corrected.original_text = Some("a leaven seconds".to_owned());
         let renamed = speaker(2, Some("Noor"));
-        let (fixed, api) = played(vec![json(&corrected), json(&renamed), json(&held)]);
+        let (fixed, api) = played(vec![
+            json(&corrected),
+            json(&renamed),
+            json(&renamed),
+            json(&held),
+        ]);
         let path = format!("/api/v1/recordings/{id}/transcript");
 
-        let read = api.correct_transcript_line(id, 4, "eleven seconds").await;
+        let read = api
+            .correct_transcript_line(id, 4, "eleven seconds", Some("a leaven seconds"))
+            .await;
         assert_eq!(read.unwrap(), corrected);
-        let read = api.rename_transcript_speaker(id, 2, "Noor").await;
+        let read = api.rename_transcript_speaker(id, 2, "Noor", None).await;
+        assert_eq!(read.unwrap(), renamed);
+        // A voice without a name is named from no name: the field is `null`.
+        let read = api
+            .rename_transcript_speaker(id, 2, "Noor", Some(None))
+            .await;
         assert_eq!(read.unwrap(), renamed);
         assert_eq!(api.request_transcript(id).await.unwrap(), held);
         let sent = |method, path: String, body: &str| Asked {
@@ -438,14 +483,54 @@ mod tests {
                 sent(
                     Method::Put,
                     format!("{path}/lines/4"),
-                    r#"{"text":"eleven seconds"}"#
+                    r#"{"text":"eleven seconds","replaces":"a leaven seconds"}"#
                 ),
                 sent(
                     Method::Put,
                     format!("{path}/speakers/2"),
                     r#"{"name":"Noor"}"#
                 ),
+                sent(
+                    Method::Put,
+                    format!("{path}/speakers/2"),
+                    r#"{"name":"Noor","replaces":null}"#
+                ),
                 sent(Method::Post, path, ""),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_glossary_is_read_and_replaced_from_the_list_that_was_read() {
+        let workspace_id = WorkspaceId::generate();
+        let held = Glossary {
+            workspace_id,
+            terms: vec!["Quorvex".to_owned(), "Lumitrax".to_owned()],
+        };
+        let refusal = br#"{"error":{"code":"conflict","message":"changed"}}"#.to_vec();
+        let (fixed, api) = played(vec![json(&held), json(&held), (409, refusal)]);
+        let path = format!("/api/v1/workspaces/{workspace_id}/glossary");
+
+        assert_eq!(api.glossary(workspace_id).await.unwrap(), held);
+        let read = held.terms.clone();
+        let set = api.set_glossary(workspace_id, &read, None).await.unwrap();
+        assert_eq!(set, held);
+        let refused = api
+            .set_glossary(workspace_id, &read[..1], Some(&read))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.category(), Some(ErrorCategory::Conflict));
+        let put = |body: &str| Asked {
+            method: Method::Put,
+            body: body.to_owned(),
+            ..get(path.clone(), None)
+        };
+        assert_eq!(
+            asked(&fixed),
+            [
+                get(path.clone(), None),
+                put(r#"{"terms":["Quorvex","Lumitrax"]}"#),
+                put(r#"{"terms":["Quorvex"],"replaces":["Quorvex","Lumitrax"]}"#),
             ]
         );
     }

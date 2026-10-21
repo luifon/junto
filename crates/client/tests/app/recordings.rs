@@ -326,7 +326,7 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
             .view()
             .workspace()
             .and_then(|workspace| workspace.search.clone())
-            .is_some_and(|panel| panel.transcripts.len() == 1)
+            .is_some_and(|panel| panel.transcripts().len() == 1)
     });
     window.click("search-transcript-0");
     let at_line = |window: &mut Window| {
@@ -479,10 +479,10 @@ fn a_search_result_opens_a_long_transcript_around_its_line_and_reads_the_earlier
             .view()
             .workspace()
             .and_then(|workspace| workspace.search.clone())
-            .filter(|panel| panel.transcripts.len() == 1)
+            .filter(|panel| panel.transcripts().len() == 1)
     });
     assert_eq!(
-        panel.transcripts[0].time,
+        panel.transcripts()[0].time,
         text::clock_of(100 + found * 1_000)
     );
     window.click("search-transcript-0");

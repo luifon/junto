@@ -651,12 +651,13 @@ impl ServerApi {
         &self,
         workspace_id: WorkspaceId,
         moves: &MoveChannels,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Receipt, ApiError> {
         let body = Some(super::client::encode(moves)?);
         let path = format!("/workspaces/{workspace_id}/channels/positions");
-        self.call(Method::Patch, path, Vec::new(), body)
-            .await
-            .map(|_| ())
+        Ok(self
+            .call(Method::Patch, path, Vec::new(), body)
+            .await?
+            .receipt)
     }
 
     pub async fn delete_channel(&self, channel_id: ChannelId) -> Result<(), ApiError> {

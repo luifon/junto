@@ -57,8 +57,26 @@ stand_in() {
 }
 stand_in server 8080
 stand_in livekit 7880
-stand_in turn 5349
-docker run -d --name "$prefix-client" --network "container:$prefix-entry" \
+# The stand-in of the TURN port answers after it has read a request, as a TURN server answers
+# a client that speaks first, and names a first line that is not plain HTTP. A
+# stand-in that answered and ended at once sent its answer while the client was still in its
+# TLS handshake: the entry passed it on with close_notify and no TCP end, the TLS code of
+# busybox kept those records unread after its handshake, and wget waited until its time limit.
+# It reads the whole header first: a socket closed with unread bytes ends with a reset, which
+# can discard the answer before the entry has read it.
+turn_answer='read -r line
+case "$line" in
+    "GET / HTTP/1."*) answer="turn-stand-in" ;;
+    *) answer="not plain HTTP" ;;
+esac
+while read -r header && [ "$header" != "$(printf "\r")" ] && [ -n "$header" ]; do :; done
+printf "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n%s\n" "$answer"'
+docker run -d --name "$prefix-turn" --network "container:$prefix-entry" \
+    --read-only --cap-drop ALL --memory 32m --cpus 0.5 --pids-limit 32 \
+    "$tools_image" sh -c 'while true; do nc -l -s 127.0.0.1 -p 5349 -e sh -c "$0"; done' "$turn_answer" > /dev/null
+# wget of busybox ends TLS in a child process that outlives it; the init of the container
+# reaps those processes, so that the requests of the test do not reach the process limit.
+docker run -d --init --name "$prefix-client" --network "container:$prefix-entry" \
     --read-only --tmpfs /tmp --cap-drop ALL --memory 32m --cpus 0.5 --pids-limit 32 \
     "$tools_image" sleep 600 > /dev/null
 
@@ -109,6 +127,13 @@ check "the server gets the address of the client, not the address that the clien
 
 redirect=$(docker exec "$prefix-client" sh -c "printf 'GET /x HTTP/1.0\r\nHost: chat.example.test\r\n\r\n' | nc 127.0.0.1 80 | tr -d '\r' | sed -n 's/^Location: //p'")
 check "port 80 redirects to HTTPS" "$redirect" "https://chat.example.test/x"
+
+check "the client keeps no ended processes" \
+    "$(docker exec "$prefix-client" ps -o stat | grep -c '^Z' || true)" "0"
+
+storage_clean=$(docker exec "$prefix-entry" caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null \
+    | grep -o '"disable_storage_clean":true' || true)
+check "the entry does not clean its storage while it obtains certificates" "$storage_clean" '"disable_storage_clean":true'
 
 if docker logs "$prefix-entry" 2>&1 | grep -q "obtaining certificate.*acme-v02\|acme.*letsencrypt"; then
     echo "FAIL  the test contacted a public certificate authority"

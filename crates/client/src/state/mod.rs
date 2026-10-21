@@ -28,6 +28,7 @@ pub mod recording;
 pub mod search;
 mod searching;
 mod threads;
+pub mod transcript_work;
 mod update_install;
 pub mod view;
 
@@ -462,6 +463,8 @@ pub struct AppState {
     /// of the last download.
     recording_download_numbers: HashMap<(ServerId, RecordingId, RecordedFile), u64>,
     download_asks: u64,
+    /// The number of the last correction or name that the person sent for a transcript.
+    transcript_asks: u64,
     /// The downloads whose file is opened when it is saved.
     opening: HashSet<(ServerId, RecordingId, RecordedFile)>,
     /// A saved file is opened with the application of the system for it.
@@ -719,6 +722,7 @@ impl AppState {
             recording_downloads: HashMap::new(),
             recording_download_numbers: HashMap::new(),
             download_asks: 0,
+            transcript_asks: 0,
             opening: HashSet::new(),
             opens_files: false,
             kept_opened: Vec::new(),
@@ -928,15 +932,18 @@ impl AppState {
         Some((self.client.server(target.server_id)?, channel_id))
     }
 
-    /// Starts a recording of the call of this device. The server answers at once and
-    /// tells by an event whether the recorder took it (ADR 0604).
-    pub fn start_recording(&mut self, cx: &mut Context<Self>) {
-        self.request_recording(true, cx);
+    /// Starts a recording of the call of this device. `language` is the language of the
+    /// speech for the transcript; without one the language of each sentence is detected
+    /// (ADR 0603). The server answers at once and tells by an event whether the recorder
+    /// took it (ADR 0604).
+    pub fn start_recording(&mut self, language: Option<String>, cx: &mut Context<Self>) {
+        self.request_recording(Some(language), cx);
     }
 
-    /// Asks for the end of the recording of the call of this device.
+    /// Asks for the end of the recording of the call of this device, also while the
+    /// recorder starts it.
     pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
-        self.request_recording(false, cx);
+        self.request_recording(None, cx);
     }
 
     /// Gives the view what is told about the recording now.
@@ -946,20 +953,23 @@ impl AppState {
         self.pending.recording_failed = self.recording.request_failed().map(str::to_owned);
     }
 
-    fn request_recording(&mut self, start: bool, cx: &mut Context<Self>) {
+    /// `start` holds the language of a recording that starts; `None` stops it.
+    fn request_recording(&mut self, start: Option<Option<String>>, cx: &mut Context<Self>) {
         let Some((server, channel_id)) = self.call_channel() else {
             return;
         };
-        let Some(request) = self.recording.request(start) else {
+        let Some(request) = self.recording.request(start.is_some()) else {
             return;
         };
         self.show_recording();
         let api = server.api();
         cx.spawn(async move |this, cx| {
-            let result = if start {
-                api.start_recording(channel_id, None).await.map(|_| ())
-            } else {
-                api.stop_recording(channel_id).await
+            let result = match start {
+                Some(language) => api
+                    .start_recording(channel_id, language.as_deref())
+                    .await
+                    .map(|_| ()),
+                None => api.stop_recording(channel_id).await,
             };
             let result = result.map_err(|error| text::flow_error(&FlowError::from(&error)));
             let _ = this.update(cx, |this, cx| {
@@ -2050,6 +2060,18 @@ impl AppState {
         {
             self.selection.transcript = None;
             self.known.transcript_line = None;
+        }
+        // A refusal of a direct conversation belongs to the place where it is stated
+        // (ADR 0741).
+        if self
+            .known
+            .conversation_refused
+            .as_ref()
+            .is_some_and(|refused| {
+                shown.server != Some(refused.server_id) || shown.place() != refused.place
+            })
+        {
+            self.known.conversation_refused = None;
         }
         // The notices belong to a server: they close when another server is shown. They
         // stay under a thread and under the pinned messages.

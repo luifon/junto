@@ -434,8 +434,8 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     window.until("the settings show the microphone", |window| {
         window
             .view()
-            .workspace()
-            .and_then(|workspace| workspace.call.clone())
+            .lists()
+            .and_then(|lists| lists.call.clone())
             .is_some_and(|panel| {
                 panel.audio.microphone == MicrophoneLine::Running
                     && panel.audio.input_level > 5
@@ -669,8 +669,8 @@ fn own_share(window: &mut Window) -> OwnShare {
 fn stage(window: &mut Window) -> Option<ShareStage> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .and_then(|panel| panel.stage)
 }
 
@@ -878,7 +878,9 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the person may record", |window| {
         !window.shows("no-record-permission")
     });
+    // "Record" opens the languages of the speech; a choice sends the request (ADR 0616).
     window.click("start-recording");
+    window.click("record-language:auto");
     window.until("the refusal is told", |window| {
         window.shows("recording-error")
     });
