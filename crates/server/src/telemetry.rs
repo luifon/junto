@@ -10,7 +10,7 @@ use opentelemetry::metrics::{Counter, Histogram, MeterProvider};
 use opentelemetry::trace::{Span, SpanKind, Status, Tracer, TracerProvider};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Stream};
+use opentelemetry_sdk::metrics::{Aggregation, PeriodicReader, SdkMeterProvider, Stream};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder, BatchSpanProcessor, SdkTracer, SdkTracerProvider,
 };
@@ -22,6 +22,9 @@ const BATCH_SIZE: usize = 256;
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(2);
 const EXPORT_INTERVAL: Duration = Duration::from_secs(5);
 const CARDINALITY: usize = 4096;
+const DURATION_BOUNDARIES: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 10.0,
+];
 
 #[derive(Clone)]
 pub struct Endpoint {
@@ -82,37 +85,14 @@ impl Telemetry {
     }
 
     fn build(endpoint: Endpoint, dispatch: tracing::Dispatch) -> std::io::Result<Self> {
-        let mut builder = reqwest_otel::blocking::Client::builder()
-            .timeout(EXPORT_TIMEOUT)
-            .redirect(reqwest_otel::redirect::Policy::none())
-            .no_proxy();
-        if let Some(path) = &endpoint.ca_file {
-            let invalid =
-                || std::io::Error::other("JUNTO_OTEL_CA_FILE: expected a readable PEM CA bundle");
-            let pem = std::fs::read(path).map_err(|_| invalid())?;
-            let certificates =
-                reqwest_otel::Certificate::from_pem_bundle(&pem).map_err(|_| invalid())?;
-            if certificates.is_empty() {
-                return Err(invalid());
-            }
-            for certificate in certificates {
-                builder = builder.add_root_certificate(certificate);
-            }
-        }
-        let client = builder.build().map_err(|_| {
-            std::io::Error::other(if endpoint.ca_file.is_some() {
-                "monitoring HTTP client initialization failed with JUNTO_OTEL_CA_FILE configured"
-            } else {
-                "monitoring HTTP client initialization failed"
-            })
-        })?;
+        let tls = export::tls_config(endpoint.ca_file.as_deref())?;
         let queue = std::sync::Arc::new(export::Queue::default());
         let traces = export::Traces {
-            http: export::Http::new(client.clone(), &endpoint, "traces", dispatch.clone()),
+            http: export::Http::new(tls.clone(), &endpoint, "traces", dispatch.clone())?,
             queue: queue.clone(),
             resource: Default::default(),
         };
-        let metrics = export::Metrics(export::Http::new(client, &endpoint, "metrics", dispatch));
+        let metrics = export::Metrics(export::Http::new(tls, &endpoint, "metrics", dispatch)?);
         let resource = Resource::builder_empty()
             .with_attribute(KeyValue::new("service.name", "junto-server"))
             .build();
@@ -140,11 +120,15 @@ impl Telemetry {
                     .with_interval(EXPORT_INTERVAL)
                     .build(),
             )
-            .with_view(|_| {
-                Stream::builder()
-                    .with_cardinality_limit(CARDINALITY)
-                    .build()
-                    .ok()
+            .with_view(|instrument| {
+                let mut stream = Stream::builder().with_cardinality_limit(CARDINALITY);
+                if instrument.name() == "http.server.request.duration" {
+                    stream = stream.with_aggregation(Aggregation::ExplicitBucketHistogram {
+                        boundaries: DURATION_BOUNDARIES.to_vec(),
+                        record_min_max: true,
+                    });
+                }
+                stream.build().ok()
             })
             .build();
         let meter = metrics.meter("junto-server");
@@ -157,9 +141,6 @@ impl Telemetry {
             duration: meter
                 .f64_histogram("http.server.request.duration")
                 .with_unit("s")
-                .with_boundaries(vec![
-                    0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 10.0,
-                ])
                 .build(),
         };
         Ok(Self {

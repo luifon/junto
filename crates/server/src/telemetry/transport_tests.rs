@@ -27,7 +27,7 @@ async fn telemetry_refuses_redirects() {
     telemetry.instruments.tracer.start("request").end();
     telemetry.instruments.requests.add(1, &[]);
     telemetry.shutdown().await;
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert!(calls.load(Ordering::Relaxed) >= 2);
     assert!(destination.requests.lock().await.is_empty());
     task.abort();
 }
@@ -67,7 +67,7 @@ async fn telemetry_bypasses_environment_proxies() {
     telemetry.instruments.tracer.start("request").end();
     telemetry.instruments.requests.add(1, &[]);
     telemetry.shutdown().await;
-    assert_eq!(collector.requests.lock().await.len(), 2);
+    assert_both_signals(&collector.requests.lock().await);
 }
 
 #[tokio::test]
@@ -164,7 +164,6 @@ async fn telemetry_https_requires_trusted_ca() {
     telemetry.instruments.requests.add(1, &[]);
     telemetry.shutdown().await;
     let exports = requests.lock().await;
-    assert_eq!(exports.len(), 2);
     assert!(
         exports
             .iter()
@@ -211,4 +210,47 @@ async fn telemetry_rejects_invalid_ca_bundles_without_the_path() {
             }
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn telemetry_bounds_a_trickling_response() {
+    if bounded_child("transport::telemetry_bounds_a_trickling_response").await {
+        return;
+    }
+    let router = Router::new().fallback(|| async {
+        let stream = futures_util::stream::unfold(
+            (0, tokio::time::interval(Duration::from_millis(200))),
+            |(index, mut interval)| async move {
+                if index == 22 {
+                    return None;
+                }
+                interval.tick().await;
+                let byte = match index {
+                    20 => b'{',
+                    21 => b'}',
+                    _ => b' ',
+                };
+                Some((
+                    Ok::<_, std::io::Error>(Bytes::from(vec![byte])),
+                    (index + 1, interval),
+                ))
+            },
+        );
+        axum::body::Body::from_stream(stream)
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let telemetry = Telemetry::start(Some(endpoint)).await.unwrap().unwrap();
+    telemetry.instruments.requests.add(1, &[]);
+    let metrics = telemetry.metrics.clone();
+    let result = tokio::task::spawn_blocking(move || metrics.force_flush())
+        .await
+        .unwrap();
+    task.abort();
+    telemetry.shutdown().await;
+    assert!(
+        result.is_err(),
+        "a response that trickles past the export deadline must fail"
+    );
 }

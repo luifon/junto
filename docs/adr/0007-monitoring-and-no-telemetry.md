@@ -28,15 +28,28 @@ Server export:
   no proxy, so data goes only to the configured destination.
 - The server image carries the CA bundle and its copyright notice from its
   existing Debian build stage, pinned by the Debian snapshot, for HTTPS collectors.
-- OpenTelemetry API, SDK and protocol encoder 0.31.0 and HTTP client reqwest 0.12.28
-  are pinned. The exporter adds reqwest 0.12 alongside the server's reqwest 0.13,
-  and adds rustls and ring, already used by the desktop client, to the server.
-  The reqwest 0.13 rustls transport introduces a platform verifier with a
-  CDLA-Permissive-2.0 CA-bundle dependency outside the licence allowlist. Retaining
-  0.12 avoids a new licence exception and needs no system TLS library.
-  The SDK's protocol encoder supplies OTLP JSON types through its generated
-  protobuf model (prost and tonic message support), without a gRPC transport.
-  A fixed HTTP transport
+- OpenTelemetry API, SDK and protocol encoder 0.33.1 are pinned. SDK 0.33.1
+  counts a span queued immediately before a flush as pending, so the flush exports it.
+- The exporter sends with the hyper 1 client of hyper-util over hyper-rustls 0.27,
+  with rustls on the ring provider. The exporter passes ring to its own TLS
+  configuration, so no process-wide provider is installed and no other HTTP client
+  depends on the exporter. Trust is the system store, read with rustls-native-certs,
+  and the optional CA file. These crates are already in the workspace for the
+  desktop client; the server's reqwest 0.13 keeps no TLS feature. Three other
+  forms were built:
+  - reqwest 0.12 next to the server's reqwest 0.13: two versions of reqwest in the
+    server, and its blocking client applies the timeout to each read of the
+    response body, not to the export.
+  - reqwest 0.13 with its default rustls provider: it adds AWS-LC, a C library
+    built with CMake (and NASM or a prebuilt copy on Windows), which makes every
+    build longer and adds licences, and the platform certificate verifier, which
+    refused the test collector's certificate given as an extra root.
+  - reqwest 0.13 with `rustls-no-provider` and ring: Cargo enables the feature for
+    every reqwest 0.13 client in the server and its tests, and reqwest panics when
+    it builds a client before a process-wide provider is installed. With export
+    disabled, a client built in a new process panicked.
+- The SDK's protocol encoder supplies OTLP JSON types through its generated
+  protobuf model (prost), without a gRPC transport. A fixed HTTP transport
   avoids the OTLP builder's implicit environment settings. Standard `OTEL_*`
   exporter settings do not add headers, compression, destinations or retries.
 - Every HTTP request that enters the middleware produces one server span named `HTTP request`,
@@ -48,7 +61,8 @@ Server export:
   metrics and ends the span with error status and `error.type=cancelled` instead
   of a response status code.
 - The duration histogram has boundaries at 0.005, 0.01, 0.025, 0.05, 0.075, 0.1,
-  0.25, 0.5, 0.75, 1, 2.5, 5 and 10 seconds.
+  0.25, 0.5, 0.75, 1, 2.5, 5 and 10 seconds. A metric view sets them, because the
+  SDK ignores the boundaries an instrument advises when a view matches it.
 - Span and metric attributes are limited to `http.request.method`,
   `http.route` and `http.response.status_code` (or the fixed cancellation attribute). The method is a standard HTTP
   method or `_OTHER`; the route is the router's template or `unmatched`. The only
@@ -61,15 +75,21 @@ Server export:
   Logs continue to use standard error and owner codes use standard output
   (ADR 0008); forwarding logs is outside this exporter because request logs
   contain raw paths that can identify accounts, messages or recordings.
-- Export uses three background threads: the SDK span processor, the metric reader,
-  and the blocking HTTP client's separate asynchronous runtime. It runs every five seconds, or when a span batch
+- Export uses two background threads: the SDK span processor and the metric reader.
+  Each exports with a single-thread asynchronous runtime of its own, not with the
+  server's runtime; a host name in the endpoint is resolved on at most one more
+  thread per runtime, which ends when it is idle. Export runs every five seconds, or when a span batch
   reaches 256. The queue holds at most 1024 finished spans and drops further spans
   without waiting. An atomic admission count bounds queued spans and counts
   drops without logging on the request thread. Each metric has a cardinality limit of 4096, with an overflow
   series for additional combinations; that series has only the fixed attribute
   `otel.metric.overflow=true`. Requests update aggregates without waiting for
   the network.
-- Each export attempt has a two-second timeout and no retry. Response bodies are
+- Each export attempt has one two-second deadline over the connection, the TLS
+  handshake, the request and the whole response body, so a collector that sends its
+  response slowly cannot extend it. A sent request is not repeated; hyper sends a
+  request again on a new connection only when a kept connection closed before any
+  byte of the request was written. Response bodies are
   capped at 64 KiB; partial rejections are reported as export failures. Failed span batches
   are lost; metrics are cumulative and are collected again at the next interval.
   Failed exports and full span queues produce fixed local warnings, at most once
@@ -82,7 +102,12 @@ Server export:
   administrator supplying an internal CA mounts its PEM file read-only. It installs no collector:
   the administrator runs one separately and makes it reachable from the server.
 - Unit tests use in-process HTTP and HTTPS collectors to inspect both signals, aggregation,
-  privacy and behavior with a blocked collector and full queue. An API test checks
+  privacy and behavior with a blocked collector, a slowly sent response and a full
+  queue. The periodic reader can export more than once during a test, so metric
+  assertions read the last cumulative export, and tests that count exports require
+  at least one per signal. One test forces a collection before shutdown so that it
+  checks more than one metric export, and it checks the histogram boundaries.
+  An API test checks
   the running server and its final export on shutdown.
 
 No telemetry:

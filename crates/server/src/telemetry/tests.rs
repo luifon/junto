@@ -177,6 +177,11 @@ async fn telemetry_exports_only_request_metadata_and_aggregated_metrics() {
                 .status(),
             StatusCode::CREATED
         );
+        let metrics = telemetry.metrics.clone();
+        tokio::task::spawn_blocking(move || metrics.force_flush())
+            .await
+            .unwrap()
+            .unwrap();
     }
     assert_eq!(
         client
@@ -217,6 +222,9 @@ async fn telemetry_exports_only_request_metadata_and_aggregated_metrics() {
     let mut spans = Vec::new();
     let mut metrics = Vec::new();
     for (signal, request) in exports.iter() {
+        if signal == "metrics" {
+            metrics.clear();
+        }
         let (resource_key, scope_key, item_key) = match signal.as_str() {
             "traces" => ("resourceSpans", "scopeSpans", "spans"),
             "metrics" => ("resourceMetrics", "scopeMetrics", "metrics"),
@@ -266,6 +274,19 @@ async fn telemetry_exports_only_request_metadata_and_aggregated_metrics() {
         })
         .unwrap();
     assert_eq!(failed["status"]["code"], 2);
+    let duration = metrics
+        .iter()
+        .find(|metric| metric["name"] == "http.server.request.duration")
+        .unwrap();
+    assert_eq!(duration["unit"], "s");
+    for point in duration["histogram"]["dataPoints"].as_array().unwrap() {
+        assert_eq!(
+            point["explicitBounds"],
+            json!([
+                0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 10.0
+            ])
+        );
+    }
     let count = metrics
         .iter()
         .find(|metric| metric["name"] == "http.server.request.count")
@@ -279,11 +300,6 @@ async fn telemetry_exports_only_request_metadata_and_aggregated_metrics() {
         })
         .unwrap();
     assert_eq!(integer(&messages["asInt"]), 2);
-    let duration = metrics
-        .iter()
-        .find(|metric| metric["name"] == "http.server.request.duration")
-        .unwrap();
-    assert_eq!(duration["unit"], "s");
     assert_eq!(
         duration["histogram"]["dataPoints"]
             .as_array()
@@ -310,11 +326,17 @@ async fn telemetry_bounds_the_number_of_metric_attribute_combinations() {
             .requests
             .add(1, &[KeyValue::new("http.route", format!("/route-{index}"))]);
     }
+    let metrics = telemetry.metrics.clone();
+    tokio::task::spawn_blocking(move || metrics.force_flush())
+        .await
+        .unwrap()
+        .unwrap();
     telemetry.shutdown().await;
     let exports = collector.requests.lock().await;
     let points: Vec<_> = exports
         .iter()
-        .filter(|(signal, _)| signal == "metrics")
+        .rfind(|(signal, _)| signal == "metrics")
+        .into_iter()
         .flat_map(|(_, request)| request["resourceMetrics"].as_array().unwrap())
         .flat_map(|resource| resource["scopeMetrics"].as_array().unwrap())
         .flat_map(|scope| scope["metrics"].as_array().unwrap())
@@ -475,7 +497,7 @@ async fn telemetry_ignores_standard_exporter_environment() {
     telemetry.instruments.tracer.start("request").end();
     telemetry.instruments.requests.add(1, &[]);
     telemetry.shutdown().await;
-    assert_eq!(collector.requests.lock().await.len(), 2);
+    assert_both_signals(&collector.requests.lock().await);
     assert!(
         !serde_json::to_string(&*collector.requests.lock().await)
             .unwrap()
@@ -531,7 +553,7 @@ async fn telemetry_counts_cancelled_requests() {
     assert!(!attrs.contains_key("http.response.status_code"));
     let metrics = &exports
         .iter()
-        .find(|(signal, _)| signal == "metrics")
+        .rfind(|(signal, _)| signal == "metrics")
         .unwrap()
         .1["resourceMetrics"][0]["scopeMetrics"][0]["metrics"];
     for metric in metrics.as_array().unwrap() {
@@ -656,6 +678,29 @@ async fn telemetry_reports_collector_partial_rejections() {
     assert_eq!(text.matches("monitoring export failed").count(), 2);
     assert!(!text.contains("secret-rejection"));
     assert!(!text.contains(&collector.endpoint));
+}
+
+#[tokio::test]
+async fn telemetry_disabled_keeps_http_clients_usable() {
+    if bounded_child("telemetry_disabled_keeps_http_clients_usable").await {
+        return;
+    }
+    assert!(Telemetry::start(None).await.unwrap().is_none());
+    let collector = Collector::start(false).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/v1/probe", collector.endpoint))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+fn assert_both_signals(exports: &[(String, Value)]) {
+    for expected in ["traces", "metrics"] {
+        assert!(exports.iter().any(|(signal, _)| signal == expected));
+    }
 }
 
 #[path = "transport_tests.rs"]

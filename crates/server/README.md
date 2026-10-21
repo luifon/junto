@@ -76,7 +76,8 @@ Export runs on background threads. At most 1024 finished spans wait in a queue,
 with batches of 256; a full queue drops spans. Each metric retains at most 4096
 attribute combinations, then combines further values in an overflow series.
 That series carries only `otel.metric.overflow=true`.
-An export attempt has a two-second timeout and is not retried. A failed export loses
+An export attempt, including the collector's response, has a two-second limit and is
+not retried. A failed export loses
 its spans; cumulative metrics remain available at the next collection. Graceful
 shutdown attempts a final export. A collector outage does not delay HTTP requests.
 Export failures and queue drops produce warnings on standard error, limited to one

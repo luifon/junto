@@ -1,8 +1,14 @@
-use std::io::Read;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::body::Bytes;
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 use opentelemetry::Context;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -14,6 +20,10 @@ use opentelemetry_sdk::metrics::Temporality;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 use opentelemetry_sdk::trace::{BatchSpanProcessor, Span, SpanData, SpanExporter, SpanProcessor};
+use tokio_rustls::rustls::crypto::ring;
+use tokio_rustls::rustls::pki_types::CertificateDer;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 const REPORT_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -74,9 +84,38 @@ impl Diagnostics {
     }
 }
 
+const RESPONSE_LIMIT: usize = 64 * 1024;
+
+pub(super) fn tls_config(ca_file: Option<&Path>) -> std::io::Result<Arc<ClientConfig>> {
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if let Some(path) = ca_file {
+        let invalid =
+            || std::io::Error::other("JUNTO_OTEL_CA_FILE: expected a readable PEM CA bundle");
+        let pem = std::fs::read(path).map_err(|_| invalid())?;
+        let mut added = 0;
+        for certificate in CertificateDer::pem_slice_iter(&pem) {
+            roots
+                .add(certificate.map_err(|_| invalid())?)
+                .map_err(|_| invalid())?;
+            added += 1;
+        }
+        if added == 0 {
+            return Err(invalid());
+        }
+    }
+    let config = ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| std::io::Error::other("monitoring TLS initialization failed"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
 pub(super) struct Http {
-    client: reqwest_otel::blocking::Client,
-    url: String,
+    client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    runtime: Option<tokio::runtime::Runtime>,
+    url: hyper::Uri,
     signal: &'static str,
     diagnostics: Diagnostics,
 }
@@ -91,51 +130,38 @@ impl std::fmt::Debug for Http {
 
 impl Http {
     pub(super) fn new(
-        client: reqwest_otel::blocking::Client,
+        tls: Arc<ClientConfig>,
         endpoint: &super::Endpoint,
         signal: &'static str,
         dispatch: tracing::Dispatch,
-    ) -> Self {
-        Self {
+    ) -> std::io::Result<Self> {
+        let failed = || std::io::Error::other("monitoring HTTP client initialization failed");
+        let url = endpoint.export_url(signal).parse().map_err(|_| failed())?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .map_err(|_| failed())?;
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(ClientConfig::clone(&tls))
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let client = Client::builder(TokioExecutor::new())
+            .pool_timer(TokioTimer::new())
+            .build(connector);
+        Ok(Self {
             client,
-            url: endpoint.export_url(signal),
+            runtime: Some(runtime),
+            url,
             signal,
             diagnostics: Diagnostics::new(dispatch),
-        }
+        })
     }
 
     fn send(&self, request: &impl serde::Serialize) -> OTelSdkResult {
-        let result = serde_json::to_vec(request).ok().and_then(|body| {
-            self.client
-                .post(&self.url)
-                .header(reqwest_otel::header::CONTENT_TYPE, "application/json")
-                .body(body)
-                .send()
-                .ok()
-        });
-        let accepted = result.is_some_and(|response| {
-            if !response.status().is_success() {
-                return false;
-            }
-            let mut body = Vec::new();
-            if response.take(65537).read_to_end(&mut body).is_err() || body.len() > 65536 {
-                return false;
-            }
-            if body.is_empty() {
-                return true;
-            }
-            let Ok(response) = serde_json::from_slice::<serde_json::Value>(&body) else {
-                return false;
-            };
-            let partial = &response["partialSuccess"];
-            ["rejectedSpans", "rejectedDataPoints"].iter().all(|key| {
-                partial[*key]
-                    .as_u64()
-                    .or_else(|| partial[*key].as_str()?.parse().ok())
-                    .unwrap_or(0)
-                    == 0
-            }) && partial["errorMessage"].as_str().is_none_or(str::is_empty)
-        });
+        let accepted = self.exchange(request).is_some_and(|body| accepted(&body));
         if accepted {
             Ok(())
         } else {
@@ -145,6 +171,54 @@ impl Http {
             ))
         }
     }
+
+    fn exchange(&self, request: &impl serde::Serialize) -> Option<Bytes> {
+        let body = serde_json::to_vec(request).ok()?;
+        let request = hyper::Request::post(&self.url)
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .ok()?;
+        let exchange = async {
+            let response = self.client.request(request).await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let body = Limited::new(response.into_body(), RESPONSE_LIMIT)
+                .collect()
+                .await
+                .ok()?;
+            Some(body.to_bytes())
+        };
+        let runtime = self.runtime.as_ref()?;
+        runtime
+            .block_on(async { tokio::time::timeout(super::EXPORT_TIMEOUT, exchange).await })
+            .ok()?
+    }
+}
+
+impl Drop for Http {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+fn accepted(body: &[u8]) -> bool {
+    if body.is_empty() {
+        return true;
+    }
+    let Ok(response) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let partial = &response["partialSuccess"];
+    ["rejectedSpans", "rejectedDataPoints"].iter().all(|key| {
+        partial[*key]
+            .as_u64()
+            .or_else(|| partial[*key].as_str()?.parse().ok())
+            .unwrap_or(0)
+            == 0
+    }) && partial["errorMessage"].as_str().is_none_or(str::is_empty)
 }
 
 #[derive(Debug)]
