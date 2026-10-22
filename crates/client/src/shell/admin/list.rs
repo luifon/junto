@@ -1,7 +1,7 @@
 //! The variable-height list of an administration page: it lays out the rows in view and
 //! keeps the keys, the focus and the scroll position of the rows by their key (ADR 0761).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -12,6 +12,7 @@ use gpui::{
     canvas, div, list, prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
+use junto_client_core::protocol::ids::AccountId;
 
 use crate::shell::Shell;
 use crate::state::admin::view::{AdminView, Scope};
@@ -62,6 +63,10 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) trait ListHost: Sized + 'static {
     fn page_list(&mut self) -> &mut PageList;
 
+    /// The accounts of the rows that the list laid out, in the order of the rows, after a
+    /// frame in which they changed.
+    fn accounts_laid_out(&mut self, _accounts: Vec<AccountId>, _cx: &mut Context<Self>) {}
+
     /// Moves the focus from the focused element to the next or the previous tab stop
     /// outside the list, as Tab and Shift+Tab do.
     fn leave_list(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -76,6 +81,12 @@ pub(crate) trait ListHost: Sized + 'static {
 impl ListHost for Shell {
     fn page_list(&mut self) -> &mut PageList {
         &mut self.admin.list
+    }
+
+    /// The window reads the profiles of the accounts that the page draws (ADR 0783).
+    fn accounts_laid_out(&mut self, accounts: Vec<AccountId>, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, cx| state.admin_accounts_laid_out(accounts, cx));
     }
 
     /// The layer keeps the focus inside it: the Tab action of the root of the window
@@ -101,6 +112,7 @@ pub(crate) struct Row {
     key: String,
     interactive: bool,
     item: bool,
+    account: Option<AccountId>,
 }
 
 impl Row {
@@ -110,7 +122,14 @@ impl Row {
             key: key.into(),
             interactive,
             item: true,
+            account: None,
         }
+    }
+
+    /// The row draws this account with its picture.
+    pub(crate) fn account(mut self, account_id: AccountId) -> Self {
+        self.account = Some(account_id);
+        self
     }
 
     /// A part of the page in the list, such as its header or its footer, which is no item
@@ -132,6 +151,7 @@ struct Entry {
     /// An empty element at the end of the row, from which Shift+Tab reaches the last
     /// control of the row.
     end: FocusHandle,
+    account: Option<AccountId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -164,6 +184,9 @@ struct Frame {
     wheel: Cell<Wheel>,
     /// The rows laid out in the frame.
     laid_out: Cell<usize>,
+    /// The accounts of the rows laid out in the frame, and those that the host was told.
+    accounts: RefCell<Vec<AccountId>>,
+    told: RefCell<Vec<AccountId>>,
 }
 
 /// The wheel steps in lines since the list was drawn, from the scroll position at which
@@ -232,6 +255,7 @@ impl PageList {
                 entry.key == row.key
                     && entry.interactive == row.interactive
                     && entry.position.is_some() == row.item
+                    && entry.account == row.account
             });
         if !unchanged {
             self.replace(rows, window, cx);
@@ -287,6 +311,7 @@ impl PageList {
                     position: row.item.then_some(position),
                     focus,
                     end,
+                    account: row.account,
                 }
             })
             .collect();
@@ -687,6 +712,7 @@ pub(crate) fn element<V: ListHost>(
     let items = page.items;
     let frame = Rc::clone(&page.frame);
     frame.laid_out.set(0);
+    frame.accounts.borrow_mut().clear();
     let pending = page
         .pending
         .as_ref()
@@ -706,6 +732,13 @@ pub(crate) fn element<V: ListHost>(
         let Some(entry) = rows.get(index) else {
             return content;
         };
+        // A row can be laid out twice in a frame, to measure it and to draw it.
+        if let Some(account) = entry.account {
+            let mut accounts = laid_out.accounts.borrow_mut();
+            if !accounts.contains(&account) {
+                accounts.push(account);
+            }
+        }
         let key = entry.key.clone();
         div()
             .id(ElementId::Name(key.clone()))
@@ -761,6 +794,7 @@ pub(crate) fn element<V: ListHost>(
         let state = state.clone();
         let shown = state.clone();
         let frame = Rc::clone(&frame);
+        let accounts = Rc::clone(&frame);
         canvas(
             move |_, window, _| {
                 let width = state.viewport_bounds().size.width;
@@ -791,7 +825,17 @@ pub(crate) fn element<V: ListHost>(
                     line_height: window.line_height(),
                 });
             },
-            move |_, (), window, _| {
+            move |_, (), window, cx| {
+                // The host learns the accounts of the drawn rows after the frame, so that a
+                // change of its state does not happen while the window draws.
+                let laid_out = accounts.accounts.borrow().clone();
+                if *accounts.told.borrow() != laid_out {
+                    accounts.told.replace(laid_out.clone());
+                    let host = entity.clone();
+                    cx.defer(move |cx| {
+                        let _ = host.update(cx, |host, cx| host.accounts_laid_out(laid_out, cx));
+                    });
+                }
                 let Some(index) = pending else { return };
                 let viewport = shown.viewport_bounds();
                 let painted = shown
@@ -1009,12 +1053,26 @@ mod tests {
         pressed: Vec<String>,
         focused: Vec<Option<FocusHandle>>,
         width: Pixels,
+        /// The accounts that the list told, at each time.
+        told: Vec<Vec<AccountId>>,
     }
 
     impl ListHost for Host {
         fn page_list(&mut self) -> &mut PageList {
             &mut self.list
         }
+
+        fn accounts_laid_out(&mut self, accounts: Vec<AccountId>, _: &mut Context<Self>) {
+            self.told.push(accounts);
+        }
+    }
+
+    /// The account that a row of a test draws.
+    fn account(key: &str) -> AccountId {
+        let number = key.bytes().fold(1u128, |number, byte| {
+            number.wrapping_mul(257).wrapping_add(u128::from(byte))
+        });
+        AccountId::from_uuid(uuid::Uuid::from_u128(number))
     }
 
     impl Host {
@@ -1037,7 +1095,11 @@ mod tests {
                 .iter()
                 .map(|line| {
                     let row = Row::new(line.key.clone(), line.control);
-                    if line.part { row.part() } else { row }
+                    if line.part {
+                        row.part()
+                    } else {
+                        row.account(account(&line.key))
+                    }
                 })
                 .collect();
             self.list.take(None, rows, window, cx);
@@ -1104,6 +1166,7 @@ mod tests {
                 pressed: Vec::new(),
                 focused: Vec::new(),
                 width: px(400.0),
+                told: Vec::new(),
             };
             host.set(lines, cx);
             host
@@ -1165,6 +1228,37 @@ mod tests {
         host.update(cx, |host, _| host.pressed.clear());
         press(cx, "enter");
         host.read_with(cx, |host, _| host.pressed.clone())
+    }
+
+    /// The host learns the accounts of the rows that the list lays out after each frame in
+    /// which they changed, and only those (ADR 0783).
+    #[gpui::test]
+    fn the_host_learns_the_accounts_of_the_rows_that_the_list_lays_out(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, true)).collect();
+        let (host, cx) = open(cx, lines);
+        let told = |host: &Entity<Host>, cx: &mut VisualTestContext| {
+            host.read_with(cx, |host, _| host.told.clone())
+        };
+        let first = told(&host, cx).last().cloned().unwrap();
+        let laid_out = host.read_with(cx, |host, _| host.list.laid_out());
+        assert!(first.contains(&account("r0000")));
+        assert!(
+            !first.is_empty() && first.len() <= laid_out,
+            "{}",
+            first.len()
+        );
+        assert!(!first.contains(&account("r1999")));
+
+        // A frame that lays out the same rows tells nothing.
+        let times = told(&host, cx).len();
+        redraw(&host, cx);
+        assert_eq!(told(&host, cx).len(), times);
+
+        scroll_to(&host, cx, 1500, 0.0);
+        let after = told(&host, cx).last().cloned().unwrap();
+        assert_eq!(told(&host, cx).len(), times + 1);
+        assert!(after.contains(&account("r1500")));
+        assert!(!after.contains(&account("r0000")));
     }
 
     /// Point 1 of the review: a row above the view that moves elsewhere moves no row in
