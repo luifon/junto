@@ -136,6 +136,6 @@ mod tests {
             }
             checked += 1;
         }
-        assert!(checked > 1000, "{checked}");
+        assert_eq!(checked, 3_521);
     }
 }
