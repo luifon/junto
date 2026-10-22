@@ -43,7 +43,7 @@ impl AppState {
                 }
                 // The read ends here. The request that follows is counted by itself.
                 let refused = read.as_ref().err().map(|reason| (*reason).to_owned());
-                this.admin.settle(stamp, what, refused);
+                this.admin.settle(stamp, refused);
                 if let Ok(image) = read {
                     this.admin_ask(
                         server_id,

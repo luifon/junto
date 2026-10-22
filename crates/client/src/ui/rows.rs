@@ -98,7 +98,8 @@ impl WorkspaceRow {
 }
 
 impl RenderOnce for WorkspaceRow {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = super::reveal::handle(&self.id, window, cx);
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
@@ -151,8 +152,8 @@ impl RenderOnce for WorkspaceRow {
                 )
             })
             .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
+            .child(super::reveal::report(&focus))
             .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
             .focus_visible(move |style| style.shadow(ring))
             .when_some(self.on_click, |row, handler| {
@@ -348,7 +349,8 @@ impl ChannelRow {
 }
 
 impl RenderOnce for ChannelRow {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = super::reveal::handle(&self.id, window, cx);
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
@@ -441,8 +443,8 @@ impl RenderOnce for ChannelRow {
                 row.bg(Hsla::from(colors.limestone_lo))
                     .child(selection_mark(cx))
             })
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
+            .child(super::reveal::report(&focus))
             .focus_visible(move |style| style.shadow(ring))
             .when_some(self.unavailable, |row, reason| {
                 row.cursor_not_allowed().tooltip(tooltip(reason))
@@ -603,7 +605,11 @@ impl OccupantRow {
 }
 
 impl RenderOnce for OccupantRow {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = self
+            .on_menu
+            .is_some()
+            .then(|| super::reveal::handle(&self.id, window, cx));
         let theme = theme(cx);
         let colors = theme.colors;
         let mut label = self.name.to_string();
@@ -664,11 +670,11 @@ impl RenderOnce for OccupantRow {
             .ink(colors.ink_2)
             .hover(move |style| style.bg(Hsla::from(colors.limestone_hover)))
             .when(self.open, |row| row.bg(Hsla::from(colors.limestone_hover)))
-            .when_some(self.on_menu, |row, open| {
+            .when_some(self.on_menu.zip(focus), |row, (open, focus)| {
                 let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
                 let (by_click, by_key) = (open.clone(), open);
-                row.focusable()
-                    .tab_stop(true)
+                row.track_focus(&focus)
+                    .child(super::reveal::report(&focus))
                     .focus_visible(move |style| style.shadow(ring))
                     .on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
                         by_click(window, cx);

@@ -54,15 +54,18 @@ pub(crate) struct Join {
     pub(crate) target: Target,
     pub(crate) running: Option<Running>,
     pub(crate) error: Option<String>,
+    /// The text of the "Add server" field that the preview was asked for with.
+    typed: Option<String>,
 }
 
 impl Join {
-    pub(crate) fn preview(opened: u64, flow: AddServerFlow) -> Self {
+    pub(crate) fn preview(opened: u64, flow: AddServerFlow, typed: String) -> Self {
         Self {
             opened,
             target: Target::Preview(flow),
             running: None,
             error: None,
+            typed: Some(typed),
         }
     }
 
@@ -72,6 +75,7 @@ impl Join {
             target: Target::Saved(server_id),
             running: None,
             error: None,
+            typed: None,
         }
     }
 
@@ -233,7 +237,7 @@ impl Shell {
         }
         join.running = Some(running);
         join.error = None;
-        let (opened, target) = (join.opened, join.target.clone());
+        let (opened, target, typed) = (join.opened, join.target.clone(), join.typed.clone());
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let saved = match target {
@@ -243,10 +247,11 @@ impl Shell {
             let result = match saved {
                 Err(error) => Err(error),
                 Ok(server_id) => {
-                    let shown = this.update_in(cx, |this, _, cx| {
+                    let shown = this.update_in(cx, |this, window, cx| {
                         if let Some(join) = this.join_opened(opened) {
                             join.target = Target::Saved(server_id);
                         }
+                        this.server_added(typed.as_deref(), window, cx);
                         this.state
                             .update(cx, |state, cx| state.select_server(server_id, cx));
                     });
@@ -295,12 +300,13 @@ impl Shell {
         };
         join.running = Some(running);
         join.error = None;
-        let opened = join.opened;
+        let (opened, typed) = (join.opened, join.typed.clone());
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = flow.dispatch(action).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if let AddServerState::Saved { server_id } = flow.view().state {
+                    this.server_added(typed.as_deref(), window, cx);
                     this.state
                         .update(cx, |state, cx| state.select_server(server_id, cx));
                     if this.join_opened(opened).is_some() {
@@ -312,6 +318,19 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    /// The previewed server is in the server book now. The "Add server" field is emptied
+    /// when it still holds the text that the preview was asked for with; a text that the
+    /// person typed since then stays.
+    fn server_added(&mut self, typed: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(typed) = typed else {
+            return;
+        };
+        if self.address.read(cx).value() == typed {
+            self.address
+                .update(cx, |field, cx| field.set_value("", window, cx));
+        }
     }
 
     /// Gives up the request that the dialog shows. The state of the application carries

@@ -68,10 +68,11 @@ impl Toggle {
 }
 
 impl RenderOnce for Toggle {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+        let focus = super::reveal::handle(&self.id, window, cx);
         div()
             .id(self.id)
             .role(Role::Switch)
@@ -95,8 +96,8 @@ impl RenderOnce for Toggle {
                     .tooltip(tooltip(reason)),
                 None => toggle
                     .cursor_pointer()
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&focus)
+                    .child(super::reveal::report(&focus))
                     .focus_visible(move |style| style.shadow(ring))
                     .when_some(self.on_click, |toggle, handler| {
                         toggle.on_click(move |event, window, cx| handler(event, window, cx))
@@ -199,13 +200,16 @@ impl Stepper {
 }
 
 impl RenderOnce for Stepper {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let selector = self.selector;
         let held = self.held;
+        let [lower, raise] = ["lower", "raise"]
+            .map(|name| super::reveal::inner_handle(&self.id, &name.into(), window, cx));
         let step = |name: &'static str,
+                    focus: FocusHandle,
                     shown: Icon,
                     (label, handler): (SharedString, Option<ClickHandler>)| {
             let ring = ring.clone();
@@ -237,8 +241,8 @@ impl RenderOnce for Stepper {
                 .map(|button| match handler {
                     Some(handler) => button
                         .cursor_pointer()
-                        .focusable()
-                        .tab_stop(true)
+                        .track_focus(&focus)
+                        .child(super::reveal::report(&focus))
                         .hover(move |style| style.bg(Hsla::from(colors.travertine)))
                         .focus_visible(move |style| style.shadow(ring))
                         .on_click(move |event, window, cx| handler(event, window, cx)),
@@ -259,7 +263,7 @@ impl RenderOnce for Stepper {
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
             .overflow_hidden()
-            .child(step("lower", Icon::Minus, self.lower))
+            .child(step("lower", lower, Icon::Minus, self.lower))
             .child(
                 div()
                     .flex()
@@ -275,7 +279,7 @@ impl RenderOnce for Stepper {
                     .ink(colors.ink)
                     .child(self.value),
             )
-            .child(step("raise", Icon::Plus, self.raise))
+            .child(step("raise", raise, Icon::Plus, self.raise))
     }
 }
 
@@ -320,10 +324,11 @@ impl SelectBox {
 }
 
 impl RenderOnce for SelectBox {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+        let focus = super::reveal::handle(&self.id, window, cx);
         div()
             .id(self.id)
             .role(Role::Button)
@@ -347,8 +352,8 @@ impl RenderOnce for SelectBox {
             .font_weight(gpui::FontWeight::NORMAL)
             .ink(colors.ink)
             .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
+            .child(super::reveal::report(&focus))
             .hover(move |style| style.bg(Hsla::from(colors.travertine)))
             .focus_visible(move |style| style.shadow(ring))
             .when_some(self.on_click, |select, handler| {
@@ -403,10 +408,11 @@ impl Tab {
 }
 
 impl RenderOnce for Tab {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+        let focus = super::reveal::handle(&self.id, window, cx);
         div()
             .id(self.id)
             .role(Role::Tab)
@@ -450,8 +456,8 @@ impl RenderOnce for Tab {
                     )
             })
             .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
+            .child(super::reveal::report(&focus))
             .focus_visible(move |style| style.shadow(ring))
             .when_some(self.on_click, |tab, handler| {
                 tab.on_click(move |event, window, cx| handler(event, window, cx))
@@ -538,6 +544,7 @@ impl RenderOnce for VolumeSlider {
             .rounded(u(theme.metrics.radius))
             .track_focus(&self.focus)
             .tab_stop(true)
+            .child(super::reveal::report(&self.focus))
             .focus_visible(move |style| style.shadow(ring))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 let step = match event.keystroke.key.as_str() {

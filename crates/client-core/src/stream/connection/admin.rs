@@ -266,8 +266,9 @@ impl Client {
 
     /// After a snapshot: every collection that a reader has open is read again
     /// (ADR 0207), and a collection whose workspace or channel the new state does not hold
-    /// is closed. An archived channel whose messages a reader has open is carried until
-    /// the archived list of its workspace answers (ADR 0762).
+    /// is closed. A collection that was loaded shows its values of before until its read
+    /// answers (ADR 0760). An archived channel whose messages a reader has open is carried
+    /// until the archived list of its workspace answers (ADR 0762).
     pub(super) fn carry_admin(&mut self, before: Option<&ServerModel>, places: &[PlaceId]) {
         let Some(model) = &mut self.model else {
             return;
@@ -287,10 +288,13 @@ impl Client {
             model.carry_archived(before, &held);
         }
         for part in wanted {
-            let held = self
-                .model
-                .as_ref()
-                .is_some_and(|model| in_state(model, part));
+            let held = self.model.as_mut().is_some_and(|model| {
+                let held = in_state(model, part);
+                if let Some(before) = before.filter(|_| held) {
+                    model.carry_admin(before, part);
+                }
+                held
+            });
             if held {
                 self.start(Load::Part(Part::Admin(part)));
             } else {

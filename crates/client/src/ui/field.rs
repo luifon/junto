@@ -175,7 +175,8 @@ impl RenderOnce for Field {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let look = look(self.kind, &theme);
-        let focused = self.state.read(cx).focus_handle(cx).is_focused(window);
+        let focus = self.state.read(cx).focus_handle(cx);
+        let focused = focus.is_focused(window);
         self.state.update(cx, |state, _| {
             state.set_editor_style(InputEditorStyle {
                 foreground: look.text.into(),
@@ -224,5 +225,6 @@ impl RenderOnce for Field {
                     .child(Input::new(&self.state)),
             )
             .children(self.trailing)
+            .child(super::reveal::report(&focus))
     }
 }

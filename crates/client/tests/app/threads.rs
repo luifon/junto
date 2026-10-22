@@ -154,6 +154,15 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
         })
     });
     assert!(window.shows_named(format!("thread-chip:{root_id}")));
+    // The pictures of the reply authors end before the count of the replies starts.
+    let bounds = |window: &mut Window, name: String| {
+        let name: &'static str = Box::leak(name.into_boxed_str());
+        window.cx.debug_bounds(name).unwrap()
+    };
+    let authors = bounds(&mut window, format!("thread-authors:{root_id}"));
+    let count = bounds(&mut window, format!("thread-count:{root_id}"));
+    assert!(authors.size.width.as_f32() > 0.0, "{authors:?}");
+    assert!(authors.right() <= count.left(), "{authors:?} {count:?}");
     assert!(window.shows("thread-replies"));
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Thread, cx)),

@@ -26,9 +26,8 @@ use crate::ui::{Button, StyleExt};
 /// A request of the page is on its way: the page takes no second one, because each change
 /// is made from the list that the one before changed.
 fn sending(view: &AdminView) -> bool {
-    matches!(
-        view.ask.as_ref(),
-        Some(ask) if ask.state == AskState::Sending
+    view.asks.iter().any(|ask| {
+        ask.state == AskState::Sending
             && matches!(
                 ask.what,
                 AskKind::AddTerm
@@ -36,7 +35,7 @@ fn sending(view: &AdminView) -> bool {
                     | AskKind::RemoveTerm(_)
                     | AskKind::MoveTerm(_)
             )
-    )
+    })
 }
 
 impl Shell {

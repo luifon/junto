@@ -380,6 +380,7 @@ impl Shell {
             day: row.day.clone().into(),
             action: Some(action),
             seed: row.author_id.as_uuid().as_u128(),
+            picture: self.faces(server_id).image(row.author_id),
             author: row.author.clone().into(),
             time: row.time.clone().into(),
             tag,

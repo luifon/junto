@@ -717,6 +717,100 @@ impl AdminModel {
         }
     }
 
+    /// Takes, after a reload, what `before` shows of a loaded collection, so that the
+    /// collection shows it while it is read again (ADR 0760). A collection that `before`
+    /// does not show loaded, such as one that a change of permissions withdrew (ADR 0748),
+    /// takes nothing. The flags of the account in a carried collection state nothing until
+    /// its read answers: the reload can follow a change of them that no event told.
+    fn carry(&mut self, before: &AdminModel, part: AdminPart) {
+        fn plain<T: Clone>(to: &mut Collection<T>, from: &Collection<T>) -> bool {
+            let loaded = from.loaded().is_some();
+            if loaded {
+                *to = from.clone();
+            }
+            loaded
+        }
+        fn by_key<K: Copy + PartialEq, T: Clone>(
+            to: &mut Vec<(K, Collection<T>)>,
+            from: &[(K, Collection<T>)],
+            key: K,
+        ) -> bool {
+            let held = keyed(from, key);
+            let loaded = held.loaded().is_some();
+            if loaded {
+                set_keyed(to, key, held.clone());
+            }
+            loaded
+        }
+        let carried = match part {
+            AdminPart::Accounts => {
+                let carried = plain(&mut self.accounts, &before.accounts);
+                if carried {
+                    self.unbannable.clone_from(&before.unbannable);
+                }
+                carried
+            }
+            AdminPart::Invites => plain(&mut self.invites, &before.invites),
+            AdminPart::JoinRequests => plain(&mut self.join_requests, &before.join_requests),
+            AdminPart::AccessTokens => {
+                let carried = plain(&mut self.access_tokens, &before.access_tokens);
+                if carried {
+                    self.access_tokens_more = before.access_tokens_more;
+                }
+                carried
+            }
+            AdminPart::Exports => plain(&mut self.exports, &before.exports),
+            AdminPart::ServerRoles => {
+                let carried = plain(&mut self.server_roles, &before.server_roles);
+                if carried {
+                    self.server_role_actions
+                        .clone_from(&before.server_role_actions);
+                }
+                carried
+            }
+            AdminPart::DirectRetention => {
+                plain(&mut self.direct_retention, &before.direct_retention)
+            }
+            AdminPart::AttachmentLimits => {
+                plain(&mut self.attachment_limits, &before.attachment_limits)
+            }
+            AdminPart::Overrides(channel_id) => {
+                by_key(&mut self.overrides, &before.overrides, channel_id)
+            }
+            AdminPart::Archived(workspace_id) => {
+                by_key(&mut self.archived, &before.archived, workspace_id)
+            }
+            AdminPart::WorkspaceSettings(workspace_id) => {
+                by_key(&mut self.settings, &before.settings, workspace_id)
+            }
+            AdminPart::ChannelPermissions(channel_id) => by_key(
+                &mut self.channel_permissions,
+                &before.channel_permissions,
+                channel_id,
+            ),
+            AdminPart::RoleActions(workspace_id) => {
+                by_key(&mut self.role_actions, &before.role_actions, workspace_id)
+            }
+            AdminPart::Glossary(workspace_id) => {
+                by_key(&mut self.glossaries, &before.glossaries, workspace_id)
+            }
+        };
+        if !carried {
+            return;
+        }
+        if let Some(times) = before.read_times.iter().find(|(held, _)| *held == part) {
+            self.read_times.retain(|(held, _)| *held != part);
+            self.read_times.push(*times);
+        }
+        let flagged = matches!(
+            part,
+            AdminPart::Accounts | AdminPart::ServerRoles | AdminPart::RoleActions(_)
+        );
+        if flagged && !self.flags_stale.contains(&part) {
+            self.flags_stale.push(part);
+        }
+    }
+
     /// Puts an archived channel where the state keeps it: into the loaded list of its
     /// workspace, or beside the lists when `keep` says that a reader needs it.
     fn put_archived(&mut self, archived: &ArchivedChannel, keep: bool) {
@@ -1183,6 +1277,12 @@ impl ServerModel {
         for place in lost {
             self.forget_place(place);
         }
+    }
+
+    /// Carries, after a reload, what the state of before showed of a loaded collection
+    /// that a reader has open, while the collection is read again.
+    pub(crate) fn carry_admin(&mut self, before: &Self, part: AdminPart) {
+        self.admin_mut().carry(&before.admin, part);
     }
 
     /// Carries, after a reload, the archived channels whose messages a reader has open.

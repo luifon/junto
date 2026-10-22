@@ -165,6 +165,24 @@ pub enum AskKind {
     AttachmentLimits,
 }
 
+impl AskKind {
+    /// True when this request follows `earlier` on its page, so that it replaces what the
+    /// page tells about `earlier`: a request of the same kind, and for the glossary every
+    /// change of its terms, which the page sends one after another (ADR 0616).
+    fn follows(self, earlier: AskKind) -> bool {
+        let term = |what: AskKind| {
+            matches!(
+                what,
+                AskKind::AddTerm
+                    | AskKind::ChangeTerm(_)
+                    | AskKind::RemoveTerm(_)
+                    | AskKind::MoveTerm(_)
+            )
+        };
+        self == earlier || (term(self) && term(earlier))
+    }
+}
+
 /// Where a request stands. A request that the server did leaves no state: its effect
 /// arrives with the state of the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,14 +236,17 @@ pub struct AdminState {
     /// The account of the server of the open layer. The layer and what it holds belong
     /// to that account.
     account: Option<AccountId>,
-    /// The number of requests that the person made. An answer to an earlier request does
-    /// not change what the page shows.
+    /// The number of requests that the person made. An answer to an earlier request of
+    /// the same kind does not change what the page shows.
     asks: u64,
     /// The number of times the layer changed its page or was closed. An answer that
     /// arrives after such a change is dropped: what it made belongs to a page that is
     /// gone.
     session: u64,
-    pub(crate) ask: Option<Ask>,
+    /// The requests of the open page that are on their way or were refused, each with the
+    /// number that `asks` gave it. The page tells one state for each kind of request, so a
+    /// request does not replace what the page tells about a request of another kind.
+    requests: Vec<(u64, Ask)>,
     /// What the last request made and the person has not put away: a code, a token.
     pub(crate) made: Option<Made>,
     /// The entries of the audit log that the page has read.
@@ -247,6 +268,7 @@ pub struct AdminState {
 /// The request that an answer belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Stamp {
+    what: AskKind,
     number: u64,
     session: u64,
 }
@@ -256,8 +278,8 @@ pub(crate) struct Stamp {
 pub(crate) enum Answered {
     /// The page that asked is gone: nothing of the answer is kept or shown.
     Gone,
-    /// The person made another request on the page afterwards: the answer does not
-    /// replace what the page tells about that one.
+    /// The person made another request of the same kind on the page afterwards: the
+    /// answer does not replace what the page tells about that one.
     Earlier,
     Current,
 }
@@ -267,7 +289,7 @@ impl AdminState {
     /// are put away, and a later answer to a request of that page is dropped.
     pub(crate) fn show(&mut self, open: AdminOpen) {
         if self.open != Some(open) {
-            self.ask = None;
+            self.requests.clear();
             self.made = None;
             self.session += 1;
             // The list of the recordings belongs to its page. A late answer finds no
@@ -287,7 +309,7 @@ impl AdminState {
         self.open = None;
         self.account = None;
         self.session += 1;
-        self.ask = None;
+        self.requests.clear();
         self.made = None;
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
@@ -319,41 +341,68 @@ impl AdminState {
         }
     }
 
-    /// Counts a request of the open page.
+    /// Counts a request of the open page. It replaces what the page told about the earlier
+    /// request that it follows; a request of another kind keeps its state.
     pub(crate) fn begin(&mut self, what: AskKind) -> Stamp {
         self.asks += 1;
-        self.ask = Some(Ask {
-            what,
-            state: AskState::Sending,
-        });
+        self.requests.retain(|(_, ask)| !what.follows(ask.what));
+        self.requests.push((
+            self.asks,
+            Ask {
+                what,
+                state: AskState::Sending,
+            },
+        ));
         Stamp {
+            what,
             number: self.asks,
             session: self.session,
         }
     }
 
     /// Takes the answer to a request: `refused` is why the server did not do it. Returns
-    /// true when the answer is the one to the newest request of the open page; only
-    /// then the page tells the refusal, or takes what the request made.
-    pub(crate) fn settle(&mut self, stamp: Stamp, what: AskKind, refused: Option<String>) -> bool {
+    /// true when the answer is the one to the newest request of its kind on the open page;
+    /// only then the page tells the refusal, or takes what the request made.
+    pub(crate) fn settle(&mut self, stamp: Stamp, refused: Option<String>) -> bool {
         if self.answered(stamp) != Answered::Current {
             return false;
         }
-        self.ask = refused.map(|reason| Ask {
-            what,
-            state: AskState::Refused(reason),
-        });
+        self.requests.retain(|(_, ask)| ask.what != stamp.what);
+        if let Some(reason) = refused {
+            self.requests.push((
+                stamp.number,
+                Ask {
+                    what: stamp.what,
+                    state: AskState::Refused(reason),
+                },
+            ));
+        }
         true
     }
 
     pub(crate) fn answered(&self, stamp: Stamp) -> Answered {
         if stamp.session != self.session {
             Answered::Gone
-        } else if stamp.number != self.asks {
-            Answered::Earlier
-        } else {
+        } else if self
+            .requests
+            .iter()
+            .any(|(number, ask)| *number == stamp.number && ask.what == stamp.what)
+        {
             Answered::Current
+        } else {
+            Answered::Earlier
         }
+    }
+
+    /// What the page tells about its requests, in the order in which they were made.
+    pub(crate) fn asks(&self) -> Vec<Ask> {
+        self.requests.iter().map(|(_, ask)| ask.clone()).collect()
+    }
+
+    /// Puts away the refusals that the page tells. The requests on their way stay.
+    pub(crate) fn dismiss_refusals(&mut self) {
+        self.requests
+            .retain(|(_, ask)| ask.state == AskState::Sending);
     }
 }
 
@@ -387,9 +436,9 @@ impl AppState {
         self.changed(cx);
     }
 
-    /// Puts away what was told about the last request.
+    /// Puts away the refusals that the page tells.
     pub fn dismiss_admin_ask(&mut self, cx: &mut Context<Self>) {
-        self.admin.ask = None;
+        self.admin.dismiss_refusals();
         // An act of the person ends the drawing of a refused move (ADR 0730).
         self.admin.channel_moves.release();
         cx.notify();
@@ -656,11 +705,11 @@ impl AppState {
                     .as_ref()
                     .err()
                     .map(|error| text::admin::refusal(what, error));
-                // Only the answer to the newest request of the open page changes what
-                // the page tells and holds. What an earlier or a late answer carries, a
+                // Only the answer to the newest request of its kind on the open page
+                // changes what the page tells and holds. What an earlier or a late answer carries, a
                 // code or a token included, is shown to nobody and is not kept; the
                 // effect of its request arrives with the state.
-                if this.admin.settle(stamp, what, refused)
+                if this.admin.settle(stamp, refused)
                     && let Ok(value) = answer
                 {
                     done(this, value, cx);
@@ -681,7 +730,7 @@ impl AppState {
         made: Option<Made>,
         cx: &mut Context<Self>,
     ) {
-        self.admin.ask = ask;
+        self.admin.requests = ask.into_iter().map(|ask| (0, ask)).collect();
         self.admin.made = made;
         self.changed(cx);
     }
@@ -716,7 +765,7 @@ mod tests {
         admin.show(server_page(server_id, AdminPage::Tokens));
         assert_eq!(admin.answered(first), Answered::Gone);
         assert_eq!(admin.answered(second), Answered::Gone);
-        assert_eq!(admin.ask, None);
+        assert_eq!(admin.asks(), []);
         assert_eq!(admin.made, None);
         let token = admin.begin(AskKind::CreateToken);
         assert_eq!(admin.answered(token), Answered::Current);
@@ -724,48 +773,120 @@ mod tests {
         // The closed layer takes no answer.
         admin.close();
         assert_eq!(admin.answered(token), Answered::Gone);
-        assert_eq!(admin.ask, None);
+        assert_eq!(admin.asks(), []);
         // A layer that is opened again does not take the answers of the one before.
         admin.show(server_page(server_id, AdminPage::Tokens));
         assert_eq!(admin.answered(token), Answered::Gone);
     }
 
     #[test]
-    fn only_the_answer_to_the_newest_request_changes_what_the_page_tells() {
+    fn only_the_answer_to_the_newest_request_of_a_kind_changes_what_the_page_tells() {
         let server_id = ServerId::generate();
         let mut admin = AdminState::default();
         admin.show(server_page(server_id, AdminPage::Tokens));
         // Two tokens are asked for; the answer to the second one arrives first.
         let first = admin.begin(AskKind::CreateToken);
         let second = admin.begin(AskKind::CreateToken);
-        assert!(admin.settle(second, AskKind::CreateToken, None));
-        assert_eq!(admin.ask, None);
+        assert_eq!(admin.answered(first), Answered::Earlier);
+        assert!(admin.settle(second, None));
+        assert_eq!(admin.asks(), []);
         admin.made = Some(Made::Entered(Vec::new()));
         // The late answer to the first one takes nothing: its result would replace the
         // result of the second one.
-        assert!(!admin.settle(first, AskKind::CreateToken, None));
-        assert!(!admin.settle(first, AskKind::CreateToken, Some("No.".to_owned())));
-        assert_eq!(admin.ask, None);
+        assert!(!admin.settle(first, None));
+        assert!(!admin.settle(first, Some("No.".to_owned())));
+        assert_eq!(admin.asks(), []);
         assert!(admin.made.is_some());
 
         // A refusal of the newest request is told at its control.
-        let third = admin.begin(AskKind::RevokeToken(AccessTokenId::generate()));
+        let third = admin.begin(AskKind::CreateToken);
         assert_eq!(
-            admin.ask.as_ref().map(|ask| &ask.state),
-            Some(&AskState::Sending)
+            admin.asks(),
+            [Ask {
+                what: AskKind::CreateToken,
+                state: AskState::Sending,
+            }]
         );
-        assert!(admin.settle(third, AskKind::CreateToken, Some("No.".to_owned())));
+        assert!(admin.settle(third, Some("No.".to_owned())));
         assert_eq!(
-            admin.ask,
-            Some(Ask {
+            admin.asks(),
+            [Ask {
                 what: AskKind::CreateToken,
                 state: AskState::Refused("No.".to_owned()),
-            })
+            }]
         );
-        // After the page changed, an answer takes nothing.
+        // The next request of the kind puts the refusal away.
         let fourth = admin.begin(AskKind::CreateToken);
+        assert_eq!(admin.asks()[0].state, AskState::Sending);
+        // After the page changed, an answer takes nothing.
         admin.show(server_page(server_id, AdminPage::Invites));
-        assert!(!admin.settle(fourth, AskKind::CreateToken, None));
+        assert!(!admin.settle(fourth, None));
+    }
+
+    #[test]
+    fn a_request_of_another_kind_keeps_the_state_of_a_request_on_its_way() {
+        let server_id = ServerId::generate();
+        let mut admin = AdminState::default();
+        admin.show(server_page(server_id, AdminPage::Tokens));
+        let revoked = AccessTokenId::generate();
+        let revoke = admin.begin(AskKind::RevokeToken(revoked));
+        let create = admin.begin(AskKind::CreateToken);
+        assert_eq!(admin.answered(revoke), Answered::Current);
+        assert_eq!(admin.answered(create), Answered::Current);
+        assert_eq!(
+            admin.asks(),
+            [
+                Ask {
+                    what: AskKind::RevokeToken(revoked),
+                    state: AskState::Sending,
+                },
+                Ask {
+                    what: AskKind::CreateToken,
+                    state: AskState::Sending,
+                },
+            ]
+        );
+        // The refusal of the first request is told while the second one is on its way.
+        assert!(admin.settle(revoke, Some("No.".to_owned())));
+        assert!(admin.settle(create, None));
+        assert_eq!(
+            admin.asks(),
+            [Ask {
+                what: AskKind::RevokeToken(revoked),
+                state: AskState::Refused("No.".to_owned()),
+            }]
+        );
+        // Putting the refusals away keeps a request on its way.
+        let again = admin.begin(AskKind::CreateToken);
+        admin.dismiss_refusals();
+        assert_eq!(
+            admin.asks(),
+            [Ask {
+                what: AskKind::CreateToken,
+                state: AskState::Sending,
+            }]
+        );
+        assert_eq!(admin.answered(again), Answered::Current);
+    }
+
+    #[test]
+    fn a_change_of_the_glossary_follows_every_earlier_change_of_its_terms() {
+        let server_id = ServerId::generate();
+        let mut admin = AdminState::default();
+        admin.show(server_page(server_id, AdminPage::Glossary));
+        let removed = admin.begin(AskKind::RemoveTerm(3));
+        assert!(admin.settle(removed, Some("No.".to_owned())));
+        let added = admin.begin(AskKind::AddTerm);
+        assert_eq!(
+            admin.asks(),
+            [Ask {
+                what: AskKind::AddTerm,
+                state: AskState::Sending,
+            }]
+        );
+        let moved = admin.begin(AskKind::MoveTerm(0));
+        assert_eq!(admin.answered(added), Answered::Earlier);
+        assert_eq!(admin.answered(moved), Answered::Current);
     }
 
     #[test]
@@ -789,7 +910,7 @@ mod tests {
         assert!(admin.follow_account(Some(second)));
         assert_eq!(admin.open, None);
         assert_eq!(admin.made, None);
-        assert_eq!(admin.ask, None);
+        assert_eq!(admin.asks(), []);
         assert_eq!(admin.answered(asked), Answered::Gone);
 
         // The server shows no account any more: the layer closes too.

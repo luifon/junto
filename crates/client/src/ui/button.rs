@@ -333,7 +333,7 @@ fn look(kind: ButtonKind, disabled: bool, theme: &Theme) -> Look {
 }
 
 impl RenderOnce for Button {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let metrics = theme.metrics;
         let disabled = self.disabled || self.kind == ButtonKind::SquareHeld;
@@ -363,6 +363,7 @@ impl RenderOnce for Button {
             _ => theme.types.control,
         };
 
+        let focus = (!disabled).then(|| super::reveal::handle(&self.id, window, cx));
         let mut frame = div()
             .id(self.id)
             .role(Role::Button)
@@ -408,12 +409,12 @@ impl RenderOnce for Button {
             })
             .when_some(self.tooltip, |frame, text| frame.tooltip(tooltip(text)))
             .when(disabled, |frame| frame.cursor_not_allowed())
-            .when(!disabled, |frame| {
+            .when_some(focus, |frame, focus| {
                 let (hover, pressed) = (look.hover, look.pressed);
                 frame
                     .cursor_pointer()
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&focus)
+                    .child(super::reveal::report(&focus))
                     .hover(move |style| style.bg(Hsla::from(hover)))
                     .active(move |style| style.bg(Hsla::from(pressed)))
                     .focus_visible(move |style| style.shadow(ring))
