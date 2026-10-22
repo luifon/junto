@@ -483,7 +483,9 @@ async fn ring(
 
 /// Takes an account out of the call that it is in. Returns the call that it left. With
 /// `identity`, the account leaves only the place that it holds with that identity: a place
-/// that another device or session of the account took stays.
+/// that another device or session of the account took stays. The identity of the seat that
+/// a completed move replaced names the seat that the move gave: the device that was moved
+/// holds both until it reads the outcome (ADR 0511).
 pub async fn leave(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -494,7 +496,9 @@ pub async fn leave(
     let Some(member) = store::member_of(&mut *connection, account_id, true).await? else {
         return Ok(None);
     };
-    if identity.is_some_and(|identity| identity != member.identity) {
+    if identity.is_some_and(|identity| {
+        identity != member.identity && Some(identity) != member.moved_from.as_deref()
+    }) {
         return Ok(None);
     }
     let Some(call) = store::call(&mut *connection, By::Id(member.call_id), true).await? else {

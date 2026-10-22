@@ -733,6 +733,11 @@ async fn initial_installation_continuation_is_reported() {
         "Initial",
         "the host needs a distinct continuation result to log"
     );
+    // The line holds for a first start as well as for a start after an unfinished one.
+    assert_eq!(
+        continued.log_line(),
+        "no installed server state exists: the migrations are applied without a migration copy"
+    );
 }
 
 #[tokio::test]
@@ -764,4 +769,65 @@ async fn a_copy_that_stays_blocked_ends_with_the_instruction() {
         started.elapsed() < std::time::Duration::from_secs(20),
         "one-second retry window plus PostgreSQL's five-second attempt must end"
     );
+}
+
+/// The identifiers and the owner code of a first start are made inside its transaction. A
+/// start whose first attempts lose leaves nothing of them: the result names the rows of the
+/// attempt that committed, and the owner code is the one whose hash is stored (ADR 0009).
+#[tokio::test]
+async fn a_first_start_that_runs_again_gives_one_consistent_result() {
+    use junto_server::secrets::{CodePurpose, hash_code};
+    let name = format!("junto_retried_{}", uuid::Uuid::new_v4().simple());
+    maintain(&[format!("create database {name}")]).await;
+    let admin: sqlx::postgres::PgConnectOptions =
+        crate::support::unused_database_url().parse().unwrap();
+    let options = admin.database(&name);
+    let limits = crate::support::test_config().limits;
+    let database = junto_server::database::Database::connect(
+        options,
+        2,
+        &limits.database,
+        &limits.stream.pool(),
+    )
+    .await
+    .unwrap();
+    bootstrap::migrate(&database, &bootstrap::MIGRATIONS)
+        .await
+        .unwrap();
+    database.commit_gate().lose_next(2);
+    let started = bootstrap::start(&database, "Server", time::OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let (server_id, workspace_id, hash): (uuid::Uuid, uuid::Uuid, Vec<u8>) =
+        sqlx::query_as("select server_id, default_workspace_id, owner_code_hash from server_state")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+    assert_eq!(server_id, started.server_id.as_uuid());
+    let code = started.owner_code.unwrap();
+    assert_eq!(hash, hash_code(CodePurpose::Owner, code.expose()));
+    for (table, rows) in [
+        ("workspaces", 1),
+        ("workspace_roles", 1),
+        ("channels", 2),
+        ("server_state", 1),
+    ] {
+        let counted: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from {table}")))
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        assert_eq!(counted, rows, "{table}");
+    }
+    let in_workspace: i64 = sqlx::query_scalar(
+        "select count(*) from channels c join workspace_roles r using (workspace_id)
+         where workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(in_workspace, 2);
+    database.close().await;
+    delete_databases(&[name]).await;
 }

@@ -306,7 +306,8 @@ impl Shell {
                 match &panel.place {
                     // The recording of the call, and then the state of the room.
                     PanelPlace::Channel(channel) => {
-                        after.extend(self.render_recording_control(&channel.recording, theme, cx));
+                        let recording = &channel.recording;
+                        after.extend(self.render_recording_control(recording, theme, false, cx));
                         after.push(div().flex_1().into_any_element());
                         after.extend(self.render_room_controls(&channel.room, theme, cx));
                     }
@@ -545,14 +546,21 @@ impl Shell {
 
     /// The recording of the call of this device in the header of its voice channel
     /// (ADR 0738): the mark with its time and the action that stops it, the action that
-    /// starts one, and what happened to the last one.
+    /// starts one, and what happened to the last one. The `compact` form of the call
+    /// window draws each action as an icon with its tooltip, and shortens the words of the
+    /// mark, the flag of a failure and the sentence of a missing permission with an
+    /// ellipsis where the place is too narrow (ADR 0772).
     pub(crate) fn render_recording_control(
         &mut self,
         control: &RecordingControl,
         theme: &Theme,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        let labelled = |button: Button, label: &'static str| {
+            if compact { button } else { button.label(label) }
+        };
         // "Record" opens the languages of the speech; a choice starts the recording
         // (ADR 0616).
         let offers_record = control.may_record
@@ -571,10 +579,9 @@ impl Shell {
                 .flex()
                 .flex_none()
                 .child(
-                    Button::new("start-recording")
+                    labelled(Button::new("start-recording"), text::RECORD)
                         .icon(Icon::Record)
                         .icon_colour(colors.cinnabar)
-                        .label(text::RECORD)
                         .tooltip(title)
                         .accessible_label(title)
                         .disabled(control.busy)
@@ -604,9 +611,8 @@ impl Shell {
         };
         let forbidden = || {
             vec![
-                Button::new("start-recording")
+                labelled(Button::new("start-recording"), text::RECORD)
                     .icon(Icon::Record)
-                    .label(text::RECORD)
                     .tooltip(text::NO_RECORD_PERMISSION)
                     .disabled(true)
                     .selector("start-recording")
@@ -622,22 +628,25 @@ impl Shell {
             RecordingShown::Starting => {
                 let mut shown = vec![recording_mark_reserved(
                     format!("{} {}", text::RECORDING_MARK, text::RECORDING_STARTS).into(),
+                    compact,
                     theme,
                 )];
                 if control.may_record {
                     shown.push(
-                        Button::new("cancel-recording")
-                            .icon(Icon::Stop)
-                            .icon_colour(colors.cinnabar)
-                            .label(text::transcripts::CANCEL_RECORDING)
-                            .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
-                            .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
-                            .disabled(control.busy)
-                            .selector("cancel-recording")
-                            .on_click(self.call_listener(cx, |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| state.stop_recording(cx));
-                            }))
-                            .into_any_element(),
+                        labelled(
+                            Button::new("cancel-recording"),
+                            text::transcripts::CANCEL_RECORDING,
+                        )
+                        .icon(Icon::Stop)
+                        .icon_colour(colors.cinnabar)
+                        .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
+                        .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
+                        .disabled(control.busy)
+                        .selector("cancel-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.stop_recording(cx));
+                        }))
+                        .into_any_element(),
                     );
                 }
                 shown
@@ -647,25 +656,33 @@ impl Shell {
                     Some(elapsed) => text::recording_time(*elapsed).into(),
                     None => text::RECORDING_MARK.into(),
                 };
-                let mut shown = vec![recording_mark_reserved(mark, theme)];
+                let mut shown = vec![recording_mark_reserved(mark, compact, theme)];
                 if control.may_record {
                     shown.push(
-                        Button::new("stop-recording")
-                            .icon(Icon::Stop)
-                            .icon_colour(colors.cinnabar)
-                            .label(if *stopping {
+                        labelled(
+                            Button::new("stop-recording"),
+                            if *stopping {
                                 text::RECORDING_STOPS
                             } else {
                                 text::STOP
-                            })
-                            .tooltip(text::STOP_RECORDING)
-                            .accessible_label(text::STOP_RECORDING)
-                            .disabled(*stopping || control.busy)
-                            .selector("stop-recording")
-                            .on_click(self.call_listener(cx, |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| state.stop_recording(cx));
-                            }))
-                            .into_any_element(),
+                            },
+                        )
+                        .icon(Icon::Stop)
+                        .icon_colour(colors.cinnabar)
+                        // Without its label the action tells by its tooltip that the
+                        // recording stops.
+                        .tooltip(if *stopping && compact {
+                            text::RECORDING_STOPS
+                        } else {
+                            text::STOP_RECORDING
+                        })
+                        .accessible_label(text::STOP_RECORDING)
+                        .disabled(*stopping || control.busy)
+                        .selector("stop-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.stop_recording(cx));
+                        }))
+                        .into_any_element(),
                     );
                 }
                 shown
@@ -738,10 +755,17 @@ impl Shell {
                         .role(Role::Status)
                         .aria_label(text::recording_flag(problem))
                         .debug_selector(|| "recording-failed".to_owned())
-                        .flex_none()
+                        .map(|failed| {
+                            if compact {
+                                failed.flex().min_w_0()
+                            } else {
+                                failed.flex_none()
+                            }
+                        })
                         .child(
                             Flag::new(FlagKind::Error, text::recording_flag(problem))
-                                .icon(Icon::Warning),
+                                .icon(Icon::Warning)
+                                .when(compact, Flag::shrinks),
                         )
                         .into_any_element(),
                     details,
@@ -1419,17 +1443,24 @@ impl Shell {
 /// The mark of a recording that runs: the mark with its time on cinnabar, and beside it the
 /// statement that every person in the call sees it (ADR 0601).
 fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
-    recording_mark_in(mark, false, theme)
+    recording_mark_in(mark, false, false, theme)
 }
 
 /// The mark of the recording of the call of this device. Its time part is as wide as the
 /// widest text that it shows, "REC starting…" or "REC 00:00:00", in the type of the mark:
 /// both texts are laid out in it without height.
-fn recording_mark_reserved(mark: SharedString, theme: &Theme) -> AnyElement {
-    recording_mark_in(mark, true, theme)
+/// With `shrinks` the words after the time end with an ellipsis where the place is too
+/// narrow, and the time keeps its width.
+fn recording_mark_reserved(mark: SharedString, shrinks: bool, theme: &Theme) -> AnyElement {
+    recording_mark_in(mark, true, shrinks, theme)
 }
 
-fn recording_mark_in(mark: SharedString, reserved: bool, theme: &Theme) -> AnyElement {
+fn recording_mark_in(
+    mark: SharedString,
+    reserved: bool,
+    shrinks: bool,
+    theme: &Theme,
+) -> AnyElement {
     let colors = theme.colors;
     let widths = [
         format!("{} {}", text::RECORDING_MARK, text::RECORDING_STARTS),
@@ -1449,11 +1480,18 @@ fn recording_mark_in(mark: SharedString, reserved: bool, theme: &Theme) -> AnyEl
         .debug_selector(|| "recording-indicator".to_owned())
         .tooltip(tooltip(text::RECORDING_TIME))
         .flex()
-        .flex_none()
+        .map(|indicator| {
+            if shrinks {
+                indicator.min_w_0()
+            } else {
+                indicator.flex_none()
+            }
+        })
         .items_center()
         .child(
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(u(7.0))
                 .h(u(28.0))
@@ -1488,7 +1526,16 @@ fn recording_mark_in(mark: SharedString, reserved: bool, theme: &Theme) -> AnyEl
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .ink(colors.cinnabar_ink)
                 .whitespace_nowrap()
-                .child(text::RECORDING_VISIBLE),
+                .map(|words| {
+                    if shrinks {
+                        words
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(div().min_w_0().truncate().child(text::RECORDING_VISIBLE))
+                    } else {
+                        words.child(text::RECORDING_VISIBLE)
+                    }
+                }),
         )
         .into_any_element()
 }

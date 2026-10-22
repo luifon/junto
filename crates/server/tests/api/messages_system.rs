@@ -670,3 +670,57 @@ async fn a_call_that_started_visible_keeps_public_lines_when_the_setting_is_turn
             .ok::<Message>(StatusCode::OK);
     }
 }
+
+#[tokio::test]
+async fn the_permanent_messages_setting_has_its_own_line_and_audit_entry() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let channel = channel(&server, &owner, "text").await;
+    let path = format!("/api/v1/channels/{}", channel.id);
+    for body in [
+        serde_json::json!({ "permanent_messages": true }),
+        // The setting is already on: nothing changes and nothing is recorded.
+        serde_json::json!({ "permanent_messages": true }),
+        serde_json::json!({ "name": "renamed", "permanent_messages": false }),
+        serde_json::json!({ "position": 4, "permanent_messages": false }),
+    ] {
+        server
+            .patch(&owner, &path, &body)
+            .await
+            .ok::<junto_protocol::structure::Channel>(StatusCode::OK);
+    }
+    let expected = [
+        "channel_created",
+        "permanent_messages_turned_on",
+        "channel_updated",
+        "permanent_messages_turned_off",
+        "channel_updated",
+    ];
+    let log: junto_protocol::audit::AuditPage = server
+        .get(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/audit-log?target_id={}",
+                channel.workspace_id, channel.id
+            ),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let recorded: Vec<_> = log
+        .entries
+        .iter()
+        .rev()
+        .map(|entry| entry.event.action())
+        .collect();
+    assert_eq!(recorded, expected);
+    let page: MessagePage = server
+        .get(&owner, &format!("/api/v1/channels/{}/messages", channel.id))
+        .await
+        .ok(StatusCode::OK);
+    let lines: Vec<_> = page
+        .messages
+        .iter()
+        .map(|message| message.system.as_ref().unwrap().action.as_str())
+        .collect();
+    assert_eq!(lines, expected);
+}

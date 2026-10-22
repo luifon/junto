@@ -1204,3 +1204,78 @@ async fn round2_mention_inbox_tracks_edits_deletes_and_reads_without_following()
     reply(&server, &owner, root.id, "following now").await;
     assert_eq!(server.snapshot(&reader).await.threads[0].unread, 2);
 }
+
+#[tokio::test]
+async fn rule_13_a_fork_records_and_tells_each_override_that_it_copies() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let channel = channel(&server, &owner, "text").await;
+    let everyone = server.everyone_role(&owner, channel.workspace_id).await;
+    server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &json!({"allow":[],"deny":["view_channel"]}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    let root = send(&server, &owner, &channel, "root").await;
+    let mut stream = server.full_stream(&owner).await;
+    let copied = fork(&server, &owner, root.id, "text").await;
+    let set = junto_protocol::audit::AuditEvent::ChannelOverrideSet {
+        role_id: everyone.id,
+        allow: vec![],
+        deny: vec![junto_protocol::WorkspacePermission::ViewChannel],
+    };
+    let log: junto_protocol::audit::AuditPage = server
+        .get(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/audit-log?target_id={}",
+                channel.workspace_id, copied.id
+            ),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let recorded: Vec<_> = log
+        .entries
+        .iter()
+        .rev()
+        .map(|entry| (entry.event.clone(), entry.actor_id, entry.channel_id))
+        .collect();
+    let by = Some(owner.account_id);
+    assert_eq!(
+        recorded,
+        [
+            (
+                junto_protocol::audit::AuditEvent::ChannelCreated {
+                    name: "fork".to_owned(),
+                    kind: junto_protocol::structure::ChannelKind::Text,
+                },
+                by,
+                Some(copied.id)
+            ),
+            (set, by, Some(copied.id)),
+        ]
+    );
+    let history: MessagePage = server
+        .get(&owner, &format!("/api/v1/channels/{}/messages", copied.id))
+        .await
+        .ok(StatusCode::OK);
+    let lines: Vec<_> = history
+        .messages
+        .iter()
+        .filter_map(|message| message.system.as_ref())
+        .map(|line| line.action.as_str())
+        .collect();
+    assert_eq!(lines, ["channel_created", "channel_override_set"]);
+    let told = server.traffic(&owner, &mut stream).await;
+    assert!(told.iter().any(|(_, event)| matches!(
+        event,
+        Event::ChannelOverrideSet { channel_id, role_id, allow, deny, .. }
+            if *channel_id == copied.id
+                && *role_id == everyone.id
+                && allow.is_empty()
+                && *deny == [junto_protocol::WorkspacePermission::ViewChannel]
+    )));
+}

@@ -920,6 +920,8 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::RecordingRetentionChanged { .. }
         | E::RetentionChanged { .. }
         | E::ChannelArchived
+        | E::PermanentMessagesTurnedOn
+        | E::PermanentMessagesTurnedOff
         | E::ChannelRestored
         | E::ArchivePeriodChanged { .. }
         | E::Unknown => Vec::new(),
