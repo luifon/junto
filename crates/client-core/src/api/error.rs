@@ -32,6 +32,8 @@ pub enum ErrorCategory {
     UnknownDevice,
     /// `account_banned`.
     Banned,
+    /// `account_inactive`: the account left its last workspace (ADR 0121).
+    Inactive,
     /// The account may not do this.
     NotAllowed,
     /// The object does not exist or the account cannot see it.
@@ -66,6 +68,7 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         | ErrorCode::OriginRejected => ErrorCategory::Proof,
         ErrorCode::UnknownDevice => ErrorCategory::UnknownDevice,
         ErrorCode::AccountBanned => ErrorCategory::Banned,
+        ErrorCode::AccountInactive => ErrorCategory::Inactive,
         ErrorCode::Forbidden
         | ErrorCode::OwnerOnly
         | ErrorCode::OwnerProtected
@@ -171,6 +174,10 @@ pub enum AccessLoss {
     Banned,
     /// The account or this device was removed: the server does not know the key.
     Removed,
+    /// The account left its last workspace (ADR 0121).
+    Inactive,
+    /// The account was deleted (ADR 0121).
+    Deleted,
 }
 
 #[derive(Debug, thiserror::Error)]

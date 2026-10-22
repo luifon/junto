@@ -21,6 +21,8 @@ pub enum ErrorCode {
     TooManyAttempts,
     RateLimited,
     AccountBanned,
+    /// The account of the device key is inactive: it left its last workspace (ADR 0121).
+    AccountInactive,
     Forbidden,
     OwnerOnly,
     OwnerProtected,
@@ -94,6 +96,7 @@ impl ErrorCode {
         Self::TooManyAttempts,
         Self::RateLimited,
         Self::AccountBanned,
+        Self::AccountInactive,
         Self::Forbidden,
         Self::OwnerOnly,
         Self::OwnerProtected,
@@ -147,6 +150,7 @@ impl ErrorCode {
             | Self::InvalidSignature
             | Self::UnknownDevice => 401,
             Self::AccountBanned
+            | Self::AccountInactive
             | Self::Forbidden
             | Self::OwnerOnly
             | Self::OwnerProtected

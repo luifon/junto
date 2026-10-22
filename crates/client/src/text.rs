@@ -8,6 +8,7 @@
 use junto_client_core::api::{TransportErrorKind, code_name};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::Notice;
+use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
@@ -65,6 +66,8 @@ pub const STATUS_REQUEST_EXPIRED: &str = "request expired";
 pub const STATUS_LINK_EXPIRED: &str = "link expired";
 pub const STATUS_KEY_MISSING: &str = "device key missing";
 pub const STATUS_BANNED: &str = "banned";
+pub const STATUS_INACTIVE: &str = "you left this server";
+pub const STATUS_DELETED: &str = "account deleted";
 pub const STATUS_UNREACHABLE: &str = "cannot be reached";
 pub const STATUS_NEEDS_UPDATE: &str = "needs a newer Junto";
 pub const STATUS_TOO_OLD: &str = "server is too old";
@@ -86,6 +89,14 @@ pub const RECORDING_RUNS: &str = "This call is recorded";
 pub const NO_CHANNELS: &str = "No channel is visible to your account.";
 pub const YOU: &str = "you";
 pub const UNKNOWN_PERSON: &str = "Unknown person";
+
+/// The name of an account that left the server or was deleted, with its mark (ADR 0121).
+pub fn departed_name(name: &str, departure: Departure) -> String {
+    match departure {
+        Departure::Inactive => format!("{name} (inactive)"),
+        Departure::Deleted => format!("{name} (deleted account)"),
+    }
+}
 
 /// The most characters of a name or a label of a server that the window shows: the
 /// longest name of a file that a server accepts.
@@ -1051,6 +1062,15 @@ pub fn moderation_notice(line: &crate::state::moderation::ModerationLine) -> Str
     }
 }
 
+pub const INACTIVE_TITLE: &str = "You left this server";
+pub const INACTIVE: &str = "Your account is inactive. Your messages, files, reactions, threads, \
+     recordings and transcripts stay for the people who can read them. An invite code returns \
+     you to the same account.";
+pub const RETURN_WITH_CODE: &str = "Return with an invite code";
+pub const DELETED_TITLE: &str = "This account was deleted";
+pub const DELETED: &str = "The account was deleted on another device. Its messages and files \
+     stay for the people who can read them. The key of this device no longer belongs to an \
+     account; remove the server from the list.";
 pub const BANNED_TITLE: &str = "Your account is banned on this server";
 pub const BANNED: &str = "An administrator can lift the ban. The key of this device stays, \
      so the account is the same after that.";

@@ -104,7 +104,10 @@ async fn store(
                 match AccountStatus::read(&status)? {
                     AccountStatus::Active => Some(account_id),
                     AccountStatus::Banned => return Err(account_banned()),
-                    AccountStatus::Removed => return Err(unknown_device()),
+                    AccountStatus::Inactive => return Err(account_inactive()),
+                    AccountStatus::Removed | AccountStatus::Deleted | AccountStatus::Unknown => {
+                        return Err(unknown_device());
+                    }
                 }
             }
             ChallengeOperation::ClaimOwner
@@ -274,4 +277,11 @@ pub fn unknown_device() -> ApiError {
 
 pub fn account_banned() -> ApiError {
     ApiError::new(ErrorCode::AccountBanned, "the account is banned")
+}
+
+pub fn account_inactive() -> ApiError {
+    ApiError::new(
+        ErrorCode::AccountInactive,
+        "the account left its last workspace; it returns with an invite or a join request",
+    )
 }

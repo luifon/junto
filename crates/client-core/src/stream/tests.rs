@@ -346,7 +346,7 @@ struct Probe {
 }
 
 impl Host for Probe {
-    fn session_ended(&self, token: &SecretToken) {
+    fn session_ended(&self, token: &SecretToken, _reason: Option<EndReason>) {
         self.ended.lock().unwrap().push(token.expose().to_owned());
     }
 

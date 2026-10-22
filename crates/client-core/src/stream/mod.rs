@@ -9,6 +9,7 @@ mod tests;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use junto_protocol::events::EndReason;
 use tokio::sync::{mpsc, watch};
 
 use crate::api::{RetryPolicy, Transport};
@@ -77,8 +78,9 @@ impl Default for StreamPolicy {
 
 /// What the stream client of one server asks of the client core.
 pub(crate) trait Host: Send + Sync + 'static {
-    /// The server no longer accepts the session of `token`.
-    fn session_ended(&self, token: &SecretToken);
+    /// The server no longer accepts the session of `token`, for `reason` when the server
+    /// stated one in `ended`.
+    fn session_ended(&self, token: &SecretToken, reason: Option<EndReason>);
     /// Whether the account is in a call with this device now.
     fn in_call(&self, in_call: bool);
 }

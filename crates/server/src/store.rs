@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use junto_authz::{Acquaintance, Contact, Request};
 use junto_protocol::account::{
-    AccountProfile, AccountStatus, AccountSummary, Avatar, Device, DeviceOrigin, ImageType,
-    OwnAccount, RecoveryNotice,
+    AccountProfile, AccountStatus, AccountSummary, Avatar, Departure, Device, DeviceOrigin,
+    ImageType, OwnAccount, RecoveryNotice,
 };
 use junto_protocol::auth::SessionCreated;
 use junto_protocol::error::ErrorCode;
@@ -405,23 +405,43 @@ pub async fn avatar_of(
     row.map(avatar).transpose()
 }
 
-/// The profile of an account that exists.
+/// The profile of an account that exists. The profile of an inactive or a deleted account
+/// states its departure and has no avatar (ADR 0121).
 pub async fn profile_of(
     connection: &mut PgConnection,
     account_id: AccountId,
 ) -> ApiResult<Option<AccountProfile>> {
-    let name: Option<String> = sqlx::query_scalar("select name from accounts where id = $1")
-        .bind(account_id)
-        .fetch_optional(&mut *connection)
-        .await?;
-    let Some(name) = name else {
+    let row: Option<(String, String)> =
+        sqlx::query_as("select name, status from accounts where id = $1")
+            .bind(account_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let Some((name, status)) = row else {
         return Ok(None);
+    };
+    let departure = departure_of(AccountStatus::read(&status)?);
+    let avatar = match departure {
+        Some(_) => None,
+        None => avatar_of(connection, account_id).await?,
     };
     Ok(Some(AccountProfile {
         id: account_id,
         name,
-        avatar: avatar_of(connection, account_id).await?,
+        avatar,
+        departure,
     }))
+}
+
+/// The departure that a profile states for an account in this state.
+pub const fn departure_of(status: AccountStatus) -> Option<Departure> {
+    match status {
+        AccountStatus::Inactive => Some(Departure::Inactive),
+        AccountStatus::Deleted => Some(Departure::Deleted),
+        AccountStatus::Active
+        | AccountStatus::Banned
+        | AccountStatus::Removed
+        | AccountStatus::Unknown => None,
+    }
 }
 
 /// Records the current profile of an account for the accounts that may see it.
@@ -476,6 +496,15 @@ pub async fn acquaintance(
 ) -> ApiResult<Acquaintance> {
     if account_id == access.account_id {
         return Ok(Acquaintance::Own);
+    }
+    let departed: bool = sqlx::query_scalar(
+        "select exists (select 1 from accounts where id = $1 and status in ('inactive', 'deleted'))",
+    )
+    .bind(account_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if departed {
+        return Ok(Acquaintance::Departed);
     }
     let fellows = fellow_members(connection, access.account_id, &[account_id]).await?;
     if fellows.contains(&account_id) {
@@ -623,6 +652,8 @@ pub enum SessionEnd {
     Banned,
     Removed,
     Recovered(RecoveryId),
+    Inactive,
+    Deleted,
 }
 
 impl SessionEnd {
@@ -633,6 +664,8 @@ impl SessionEnd {
             Self::Banned => "banned",
             Self::Removed => "removed",
             Self::Recovered(_) => "recovered",
+            Self::Inactive => "inactive",
+            Self::Deleted => "deleted",
         }
     }
 }

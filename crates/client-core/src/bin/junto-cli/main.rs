@@ -68,6 +68,11 @@ commands:
                                server of this device
                                [--yes]
   devices                      list the devices of the account
+  leave <workspace id>         leave a workspace; leaving the last one makes the account
+                               inactive until an invite or an approved request returns it
+  delete-account               delete the account of this device on the server; its
+                               content and audit entries stay, and it cannot return
+                               --yes
   recoveries                   list the recoveries of the account that this device has not
                                acknowledged
   acknowledge-recovery <id>    state that a recovery was seen; this device is not told of
@@ -681,6 +686,38 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             end_session(&server).await;
             result
         }
+        "leave" => {
+            let workspace_id: WorkspaceId = arguments
+                .positional
+                .get(1)
+                .and_then(|text| text.parse().ok())
+                .ok_or_else(|| usage("leave needs the identifier of a workspace"))?;
+            let server = logged_in(&client, &arguments).await?;
+            let left = server.api().leave_workspace(workspace_id).await;
+            if left.is_ok() {
+                // After the last workspace the account is inactive: the check shows it.
+                let _ = server.dispatch_when_free(AccessAction::Check).await;
+            }
+            show(&server);
+            end_session(&server).await;
+            left.map_err(failed)
+        }
+        "delete-account" => {
+            if !arguments.flag("yes") {
+                return Err(usage(
+                    "delete-account cannot be undone; state it with --yes",
+                ));
+            }
+            let server = logged_in(&client, &arguments).await?;
+            server.api().delete_account().await.map_err(failed)?;
+            client.remove_server(server.id()).map_err(|error| {
+                failed(format!(
+                    "the account was deleted; the server stays in the list: {error}"
+                ))
+            })?;
+            println!("deleted the account; removed the server and its key from this device");
+            Ok(())
+        }
         "devices" => {
             let server = logged_in(&client, &arguments).await?;
             let devices = server.api().devices().await;
@@ -769,6 +806,8 @@ fn servers(client: &Client) -> Result<(), Failure> {
             Membership::Member { .. } => "member",
             Membership::Banned { .. } => "banned",
             Membership::Removed => "removed",
+            Membership::Inactive { .. } => "inactive",
+            Membership::Deleted { .. } => "account deleted",
         };
         println!(
             "{}  {}  {}  {membership}",
@@ -1380,6 +1419,10 @@ fn show(server: &ServerHandle) {
             }
         }
         AccessState::Banned { .. } => println!("state: banned"),
+        AccessState::Inactive { .. } => {
+            println!("state: inactive; `join` with an invite code returns the account");
+        }
+        AccessState::Deleted { .. } => println!("state: account deleted"),
     }
 }
 

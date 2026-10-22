@@ -1175,6 +1175,22 @@ impl Shell {
                 .action(check(text::CHECK_AGAIN, cx))
                 .action(forget(cx))
                 .action(remove(cx)),
+            ServerStatus::Inactive => StatePanel::new(text::INACTIVE_TITLE, text::INACTIVE)
+                .selector("inactive")
+                .action(
+                    Button::new("return-to-server")
+                        .kind(ButtonKind::Primary)
+                        .label(text::RETURN_WITH_CODE)
+                        .selector("return-to-server")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_join_for(server_id, window, cx);
+                        })),
+                )
+                .action(remove(cx)),
+            ServerStatus::Deleted => StatePanel::new(text::DELETED_TITLE, text::DELETED)
+                .icon(Icon::Warning)
+                .selector("deleted")
+                .action(remove(cx)),
             ServerStatus::Incompatible(reason) => {
                 let (title, detail) = text::incompatibility(*reason);
                 let detail = self.incompatibility_detail(*reason, detail, cx);

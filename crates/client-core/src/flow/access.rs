@@ -1,5 +1,6 @@
 //! The access flow of one saved server: joining, asking for access, linking this device,
-//! logging in, and what a ban or a removal leaves (ADR 0712).
+//! logging in, and what a ban, a removal, a departure or a deletion leaves (ADR 0712,
+//! ADR 0121).
 //!
 //! This module holds the states, the actions and the rules that decide the next state from
 //! an answer of the server. The rules are functions without side effects; the manager runs
@@ -66,6 +67,11 @@ pub enum AccessState {
     },
     /// The account is banned. An unban restores it; `Check` finds that out.
     Banned { account_id: Option<AccountId> },
+    /// The account left the last workspace of which it was a member. A join with an invite
+    /// code or an approved join request returns the same account (ADR 0121).
+    Inactive { account_id: Option<AccountId> },
+    /// The account was deleted. The key of this device no longer belongs to an account.
+    Deleted { account_id: Option<AccountId> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -190,6 +196,8 @@ pub fn actions(state: &AccessState) -> &'static [ActionKind] {
         AccessState::LoggedOutByPerson { .. } => &[K::LogIn],
         AccessState::LoggedIn { .. } => &[K::Check, K::LogOut, K::LogOutByPerson],
         AccessState::Banned { .. } => &[K::Check, K::ForgetAccount],
+        AccessState::Inactive { .. } => &[K::Check, K::Join, K::RequestAccess, K::ForgetAccount],
+        AccessState::Deleted { .. } => &[K::Check, K::ForgetAccount],
     }
 }
 
@@ -217,6 +225,12 @@ pub fn initial(membership: &Membership, logged_out: bool) -> AccessState {
         Membership::Banned { account_id } => AccessState::Banned {
             account_id: *account_id,
         },
+        Membership::Inactive { account_id } => AccessState::Inactive {
+            account_id: Some(*account_id),
+        },
+        Membership::Deleted { account_id } => AccessState::Deleted {
+            account_id: *account_id,
+        },
     }
 }
 
@@ -228,6 +242,10 @@ pub(crate) enum Probe {
     UnknownDevice,
     /// `account_banned`.
     Banned,
+    /// `account_inactive` (ADR 0121).
+    Inactive,
+    /// The session ended with the reason `deleted`, and the key belongs to no account.
+    Deleted,
 }
 
 /// A state and the membership that the book stores with it.
@@ -241,7 +259,8 @@ pub(crate) struct Settled {
 pub(crate) fn account_of(membership: &Membership) -> Option<AccountId> {
     match membership {
         Membership::Member { account_id, .. } => Some(*account_id),
-        Membership::Banned { account_id } => *account_id,
+        Membership::Banned { account_id } | Membership::Deleted { account_id } => *account_id,
+        Membership::Inactive { account_id } => Some(*account_id),
         Membership::None | Membership::Removed | Membership::JoinRequested { .. } => None,
     }
 }
@@ -278,15 +297,45 @@ pub(crate) fn after_probe(
                 membership: Membership::Banned { account_id },
             }
         }
-        Probe::UnknownDevice => match membership {
-            Membership::Member { .. } | Membership::Banned { .. } | Membership::Removed => {
-                Settled {
-                    state: AccessState::NoAccount {
-                        notice: Some(Notice::Removed),
-                    },
-                    membership: Membership::Removed,
-                }
+        Probe::Inactive => match account_of(membership) {
+            Some(account_id) => Settled {
+                state: AccessState::Inactive {
+                    account_id: Some(account_id),
+                },
+                membership: Membership::Inactive { account_id },
+            },
+            // A key of an inactive account that this book did not know as a member: the
+            // device can still return with an invite.
+            None => Settled {
+                state: AccessState::Inactive { account_id: None },
+                membership: membership.clone(),
+            },
+        },
+        Probe::Deleted => {
+            let account_id = account_of(membership);
+            Settled {
+                state: AccessState::Deleted { account_id },
+                membership: Membership::Deleted { account_id },
             }
+        }
+        Probe::UnknownDevice => match membership {
+            // The deletion was stated by the server; an unknown key does not turn it into a
+            // removal.
+            Membership::Deleted { account_id } => Settled {
+                state: AccessState::Deleted {
+                    account_id: *account_id,
+                },
+                membership: membership.clone(),
+            },
+            Membership::Member { .. }
+            | Membership::Banned { .. }
+            | Membership::Inactive { .. }
+            | Membership::Removed => Settled {
+                state: AccessState::NoAccount {
+                    notice: Some(Notice::Removed),
+                },
+                membership: Membership::Removed,
+            },
             Membership::JoinRequested { .. } => Settled {
                 state: AccessState::NoAccount { notice: None },
                 membership: Membership::None,
@@ -383,6 +432,10 @@ mod tests {
             AccessState::LoggedOutByPerson {
                 account_id: AccountId::generate(),
             },
+            AccessState::Inactive {
+                account_id: Some(AccountId::generate()),
+            },
+            AccessState::Deleted { account_id: None },
         ]
     }
 
@@ -628,6 +681,84 @@ mod tests {
             unknown_account.state,
             AccessState::Banned { account_id: None }
         );
+    }
+
+    #[test]
+    fn an_inactive_account_returns_with_a_code_or_a_request_and_a_deleted_one_is_forgotten() {
+        use ActionKind as K;
+        let inactive = AccessState::Inactive {
+            account_id: Some(AccountId::generate()),
+        };
+        assert_eq!(
+            actions(&inactive),
+            [K::Check, K::Join, K::RequestAccess, K::ForgetAccount]
+        );
+        let deleted = AccessState::Deleted { account_id: None };
+        assert_eq!(actions(&deleted), [K::Check, K::ForgetAccount]);
+    }
+
+    #[test]
+    fn an_inactive_refusal_keeps_the_account_and_the_key_for_its_return() {
+        let account_id = AccountId::generate();
+        let member = Membership::Member {
+            account_id,
+            device_id: DeviceId::generate(),
+        };
+        let settled = after_probe(&initial(&member, false), &member, Probe::Inactive, now());
+        assert_eq!(
+            settled.state,
+            AccessState::Inactive {
+                account_id: Some(account_id)
+            }
+        );
+        assert_eq!(settled.membership, Membership::Inactive { account_id });
+        assert_eq!(
+            initial(&settled.membership, false),
+            AccessState::Inactive {
+                account_id: Some(account_id)
+            }
+        );
+        let returned = after_probe(
+            &settled.state,
+            &settled.membership,
+            Probe::LoggedIn(session(account_id)),
+            now(),
+        );
+        assert!(matches!(
+            returned.membership,
+            Membership::Member { account_id: back, .. } if back == account_id
+        ));
+        let removed = after_probe(
+            &settled.state,
+            &settled.membership,
+            Probe::UnknownDevice,
+            now(),
+        );
+        assert_eq!(removed.membership, Membership::Removed);
+    }
+
+    #[test]
+    fn a_deletion_stays_a_deletion_when_the_key_is_unknown_later() {
+        let account_id = AccountId::generate();
+        let member = Membership::Member {
+            account_id,
+            device_id: DeviceId::generate(),
+        };
+        let settled = after_probe(&initial(&member, false), &member, Probe::Deleted, now());
+        assert_eq!(
+            settled.state,
+            AccessState::Deleted {
+                account_id: Some(account_id)
+            }
+        );
+        let later = after_probe(
+            &initial(&settled.membership, false),
+            &settled.membership,
+            Probe::UnknownDevice,
+            now(),
+        );
+        assert_eq!(later.state, settled.state);
+        assert_eq!(later.membership, settled.membership);
     }
 
     #[test]

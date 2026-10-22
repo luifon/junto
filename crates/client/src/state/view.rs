@@ -519,6 +519,11 @@ pub enum ServerStatus {
     },
     NoAccount(Option<Notice>),
     Banned,
+    /// The account left the last workspace of the server (ADR 0121). An invite code
+    /// returns it.
+    Inactive,
+    /// The account was deleted (ADR 0121).
+    Deleted,
     Unreachable,
     Incompatible(Incompatibility),
     OtherServer,
@@ -585,6 +590,8 @@ pub fn status(server: &ServerSnapshot) -> ServerStatus {
         },
         AccessState::NoAccount { notice } => ServerStatus::NoAccount(*notice),
         AccessState::Banned { .. } => ServerStatus::Banned,
+        AccessState::Inactive { .. } => ServerStatus::Inactive,
+        AccessState::Deleted { .. } => ServerStatus::Deleted,
     }
 }
 
@@ -2732,11 +2739,7 @@ fn names(
     model: &ServerModel,
     known: &Known,
 ) -> Names {
-    let mut accounts: HashMap<AccountId, String> = known
-        .people
-        .names(server_id)
-        .map(|(account_id, name)| (account_id, name.to_owned()))
-        .collect();
+    let mut accounts: HashMap<AccountId, String> = known.people.names(server_id).collect();
     if let Some(members) = workspace.and_then(|workspace| workspace.members.loaded()) {
         accounts.extend(
             members
@@ -2753,6 +2756,7 @@ fn names(
             .iter()
             .map(|role| (role.id, crate::text::label(&role.name)))
             .collect(),
+        departed: known.people.departures(server_id),
     }
 }
 

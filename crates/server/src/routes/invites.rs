@@ -42,6 +42,14 @@ type InviteRow = (
     String,
 );
 
+type JoinRequestRow = (
+    JoinRequestId,
+    String,
+    OffsetDateTime,
+    OffsetDateTime,
+    Option<AccountId>,
+);
+
 const INVITE_SELECT: &str = "select i.id, i.created_by, i.created_at, i.expires_at, i.max_uses, \
      i.uses, i.revocation, \
      array(select w.workspace_id from invite_workspaces w \
@@ -509,8 +517,29 @@ pub async fn join(
             now,
         )
         .await?;
+        let returning =
+            super::departures::returning_account(connection, &proven.public_key).await?;
         let (invite_id, invite_created_by, workspace_ids) =
             use_invite(connection, &code_hash, now).await?;
+        // A key of an inactive account returns to that account, with its stored name
+        // (ADR 0121).
+        if let Some((account_id, device_id)) = returning {
+            super::departures::reactivate(connection, now, account_id, &workspace_ids).await?;
+            audit::record(
+                connection,
+                now,
+                Some(account_id),
+                About::Server,
+                &AuditEvent::AccountReturned {
+                    account_id,
+                    invite_id: Some(invite_id),
+                    invite_created_by: Some(invite_created_by),
+                    join_request_id: None,
+                },
+            )
+            .await?;
+            return store::start_session(&app, connection, now, account_id, device_id).await;
+        }
         let account_id = store::create_account(connection, now, &name).await?;
         let device = store::create_device(
             connection,
@@ -561,9 +590,10 @@ pub async fn request_to_join(
         name,
         created_at: now,
         expires_at: now + limits.join_request_lifetime,
+        returning_account_id: None,
     };
 
-    transact!(app, |connection| {
+    let request = transact!(app, |connection| {
         let proven = proof::consume(
             &app,
             connection,
@@ -573,7 +603,12 @@ pub async fn request_to_join(
             now,
         )
         .await?;
-        store::require_key_unregistered(connection, &proven.public_key).await?;
+        let returning =
+            super::departures::returning_account(connection, &proven.public_key).await?;
+        let request = JoinRequest {
+            returning_account_id: returning.map(|(account_id, _)| account_id),
+            ..request.clone()
+        };
         sqlx::query(
             "update join_requests set state = 'expired'
              where public_key = $1 and state = 'pending' and expires_at <= $2",
@@ -610,7 +645,8 @@ pub async fn request_to_join(
                 let created = Event::JoinRequestCreated {
                     join_request: request.clone(),
                 };
-                events::publish(connection, now, &created).await
+                events::publish(connection, now, &created).await?;
+                Ok(request)
             }
             Err(error) if violates(&error, "join_requests_one_pending_per_key") => {
                 Err(ApiError::new(
@@ -692,22 +728,28 @@ pub async fn list_join_requests(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::ApproveJoinRequests))?;
-        let rows: Vec<(JoinRequestId, String, OffsetDateTime, OffsetDateTime)> = sqlx::query_as(
-            "select id, name, created_at, expires_at from join_requests
-             where state = 'pending' and expires_at > $1
-             order by created_at, id",
+        let rows: Vec<JoinRequestRow> = sqlx::query_as(
+            "select r.id, r.name, r.created_at, r.expires_at,
+                    (select a.id from devices d join accounts a on a.id = d.account_id
+                     where d.public_key = r.public_key and a.status = 'inactive')
+             from join_requests r
+             where r.state = 'pending' and r.expires_at > $1
+             order by r.created_at, r.id",
         )
         .bind(now)
         .fetch_all(&mut *connection)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, created_at, expires_at)| JoinRequest {
-                id,
-                name,
-                created_at,
-                expires_at,
-            })
+            .map(
+                |(id, name, created_at, expires_at, returning_account_id)| JoinRequest {
+                    id,
+                    name,
+                    created_at,
+                    expires_at,
+                    returning_account_id,
+                },
+            )
             .collect())
     })
     .map(Json)
@@ -763,17 +805,27 @@ pub async fn approve_join_request(
         let (public_key, name) = pending_request(connection, join_request_id, now).await?;
         let public_key = db::public_key(&public_key)?;
 
-        let account_id = store::create_account(connection, now, &name).await?;
-        store::create_device(
-            connection,
-            now,
-            account_id,
-            &public_key,
-            "",
-            DeviceOrigin::JoinRequest,
-        )
-        .await?;
-        store::add_members(connection, now, account_id, &workspace_ids).await?;
+        let returning = super::departures::returning_account(connection, &public_key).await?;
+        let account_id = match returning {
+            Some((account_id, _)) => {
+                super::departures::reactivate(connection, now, account_id, &workspace_ids).await?;
+                account_id
+            }
+            None => {
+                let account_id = store::create_account(connection, now, &name).await?;
+                store::create_device(
+                    connection,
+                    now,
+                    account_id,
+                    &public_key,
+                    "",
+                    DeviceOrigin::JoinRequest,
+                )
+                .await?;
+                store::add_members(connection, now, account_id, &workspace_ids).await?;
+                account_id
+            }
+        };
         sqlx::query(
             "update join_requests
              set state = 'approved', decided_at = $2, decided_by = $3, account_id = $4
@@ -797,6 +849,21 @@ pub async fn approve_join_request(
             },
         )
         .await?;
+        if returning.is_some() {
+            audit::record(
+                connection,
+                now,
+                Some(access.account_id),
+                About::Server,
+                &AuditEvent::AccountReturned {
+                    account_id,
+                    invite_id: None,
+                    invite_created_by: None,
+                    join_request_id: Some(join_request_id),
+                },
+            )
+            .await?;
+        }
         let decided = Event::JoinRequestDecided {
             join_request_id,
             state: JoinRequestState::Approved,
@@ -945,6 +1012,58 @@ pub(crate) async fn withdraw_workspace(
                 )
                 .await?;
             }
+        }
+    }
+}
+
+/// Revokes every invite of an account that is still valid, in the transaction in which the
+/// account becomes inactive or is deleted (ADR 0121). The account is the acting account of
+/// each audit entry.
+pub(crate) async fn revoke_all_of(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    creator: AccountId,
+) -> ApiResult<()> {
+    let mut after = uuid::Uuid::nil();
+    loop {
+        let rows: Vec<InviteRow> = sqlx::query_as(sqlx::AssertSqlSafe(withdrawal_statement()))
+            .bind(creator)
+            .bind(after)
+            .fetch_all(&mut *connection)
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for row in rows {
+            let revoked = invite(row)?;
+            after = revoked.id.as_uuid();
+            sqlx::query("update invites set revoked_at=$2, revocation='revoked' where id=$1")
+                .bind(revoked.id)
+                .bind(now)
+                .execute(&mut *connection)
+                .await?;
+            audit::record(
+                connection,
+                now,
+                Some(creator),
+                About::Server,
+                &AuditEvent::InviteRevoked {
+                    invite_id: revoked.id,
+                    invite_created_by: Some(creator),
+                },
+            )
+            .await?;
+            announce(
+                connection,
+                now,
+                creator,
+                &revoked.workspace_ids,
+                &Event::InviteRevoked {
+                    invite_id: revoked.id,
+                    revocation: InviteRevocation::Revoked,
+                },
+            )
+            .await?;
         }
     }
 }

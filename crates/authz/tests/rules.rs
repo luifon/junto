@@ -2,10 +2,10 @@
 
 use junto_authz::{
     Acquaintance, Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant,
-    ChannelScope, Contact, Decision, Denial, HeldRole, Membership, MessagePlace, Override,
-    OwnerAction, Participation, Permanence, Position, Reach, Request, RoleKey, RoleOverride,
-    ServerPermission, ServerPermissions, Target, WorkspacePermission, WorkspacePermissions,
-    WorkspaceScope, authorize,
+    ChannelScope, Contact, Decision, Denial, Departing, HeldRole, Membership, MessagePlace,
+    Override, OwnerAction, Participation, Permanence, Position, Reach, Request, RoleKey,
+    RoleOverride, ServerPermission, ServerPermissions, Target, WorkspacePermission,
+    WorkspacePermissions, WorkspaceScope, authorize,
 };
 
 use Decision::{Allow, Deny};
@@ -295,6 +295,38 @@ fn owner_only_actions_belong_to_the_owner() {
 fn own_account_is_open_to_every_actor() {
     for actor in [plain(), administrator(), owner()] {
         assert_eq!(authorize(&actor, &Request::OwnAccount), Allow);
+    }
+}
+
+#[test]
+fn every_actor_may_leave_a_workspace_and_only_a_member_may_leave_the_server() {
+    let moderator = with_server(&[ServerPermission::BanMembers]);
+    for actor in [plain(), administrator(), moderator.clone(), owner()] {
+        assert_eq!(
+            authorize(&actor, &Request::Depart(Departing::Workspace)),
+            Allow
+        );
+    }
+    for actor in [plain(), administrator(), moderator] {
+        assert_eq!(
+            authorize(&actor, &Request::Depart(Departing::Server)),
+            Allow
+        );
+    }
+    assert_eq!(
+        authorize(&owner(), &Request::Depart(Departing::Server)),
+        Deny(Denial::OwnerProtected)
+    );
+}
+
+#[test]
+fn the_profile_of_a_departed_account_is_open_to_every_actor() {
+    let inviter = with_server(&[ServerPermission::CreateInvites]);
+    for actor in [owner(), administrator(), plain(), inviter] {
+        assert_eq!(
+            authorize(&actor, &Request::ViewAccount(Acquaintance::Departed)),
+            Allow
+        );
     }
 }
 

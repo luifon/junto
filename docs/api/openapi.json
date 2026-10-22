@@ -252,6 +252,40 @@
           }
         ]
       },
+      "delete": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Deletes the caller's account. Its messages, files, reactions, threads, direct\nconversations, recordings, transcripts and audit entries stay with its name; its\nmemberships, roles, devices, sessions, access tokens, invites and avatar end. A deleted\naccount cannot return.",
+        "operationId": "delete_account",
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "patch": {
         "tags": [
           "account"
@@ -9797,6 +9831,52 @@
         ]
       }
     },
+    "/api/v1/workspaces/{workspace_id}/departure": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Leaves a workspace. Leaving the last workspace makes the account inactive: its sessions,\naccess tokens, server roles and invites end, and it returns with an invite or an approved\njoin request.",
+        "operationId": "leave_workspace",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/workspaces/{workspace_id}/file-retention": {
       "get": {
         "tags": [
@@ -11144,6 +11224,17 @@
               }
             ]
           },
+          "departure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Departure",
+                "description": "Present when the account is inactive or deleted. Such a profile has no avatar."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "$ref": "#/components/schemas/AccountId"
           },
@@ -11154,10 +11245,13 @@
       },
       "AccountStatus": {
         "type": "string",
+        "description": "The state of an account (ADR 0113, ADR 0121).\n\nA server can add states within one API version (ADR 0209). A state that this build does\nnot know is read as [`AccountStatus::Unknown`]. `Unknown` is never written.",
         "enum": [
           "active",
           "banned",
-          "removed"
+          "removed",
+          "inactive",
+          "deleted"
         ]
       },
       "AccountSummary": {
@@ -13037,6 +13131,119 @@
                 "$ref": "#/components/schemas/ExportId"
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "The account left the workspace itself (ADR 0121).",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_member_left"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The account left the last workspace of which it was a member and became inactive\n(ADR 0121).",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_left"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The person deleted the account, which left these workspaces (ADR 0121).",
+            "required": [
+              "account_id",
+              "workspace_ids",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_deleted"
+                ]
+              },
+              "workspace_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceId"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An inactive account became active again, with an invite or an approved join request\n(ADR 0121).",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_returned"
+                ]
+              },
+              "invite_created_by": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AccountId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "invite_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/InviteId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "join_request_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/JoinRequestId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
           }
         ],
         "description": "What was done. New actions are added; the fields of an existing action do not change.\n\nAn action that this build does not know is read as [`AuditEvent::Unknown`], so that a\nclient can show the entry with its time and its actor (ADR 0209). `Unknown` is never\nwritten."
@@ -14439,6 +14646,14 @@
         },
         "additionalProperties": false
       },
+      "Departure": {
+        "type": "string",
+        "description": "Why an account is no longer on the server, as its profile states it to other accounts\n(ADR 0121). A ban and a removal are not stated.",
+        "enum": [
+          "inactive",
+          "deleted"
+        ]
+      },
       "Device": {
         "type": "object",
         "required": [
@@ -14622,6 +14837,7 @@
           "too_many_attempts",
           "rate_limited",
           "account_banned",
+          "account_inactive",
           "forbidden",
           "owner_only",
           "owner_protected",
@@ -15186,6 +15402,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "returning_account_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The inactive account to which the key of the request belongs. An approval makes that\naccount active again with its own name, not the name of the request (ADR 0121)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

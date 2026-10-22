@@ -630,9 +630,40 @@ fn draw_all_servers(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
+/// The page that leaves a workspace or deletes the account (ADR 0121), with each question.
+fn draw_departure(studio: &mut Studio) -> Result<(), String> {
+    studio.draw(
+        Screen::new("account-departure", two_servers()),
+        |shell, window, cx| shell.open_account(AccountPage::Departure, window, cx),
+    )?;
+    studio.draw(
+        Screen::new("account-departure-leave-question", two_servers()),
+        |shell, window, cx| {
+            let shown = shell
+                .state()
+                .read(cx)
+                .view()
+                .workspace()
+                .map(|workspace| workspace.id);
+            if let Some(workspace_id) = shown {
+                shell.open_departure(workspace_id, window, cx);
+            }
+        },
+    )?;
+    studio.draw(
+        Screen::new("account-departure-delete-question", two_servers()),
+        |shell, window, cx| {
+            shell.open_account(AccountPage::Departure, window, cx);
+            shell.set_account_mode(Some(Mode::DeleteAccount), "", window, cx);
+        },
+    )?;
+    Ok(())
+}
+
 pub fn draw(studio: &mut Studio) -> Result<(), String> {
     draw_profile(studio)?;
     draw_devices(studio)?;
+    draw_departure(studio)?;
     draw_link(studio)?;
     draw_one_server(studio)?;
     draw_all_servers(studio)

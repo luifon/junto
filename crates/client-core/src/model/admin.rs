@@ -48,7 +48,9 @@ pub enum LoadFailure {
 impl LoadFailure {
     pub fn of(error: &ApiError) -> Self {
         match error.category() {
-            Some(ErrorCategory::NotAllowed | ErrorCategory::Banned) => Self::NotAllowed,
+            Some(ErrorCategory::NotAllowed | ErrorCategory::Banned | ErrorCategory::Inactive) => {
+                Self::NotAllowed
+            }
             Some(ErrorCategory::NotFound) => Self::NotFound,
             Some(_) => Self::Unavailable,
             None => Self::NoAnswer,

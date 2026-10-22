@@ -7,6 +7,10 @@ use crate::ids::{AccountId, DeviceId, RecoveryId, ServerRoleId, WorkspaceId};
 use crate::keys::PublicKey;
 use crate::secret::LinkCode;
 
+/// The state of an account (ADR 0113, ADR 0121).
+///
+/// A server can add states within one API version (ADR 0209). A state that this build does
+/// not know is read as [`AccountStatus::Unknown`]. `Unknown` is never written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
@@ -14,6 +18,26 @@ pub enum AccountStatus {
     Active,
     Banned,
     Removed,
+    /// The account left the last workspace of which it was a member. It can return with an
+    /// invite or an approved join request.
+    Inactive,
+    /// The person deleted the account. It cannot return.
+    Deleted,
+    /// A state that this build does not know. It is read and never written.
+    #[serde(other, skip_serializing)]
+    Unknown,
+}
+
+/// Why an account is no longer on the server, as its profile states it to other accounts
+/// (ADR 0121). A ban and a removal are not stated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Departure {
+    /// The account left the last workspace of which it was a member.
+    Inactive,
+    /// The person deleted the account.
+    Deleted,
 }
 
 /// The formats in which the server stores an avatar.
@@ -62,6 +86,9 @@ pub struct AccountProfile {
     pub id: AccountId,
     pub name: String,
     pub avatar: Option<Avatar>,
+    /// Present when the account is inactive or deleted. Such a profile has no avatar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub departure: Option<Departure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

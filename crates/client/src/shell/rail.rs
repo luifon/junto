@@ -39,6 +39,8 @@ pub(crate) fn status_line(row: &ServerRow) -> Option<(Option<Icon>, &'static str
         ServerStatus::WaitingForLink { .. } => (Some(Icon::Clock), text::STATUS_WAITING_FOR_LINK),
         ServerStatus::NoAccount(notice) => (None, text::no_account_status(*notice)),
         ServerStatus::Banned => (Some(Icon::Warning), text::STATUS_BANNED),
+        ServerStatus::Inactive => (None, text::STATUS_INACTIVE),
+        ServerStatus::Deleted => (Some(Icon::Warning), text::STATUS_DELETED),
         ServerStatus::Unreachable => (Some(Icon::Warning), text::STATUS_UNREACHABLE),
         ServerStatus::Incompatible(reason) => (
             Some(Icon::Warning),

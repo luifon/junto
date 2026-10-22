@@ -483,6 +483,7 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
                 id: ana.id,
                 name: "Ana Lima".to_owned(),
                 avatar: None,
+                departure: None,
             },
         },
     ] {
@@ -578,6 +579,7 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
         name: "Carla".to_owned(),
         created_at: time(),
         expires_at: time() + time::Duration::days(7),
+        returning_account_id: None,
     };
     model.apply(&Event::JoinRequestCreated {
         join_request: request.clone(),

@@ -3,6 +3,7 @@
 //! and the open page at the right. A form and a question are drawn in the row that they
 //! belong to.
 
+mod departure;
 mod devices;
 mod profile;
 mod recoveries;
@@ -16,7 +17,7 @@ use gpui::{
 };
 use gpui_base::FocusTrapElement as _;
 use gpui_base::input::InputState;
-use junto_client_core::protocol::ids::{AccountId, DeviceId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, DeviceId, ServerId, WorkspaceId};
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
@@ -38,6 +39,10 @@ const NAV_WIDTH: f32 = 208.0;
 pub enum Mode {
     RenameDevice(DeviceId),
     RemoveDevice(DeviceId),
+    /// The question before the account leaves a workspace (ADR 0121).
+    LeaveWorkspace(WorkspaceId),
+    /// The question before the account is deleted (ADR 0121).
+    DeleteAccount,
 }
 
 /// What the account layer holds of the window itself: the text of its fields, and which
@@ -243,7 +248,7 @@ impl Shell {
             .account_view()
             .and_then(|view| match view.page {
                 PageView::Profile(page) => Some(page.name),
-                PageView::Devices(_) | PageView::Recoveries(_) => None,
+                PageView::Devices(_) | PageView::Recoveries(_) | PageView::Departure(_) => None,
             });
         if let Some(name) = held {
             self.account
@@ -457,6 +462,7 @@ impl Shell {
             PageView::Profile(page) => self.render_profile_page(&view, page, window, cx),
             PageView::Devices(page) => self.render_devices_page(&view, page, window, cx),
             PageView::Recoveries(list) => self.render_recoveries_page(list, window, cx),
+            PageView::Departure(page) => self.render_departure_page(&view, page, cx),
         };
         let surface = Surface {
             id: "account",
@@ -492,6 +498,7 @@ impl Shell {
             AccountPage::Profile,
             AccountPage::Devices,
             AccountPage::Recoveries,
+            AccountPage::Departure,
         ] {
             let name = text::account::page_name(page);
             column = column.child(

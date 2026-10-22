@@ -27,6 +27,7 @@ pub const fn page_name(page: AccountPage) -> &'static str {
         AccountPage::Profile => "Profile",
         AccountPage::Devices => "Devices",
         AccountPage::Recoveries => "Recoveries",
+        AccountPage::Departure => "Leave or delete",
     }
 }
 
@@ -35,6 +36,7 @@ pub const fn page_icon(page: AccountPage) -> Icon {
         AccountPage::Profile => Icon::People,
         AccountPage::Devices => Icon::Key,
         AccountPage::Recoveries => Icon::Clock,
+        AccountPage::Departure => Icon::Trash,
     }
 }
 
@@ -44,6 +46,7 @@ pub const fn page_selector(page: AccountPage) -> &'static str {
         AccountPage::Profile => "account-nav-profile",
         AccountPage::Devices => "account-nav-devices",
         AccountPage::Recoveries => "account-nav-recoveries",
+        AccountPage::Departure => "account-nav-departure",
     }
 }
 
@@ -77,6 +80,46 @@ pub fn key_fingerprint(key: &PublicKey) -> String {
 }
 
 // The profile.
+pub const DEPARTURE_HELP: &str = "Leave a workspace of this server, or delete your account on \
+     it. The messages, files, reactions, threads, direct conversations, recordings and \
+     transcripts in which you took part stay, and so does every entry of the audit log.";
+pub const WORKSPACES: &str = "Workspaces";
+pub const NO_WORKSPACE: &str = "Your account is a member of no workspace on this server.";
+pub const LEAVE: &str = "Leave";
+pub const LEAVE_WORKSPACE: &str = "Leave workspace";
+pub const LEAVE_WORKSPACE_HELP: &str = "Shows what stays and what ends before you leave.";
+pub const LEAVING: &str = "Leaving…";
+pub const DELETE_ACCOUNT_GROUP: &str = "Your account";
+pub const DELETE_ACCOUNT: &str = "Delete account";
+pub const DELETE_ACCOUNT_CONFIRM: &str = "Delete my account";
+pub const DELETING: &str = "Deleting…";
+pub const OWNER_STAYS: &str = "You are the server owner. Another account must first become the \
+     owner, with the host command of the server; then you can leave the last workspace or \
+     delete the account.";
+
+/// What stays and what ends when the account leaves a workspace (ADR 0121).
+pub fn leave_question(last: bool) -> &'static str {
+    if last {
+        "This is your last workspace on this server. What stays: your messages, files, \
+         reactions, threads, direct conversations, recordings and transcripts, under your \
+         name marked as inactive, and every entry of the audit log. What ends: your \
+         membership and roles, your server roles, your invites, and the sessions of every \
+         device of yours on this server. Your account becomes inactive; an invite code \
+         returns you to the same account."
+    } else {
+        "What stays: your messages, files, reactions, threads, recordings and transcripts in \
+         this workspace, under your name, and every entry of the audit log. What ends: your \
+         membership and your roles in this workspace, and this workspace in the invites that \
+         you created. To come back you need an invite."
+    }
+}
+
+pub const DELETE_QUESTION: &str = "What stays: your messages, files, reactions, threads, direct \
+     conversations, recordings and transcripts, under your name marked as a deleted account, \
+     and every entry of the audit log. What ends: your account, its memberships and roles, \
+     its devices and sessions, its invites and its picture. This cannot be undone. The server \
+     is removed from the list on this device.";
+
 pub const PROFILE_HELP: &str =
     "The name and the picture that the people on this server see for your account.";
 pub const PICTURE: &str = "Picture";
@@ -415,6 +458,10 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
             LAST_DEVICE
         }
         (_, Some(ErrorCategory::NotFound)) if device => "Your account holds this device no longer.",
+        (Some(ErrorCode::OwnerProtected), _) => OWNER_STAYS,
+        (_, Some(ErrorCategory::NotFound)) if matches!(what, AskKind::LeaveWorkspace(_)) => {
+            "Your account is no longer a member of this workspace."
+        }
         _ => return crate::text::flow_error(&FlowError::from(error)),
     };
     fixed.to_owned()

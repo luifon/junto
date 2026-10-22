@@ -90,6 +90,7 @@ impl Class {
             Event::RetentionChanged { .. }
             | Event::AccountAdded { .. }
             | Event::AccountProfileUpdated { .. }
+            | Event::AccountDepartureChanged { .. }
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. }
@@ -606,9 +607,11 @@ impl Audience {
                 low_account_id: conversation.low_account_id,
                 high_account_id: conversation.high_account_id,
             }),
-            Event::ServerLogoChanged { .. } | Event::AttachmentLimitsChanged { .. } => {
-                Some(Self::ActiveAccounts)
-            }
+            // The departure of an account goes to every account that may read its profile
+            // now (ADR 0121).
+            Event::ServerLogoChanged { .. }
+            | Event::AttachmentLimitsChanged { .. }
+            | Event::AccountDepartureChanged { .. } => Some(Self::ActiveAccounts),
             Event::MessageMentioned {
                 workspace_id,
                 channel_id,

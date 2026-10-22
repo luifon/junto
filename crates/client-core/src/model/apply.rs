@@ -967,6 +967,7 @@ impl ServerModel {
             | Event::AccountRecovered { .. }
             | Event::AccountAdded { .. }
             | Event::AccountStatusChanged { .. }
+            | Event::AccountDepartureChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. }
             | Event::ServerRoleCreated { .. }

@@ -25,7 +25,9 @@ use junto_authz::WorkspacePermission;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::account::{AccountProfile, AccountStatus, AccountSummary, DeviceOrigin, RecoveryNotice};
+use crate::account::{
+    AccountProfile, AccountStatus, AccountSummary, Departure, DeviceOrigin, RecoveryNotice,
+};
 use crate::call::{
     CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, DirectMute, EntryOutcome,
     EntryRequest, InvitationOutcome, LeaveReason, Meeting, MeetingEnd, MoveOutcome, OwnCall,
@@ -103,6 +105,14 @@ pub enum EndReason {
     Recovered,
     /// The session was logged out or has expired.
     SessionEnded,
+    /// The account left the last workspace of which it was a member (ADR 0121).
+    Inactive,
+    /// The person deleted the account (ADR 0121).
+    Deleted,
+    /// A reason that this build does not know (ADR 0209). A client treats it as an ended
+    /// session. It is read and never written.
+    #[serde(other, skip_serializing)]
+    Unknown,
 }
 
 /// What the server sends.
@@ -656,6 +666,12 @@ pub enum Event {
         workspace_id: WorkspaceId,
         level: Option<crate::discovery::NotificationLevel>,
     },
+    /// An account became inactive, was deleted, or returned (`departure` absent) (ADR 0121).
+    /// Every active account receives it.
+    AccountDepartureChanged {
+        account_id: AccountId,
+        departure: Option<Departure>,
+    },
 }
 
 impl Event {
@@ -747,6 +763,7 @@ impl Event {
         "notifications_read",
         "thread_follow_changed",
         "notification_default_changed",
+        "account_departure_changed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -760,6 +777,7 @@ impl Event {
             Self::PermissionsChanged { .. } => "permissions_changed",
             Self::AccountAdded { .. } => "account_added",
             Self::AccountProfileUpdated { .. } => "account_profile_updated",
+            Self::AccountDepartureChanged { .. } => "account_departure_changed",
             Self::AccountStatusChanged { .. } => "account_status_changed",
             Self::AccountServerRolesChanged { .. } => "account_server_roles_changed",
             Self::OwnerChanged { .. } => "owner_changed",
@@ -1055,6 +1073,7 @@ mod tests {
                         width: 64,
                         height: 64,
                     }),
+                    departure: None,
                 },
             },
             Event::AccountStatusChanged {
@@ -1126,6 +1145,7 @@ mod tests {
                     name: "Newcomer".to_owned(),
                     created_at: time(),
                     expires_at: time(),
+                    returning_account_id: None,
                 },
             },
             Event::JoinRequestDecided {
@@ -1422,6 +1442,10 @@ mod tests {
                 workspace_id,
                 level: Some(crate::discovery::NotificationLevel::All),
             },
+            Event::AccountDepartureChanged {
+                account_id,
+                departure: Some(crate::account::Departure::Inactive),
+            },
         ]
     }
 
@@ -1527,5 +1551,60 @@ mod tests {
             assert!(!code.name().is_empty());
         }
         assert_eq!(CloseCode::from_code(1000), None);
+    }
+
+    #[test]
+    fn a_status_and_an_end_reason_of_a_newer_server_are_read_as_unknown_and_never_written() {
+        let ended: ServerMessage =
+            serde_json::from_str(r#"{"type":"ended","reason":"archived","recovery":null}"#)
+                .unwrap();
+        assert_eq!(
+            ended,
+            ServerMessage::Ended {
+                reason: EndReason::Unknown,
+                recovery: None
+            }
+        );
+        assert!(serde_json::to_string(&ended).is_err());
+        let changed: Event = serde_json::from_str(
+            r#"{"type":"account_status_changed",
+                "account_id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","status":"archived"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            changed,
+            Event::AccountStatusChanged {
+                status: AccountStatus::Unknown,
+                ..
+            }
+        ));
+        assert!(serde_json::to_string(&changed).is_err());
+        for (status, name) in [
+            (AccountStatus::Inactive, "inactive"),
+            (AccountStatus::Deleted, "deleted"),
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), name);
+        }
+        for (reason, name) in [
+            (EndReason::Inactive, "inactive"),
+            (EndReason::Deleted, "deleted"),
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn a_profile_without_a_departure_is_read_as_an_active_account() {
+        let profile: AccountProfile = serde_json::from_str(
+            r#"{"id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","name":"Ana","avatar":null}"#,
+        )
+        .unwrap();
+        assert_eq!(profile.departure, None);
+        let departed = AccountProfile {
+            departure: Some(Departure::Deleted),
+            ..profile
+        };
+        let json = serde_json::to_value(&departed).unwrap();
+        assert_eq!(json["departure"], "deleted");
     }
 }

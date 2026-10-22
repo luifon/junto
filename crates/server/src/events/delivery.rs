@@ -174,6 +174,8 @@ async fn why_ended(connection: &mut PgConnection, who: &Opened) -> ApiResult<End
             ("banned", ..) => Ok(because(EndReason::Banned)),
             ("removed", ..) => Ok(because(EndReason::Removed)),
             ("device_removed", ..) => Ok(because(EndReason::DeviceRemoved)),
+            ("inactive", ..) => Ok(because(EndReason::Inactive)),
+            ("deleted", ..) => Ok(because(EndReason::Deleted)),
             ("logged_out", ..) => Ok(because(EndReason::SessionEnded)),
             (other, ..) => Err(ApiError::internal(&format_args!(
                 "unknown stored reason {other:?} of an ended session"
@@ -187,6 +189,13 @@ async fn why_ended(connection: &mut PgConnection, who: &Opened) -> ApiResult<End
     match status.as_deref().map(AccountStatus::read).transpose()? {
         Some(AccountStatus::Banned) => return Ok(because(EndReason::Banned)),
         Some(AccountStatus::Removed) | None => return Ok(because(EndReason::Removed)),
+        Some(AccountStatus::Inactive) => return Ok(because(EndReason::Inactive)),
+        Some(AccountStatus::Deleted) => return Ok(because(EndReason::Deleted)),
+        Some(AccountStatus::Unknown) => {
+            return Err(ApiError::internal(
+                &"an account state that was never stored",
+            ));
+        }
         Some(AccountStatus::Active) => {}
     }
     let device_exists: bool =

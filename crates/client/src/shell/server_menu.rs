@@ -191,6 +191,22 @@ impl Shell {
                                 })),
                         )
                     })
+                    // Leaving the shown workspace opens the page of the account layer that
+                    // states what stays and what ends (ADR 0121).
+                    .when_some(
+                        workspace_id.filter(|_| has_content),
+                        |menu, workspace_id| {
+                            menu.child(
+                                MenuItem::new("leave-workspace", text::account::LEAVE_WORKSPACE)
+                                    .icon(Icon::Trash)
+                                    .detail(text::account::LEAVE_WORKSPACE_HELP)
+                                    .selector("menu-leave-workspace")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_departure(workspace_id, window, cx);
+                                    })),
+                            )
+                        },
+                    )
                     .child(menu_separator(cx))
                     // Drawn in every state, so that a change of the state while the menu is
                     // open moves no item under the pointer (ADR 0730).

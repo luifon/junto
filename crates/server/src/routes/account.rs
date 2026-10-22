@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use junto_authz::Request;
+use junto_authz::{Acquaintance, Request};
 use junto_protocol::account::{
     AccountProfile, ApproveDeviceLink, Avatar, Device, DeviceLinkCreated, DeviceOrigin,
     LookUpDeviceLink, OwnAccount, PendingDeviceLink, RecoveryNotice, RenameDevice,
@@ -269,10 +269,10 @@ async fn require_sight(
     connection: &mut sqlx::PgConnection,
     access: &Access,
     account_id: AccountId,
-) -> ApiResult<()> {
+) -> ApiResult<Acquaintance> {
     let acquaintance = store::acquaintance(connection, access, account_id).await?;
     if access.allows(Request::ViewAccount(acquaintance)) {
-        Ok(())
+        Ok(acquaintance)
     } else {
         Err(ApiError::not_found())
     }
@@ -302,7 +302,11 @@ pub async fn get_avatar(
     let now = app.now();
     let (media_type, content, hash): (String, Vec<u8>, Vec<u8>) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        require_sight(connection, &access, account_id).await?;
+        // The avatar of an inactive or a deleted account is not shown to other accounts
+        // (ADR 0121).
+        if require_sight(connection, &access, account_id).await? == Acquaintance::Departed {
+            return Err(ApiError::not_found());
+        }
         let row = sqlx::query_as(
             "select media_type, content, hash from account_avatars where account_id = $1",
         )
