@@ -214,6 +214,13 @@ class WindowsRunner(unittest.TestCase):
         self.assertIn("    the run starts no job: the disk of the caches has 1 KiB free", result.stdout)
 
 
+DEFAULT_JOBS = {
+    "linux": ["rust-linux", "licences", "transcription-worker", "layout-page"],
+    "macos": ["rust-macos", "deployment"],
+    "windows": ["rust-windows"],
+}
+
+
 class CommitStatus(unittest.TestCase):
     """ci.sh status of a commit, with runs of the three runners in folders of the test."""
 
@@ -327,6 +334,101 @@ class CommitStatus(unittest.TestCase):
         result = self.status()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(f"linux: no run of {self.commit} has transcription-worker", result.stdout)
+        self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
+
+    def passing(self, runner, started="20261020T100000Z", **extra):
+        """A run of the default jobs of a runner that each passed, with the extra jobs and statuses."""
+        results = {**dict.fromkeys(DEFAULT_JOBS[runner], 0), **extra}
+        return self.run_of(runner, started, list(results), results)
+
+    def test_a_failed_optional_job_is_shown_and_does_not_fail_the_commit(self):
+        self.passing("linux", **{"rust-linux-devices": 101})
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-linux-devices +FAILED .*  \(optional\)")
+        # run-jobs.sh ends with 1 because of the optional job; that is not a failure outside the jobs.
+        self.assertNotIn("the runner ended with status", result.stdout)
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    # The run of the optional job alone is shown and decides no default job.
+    def test_a_later_run_of_only_the_optional_job_leaves_the_full_run_to_decide(self):
+        full = self.passing("linux")
+        later = self.run_of("linux", "20261020T110000Z", ["rust-linux-devices"], {"rust-linux-devices": 0})
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"run {full}", result.stdout)
+        self.assertIn(f"run {later}", result.stdout)
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    def test_a_later_failed_run_of_only_the_optional_job_does_not_fail_the_commit(self):
+        self.passing("linux")
+        self.run_of("linux", "20261020T110000Z", ["rust-linux-devices"], {"rust-linux-devices": 101})
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-linux-devices +FAILED .*  \(optional\)")
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    # A run of only the optional job that ended before its first job.
+    def test_a_later_run_of_only_the_optional_job_that_did_not_start_does_not_fail_the_commit(self):
+        self.passing("linux")
+        failed = self.run_of("linux", "20261020T110000Z", ["rust-linux-devices"], {})
+        here = self.directories["linux"] / "runs" / failed
+        (here / "record.tsv").unlink()
+        (here / "finished").write_text("1\n")
+        (here / "runner.log").write_text("the run starts no job: the disk of the caches has 1 KiB free\n")
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("rust-linux-devices     not run  (optional)", result.stdout)
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    # The optional job runs after the default jobs; the run is not finished.
+    def test_a_run_whose_optional_job_still_runs_leaves_the_commit_incomplete(self):
+        run = self.passing("linux")
+        here = self.directories["linux"] / "runs" / run
+        (here / "jobs").write_text(" ".join(DEFAULT_JOBS["linux"] + ["rust-linux-devices"]) + "\n")
+        (here / "finished").unlink()
+        (here / "current").write_text("rust-linux-devices\t2026-10-20T10:30:00Z\n")
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("rust-linux-devices     running  since 2026-10-20T10:30:00Z  (optional)", result.stdout)
+        self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
+
+    # ci.sh status <run> decides with every job of the run, the optional job as well.
+    def test_the_status_of_a_run_fails_with_its_optional_job(self):
+        run = self.passing("linux", **{"rust-linux-devices": 101})
+        result = subprocess.run(["sh", str(CI), "status", run], env=self.environment, capture_output=True,
+                                text=True, timeout=300, cwd=self.root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-linux-devices +FAILED ")
+        self.assertNotIn("(optional)", result.stdout)
+
+    def test_a_failed_default_job_fails_the_commit(self):
+        self.passing("linux", **{"rust-linux": 101, "rust-linux-devices": 0})
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+
+    def test_a_later_failed_run_of_a_default_job_fails_the_commit(self):
+        self.passing("linux")
+        self.run_of("linux", "20261020T110000Z", ["rust-linux"], {"rust-linux": 101})
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+
+    def test_a_commit_with_only_a_run_of_the_optional_job_is_incomplete(self):
+        self.run_of("linux", "20261020T110000Z", ["rust-linux-devices"], {"rust-linux-devices": 0})
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        for job in DEFAULT_JOBS["linux"]:
+            self.assertIn(f"linux: no run of {self.commit} has {job}", result.stdout)
         self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
 
 

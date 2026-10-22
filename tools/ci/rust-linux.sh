@@ -16,10 +16,22 @@ step "Format"
 tools/linux-container.sh cargo fmt --all --check
 step "Lint"
 tools/linux-container.sh cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+# The device checks of the media crate and the native code that only they select, which the
+# workspace lint does not compile (ADR 0913).
+step "Lint the device checks of the media crate"
+tools/linux-container.sh cargo clippy --locked -p junto-media --features native-device-tests --all-targets -- -D warnings
 step "Build the server used by process tests"
 tools/linux-container.sh cargo build --workspace --locked
+# The V4L2 device in memory of the camera tests is not linked into the client (ADR 0913); the
+# camera code itself is.
+step "The client holds the camera code and not the test camera device"
+tools/linux-container.sh sh -c 'llvm-nm-22 /target/debug/junto >/tmp/symbols && grep -q junto_camera_open /tmp/symbols && ! grep -q junto_fake_ /tmp/symbols'
 step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
+# The camera unit tests with the counts that the device checks read (ADR 0913); they open no
+# device.
+step "Camera unit tests of the device checks"
+tools/linux-container.sh cargo test --locked -p junto-media --features native-device-tests --lib camera::
 step "CI runner unit tests"
 tools/linux-container.sh python3 -m unittest discover -s tools/ci -p "test_*.py"
 step "Container runner unit tests"

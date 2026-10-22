@@ -19,6 +19,10 @@ esac
 # --keep-going: the lints of every crate, also after a crate with an error.
 step "Lint"
 cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+# The device checks of the media crate and the native code that only they select, which the
+# workspace lint does not compile (ADR 0913).
+step "Lint the device checks of the media crate"
+cargo clippy --locked -p junto-media --features native-device-tests --all-targets --keep-going -- -D warnings
 step "Build every target"
 cargo build --workspace --all-targets --locked
 if [ "$system" = macos ]; then

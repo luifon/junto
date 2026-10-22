@@ -38,26 +38,25 @@ class Exception final : public std::exception {
 };
 
 // Writes one line that names the bridge function, the type of the current exception and its
-// message to standard error, and ends the process with std::abort(). Called only inside a catch
-// clause. `windows_type` and `message` are null when they are not known: on macOS and Linux the
-// C++ ABI gives the type of the current exception, on Windows only the type of a std::exception
-// is known.
-[[noreturn]] void end_at_foreign_exception(const char* bridge_function,
-                                           const char* windows_type,
-                                           const char* message) noexcept;
-
-inline const char* windows_type(const std::exception& e) {
-#if defined(_MSC_VER)
-  return typeid(e).name();
-#else
-  static_cast<void>(e);
-  return nullptr;
-#endif
-}
+// message to standard error, then a line with the readable names, and ends the process with
+// std::abort(). Called only inside a catch clause. Its arguments need no allocation and run no
+// code of the exception, so that the catch can call it when the memory of the process is
+// exhausted: it reads the type and the message of `exception` itself, after it has turned off
+// the message box of abort() on Windows. `exception` is null for a value that is not a
+// std::exception; on macOS and Linux the C++ ABI gives the type of any value, on Windows only
+// the type of a std::exception is known.
+[[noreturn]] void end_at_foreign_exception(const std::type_info& bridge_function,
+                                           const std::exception* exception) noexcept;
 
 // Test functions of the bridge.
 void throw_runtime_exception(std::size_t index);
 void throw_value();
+// Takes the lock of the stream stderr of the C library and keeps it: another thread that writes
+// to that stream waits for ever.
+void hold_standard_error();
+// Throws an exception of the class TestError, which derives from std::exception and is not
+// livekit_ffi::Exception, with the message "a test error".
+void throw_test_error();
 
 }  // namespace livekit_ffi
 
@@ -77,10 +76,9 @@ static void trycatch(Try&& func, Fail&& fail) noexcept try {
 } catch (const ::livekit_ffi::Exception& e) {
   fail(e.what());
 } catch (const ::std::exception& e) {
-  ::livekit_ffi::end_at_foreign_exception(typeid(Try).name(),
-                                          ::livekit_ffi::windows_type(e), e.what());
+  ::livekit_ffi::end_at_foreign_exception(typeid(Try), &e);
 } catch (...) {
-  ::livekit_ffi::end_at_foreign_exception(typeid(Try).name(), nullptr, nullptr);
+  ::livekit_ffi::end_at_foreign_exception(typeid(Try), nullptr);
 }
 
 }  // namespace behavior

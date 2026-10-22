@@ -84,6 +84,50 @@ tools/linux-container.sh tools/linux/display.sh wayland tools/linux/portal.sh \
 
 The script installs the nightly toolchain `nightly-2026-10-01` into a temporary directory of the container, builds `junto-media` for the host target with the checking into a directory of the container, and runs the ignored tests of `share::linux::audio::tests` and, under the virtual portal of this command, the picture capture test `share::linux::live`. Without the display and portal scripts it runs the sound tests only. The toolchain and the build end with the container; the build volume is not used. Run it after a change of `src/share/linux/registry.rs`, `connection.rs`, `audio.rs` or `video.rs`, and after a new version of the `pipewire` crate. A run takes a full build of the dependencies of `junto-media`.
 
+## Camera capture
+
+`camera::CameraCapture` uses AVFoundation on macOS, Media Foundation on Windows and
+V4L2 on Linux. Device selection, errors, supported sizes and colour normalization are
+described in ADR 0770. Linux needs read/write access to its V4L2 capture nodes; it does
+not obtain camera permission through the desktop portal. Compressed-only and
+multi-planar-only Linux devices are unsupported.
+
+The ordinary `test-support` camera factory remains `NoCamera`. Synthetic frame and
+cancellation tests open no device. For an explicitly authorized Windows or Linux
+device check, first list without capture:
+
+```sh
+cargo run -p junto-media --features native-device-tests --example camera-device -- --list
+JUNTO_TEST_CAMERA_DEVICE=1 cargo run -p junto-media --features native-device-tests --example camera-device
+```
+
+`JUNTO_TEST_CAMERA_INDEX` selects an index in the current list (default zero). Capture
+requires a device, checks the size and the content of thirty pictures, and then, over
+three seconds, that the driver lost no picture (Linux) and that capture delivered the
+pictures that the limit of 30 per second keeps of those that the driver gave. It prints the
+rate of the camera, which a camera lowers in low light. No permission dialog is requested.
+
+On Windows 11, as an administrator, the same check runs against two virtual cameras of
+Media Foundation, one of them through the MJPEG decoder, without a real camera:
+
+```sh
+cargo build -p junto-media --features native-device-tests --example virtual-camera-source --example camera-device
+JUNTO_TEST_CAMERA_DEVICE=1 target/debug/examples/camera-device.exe --virtual
+```
+
+The check registers the source library for its session, removes the registration and the
+cameras at its end, and runs from an SSH session as well as from the desktop (ADR 0913).
+The Linux capture code is tested on every commit against a V4L2 device in memory
+(`src/camera/v4l2_fake.c`). Run Linux checks on Linux with the chosen device exposed to the build
+container, and use `tools/serial.sh` for native builds. The example does not capture
+on macOS; its native camera stage is in `tests/native/README.md`.
+
+`tools/ci/ci.sh run <commit> rust-linux-devices` runs the Linux checks under the CI
+host lock. Its camera step alone enables `JUNTO_LINUX_CAMERA=1` in the container
+runner and passes the video character devices through with their required groups.
+The job is excluded from default CI. It also runs the media and window live tiers
+with synthetic sound and without physical sound devices.
+
 ## Screen capture
 
 The common interface is `share::ScreenCapture`. A `CaptureStream` owns the running capture; dropping it ends the capture. The sink receives pictures, interleaved sound and an end notification. An end notification is terminal. Sound is separate from the microphone pipeline and has no microphone echo cancellation or noise suppression.
