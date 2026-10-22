@@ -21,7 +21,7 @@ use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::Notice;
 use junto_client_core::model::ServerModel;
 use junto_client_core::profile::{self, InvalidAvatar, ProfileStore};
-use junto_client_core::protocol::account::{AccountProfile, OwnAccount};
+use junto_client_core::protocol::account::{AccountProfile, Departure, OwnAccount};
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
@@ -249,6 +249,8 @@ struct Profile {
     /// Absent when the server sent no character that a name can hold.
     name: Option<String>,
     avatar: Option<PictureHash>,
+    /// The account left the server or was deleted (ADR 0121). Its avatar is not shown.
+    departure: Option<Departure>,
 }
 
 impl Profile {
@@ -264,8 +266,19 @@ impl Profile {
             avatar: profile
                 .avatar
                 .as_ref()
+                .filter(|_| profile.departure.is_none())
                 .and_then(|avatar| PictureHash::parse(&avatar.hash)),
+            departure: profile.departure,
         }
+    }
+
+    /// The name as the window shows it: with the mark of a departure.
+    fn shown_name(&self) -> Option<String> {
+        let name = self.name.as_deref()?;
+        Some(match self.departure {
+            Some(departure) => crate::text::departed_name(name, departure),
+            None => name.to_owned(),
+        })
     }
 }
 
@@ -615,6 +628,35 @@ impl People {
         true
     }
 
+    /// The event `account_departure_changed`: the account left the server, was deleted, or
+    /// returned (ADR 0121). The mark changes at once, and the profile is read again: it has
+    /// no avatar while the account is departed, and its avatar again after a return. True
+    /// when something that the window shows changed.
+    pub fn departure_changed(
+        &mut self,
+        server_id: ServerId,
+        account_id: AccountId,
+        departure: Option<Departure>,
+    ) -> bool {
+        let Some(held) = self.servers.get_mut(&server_id) else {
+            return false;
+        };
+        let Some(entry) = held.profiles.get_mut(&account_id) else {
+            return false;
+        };
+        if let Some(profile) = &mut entry.value {
+            profile.departure = departure;
+            if departure.is_some() {
+                profile.avatar = None;
+            }
+        }
+        if !matches!(entry.read, Read::Asking { .. }) {
+            entry.read = Read::Wanted;
+        }
+        held.settle(&mut self.dropped);
+        true
+    }
+
     /// The state of a server was replaced, or events were missed: every profile can have
     /// changed without an event. Each is read again when it is shown; what was read
     /// before is shown until the answer arrives. A request that is on its way started
@@ -639,7 +681,8 @@ impl People {
         std::mem::take(&mut self.dropped)
     }
 
-    /// The name of an account as its profile gave it.
+    /// The name of an account as its profile gave it, with the mark of a departure
+    /// (ADR 0121).
     pub fn name(&self, server_id: ServerId, account_id: AccountId) -> Option<String> {
         self.servers
             .get(&server_id)?
@@ -647,19 +690,40 @@ impl People {
             .get(&account_id)?
             .value
             .as_ref()?
-            .name
-            .clone()
+            .shown_name()
     }
 
-    /// The names that were read of the accounts of one server.
-    pub fn names(&self, server_id: ServerId) -> impl Iterator<Item = (AccountId, &str)> {
+    /// The names that were read of the accounts of one server, with the mark of a
+    /// departure.
+    pub fn names(&self, server_id: ServerId) -> impl Iterator<Item = (AccountId, String)> + '_ {
         self.servers
             .get(&server_id)
             .into_iter()
             .flat_map(|held| held.profiles.iter())
             .filter_map(|(account_id, entry)| {
-                Some((*account_id, entry.value.as_ref()?.name.as_deref()?))
+                Some((*account_id, entry.value.as_ref()?.shown_name()?))
             })
+    }
+
+    /// The departure of an account, as its profile or a later event stated it.
+    pub fn departure(&self, server_id: ServerId, account_id: AccountId) -> Option<Departure> {
+        self.servers
+            .get(&server_id)?
+            .profiles
+            .get(&account_id)?
+            .value
+            .as_ref()?
+            .departure
+    }
+
+    /// The accounts of one server that left it or were deleted.
+    pub fn departures(&self, server_id: ServerId) -> HashMap<AccountId, Departure> {
+        self.servers
+            .get(&server_id)
+            .into_iter()
+            .flat_map(|held| held.profiles.iter())
+            .filter_map(|(account_id, entry)| Some((*account_id, entry.value.as_ref()?.departure?)))
+            .collect()
     }
 
     /// The pictures of the accounts of one server whose profile names an avatar.
@@ -728,6 +792,7 @@ impl People {
                 value: Some(Profile {
                     name: Some(name.to_owned()),
                     avatar: picture.as_ref().map(|(hash, _)| *hash),
+                    departure: None,
                 }),
                 used,
             },
@@ -1333,9 +1398,20 @@ impl AppState {
     ) {
         match notice {
             Notice::Event { event, .. } => {
-                if let Event::AccountProfileUpdated { profile } = event.as_ref()
-                    && self.known.people.profile_updated(server_id, profile)
-                {
+                let changed = match event.as_ref() {
+                    Event::AccountProfileUpdated { profile } => {
+                        self.known.people.profile_updated(server_id, profile)
+                    }
+                    Event::AccountDepartureChanged {
+                        account_id,
+                        departure,
+                    } => self
+                        .known
+                        .people
+                        .departure_changed(server_id, *account_id, *departure),
+                    _ => false,
+                };
+                if changed {
                     self.people_changed(cx);
                 }
             }

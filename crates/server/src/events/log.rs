@@ -190,6 +190,9 @@ pub enum Receivers {
     ConversationPeers(AccountId),
     /// The accounts that have a direct-message conversation with a holder of the role.
     ConversationPeersOfServerRole(junto_protocol::ids::ServerRoleId),
+    /// The members of the workspaces that the account left by itself, and its
+    /// direct-message peers (ADR 0121).
+    DepartureWitnesses(AccountId),
 }
 
 /// Stores the accounts that `receivers` selects now as the list `list`, which is the
@@ -236,6 +239,18 @@ async fn list_receivers(
              where h.role_id = $2",
             id.as_uuid(),
         ),
+        Receivers::DepartureWitnesses(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, m.account_id
+             from account_departures d
+             join workspace_members m on m.workspace_id = d.workspace_id
+             where d.account_id = $2 and m.account_id <> $2
+             union
+             select $1, high_account_id from conversations where low_account_id = $2
+             union
+             select $1, low_account_id from conversations where high_account_id = $2",
+            id.as_uuid(),
+        ),
     };
     let listed = sqlx::query(statement)
         .bind(list)
@@ -243,6 +258,40 @@ async fn list_receivers(
         .execute(connection)
         .await?;
     Ok(listed.rows_affected())
+}
+
+/// Records a departure or a return of an account (ADR 0121) for the accounts that saw it:
+/// the members of the workspaces that it left by itself and its direct-message peers, from
+/// a list stored now, and the accounts with `ban_members`, decided at delivery.
+pub async fn departure_changed(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    account_id: AccountId,
+    departure: Option<junto_protocol::account::Departure>,
+) -> ApiResult<()> {
+    let event = Event::AccountDepartureChanged {
+        account_id,
+        departure,
+    };
+    let list = Uuid::now_v7();
+    record_at_id(
+        &mut *connection,
+        now,
+        list,
+        &Audience::Listed { list },
+        &event,
+    )
+    .await?;
+    list_receivers(
+        &mut *connection,
+        list,
+        Receivers::DepartureWitnesses(account_id),
+    )
+    .await?;
+    let moderators = Audience::ServerPermission {
+        permission: junto_authz::ServerPermission::BanMembers,
+    };
+    record(connection, now, &moderators, &event).await
 }
 
 /// Records the notice that tells the accounts that `holders` selects now to load a

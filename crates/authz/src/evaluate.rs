@@ -1,7 +1,7 @@
 use crate::model::{
     Acquaintance, Actor, AuditScope, Authorship, ChannelContent, ChannelGrant, ChannelScope,
-    Contact, Decision, Denial, Membership, MessagePlace, Participation, Permanence, Position,
-    Reach, Request, Target, WorkspaceScope,
+    Contact, Decision, Denial, Departing, Membership, MessagePlace, Participation, Permanence,
+    Position, Reach, Request, Target, WorkspaceScope,
 };
 use crate::permissions::{ServerPermission, WorkspacePermission, WorkspacePermissions};
 
@@ -121,10 +121,18 @@ fn apply_limits<'a>(actor: &Actor, request: &Request<'a>) -> Limited<'a> {
         } => Limited::Open(Check::Server(ServerPermission::BanMembers)),
 
         Request::OwnAccount => allow,
+        Request::Depart(Departing::Workspace) => allow,
+        Request::Depart(Departing::Server) => match actor.position {
+            Position::Owner => deny(Denial::OwnerProtected),
+            Position::Member => allow,
+        },
         // The profile of every account that the actor may contact (ADR 0307): an actor who
         // administers the server passes the check of an unrelated account.
         Request::ViewAccount(
-            Acquaintance::Own | Acquaintance::SharedWorkspace | Acquaintance::Administrator,
+            Acquaintance::Own
+            | Acquaintance::SharedWorkspace
+            | Acquaintance::Administrator
+            | Acquaintance::Departed,
         ) => allow,
         Request::ViewAccount(Acquaintance::Unrelated) => {
             Limited::Open(Check::Server(ServerPermission::BanMembers))

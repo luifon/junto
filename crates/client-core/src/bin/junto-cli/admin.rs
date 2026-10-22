@@ -741,7 +741,28 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::CallSoundUnblocked { account_id }
         | E::CallMemberDisconnected { account_id }
         | E::CallMemberMovedOut { account_id }
-        | E::CallMemberMovedIn { account_id } => vec![pair("account", account_id)],
+        | E::CallMemberMovedIn { account_id }
+        | E::WorkspaceMemberLeft { account_id }
+        | E::AccountLeft { account_id } => vec![pair("account", account_id)],
+        E::AccountDeleted {
+            account_id,
+            workspace_ids,
+        } => vec![
+            pair("account", account_id),
+            pair("workspaces", listed(workspace_ids)),
+        ],
+        E::AccountReturned {
+            account_id,
+            invite_id,
+            invite_created_by,
+            join_request_id,
+        } => {
+            let mut pairs = vec![pair("account", account_id)];
+            pairs.extend(invite_id.map(|id| pair("invite", id)));
+            pairs.extend(invite_created_by.map(|by| pair("invite_created_by", by)));
+            pairs.extend(join_request_id.map(|id| pair("request", id)));
+            pairs
+        }
         E::AccountRemoved {
             account_id,
             reason,

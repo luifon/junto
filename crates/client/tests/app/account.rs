@@ -65,7 +65,7 @@ impl Window {
     fn profile(&mut self) -> Option<ProfilePage> {
         match self.account()?.page {
             PageView::Profile(page) => Some(page),
-            PageView::Devices(_) | PageView::Recoveries(_) => None,
+            PageView::Devices(_) | PageView::Recoveries(_) | PageView::Departure(_) => None,
         }
     }
 

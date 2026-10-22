@@ -418,6 +418,11 @@ impl Shell {
                     ServerStatus::Banned => {
                         Body::Statement(text::BANNED_TITLE, text::BANNED.to_owned())
                     }
+                    // An inactive account returns with a code: the join form of the server.
+                    ServerStatus::Inactive => Body::Paths { found: false },
+                    ServerStatus::Deleted => {
+                        Body::Statement(text::DELETED_TITLE, text::DELETED.to_owned())
+                    }
                     ServerStatus::Unreachable => {
                         Body::Statement(text::UNREACHABLE_TITLE, text::UNREACHABLE.to_owned())
                     }

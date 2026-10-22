@@ -129,6 +129,7 @@ fn the_description_of_the_avatar_of_a_member_follows_the_profile_of_the_account(
             id: ana.account_id,
             name: ana.name.clone(),
             avatar: Some(avatar("a")),
+            departure: None,
         },
     });
     let members = |model: &ServerModel| {
@@ -157,6 +158,7 @@ fn the_description_of_the_avatar_of_a_member_follows_the_profile_of_the_account(
             id: ana.account_id,
             name: ana.name.clone(),
             avatar: Some(avatar("a")),
+            departure: None,
         },
     });
     assert!(Arc::ptr_eq(&held, &model.workspaces[0]));
@@ -167,6 +169,7 @@ fn the_description_of_the_avatar_of_a_member_follows_the_profile_of_the_account(
             id: ana.account_id,
             name: "Ana Maria".to_owned(),
             avatar: None,
+            departure: None,
         },
     });
     let now = of(&model, ana.account_id);

@@ -703,7 +703,7 @@ impl Client {
         self.park();
         self.halted = true;
         if let Some(target) = &self.target {
-            self.host.session_ended(&target.token);
+            self.host.session_ended(&target.token, reason);
         }
     }
 

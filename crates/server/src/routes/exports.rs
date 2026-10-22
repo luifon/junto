@@ -177,7 +177,13 @@ pub async fn export_conversation(
     let now = app.now();
     let made = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let place = Place::direct(connection, &access, conversation_id).await?;
+        let place = Place::direct(
+            connection,
+            &access,
+            conversation_id,
+            crate::messages::Purpose::Read,
+        )
+        .await?;
         request(connection, &app, &access, &place, id).await
     })?;
     app.exports.wake();

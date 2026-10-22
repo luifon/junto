@@ -16,14 +16,14 @@ use junto_client_core::live::Notice;
 use junto_client_core::profile::{self, NAME_MAX_CHARS};
 use junto_client_core::protocol::account::{Device, DeviceOrigin, RecoveryNotice};
 use junto_client_core::protocol::events::Event;
-use junto_client_core::protocol::ids::{AccountId, DeviceId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, DeviceId, ServerId, WorkspaceId};
 use junto_client_core::protocol::secret::LinkCode;
 use time::OffsetDateTime;
 
 use super::AppState;
 use super::view::{ServerSnapshot, shown_model};
 use crate::text;
-use junto_client_core::flow::access::AccessState;
+use junto_client_core::flow::access::{AccessAction, AccessState};
 
 /// The most devices of an account that the layer holds and lists. A server that lists
 /// more gets the count of the others stated.
@@ -45,6 +45,8 @@ pub enum AccountPage {
     /// Every recovery of the account, also those that this device acknowledged
     /// (ADR 0112, ADR 0118).
     Recoveries,
+    /// Leaving a workspace and deleting the account (ADR 0121).
+    Departure,
 }
 
 impl AccountPage {
@@ -70,6 +72,8 @@ pub enum AskKind {
     RemovePicture,
     RenameDevice(DeviceId),
     RemoveDevice(DeviceId),
+    LeaveWorkspace(WorkspaceId),
+    DeleteAccount,
 }
 
 /// Where a request stands. A request that the server did leaves no state: its effect
@@ -440,11 +444,41 @@ pub enum RecoveryList {
     },
 }
 
+/// One workspace of which the account is a member, on the page that leaves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepartureWorkspace {
+    pub id: WorkspaceId,
+    pub name: String,
+}
+
+/// The page that leaves a workspace or deletes the account (ADR 0121).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeparturePage {
+    /// The workspaces of which the account is a member, in the order of the server.
+    pub workspaces: Vec<DepartureWorkspace>,
+    /// The account is the server owner: it cannot leave its last workspace or delete
+    /// itself before another account becomes the owner.
+    pub owner: bool,
+}
+
+impl DeparturePage {
+    /// Leaving this workspace makes the account inactive.
+    pub fn leaves_the_server(&self, workspace_id: WorkspaceId) -> bool {
+        self.workspaces.len() == 1 && self.workspaces[0].id == workspace_id
+    }
+
+    /// The account may leave this workspace now.
+    pub fn may_leave(&self, workspace_id: WorkspaceId) -> bool {
+        !(self.owner && self.leaves_the_server(workspace_id))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageView {
     Profile(ProfilePage),
     Devices(DevicesPage),
     Recoveries(RecoveryList),
+    Departure(DeparturePage),
 }
 
 /// The account layer as the window draws it.
@@ -611,6 +645,23 @@ pub fn derive(
             link: link.map(link_view),
         }),
         AccountPage::Recoveries => PageView::Recoveries(recovery_list(state, server)),
+        AccountPage::Departure => PageView::Departure(DeparturePage {
+            workspaces: model
+                .workspaces
+                .iter()
+                .filter(|workspace| {
+                    model
+                        .account
+                        .workspace_ids
+                        .contains(&workspace.workspace.id)
+                })
+                .map(|workspace| DepartureWorkspace {
+                    id: workspace.workspace.id,
+                    name: text::label(&workspace.workspace.name),
+                })
+                .collect(),
+            owner: model.account.is_owner,
+        }),
     };
     Some(AccountView {
         server_id: server.id,
@@ -799,7 +850,7 @@ impl AppState {
         &mut self,
         what: AskKind,
         request: impl FnOnce(ServerApi) -> F,
-        done: impl FnOnce(&mut Self) + 'static,
+        done: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) where
         T: 'static,
@@ -825,7 +876,7 @@ impl AppState {
                     .err()
                     .map(|error| text::account::refusal(what, error));
                 if this.account.settle(stamp, what, refused) && answer.is_ok() {
-                    done(this);
+                    done(this, cx);
                 }
                 this.changed(cx);
             });
@@ -842,6 +893,42 @@ impl AppState {
         cx.notify();
     }
 
+    /// Leaves a workspace of the server of the layer (ADR 0121). After the last workspace
+    /// the account is inactive: the server ends its sessions, and a check of the server
+    /// moves it to that state at once.
+    pub fn leave_workspace(&mut self, workspace_id: WorkspaceId, cx: &mut Context<Self>) {
+        let Some(server_id) = self.account.open.map(|open| open.server_id) else {
+            return;
+        };
+        self.account_ask(
+            AskKind::LeaveWorkspace(workspace_id),
+            move |api| async move { api.leave_workspace(workspace_id).await },
+            move |this, cx| {
+                if let Some(server) = this.client.server(server_id) {
+                    Self::run(server.dispatch_when_free(AccessAction::Check), cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Deletes the account on the server of the layer (ADR 0121). The key of this device
+    /// no longer belongs to an account, so the server leaves the book with its key.
+    pub fn delete_account(&mut self, cx: &mut Context<Self>) {
+        let Some(server_id) = self.account.open.map(|open| open.server_id) else {
+            return;
+        };
+        self.account_ask(
+            AskKind::DeleteAccount,
+            |api| async move { api.delete_account().await },
+            move |this, cx| {
+                this.account.close();
+                this.remove_server(server_id, cx);
+            },
+            cx,
+        );
+    }
+
     /// Sets the name of the account on the server of the layer (ADR 0119). The name is
     /// checked by the rule of the server before anything is sent.
     pub fn save_account_name(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -853,7 +940,7 @@ impl AppState {
             Ok(name) => self.account_ask(
                 AskKind::SaveName,
                 move |api| async move { api.update_profile(&name).await },
-                |_| {},
+                |_, _| {},
                 cx,
             ),
         }
@@ -904,7 +991,7 @@ impl AppState {
         self.account_ask(
             AskKind::RemovePicture,
             |api| async move { api.remove_avatar().await },
-            |_| {},
+            |_, _| {},
             cx,
         );
     }
@@ -920,7 +1007,7 @@ impl AppState {
             Ok(name) => self.account_ask(
                 what,
                 move |api| async move { api.rename_device(device_id, name).await },
-                |this| this.account.stale = true,
+                |this, _| this.account.stale = true,
                 cx,
             ),
         }
@@ -931,7 +1018,7 @@ impl AppState {
         self.account_ask(
             AskKind::RemoveDevice(device_id),
             move |api| async move { api.remove_device(device_id).await },
-            |this| this.account.stale = true,
+            |this, _| this.account.stale = true,
             cx,
         );
     }
@@ -1037,6 +1124,33 @@ pub(crate) mod tests {
     use junto_client_core::protocol::snapshot::Snapshot;
 
     use super::*;
+
+    #[test]
+    fn the_last_workspace_leaves_the_server_and_the_owner_keeps_it() {
+        let workspace = |name: &str| DepartureWorkspace {
+            id: WorkspaceId::generate(),
+            name: name.to_owned(),
+        };
+        let (studio, lab) = (workspace("Studio"), workspace("Lab"));
+        let two = DeparturePage {
+            workspaces: vec![studio.clone(), lab.clone()],
+            owner: true,
+        };
+        assert!(!two.leaves_the_server(studio.id));
+        assert!(
+            two.may_leave(studio.id),
+            "the owner stays a member of another"
+        );
+        let one = DeparturePage {
+            workspaces: vec![lab.clone()],
+            owner: false,
+        };
+        assert!(one.leaves_the_server(lab.id));
+        assert!(one.may_leave(lab.id));
+        let owner = DeparturePage { owner: true, ..one };
+        assert!(!owner.may_leave(lab.id));
+        assert!(!owner.leaves_the_server(studio.id));
+    }
 
     pub(crate) fn at() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_791_626_640).unwrap()
@@ -1299,7 +1413,9 @@ pub(crate) mod tests {
         state.follow_account(Some(account_id));
         let devices = |state: &AccountState| match derive(&servers, state, None).unwrap().page {
             PageView::Devices(page) => page,
-            PageView::Profile(_) | PageView::Recoveries(_) => panic!("the devices page is open"),
+            PageView::Profile(_) | PageView::Recoveries(_) | PageView::Departure(_) => {
+                panic!("the devices page is open")
+            }
         };
         assert_eq!(devices(&state).list, DeviceList::Reading);
         assert_eq!(devices(&state).link, None);

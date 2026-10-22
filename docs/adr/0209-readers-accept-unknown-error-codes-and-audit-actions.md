@@ -18,6 +18,7 @@ Reading:
 - A reader of `junto-protocol` reads an error code that it does not know as the value `unknown`. The status of the response still tells the kind of the error.
 - A reader reads an audit entry with an action that it does not know as an entry with the event `unknown`. The identifier, the time, the acting account, the workspace and the channel of the entry are read as before.
 - An event of the stream with an unknown type is read as before (ADR 0206).
+- A reader reads an account status and a reason of `ended` that it does not know as `unknown` too (ADR 0121); a client treats such a reason as an ended session.
 - Every other set of values stays closed: a new value needs a new API version (ADR 0206).
 
 Writing:

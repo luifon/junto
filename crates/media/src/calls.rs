@@ -1401,6 +1401,8 @@ fn device_of(server: &ServerHandle) -> Option<DeviceId> {
         Membership::None
         | Membership::JoinRequested { .. }
         | Membership::Banned { .. }
+        | Membership::Inactive { .. }
+        | Membership::Deleted { .. }
         | Membership::Removed => None,
     }
 }

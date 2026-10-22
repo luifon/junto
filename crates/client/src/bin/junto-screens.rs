@@ -2384,6 +2384,26 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
             ),
         ),
         (
+            "server-inactive",
+            harbor_as(
+                AccessState::Inactive {
+                    account_id: Some(person("Luca")),
+                },
+                reachable(),
+                None,
+            ),
+        ),
+        (
+            "server-deleted",
+            harbor_as(
+                AccessState::Deleted {
+                    account_id: Some(person("Luca")),
+                },
+                reachable(),
+                None,
+            ),
+        ),
+        (
             "server-unreachable",
             harbor_as(
                 logged_out(),

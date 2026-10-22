@@ -167,7 +167,7 @@ impl Shell {
             .account_view()
             .and_then(|view| match view.page {
                 PageView::Devices(page) => page.link,
-                PageView::Profile(_) | PageView::Recoveries(_) => None,
+                PageView::Profile(_) | PageView::Recoveries(_) | PageView::Departure(_) => None,
             });
         if !matches!(
             link,
@@ -216,7 +216,7 @@ impl Shell {
             PageView::Devices(page) => {
                 matches!(page.link, None | Some(LinkView::EnterCode { .. }))
             }
-            PageView::Profile(_) | PageView::Recoveries(_) => false,
+            PageView::Profile(_) | PageView::Recoveries(_) | PageView::Departure(_) => false,
         };
         if !asks_for_code && !self.account.code.read(cx).value().is_empty() {
             self.account

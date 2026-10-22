@@ -45,6 +45,7 @@ async fn an_account_sets_its_name_and_the_accounts_that_see_it_are_told() {
         id: guest.account_id,
         name: "Grace".to_owned(),
         avatar: None,
+        departure: None,
     };
     assert_eq!(
         to_fellow.event().await.1,
@@ -135,6 +136,7 @@ async fn an_avatar_is_stored_served_and_removed() {
                     id: guest.account_id,
                     name: "Guest".to_owned(),
                     avatar: Some(expected.clone()),
+                    departure: None,
                 }
             }
         );
@@ -175,6 +177,7 @@ async fn an_avatar_is_stored_served_and_removed() {
                 id: guest.account_id,
                 name: "Guest".to_owned(),
                 avatar: None,
+                departure: None,
             }
         }
     );

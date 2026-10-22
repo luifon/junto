@@ -753,8 +753,8 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             removed_workspace_id,
             ..
         } => format!(
-            "an invite of {} gives {} no longer, because its creator was removed from that \
-             workspace.",
+            "an invite of {} gives {} no longer, because its creator is no longer a member of \
+             that workspace.",
             account(*invite_created_by),
             the_workspaces(std::slice::from_ref(removed_workspace_id), names)
         ),
@@ -882,6 +882,44 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             "an administrator added {} to the workspace.",
             account(*account_id)
         ),
+        AuditEvent::WorkspaceMemberLeft { account_id } => {
+            format!("{} left the workspace.", account(*account_id))
+        }
+        AuditEvent::AccountLeft { account_id } => format!(
+            "{} left the last workspace of the server and became inactive.",
+            account(*account_id)
+        ),
+        AuditEvent::AccountDeleted {
+            account_id,
+            workspace_ids,
+        } if workspace_ids.is_empty() => {
+            format!("{} was deleted by its person.", account(*account_id))
+        }
+        AuditEvent::AccountDeleted {
+            account_id,
+            workspace_ids,
+        } => format!(
+            "{} was deleted by its person and left {}.",
+            account(*account_id),
+            the_workspaces(workspace_ids, names)
+        ),
+        AuditEvent::AccountReturned {
+            account_id,
+            invite_created_by,
+            join_request_id,
+            ..
+        } => match (invite_created_by, join_request_id) {
+            (Some(created_by), _) => format!(
+                "{} returned to the server with an invite of {}.",
+                account(*account_id),
+                account(*created_by)
+            ),
+            (None, Some(_)) => format!(
+                "{} returned to the server through an approved join request.",
+                account(*account_id)
+            ),
+            (None, None) => format!("{} returned to the server.", account(*account_id)),
+        },
         AuditEvent::CategoryCreated { name, .. } => {
             format!("the category “{name}” was created.")
         }

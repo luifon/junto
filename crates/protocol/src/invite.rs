@@ -94,6 +94,10 @@ pub struct JoinRequest {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    /// The inactive account to which the key of the request belongs. An approval makes that
+    /// account active again with its own name, not the name of the request (ADR 0121).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returning_account_id: Option<AccountId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

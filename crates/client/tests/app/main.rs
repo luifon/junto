@@ -30,6 +30,7 @@ mod admin;
 mod admin_pages;
 mod calls;
 mod contacts;
+mod departures;
 mod flows;
 mod glossary;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that

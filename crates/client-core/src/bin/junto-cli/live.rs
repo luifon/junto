@@ -727,6 +727,13 @@ fn event_details(event: &Event) -> String {
         },
         Event::AccountAdded { account } => format!("account={}", account.id),
         Event::AccountProfileUpdated { profile } => format!("account={}", profile.id),
+        Event::AccountDepartureChanged {
+            account_id,
+            departure,
+        } => match departure {
+            Some(departure) => format!("account={account_id} departure={}", word(departure)),
+            None => format!("account={account_id} returned"),
+        },
         Event::AccountStatusChanged { account_id, status } => {
             format!("account={account_id} status={}", word(status))
         }

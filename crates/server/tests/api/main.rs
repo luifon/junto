@@ -19,6 +19,7 @@ mod calls_support;
 mod concurrency;
 mod contacts;
 mod deletions;
+mod departures;
 mod devices;
 mod downloads;
 mod exports;

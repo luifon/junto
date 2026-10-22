@@ -16,6 +16,7 @@ use gpui::{
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
+use junto_client_core::protocol::account::Departure;
 #[cfg(feature = "test-support")]
 use junto_client_core::protocol::ids::AttachmentId;
 use junto_client_core::protocol::ids::{MessageId, ServerId};
@@ -875,11 +876,63 @@ impl Shell {
                     .children(stale),
             )
             .child(body)
-            .child(match self.shown_archived() {
+            .child(match (self.shown_archived(), self.shown_departure(pane)) {
                 // An archived channel takes no message (ADR 0410).
-                Some(archived) => self.render_archived_bar(pane, archived, cx),
-                None => self.render_composer(pane, shown.draft, compact, shown.permanent, cx),
+                (Some(archived), _) => self.render_archived_bar(pane, archived, cx),
+                // Nor does a conversation with a departed account (ADR 0121).
+                (None, Some(departure)) => self.render_departed_bar(pane, departure, cx),
+                (None, None) => {
+                    self.render_composer(pane, shown.draft, compact, shown.permanent, cx)
+                }
             })
+            .into_any_element()
+    }
+
+    /// The departure of the other account of the direct conversation that the main area
+    /// shows (ADR 0121).
+    pub(crate) fn shown_departure(&self, pane: Pane) -> Option<Departure> {
+        if pane != Pane::Main {
+            return None;
+        }
+        self.view
+            .as_ref()?
+            .lists()?
+            .conversation
+            .as_ref()?
+            .departure
+    }
+
+    /// The statement in place of the composer of a conversation with a departed account:
+    /// it stays readable, and nobody can write in it.
+    fn render_departed_bar(
+        &mut self,
+        pane: Pane,
+        departure: Departure,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = crate::theme::theme(cx);
+        let colors = theme.colors;
+        div()
+            .id(pane.id("departed-bar"))
+            .debug_selector(move || pane.id("departed-bar").to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(10.0))
+            .min_h(u(44.0))
+            .py(u(8.0))
+            .px(u(16.0))
+            .border_t_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.limestone))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .typeface(theme.types.control_strong, &theme)
+                    .ink(colors.ink)
+                    .child(text::departed_conversation(departure)),
+            )
             .into_any_element()
     }
 

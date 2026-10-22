@@ -101,7 +101,7 @@ pub async fn locked_status(
     AccountStatus::read(&status.ok_or_else(ApiError::not_found)?)
 }
 
-async fn set_status(
+pub(crate) async fn set_status(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     account_id: AccountId,
@@ -139,8 +139,14 @@ pub async fn remove_account(
         access.require(Request::Moderate {
             target: access.target(account_id),
         })?;
-        if locked_status(connection, account_id).await? == AccountStatus::Removed {
-            return Err(ApiError::conflict("the account is already removed"));
+        match locked_status(connection, account_id).await? {
+            AccountStatus::Active | AccountStatus::Banned | AccountStatus::Inactive => {}
+            AccountStatus::Removed => {
+                return Err(ApiError::conflict("the account is already removed"));
+            }
+            AccountStatus::Deleted | AccountStatus::Unknown => {
+                return Err(ApiError::conflict("the account is deleted"));
+            }
         }
 
         access.require_above_account(connection, account_id).await?;
@@ -232,6 +238,14 @@ pub async fn ban_account(
                 return Err(ApiError::conflict("the account is already banned"));
             }
             AccountStatus::Removed => return Err(ApiError::conflict("the account is removed")),
+            AccountStatus::Inactive => {
+                return Err(ApiError::conflict(
+                    "the account is inactive; a removal keeps it from returning",
+                ));
+            }
+            AccountStatus::Deleted | AccountStatus::Unknown => {
+                return Err(ApiError::conflict("the account is deleted"));
+            }
         }
 
         access.require_above_account(connection, account_id).await?;
