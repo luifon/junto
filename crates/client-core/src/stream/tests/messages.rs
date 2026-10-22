@@ -1005,6 +1005,62 @@ async fn a_message_that_a_search_finds_is_not_put_back_after_a_later_event() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_search_answer_from_before_a_reload_is_not_used() {
+    let mut room = room().await;
+    let place = room.place;
+    let history = format!("/api/v1/channels/{}/messages", room.rig.scene.general);
+
+    // The server stores a message and its answer is lost.
+    room.chat(|chat| chat.lose_answers = 1);
+    let id = room
+        .rig
+        .live
+        .send_message(place, document("deleted during a reload"), None)
+        .unwrap();
+    room.rig
+        .model_when("no confirmation", unconfirmed(id))
+        .await;
+    let stored = room.chat(|chat| chat.messages.last().cloned().unwrap());
+
+    // "Send again" searches the history, and the answer holds the message.
+    let before = room.sent_to(&history);
+    let gate = room.rig.http.hold_answers("/messages");
+    room.rig.live.send_again(id);
+    for _ in 0..1000 {
+        if room.sent_to(&history) > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(room.sent_to(&history), before + 1);
+    // Another device deletes the message while the events are missed, and the state is
+    // replaced by a snapshot before the answer arrives.
+    room.chat(|chat| {
+        chat.messages.pop();
+    });
+    room.rig.set_snapshot(90, |_| {});
+    room.peer
+        .send(&ServerMessage::Resync {
+            reason: ResyncReason::TooFarBehind,
+        })
+        .await;
+    room.peer.serve().await;
+    room.rig
+        .model_when("the snapshot", |model| model.cursor.position == 90)
+        .await;
+    // The answer from before the reload is not used: the history is searched again, does
+    // not hold the message, and the message is sent.
+    gate.add_permits(64);
+    let model = room
+        .rig
+        .model_when("the message is sent", |model| model.outbox.is_empty())
+        .await;
+    assert_eq!(room.chat(|chat| chat.posted.len()), 2);
+    let timeline = model.timeline(place).unwrap();
+    assert!(timeline.messages.iter().all(|held| held.id != stored.id));
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_search_that_does_not_reach_the_end_of_the_history_sends_nothing() {
     let room = room().await;
     let (rig, place) = (&room.rig, room.place);

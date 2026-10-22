@@ -1225,6 +1225,59 @@ async fn a_carried_archived_channel_is_checked_without_a_reader_of_its_list() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_carried_archived_channel_is_checked_when_the_reader_releases_its_list() {
+    use junto_protocol::WorkspacePermission::ViewChannel;
+    let (rig, mut peer, admin) = reading_rig().await;
+    let (workspace_id, general) = (rig.scene.workspace_id, rig.scene.general);
+    let place = PlaceId::Channel(general);
+    let list = AdminPart::Archived(workspace_id);
+    let part = AdminPart::ChannelPermissions(general);
+
+    // A reader has the messages, the archived list and the permissions of the channel open.
+    let gone = archived_channel(rig.model().channel(general).unwrap().channel.clone());
+    admin.lock().unwrap().archived = vec![gone.clone()];
+    soon("the archived channels", rig.live.open_admin(list))
+        .await
+        .unwrap();
+    peer.event(
+        41,
+        Event::ChannelArchived {
+            channel: gone.clone(),
+        },
+    )
+    .await;
+    rig.model_when("the event", |model| model.cursor.position == 41)
+        .await;
+    admin.lock().unwrap().permissions = vec![ViewChannel];
+    soon("the permissions of the channel", rig.live.open_admin(part))
+        .await
+        .unwrap();
+
+    // The server deletes the channel while the events are missed. The read of the list
+    // after the reload is on its way when the reader releases the list.
+    admin.lock().unwrap().archived.clear();
+    let gate = rig.http.hold("/archived-channels");
+    reload(&rig, &mut peer, 90, |snapshot| {
+        snapshot.workspaces[0]
+            .channels
+            .retain(|held| held.id != general);
+    })
+    .await;
+    asked(&rig, "/archived-channels", 2).await;
+    rig.live.release_admin(list);
+    gate.add_permits(64);
+    let model = rig
+        .model_when("the channel is checked", |model| {
+            model.admin.archived_channel(general).is_none()
+        })
+        .await;
+    assert!(model.readable_channel(general).is_none());
+    assert!(model.timeline(place).is_none());
+    assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
+    assert_eq!(model.admin.state(list), CollectionState::NotLoaded);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_new_session_sends_the_read_of_a_collection_again() {
     let (mut rig, _first, admin) = served_rig().await;
     let part = AdminPart::Invites;

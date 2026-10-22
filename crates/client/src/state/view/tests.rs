@@ -2700,8 +2700,9 @@ pub(super) mod calls {
             .and_then(|held| held.call.as_ref())
             .map(|call| call.id)
             .unwrap();
+        let elsewhere = EntryRequestId::generate();
         scene.snapshot.entry_requests = vec![EntryRequest {
-            id: EntryRequestId::generate(),
+            id: elsewhere,
             call_id,
             place: CallPlace::Channel {
                 workspace_id: studio,
@@ -2715,9 +2716,30 @@ pub(super) mod calls {
             closed(&scene, &nothing, "Daily"),
             (Some(Closed::Locked), Some(EntryState::Waiting))
         );
+        // A request of this device that waits or is on its way is shown as it is.
+        assert_eq!(
+            closed(&scene, &asked(EntryState::Asking), "Daily"),
+            (Some(Closed::Locked), Some(EntryState::Asking))
+        );
+        // A request of this device that ended does not hide the one that waits.
         assert_eq!(
             closed(&scene, &asked(EntryState::Denied), "Daily"),
-            (Some(Closed::Locked), Some(EntryState::Denied))
+            (Some(Closed::Locked), Some(EntryState::Waiting))
+        );
+        // The state of the server can still list the request of this device that ended:
+        // that one is not shown as waiting.
+        let ended = |server: &ServerSnapshot| Known {
+            entry: Some(OwnEntry {
+                server_id: server.id,
+                channel_id: daily,
+                request_id: Some(elsewhere),
+                state: EntryState::Expired,
+            }),
+            ..Known::default()
+        };
+        assert_eq!(
+            closed(&scene, &ended, "Daily"),
+            (Some(Closed::Locked), Some(EntryState::Expired))
         );
         scene.snapshot.entry_requests.clear();
         // A voice channel that hides who is inside shows no lock. The answer of the

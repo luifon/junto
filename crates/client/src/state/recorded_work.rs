@@ -354,7 +354,7 @@ impl AppState {
         self.recording_download_numbers.insert(key, number);
         // The window is told a change of the stage and each further hundredth of the file,
         // not each part that arrives.
-        let mut steps = Steps::new(download.watch());
+        let mut steps = Steps::of_recording(download);
         cx.spawn(async move |this, cx| {
             while let Some(progress) = steps.next().await {
                 let ended = progress.ended();

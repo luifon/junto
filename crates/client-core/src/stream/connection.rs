@@ -1342,6 +1342,7 @@ impl Client {
         let mut places = self.messages.wanted_places();
         places.extend(self.messages.wanted_pins());
         self.carry_admin(before.as_ref(), &places);
+        self.messages.overtake_searches();
         self.carry_messages(before.as_ref());
         self.carry_recordings(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });

@@ -380,7 +380,7 @@ tools/linux-container.sh sh -c 'cargo build -p junto-client --bin junto &&
 
 With `JUNTO_RENDERER_CHECKED=1` in the environment the binary skips its check, and this command then fails with a black window.
 
-`window_level::keep_above` is the interface by which a detached call window asks to stay above other windows (ADR 0507). The detached call window calls it when it opens with the choice "keep on top" and when the person changes the choice. On Linux the window is not opened again for the choice, and the choice is drawn only under X11. Under X11 it sends the window manager the request for the state "above"; for a Wayland window it answers that the system has no such request. Its tests need the private X11 display and its window manager:
+`window_level::keep_above` is the interface by which a detached call window asks to stay above other windows (ADR 0507). The detached call window calls it when it opens with the choice "keep on top" and when the person changes the choice. On Linux the window is not opened again for the choice, and the choice is drawn only under X11. Under X11 it puts the request for the state "above" into a queue, and a thread of its own sends the requests to the window manager in their order, so the thread of the window does not wait for the display server. It returns nothing: the outcome, also for a Wayland window that has no such request, is written to the log. Its tests need the private X11 display and its window manager:
 
 ```sh
 tools/linux-container.sh tools/linux/display.sh x11 \
