@@ -13,8 +13,8 @@ pub mod uploads;
 pub use mentions::{mentioned_among, mentions};
 pub use place::Place;
 pub use store::{
-    REPLY_AUTHORS, VISIBLE, changed, changed_at, get, load_messages, remove, snapshot, state,
-    state_query, system,
+    REPLY_AUTHORS, VISIBLE, changed, get, load_messages, remove, snapshot, state, state_query,
+    system,
 };
 
 pub(crate) use store::erase;

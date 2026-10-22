@@ -40,7 +40,6 @@ language plpgsql as $$
 begin
     if old.position is null and new.position is not null
         and old.ordinal is null and new.ordinal is not null
-        and new.retention_parent is not distinct from old.retention_parent
         and (new.id, new.recorded_at, new.class, new.kind, new.audience,
              new.audience_account_id, new.revalidates_account_id, new.payload)
             is not distinct from
@@ -53,19 +52,15 @@ begin
 end
 $$;
 
-create or replace function events_check_retention_pair() returns trigger language plpgsql as $$
-begin
-    if not exists (
-        select 1 from events parent join events notice on notice.retention_parent=parent.id
-        where notice.id=new.id and parent.kind='message_changed' and parent.retention_parent is null
-          and parent.payload->>'message_id'=notice.payload->>'message_id'
-          and notice.position=parent.position and notice.ordinal=parent.ordinal+1
-    ) then
-        raise exception 'a notice retention pair needs its immediately preceding message event';
-    end if;
-    return null;
-end
-$$;
+-- The log keeps a number of changes (ADR 0207). A message and its notice are one change, so
+-- the link that kept them together as one unit of the trimming is not needed. The first
+-- event of each change marks the change for the trimming.
+drop trigger events_retention_pair_at_commit on events;
+drop function events_check_retention_pair();
+drop index events_retention_units;
+alter table events drop constraint events_notice_parent_kind;
+alter table events drop column retention_parent;
+create index events_changes on events (position) where ordinal = 0;
 
 -- The cursors of clients count positions of events. The positions of changes are another
 -- history, so every cursor of the earlier one leads to a snapshot (ADR 0010).

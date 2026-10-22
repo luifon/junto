@@ -340,6 +340,9 @@ fn decide(
 /// index of each among them as the low part of its position (ADR 0010). `None` when the
 /// message is larger than a client reads.
 fn change_message(position: i64, events: Vec<Receivable>) -> ApiResult<Option<Delivery>> {
+    if u64::try_from(events.len()).unwrap_or(u64::MAX) > log::END_OF_CHANGE {
+        return Ok(None);
+    }
     let events = (0u64..)
         .zip(events)
         .map(|(index, receivable)| {
@@ -477,8 +480,8 @@ fn read_candidate(row: EventRow) -> Candidate {
 }
 
 /// The rows of the change at `$1` after the ordinal `$4` that are addressed to the
-/// connection, with the parts that are not above their largest sizes.
-const REST_OF_CHANGE: (&str, &str) = (
+/// connection, with the parts that are not above their largest sizes, at most `$7`.
+const PAGE_OF_CHANGE: (&str, &str) = (
     "select position, ordinal, recorded_at, class,
             case when octet_length(audience::text) <= $5 then audience end,
             case when octet_length(audience::text) <= $5 and octet_length(payload::text) <= $6
@@ -486,6 +489,34 @@ const REST_OF_CHANGE: (&str, &str) = (
             true
      from events where position = $1 and ordinal > $4",
     "order by ordinal limit $7",
+);
+
+/// The rows of the change at `$1` that are addressed to the connection, in their order, while
+/// the stored parts that they hold reach at most `$4` bytes, and then the first row beyond,
+/// without its parts. The bytes count each part up to its largest size.
+const CHANGE_WITHIN: (&str, &str) = (
+    "select position, ordinal, recorded_at, class,
+            case when within and audience_bytes <= $5 then audience end,
+            case when within and audience_bytes <= $5 and payload_bytes <= $6 then payload end,
+            within
+     from (
+         select *, bytes_through <= $4 as within
+         from (
+             select *, sum(own_bytes) over (order by ordinal) as bytes_through
+             from (
+                 select position, ordinal, recorded_at, class, audience, payload,
+                        octet_length(audience::text) as audience_bytes,
+                        octet_length(payload::text) as payload_bytes,
+                        least(octet_length(audience::text), $5)
+                            + least(octet_length(payload::text), $6) as own_bytes
+                 from events
+                 where position = $1",
+    "order by ordinal
+             ) as addressed
+         ) as summed
+     ) as marked
+     where bytes_through - own_bytes <= $4
+     order by ordinal",
 );
 
 /// Whether the caller may receive at full level an event of its committed change at
@@ -510,7 +541,7 @@ pub(crate) async fn last_receivable(
     let mut after = -1;
     loop {
         let rows: Vec<EventRow> =
-            sqlx::query_as(addressed_query(REST_OF_CHANGE.0, REST_OF_CHANGE.1))
+            sqlx::query_as(addressed_query(PAGE_OF_CHANGE.0, PAGE_OF_CHANGE.1))
                 .bind(change)
                 .bind(account)
                 .bind(&classes)
@@ -611,22 +642,29 @@ pub async fn next_batch(
         .await?;
         let beyond = rows.pop_if(|row| !row.6);
         let mut more = beyond.is_some();
-        if let (Some(beyond), Some(&(change, ordinal, ..))) = (&beyond, rows.last())
+        // The last change, which the limits cut, is read again whole, up to the size of the
+        // largest message. A change whose rows pass it is not read further and is skipped.
+        let mut oversized = None;
+        if let (Some(beyond), Some(&(change, ..))) = (&beyond, rows.last())
             && beyond.0 == change
         {
-            // The rest of the last change, which the limits cut.
-            let rest: Vec<EventRow> =
-                sqlx::query_as(addressed_query(REST_OF_CHANGE.0, REST_OF_CHANGE.1))
+            rows.retain(|row| row.0 != change);
+            let mut whole: Vec<EventRow> =
+                sqlx::query_as(addressed_query(CHANGE_WITHIN.0, CHANGE_WITHIN.1))
                     .bind(change)
                     .bind(access.account_id)
                     .bind(&classes)
-                    .bind(ordinal)
+                    .bind(i64::try_from(LARGEST_SERVER_MESSAGE_BYTES).unwrap_or(i64::MAX))
                     .bind(STORED_AUDIENCE_BYTES)
                     .bind(STORED_PAYLOAD_BYTES)
-                    .bind(i64::MAX)
                     .fetch_all(&mut *connection)
                     .await?;
-            rows.extend(rest);
+            if whole.pop_if(|row| !row.6).is_some() {
+                tracing::error!(position = change, "a change is larger than a client reads");
+                oversized = Some(change);
+            } else {
+                rows.extend(whole);
+            }
         }
         let mut position = match rows.last() {
             Some(last) if more => last.0,
@@ -672,6 +710,9 @@ pub async fn next_batch(
                     skipped = Some(ended);
                 }
             }
+        }
+        if skipped.is_none() {
+            skipped = oversized;
         }
         if let Some(at) = skipped {
             position = at;

@@ -346,17 +346,6 @@ pub(crate) async fn record_at_id(
     audience: &Audience,
     event: &Event,
 ) -> ApiResult<()> {
-    record_with_parent(connection, now, id, audience, event, None).await
-}
-
-pub(crate) async fn record_with_parent(
-    connection: &mut PgConnection,
-    now: OffsetDateTime,
-    id: Uuid,
-    audience: &Audience,
-    event: &Event,
-    parent: Option<Uuid>,
-) -> ApiResult<()> {
     if !audience.fits(event) {
         return Err(ApiError::internal(&format_args!(
             "the event {} cannot have this audience",
@@ -381,8 +370,8 @@ pub(crate) async fn record_with_parent(
     sqlx::query(
         "insert into events
              (id, recorded_at, class, kind, audience, audience_account_id,
-              revalidates_account_id, payload, retention_parent)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+              revalidates_account_id, payload)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(id)
     .bind(now)
@@ -392,7 +381,6 @@ pub(crate) async fn record_with_parent(
     .bind(audience.account_id())
     .bind(revalidated_account(audience, event))
     .bind(Json(event))
-    .bind(parent)
     .execute(connection)
     .await?;
     Ok(())
@@ -459,42 +447,47 @@ pub async fn state(connection: &mut PgConnection) -> ApiResult<LogState> {
     })
 }
 
-/// Keeps the newest retention units, removing each message/notice pair together.
-/// A unit contains one event or one message followed by its notice (ADR 0207).
+/// Keeps the newest changes of the log (ADR 0207). The number of changes that are kept does
+/// not depend on how many events each change recorded, so the boundary that a client can
+/// find with cursors shows nothing about the events of other accounts.
 pub async fn trim(app: &AppState) -> ApiResult<u64> {
     let kept = i64::from(app.config.limits.stream.events_kept);
-    let batch = i64::from((app.config.limits.maintenance_batch / 2).max(1));
-    let mut removed = 0;
-    loop {
-        let (deleted, units) = transact!(app, |connection| {
-            let through: Option<i64> = sqlx::query_scalar(
-                "select coalesce(notice.position,unit.position) from (
-                     select id,position from events where retention_parent is null
-                     order by position desc offset $1 limit 1) unit
-                 left join events notice on notice.retention_parent=unit.id",
-            )
-            .bind(kept)
-            .fetch_optional(&mut *connection)
-            .await?;
-            let Some(through) = through else {
-                return Ok((0i64, 0i64));
-            };
+    let batch = i64::from(app.config.limits.maintenance_batch.max(1));
+    let through = transact!(app, |connection| {
+        let through: Option<i64> = sqlx::query_scalar(
+            "select position from events where ordinal = 0
+             order by position desc offset $1 limit 1",
+        )
+        .bind(kept)
+        .fetch_optional(&mut *connection)
+        .await?;
+        if let Some(through) = through {
             sqlx::query("update event_stream set trimmed_through=greatest(trimmed_through,$1)")
                 .bind(through)
                 .execute(&mut *connection)
                 .await?;
-            let counts: (i64,i64) = sqlx::query_as(
-                "with roots as materialized (
-                    select e.id, 1+(select count(*) from events n where n.retention_parent=e.id) as size
-                    from events e where e.retention_parent is null and e.position <= $1
-                    order by e.position limit $2),
-                 removed as (delete from events where id in(select id from roots) returning id)
-                 select coalesce(sum(roots.size),0)::bigint,count(*) from roots join removed using(id)"
-            ).bind(through).bind(batch).fetch_one(&mut *connection).await?;
-            Ok(counts)
+        }
+        Ok(through)
+    })?;
+    let Some(through) = through else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    loop {
+        let deleted = transact!(app, |connection| {
+            Ok(sqlx::query(
+                "delete from events where id in (
+                     select id from events where position <= $1
+                     order by position, ordinal limit $2)",
+            )
+            .bind(through)
+            .bind(batch)
+            .execute(&mut *connection)
+            .await?
+            .rows_affected())
         })?;
-        removed += u64::try_from(deleted).map_err(|error| ApiError::internal(&error))?;
-        if units < batch {
+        removed += deleted;
+        if i64::try_from(deleted).unwrap_or(i64::MAX) < batch {
             return Ok(removed);
         }
     }

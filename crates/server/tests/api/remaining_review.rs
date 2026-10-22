@@ -479,7 +479,6 @@ async fn review2_read_boundaries_cover_missed_calls_mentions_and_older_marks() {
         line.id,
         conversation.id.as_uuid(),
         reader.account_id,
-        None,
     )
     .await
     .unwrap();
@@ -525,13 +524,13 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
         .await;
         let message = crate::messages_support::send(&server, &owner, &channel, "template").await;
         let initial = server.snapshot(&owner).await.cursor;
-        // Populate the shipped retention bound with message/notice pairs, each pair one
-        // change as a message and its notice are. A message whose notice has no recipient,
-        // in the muted case, records no notice.
+        // Populate the shipped retention bound with changes of a message and its notice, as
+        // a message writes them. A message whose notice has no recipient, in the muted case,
+        // records no notice.
         let primary:Value=sqlx::query_scalar("select to_jsonb(e)-'id'-'position'-'ordinal' from events e where kind='message_changed' and payload->>'message_id'=$1 order by position desc limit 1").bind(message.id.to_string()).fetch_one(&server.db).await.unwrap();
         let notice:Option<Value>=sqlx::query_scalar("select to_jsonb(e)-'id'-'position'-'ordinal' from events e where kind='notification_changed' and payload->>'message_id'=$1 order by position desc limit 1").bind(message.id.to_string()).fetch_optional(&server.db).await.unwrap();
         let kept = server.state.config.limits.stream.events_kept;
-        let insert = "with pair as materialized (select gen_random_uuid() as first, gen_random_uuid() as second) insert into events select (jsonb_populate_record(null::events,case when slot=0 then $1 else $2 end || jsonb_build_object('id',case when slot=0 then first else second end,'retention_parent',case when slot=1 then first else null end))).* from pair cross join generate_series(0,$3) slot order by slot";
+        let insert = "with pair as materialized (select gen_random_uuid() as first, gen_random_uuid() as second) insert into events select (jsonb_populate_record(null::events,case when slot=0 then $1 else $2 end || jsonb_build_object('id',case when slot=0 then first else second end))).* from pair cross join generate_series(0,$3) slot order by slot";
         let pairs = |count: u32| {
             let (primary, notice, server) = (&primary, &notice, &server);
             async move {

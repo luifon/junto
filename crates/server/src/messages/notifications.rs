@@ -45,7 +45,6 @@ pub async fn missed_call(
     id: MessageId,
     place: Uuid,
     account_id: AccountId,
-    message_event: Option<Uuid>,
 ) -> ApiResult<()> {
     let noticed = sqlx::query(
         "insert into notifications (id, account_id, message_id, kind, created_at, read_at)
@@ -67,8 +66,7 @@ pub async fn missed_call(
     } else {
         Vec::new()
     };
-    publish_after(connection, now, id, &recipients, true, message_event).await?;
-    Ok(())
+    publish(connection, now, id, &recipients, true).await
 }
 
 pub async fn create(
@@ -76,7 +74,6 @@ pub async fn create(
     now: OffsetDateTime,
     id: MessageId,
     added_mentions: Option<&[AccountId]>,
-    message_event: Uuid,
 ) -> ApiResult<()> {
     let (place_id, channel_id): (Uuid, Option<ChannelId>) = sqlx::query_as("select m.place_id,ch.id from messages m left join channels ch on ch.id=m.place_id where m.id=$1")
         .bind(id)
@@ -135,7 +132,7 @@ pub async fn create(
             .into_iter()
             .map(|(id, kind)| (id, kind == "mention" || kind == "direct"))
             .collect();
-        publish_after(connection, now, id, &recipients, true, Some(message_event)).await?;
+        publish(connection, now, id, &recipients, true).await?;
     }
     Ok(())
 }
@@ -347,17 +344,6 @@ pub async fn publish(
     recipients: &[(AccountId, bool)],
     alert: bool,
 ) -> ApiResult<()> {
-    publish_after(connection, now, id, recipients, alert, None).await
-}
-
-async fn publish_after(
-    connection: &mut PgConnection,
-    now: OffsetDateTime,
-    id: MessageId,
-    recipients: &[(AccountId, bool)],
-    alert: bool,
-    parent: Option<Uuid>,
-) -> ApiResult<()> {
     let notice_id = Uuid::now_v7();
     let accounts: Vec<_> = recipients.iter().map(|(id, _)| *id).collect();
     let background: Vec<_> = recipients
@@ -378,13 +364,12 @@ async fn publish_after(
         message_id: id,
         notice_id,
     };
-    events::log::record_with_parent(
+    events::log::record_at_id(
         connection,
         now,
         notice_id,
         &audience,
         &Event::NotificationChanged { message_id: id },
-        parent,
     )
     .await
 }

@@ -415,6 +415,45 @@ async fn a_change_with_more_events_than_a_batch_arrives_whole_in_one_message() {
     }
 }
 
+#[tokio::test]
+async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let mut stream = server.subscribed(&owner, Level::Full).await;
+    let mut transaction = server.db.begin().await.unwrap();
+    let event = Event::DeviceRenamed {
+        device_id: owner.device_id,
+        name: "many".to_owned(),
+    };
+    junto_server::events::tell_account(
+        &mut transaction,
+        server.clock.now(),
+        owner.account_id,
+        &event,
+    )
+    .await
+    .unwrap();
+    // More events for one connection than the 2^16 indexes of a change, each small.
+    sqlx::query(
+        "insert into events (id, recorded_at, class, kind, audience, audience_account_id,
+                             revalidates_account_id, payload)
+         select gen_random_uuid(), e.recorded_at, e.class, e.kind, e.audience,
+                e.audience_account_id, e.revalidates_account_id, e.payload
+         from events e cross join generate_series(1, 70000)
+         where e.position is null",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    assert_eq!(
+        after_checkpoints(&mut stream).await,
+        Frame::Message(ServerMessage::Resync {
+            reason: ResyncReason::SkippedEvent
+        })
+    );
+}
+
 /// A client that applied a change has its cursor at the position that the receipt of the
 /// change names (ADR 0214), so a wait for the receipt ends with the change.
 #[tokio::test]

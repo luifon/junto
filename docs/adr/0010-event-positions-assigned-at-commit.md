@@ -43,7 +43,7 @@ Positions of the stream:
 - The position of an event on the wire, its `id` (ADR 0206), is the position of its change times 2^16, plus the index of the event among the events of that change that the connection receives: 0, 1, 2. The index counts nothing that the connection does not receive, so two positions of one change tell nothing about the events between them.
 - A cursor, of a snapshot, a `subscribed`, a `checkpoint` or the answer of a change (ADR 0214), names the end of a change: its position times 2^16, plus 65535. The `change` message states this position as well, and the client moves its cursor to it after the events of the change, so a client that waits for its cursor to reach the cursor of an answer stops waiting with the change.
 - A change reaches a connection in one message (ADR 0011), so the client of a cursor has applied every change up to the change that the cursor names. The server reads the changes after it and does not read the low 16 bits of a cursor.
-- 2^16 indexes are enough: the largest message that a client reads (ADR 0011) holds fewer events. A position of a change at or above 2^47 cannot be written on the wire, and the server fails the read; at a thousand changes per second the log reaches it after more than four thousand years.
+- 2^16 indexes are enough: the largest message that a client reads (ADR 0011) holds fewer events. A change with more events for one connection is not sent to it, as a change larger than that message, and the server checks the number before it writes a position. A position of a change at or above 2^47 cannot be written on the wire, and the server fails the read; at a thousand changes per second the log reaches it after more than four thousand years.
 
 Epoch:
 

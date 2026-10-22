@@ -23,7 +23,7 @@ The log:
 Delivery:
 
 - Each connection reads the log after its own position, in batches of at most 64 events. A replay and live delivery are the same read.
-- A batch ends at the end of a change. When the limit of rows or the budget of bytes cuts a change, the batch also reads the rest of that change. One more row, read without its audience and payload, tells whether the log holds more and whether the last change goes on, so the rest is read only for a change that the limits cut.
+- A batch ends at the end of a change. One more row, read without its audience and payload, tells whether the log holds more and whether the limit of rows or the budget of bytes cut the last change. Only then the batch reads that change again whole, while its rows that are addressed to the connection hold at most 256 KiB of stored parts, the size of the largest message. A change with more is not read further: the connection gets `resync` with the reason `skipped_event`, and its position moves past the change. Such a change can hold few events that the connection receives among many that it does not; it costs that connection a snapshot.
 - The events of one change that a connection may receive are one `change` message, in the order of the change (ADR 0206). The client applies all of them before its cursor passes the change, so a connection that ends during a write leaves no cursor inside a change.
 - A `change` message whose text is larger than 256 KiB, the largest message that a client reads, is not sent. The connection gets `resync` with the reason `skipped_event`, and its position moves past the change.
 - One batch is one read-only serializable transaction (ADR 0009). It checks the session as every request does (ADR 0109), reads the events, and reads the memberships, roles and overrides of the account in the workspaces and channels that the batch names. From these it builds the same input for the permission function as the REST routes build.
@@ -83,7 +83,7 @@ Tests:
 - A change and its events commit together or not at all.
 - A permission that is removed hides every event that the account has not been sent. An event whose decision is less than 1 second old can still be written, and a message that the socket has taken is completed.
 - A database that needs more than 1 second for the read of the smallest batch delivers no events. The connections close after 5 attempts and the clients connect again.
-- The memory of a batch grows with the largest change that it reads, beyond the 64 rows and 256 KiB of its limits. A change that records many events for one recipient is not sent to it and leads to a snapshot.
+- A batch holds at most its 64 rows and 256 KiB plus one row, or the rows of one change up to 256 KiB of stored parts and one row more without parts.
 - The event stream needs 7 database connections next to the 16 of the requests.
 - A permission that is granted shows the events about the channel that still wait in the log for that connection. A client can therefore receive an event about a channel before the notice that its permissions changed (ADR 0208).
 - A subscription with an older cursor is decided by the current permissions as well. An account can read the kept part of the log (ADR 0207) for the objects that it may see now, their earlier names and their former members included.
