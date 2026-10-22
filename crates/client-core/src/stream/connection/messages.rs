@@ -356,8 +356,6 @@ impl Work {
             .min()
     }
 
-    /// An event arrived. A read position whose request is on its way gets an answer that
-    /// can be older than the event, when the event changes the summary of its place.
     /// Keeps an event of the messages of a place whose history a search reads now.
     pub(super) fn keep_for_searches(&mut self, event: &Arc<Event>, model: &ServerModel) {
         for sending in self.sends.values_mut() {
@@ -376,6 +374,19 @@ impl Work {
         }
     }
 
+    /// The state was replaced by a snapshot: the events between the state before and the
+    /// new one were not told, so the answer of a search that is on its way is not used.
+    pub(super) fn overtake_searches(&mut self) {
+        for sending in self.sends.values_mut() {
+            if let Some((_, kept)) = &mut sending.searching {
+                kept.clear();
+                sending.search_overtaken = true;
+            }
+        }
+    }
+
+    /// An event arrived. A read position whose request is on its way gets an answer that
+    /// can be older than the event, when the event changes the summary of its place.
     pub(super) fn overtake_marks(
         &mut self,
         event: &junto_protocol::events::Event,

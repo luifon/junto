@@ -1821,6 +1821,45 @@ fn call_people(
     occupants
 }
 
+/// What the window shows of the request of the person to enter one voice channel.
+pub(super) struct ShownEntry {
+    pub(super) state: Option<EntryState>,
+    /// The request of another device of the account that is shown as waiting.
+    pub(super) elsewhere: Option<EntryRequestId>,
+}
+
+/// A request of this device that waits or is on its way is shown as it is. Otherwise a
+/// request of the account that another device made waits as the state of the server lists
+/// it (ADR 0719), also over a request of this device that ended; then the end of the
+/// request of this device is shown. The state of the server can still list the request of
+/// this device that ended, which is not shown as waiting.
+pub(super) fn shown_entry(
+    own: Option<&OwnEntry>,
+    model: &ServerModel,
+    server_id: ServerId,
+    channel_id: ChannelId,
+) -> ShownEntry {
+    let own = own.filter(|entry| entry.server_id == server_id && entry.channel_id == channel_id);
+    if let Some(entry) =
+        own.filter(|entry| matches!(entry.state, EntryState::Asking | EntryState::Waiting))
+    {
+        return ShownEntry {
+            state: Some(entry.state),
+            elsewhere: None,
+        };
+    }
+    let elsewhere = own_entry_request(model, channel_id)
+        .map(|request| request.id)
+        .filter(|id| own.is_none_or(|entry| entry.request_id != Some(*id)));
+    ShownEntry {
+        state: match elsewhere {
+            Some(_) => Some(EntryState::Waiting),
+            None => own.map(|entry| entry.state),
+        },
+        elsewhere,
+    }
+}
+
 /// The request of the account to enter a voice channel, from whichever device of the
 /// account it was made, as the state of the server lists it.
 pub(super) fn own_entry_request(
@@ -1862,15 +1901,8 @@ fn voice_state(
         model,
         known,
     );
-    // What this device knows of its own request comes first. A request of the account
-    // that another device made waits as the state of the server lists it (ADR 0719).
-    let channel_id = channel.channel.id;
-    let entry = known
-        .entry
-        .as_ref()
-        .filter(|entry| entry.server_id == server_id && entry.channel_id == channel_id)
-        .map(|entry| entry.state)
-        .or_else(|| own_entry_request(model, channel_id).map(|_| EntryState::Waiting))
+    let entry = shown_entry(known.entry.as_ref(), model, server_id, channel.channel.id)
+        .state
         .filter(|_| relation == Relation::Outside);
     // What the server answered to the last join of this voice channel.
     let refused = match &media.calls.outcome {

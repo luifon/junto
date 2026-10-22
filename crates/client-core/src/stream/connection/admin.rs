@@ -370,22 +370,21 @@ impl Client {
             }));
             model.carry_archived(before, &held);
         }
-        // A carried channel is checked by the archived list of its workspace. A list that no
-        // reader holds is read for that check alone (ADR 0762).
-        let mut checks: Vec<WorkspaceId> = self
+        // A carried channel is checked by the archived list of its workspace. The check
+        // holds the read of the list also when a reader releases the list before the
+        // answer, and a list that no reader holds is read for the check alone (ADR 0762).
+        let checks: Vec<WorkspaceId> = self
             .model
             .as_ref()
             .map(|model| model.carried_archived_workspaces())
             .unwrap_or_default();
-        checks.retain(|workspace_id| {
-            !self
-                .admin
-                .wanted
-                .contains_key(&AdminPart::Archived(*workspace_id))
-        });
         self.admin.checking = checks.iter().copied().collect();
         for workspace_id in checks {
-            self.start(Load::Part(Part::Admin(AdminPart::Archived(workspace_id))));
+            let list = AdminPart::Archived(workspace_id);
+            // The list that a reader holds is read below with the other open collections.
+            if !self.admin.wanted.contains_key(&list) {
+                self.start(Load::Part(Part::Admin(list)));
+            }
         }
         for part in wanted {
             let held = self

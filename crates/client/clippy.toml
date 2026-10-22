@@ -49,6 +49,11 @@ disallowed-methods = [
     { path = "iana_time_zone::get_timezone", reason = "it reads files of the system; the thread of the window does not (ADR 0730): use `zones::system_zone` at the start or on a background thread" },
     { path = "junto_client::zones::system_zone", reason = "it reads files of the system; after the start the window reads the zone on a background thread (ADR 0730, ADR 0798): use `AppState::system_zone_name`" },
     { path = "junto_client::zones::system", reason = "it reads files of the system; after the start the window reads the zone on a background thread (ADR 0730, ADR 0798): use `AppState::system_zone_name`" },
+    # A transfer changes its progress at each part. The window takes a change of the stage
+    # and each further hundredth only (ADR 0740, ADR 0744).
+    { path = "junto_client_core::transfers::Download::watch", reason = "it changes at each part that arrives, and each change that the window takes derives its view again (ADR 0740): use `state::progress::Steps`" },
+    { path = "junto_client_core::transfers::Upload::watch", reason = "it changes at each part that leaves, and each change that the window takes derives its view again (ADR 0740): use `state::progress::Steps`" },
+    { path = "junto_client_core::transfers::RecordingDownload::watch", reason = "it changes at each part that arrives, and each change that the window takes derives its view again (ADR 0744): use `state::progress::Steps`" },
 ]
 # Clippy refuses the type in a type position and in `use`, not as a value such as
 # `chrono::Local.timestamp_opt(..)`; the test `notices::no_code_of_the_application_names_the_local_zone_of_chrono`

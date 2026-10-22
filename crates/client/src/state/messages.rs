@@ -756,7 +756,7 @@ impl AppState {
     /// The window is told a change of the stage of an upload and each further hundredth of
     /// the file, not each part that leaves.
     fn watch_upload(&mut self, upload: &Upload, cx: &mut Context<Self>) {
-        let mut steps = Steps::new(upload.watch());
+        let mut steps = Steps::of_upload(upload);
         cx.spawn(async move |this, cx| {
             while steps.next().await.is_some() {
                 let told = this.update(cx, |this, cx| {
@@ -884,7 +884,7 @@ impl AppState {
         let download = server.transfers().download(attachment, directory);
         // The window is told a change of the stage and each further hundredth of the file,
         // not each part that arrives.
-        let mut steps = Steps::new(download.watch());
+        let mut steps = Steps::of_download(&download);
         self.known.downloads.insert(key, download.progress());
         self.downloads.insert(key, download);
         cx.spawn(async move |this, cx| {

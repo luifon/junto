@@ -3,7 +3,10 @@
 //! again on the thread of the window. The window takes a change of the stage, of the
 //! interruption and each further hundredth of the file (ADR 0744).
 
-use junto_client_core::transfers::{DownloadProgress, DownloadStage, UploadProgress, UploadStage};
+use junto_client_core::transfers::{
+    Download, DownloadProgress, DownloadStage, RecordingDownload, Upload, UploadProgress,
+    UploadStage,
+};
 use tokio::sync::watch;
 
 /// A file without a stated length counts parts of this many bytes.
@@ -87,8 +90,30 @@ pub(super) struct Steps<T> {
     ended: bool,
 }
 
+impl Steps<DownloadProgress> {
+    /// The only reader of the progress of a download of a file of a message in the window.
+    #[allow(clippy::disallowed_methods)]
+    pub(super) fn of_download(download: &Download) -> Self {
+        Self::new(download.watch())
+    }
+
+    /// The only reader of the progress of a download of a file of a recording in the window.
+    #[allow(clippy::disallowed_methods)]
+    pub(super) fn of_recording(download: &RecordingDownload) -> Self {
+        Self::new(download.watch())
+    }
+}
+
+impl Steps<UploadProgress> {
+    /// The only reader of the progress of an upload in the window.
+    #[allow(clippy::disallowed_methods)]
+    pub(super) fn of_upload(upload: &Upload) -> Self {
+        Self::new(upload.watch())
+    }
+}
+
 impl<T: Stepped> Steps<T> {
-    pub(super) fn new(watch: watch::Receiver<T>) -> Self {
+    fn new(watch: watch::Receiver<T>) -> Self {
         Self {
             watch,
             told: None,

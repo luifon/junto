@@ -1425,23 +1425,21 @@ impl AppState {
         channel_id: ChannelId,
         cx: &mut Context<Self>,
     ) {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let elsewhere = server.live().view().model.and_then(|model| {
+            view::shown_entry(self.known.entry.as_ref(), &model, server_id, channel_id).elsewhere
+        });
         let own =
             self.known.entry.as_ref().is_some_and(|entry| {
                 entry.server_id == server_id && entry.channel_id == channel_id
             });
+        // The request of this device, or what the window told of its end, goes first.
         if own {
             self.withdraw_entry(cx);
-            return;
         }
-        let Some(server) = self.client.server(server_id) else {
-            return;
-        };
-        let request_id = server
-            .live()
-            .view()
-            .model
-            .and_then(|model| view::own_entry_request(&model, channel_id).map(|held| held.id));
-        let Some(request_id) = request_id else {
+        let Some(request_id) = elsewhere else {
             return;
         };
         let api = server.api();
