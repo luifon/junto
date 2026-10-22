@@ -389,6 +389,8 @@ pub struct AppState {
     shown: Shown,
     /// The picture of the profile preset, and where a change of it stands.
     preset_picture: people::PresetPicture,
+    /// The people whose profiles the window reads (ADR 0783).
+    people_followed: people::Followed,
     /// The images of the logos of the servers, and where the read of each stands
     /// (ADR 0101).
     logos: logo::Logos,
@@ -692,6 +694,7 @@ impl AppState {
             update_install: update_install::InstallState::new(),
             shown: Shown::default(),
             preset_picture: people::PresetPicture::default(),
+            people_followed: people::Followed::default(),
             logos: logo::Logos::default(),
             members: None,
             watchers: HashMap::new(),

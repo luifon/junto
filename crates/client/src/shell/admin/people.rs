@@ -1023,7 +1023,7 @@ impl Shell {
         let list = std::iter::once(Row::new("people-header", true).part())
             .chain(
                 rows.iter()
-                    .map(|row| Row::new(format!("account-{}", row.id), true)),
+                    .map(|row| Row::new(format!("account-{}", row.id), true).account(row.id)),
             )
             .chain(std::iter::once(Row::new("people-footer", false).part()))
             .collect();
@@ -1210,6 +1210,7 @@ impl Shell {
                 format!("member-{}", row.account_id),
                 row.assignable.is_some() || matches!(row.remove, Some(Ok(()))),
             )
+            .account(row.account_id)
         }))
         .chain(std::iter::once(
             Row::new(
@@ -1218,11 +1219,9 @@ impl Shell {
             )
             .part(),
         ))
-        .chain(
-            addable
-                .iter()
-                .map(|row| Row::new(format!("member-addable-{}", row.account_id), true)),
-        )
+        .chain(addable.iter().map(|row| {
+            Row::new(format!("member-addable-{}", row.account_id), true).account(row.account_id)
+        }))
         .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();

@@ -678,6 +678,19 @@ impl People {
             .map_or(0, |held| held.on_way.len())
     }
 
+    /// The number of requests that the cache started.
+    pub fn requests(&self) -> u64 {
+        self.asked
+    }
+
+    /// The accounts whose profiles are wanted for a server, in the order of their reads.
+    pub fn wanted(&self, server_id: ServerId) -> Vec<AccountId> {
+        self.servers
+            .get(&server_id)
+            .map(|held| held.wanted.clone())
+            .unwrap_or_default()
+    }
+
     /// The number of requests in a row for the profile of an account that got no answer,
     /// while no request for it is on its way.
     pub fn unanswered(&self, server_id: ServerId, account_id: AccountId) -> Option<u8> {
@@ -1116,6 +1129,15 @@ fn store_picture(
     Ok(decode(&bytes, PRESET_SIDE))
 }
 
+/// The people whose profiles the window reads, apart from the cache.
+#[derive(Debug, Default)]
+pub(super) struct Followed {
+    /// The people of the last derived view, with those of the call.
+    view: HashMap<ServerId, Wanted>,
+    /// The accounts of the rows of the administration that the list laid out last.
+    admin_rows: Vec<AccountId>,
+}
+
 /// The picture of the profile preset, as the settings show it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PresetPicture {
@@ -1176,12 +1198,35 @@ impl AppState {
         if let Some(call) = call {
             add_call_people(&mut wanted, view, call, servers);
         }
+        self.people_followed.view = wanted;
+        self.want_people(cx);
+    }
+
+    /// The accounts of the rows of the open page of the administration that its list laid
+    /// out in the last frame, in the order of the rows. Their profiles are read; the other
+    /// accounts of the page are not drawn (ADR 0761, ADR 0783). The window is not told: the
+    /// pictures are those of every held profile, so only an answer changes what it draws,
+    /// and an answer tells the window.
+    pub fn admin_accounts_laid_out(&mut self, accounts: Vec<AccountId>, cx: &mut Context<Self>) {
+        if self.people_followed.admin_rows == accounts {
+            return;
+        }
+        self.people_followed.admin_rows = accounts;
+        self.want_people(cx);
+    }
+
+    /// Gives the cache the people of the view, and the accounts of the laid-out rows of the
+    /// open page of the administration that the page still lists.
+    fn want_people(&mut self, cx: &mut Context<Self>) {
+        let mut wanted = self.people_followed.view.clone();
         if let Some(admin) = self.admin_view() {
-            wanted
-                .entry(admin.server_id)
-                .or_default()
-                .accounts
-                .extend(admin_people(&admin));
+            let listed: HashSet<AccountId> = admin_people(&admin).into_iter().collect();
+            wanted.entry(admin.server_id).or_default().accounts.extend(
+                self.people_followed
+                    .admin_rows
+                    .iter()
+                    .filter(|account_id| listed.contains(account_id)),
+            );
         }
         self.known.people.want_all(&wanted);
         self.read_people(true, cx);
@@ -1361,6 +1406,20 @@ impl AppState {
     #[cfg(feature = "test-support")]
     pub fn people_on_way(&self, server_id: ServerId) -> usize {
         self.known.people.on_way(server_id)
+    }
+
+    /// The number of requests for profiles and images that the window started, for every
+    /// server. A test counts them.
+    #[cfg(feature = "test-support")]
+    pub fn people_requests(&self) -> u64 {
+        self.known.people.requests()
+    }
+
+    /// The accounts of a server whose profiles the window wants, in the order in which
+    /// they are read. A test reads them.
+    #[cfg(feature = "test-support")]
+    pub fn people_wanted(&self, server_id: ServerId) -> Vec<AccountId> {
+        self.known.people.wanted(server_id)
     }
 
     /// The number of requests in a row for the profile of an account that got no answer.

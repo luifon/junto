@@ -2873,6 +2873,114 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
     assert!(count(&mut window) < 100);
 }
 
+/// The window reads the profiles of the accounts whose rows the list lays out, and those of
+/// the rows that a scroll brings into view, and not the profiles of the other accounts of
+/// a long list. A scroll back to rows whose profiles are read sends no request and draws
+/// the window once (ADR 0783).
+#[gpui::test]
+fn the_people_page_reads_the_profiles_of_the_rows_that_it_lays_out(cx: &mut TestAppContext) {
+    use sqlx::ConnectOptions;
+    let world = World::new();
+    let server = world.server("People profiles");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let code = invite(&world, &owner, Vec::new());
+    let device = Device::new();
+    world.run(async {
+        let handle = device.add(&server.address()).await;
+        handle.dispatch(join(&code, "Member 0002b")).await.unwrap();
+        logged_in(&handle);
+    });
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into accounts (id, name, status, created_at)
+            select gen_random_uuid(), 'Member ' || lpad(n::text, 4, '0'), 'active', now()
+            from generate_series(1, 2000) as n",
+        )
+        .execute(&mut database)
+        .await
+        .unwrap();
+    });
+    let state = window.state.clone();
+    let requests =
+        |window: &mut Window| state.read_with(&window.cx, |state, _| state.people_requests());
+    let before = requests(&mut window);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        server_page!(window, People).is_some_and(|page| {
+            page.accounts
+                .loaded()
+                .is_some_and(|rows| rows.len() == 2002)
+        })
+    });
+    window.settle();
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    let wanted = |window: &mut Window| {
+        state.read_with(&window.cx, |state, _| state.people_wanted(server_id))
+    };
+    let read = |window: &mut Window| {
+        window.until("every profile request has its answer", |window| {
+            state.read_with(&window.cx, |state, _| state.people_on_way(server_id)) == 0
+        });
+    };
+    read(&mut window);
+    let laid_out = window.in_shell(|shell, _, _| shell.admin_rows_laid_out());
+    let first = wanted(&mut window);
+    assert!(!first.is_empty());
+    assert!(
+        first.len() <= laid_out,
+        "{} profiles wanted for {laid_out} rows laid out",
+        first.len()
+    );
+    let opened = requests(&mut window) - before;
+    assert!(
+        opened <= u64::try_from(laid_out).unwrap(),
+        "{opened} profile requests for {laid_out} rows laid out"
+    );
+
+    // A row far below the first 512 accounts comes into view: its profile is wanted.
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to(0.75);
+        cx.notify();
+    });
+    window.settle();
+    let rows = server_page!(&mut window, People)
+        .unwrap()
+        .accounts
+        .loaded()
+        .unwrap()
+        .clone();
+    let seen = rows
+        .iter()
+        .position(|row| in_view(&mut window, sel("account-row", row.id)).is_some())
+        .unwrap();
+    assert!(seen > 512, "the first row in view is row {seen}");
+    let after = wanted(&mut window);
+    assert!(after.contains(&rows[seen].id), "{seen}");
+    // The first account of the page is drawn only by the page.
+    let top = rows
+        .iter()
+        .find(|row| row.name == "Member 0001")
+        .unwrap()
+        .id;
+    assert!(first.contains(&top));
+    assert!(!after.contains(&top));
+
+    // Back at the top, the profiles are held: no request, and one drawing for the scroll.
+    read(&mut window);
+    let draws = |window: &mut Window| window.in_shell(|shell, _, _| shell.draws().0);
+    let (drawn, asked) = (draws(&mut window), requests(&mut window));
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to(0.0);
+        cx.notify();
+    });
+    window.settle();
+    assert_eq!(wanted(&mut window), first);
+    assert_eq!(requests(&mut window), asked);
+    assert_eq!(draws(&mut window) - drawn, 1);
+}
+
 /// Presses "Load older" of the audit log, one page at a time, until `done` holds for the
 /// loaded page.
 fn load_older_until(
