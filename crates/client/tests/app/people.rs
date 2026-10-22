@@ -56,6 +56,11 @@ impl Window {
         self.cx.run_until_parked();
     }
 
+    /// True when the window draws the image of the avatar of the account somewhere.
+    pub(crate) fn draws_picture(&mut self, account_id: AccountId) -> bool {
+        self.shows_named(format!("avatar-image:{}", account_id.as_uuid().as_u128()))
+    }
+
     /// The requests for profiles and images of the selected server that are on their way.
     fn people_on_way(&mut self) -> usize {
         let server_id = self.server_id();
@@ -233,9 +238,10 @@ fn the_author_of_a_notice_is_drawn_with_the_picture(cx: &mut TestAppContext) {
     window.until("the notice is counted", |window| {
         window.unread_notices() == 1
     });
+    assert!(!window.draws_picture(ada));
     window.open_notices();
     window.until("the picture of Ada at the notice", |window| {
-        window.shows_picture(ada, hash)
+        window.shows_picture(ada, hash) && window.draws_picture(ada)
     });
 }
 
@@ -252,12 +258,13 @@ fn the_author_of_a_search_result_is_drawn_with_the_picture(cx: &mut TestAppConte
         hash,
     } = picture_scene(cx, &world);
     admin.send(&world, random, document("the quartz review"));
+    assert!(!window.draws_picture(ada));
     window.search_for("quartz");
     window.until("the result of Ada", |window| {
         window.until_searched().results.len() == 1
     });
     window.until("the picture of Ada at the result", |window| {
-        window.shows_picture(ada, hash)
+        window.shows_picture(ada, hash) && window.draws_picture(ada)
     });
 }
 

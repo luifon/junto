@@ -65,9 +65,12 @@ impl Avatar {
 
 impl RenderOnce for Avatar {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let seed = self.seed;
         let picture = match self.image {
-            // The image fills the square: its middle is shown, with its proportions.
+            // The image fills the square: its middle is shown, with its proportions. A test
+            // finds the drawn image of an account by the seed of its avatar.
             Some(image) => img(image)
+                .debug_selector(move || format!("avatar-image:{seed}"))
                 .size(u(self.size))
                 .flex_none()
                 .rounded(u(self.radius))
