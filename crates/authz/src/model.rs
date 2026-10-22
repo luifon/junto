@@ -226,8 +226,9 @@ pub enum Acquaintance {
     /// the server owner or holds the administrator permission: the actor may write to it
     /// (ADR 0307).
     Administrator,
-    /// The other account is inactive or deleted. Its profile, without an avatar, is open to
-    /// every actor: content that it wrote stays readable (ADR 0121).
+    /// The other account is inactive or deleted, and the actor is a member of a workspace
+    /// that it left by itself or has a direct conversation with it: the actor reads content
+    /// that it wrote, and sees its profile without an avatar (ADR 0121).
     Departed,
     Unrelated,
 }

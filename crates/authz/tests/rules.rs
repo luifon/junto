@@ -320,7 +320,7 @@ fn every_actor_may_leave_a_workspace_and_only_a_member_may_leave_the_server() {
 }
 
 #[test]
-fn the_profile_of_a_departed_account_is_open_to_every_actor() {
+fn the_profile_of_a_departed_account_is_open_to_an_actor_that_the_server_counts_as_a_witness() {
     let inviter = with_server(&[ServerPermission::CreateInvites]);
     for actor in [owner(), administrator(), plain(), inviter] {
         assert_eq!(

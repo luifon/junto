@@ -302,9 +302,13 @@ pub async fn get_avatar(
     let now = app.now();
     let (media_type, content, hash): (String, Vec<u8>, Vec<u8>) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
+        require_sight(connection, &access, account_id).await?;
         // The avatar of an inactive or a deleted account is not shown to other accounts
         // (ADR 0121).
-        if require_sight(connection, &access, account_id).await? == Acquaintance::Departed {
+        let departed = store::profile_of(connection, account_id)
+            .await?
+            .is_some_and(|profile| profile.departure.is_some());
+        if departed && account_id != access.account_id {
             return Err(ApiError::not_found());
         }
         let row = sqlx::query_as(

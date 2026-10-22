@@ -119,6 +119,7 @@ pub async fn leave_workspace(
             Departing::Workspace
         }))?;
         end_membership(connection, &app, now, account_id, account_id, workspace_id).await?;
+        record_left(connection, account_id, workspace_id).await?;
         audit::record(
             connection,
             now,
@@ -162,6 +163,7 @@ pub async fn delete_account(State(app): State<AppState>, bearer: Bearer) -> ApiR
         .await?;
         for workspace_id in &workspace_ids {
             end_membership(connection, &app, now, account_id, account_id, *workspace_id).await?;
+            record_left(connection, account_id, *workspace_id).await?;
             audit::record(
                 connection,
                 now,
@@ -181,6 +183,24 @@ pub async fn delete_account(State(app): State<AppState>, bearer: Bearer) -> ApiR
         .await
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stores that an account left a workspace by itself: the members of that workspace are
+/// told of its departure from the server and see its profile after it (ADR 0121).
+async fn record_left(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    sqlx::query(
+        "insert into account_departures (account_id, workspace_id) values ($1, $2)
+         on conflict do nothing",
+    )
+    .bind(account_id)
+    .bind(workspace_id)
+    .execute(connection)
+    .await?;
+    Ok(())
 }
 
 /// How an account ends its presence on the server.
@@ -212,12 +232,14 @@ async fn end_account(
             SessionEnd::Deleted,
         ),
     };
+    // The time comes first: the check of the table needs it with the state.
+    sqlx::query("update accounts set departed_at = $2 where id = $1")
+        .bind(account_id)
+        .bind(now)
+        .execute(&mut *connection)
+        .await?;
     super::moderation::set_status(connection, now, account_id, status).await?;
-    let departed = Event::AccountDepartureChanged {
-        account_id,
-        departure: Some(departure),
-    };
-    events::publish(connection, now, &departed).await?;
+    events::log::departure_changed(connection, now, account_id, Some(departure)).await?;
     store::contact_changed(connection, now, account_id).await?;
     store::end_sessions(connection, &app.calls, now, account_id, session_end).await?;
     crate::exports::account_ended(connection, now, account_id).await?;
@@ -286,11 +308,11 @@ pub(crate) async fn reactivate(
     workspace_ids: &[WorkspaceId],
 ) -> ApiResult<()> {
     super::moderation::set_status(connection, now, account_id, AccountStatus::Active).await?;
-    let returned = Event::AccountDepartureChanged {
-        account_id,
-        departure: None,
-    };
-    events::publish(connection, now, &returned).await?;
+    sqlx::query("update accounts set departed_at = null where id = $1")
+        .bind(account_id)
+        .execute(&mut *connection)
+        .await?;
+    events::log::departure_changed(connection, now, account_id, None).await?;
     store::add_members(connection, now, account_id, workspace_ids).await?;
     store::contact_changed(connection, now, account_id).await
 }

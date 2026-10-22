@@ -17,7 +17,7 @@ Audiences:
 | `device_added`, `device_renamed`, `device_removed`, `device_logged_in`, `device_logged_out`, `account_recovered` | The connections of the account itself |
 | `permissions_changed` | The accounts whose permissions the change can have altered |
 | `account_added`, `account_status_changed`, `account_server_roles_changed`, `owner_changed` | Accounts with `ban_members` |
-| `account_departure_changed` | Every active account (ADR 0121) |
+| `account_departure_changed` | The members of the workspaces that the account left by itself and its direct-conversation peers, from a stored list, and accounts with `ban_members` (ADR 0121) |
 | `server_role_created`, `server_role_updated` | Accounts with `administrator` |
 | `invite_created`, `invite_used`, `invite_revoked` | Accounts with `create_invites` that created the invite or may see every workspace that it names (ADR 0111) |
 | `invites_of_creator_revoked` | Accounts with `create_invites` |

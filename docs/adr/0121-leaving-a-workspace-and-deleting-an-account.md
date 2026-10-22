@@ -41,11 +41,12 @@ The account row and the name stay in both states, for the audit log and for the 
 - The caller must be a member of the workspace; otherwise `not_found`.
 - It is one serializable transaction (ADR 0009) and does what the removal of a membership does (ADR 0106), through the same function:
   - the membership and its workspace role assignments are deleted; the overrides of the roles stay;
-  - every invite that the account created loses this workspace; an invite that names no other workspace is revoked, with its event and audit entry (ADR 0106);
+  - every invite that the account created and that is still valid (not revoked, not expired, not used up) loses this workspace; an invite that names no other workspace is revoked, with its event and audit entry (ADR 0106);
   - a seat of the account in a call of a channel of the workspace ends, with a pending move of that seat;
   - `permissions_changed` for the account, and for its direct conversation peers (ADR 0208);
   - `workspace_member_removed` for the accounts that see the workspace and for the account.
 - No moderation notice is recorded (ADR 0120): nobody moderated the account.
+- The server stores that the account left this workspace by itself (`account_departures`). The members of the workspaces that an account left by itself are the members who see its departure (below).
 - Audit entry `workspace_member_left` about the workspace, with the account. The acting account is the account itself.
 - Every other membership, the server roles, the devices and the sessions stay, unless this was the last membership (below).
 - The default workspace can be left as any other.
@@ -54,11 +55,11 @@ The account row and the name stay in both states, for the audit log and for the 
 
 When the membership was the last of the account, the same transaction also:
 
-- sets the state to `inactive`;
+- sets the state to `inactive` and stores the time of the departure (`accounts.departed_at`);
 - ends every session of the account, with the stored reason `inactive` (ADR 0208), and with them every seat in a call, a direct call included (ADR 0510);
 - deletes every access token of the account (ADR 0210);
 - deletes every server role assignment of the account;
-- revokes every invite of the account that is still valid, with an `invite_revoked` event and an `invite_revoked` audit entry for each, whose acting account is the account. Reason: an invite admits people in the name of its creator, and the creator can no longer revoke it or answer for it;
+- revokes every invite of the account that is still valid (not revoked, not expired, not used up), with an `invite_revoked` event and an `invite_revoked` audit entry for each, whose acting account is the account. Reason: an invite admits people in the name of its creator, and the creator can no longer revoke it or answer for it;
 - ends the exports of the account (ADR 0411);
 - records `account_status_changed`, `account_server_roles_changed` when the account held a server role, and `account_departure_changed`;
 - records the audit entry `account_left` about the server.
@@ -103,7 +104,7 @@ An account that is a member of no workspace, for example after administrators re
 
 ### What other members see
 
-- The profile of a departed account (`GET /api/v1/accounts/{account_id}/profile`) has the field `departure`, with the value `inactive` or `deleted`, and no avatar. It is shown to every active account of the server. Reason: content that the account wrote stays readable to the audience of that content, which already receives the identifier and the name (`Message.author_name`); without the profile a reader could not tell a departed author from an unknown one. The fact is given only to a caller that knows the identifier.
+- The profile of a departed account (`GET /api/v1/accounts/{account_id}/profile`) has the field `departure`, with the value `inactive` or `deleted`, and no avatar. It is shown to the other members, as the operator's rule names them: the current members of the workspaces that the account left by itself, the accounts with a direct conversation with it, and the accounts with `ban_members` (ADR 0119). Another account gets `not_found`, as for an unknown account (ADR 0205). Reason: these accounts read content that the account wrote; without the profile they could not tell a departed author from an unknown one.
 - The avatar route answers `not_found` for a departed account, to every caller other than the account itself.
 - The profile of an active account has no `departure`. A ban and a removal are not stated in a profile (ADR 0113).
 - Earlier `account_profile_updated` events of the account carry its avatar; they keep the audience of ADR 0119, decided at delivery, and so reach no account without a common workspace after the departure.
@@ -119,6 +120,7 @@ ADR 0408 hides the whole history of a direct conversation while the contact rule
 - Refused with `not_found`, as for a conversation that does not exist: a new message, an edit, a deletion, a reaction, a pin, an upload, and opening the conversation again. A direct conversation has no threads (ADR 0413).
 - Each server route that opens a direct conversation states whether it reads or changes it (`messages::Purpose`), so that a change never passes through a read-only conversation. The rule of search, notices and the snapshot (`access::visibility`) lists such a conversation as readable.
 - The departed account itself has no session and reads nothing.
+- A removal by a moderator after the departure (ADR 0113) keeps the conversation read only: the time of the departure stays stored with the removed account.
 - After a return the contact rule decides again (ADR 0307).
 - The window marks the other participant in the list of conversations, shows the messages as offering no action, and states in place of the composer that the conversation stays readable and that nobody can write in it.
 - An event about a message of such a conversation, for example a removal by retention (ADR 0406), still needs the contact rule at delivery (ADR 0208); the remaining participant sees that change at the next read of the history.
@@ -127,7 +129,7 @@ ADR 0408 hides the whole history of a direct conversation while the contact rule
 
 `account_departure_changed` carries the account and its departure: `inactive`, `deleted`, or none after a return.
 
-- Audience: every active account of the server (ADR 0208), as the profile of a departed account. A client updates the name and the picture that it holds for the account.
+- Audience: the members of the workspaces that the account left by itself and its direct-conversation peers, listed in the transaction of the change and delivered from that stored list (as ADR 0308 does for former members), and the accounts with `ban_members`, decided at delivery (ADR 0208). Two events with the same content are recorded; a client that receives both applies the same change twice. A client updates the name and the picture that it holds for the account.
 - Class: general.
 
 The account itself gets `ended` with the new reason `inactive` or `deleted` (ADR 0206, ADR 0208), and its connections close.
@@ -181,7 +183,7 @@ The client keeps no copy of messages or files on disk. Its local data of a serve
 
 - A person can leave and come back without help from an administrator, other than an invite or an approval.
 - Content stays readable and attributed after its author left or deleted the account; readers see that the author is no longer there.
-- Every active account can learn that an account whose identifier it holds has departed, and its name. It learns nothing about bans and removals.
+- The members of the workspaces that an account left, its conversation peers and the moderators learn of its departure. Other accounts learn nothing new; nobody learns of bans and removals through it.
 - An inactive account keeps its public keys on the server. They grant nothing while the account is inactive, other than a return with an invite or an approval.
 - A deleted account cannot be restored. Its person can join again only as a new account, through an invite or an approval.
 - An owner who wants to leave needs host access, through `assign-owner`.

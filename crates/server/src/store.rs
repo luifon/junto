@@ -497,13 +497,23 @@ pub async fn acquaintance(
     if account_id == access.account_id {
         return Ok(Acquaintance::Own);
     }
-    let departed: bool = sqlx::query_scalar(
-        "select exists (select 1 from accounts where id = $1 and status in ('inactive', 'deleted'))",
+    // The profile of a departed account goes to the members of the workspaces that it left
+    // by itself and to its conversation peers (ADR 0121); a holder of `ban_members` sees it
+    // as every profile.
+    let witness: bool = sqlx::query_scalar(
+        "select exists (select 1 from accounts where id = $1 and status in ('inactive', 'deleted'))
+            and (exists (select 1 from account_departures d
+                         join workspace_members m on m.workspace_id = d.workspace_id
+                         where d.account_id = $1 and m.account_id = $2)
+                 or exists (select 1 from conversations
+                            where (low_account_id = $1 and high_account_id = $2)
+                               or (low_account_id = $2 and high_account_id = $1)))",
     )
     .bind(account_id)
+    .bind(access.account_id)
     .fetch_one(&mut *connection)
     .await?;
-    if departed {
+    if witness {
         return Ok(Acquaintance::Departed);
     }
     let fellows = fellow_members(connection, access.account_id, &[account_id]).await?;
@@ -588,14 +598,15 @@ pub async fn contact(
     }))
 }
 
-/// Whether an account is inactive or deleted (ADR 0121).
+/// Whether an account departed: it is inactive or deleted, or a moderator removed it after
+/// its departure. A direct conversation with it stays readable (ADR 0121).
 pub async fn departed(connection: &mut PgConnection, account_id: AccountId) -> ApiResult<bool> {
     Ok(departed_among(connection, &[account_id])
         .await?
         .contains(&account_id))
 }
 
-/// The accounts of `account_ids` that are inactive or deleted.
+/// The accounts of `account_ids` that departed, as [`departed`] states it.
 pub async fn departed_among(
     connection: &mut PgConnection,
     account_ids: &[AccountId],
@@ -604,7 +615,8 @@ pub async fn departed_among(
         return Ok(HashSet::new());
     }
     let departed: Vec<AccountId> = sqlx::query_scalar(
-        "select id from accounts where id = any($1) and status in ('inactive', 'deleted')",
+        "select id from accounts where id = any($1) and departed_at is not null
+           and status in ('inactive', 'deleted', 'removed')",
     )
     .bind(account_ids)
     .fetch_all(connection)

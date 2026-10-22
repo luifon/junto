@@ -107,12 +107,14 @@ pub async fn load(
              r.workspace_id=w.id and (r.is_everyone or exists( select 1 from member_roles mr where mr.role_id=r.id and
              mr.account_id=a.id))))) from workspaces w where w.deleted_at is null and ($2::uuid[] is null or w.id in(select workspace_id from
              channels_selected))), '[]' ::jsonb), 'directs' ,coalesce((select jsonb_agg(jsonb_build_object( 'id' ,c.id,
-             'departed' ,peer.status in ('inactive', 'deleted'),
+             'departed' ,peer.departed_at is not null
+                 and peer.status in ('inactive', 'deleted', 'removed'),
              'owner' ,coalesce(peer.id=s.owner_account_id,false), 'roles' ,array(select r.permissions from server_roles
              r join account_server_roles ar on ar.role_id=r.id where ar.account_id=peer.id), 'shared' ,exists(select 1
              from workspace_members mine join workspace_members theirs using(workspace_id) where mine.account_id=a.id
              and theirs.account_id=peer.id))) from conversations c join accounts peer on peer.id=case when
-             c.low_account_id=a.id then c.high_account_id else c.low_account_id end where $3 and peer.status in ('active', 'inactive', 'deleted')
+             c.low_account_id=a.id then c.high_account_id else c.low_account_id end where $3 and (peer.status= 'active'
+             or (peer.departed_at is not null and peer.status in ('inactive', 'deleted', 'removed')))
              and (c.low_account_id=a.id or c.high_account_id=a.id) and ($2::uuid[] is null or c.id=any($2))), '[]'
              ::jsonb)) from accounts a cross join (select owner_account_id from server_state limit 1) s cross join channels_json cj where a.id=any($1) and
              a.status= 'active'")

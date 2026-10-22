@@ -607,11 +607,11 @@ impl Audience {
                 low_account_id: conversation.low_account_id,
                 high_account_id: conversation.high_account_id,
             }),
-            // The departure of an account goes to every account that may read its profile
-            // now (ADR 0121).
-            Event::ServerLogoChanged { .. }
-            | Event::AttachmentLimitsChanged { .. }
-            | Event::AccountDepartureChanged { .. } => Some(Self::ActiveAccounts),
+            Event::ServerLogoChanged { .. } | Event::AttachmentLimitsChanged { .. } => {
+                Some(Self::ActiveAccounts)
+            }
+            // Its writer states the stored list and the moderators (ADR 0121).
+            Event::AccountDepartureChanged { .. } => None,
             Event::MessageMentioned {
                 workspace_id,
                 channel_id,
@@ -854,6 +854,13 @@ impl Audience {
                 true
             }
             (Event::PermissionsChanged { .. }, Self::Listed { .. }) => true,
+            (Event::AccountDepartureChanged { .. }, Self::Listed { .. }) => true,
+            (
+                Event::AccountDepartureChanged { .. },
+                Self::ServerPermission {
+                    permission: ServerPermission::BanMembers,
+                },
+            ) => true,
             // The accounts that see a new workspace, or a channel that appears with
             // overrides (ADR 0310).
             (
@@ -917,7 +924,11 @@ pub fn revalidated_account(audience: &Audience, event: &Event) -> Option<Account
         | Event::AccountRecovered { .. } => audience.account_id(),
         Event::AccountStatusChanged {
             account_id,
-            status: AccountStatus::Banned | AccountStatus::Removed,
+            status:
+                AccountStatus::Banned
+                | AccountStatus::Removed
+                | AccountStatus::Inactive
+                | AccountStatus::Deleted,
         } => Some(*account_id),
         _ => None,
     }
@@ -2029,6 +2040,8 @@ mod tests {
         for (status, expected) in [
             (AccountStatus::Banned, Some(account_id)),
             (AccountStatus::Removed, Some(account_id)),
+            (AccountStatus::Inactive, Some(account_id)),
+            (AccountStatus::Deleted, Some(account_id)),
             (AccountStatus::Active, None),
         ] {
             let event = Event::AccountStatusChanged { account_id, status };

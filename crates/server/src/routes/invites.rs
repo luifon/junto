@@ -943,6 +943,7 @@ pub(crate) async fn withdraw_workspace(
         let rows: Vec<InviteRow> = sqlx::query_as(sqlx::AssertSqlSafe(withdrawal_statement()))
             .bind(creator)
             .bind(after)
+            .bind(now)
             .fetch_all(&mut *connection)
             .await?;
         if rows.is_empty() {
@@ -1029,6 +1030,7 @@ pub(crate) async fn revoke_all_of(
         let rows: Vec<InviteRow> = sqlx::query_as(sqlx::AssertSqlSafe(withdrawal_statement()))
             .bind(creator)
             .bind(after)
+            .bind(now)
             .fetch_all(&mut *connection)
             .await?;
         if rows.is_empty() {
@@ -1068,9 +1070,13 @@ pub(crate) async fn revoke_all_of(
     }
 }
 
-/// The fixed-size creator page used while withdrawing a workspace's grants.
+/// The fixed-size creator page used while withdrawing a workspace's grants and while
+/// revoking the invites of a departed account: the invites of `$1` after `$2` that are still
+/// valid at `$3`, not revoked, not expired and not used up. An invite that is no longer
+/// valid admits nobody and is not changed (ADR 0121).
 pub fn withdrawal_statement() -> String {
     format!(
-        "{INVITE_SELECT} where i.created_by=$1 and i.revoked_at is null and i.id>$2 order by i.id limit 100"
+        "{INVITE_SELECT} where i.created_by=$1 and i.revoked_at is null and i.id>$2
+         and i.expires_at>$3 and i.uses<i.max_uses order by i.id limit 100"
     )
 }

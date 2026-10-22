@@ -211,12 +211,50 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
     let guest = server.join(&owner, "Guest").await;
     let stranger = server.join_into(&owner, "Stranger", &[other.id]).await;
     let fellow = server.join(&owner, "Fellow").await;
+    // A peer of a direct conversation who no longer shares a workspace with the guest.
+    let peer = server
+        .join_into(&owner, "Peer", &[default.id, other.id])
+        .await;
+    server
+        .post(
+            &peer,
+            "/api/v1/conversations",
+            &json!({ "account_id": guest.account_id }),
+        )
+        .await
+        .ok::<Conversation>(StatusCode::OK);
+    server
+        .post(&peer, &departure(&default), &Value::Null)
+        .await
+        .empty(StatusCode::NO_CONTENT);
     server
         .grant_server(&owner, &guest, &[ServerPermission::CreateInvites])
         .await;
     let held: InviteCreated = server
         .invite(&guest, json!({ "workspace_ids": [default.id] }))
         .await;
+    // An invite that expires and one that is used up are no longer valid: leaving does not
+    // revoke them.
+    let soon = (server.clock.now() + time::Duration::hours(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let expired: InviteCreated = server
+        .invite(
+            &guest,
+            json!({ "workspace_ids": [default.id], "expires_at": soon }),
+        )
+        .await;
+    let used: InviteCreated = server
+        .invite(
+            &guest,
+            json!({ "workspace_ids": [default.id], "max_uses": 1 }),
+        )
+        .await;
+    server
+        .join_reply(&DeviceKey::generate(), used.code.expose(), "Used")
+        .await
+        .ok::<SessionCreated>(StatusCode::CREATED);
+    server.clock.advance(time::Duration::hours(2));
     server
         .put_bytes(
             &guest,
@@ -229,6 +267,8 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
     let mut guest_stream = server.subscribed(&guest, Level::Full).await;
     let mut stranger_stream = server.subscribed(&stranger, Level::Full).await;
     let mut fellow_stream = server.subscribed(&fellow, Level::Full).await;
+    let mut peer_stream = server.subscribed(&peer, Level::Full).await;
+    let mut owner_stream = server.subscribed(&owner, Level::Full).await;
 
     server
         .post(&guest, &departure(&default), &Value::Null)
@@ -261,7 +301,20 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
         .find(|invite| invite.id == held.invite.id)
         .unwrap();
     assert!(revoked.revocation.is_some());
+    for kept in [&expired, &used] {
+        let open: bool = sqlx::query_scalar("select revoked_at is null from invites where id = $1")
+            .bind(kept.invite.id.as_uuid())
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+        assert!(open, "an invite that is no longer valid is not revoked");
+    }
     let log = server_log(&server, &owner).await;
+    assert!(!log.entries.iter().any(|entry| matches!(
+        entry.event,
+        AuditEvent::InviteRevoked { invite_id, .. }
+            if invite_id == expired.invite.id || invite_id == used.invite.id
+    )));
     assert!(log.entries.iter().any(|entry| entry.event
         == AuditEvent::AccountLeft {
             account_id: guest.account_id
@@ -274,12 +327,20 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
         avatar: None,
         departure: Some(Departure::Inactive),
     };
-    for viewer in [&owner, &stranger, &fellow] {
-        let seen: AccountProfile = server
-            .get(viewer, &profile_path(&guest))
-            .await
-            .ok(StatusCode::OK);
-        assert_eq!(seen, departed);
+    // The profile of the departed account goes to the members of the workspace that it
+    // left, to its conversation peers and to the moderators; not to an unrelated account.
+    server
+        .get(&stranger, &profile_path(&guest))
+        .await
+        .error(ErrorCode::NotFound);
+    for viewer in [&owner, &fellow, &peer, &stranger] {
+        if viewer.account_id != stranger.account_id {
+            let seen: AccountProfile = server
+                .get(viewer, &profile_path(&guest))
+                .await
+                .ok(StatusCode::OK);
+            assert_eq!(seen, departed);
+        }
         server
             .get(
                 viewer,
@@ -298,7 +359,11 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
         })
     };
     let stranger_events = server.traffic(&stranger, &mut stranger_stream).await;
-    assert!(told(&stranger_events, Some(Departure::Inactive)));
+    assert!(!told(&stranger_events, Some(Departure::Inactive)));
+    for (viewer, stream) in [(&peer, &mut peer_stream), (&owner, &mut owner_stream)] {
+        let events = server.traffic(viewer, stream).await;
+        assert!(told(&events, Some(Departure::Inactive)));
+    }
     let fellow_events = server.traffic(&fellow, &mut fellow_stream).await;
     assert!(told(&fellow_events, Some(Departure::Inactive)));
     assert!(fellow_events.iter().any(|(_, event)| matches!(
@@ -332,7 +397,9 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
             .any(|listed| listed.account_id == guest.account_id)
     );
     let stranger_events = server.traffic(&stranger, &mut stranger_stream).await;
-    assert!(told(&stranger_events, None));
+    assert!(!told(&stranger_events, None));
+    let fellow_events = server.traffic(&fellow, &mut fellow_stream).await;
+    assert!(told(&fellow_events, None));
     let log = server_log(&server, &owner).await;
     assert_eq!(
         log.entries[0].event,
@@ -877,5 +944,39 @@ async fn a_direct_conversation_with_a_departed_account_stays_readable_and_takes_
             .await
             .error(ErrorCode::Unauthenticated);
     }
+
+    // A moderator's removal after the departure keeps the conversation readable: the
+    // conversation stays, as for the departure itself.
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/accounts/{}/removal", inactive.account_id),
+            &json!({}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let id = left_inactive.conversation.id;
+    let listed: Vec<Conversation> = server
+        .get(&owner, "/api/v1/conversations")
+        .await
+        .ok(StatusCode::OK);
+    assert!(listed.iter().any(|held| held.id == id));
+    let page: junto_protocol::message::MessagePage = server
+        .get(&owner, &format!("/api/v1/conversations/{id}/messages"))
+        .await
+        .ok(StatusCode::OK);
+    assert!(
+        page.messages
+            .iter()
+            .any(|held| held.id == left_inactive.message.id)
+    );
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/conversations/{id}/messages"),
+            &text("more"),
+        )
+        .await
+        .error(ErrorCode::NotFound);
     drop((attachments, exports));
 }
