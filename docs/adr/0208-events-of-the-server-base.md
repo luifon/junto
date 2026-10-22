@@ -17,6 +17,7 @@ Audiences:
 | `device_added`, `device_renamed`, `device_removed`, `device_logged_in`, `device_logged_out`, `account_recovered` | The connections of the account itself |
 | `permissions_changed` | The accounts whose permissions the change can have altered |
 | `account_added`, `account_status_changed`, `account_server_roles_changed`, `owner_changed` | Accounts with `ban_members` |
+| `account_departure_changed` | Every active account (ADR 0121) |
 | `server_role_created`, `server_role_updated` | Accounts with `administrator` |
 | `invite_created`, `invite_used`, `invite_revoked` | Accounts with `create_invites` that created the invite or may see every workspace that it names (ADR 0111) |
 | `invites_of_creator_revoked` | Accounts with `create_invites` |
@@ -57,7 +58,7 @@ Recovery:
 
 Reason of an ended session:
 
-- A change that ends a session before its expiry stores a row for the session in the same transaction: the identifier of the session, the reason (logged out, device removed, banned, removed, recovered) and, for a recovery, the recovery.
+- A change that ends a session before its expiry stores a row for the session in the same transaction: the identifier of the session, the reason (logged out, device removed, banned, removed, recovered, inactive, deleted) and, for a recovery, the recovery. The reasons inactive and deleted belong to ADR 0121.
 - A connection whose session no longer counts reads the row of its session and sends that reason. The server does not derive the reason from the order of identifiers or of times.
 - A session without a row has expired. The connection then sends `session_ended`, or the reason that the state of the account and of the device gives.
 - The maintenance task (ADR 0009) removes a row when the session would have expired, 30 days after it was ended at the latest (ADR 0109).

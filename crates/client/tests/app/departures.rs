@@ -7,7 +7,9 @@ use junto_client::state::account::{AccountPage, PageView};
 use junto_client::state::feed::plain_text;
 use junto_client::state::view::ServerStatus;
 use junto_client::text;
-use junto_client_core::protocol::account::AccountStatus;
+use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::account::{AccountStatus, Departure};
+use junto_client_core::protocol::message::SendMessage;
 
 use crate::harness::{Window, World, member};
 
@@ -87,9 +89,12 @@ fn a_member_leaves_a_workspace_then_the_server_and_returns_with_a_code(
     });
     assert_eq!(window.status(), Some(ServerStatus::Ready));
 
-    // The last workspace: the account becomes inactive, and the window says how to return.
-    window.open_account();
-    window.click("account-nav-departure");
+    // The last workspace, on the same page: the account becomes inactive, and the window
+    // says how to return.
+    window.until("the page lists the one workspace that is left", |window| {
+        matches!(window.account().map(|view| view.page),
+            Some(PageView::Departure(page)) if page.workspaces.len() == 1)
+    });
     window.click("account-leave");
     assert!(window.shows("account-leave-question"));
     window.click("account-leave-confirm");
@@ -133,6 +138,18 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
     window.write("Kept words");
     window.until_message("Kept words");
     other.until_message("Kept words");
+    // A direct conversation of the two.
+    let bruno = other.own_account();
+    let api = window.handle().api();
+    let conversation = world.run(api.open_conversation(bruno)).unwrap();
+    let line = SendMessage {
+        document: crate::messages::document("A direct line"),
+        reply_to: None,
+        attachments: Vec::new(),
+    };
+    world
+        .run(api.send_message(PlaceId::Direct(conversation.id), &line))
+        .unwrap();
 
     window.open_account();
     window.click("account-nav-departure");
@@ -150,6 +167,28 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
     other.until("the author is marked as deleted", |other| {
         other.authors_of("Kept words") == ["Luca (deleted account)"]
     });
+
+    // The direct conversation stays listed and readable, under the marked name, and takes
+    // no message: a statement stands in place of the composer.
+    let row = crate::harness::selector(format!("direct-row:{}", conversation.id));
+    other.until("the conversation is listed", |other| other.shows(row));
+    other.click(row);
+    other.until_message("A direct line");
+    assert_eq!(
+        other.authors_of("A direct line"),
+        ["Luca (deleted account)"]
+    );
+    other.until("the composer gives way to the statement", |other| {
+        other.shows("departed-bar")
+    });
+    assert!(!other.shows("send-message"));
+    let shown = other
+        .view()
+        .lists()
+        .and_then(|lists| lists.conversation.clone())
+        .unwrap();
+    assert_eq!(shown.departure, Some(Departure::Deleted));
+    assert_eq!(shown.name.as_deref(), Some("Luca (deleted account)"));
     let accounts = world.run(admin.handle.api().accounts()).unwrap();
     let held = accounts.iter().find(|account| account.id == luca).unwrap();
     assert_eq!(held.status, AccountStatus::Deleted);

@@ -516,7 +516,7 @@ async fn deleting_the_account_keeps_its_content_and_audit_and_frees_its_key() {
     server
         .post(&owner, &direct_path, &text("nobody reads this"))
         .await
-        .error(ErrorCode::Forbidden);
+        .error(ErrorCode::NotFound);
 
     let after = entries_naming(&server, &guest).await;
     assert_eq!(after[..before.len()], before[..]);
@@ -684,4 +684,198 @@ async fn a_new_key_still_joins_as_a_new_account() {
         log.entries[0].event,
         AuditEvent::AccountJoined { account_id, .. } if account_id == newcomer.account_id
     ));
+}
+
+/// What a departed account left in a direct conversation with the owner: a message with a
+/// file. A direct conversation has no threads.
+struct Left {
+    conversation: Conversation,
+    message: Message,
+    attachment: junto_protocol::ids::AttachmentId,
+}
+
+async fn leave_a_conversation(
+    server: &TestServer,
+    owner: &Member,
+    name: &str,
+    word: &str,
+) -> (Member, Left) {
+    let guest = server.join(owner, name).await;
+    let conversation: Conversation = server
+        .post(
+            &guest,
+            "/api/v1/conversations",
+            &json!({ "account_id": owner.account_id }),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let upload = crate::messages_support::upload(
+        server,
+        &guest,
+        json!({ "conversation_id": conversation.id }),
+        b"kept file",
+    )
+    .await;
+    let message: Message = server
+        .post(
+            &guest,
+            &format!("/api/v1/conversations/{}/messages", conversation.id),
+            &json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"text","text":word}]}]},
+                    "attachments":[upload.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let attachment = message.attachments[0].id;
+    (
+        guest,
+        Left {
+            conversation,
+            message,
+            attachment,
+        },
+    )
+}
+
+#[tokio::test]
+async fn a_direct_conversation_with_a_departed_account_stays_readable_and_takes_no_change() {
+    let (attachments, exports) = (
+        crate::support::Scratch::new(),
+        crate::support::Scratch::new(),
+    );
+    let (attachments_path, exports_path) = (attachments.0.clone(), exports.0.clone());
+    let server = TestServer::start_with(move |config| {
+        config.attachments_directory = Some(attachments_path);
+        config.exports_directory = Some(exports_path);
+    })
+    .await;
+    let owner = server.owner().await;
+    let default = server.default_workspace(&owner).await;
+    let (inactive, left_inactive) =
+        leave_a_conversation(&server, &owner, "Ina", "quartzline").await;
+    let (deleted, left_deleted) = leave_a_conversation(&server, &owner, "Del", "basaltline").await;
+    server
+        .post(&inactive, &departure(&default), &Value::Null)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server
+        .delete(&deleted, "/api/v1/account")
+        .await
+        .empty(StatusCode::NO_CONTENT);
+
+    let listed: Vec<Conversation> = server
+        .get(&owner, "/api/v1/conversations")
+        .await
+        .ok(StatusCode::OK);
+    for (left, word, gone) in [
+        (&left_inactive, "quartzline", &inactive),
+        (&left_deleted, "basaltline", &deleted),
+    ] {
+        let id = left.conversation.id;
+        // Listed.
+        assert!(listed.iter().any(|held| held.id == id));
+        // History.
+        let page: junto_protocol::message::MessagePage = server
+            .get(&owner, &format!("/api/v1/conversations/{id}/messages"))
+            .await
+            .ok(StatusCode::OK);
+        assert!(page.messages.iter().any(|held| held.id == left.message.id));
+        // A single message.
+        server
+            .get(&owner, &message(left.message.id))
+            .await
+            .ok::<Message>(StatusCode::OK);
+        let file = server
+            .get(
+                &owner,
+                &format!("/api/v1/attachments/{}/file", left.attachment),
+            )
+            .await;
+        assert_eq!(file.status, StatusCode::OK);
+        assert_eq!(file.bytes(), b"kept file");
+        // Search.
+        let found = crate::discovery_support::search(&server, &owner, word).await;
+        assert!(
+            found
+                .results
+                .iter()
+                .any(|hit| hit.message_id == Some(left.message.id)),
+            "{word}"
+        );
+        // The read position is the owner's own.
+        server
+            .put(
+                &owner,
+                &format!("/api/v1/conversations/{id}/messages/read"),
+                &json!({ "position": left.message.position }),
+            )
+            .await
+            .ok::<Value>(StatusCode::OK);
+        // An export.
+        let export: junto_protocol::export::Export = server
+            .post(
+                &owner,
+                &format!("/api/v1/conversations/{id}/exports"),
+                &Value::Null,
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        junto_server::exports::run_once(&server.state)
+            .await
+            .unwrap();
+        let built: junto_protocol::export::Export = server
+            .get(&owner, &format!("/api/v1/exports/{}", export.id))
+            .await
+            .ok(StatusCode::OK);
+        assert_eq!(built.state, junto_protocol::export::ExportState::Ready);
+
+        // No change: a message, a reaction, an edit, a deletion, an upload and a new
+        // conversation are refused as for a conversation that does not exist.
+        server
+            .post(
+                &owner,
+                &format!("/api/v1/conversations/{id}/messages"),
+                &text("more"),
+            )
+            .await
+            .error(ErrorCode::NotFound);
+        server
+            .put(
+                &owner,
+                &format!("/api/v1/messages/{}/reaction", left.message.id),
+                &json!({ "emoji": "👍" }),
+            )
+            .await
+            .error(ErrorCode::NotFound);
+        server
+            .put(&owner, &message(left.message.id), &text("changed"))
+            .await
+            .error(ErrorCode::NotFound);
+        server
+            .delete(&owner, &message(left.message.id))
+            .await
+            .error(ErrorCode::NotFound);
+        server
+            .post(
+                &owner,
+                "/api/v1/attachments",
+                &json!({"conversation_id": id, "name":"file.bin", "bytes": 4,
+                        "sha256": junto_server::messages::uploads::hash(b"more")}),
+            )
+            .await
+            .error(ErrorCode::NotFound);
+        server
+            .post(
+                &owner,
+                "/api/v1/conversations",
+                &json!({ "account_id": gone.account_id }),
+            )
+            .await
+            .error(ErrorCode::NotFound);
+        // The departed person reads nothing.
+        server
+            .get(gone, &format!("/api/v1/conversations/{id}/messages"))
+            .await
+            .error(ErrorCode::Unauthenticated);
+    }
+    drop((attachments, exports));
 }

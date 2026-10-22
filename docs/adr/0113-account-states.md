@@ -10,7 +10,7 @@ ADR 0106 states that an administrator can remove a member and can ban and unban 
 
 ## Decision
 
-- An account has one of three states: active, banned, removed. The account row is never deleted.
+- An account has one of the states active, banned, removed, and the states inactive and deleted of ADR 0121, which the person reaches by leaving the last workspace or deleting the account. The account row is never deleted.
 - Removal, ban and unban need the server permission `ban_members` (ADR 0304).
 - Each of the three is one serializable transaction (ADR 0009). A request of the affected account that overlaps it either finishes before it and is covered by it, or sees its result.
 
@@ -38,5 +38,6 @@ Limits:
 - A removed person can join again with a valid invite code and the same device key, and gets a new account.
 - A banned person needs a new device key and a new invite code to return, and gets a new account; the audit log shows who created that code.
 - An unban restores access without a new invite. This is the one way back into the banned account; ADR 0106 states the same rule.
-- The list of accounts shows banned and removed accounts with their state.
+- The list of accounts shows banned, removed, inactive and deleted accounts with their state.
+- An inactive account can be removed and not banned; a deleted account takes no removal, ban or unban (ADR 0121).
 - The name of a removed account stays stored for the audit log and for later content that refers to it.

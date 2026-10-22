@@ -614,6 +614,41 @@ mod tests {
     }
 
     #[test]
+    fn an_inactive_and_a_deleted_membership_are_stored_and_read_back() {
+        let (_directory, data_dir, book) = book();
+        let account_id = AccountId::generate();
+        let first = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        let second = book
+            .add(entry("https://globex.example.test", "Globex"))
+            .unwrap();
+        book.update(first.key(), |entry| {
+            entry.membership = Membership::Inactive { account_id };
+        })
+        .unwrap();
+        book.update(second.key(), |entry| {
+            entry.membership = Membership::Deleted {
+                account_id: Some(account_id),
+            };
+        })
+        .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 5);
+        assert_eq!(stored["servers"][0]["membership"]["state"], "inactive");
+        assert_eq!(stored["servers"][1]["membership"]["state"], "deleted");
+        let entries = book.entries().unwrap();
+        assert_eq!(entries[0].membership, Membership::Inactive { account_id });
+        assert_eq!(
+            entries[1].membership,
+            Membership::Deleted {
+                account_id: Some(account_id)
+            }
+        );
+    }
+
+    #[test]
     fn an_update_keeps_the_identifier_and_the_address() {
         let (_directory, _data_dir, book) = book();
         let saved = book
@@ -747,7 +782,7 @@ mod tests {
             .unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 4);
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
         assert_eq!(stored["servers"][0]["logged_out"], true);
         assert!(book.entries().unwrap()[0].logged_out);
     }
@@ -1111,13 +1146,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":5,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":6,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 5,
-                supported: 4,
+                found: 6,
+                supported: 5,
                 ..
             })
         ));

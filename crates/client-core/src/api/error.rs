@@ -371,6 +371,7 @@ mod tests {
             (ErrorCode::OriginRejected, C::Proof),
             (ErrorCode::UnknownDevice, C::UnknownDevice),
             (ErrorCode::AccountBanned, C::Banned),
+            (ErrorCode::AccountInactive, C::Inactive),
             (ErrorCode::Forbidden, C::NotAllowed),
             (ErrorCode::OwnerOnly, C::NotAllowed),
             (ErrorCode::OwnerProtected, C::NotAllowed),

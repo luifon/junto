@@ -491,6 +491,8 @@ mod tests {
                     AccessState::Banned { .. }
                         | AccessState::WaitingForApproval { .. }
                         | AccessState::WaitingForLink { .. }
+                        | AccessState::Inactive { .. }
+                        | AccessState::Deleted { .. }
                 ),
                 "{state:?}"
             );

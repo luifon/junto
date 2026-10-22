@@ -20,7 +20,10 @@ Messages and history:
 - Reading, writing, reacting, uploading, downloading, read positions, snapshots and event
   delivery for a direct conversation require participation and the current contact rule.
   Earlier history is unavailable while that rule fails; it becomes available again when
-  the rule holds. Administrator permission never opens somebody else's conversation.
+  the rule holds. One exception: when the other participant is inactive or deleted, the
+  remaining participant keeps read-only access to the history, the files, the search
+  results, its read position and an export, and no change is accepted (ADR 0121).
+  Administrator permission never opens somebody else's conversation.
 - Opening a conversation records `conversation_opened` for its two participants. The accounts that a conversation can be opened with are listed by `GET /api/v1/direct-messages/contacts` (ADR 0307).
 - Message identifiers are UUID v7. Each channel or conversation has a separate rising
   integer public position. A public writer increments its place's row in the transaction

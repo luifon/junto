@@ -241,7 +241,15 @@ pub async fn permitted(
         }
         MessagePlace::Direct {
             conversation_id, ..
-        } => Place::direct(connection, access, conversation_id).await,
+        } => {
+            Place::direct(
+                connection,
+                access,
+                conversation_id,
+                crate::messages::Purpose::Read,
+            )
+            .await
+        }
     };
     let opened = match opened {
         Ok(opened) => opened,

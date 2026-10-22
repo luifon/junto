@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Adds the account states `inactive` and `deleted` to ADR 0113, the profile of a departed account to ADR 0119, one event to ADR 0208, and two open sets of values to ADR 0209.
+Accepted. Adds the account states `inactive` and `deleted` to ADR 0113, the profile of a departed account to ADR 0119, one event to ADR 0208, two open sets of values to ADR 0209, and the read-only direct conversation to ADR 0307 and ADR 0408.
 
 ## Context
 
@@ -106,9 +106,22 @@ An account that is a member of no workspace, for example after administrators re
 - The profile of a departed account (`GET /api/v1/accounts/{account_id}/profile`) has the field `departure`, with the value `inactive` or `deleted`, and no avatar. It is shown to every active account of the server. Reason: content that the account wrote stays readable to the audience of that content, which already receives the identifier and the name (`Message.author_name`); without the profile a reader could not tell a departed author from an unknown one. The fact is given only to a caller that knows the identifier.
 - The avatar route answers `not_found` for a departed account, to every caller other than the account itself.
 - The profile of an active account has no `departure`. A ban and a removal are not stated in a profile (ADR 0113).
+- Earlier `account_profile_updated` events of the account carry its avatar; they keep the audience of ADR 0119, decided at delivery, and so reach no account without a common workspace after the departure.
 - The window shows the stored name with a mark wherever it names a departed person: "Ana (inactive)", "Ana (deleted account)". It shows the generated picture of the account, never the stored avatar, and the readable alternative of the picture states that the account left the server or was deleted.
 - Member lists no longer contain the account. Mentions, the contact list and call invitations offer only active accounts (ADR 0307).
-- A direct conversation with a departed account stays readable for the other participant. No new message can be sent in it (ADR 0307), and the window says so in place of the composer.
+- A direct conversation with a departed account stays readable for the other participant; see the next section.
+
+### Direct conversations with a departed account
+
+ADR 0408 hides the whole history of a direct conversation while the contact rule of ADR 0307 fails. For a conversation whose other participant is inactive or deleted, the remaining participant keeps read-only access instead:
+
+- Readable: the list of conversations, the history, a single message, the files of its messages, its search results, the read position of the remaining participant, and an export.
+- Refused with `not_found`, as for a conversation that does not exist: a new message, an edit, a deletion, a reaction, a pin, an upload, and opening the conversation again. A direct conversation has no threads (ADR 0413).
+- Each server route that opens a direct conversation states whether it reads or changes it (`messages::Purpose`), so that a change never passes through a read-only conversation. The rule of search, notices and the snapshot (`access::visibility`) lists such a conversation as readable.
+- The departed account itself has no session and reads nothing.
+- After a return the contact rule decides again (ADR 0307).
+- The window marks the other participant in the list of conversations, shows the messages as offering no action, and states in place of the composer that the conversation stays readable and that nobody can write in it.
+- An event about a message of such a conversation, for example a removal by retention (ADR 0406), still needs the contact rule at delivery (ADR 0208); the remaining participant sees that change at the next read of the history.
 
 ### Event
 
@@ -149,9 +162,10 @@ The client keeps no copy of messages or files on disk. Its local data of a serve
 
 ### Window controls and confirmation
 
-- The server menu offers "Leave workspace" for the shown workspace. It is absent for the owner when it is the last workspace of the owner.
-- The account page offers "Delete account". It is absent for the owner, with the sentence that the owner must first hand over the server.
-- Each opens a confirmation that states what stays and what ends before the person confirms:
+- The account layer (ADR 0781) has the page "Leave or delete". It lists the workspaces of which the account is a member, each with "Leave", and offers "Delete account".
+- The server menu offers "Leave workspace" for the shown workspace. It opens that page with the question for that workspace.
+- For the owner, "Leave" of the last workspace and "Delete account" are disabled, with the sentence that another account must first become the owner through the host command.
+- Each control opens a question in its row that states what stays and what ends before the person confirms:
   - Stays: the messages, files, reactions, threads, direct conversations, recordings and transcripts in which the person took part, under the person's name with the mark, and every audit entry.
   - Ends when leaving a workspace: the membership and its roles; invites created by the person for that workspace.
   - Ends when leaving the last workspace: also the sessions of every device on the server, the server roles and the remaining invites; the account becomes inactive and can return with an invite code.

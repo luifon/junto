@@ -321,7 +321,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 68] = [
+pub const ACTIONS: [(&str, AuditGroup); 72] = [
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -329,6 +329,10 @@ pub const ACTIONS: [(&str, AuditGroup); 68] = [
     ("account_recovered", AuditGroup::Members),
     ("workspace_member_added", AuditGroup::Members),
     ("workspace_member_removed", AuditGroup::Members),
+    ("workspace_member_left", AuditGroup::Members),
+    ("account_left", AuditGroup::Members),
+    ("account_deleted", AuditGroup::Members),
+    ("account_returned", AuditGroup::Members),
     ("invite_created", AuditGroup::Invites),
     ("invite_workspaces_changed", AuditGroup::Invites),
     ("invite_revoked", AuditGroup::Invites),
@@ -1749,15 +1753,6 @@ mod tests {
                 vec!["Ana", "returned", "invite"],
             ),
             (
-                AuditEvent::AccountReturned {
-                    account_id,
-                    invite_id: None,
-                    invite_created_by: None,
-                    join_request_id: Some(join_request_id),
-                },
-                vec!["Ana", "returned", "join request"],
-            ),
-            (
                 AuditEvent::CategoryCreated {
                     category_id: scene.projects,
                     name: "Projects".to_owned(),
@@ -2788,7 +2783,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..69).collect::<Vec<usize>>());
+        assert_eq!(places, (0..73).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

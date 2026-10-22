@@ -10,7 +10,7 @@ use junto_client_core::protocol::ids::ServerId;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
-use crate::state::view::ShellView;
+use crate::state::view::{ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
@@ -303,10 +303,19 @@ impl Shell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        // The key of an inactive account is the way back to it (ADR 0121).
+        let inactive = view
+            .servers
+            .iter()
+            .any(|row| row.id == server_id && row.status == ServerStatus::Inactive);
         self.render_question(
             Question {
                 title: text::REMOVE_SERVER_TITLE,
-                sentence: text::REMOVE_SERVER_CONFIRM,
+                sentence: if inactive {
+                    text::REMOVE_INACTIVE_SERVER_CONFIRM
+                } else {
+                    text::REMOVE_SERVER_CONFIRM
+                },
                 confirm: text::REMOVE,
                 selector: "confirm-remove",
             },

@@ -90,6 +90,20 @@ pub const NO_CHANNELS: &str = "No channel is visible to your account.";
 pub const YOU: &str = "you";
 pub const UNKNOWN_PERSON: &str = "Unknown person";
 
+/// The statement in place of the composer of a direct conversation with an account that
+/// left the server or was deleted (ADR 0121).
+pub const fn departed_conversation(departure: Departure) -> &'static str {
+    match departure {
+        Departure::Inactive => {
+            "This account left the server. The conversation stays readable; nobody can write \
+             in it."
+        }
+        Departure::Deleted => {
+            "This account was deleted. The conversation stays readable; nobody can write in it."
+        }
+    }
+}
+
 /// The name of an account that left the server or was deleted, with its mark (ADR 0121).
 pub fn departed_name(name: &str, departure: Departure) -> String {
     match departure {
@@ -1238,6 +1252,11 @@ pub const REMOVE_SERVER_TITLE: &str = "Remove this server from this device?";
 pub const REMOVE_SERVER_CONFIRM: &str = "The entry in the server book and the key of this \
      device for the server are deleted. Your account on the server stays. This device can \
      use it again only through a device link or a recovery.";
+
+pub const REMOVE_INACTIVE_SERVER_CONFIRM: &str = "The entry in the server book and the key of \
+     this device for the server are deleted. Your inactive account stays on the server, but \
+     this device can no longer return to it: a later join with an invite code makes a new \
+     account.";
 
 pub const FORGET_ACCOUNT_TITLE: &str = "Forget the account on this server?";
 pub const ACCOUNT_CHANGED: &str = "This device now belongs to another account on this server \

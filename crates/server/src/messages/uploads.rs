@@ -1,6 +1,6 @@
 //! Attachment metadata, file integrity and delayed filesystem cleanup.
 
-use super::Place;
+use super::{Place, Purpose};
 use crate::{
     access::Access,
     error::{ApiError, ApiResult},
@@ -71,7 +71,14 @@ pub async fn owned(
         .fetch_optional(&mut *connection)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let place = Place::load(connection, access, row.try_get("place_id")?).await?;
+    // An upload is for a message that its owner sends: a change of the place.
+    let place = Place::load(
+        connection,
+        access,
+        row.try_get("place_id")?,
+        Purpose::Change,
+    )
+    .await?;
     Ok((
         place,
         Upload {

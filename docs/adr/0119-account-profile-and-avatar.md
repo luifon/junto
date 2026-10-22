@@ -23,6 +23,7 @@ Who may see a profile:
 - Reason for the administrators: every active account may write to them (ADR 0307), and a person who writes to an account needs its name and its picture. An account may therefore see the profile of every account that it may contact: one that administers the server sees every profile through `ban_members`, which the administrator permission includes (ADR 0301).
 - The permission function decides this, as every other check (ADR 0301).
 - A profile that the caller may not see is answered as an account that does not exist (ADR 0205).
+- The profile of an inactive or a deleted account is shown to every active account, with the field `departure` and without an avatar, and its avatar route answers `not_found` (ADR 0121).
 - The avatar route needs a session. There is no public address of an avatar.
 
 Avatar:

@@ -588,6 +588,30 @@ pub async fn contact(
     }))
 }
 
+/// Whether an account is inactive or deleted (ADR 0121).
+pub async fn departed(connection: &mut PgConnection, account_id: AccountId) -> ApiResult<bool> {
+    Ok(departed_among(connection, &[account_id])
+        .await?
+        .contains(&account_id))
+}
+
+/// The accounts of `account_ids` that are inactive or deleted.
+pub async fn departed_among(
+    connection: &mut PgConnection,
+    account_ids: &[AccountId],
+) -> ApiResult<HashSet<AccountId>> {
+    if account_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let departed: Vec<AccountId> = sqlx::query_scalar(
+        "select id from accounts where id = any($1) and status in ('inactive', 'deleted')",
+    )
+    .bind(account_ids)
+    .fetch_all(connection)
+    .await?;
+    Ok(departed.into_iter().collect())
+}
+
 /// Whether the caller and another account may exchange direct messages and direct calls
 /// now: both are active, and they share a workspace or one of them administers the server
 /// (ADR 0307). Every decision about a direct message or a direct call uses this function or
