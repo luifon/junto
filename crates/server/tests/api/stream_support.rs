@@ -375,7 +375,7 @@ impl Stream {
                 return event;
             }
             match self.next().await {
-                Frame::Message(ServerMessage::Change { events }) => {
+                Frame::Message(ServerMessage::Change { events, .. }) => {
                     assert!(!events.is_empty(), "a change without events");
                     self.queued
                         .extend(events.into_iter().map(|event| (event.id, event.event)));

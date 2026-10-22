@@ -283,7 +283,7 @@ async fn a_client_that_does_not_read_is_disconnected_and_resumes_from_its_cursor
     };
     let end = loop {
         match slow.next().await {
-            Frame::Message(ServerMessage::Change { events }) => {
+            Frame::Message(ServerMessage::Change { events, .. }) => {
                 for event in events {
                     read(event.event, event.id, &mut received);
                 }

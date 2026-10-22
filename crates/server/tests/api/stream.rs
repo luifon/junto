@@ -398,19 +398,49 @@ async fn a_change_with_more_events_than_a_batch_arrives_whole_in_one_message() {
     let owner = server.owner().await;
     let mut stream = server.subscribed(&owner, Level::Full).await;
     change_of_own_events(&server, &owner, 100, 8).await;
-    let Frame::Message(ServerMessage::Change { events }) = after_checkpoints(&mut stream).await
+    let Frame::Message(ServerMessage::Change { position, events }) =
+        after_checkpoints(&mut stream).await
     else {
         panic!("the change did not arrive");
     };
     assert_eq!(events.len(), 100);
     let first = events[0].id;
     assert_eq!(first & 0xffff, 0);
+    assert_eq!(position, first | 0xffff);
     for (index, event) in (0u64..).zip(&events) {
         assert_eq!(event.id, first + index);
         assert!(
             matches!(&event.event, Event::DeviceRenamed { name, .. } if *name == format!("{index:0>8}"))
         );
     }
+}
+
+/// A client that applied a change has its cursor at the position that the receipt of the
+/// change names (ADR 0214), so a wait for the receipt ends with the change.
+#[tokio::test]
+async fn the_receipt_of_a_change_is_the_position_after_its_message() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let mut stream = server.subscribed(&owner, Level::Full).await;
+    let reply = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/categories", workspace.id),
+            &json!({ "name": "receipt", "position": 0 }),
+        )
+        .await;
+    let receipt: Cursor =
+        serde_json::from_str(reply.header("junto-event-cursor").unwrap()).unwrap();
+    reply.ok::<Category>(StatusCode::CREATED);
+    let Frame::Message(ServerMessage::Change { position, events }) =
+        after_checkpoints(&mut stream).await
+    else {
+        panic!("the change did not arrive");
+    };
+    assert_eq!(events.len(), 1);
+    assert!(events[0].id < position);
+    assert_eq!(receipt, stream.cursor(position));
 }
 
 #[tokio::test]
@@ -532,7 +562,7 @@ async fn beyond_the_replay_bound_the_client_is_told_to_load_a_snapshot() {
         })
         .await;
     let mut answer = reconnected.next().await;
-    if let Frame::Message(ServerMessage::Change { events }) = &answer {
+    if let Frame::Message(ServerMessage::Change { events, .. }) = &answer {
         let [
             StreamEvent {
                 event: Event::CategoryCreated { category },

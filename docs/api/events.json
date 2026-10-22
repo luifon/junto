@@ -5471,13 +5471,18 @@
             "type": "object"
           },
           {
-            "description": "The events of one change that the connection may receive, in the order in which the\nchange recorded them (ADR 0011). A change is never split between messages: the client\napplies all of them before it moves its cursor past the change.",
+            "description": "The events of one change that the connection may receive, in the order in which the\nchange recorded them (ADR 0011). A change is never split between messages: the client\napplies all of them and then moves its cursor to `position`, the position after the\nchange, which every cursor of the server for this change states (ADR 0010).",
             "properties": {
               "events": {
                 "items": {
                   "$ref": "#/components/schemas/StreamEvent"
                 },
                 "type": "array"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
               },
               "type": {
                 "enum": [
@@ -5487,6 +5492,7 @@
               }
             },
             "required": [
+              "position",
               "events",
               "type"
             ],

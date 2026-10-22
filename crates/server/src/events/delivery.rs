@@ -351,8 +351,11 @@ fn change_message(position: i64, events: Vec<Receivable>) -> ApiResult<Option<De
         })
         .collect::<ApiResult<Vec<_>>>()?;
     let count = events.len();
-    let text = serde_json::to_string(&ServerMessage::Change { events })
-        .map_err(|error| ApiError::internal(&error))?;
+    let text = serde_json::to_string(&ServerMessage::Change {
+        position: stream_position(position, log::END_OF_CHANGE)?,
+        events,
+    })
+    .map_err(|error| ApiError::internal(&error))?;
     Ok(
         (text.len() <= LARGEST_SERVER_MESSAGE_BYTES).then_some(Delivery {
             position,

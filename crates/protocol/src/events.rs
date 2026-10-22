@@ -129,8 +129,12 @@ pub enum ServerMessage {
     Subscribed { level: Level, cursor: Cursor },
     /// The events of one change that the connection may receive, in the order in which the
     /// change recorded them (ADR 0011). A change is never split between messages: the client
-    /// applies all of them before it moves its cursor past the change.
-    Change { events: Vec<StreamEvent> },
+    /// applies all of them and then moves its cursor to `position`, the position after the
+    /// change, which every cursor of the server for this change states (ADR 0010).
+    Change {
+        position: u64,
+        events: Vec<StreamEvent>,
+    },
     /// The connection has received every event up to `cursor` that it may receive.
     Checkpoint { cursor: Cursor },
     /// The server does not continue from the cursor of the client: as the answer to a
@@ -865,8 +869,11 @@ impl Event {
 pub enum Received {
     /// Every message except `change`.
     Message(ServerMessage),
-    /// The events of one `change`, in their order.
-    Change(Vec<ReadEvent>),
+    /// The events of one `change`, in their order, and the position after the change.
+    Change {
+        position: u64,
+        events: Vec<ReadEvent>,
+    },
     /// A message of a type that this version does not know. The client skips it.
     UnknownMessage,
 }
@@ -888,6 +895,7 @@ pub enum ReadEvent {
 /// The events of a `change` message as text, so that each is read on its own.
 #[derive(Deserialize)]
 struct ChangeText<'a> {
+    position: u64,
     #[serde(borrow)]
     events: Vec<&'a serde_json::value::RawValue>,
 }
@@ -907,6 +915,7 @@ pub fn decode(text: &str) -> Result<Received, serde_json::Error> {
         return serde_json::from_value(value).map(Received::Message);
     }
     let change: ChangeText = serde_json::from_str(text)?;
+    let position = change.position;
     change
         .events
         .into_iter()
@@ -925,7 +934,7 @@ pub fn decode(text: &str) -> Result<Received, serde_json::Error> {
             })
         })
         .collect::<Result<_, _>>()
-        .map(Received::Change)
+        .map(|events| Received::Change { position, events })
 }
 
 #[cfg(test)]
@@ -1502,6 +1511,7 @@ mod tests {
                 cursor,
             },
             ServerMessage::Change {
+                position: 43,
                 events: vec![StreamEvent {
                     id: 42,
                     at: time(),
@@ -1523,15 +1533,16 @@ mod tests {
             let json: serde_json::Value = serde_json::from_str(&text).unwrap();
             names.push(json["type"].as_str().unwrap().to_owned());
             let read = match &message {
-                ServerMessage::Change { events } => Received::Change(
-                    events
+                ServerMessage::Change { position, events } => Received::Change {
+                    position: *position,
+                    events: events
                         .iter()
                         .map(|event| ReadEvent::Known {
                             event: event.clone(),
                             bytes: serde_json::to_string(event).unwrap().len(),
                         })
                         .collect(),
-                ),
+                },
                 _ => Received::Message(message),
             };
             assert_eq!(decode(&text).unwrap(), read);
@@ -1559,14 +1570,15 @@ mod tests {
             "event":{"type":"device_removed","new":true,
                      "device_id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"}}"#;
         let change = format!(
-            r#"{{"type":"change","new":1,"events":[
+            r#"{{"type":"change","new":1,"position":20,"events":[
                 {{"id":9,"at":"2030-01-01T00:00:00Z",
                   "event":{{"type":"message_created","text":"hello"}}}},
                 {known}]}}"#
         );
-        let Received::Change(events) = decode(&change).unwrap() else {
+        let Received::Change { position, events } = decode(&change).unwrap() else {
             panic!("a change is read as a change");
         };
+        assert_eq!(position, 20);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], ReadEvent::Unknown { id: 9 });
         assert!(matches!(
@@ -1574,15 +1586,19 @@ mod tests {
             ReadEvent::Known { event, bytes } if event.id == 10 && *bytes == known.len()
         ));
         assert_eq!(
-            decode(r#"{"type":"change","events":[]}"#).unwrap(),
-            Received::Change(Vec::new())
+            decode(r#"{"type":"change","position":5,"events":[]}"#).unwrap(),
+            Received::Change {
+                position: 5,
+                events: Vec::new()
+            }
         );
         assert_eq!(
             decode(r#"{"type":"notice","text":"hello"}"#).unwrap(),
             Received::UnknownMessage
         );
-        assert!(decode(r#"{"type":"change","events":[{"id":9}]}"#).is_err());
-        assert!(decode(r#"{"type":"change"}"#).is_err());
+        assert!(decode(r#"{"type":"change","position":9,"events":[{"id":9}]}"#).is_err());
+        assert!(decode(r#"{"type":"change","position":9}"#).is_err());
+        assert!(decode(r#"{"type":"change","events":[]}"#).is_err());
         assert!(decode("[]").is_err());
     }
 
