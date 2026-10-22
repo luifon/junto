@@ -1377,6 +1377,34 @@ async fn a_contact_that_waits_for_an_action_does_not_undo_a_logout_of_the_person
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_action_that_waits_for_the_running_one_runs_before_a_later_action() {
+    let network = Arc::new(Network::default());
+    network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+
+    // An action runs, and an action of the person waits for it.
+    let running = handle.server.gate.lock().await;
+    let waiting = handle.dispatch_when_free(AccessAction::Check);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    // The waiting action takes its turn when the running one ends. It then waits for the
+    // server, and an action asked for later finds the flow busy.
+    network.suspend("acme");
+    drop(running);
+    let later = handle.dispatch(AccessAction::Check);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    network.resume("acme");
+    assert!(matches!(later.await, Err(FlowError::Busy)));
+    waiting.await.unwrap();
+    logged_in(&handle);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_logout_of_the_person_ends_the_session_on_the_device_when_the_server_does_not_answer() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");

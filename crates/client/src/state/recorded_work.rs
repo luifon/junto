@@ -13,9 +13,10 @@ use junto_client_core::protocol::ids::{
     ChannelId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId,
 };
 use junto_client_core::protocol::transcript::TranscriptState;
-use junto_client_core::transfers::{DownloadProgress, DownloadStage, RecordingDownload};
+use junto_client_core::transfers::{DownloadStage, RecordingDownload};
 
 use super::AppState;
+use super::progress::{Stepped as _, Steps};
 use super::recorded::near_recordings;
 use super::view::Shown;
 use crate::text;
@@ -29,23 +30,6 @@ const MOST_OPEN: usize = 24;
 pub enum RecordedFile {
     Segment(RecordingSegmentId),
     Text,
-}
-
-/// What the window shows of the progress of a download: its stage, and the hundredth of
-/// the file that has arrived. A file without a stated length counts parts of 256 KiB.
-fn progress_step(
-    progress: &DownloadProgress,
-) -> (std::mem::Discriminant<DownloadStage>, bool, u64) {
-    let part = progress
-        .received
-        .saturating_mul(100)
-        .checked_div(progress.bytes)
-        .unwrap_or(progress.received / (256 * 1024));
-    (
-        std::mem::discriminant(&progress.stage),
-        progress.interrupted,
-        part,
-    )
 }
 
 impl AppState {
@@ -368,45 +352,29 @@ impl AppState {
         self.download_asks += 1;
         let number = self.download_asks;
         self.recording_download_numbers.insert(key, number);
-        let mut watch = download.watch();
+        // The window is told a change of the stage and each further hundredth of the file,
+        // not each part that arrives.
+        let mut steps = Steps::new(download.watch());
         cx.spawn(async move |this, cx| {
-            let mut told_step = None;
-            let mut closed = false;
-            loop {
-                // The stage of this moment is read before the first wait: a download
-                // can end before this task runs.
-                let progress = watch.borrow_and_update().clone();
-                let ended = matches!(
-                    progress.stage,
-                    DownloadStage::Saved(_) | DownloadStage::Failed(_) | DownloadStage::Cancelled
-                );
-                // The window is told a change of the stage and each further hundredth
-                // of the file, not each part that arrives.
-                let step = progress_step(&progress);
-                if told_step != Some(step) {
-                    told_step = Some(step);
-                    let told = this.update(cx, |this, cx| {
-                        if this.recording_download_numbers.get(&key) != Some(&number) {
-                            return false;
-                        }
-                        if ended
-                            && this.opening.remove(&key)
-                            && let DownloadStage::Saved(path) = progress.stage
-                        {
-                            this.open_file(path, cx);
-                        }
-                        this.show_recording_downloads();
-                        this.changed(cx);
-                        true
-                    });
-                    if !told.unwrap_or(false) {
-                        break;
+            while let Some(progress) = steps.next().await {
+                let ended = progress.ended();
+                let told = this.update(cx, |this, cx| {
+                    if this.recording_download_numbers.get(&key) != Some(&number) {
+                        return false;
                     }
-                }
-                if ended || closed {
+                    if ended
+                        && this.opening.remove(&key)
+                        && let DownloadStage::Saved(path) = progress.stage
+                    {
+                        this.open_file(path, cx);
+                    }
+                    this.show_recording_downloads();
+                    this.changed(cx);
+                    true
+                });
+                if !told.unwrap_or(false) {
                     break;
                 }
-                closed = watch.changed().await.is_err();
             }
         })
         .detach();

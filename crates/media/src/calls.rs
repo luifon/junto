@@ -972,7 +972,7 @@ async fn request(
             low_account_id,
             high_account_id,
         } => {
-            let own = server.account();
+            let own = own_account(server);
             let other = if own == Some(*low_account_id) {
                 *high_account_id
             } else {
@@ -999,7 +999,7 @@ async fn request_renewal(
             low_account_id,
             high_account_id,
         } => {
-            let own = server.account();
+            let own = own_account(server);
             let other = if own == Some(*low_account_id) {
                 *high_account_id
             } else {
@@ -1105,6 +1105,16 @@ fn lists_identity(call: &Call, identity: &str) -> bool {
         .any(|participant| participant.identity == identity)
 }
 
+/// The account of this device on a server: the account of its session, or, while the
+/// client core logs in again after an ended session and holds no session, the account
+/// that the access flow shows (ADR 0787). A login that gives another account ends the
+/// call when the session reads the state (`read_as`).
+fn own_account(server: &ServerHandle) -> Option<AccountId> {
+    server
+        .account()
+        .or_else(|| server.owner().map(|owner| owner.account_id))
+}
+
 fn media_join(answer: &CallJoin) -> MediaJoin {
     MediaJoin {
         url: answer.media_url.clone(),
@@ -1121,7 +1131,7 @@ fn start(
     target: CallTarget,
     answer: CallJoin,
 ) -> bool {
-    let Some(account_id) = server.account() else {
+    let Some(account_id) = own_account(&server) else {
         return false;
     };
     // Without a position and without a state the answer belongs to a history that no
@@ -2310,7 +2320,7 @@ impl Session {
     fn note_move(&mut self, event: &Event) {
         match event {
             Event::CallMoveRequested { call_move }
-                if Some(call_move.account_id) == self.server.account()
+                if call_move.account_id == self.grants.account_id
                     && call_move.from == self.target.place =>
             {
                 self.start_move(call_move);

@@ -16,6 +16,7 @@ use crate::model::{
     AdminPart, AdminPayload, AdminSet, CollectionState, LoadFailure, MOST_TOKENS, Part, PlaceId,
     ServerModel, WorkspaceSettings,
 };
+use junto_protocol::ids::{ChannelId, WorkspaceId};
 
 type Reply = oneshot::Sender<Result<(), LoadError>>;
 
@@ -32,6 +33,9 @@ pub(super) struct Collections {
     /// collection shows its earlier values, so the state does not tell that a read of it
     /// is still owed.
     refreshing: BTreeSet<AdminPart>,
+    /// The workspaces whose archived list the client reads without a reader, to check the
+    /// archived channels that it carried over a reload (ADR 0762).
+    checking: BTreeSet<WorkspaceId>,
 }
 
 /// Reads one collection from its route.
@@ -172,6 +176,11 @@ impl Client {
         self.admin.wanted.remove(&part);
         self.admin.opening.remove(&part);
         self.admin.refreshing.remove(&part);
+        if self.checks_admin(part) {
+            // The read goes on for the check of the carried channels, and its answer is
+            // not kept.
+            return;
+        }
         let held = Part::Admin(part);
         self.resume.retain(|kept| *kept != held);
         self.pending
@@ -211,6 +220,13 @@ impl Client {
         self.admin.wanted.contains_key(&part)
     }
 
+    /// True for the archived list of a workspace that the client reads to check the
+    /// archived channels that it carried.
+    fn checks_admin(&self, part: AdminPart) -> bool {
+        matches!(part, AdminPart::Archived(workspace_id)
+            if self.admin.checking.contains(&workspace_id))
+    }
+
     /// The answer to the read of a collection, with the events that arrived since the
     /// read was sent.
     pub(super) fn admin_loaded(
@@ -219,9 +235,15 @@ impl Client {
         result: Result<AdminPayload, ApiError>,
         kept: &[Arc<Event>],
     ) {
-        if !self.wants_admin(part) {
+        let wanted = self.wants_admin(part);
+        let check = self.checks_admin(part);
+        if !wanted && !check {
             return;
         }
+        if let AdminPart::Archived(workspace_id) = part {
+            self.admin.checking.remove(&workspace_id);
+        }
+        let held = self.held_channels();
         let Some(model) = &mut self.model else {
             return;
         };
@@ -239,8 +261,17 @@ impl Client {
             Ok(payload) => {
                 model.set_admin(part, AdminSet::Loaded(payload));
                 model.replay_admin(part, kept.iter().map(Arc::as_ref));
-                if matches!(part, AdminPart::Archived(_)) {
+                if let AdminPart::Archived(workspace_id) = part {
                     model.close_lost_archived();
+                    if !wanted {
+                        // No reader holds the list: it decided which carried channels stay,
+                        // and it goes again.
+                        model.release_archived(workspace_id, &held);
+                    }
+                    self.close_lost_collections();
+                }
+                if !wanted {
+                    return;
                 }
                 self.answer_admin(part, || Ok(()));
                 // An event that names a change without carrying it arrived after the
@@ -249,12 +280,65 @@ impl Client {
                     self.start(Load::Part(Part::Admin(part)));
                 }
             }
+            Err(error) if !wanted => {
+                // The carried channels stay unchecked until the next reload.
+                tracing::debug!(%error, ?part, "the archived list was not read for a check");
+                if let AdminPart::Archived(workspace_id) = part {
+                    model.release_archived(workspace_id, &held);
+                }
+            }
             Err(error) => {
                 tracing::debug!(%error, ?part, "a collection of the administration was not read");
                 model.set_admin(part, AdminSet::Failed(LoadFailure::of(&error)));
                 let error = Arc::new(error);
                 self.answer_admin(part, || Err(LoadError::Request(error.clone())));
             }
+        }
+    }
+
+    /// The channels of the collections of one channel that readers have open.
+    fn held_channels(&self) -> Vec<ChannelId> {
+        self.admin
+            .wanted
+            .keys()
+            .filter_map(|part| match part {
+                AdminPart::Overrides(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
+                    Some(*channel_id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Closes each open collection of one channel whose channel the state no longer holds.
+    fn close_lost_collections(&mut self) {
+        let Some(model) = &self.model else {
+            return;
+        };
+        let lost: Vec<AdminPart> = self
+            .admin
+            .wanted
+            .keys()
+            .copied()
+            .filter(|part| {
+                matches!(
+                    part,
+                    AdminPart::Overrides(_) | AdminPart::ChannelPermissions(_)
+                ) && !in_state(model, *part)
+            })
+            .collect();
+        for part in lost {
+            self.admin.wanted.remove(&part);
+            self.admin.refreshing.remove(&part);
+            let held = Part::Admin(part);
+            self.resume.retain(|kept| *kept != held);
+            self.pending
+                .retain(|pending| pending.load != Load::Part(held));
+            if let Some(model) = &mut self.model {
+                model.set_admin(part, AdminSet::NotLoaded);
+                self.model_changed = true;
+            }
+            self.answer_admin(part, || Err(LoadError::NotInState));
         }
     }
 
@@ -286,6 +370,23 @@ impl Client {
             }));
             model.carry_archived(before, &held);
         }
+        // A carried channel is checked by the archived list of its workspace. A list that no
+        // reader holds is read for that check alone (ADR 0762).
+        let mut checks: Vec<WorkspaceId> = self
+            .model
+            .as_ref()
+            .map(|model| model.carried_archived_workspaces())
+            .unwrap_or_default();
+        checks.retain(|workspace_id| {
+            !self
+                .admin
+                .wanted
+                .contains_key(&AdminPart::Archived(*workspace_id))
+        });
+        self.admin.checking = checks.iter().copied().collect();
+        for workspace_id in checks {
+            self.start(Load::Part(Part::Admin(AdminPart::Archived(workspace_id))));
+        }
         for part in wanted {
             let held = self
                 .model
@@ -312,6 +413,9 @@ impl Client {
     /// True when the state still needs the read of a collection that a change of the
     /// session interrupted.
     pub(super) fn admin_read_needed(&self, part: AdminPart, model: &ServerModel) -> bool {
+        if self.checks_admin(part) && !self.wants_admin(part) {
+            return true;
+        }
         self.wants_admin(part)
             && (model.admin.state(part) != CollectionState::Loaded
                 || self.admin.refreshing.contains(&part))

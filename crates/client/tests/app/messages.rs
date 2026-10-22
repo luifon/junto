@@ -8,7 +8,7 @@ use junto_client::state::feed::{Feed, FeedRow, MessageRow, QuoteText, plain_text
 use junto_client::state::view::ServerStatus;
 use junto_client::text;
 use junto_client_core::model::PlaceId;
-use junto_client_core::protocol::ids::{AccountId, AttachmentId, ChannelId, MessageId};
+use junto_client_core::protocol::ids::{AccountId, AttachmentId, ChannelId, MessageId, ServerId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message, SendMessage};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::{DownloadStage, UploadSource, UploadStage};
@@ -126,6 +126,58 @@ impl Window {
     pub fn own_account(&mut self) -> AccountId {
         self.view().person.account_id.unwrap()
     }
+}
+
+/// The position of the list of a place, as the client core holds it.
+fn core_anchor(window: &mut Window, server_id: ServerId, place: PlaceId) -> Option<Option<u64>> {
+    window.state.read_with(&window.cx, |state, _| {
+        state
+            .server(server_id)?
+            .live()
+            .view()
+            .model?
+            .timeline(place)
+            .map(|timeline| timeline.anchor)
+    })
+}
+
+#[gpui::test]
+fn the_position_of_a_list_is_told_again_after_a_read_of_the_latest_messages(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let channel = window.selected_channel();
+    let messages: Vec<Message> = (0..60)
+        .map(|index| admin.send(&world, channel, document(&format!("Message {index}"))))
+        .collect();
+    window.until_message("Message 59");
+    let (server_id, place) = (admin.handle.id(), PlaceId::Channel(channel));
+    let anchor = messages[20].position;
+
+    // The list stands at a message, and the client core is told so.
+    window.state.update(&mut window.cx, |state, _| {
+        state.set_anchor(server_id, place, Some(anchor));
+    });
+    window.until("the position is told", |window| {
+        core_anchor(window, server_id, place) == Some(Some(anchor))
+    });
+    // The person reads the latest messages: the client core follows the end.
+    window.state.update(&mut window.cx, |state, _| {
+        state.read_latest(server_id, place);
+    });
+    window.until("the end is followed", |window| {
+        core_anchor(window, server_id, place) == Some(None)
+    });
+    // The list stands at the same message again, and the client core is told so again.
+    window.state.update(&mut window.cx, |state, _| {
+        state.set_anchor(server_id, place, Some(anchor));
+    });
+    window.until("the position is told again", |window| {
+        core_anchor(window, server_id, place) == Some(Some(anchor))
+    });
 }
 
 #[gpui::test]

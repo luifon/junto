@@ -515,7 +515,7 @@ async fn save(
         bytes: Some(bytes),
         sha256: None,
     };
-    let mut part = Part::create(part_file(directory, name, &stored))?;
+    let mut part = Part::create(part_file(directory, &stored))?;
     receive(api, export_id, bytes, &mut part.file, progress, wait).await?;
     if progress.is_stopped() {
         return Err(SaveFailure::Stopped);

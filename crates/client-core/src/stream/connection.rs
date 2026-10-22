@@ -940,6 +940,7 @@ impl Client {
         model.cursor.position = id;
         self.model_changed = true;
         self.messages.overtake_marks(&event, model);
+        self.messages.keep_for_searches(&event, model);
         let mut again = Vec::new();
         for pending in &mut self.pending {
             if let Load::Part(part) = pending.load {
