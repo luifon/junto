@@ -20,6 +20,10 @@ step "Build the server used by process tests"
 tools/linux-container.sh cargo build --workspace --locked
 step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
+# The production sound host against virtual PipeWire devices, and the trust of the call
+# library in a TURN server over TLS. Both need the isolated container (ADR 0750).
+step "Linux sound devices and TURN over TLS"
+tools/linux-container.sh cargo test --locked -p junto-media --test linux_audio --test tls_trust -- --ignored
 step "CI runner unit tests"
 tools/linux-container.sh python3 -m unittest discover -s tools/ci -p "test_*.py"
 step "Container runner unit tests"

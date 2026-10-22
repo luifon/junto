@@ -22,7 +22,7 @@ use junto_client_core::transfers::{
     DownloadStage, Stored, StoredKind, TransferFailure, part_file, segment_file_name,
 };
 
-use crate::recording_server::{RecordingServer, Spoken};
+use crate::recording_server::{RecordPlan, RecordingServer, Spoken};
 use crate::stream::{channel, live, model_when, pair};
 use crate::support::{Device, TestServer, join, logged_in};
 use crate::threads::seed_transcript;
@@ -430,6 +430,35 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
         model.recording(id).is_none()
     })
     .await;
+}
+
+/// The length of a recording is the time that the test gave its jobs, also when the machine
+/// takes longer than the tolerance of the length check between the start and the stop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recording_on_a_slow_machine_has_the_length_that_its_test_gave() {
+    let server = RecordingServer::start("Recordings").await;
+    let device = Device::new();
+    let owner = device.add(&server.address()).await;
+    let claim = AccessAction::ClaimOwner {
+        code: OwnerCode::new(server.owner_code()),
+        name: "Ada".to_owned(),
+        device_name: "First device".to_owned(),
+    };
+    owner.dispatch(claim).await.unwrap();
+    let workspace_id = owner.api().workspaces().await.unwrap()[0].id;
+    let voice = channel(&owner, workspace_id, "Daily", ChannelKind::Voice).await;
+
+    let plan = RecordPlan {
+        machine_time: Some(std::time::Duration::from_secs(4)),
+        ..RecordPlan::default()
+    };
+    let id = server.record_with(voice.id, &[&owner], plan).await;
+    let detail = owner.api().recording(id).await.unwrap();
+    assert_eq!(detail.recording.state, RecordingState::Ready);
+    assert_eq!(detail.segments.len(), 3, "{detail:?}");
+    for segment in &detail.segments {
+        assert_eq!(segment.duration_ms, Some(2_000), "{segment:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

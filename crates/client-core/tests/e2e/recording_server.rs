@@ -60,24 +60,32 @@ given="$here/$(basename "$6").json"
 cp "$given" "$4.tmp" && mv "$4.tmp" "$4"
 "#;
 
-/// The time of the machine, and ahead of it by what a test added. A recording gets the
-/// length of its files in this way.
-#[derive(Default)]
+/// The clock of the server and of the recorder. It starts at the time of the machine and
+/// stands still until a test moves it, so a job of the recorder lasts the time that the test
+/// added, also when the machine takes longer for the passes between its start and its stop
+/// than the length check of a file allows (ADR 0606).
 struct TestClock {
-    ahead: Mutex<time::Duration>,
+    now: Mutex<OffsetDateTime>,
 }
 
 impl TestClock {
+    fn starting_now() -> Self {
+        let now = OffsetDateTime::now_utc();
+        // The server stores times to the microsecond.
+        let now = now.replace_nanosecond(now.microsecond() * 1_000).unwrap();
+        Self {
+            now: Mutex::new(now),
+        }
+    }
+
     fn advance(&self, duration: time::Duration) {
-        *self.ahead.lock().unwrap() += duration;
+        *self.now.lock().unwrap() += duration;
     }
 }
 
 impl Clock for TestClock {
     fn now(&self) -> OffsetDateTime {
-        let now = OffsetDateTime::now_utc() + *self.ahead.lock().unwrap();
-        // The server stores times to the microsecond.
-        now.replace_nanosecond(now.microsecond() * 1_000).unwrap()
+        *self.now.lock().unwrap()
     }
 }
 
@@ -119,6 +127,9 @@ pub struct RecordPlan<'a> {
     /// error after one second, and the person stops sharing: the recording is saved in
     /// part.
     pub fail_shared_sound: bool,
+    /// Machine time that passes after the jobs start and before the recording is stopped,
+    /// as on a loaded machine.
+    pub machine_time: Option<std::time::Duration>,
 }
 
 /// The place of one person in the call of a voice channel, as the media server in memory
@@ -209,7 +220,7 @@ impl RecordingServer {
         };
         let attachments_directory = attachments.path().canonicalize().unwrap();
         let name = name.to_owned();
-        let clock = Arc::new(TestClock::default());
+        let clock = Arc::new(TestClock::starting_now());
         let server_clock = clock.clone();
         let (shutdown, stopped) = oneshot::channel::<()>();
         let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -473,6 +484,10 @@ impl RecordingServer {
             .await
             .unwrap();
         self.tend().await;
+        if let Some(time) = plan.machine_time {
+            self.on(move |_| async move { tokio::time::sleep(time).await })
+                .await;
+        }
         let mut left = i64::from(samples::SECONDS);
         if plan.fail_shared_sound {
             let seat = &seats[0];
