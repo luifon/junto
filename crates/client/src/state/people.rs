@@ -677,6 +677,11 @@ impl People {
             .map_or(0, |held| held.on_way.len())
     }
 
+    /// The number of requests that the cache started.
+    pub fn requests(&self) -> u64 {
+        self.asked
+    }
+
     /// The accounts whose profiles are wanted for a server, in the order of their reads.
     pub fn wanted(&self, server_id: ServerId) -> Vec<AccountId> {
         self.servers
@@ -1152,14 +1157,15 @@ impl AppState {
 
     /// The accounts of the rows of the open page of the administration that its list laid
     /// out in the last frame, in the order of the rows. Their profiles are read; the other
-    /// accounts of the page are not drawn (ADR 0761, ADR 0783).
+    /// accounts of the page are not drawn (ADR 0761, ADR 0783). The window is not told: the
+    /// pictures are those of every held profile, so only an answer changes what it draws,
+    /// and an answer tells the window.
     pub fn admin_accounts_laid_out(&mut self, accounts: Vec<AccountId>, cx: &mut Context<Self>) {
         if self.people_followed.admin_rows == accounts {
             return;
         }
         self.people_followed.admin_rows = accounts;
         self.want_people(cx);
-        cx.notify();
     }
 
     /// Gives the cache the people of the view, and the accounts of the laid-out rows of the
@@ -1353,6 +1359,13 @@ impl AppState {
     #[cfg(feature = "test-support")]
     pub fn people_on_way(&self, server_id: ServerId) -> usize {
         self.known.people.on_way(server_id)
+    }
+
+    /// The number of requests for profiles and images that the window started, for every
+    /// server. A test counts them.
+    #[cfg(feature = "test-support")]
+    pub fn people_requests(&self) -> u64 {
+        self.known.people.requests()
     }
 
     /// The accounts of a server whose profiles the window wants, in the order in which
