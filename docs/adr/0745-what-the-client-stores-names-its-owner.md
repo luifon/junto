@@ -27,7 +27,7 @@ Pictures of messages:
 
 Unfinished files:
 
-- The name of the unfinished file of a download is `<name>.<mark>.part`. The mark is 32 hexadecimal digits of a SHA-256 hash over the owner, the kind of the file (a file of a message, a file of a recording segment, the text of a transcript, an export), its identifier, the length that the server states and the hash that the server states. Two unfinished files have one name only when all of these are equal.
+- The name of the unfinished file of a download is `junto-<kind>.<mark>.part`, where `<kind>` is `file`, `recording`, `transcript` or `export`. It holds no name that a server or a person chose: the name of the saved file of a recording comes from the name of its channel, and a rename of the channel gave the next download another unfinished file, so the download started again and the first unfinished file stayed in the directory. Test: `a_cut_download_continues_after_a_rename_of_its_channel` in `crates/client-core`. The mark is 32 hexadecimal digits of a SHA-256 hash over the owner, the kind of the file (a file of a message, a file of a recording segment, the text of a transcript, an export), its identifier, the length that the server states and the hash that the server states. Two unfinished files have one name only when all of these are equal.
 - A download belongs to the owner of its start. Each of its requests is made for the account of that owner and fails when the device has another account. A download does not start while the device is not logged in.
 - The unfinished file of an export save has the same form of name. A save removes only an unfinished file of its own owner.
 - An upload belongs to the owner of its start in the same way: each of its requests is made for that account, and it does not start while the device is not logged in.
@@ -37,7 +37,7 @@ Unfinished files:
 ## Consequences
 
 - A download that was cut continues only for the same entry and the same account. After a server was removed and added again, and after the device got another account, the file is read from its first byte, and the unfinished file of the owner before stays in the directory until the person deletes it.
-- An unfinished file that a build before this record left has a name of the earlier form and is not continued.
+- An unfinished file that a build before this record left has a name of an earlier form and is not continued.
 - A view that shows more than 48 pictures at one time shows the others as not yet arrived, until the window shows fewer. A message has at most 10 files unless the administrator of its server raised the limit (ADR 0401).
 - The next account of an entry reads each picture again, also the pictures that the account before had read.
 - The other stores of a server follow the same rule:

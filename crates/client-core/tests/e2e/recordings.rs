@@ -179,7 +179,7 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
         bytes: Some(held.len() as u64),
         sha256: None,
     };
-    let part = part_file(target.path(), "Daily again.mp4", &stored);
+    let part = part_file(target.path(), &stored);
     std::fs::write(&part, vec![0u8; half]).unwrap();
     let again = transfers
         .download_segment(id, video, "Daily again", target.path().into())

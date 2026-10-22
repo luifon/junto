@@ -319,6 +319,31 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
                 .model
                 .is_some_and(|model| model.entry_requests.is_empty())
     });
+    // A request that the account made without the window, as another device of the
+    // account does, is shown as waiting, and the window withdraws it.
+    let own = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.client().servers())
+        .remove(0);
+    scene.world.run(own.api().request_entry(voice)).unwrap();
+    scene
+        .window
+        .until("the request of the account waits", |window| {
+            voice_of(window).entry == Some(EntryState::Waiting)
+        });
+    assert!(scene.window.shows("withdraw-entry") && !scene.window.shows("ask-to-enter"));
+    scene.window.click("withdraw-entry");
+    scene
+        .window
+        .until("the request of the account is withdrawn", |window| {
+            voice_of(window).entry.is_none()
+                && admin
+                    .live()
+                    .view()
+                    .model
+                    .is_some_and(|model| model.entry_requests.is_empty())
+        });
     // The people inside accept the third request: the device enters the locked room.
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();

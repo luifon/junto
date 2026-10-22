@@ -2690,6 +2690,36 @@ pub(super) mod calls {
             closed(&scene, &asked(EntryState::Denied), "HR"),
             (None, None)
         );
+        // A request that another device of the account made waits at its voice channel.
+        // What this device knows of its own request there comes first.
+        let call_id = scene
+            .studio_mut()
+            .calls
+            .iter()
+            .find(|held| held.channel_id == daily)
+            .and_then(|held| held.call.as_ref())
+            .map(|call| call.id)
+            .unwrap();
+        scene.snapshot.entry_requests = vec![EntryRequest {
+            id: EntryRequestId::generate(),
+            call_id,
+            place: CallPlace::Channel {
+                workspace_id: studio,
+                channel_id: daily,
+            },
+            account_id: own,
+            created_at: time(),
+            expires_at: time() + time::Duration::seconds(60),
+        }];
+        assert_eq!(
+            closed(&scene, &nothing, "Daily"),
+            (Some(Closed::Locked), Some(EntryState::Waiting))
+        );
+        assert_eq!(
+            closed(&scene, &asked(EntryState::Denied), "Daily"),
+            (Some(Closed::Locked), Some(EntryState::Denied))
+        );
+        scene.snapshot.entry_requests.clear();
         // A voice channel that hides who is inside shows no lock. The answer of the
         // server to a join tells it (ADR 0514).
         let refused = |code: ErrorCode| {

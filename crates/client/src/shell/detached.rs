@@ -29,20 +29,6 @@ const HEADER_HEIGHT: f32 = 48.0;
 /// of the design. A narrower window draws the panel over the stage.
 const STAGE_BESIDE_PANEL: f32 = 480.0;
 
-/// Asks the system to keep the call window above other windows, or to stop. Nothing of the
-/// call depends on the answer.
-fn ask_above(window: &mut Window, above: bool, cx: &mut App) {
-    match crate::window_level::keep_above(window, above, cx) {
-        crate::window_level::KeepAbove::Applied => {}
-        crate::window_level::KeepAbove::Unsupported => {
-            tracing::warn!("the window system keeps no window above the others");
-        }
-        crate::window_level::KeepAbove::Failed(failure) => {
-            tracing::warn!(%failure, "the call window was not kept above the others");
-        }
-    }
-}
-
 pub fn open(state: Entity<AppState>, cx: &mut App) {
     if state.read(cx).is_call_detached() {
         return;
@@ -109,7 +95,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                 true
             });
             if ASKS_WINDOW_MANAGER && saved.keep_on_top {
-                ask_above(window, true, cx);
+                crate::window_level::keep_above(window, true, cx);
             }
             let shell = cx.new(|cx| {
                 let mut shell = Shell::new_window(held, true, window, cx);
@@ -225,7 +211,7 @@ impl Shell {
                         let state = state.clone();
                         if ASKS_WINDOW_MANAGER {
                             state.update(cx, |state, cx| state.set_call_on_top(!top, cx));
-                            ask_above(window, !top, cx);
+                            crate::window_level::keep_above(window, !top, cx);
                             return;
                         }
                         // The window is opened again with the other kind. The text that

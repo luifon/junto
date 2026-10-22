@@ -18,7 +18,9 @@ use junto_client_core::model::{
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::RecoveryNotice;
-use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason, ShareAudio};
+use junto_client_core::protocol::call::{
+    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio,
+};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, ConversationId, EntryRequestId,
@@ -1819,6 +1821,17 @@ fn call_people(
     occupants
 }
 
+/// The request of the account to enter a voice channel, from whichever device of the
+/// account it was made, as the state of the server lists it.
+pub(super) fn own_entry_request(
+    model: &ServerModel,
+    channel_id: ChannelId,
+) -> Option<&EntryRequest> {
+    model.own_entry_requests.iter().find(|request| {
+        matches!(request.place, CallPlace::Channel { channel_id: of, .. } if of == channel_id)
+    })
+}
+
 fn voice_state(
     server_id: ServerId,
     channel: &ChannelModel,
@@ -1849,12 +1862,16 @@ fn voice_state(
         model,
         known,
     );
+    // What this device knows of its own request comes first. A request of the account
+    // that another device made waits as the state of the server lists it (ADR 0719).
+    let channel_id = channel.channel.id;
     let entry = known
         .entry
         .as_ref()
-        .filter(|entry| entry.server_id == server_id && entry.channel_id == channel.channel.id)
-        .filter(|_| relation == Relation::Outside)
-        .map(|entry| entry.state);
+        .filter(|entry| entry.server_id == server_id && entry.channel_id == channel_id)
+        .map(|entry| entry.state)
+        .or_else(|| own_entry_request(model, channel_id).map(|_| EntryState::Waiting))
+        .filter(|_| relation == Relation::Outside);
     // What the server answered to the last join of this voice channel.
     let refused = match &media.calls.outcome {
         Some(Outcome::JoinFailed {

@@ -665,6 +665,18 @@ pub enum StoredKind {
     Export,
 }
 
+impl StoredKind {
+    /// The word of the kind in the name of an unfinished file.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Attachment => "file",
+            Self::RecordingSegment => "recording",
+            Self::TranscriptText => "transcript",
+            Self::Export => "export",
+        }
+    }
+}
+
 /// What an unfinished file on this device holds: the file of the server, and the saved
 /// server and the account that it is read for (ADR 0745).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -715,12 +727,14 @@ impl Stored<'_> {
     }
 }
 
-/// The path of the unfinished file of a download in `directory`: the name of the saved
-/// file and the mark of what the file holds and whom it belongs to.
-pub fn part_file(directory: &Path, name: &str, stored: &Stored<'_>) -> PathBuf {
+/// The path of the unfinished file of a download in `directory`: the kind of the file and
+/// the mark of what the file holds and whom it belongs to. It holds no name that a server
+/// or a person chose, so a rename of a channel or of a person, which changes the name of
+/// the saved file, does not change it (ADR 0745).
+pub fn part_file(directory: &Path, stored: &Stored<'_>) -> PathBuf {
     directory.join(format!(
-        "{}.{}{PART_ENDING}",
-        shorten(name, 120),
+        "junto-{}.{}{PART_ENDING}",
+        stored.kind.word(),
         stored.mark()
     ))
 }
@@ -1267,7 +1281,7 @@ impl Transfers {
             sha256: Some(&attachment.sha256),
         };
         let wanted = Wanted {
-            part: part_file(&directory, &name, &stored),
+            part: part_file(&directory, &stored),
             name,
             length: Length::Exactly(attachment.bytes),
             sha256: Some(attachment.sha256.clone()),

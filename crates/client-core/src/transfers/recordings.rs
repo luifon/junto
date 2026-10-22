@@ -123,7 +123,7 @@ impl Transfers {
             sha256: None,
         };
         let wanted = Wanted {
-            part: part_file(&directory, &name, &stored),
+            part: part_file(&directory, &stored),
             name,
             length: Length::Exactly(bytes),
             sha256: None,
@@ -165,7 +165,7 @@ impl Transfers {
             sha256: None,
         };
         let wanted = Wanted {
-            part: part_file(&directory, &name, &stored),
+            part: part_file(&directory, &stored),
             name,
             length: Length::AtMost(TRANSCRIPT_TEXT_MAX_BYTES),
             sha256: None,
@@ -359,8 +359,7 @@ pub(super) mod tests {
         (files, transfers)
     }
 
-    /// The name of the unfinished file of a segment that is saved with the stem "Daily"
-    /// as an audio track.
+    /// The name of the unfinished file of a segment that is saved as an audio track.
     fn part_name(transfers: &Transfers, segment: &RecordingSegment) -> String {
         let (owner, _) = (transfers.owned)().unwrap();
         let stored = Stored {
@@ -370,7 +369,7 @@ pub(super) mod tests {
             bytes: segment.file.as_ref().map(|file| file.bytes),
             sha256: None,
         };
-        part_file(Path::new(""), "Daily.ogg", &stored)
+        part_file(Path::new(""), &stored)
             .to_string_lossy()
             .into_owned()
     }
@@ -426,6 +425,29 @@ pub(super) mod tests {
         let long = segment_file_name(&"n".repeat(300), &video);
         assert_eq!(long.chars().count(), 200);
         assert!(long.ends_with(".mp4"));
+    }
+
+    #[tokio::test]
+    async fn a_cut_download_continues_after_a_rename_of_its_channel() {
+        let content = b"abcdefghij";
+        let segment = track(content);
+        let recording_id = RecordingId::generate();
+        let directory = tempfile::tempdir().unwrap();
+        // A download with the stem "Daily" left its first bytes. The channel was renamed,
+        // and the next download has another stem.
+        let (files, transfers) = played(vec![rest(&content[4..])]);
+        let part = part_name(&transfers, &segment);
+        assert!(!part.contains("Daily"));
+        std::fs::write(directory.path().join(&part), &content[..4]).unwrap();
+
+        let download = transfers
+            .download_segment(recording_id, &segment, "Weekly", directory.path().into())
+            .unwrap();
+        let saved = download.finished().await.unwrap();
+        assert_eq!(saved, directory.path().join("Weekly.ogg"));
+        assert_eq!(std::fs::read(&saved).unwrap(), content);
+        assert_eq!(starts(&files), [4]);
+        assert_eq!(names(directory.path()), ["Weekly.ogg"]);
     }
 
     #[tokio::test]

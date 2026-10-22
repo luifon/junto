@@ -2718,3 +2718,66 @@ async fn a_grant_that_a_read_of_the_own_call_states_closes_the_setting_once_afte
     assert!(f.session.inner.shared().muted);
     f.session.engine.close().await;
 }
+
+#[tokio::test]
+async fn a_join_answer_that_arrives_while_a_login_runs_starts_the_call() {
+    use junto_client_core::flow::access::AccessState;
+    let f = fixture();
+    let (inner, server, target) = (
+        f.session.inner.clone(),
+        f.session.server.clone(),
+        f.session.target,
+    );
+    let account_id = f.session.grants.account_id;
+    // The access flow shows the account, and the device holds no session: a login after
+    // an ended session runs (ADR 0787).
+    server.set_access_for_test(AccessState::LoggedIn {
+        account_id,
+        device_id: DeviceId::generate(),
+        session_expires_at: OffsetDateTime::UNIX_EPOCH,
+        recoveries: Vec::new(),
+        previous_account: None,
+    });
+    assert!(server.account().is_none());
+    let key = {
+        let mut shared = inner.shared();
+        shared.next_key += 1;
+        let key = shared.next_key;
+        shared.joining = Some(Joining { key, target });
+        key
+    };
+    assert!(
+        start(&inner, key, server, target, f.answer.clone()),
+        "the answer of the server started no call"
+    );
+    assert!(end_active(&inner).await.is_some());
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_move_that_is_told_while_a_login_runs_is_followed() {
+    use junto_client_core::protocol::call::CallMove;
+    use junto_client_core::protocol::ids::CallMoveId;
+    let mut f = fixture();
+    // The event stream keeps its session while a login after an ended session runs
+    // (ADR 0787), so the move can arrive while the device holds no session.
+    assert!(f.session.server.account().is_none());
+    let call_move = CallMove {
+        id: CallMoveId::generate(),
+        account_id: f.session.grants.account_id,
+        from: f.session.target.place,
+        to: CallPlace::Channel {
+            workspace_id: WorkspaceId::generate(),
+            channel_id: ChannelId::generate(),
+        },
+        moved_by: AccountId::generate(),
+        expires_at: OffsetDateTime::now_utc() + time::Duration::seconds(60),
+    };
+    f.session.note_move(&Event::CallMoveRequested { call_move });
+    assert!(
+        f.session.moving.is_some(),
+        "the move of the person was not followed"
+    );
+    f.session.end_move();
+    f.session.engine.close().await;
+}
