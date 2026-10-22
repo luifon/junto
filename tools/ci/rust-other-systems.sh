@@ -19,6 +19,10 @@ esac
 # --keep-going: the lints of every crate, also after a crate with an error.
 step "Lint"
 cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+# The device checks of the media crate and the native code that only they select, which the
+# workspace lint does not compile (ADR 0913).
+step "Lint the device checks of the media crate"
+cargo clippy --locked -p junto-media --features native-device-tests --all-targets --keep-going -- -D warnings
 step "Build every target"
 cargo build --workspace --all-targets --locked
 if [ "$system" = macos ]; then
@@ -29,9 +33,10 @@ if [ "$system" = macos ]; then
     tools/check-condition-wait.sh "${CARGO_TARGET_DIR:-target}/debug/junto"
     # The unit tests of the media crate, with those of the condition waits and those that the
     # Linux job does not compile: camera colour and capture settings, and screen capture
-    # configuration. They open no device and ask for no permission.
+    # configuration. They open no device and ask for no permission. Also the reading of the
+    # sources of the WebRTC wrapper (ADR 0733), whose paths differ between the systems.
     step "Media unit tests on macOS"
-    cargo test --locked -p junto-media --lib
+    cargo test --locked -p junto-media --lib --test native_exceptions
 fi
 # The tests that need PostgreSQL run on Linux only, except the window tests on Windows and
 # on macOS.
@@ -72,11 +77,12 @@ if [ "$system" = macos ]; then
     exit 0
 fi
 
-# The unit tests of the media crate, and the capture of the screen against the window of a
-# fixture program, which appears on the desktop of the account for a few seconds without
-# taking the focus. No test plays sound (ADR 0706).
+# The unit tests of the media crate, the reading of the sources of the WebRTC wrapper (ADR 0733),
+# and the capture of the screen against the window of a fixture program, which appears on the
+# desktop of the account for a few seconds without taking the focus. No test plays sound
+# (ADR 0706).
 step "Media tests and screen capture on Windows"
-cargo test --locked -p junto-media --lib --test windows_capture
+cargo test --locked -p junto-media --lib --test native_exceptions --test windows_capture
 # The ZIP of the client: extracted into a folder of the account, started, updated while its
 # program runs, and rolled back by its recovery program (ADR 0755).
 step "Windows package"

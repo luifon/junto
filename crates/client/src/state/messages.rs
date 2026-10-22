@@ -13,10 +13,11 @@ use junto_client_core::live::LoadError;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ids::{AccountId, AttachmentId, MessageId, ServerId};
 use junto_client_core::protocol::message::{Attachment, Block, Document, Message};
-use junto_client_core::transfers::{TransferFailure, Upload, UploadSource, UploadStage};
+use junto_client_core::transfers::{TransferFailure, Upload, UploadSource};
 
 use super::AppState;
 use super::feed;
+use super::progress::Steps;
 use super::view::{DraftFile, Shown};
 use crate::text;
 
@@ -140,6 +141,11 @@ impl AppState {
                 continue;
             };
             let opening = server.live().open_messages(key.1);
+            // A place that the client core did not take, and opens again now, starts
+            // without the position that the window told it before.
+            if let Some(Some(position)) = self.anchors.get(&key) {
+                server.live().set_message_anchor(key.1, Some(*position));
+            }
             let task = cx.spawn(async move |this, cx| {
                 let result = opening.await;
                 let _ = this.update(cx, |this, cx| {
@@ -623,9 +629,11 @@ impl AppState {
         }
     }
 
-    /// Replaces the loaded messages of a place by the end of its history.
+    /// Replaces the loaded messages of a place by the end of its history. The client core
+    /// then follows the end of the place, and the record of the window says so.
     pub fn read_latest(&mut self, server_id: ServerId, place: PlaceId) {
         if let Some(server) = self.client.server(server_id) {
+            self.anchors.insert((server_id, place), None);
             server.live().read_latest_messages(place);
         }
     }
@@ -745,20 +753,17 @@ impl AppState {
         cx.notify();
     }
 
+    /// The window is told a change of the stage of an upload and each further hundredth of
+    /// the file, not each part that leaves.
     fn watch_upload(&mut self, upload: &Upload, cx: &mut Context<Self>) {
-        let mut watch = upload.watch();
+        let mut steps = Steps::of_upload(upload);
         cx.spawn(async move |this, cx| {
-            loop {
-                let ended = watch.changed().await.is_err()
-                    || matches!(
-                        watch.borrow().stage,
-                        UploadStage::Complete(_) | UploadStage::Failed(_) | UploadStage::Cancelled
-                    );
+            while steps.next().await.is_some() {
                 let told = this.update(cx, |this, cx| {
                     this.show_uploads();
                     cx.notify();
                 });
-                if ended || told.is_err() {
+                if told.is_err() {
                     break;
                 }
             }
@@ -877,20 +882,20 @@ impl AppState {
             return;
         };
         let download = server.transfers().download(attachment, directory);
-        let mut watch = download.watch();
+        // The window is told a change of the stage and each further hundredth of the file,
+        // not each part that arrives.
+        let mut steps = Steps::of_download(&download);
         self.known.downloads.insert(key, download.progress());
         self.downloads.insert(key, download);
         cx.spawn(async move |this, cx| {
-            loop {
-                let closed = watch.changed().await.is_err();
-                let progress = watch.borrow().clone();
+            while let Some(progress) = steps.next().await {
                 let told = this.update(cx, |this, cx| {
                     if this.downloads.contains_key(&key) {
                         this.known.downloads.insert(key, progress);
                         this.changed(cx);
                     }
                 });
-                if closed || told.is_err() {
+                if told.is_err() {
                     break;
                 }
             }

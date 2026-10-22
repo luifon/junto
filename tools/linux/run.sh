@@ -118,7 +118,14 @@ else
     set -- /target /usr/local/cargo/registry -- /opt/junto-linux/session.sh "$@"
 fi
 status=0
-docker run --name "$build" --user 0 --network "$network" --memory "$memory" --memory-swap "$memory" --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
+run_build() {
+    if [ "${JUNTO_LINUX_CAMERA:-}" = 1 ]; then
+        python3 "$root/tools/linux/camera.py" "$@"
+    else
+        "$@"
+    fi
+}
+run_build docker run --name "$build" --user 0 --network "$network" --memory "$memory" --memory-swap "$memory" --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
     --mount "type=bind,src=$root,dst=/src" \
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
     --mount "type=volume,src=$target_volume,dst=/target" \

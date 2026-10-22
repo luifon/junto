@@ -39,7 +39,7 @@ One call per account, and the transfer rule:
 - A request to enter the same call by another device of the account moves the call to that device: the earlier identity is no longer allowed, the account keeps its place, and the lock and the user limit do not apply. Others see the person leave and join.
 - A request to enter another call ends the membership in the first call. The lock and the user limit of the new place apply.
 - The earlier identity is removed from its room by the admission check.
-- The request that leaves a call can name the identity of the place that the device leaves. The server then ends the place only when the account holds it with that identity; with another identity, or without a place, nothing changes and the answer is the same. A device that leaves late does not end the place that another device of the account took. Without an identity the request ends the call of the account from whichever device.
+- The request that leaves a call can name the identity of the place that the device leaves. The server then ends the place only when the account holds it with that identity; with another identity, or without a place, nothing changes and the answer is the same. A device that leaves late does not end the place that another device of the account took. The identity of the seat that a completed move replaced names the seat that the move gave (ADR 0511). Without an identity the request ends the call of the account from whichever device.
 
 Own state and blocks:
 

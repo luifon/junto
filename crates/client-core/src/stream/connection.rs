@@ -940,6 +940,7 @@ impl Client {
         model.cursor.position = id;
         self.model_changed = true;
         self.messages.overtake_marks(&event, model);
+        self.messages.keep_for_searches(&event, model);
         let mut again = Vec::new();
         for pending in &mut self.pending {
             if let Load::Part(part) = pending.load {
@@ -1341,6 +1342,7 @@ impl Client {
         let mut places = self.messages.wanted_places();
         places.extend(self.messages.wanted_pins());
         self.carry_admin(before.as_ref(), &places);
+        self.messages.overtake_searches();
         self.carry_messages(before.as_ref());
         self.carry_recordings(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });

@@ -21,27 +21,23 @@ use junto_client_core::call_window::CallWindowSettings;
 /// the other kind (ADR 0772).
 const ASKS_WINDOW_MANAGER: bool = cfg!(target_os = "linux");
 
-/// The height of the header of the call window, in pixels of the design: one line of
-/// buttons.
+/// The height of the first line of the header of the call window, in pixels of the
+/// design: the window controls and the buttons of the panel.
 const HEADER_HEIGHT: f32 = 48.0;
+
+/// The height of the second line of the header, which holds the recording control of a
+/// call of a voice channel in a narrow window, in pixels of the design.
+const RECORDING_LINE_HEIGHT: f32 = 40.0;
+
+/// The narrowest call window, in pixels of the design, whose first line of the header
+/// holds the recording control between the window controls and the buttons of the panel
+/// (ADR 0772). The controls and the buttons take 244 of them; the rest holds the mark of
+/// a running recording with its words and the action after it.
+const RECORDING_BESIDE_CONTROLS: f32 = 560.0;
 
 /// The narrowest stage that the call window draws beside the panel of the call, in pixels
 /// of the design. A narrower window draws the panel over the stage.
 const STAGE_BESIDE_PANEL: f32 = 480.0;
-
-/// Asks the system to keep the call window above other windows, or to stop. Nothing of the
-/// call depends on the answer.
-fn ask_above(window: &mut Window, above: bool, cx: &mut App) {
-    match crate::window_level::keep_above(window, above, cx) {
-        crate::window_level::KeepAbove::Applied => {}
-        crate::window_level::KeepAbove::Unsupported => {
-            tracing::warn!("the window system keeps no window above the others");
-        }
-        crate::window_level::KeepAbove::Failed(failure) => {
-            tracing::warn!(%failure, "the call window was not kept above the others");
-        }
-    }
-}
 
 pub fn open(state: Entity<AppState>, cx: &mut App) {
     if state.read(cx).is_call_detached() {
@@ -109,7 +105,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                 true
             });
             if ASKS_WINDOW_MANAGER && saved.keep_on_top {
-                ask_above(window, true, cx);
+                crate::window_level::keep_above(window, true, cx);
             }
             let shell = cx.new(|cx| {
                 let mut shell = Shell::new_window(held, true, window, cx);
@@ -201,9 +197,6 @@ impl Shell {
             .bg(Hsla::from(theme.colors.basalt));
         let state = self.state.clone();
         let top = self.state.read(cx).call_window_settings().keep_on_top;
-        // The header has one line of a fixed height: a change of the recording changes only
-        // its own part, between the window controls and the buttons of the panel, and moves
-        // nothing under the header (ADR 0730).
         let controls = div()
             .flex()
             .flex_none()
@@ -225,7 +218,7 @@ impl Shell {
                         let state = state.clone();
                         if ASKS_WINDOW_MANAGER {
                             state.update(cx, |state, cx| state.set_call_on_top(!top, cx));
-                            ask_above(window, !top, cx);
+                            crate::window_level::keep_above(window, !top, cx);
                             return;
                         }
                         // The window is opened again with the other kind. The text that
@@ -248,19 +241,38 @@ impl Shell {
                     .tooltip(text::FULLSCREEN)
                     .on_click(cx.listener(|_, _, window, _| window.toggle_fullscreen())),
             );
-        let recording = div()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .items_center()
-            .gap(u(6.0))
-            .children(
-                panel
-                    .and_then(|panel| panel.channel())
-                    .map(|channel| self.render_recording_control(&channel.recording, &theme, cx))
-                    .into_iter()
-                    .flatten(),
-            );
+        // The call of a voice channel has a recording control. It lies between the window
+        // controls and the buttons of the panel in a wide window, and on a second line of
+        // its own in a narrow one. The form depends on the width and on the kind of the
+        // call only, so a change of the recording moves nothing (ADR 0772).
+        let records = view
+            .call
+            .as_ref()
+            .is_some_and(|strip| strip.channel_id.is_some());
+        let recording_beside = super::logical_width(window) >= RECORDING_BESIDE_CONTROLS;
+        let recording = records.then(|| {
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .items_center()
+                .gap(u(6.0))
+                .children(
+                    panel
+                        .and_then(|panel| panel.channel())
+                        .map(|channel| {
+                            self.render_recording_control(&channel.recording, &theme, true, cx)
+                        })
+                        .into_iter()
+                        .flatten(),
+                )
+        });
+        let (in_header, under_header) = if recording_beside {
+            (recording, None)
+        } else {
+            (None, recording)
+        };
         let header = div()
             .flex_none()
             .flex()
@@ -269,7 +281,7 @@ impl Shell {
             .h(u(HEADER_HEIGHT))
             .px(u(8.0))
             .child(controls)
-            .child(recording)
+            .child(in_header.unwrap_or_else(|| div().flex_1()))
             .when(panel.is_some(), |header| {
                 header.child(
                     div()
@@ -280,6 +292,17 @@ impl Shell {
                 )
             });
         body = body.child(header);
+        if let Some(recording) = under_header {
+            body = body.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .h(u(RECORDING_LINE_HEIGHT))
+                    .px(u(8.0))
+                    .child(recording),
+            );
+        }
         // What the main window tells about the call is told here too: the person can use
         // this window alone (ADR 0772).
         let meeting = panel

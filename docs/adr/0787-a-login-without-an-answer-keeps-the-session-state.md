@@ -27,6 +27,8 @@ Who logs in again after the third outcome:
 
 The call during that time follows the rule that ADR 0734 states for an interrupted event stream: the call is kept, a place that the server ended is not noticed, and no new token is asked for. The media session changes nothing without a live state: the admission and the blocks stay as the last state told them (ADR 0785), also while the device has no session because a login runs. The first state after the stream is live again is applied by its position.
 
+The media engine takes the account of a call from the session of the device, and, while a login runs and the device holds no session, from the access flow, which still shows the account as `logged in`. A join whose answer arrives in that time starts its call; a move of the account that the stream tells in that time is followed, by the account of the call; and a direct call names the other account of the conversation. A login that gives another account ends the call when the media session reads the state. Reason: the media engine read the account of the session only, so the answer of a join that arrived during a login started no call, the join was reported as ended by the person and its place was given up, a move in that time was not followed, and a direct call could name the own account as the other one. Tests: `a_join_answer_that_arrives_while_a_login_runs_starts_the_call` and `a_move_that_is_told_while_a_login_runs_is_followed` in `crates/media`.
+
 What reads `logged out`, and what a login without an answer changes for it:
 
 - The media session ends a call when the access flow is not `logged in` for the account of the call. It keeps the call now.

@@ -33,6 +33,7 @@ Completion:
 - In one transaction the account stops being a member of the source and becomes a member of the destination, with its own microphone and sound settings. The block of meeting mode of the destination applies.
 - The moved account and the account that moved get `call_move_resolved` with the outcome `completed`. The audit log gets two entries by the account that moved: `call_member_moved_out` about the source channel, which does not name the destination, and `call_member_moved_in` about the destination channel, which does not name the source. Each entry is shown by the rule of its own channel (ADR 0305), so a reader who sees only the source does not learn that the destination exists.
 - The client leaves the source when it receives the outcome. The identity of the source is no longer allowed, and the admission check removes it.
+- The seat of the destination records the identity of the source seat that it replaced. Until the device reads the outcome it holds both seats, and a leave that it sends names the source. A leave that names that identity ends the seat of the destination, so a person who leaves at the moment of the completion is not left in the destination. A later seat of the account, on this device or another, does not record it, and the identity of the source ends nothing there.
 
 Failure:
 

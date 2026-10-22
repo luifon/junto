@@ -7,8 +7,10 @@
 //! answer: after the answer the read starts again.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
+use junto_protocol::events::Event;
 use junto_protocol::ids::{AttachmentId, ChannelId, MessageId};
 use junto_protocol::message::{Message, MessagePage, MessageState, SendMessage, ThreadState};
 use tokio::sync::oneshot;
@@ -211,6 +213,13 @@ struct Sending {
     /// The person asked to send the message again: the history is searched at this time,
     /// and the message is sent when the history does not hold it.
     search_at: Option<Instant>,
+    /// The place whose history the search that is on its way reads, with the events of the
+    /// messages of that place that arrived since it was sent. Its answer can be older than
+    /// them (ADR 0721).
+    searching: Option<(PlaceId, Vec<Arc<Event>>)>,
+    /// More events arrived during the search than are kept: its answer is not used, and
+    /// the history is searched again.
+    search_overtaken: bool,
 }
 
 /// What a request that is no read reports back.
@@ -345,6 +354,35 @@ impl Work {
             .chain(mutes)
             .filter(|at| self.advanced_at.is_none_or(|step| *at > step))
             .min()
+    }
+
+    /// Keeps an event of the messages of a place whose history a search reads now.
+    pub(super) fn keep_for_searches(&mut self, event: &Arc<Event>, model: &ServerModel) {
+        for sending in self.sends.values_mut() {
+            let Some((place, kept)) = &mut sending.searching else {
+                continue;
+            };
+            if !Part::Messages(*place, Reach::Open).concerns(event, model) {
+                continue;
+            }
+            if kept.len() >= super::MOST_KEPT_EVENTS {
+                kept.clear();
+                sending.search_overtaken = true;
+            } else if !sending.search_overtaken {
+                kept.push(event.clone());
+            }
+        }
+    }
+
+    /// The state was replaced by a snapshot: the events between the state before and the
+    /// new one were not told, so the answer of a search that is on its way is not used.
+    pub(super) fn overtake_searches(&mut self) {
+        for sending in self.sends.values_mut() {
+            if let Some((_, kept)) = &mut sending.searching {
+                kept.clear();
+                sending.search_overtaken = true;
+            }
+        }
     }
 
     /// An event arrived. A read position whose request is on its way gets an answer that
@@ -1440,6 +1478,8 @@ impl Client {
             let token = token.clone();
             let request = if search {
                 let after = pending.after;
+                sending.searching = Some((place, Vec::new()));
+                sending.search_overtaken = false;
                 tokio::spawn(async move {
                     let result = history_after(&api, place, after).await;
                     let outcome = Outcome::Searched { id, result };
@@ -1531,9 +1571,16 @@ impl Client {
             return;
         };
         sending.request = None;
+        let kept = sending
+            .searching
+            .take()
+            .map(|(_, kept)| kept)
+            .unwrap_or_default();
+        let overtaken = std::mem::take(&mut sending.search_overtaken);
         let Some(model) = &mut self.model else {
             return;
         };
+        let mut reads = Vec::new();
         let Some(pending) = model
             .outbox
             .iter()
@@ -1555,11 +1602,19 @@ impl Client {
                         !model.sent_ids.contains(&message.id) && probe.is_confirmed_by(message, own)
                     })
                     .cloned();
-                if let Some(message) = found {
+                if overtaken {
+                    // The answer can be older than events that were not kept: the history
+                    // is searched again.
+                    sending.search_at = Some(Instant::now());
+                } else if let Some(message) = found {
                     self.messages.sends.remove(&id);
                     model.outbox.retain(|held| held.id != id);
                     model.note_sent(message.id);
+                    // The events of the message that arrived during the search are applied
+                    // after the answer: a later edit or deletion is not undone by it.
+                    let part = Part::Message(PlaceId::of_message(&message), message.id);
                     model.put_message(message);
+                    reads = model.replay_reads(part, kept.iter().map(Arc::as_ref));
                     self.model_changed = true;
                 } else if history.complete {
                     // The server does not hold the message: the next step sends it.
@@ -1587,6 +1642,9 @@ impl Client {
                 sending.search_at = None;
                 self.set_send_state(id, SendState::Unconfirmed);
             }
+        }
+        for read in reads {
+            self.read(read);
         }
     }
 }
@@ -1657,6 +1715,7 @@ mod tests {
                 request: Some(request.abort_handle()),
                 attempted_at: Some(started),
                 search_at: Some(started + Duration::from_secs(30)),
+                ..Sending::default()
             },
         );
         // The time of the search has passed and its request runs: the task has nothing
@@ -1671,6 +1730,7 @@ mod tests {
                 request: None,
                 attempted_at: Some(now),
                 search_at: Some(later),
+                ..Sending::default()
             },
         );
         assert_eq!(work.next_due(), Some(later));
@@ -1688,6 +1748,7 @@ mod tests {
                 request: None,
                 attempted_at: Some(step),
                 search_at: Some(due),
+                ..Sending::default()
             },
         );
         work.marks.insert(

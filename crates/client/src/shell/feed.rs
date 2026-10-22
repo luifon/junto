@@ -433,11 +433,14 @@ type Tokens = Arc<Vec<(Range<usize>, Token)>>;
 
 /// The tokens of the code blocks that the window drew, by the text and the language of
 /// each block. A list draws its rows many times, and the tokens of a text do not change.
+/// A full store lets go of the block that was drawn longest ago.
 #[derive(Default)]
 pub(crate) struct CodeTokens {
-    /// By the rules of the language, then by the text.
-    held: HashMap<&'static str, HashMap<String, Tokens>>,
+    /// By the rules of the language, then by the text: the tokens, and the number of the
+    /// drawing that used them last.
+    held: HashMap<&'static str, HashMap<String, (Tokens, u64)>>,
     blocks: usize,
+    drawings: u64,
 }
 
 impl CodeTokens {
@@ -450,20 +453,42 @@ impl CodeTokens {
         if code.len() > highlight::MOST_BYTES {
             return Tokens::default();
         }
-        if let Some(held) = self.held.get(rules).and_then(|held| held.get(code)) {
-            return held.clone();
+        self.drawings += 1;
+        if let Some((tokens, used)) = self.held.get_mut(rules).and_then(|held| held.get_mut(code)) {
+            *used = self.drawings;
+            return tokens.clone();
         }
         if self.blocks >= MOST_CODE_BLOCKS {
-            self.held.clear();
-            self.blocks = 0;
+            self.drop_oldest();
         }
         let tokens = Arc::new(highlight::tokens(code, language));
         self.held
             .entry(rules)
             .or_default()
-            .insert(code.to_owned(), tokens.clone());
+            .insert(code.to_owned(), (tokens.clone(), self.drawings));
         self.blocks += 1;
         tokens
+    }
+
+    fn drop_oldest(&mut self) {
+        let oldest = self
+            .held
+            .iter()
+            .flat_map(|(rules, held)| {
+                held.iter()
+                    .map(move |(code, (_, used))| (*used, *rules, code))
+            })
+            .min_by_key(|(used, _, _)| *used)
+            .map(|(_, rules, code)| (rules, code.clone()));
+        if let Some((rules, code)) = oldest
+            && let Some(held) = self.held.get_mut(rules)
+            && held.remove(&code).is_some()
+        {
+            self.blocks = self.blocks.saturating_sub(1);
+            if held.is_empty() {
+                self.held.remove(rules);
+            }
+        }
     }
 }
 
@@ -2733,6 +2758,23 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_store_of_code_tokens_lets_go_of_the_block_drawn_longest_ago() {
+        let mut store = CodeTokens::default();
+        let code = |number: usize| format!("let value = {number};");
+        let first: Vec<Tokens> = (0..MOST_CODE_BLOCKS)
+            .map(|number| store.of(&code(number), Some("rust")))
+            .collect();
+        assert!(first.iter().all(|tokens| !tokens.is_empty()));
+        // The first block is drawn again, and one more block makes the store full.
+        assert!(Arc::ptr_eq(&store.of(&code(0), Some("rust")), &first[0]));
+        store.of(&code(MOST_CODE_BLOCKS), Some("rust"));
+        // Only the block that was drawn longest ago is read again.
+        assert!(Arc::ptr_eq(&store.of(&code(0), Some("rust")), &first[0]));
+        assert!(Arc::ptr_eq(&store.of(&code(2), Some("rust")), &first[2]));
+        assert!(!Arc::ptr_eq(&store.of(&code(1), Some("rust")), &first[1]));
+    }
 
     #[test]
     fn an_address_that_is_no_web_or_mail_address_is_no_link() {

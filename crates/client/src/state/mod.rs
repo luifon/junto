@@ -21,6 +21,7 @@ pub mod notices;
 mod notifying;
 pub mod people;
 pub mod person_drop;
+mod progress;
 pub mod receipts;
 pub mod recorded;
 mod recorded_work;
@@ -388,6 +389,8 @@ pub struct AppState {
     shown: Shown,
     /// The picture of the profile preset, and where a change of it stands.
     preset_picture: people::PresetPicture,
+    /// The people whose profiles the window reads (ADR 0783).
+    people_followed: people::Followed,
     /// The images of the logos of the servers, and where the read of each stands
     /// (ADR 0101).
     logos: logo::Logos,
@@ -691,6 +694,7 @@ impl AppState {
             update_install: update_install::InstallState::new(),
             shown: Shown::default(),
             preset_picture: people::PresetPicture::default(),
+            people_followed: people::Followed::default(),
             logos: logo::Logos::default(),
             members: None,
             watchers: HashMap::new(),
@@ -1416,6 +1420,39 @@ impl AppState {
         self.changed(cx);
     }
 
+    /// Withdraws the request to enter that the window shows at a voice channel: the one
+    /// of this device, or one that another device of the account made (ADR 0739).
+    pub fn withdraw_entry_at(
+        &mut self,
+        server_id: ServerId,
+        channel_id: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let elsewhere = server.live().view().model.and_then(|model| {
+            view::shown_entry(self.known.entry.as_ref(), &model, server_id, channel_id).elsewhere
+        });
+        let own =
+            self.known.entry.as_ref().is_some_and(|entry| {
+                entry.server_id == server_id && entry.channel_id == channel_id
+            });
+        // The request of this device, or what the window told of its end, goes first.
+        if own {
+            self.withdraw_entry(cx);
+        }
+        let Some(request_id) = elsewhere else {
+            return;
+        };
+        let api = server.api();
+        cx.spawn(async move |_, _| {
+            // A request that was answered meanwhile is gone on the server.
+            let _ = api.cancel_entry_request(request_id).await;
+        })
+        .detach();
+    }
+
     /// Withdraws the request to enter, and puts away what was told about it.
     pub fn withdraw_entry(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.known.entry.take() else {
@@ -2084,7 +2121,7 @@ impl AppState {
         self.end_search_of_other_server(shown.server);
         self.drop_lost_search_filter(&snapshots, cx);
         self.shown = shown;
-        self.follow_people(&view, cx);
+        self.follow_people(&view, &snapshots, cx);
         self.follow_followed(&view, cx);
         self.follow_moderation(&snapshots, cx);
         let readers = self.archived_readers(&view, &snapshots);

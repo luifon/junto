@@ -683,19 +683,60 @@ fn a_program_that_the_client_opens_is_started_by_the_shell_outside_its_tree() {
     assert_eq!(creator_of(&report).0, std::process::id());
 }
 
-/// A scheme of links that only this test program uses, registered for the account with a
-/// command that starts the fixture. The registration is removed when the value is dropped.
+/// The start of the name of each scheme that a process of this test program registers.
+const SCHEME_PREFIX: &str = "junto-test-open-";
+/// The number of schemes that this process has registered.
+static REGISTERED: AtomicUsize = AtomicUsize::new(0);
+
+/// A scheme of links that only one registration of this process of the test program uses,
+/// registered for the account with a command that starts the fixture. The registration is
+/// removed when the value is dropped. A process that is killed drops nothing, so its name holds
+/// the number and the creation time of the process and the number of the registration
+/// (`junto-test-open-<number>-<creation time>-<registration>`), and each registration first
+/// removes the schemes of processes that no longer run. The keys are volatile: Windows also
+/// removes them when the account logs off.
 struct Scheme {
+    name: String,
     key: String,
 }
 
 impl Scheme {
-    fn register(name: &str, command: &str) -> Self {
+    fn register(command: &str) -> Self {
+        Self::remove_ended();
+        let process = std::process::id();
+        let created = registry::creation_time(process).unwrap();
+        let registration = REGISTERED.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{SCHEME_PREFIX}{process}-{created}-{registration}");
         let key = format!(r"Software\Classes\{name}");
         registry::set(&key, None, "URL:Junto test");
         registry::set(&key, Some("URL Protocol"), "");
         registry::set(&format!(r"{key}\shell\open\command"), None, command);
-        Self { key }
+        Self { name, key }
+    }
+
+    /// Removes the schemes of this test program whose process no longer runs: no process has
+    /// the number, or it has another creation time. A name without a creation time is of an
+    /// earlier version of this program, and is removed when no process has its number.
+    fn remove_ended() {
+        for name in registry::classes() {
+            let Some(process) = name.strip_prefix(SCHEME_PREFIX) else {
+                continue;
+            };
+            let mut parts = process.splitn(3, '-');
+            let number = parts.next().unwrap_or_default();
+            let created = parts.next().and_then(|created| created.parse::<u64>().ok());
+            let Ok(number) = number.parse::<u32>() else {
+                continue;
+            };
+            let running = registry::creation_time(number);
+            let ended = match created {
+                Some(created) => running != Some(created),
+                None => running.is_none(),
+            };
+            if ended {
+                registry::remove(&format!(r"Software\Classes\{name}"));
+            }
+        }
     }
 }
 
@@ -708,12 +749,116 @@ impl Drop for Scheme {
 #[allow(unsafe_code)]
 mod registry {
     use windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
+        REG_OPTION_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW,
+        RegOpenKeyExW, RegSetValueExW,
     };
-    use windows::core::{HSTRING, PCWSTR};
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
 
-    /// Sets a text value of a key of the account, the default value without a name.
+    /// The creation time of a running process as Windows stores it, or nothing when no
+    /// process of that number runs.
+    pub fn creation_time(process: u32) -> Option<u64> {
+        use windows::Win32::Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT};
+        use windows::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            WaitForSingleObject,
+        };
+        // SAFETY: the handle is closed before the return; the call writes the four times into
+        // the values.
+        unsafe {
+            let handle = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                process,
+            )
+            .ok()?;
+            let (mut created, mut ended, mut kernel, mut user) = (
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+            );
+            // A process that has ended stays open while another process holds a handle of it.
+            let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+                && GetProcessTimes(handle, &mut created, &mut ended, &mut kernel, &mut user)
+                    .is_ok();
+            let _ = CloseHandle(handle);
+            running
+                .then(|| u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime))
+        }
+    }
+
+    /// The names of the keys of `Software\Classes` of the account.
+    pub fn classes() -> Vec<String> {
+        let mut opened = HKEY::default();
+        let mut names = Vec::new();
+        // SAFETY: the strings and the buffer outlive the calls, and `length` states the length
+        // of the buffer; the key opened here is closed before the return.
+        unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(r"Software\Classes"),
+                None,
+                KEY_ENUMERATE_SUB_KEYS,
+                &mut opened,
+            )
+            .ok()
+            .unwrap();
+            // A key name has at most 255 characters.
+            let mut buffer = [0u16; 256];
+            for index in 0.. {
+                let mut length = buffer.len() as u32;
+                let read = RegEnumKeyExW(
+                    opened,
+                    index,
+                    Some(PWSTR(buffer.as_mut_ptr())),
+                    &mut length,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                if read.is_err() {
+                    break;
+                }
+                names.push(String::from_utf16_lossy(&buffer[..length as usize]));
+            }
+            let _ = RegCloseKey(opened);
+        }
+        names
+    }
+
+    /// Whether a key of the account is volatile: below a volatile key Windows refuses to create
+    /// a key that is not volatile (`ERROR_CHILD_MUST_BE_VOLATILE`).
+    pub fn is_volatile(key: &str) -> bool {
+        use windows::Win32::Foundation::ERROR_CHILD_MUST_BE_VOLATILE;
+        let child = format!(r"{key}\junto-test-volatile");
+        let mut opened = HKEY::default();
+        // SAFETY: the string outlives the call; a key opened here is closed before the return.
+        let created = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(child.as_str()),
+                None,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                None,
+                &mut opened,
+                None,
+            )
+        };
+        if created.is_ok() {
+            // SAFETY: the key was opened by the call above.
+            let _ = unsafe { RegCloseKey(opened) };
+            remove(&child);
+            return false;
+        }
+        assert_eq!(created, ERROR_CHILD_MUST_BE_VOLATILE, "{child}");
+        true
+    }
+
+    /// Sets a text value of a volatile key of the account, the default value without a name.
     pub fn set(key: &str, name: Option<&str>, value: &str) {
         let mut opened = HKEY::default();
         let data: Vec<u8> = value
@@ -730,7 +875,7 @@ mod registry {
                 &HSTRING::from(key),
                 None,
                 PCWSTR::null(),
-                REG_OPTION_NON_VOLATILE,
+                REG_OPTION_VOLATILE,
                 KEY_SET_VALUE,
                 None,
                 &mut opened,
@@ -841,6 +986,73 @@ fn arguments_in(file: &std::path::Path) -> Vec<String> {
     }
 }
 
+/// The keys of `Software\Classes` that a test created, removed when the value is dropped.
+struct Keys(Vec<String>);
+
+impl Drop for Keys {
+    fn drop(&mut self) {
+        for name in &self.0 {
+            registry::remove(&format!(r"Software\Classes\{name}"));
+        }
+    }
+}
+
+#[test]
+fn a_registration_removes_the_schemes_of_test_processes_that_no_longer_run() {
+    // A process that runs until its input ends, and one that has ended. The handle of the
+    // ended one stays open, so Windows gives its number to no other process.
+    let mut running = Command::new("findstr")
+        .arg("x")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut ended = Command::new("cmd")
+        .args(["/d", "/c", "exit"])
+        .spawn()
+        .unwrap();
+    ended.wait().unwrap();
+    let number = running.id();
+    let created = registry::creation_time(number).unwrap();
+    let kept = [
+        format!("{SCHEME_PREFIX}{number}-{created}"),
+        format!("{SCHEME_PREFIX}{number}"),
+        format!("{SCHEME_PREFIX}other"),
+    ];
+    let removed = [
+        format!("{SCHEME_PREFIX}{number}-{}-0", created - 1),
+        format!("{SCHEME_PREFIX}{}-{created}-0", ended.id()),
+        format!("{SCHEME_PREFIX}{}", ended.id()),
+    ];
+    let _keys = Keys(kept.iter().chain(&removed).cloned().collect());
+    for name in kept.iter().chain(&removed) {
+        registry::set(&format!(r"Software\Classes\{name}"), None, "URL:Junto test");
+    }
+    let scheme = Scheme::register("unused");
+    let classes = registry::classes();
+    for name in kept.iter().chain([&scheme.name]) {
+        assert!(classes.contains(name), "{name} was removed");
+    }
+    for name in &removed {
+        assert!(!classes.contains(name), "{name} was not removed");
+    }
+    // Windows removes the keys of the scheme also at a logoff of the account.
+    for key in [
+        scheme.key.clone(),
+        format!(r"{}\shell\open\command", scheme.key),
+    ] {
+        assert!(registry::is_volatile(&key), "{key} is not volatile");
+    }
+    let name = scheme.name.clone();
+    drop(scheme);
+    assert!(
+        !registry::classes().contains(&name),
+        "{name} stayed after the drop"
+    );
+    drop(running.stdin.take());
+    running.wait().unwrap();
+}
+
 #[test]
 fn a_link_with_quotes_and_spaces_reaches_its_application_as_one_argument() {
     use junto_client_core::link::Link;
@@ -849,27 +1061,24 @@ fn a_link_with_quotes_and_spaces_reaches_its_application_as_one_argument() {
     // the target directory of the build can be named with slashes.
     let fixture = std::path::absolute(env!("CARGO_BIN_EXE_junto-share-fixture")).unwrap();
     let process = std::process::id();
-    let name = format!("junto-test-open-{process}");
     let file =
         std::path::absolute(std::env::temp_dir().join(format!("junto-share-arguments-{process}")))
             .unwrap();
     let _ = std::fs::remove_file(&file);
     // The usual form of the command of an application for a scheme.
-    let _scheme = Scheme::register(
-        &name,
-        &format!(
-            r#""{}" --arguments "{}" "%1""#,
-            fixture.display(),
-            file.display()
-        ),
-    );
+    let scheme = Scheme::register(&format!(
+        r#""{}" --arguments "{}" "%1""#,
+        fixture.display(),
+        file.display()
+    ));
+    let name = &scheme.name;
     // An address that a server could send: with `%1` replaced as it is, the fixture would
     // receive `--report` and `C:\a b` as arguments of their own.
     let link = Link::of_any_scheme(&format!(r#"{name}:x" --report "C:\a b" y"#)).unwrap();
     // When the shell finds no program for the scheme, it shows a message on the desktop and
     // waits for a person to close it: the link is opened only when the shell finds the
     // fixture.
-    let program = registry::program_of(&name).map(std::path::PathBuf::from);
+    let program = registry::program_of(name).map(std::path::PathBuf::from);
     assert_eq!(program.as_deref(), Some(fixture.as_path()));
     // The shell answers when it has started the program. A message that it shows all the
     // same is closed here, so that nothing of the test stays on the desktop.
@@ -880,7 +1089,7 @@ fn a_link_with_quotes_and_spaces_reaches_its_application_as_one_argument() {
     });
     let opened = answered.recv_timeout(PATIENCE);
     if opened.is_err() {
-        let closed = registry::close_messages(&name);
+        let closed = registry::close_messages(name);
         panic!("the shell did not answer; {closed} message windows of the shell were closed");
     }
     assert_eq!(opened.ok(), Some(Ok(Opened::ByTheShell)));

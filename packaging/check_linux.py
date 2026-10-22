@@ -18,6 +18,7 @@ import icons
 import licences
 import linux
 import release_tools
+import check_lifecycle
 from configuration import architecture as machine_architecture
 from programs import outcome
 
@@ -311,9 +312,13 @@ class Check:
             running.kill()
             running.wait()
 
+    @step("real client packages: install, first frame, update, first frame, rollback, first frame")
+    def real_client_lifecycle(self):
+        check_lifecycle.check(self.root, "linux", self.files)
+
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="junto-linux-packages-", ignore_cleanup_errors=True) as temporary:
+    with tempfile.TemporaryDirectory(prefix="junto-linux-packages-") as temporary:
         check = Check(pathlib.Path(temporary))
         for number, (name, function) in enumerate(STEPS, 1):
             print(f"[{number}/{len(STEPS)}] {name}", flush=True)

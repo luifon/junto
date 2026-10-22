@@ -389,7 +389,8 @@ pub async fn copy_before_migration(
 pub enum MigrationCopied {
     /// No migration waits, or the copy is turned off.
     Nothing,
-    /// Initial installation continues without a copy: no installed server state exists.
+    /// No installed server state exists, so no copy is made: a first start, or a start
+    /// after a first start that did not finish.
     Initial,
     /// The database was copied to the database of this name.
     Made(String),
@@ -397,6 +398,27 @@ pub enum MigrationCopied {
     /// The name is the copy that holds the state before that upgrade, when the database
     /// server has one.
     Unfinished(Option<String>),
+}
+
+impl MigrationCopied {
+    /// The line that the server logs at its start about the copy. The name of a copy is
+    /// logged as a field of its own.
+    pub fn log_line(&self) -> &'static str {
+        match self {
+            Self::Nothing => "no migration waits, or the migration copy is turned off",
+            Self::Initial => {
+                "no installed server state exists: the migrations are applied without a \
+                 migration copy"
+            }
+            Self::Made(_) => {
+                "this version changes the database; a copy of the database was made before"
+            }
+            Self::Unfinished(_) => {
+                "an upgrade before this start did not apply every migration: no copy of the \
+                 database was made; the database named here is the copy from before that upgrade"
+            }
+        }
+    }
 }
 
 /// [`copy_before_migration`] for the migrations of `migrations`.

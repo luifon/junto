@@ -3873,6 +3873,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "junto-authz",
+ "junto-icon",
  "junto-protocol",
  "junto-server",
  "reqwest 0.12.28",

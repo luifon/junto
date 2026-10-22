@@ -298,3 +298,58 @@ async fn a_leave_that_names_an_identity_ends_only_the_place_with_that_identity()
     server.leave_call(ann).await;
     assert_eq!(held(server, ann).await, None);
 }
+
+#[tokio::test]
+async fn a_leave_that_names_the_source_of_a_completed_move_ends_the_seat_that_the_move_gave() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let lounge = scene.voice.id;
+    let garden = server.voice(owner, scene.workspace_id, "garden").await.id;
+    server.enter_call(ben, garden).await;
+    let source = server.enter_call(ann, lounge).await;
+    let pending = move_to(server, owner, lounge, ann.account_id, garden).await;
+    let moved: CallJoin = server
+        .post(
+            ann,
+            &format!("/api/v1/call/moves/{}/join", pending.id),
+            &Value::Null,
+        )
+        .await
+        .ok(StatusCode::OK);
+    let destination = server.connect(moved);
+    server.check().await;
+    assert_eq!(held(server, ann).await, Some(destination.identity.clone()));
+    assert_eq!(server.occupants(ben, garden).await.len(), 2);
+
+    // The device leaves before it has read that the server completed the move: its leave
+    // names the seat of the source. The device holds both seats, so the seat that the move
+    // gave ends.
+    leave_as(server, ann, &source.identity).await;
+    assert_eq!(held(server, ann).await, None);
+    assert_eq!(server.occupants(ben, garden).await, [ben.account_id]);
+
+    // A later seat of the account is another seat: the identity of the source ends nothing.
+    let again = server.enter_call(ann, garden).await;
+    leave_as(server, ann, &source.identity).await;
+    assert_eq!(held(server, ann).await, Some(again.identity.clone()));
+    server.leave_call(ann).await;
+
+    // After another move, a seat that another device takes is not ended by the identity of
+    // the source either.
+    let source = server.enter_call(ann, lounge).await;
+    let pending = move_to(server, owner, lounge, ann.account_id, garden).await;
+    let moved: CallJoin = server
+        .post(
+            ann,
+            &format!("/api/v1/call/moves/{}/join", pending.id),
+            &Value::Null,
+        )
+        .await
+        .ok(StatusCode::OK);
+    server.connect(moved);
+    server.check().await;
+    let other = link_second_device(server, ann).await;
+    let taken = server.enter_call(&other, garden).await;
+    leave_as(server, ann, &source.identity).await;
+    assert_eq!(held(server, ann).await, Some(taken.identity));
+}

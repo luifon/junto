@@ -1285,6 +1285,40 @@ impl ServerModel {
         self.admin_mut().carry(&before.admin, part);
     }
 
+    /// The workspaces of the archived channels that the state carried over a reload and
+    /// that no loaded archived list holds.
+    pub(crate) fn carried_archived_workspaces(&self) -> Vec<WorkspaceId> {
+        let mut workspaces: Vec<WorkspaceId> = self
+            .admin
+            .archived_known
+            .iter()
+            .map(|held| held.channel.workspace_id)
+            .collect();
+        workspaces.sort_unstable();
+        workspaces.dedup();
+        workspaces
+    }
+
+    /// Lets go of the archived list of a workspace that the client read without a reader.
+    /// A channel of the list stays while a reader has its messages, a thread of it or its
+    /// pin list open, or a collection of it (`held`).
+    pub(crate) fn release_archived(&mut self, workspace_id: WorkspaceId, held: &[ChannelId]) {
+        let kept: Vec<ArchivedChannel> = self
+            .admin
+            .archived(workspace_id)
+            .loaded()
+            .into_iter()
+            .flatten()
+            .filter(|channel| {
+                self.reads_channel(channel.channel.id) || held.contains(&channel.channel.id)
+            })
+            .cloned()
+            .collect();
+        let admin = self.admin_mut();
+        admin.set(AdminPart::Archived(workspace_id), AdminSet::NotLoaded);
+        admin.archived_known.extend(kept);
+    }
+
     /// Carries, after a reload, the archived channels whose messages a reader has open.
     /// The snapshot does not name them (ADR 0410); the archived list of their workspace
     /// decides when it answers.

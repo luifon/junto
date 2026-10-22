@@ -861,8 +861,10 @@ impl Shell {
                 .label(label)
                 .selector("withdraw-entry")
                 .flex_1()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.state.update(cx, |state, cx| state.withdraw_entry(cx));
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.withdraw_entry_at(server_id, channel_id, cx);
+                    });
                 }))
         };
         let actions = div().flex().gap(u(6.0)).mt(u(7.0));
