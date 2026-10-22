@@ -263,7 +263,7 @@ impl Shell {
             .call
             .as_ref()
             .is_some_and(|strip| strip.channel_id.is_some());
-        let beside = super::logical_width(window) >= RECORDING_BESIDE_CONTROLS;
+        let recording_beside = super::logical_width(window) >= RECORDING_BESIDE_CONTROLS;
         let recording = records.then(|| {
             div()
                 .flex()
@@ -282,7 +282,7 @@ impl Shell {
                         .flatten(),
                 )
         });
-        let (in_header, under_header) = if beside {
+        let (in_header, under_header) = if recording_beside {
             (recording, None)
         } else {
             (None, recording)

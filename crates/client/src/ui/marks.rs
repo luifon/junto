@@ -63,19 +63,11 @@ impl Chip {
         Self {
             text: text.into(),
             icon: None,
-            shrinks: false,
         }
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
-        self
-    }
-
-    /// The flag gets narrower than its text where the place is too narrow, and its text
-    /// ends with an ellipsis.
-    pub fn shrinks(mut self) -> Self {
-        self.shrinks = true;
         self
     }
 }
@@ -127,11 +119,19 @@ impl Flag {
             kind,
             text: text.into(),
             icon: None,
+            shrinks: false,
         }
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// The flag gets narrower than its text where the place is too narrow, and its text
+    /// ends with an ellipsis.
+    pub fn shrinks(mut self) -> Self {
+        self.shrinks = true;
         self
     }
 }

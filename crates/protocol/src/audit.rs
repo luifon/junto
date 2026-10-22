@@ -548,6 +548,8 @@ mod tests {
             },
             AuditEvent::ChannelArchived,
             AuditEvent::ChannelRestored,
+            AuditEvent::PermanentMessagesTurnedOn,
+            AuditEvent::PermanentMessagesTurnedOff,
             AuditEvent::ArchivePeriodChanged { days: None },
             AuditEvent::CategoryDeleted {
                 category_id: CategoryId::generate(),
