@@ -623,6 +623,13 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             .state
             .read_with(&window.cx, |state, _| state.is_call_detached())
     });
+    // The main window shows another channel: the messages of the voice channel are not
+    // read any more from the moment the call window has closed.
+    let place = junto_client_core::model::PlaceId::Channel(voice.id);
+    let server_id = admin.handle.id();
+    assert!(!window.state.read_with(&window.cx, |state, _| {
+        state.reads_messages(server_id, place)
+    }));
     // The main window shows another channel: the text waits for the voice channel.
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),

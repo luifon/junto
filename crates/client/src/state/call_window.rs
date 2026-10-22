@@ -52,7 +52,9 @@ impl AppState {
         self.known.call_in_own_window = false;
         self.talking_windows.clear();
         self.calls.set_talking(false);
-        cx.notify();
+        // The messages of the place of the call are released when the main window does
+        // not show that place.
+        self.changed(cx);
     }
     pub fn return_call(&mut self, cx: &mut Context<Self>) {
         self.call_window_closes(cx);
@@ -102,6 +104,13 @@ impl AppState {
         settings.keep_on_top = top;
         self.save_call_window(settings, cx);
     }
+    /// True while the window reads the messages of a place: for the main window, for its
+    /// side panel or for the call window.
+    #[cfg(feature = "test-support")]
+    pub fn reads_messages(&self, server_id: ServerId, place: PlaceId) -> bool {
+        self.open_places.contains_key(&(server_id, place))
+    }
+
     /// The place whose messages the call window shows while it is open: the voice channel of
     /// the call, or the conversation of a direct-message call.
     pub(super) fn call_window_place(

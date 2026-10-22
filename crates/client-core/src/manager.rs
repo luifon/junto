@@ -604,9 +604,24 @@ impl ServerHandle {
         &self,
         wanted: Wanted,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        self.run_in_turn(wanted, Turn::Now)
+    }
+
+    fn run_in_turn(
+        &self,
+        wanted: Wanted,
+        turn: Turn,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
         let server = self.server.clone();
         let work = self.server.core.runtime.run(async move {
-            let result = server.clone().dispatch(wanted).await;
+            let gate = match turn {
+                Turn::Now => server.gate.try_lock().map_err(|_| FlowError::Busy),
+                Turn::WhenFree => Ok(server.gate.lock().await),
+            };
+            let result = match gate {
+                Ok(gate) => server.clone().dispatch(gate, wanted).await,
+                Err(busy) => Err(busy),
+            };
             if result.is_ok()
                 && let Ok(applying) = server.applying.try_lock()
             {
@@ -621,7 +636,9 @@ impl ServerHandle {
     /// Runs one action of the access flow after an action or a renewal of the session that
     /// runs now has ended. `dispatch` answers `busy` in that case (ADR 0712); an interface
     /// uses this for what a person asked for, so that the request is not lost because the
-    /// client asked the server something by itself at the same moment.
+    /// client asked the server something by itself at the same moment. Actions that wait
+    /// run in the order in which they were asked for, and an action that waits runs before
+    /// one that `dispatch` asks for after the running one has ended.
     pub fn dispatch_when_free(
         &self,
         action: AccessAction,
@@ -633,16 +650,7 @@ impl ServerHandle {
         &self,
         wanted: Wanted,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
-        let handle = self.clone();
-        let work = self.server.core.runtime.run(async move {
-            loop {
-                match handle.run_wanted(wanted.clone()).await {
-                    Err(FlowError::Busy) => drop(handle.server.gate.lock().await),
-                    result => return result,
-                }
-            }
-        });
-        async move { work.await? }
+        self.run_in_turn(wanted, Turn::WhenFree)
     }
 
     /// Contacts the server as [`ServerHandle::connect`] does, after an action or a renewal
@@ -1060,6 +1068,16 @@ enum Wanted {
     Contact,
 }
 
+/// When an action takes the lock of the actions of its server.
+#[derive(Debug, Clone, Copy)]
+enum Turn {
+    /// At once, or not at all: a running action makes it `busy`.
+    Now,
+    /// In the order of the waiting actions, after the running one. The lock is held from
+    /// its turn to the end of the action, so no action asked for later runs first.
+    WhenFree,
+}
+
 /// The action that contacts the server in a state: a login for a device that is logged out,
 /// none after a logout of the person, and a check otherwise.
 fn contact_action(state: &AccessState) -> Option<AccessAction> {
@@ -1185,10 +1203,12 @@ impl Server {
         self.id
     }
 
-    async fn dispatch(self: Arc<Self>, wanted: Wanted) -> Result<(), FlowError> {
-        let Ok(_gate) = self.gate.try_lock() else {
-            return Err(FlowError::Busy);
-        };
+    /// Runs one action while `_gate`, the lock of the actions of this server, is held.
+    async fn dispatch(
+        self: Arc<Self>,
+        _gate: tokio::sync::MutexGuard<'_, ()>,
+        wanted: Wanted,
+    ) -> Result<(), FlowError> {
         let action = match wanted {
             Wanted::Action(action) => action,
             Wanted::Contact => match contact_action(&lock(&self.state).access) {

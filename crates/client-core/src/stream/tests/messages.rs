@@ -960,6 +960,51 @@ fn unconfirmed(id: u64) -> impl Fn(&ServerModel) -> bool {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_message_that_a_search_finds_is_not_put_back_after_a_later_event() {
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    let history = format!("/api/v1/channels/{}/messages", rig.scene.general);
+
+    // The server stores a message and its answer is lost.
+    room.chat(|chat| chat.lose_answers = 1);
+    let id = rig
+        .live
+        .send_message(place, document("deleted during the search"), None)
+        .unwrap();
+    rig.model_when("no confirmation", unconfirmed(id)).await;
+    let stored = room.chat(|chat| chat.messages.last().cloned().unwrap());
+    assert_eq!(stored.position, 4);
+
+    // "Send again" searches the history. The answer holds the message, and the message is
+    // deleted before the answer arrives.
+    let before = room.sent_to(&history);
+    let gate = rig.http.hold_answers("/messages");
+    rig.live.send_again(id);
+    // The search starts after the time in which the first request can still take effect.
+    for _ in 0..1000 {
+        if room.sent_to(&history) > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(room.sent_to(&history), before + 1);
+    room.chat(|chat| {
+        chat.messages.pop();
+    });
+    room.changed(41, &stored, true).await;
+    rig.model_when("the deletion", |model| model.cursor.position == 41)
+        .await;
+    gate.add_permits(1);
+    let model = rig
+        .model_when("the answer", |model| model.outbox.is_empty())
+        .await;
+    assert_eq!(positions(&model, place), [1, 2, 3]);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(positions(&rig.model(), place), [1, 2, 3]);
+    assert_eq!(room.chat(|chat| chat.posted.len()), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_search_that_does_not_reach_the_end_of_the_history_sends_nothing() {
     let room = room().await;
     let (rig, place) = (&room.rig, room.place);

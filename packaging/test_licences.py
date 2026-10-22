@@ -1,5 +1,6 @@
 """The licence file of the client packages (ADR 0801)."""
 import os
+import re
 import pathlib
 import subprocess
 import sys
@@ -11,6 +12,8 @@ from unittest import mock
 import fixtures
 import licences
 from configuration import architecture
+
+TEST_TEXTS = pathlib.Path(__file__).with_name("test-licence-texts")
 
 TARGETS = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 MIT = "Permission is hereby granted, free of charge"
@@ -345,6 +348,26 @@ class LicenceTextTests(unittest.TestCase):
         for heading in headings:
             with self.subTest(heading):
                 self.assertEqual(licences.licences_in(heading.encode()), set())
+
+    def test_the_headings_of_the_sections_of_a_licence_are_no_licence_text(self):
+        mpl = (TEST_TEXTS / "MPL-2.0.txt").read_text()
+        self.assertEqual(licences.licences_in(mpl.encode()), {"MPL-2.0"})
+        # The lines of the title and of the headings, also those inside the box of sections 6 and 7.
+        lines = [line.strip(" *") for line in mpl.splitlines()]
+        headings = "\n".join(line for line in lines
+                             if line.startswith("Mozilla Public License") or re.fullmatch(r"\d+(\.\d+)*\. \S.{0,60}", line))
+        for heading in ("2.1. Grants", "6. Disclaimer of Warranty", "10. Versions of the License"):
+            self.assertIn(heading, headings)
+        cc0 = ("Creative Commons Legal Code\n\nCC0 1.0 Universal\n\nStatement of Purpose\n\n1. Copyright and Related "
+               "Rights.\n\n2. Waiver.\n\n3. Public License Fallback.\n\n4. Limitations and Disclaimers.\n")
+        for identifier, text in (("MPL-2.0", headings), ("CC0-1.0", cc0)):
+            with self.subTest(identifier):
+                self.assertEqual(licences.licences_in(text.encode()), set())
+
+    def test_each_licence_is_identified_by_a_phrase_of_its_terms(self):
+        for identifier, (required, _) in licences.LICENCE_PHRASES.items():
+            with self.subTest(identifier):
+                self.assertGreaterEqual(max(len(phrase.split()) for phrase in required), licences.OPERATIVE_WORDS)
 
     def test_variants_and_neighbours_of_a_licence_are_told_apart(self):
         mit = standard("MIT")

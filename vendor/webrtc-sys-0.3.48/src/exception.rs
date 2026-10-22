@@ -15,7 +15,8 @@
 
 //! Functions that throw through the bridge, for the tests of `livekit/exception.h`: an
 //! exception of the C++ runtime and a value that is not an exception must each end the process
-//! with a line that names the bridge function.
+//! with a line that names the bridge function, also while another thread holds the stream
+//! `stderr` of the C library.
 
 #[cxx::bridge(namespace = "livekit_ffi")]
 pub mod ffi {
@@ -27,5 +28,12 @@ pub mod ffi {
 
         /// Throws an `int`.
         fn throw_value() -> Result<()>;
+
+        /// Takes the lock of the stream `stderr` of the C library and keeps it.
+        fn hold_standard_error();
+
+        /// Throws a subclass of `std::exception` other than `livekit_ffi::Exception`, with the
+        /// message "a test error".
+        fn throw_test_error() -> Result<()>;
     }
 }

@@ -67,7 +67,7 @@ The files that install a server with Docker Compose. `deploy/README.md` lists ea
 
 ## `packaging/`
 
-The release tooling of the client: the macOS bundle and its signing, the Linux tarball and AppImage, the Windows ZIP, the update and recovery checks, and the public release and freshness keys (`update-keys.json`, `freshness-keys.json`). `packaging/icon/` holds the source of the application icon. The unit tests are the files `test_*.py`; the files `check_*.py` are checks that build and run packages. See `packaging/README.md`.
+The release tooling of the client: the macOS bundle and its signing, the Linux tarball and AppImage, the Windows ZIP, the update and recovery checks, and the public release and freshness keys (`update-keys.json`, `freshness-keys.json`). `packaging/icon/` holds the source of the application icon. The unit tests are the files `test_*.py`; the files `check_*.py` are checks that build and run packages. See `packaging/README.md`. The platform checks call `packaging/check_lifecycle.py`: install the real client of the workspace version, start to the first frame, let the installed client update itself to a second build of the same checkout with the next patch version, start again, recover the previous version and start it again, and compare the installation with the expected package at each stage. They use temporary test keys and empty profiles; the Linux check states whether it uses FUSE or extract-and-run (ADR 0725, 0754, 0755).
 
 ## `tools/`
 
@@ -85,12 +85,13 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
 
 ## Continuous integration: `tools/ci/` (ADR 0905)
 
-- Each job is one script: `rust-linux.sh`, `rust-other-systems.sh` (macOS and Windows), `licences.sh`, `layout-page.sh`, `transcription-worker.sh`, `deployment.sh`. The images and tool versions of the jobs are in `tools/ci/pins.sh`.
+- Each job is one script: `rust-linux.sh`, the optional `rust-linux-devices.sh`, `rust-other-systems.sh` (macOS and Windows), `licences.sh`, `layout-page.sh`, `transcription-worker.sh`, `deployment.sh`. The images and tool versions of the jobs are in `tools/ci/pins.sh`.
 - `.github/workflows/ci.yml` calls the same scripts. Each action is named by its commit hash.
 - CI runs on three machines of the project and is started with `tools/ci/ci.sh`:
   - `ci.sh run <commit>` sends the commit to the Linux host and to the Windows machine over SSH and starts their jobs: on Linux `rust-linux`, `licences`, `transcription-worker`, `layout-page`; on Windows `rust-windows`.
   - `ci.sh local <commit>` runs the macOS jobs on the local machine: `rust-macos` and `deployment`.
   - `ci.sh status <commit>` prints `passed` when each job of the three machines passed in the latest run of the commit that has the job, so a run of only the failed jobs completes an earlier run.
+  - `ci.sh run <commit> rust-linux-devices` explicitly selects media crate checks, the media and window live tiers and a native camera check. It is absent from the default jobs. Only its camera step passes video device nodes into the container; it requires an available camera and saves no captured pictures (ADR 0905, ADR 0913).
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
 - `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.

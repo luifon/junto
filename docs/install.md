@@ -418,7 +418,7 @@ The server is never updated automatically (ADR 0005). An upgrade is a new checko
    ```
 
 5. Only when the deployment was created by a release in which the server connected as the user `junto`: run `deploy/database-user.sh one-host.yaml` (see "The database user of an earlier release").
-6. Build and start. When the release has a migration, the server first copies the database to `junto_before_<number>` on the same PostgreSQL server, then applies the migrations (ADR 0018). Its log names the copy. A database without installed server state gets no copy: with the default `JUNTO_MIGRATION_COPY=database`, every start on it, the first start of a new installation as well as a restart of an interrupted first installation, logs `continuing the first installation without a migration copy: no installed server state exists`, even while an old connection remains open. A marker on a database with installed state is cleared with a warning and the ordinary copy is made.
+6. Build and start. When the release has a migration, the server first copies the database to `junto_before_<number>` on the same PostgreSQL server, then applies the migrations (ADR 0018). Its log names the copy. A database without installed server state gets no copy: with the default `JUNTO_MIGRATION_COPY=database`, every start on it, the first start of a new installation as well as a restart of an interrupted first installation, logs `no installed server state exists: the migrations are applied without a migration copy`, even while an old connection remains open. A marker on a database with installed state is cleared with a warning and the ordinary copy is made.
 
    ```sh
    docker compose -f one-host.yaml up -d --build

@@ -420,8 +420,10 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         )
         .await
         .ok::<Value>(StatusCode::OK);
-    let mut to_manager = managing.events(6).await;
-    let mut to_insider = inside.events(5).await;
+    // The second change records two system lines: the change of the position and the
+    // permanent messages that it turns on (ADR 0402).
+    let mut to_manager = managing.events(7).await;
+    let mut to_insider = inside.events(6).await;
     server
         .delete(owner, &format!("/api/v1/channels/{channel_id}"))
         .await
@@ -434,6 +436,7 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
             "message_changed",
             "channel_updated",
             "message_changed",
+            "message_changed",
             "channel_updated",
             "message_changed",
             "channel_deleted"
@@ -445,6 +448,7 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         [
             "message_changed",
             "channel_updated",
+            "message_changed",
             "message_changed",
             "channel_updated",
             "message_changed",

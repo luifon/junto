@@ -21,6 +21,7 @@ pub mod notices;
 mod notifying;
 pub mod people;
 pub mod person_drop;
+mod progress;
 pub mod receipts;
 pub mod recorded;
 mod recorded_work;
@@ -1419,6 +1420,41 @@ impl AppState {
         self.changed(cx);
     }
 
+    /// Withdraws the request to enter that the window shows at a voice channel: the one
+    /// of this device, or one that another device of the account made (ADR 0739).
+    pub fn withdraw_entry_at(
+        &mut self,
+        server_id: ServerId,
+        channel_id: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        let own =
+            self.known.entry.as_ref().is_some_and(|entry| {
+                entry.server_id == server_id && entry.channel_id == channel_id
+            });
+        if own {
+            self.withdraw_entry(cx);
+            return;
+        }
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let request_id = server
+            .live()
+            .view()
+            .model
+            .and_then(|model| view::own_entry_request(&model, channel_id).map(|held| held.id));
+        let Some(request_id) = request_id else {
+            return;
+        };
+        let api = server.api();
+        cx.spawn(async move |_, _| {
+            // A request that was answered meanwhile is gone on the server.
+            let _ = api.cancel_entry_request(request_id).await;
+        })
+        .detach();
+    }
+
     /// Withdraws the request to enter, and puts away what was told about it.
     pub fn withdraw_entry(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.known.entry.take() else {
@@ -2087,7 +2123,7 @@ impl AppState {
         self.end_search_of_other_server(shown.server);
         self.drop_lost_search_filter(&snapshots, cx);
         self.shown = shown;
-        self.follow_people(&view, cx);
+        self.follow_people(&view, &snapshots, cx);
         self.follow_followed(&view, cx);
         self.follow_moderation(&snapshots, cx);
         let readers = self.archived_readers(&view, &snapshots);

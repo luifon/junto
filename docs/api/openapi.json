@@ -2146,13 +2146,13 @@
         "tags": [
           "calls"
         ],
-        "summary": "Leaves the call that the caller's account is in, from whichever device. With `identity`,\nthe call is left only when the account holds its place with that identity; otherwise\nnothing changes, and the answer is the same.",
+        "summary": "Leaves the call that the caller's account is in, from whichever device. With `identity`,\nthe call is left only when the account holds its place with that identity, or with the\nplace that a completed move gave in place of it; otherwise nothing changes, and the\nanswer is the same.",
         "operationId": "leave_call",
         "parameters": [
           {
             "name": "identity",
             "in": "query",
-            "description": "The identity of the place that the device leaves. The call of the account ends only\nwhen the account holds its place with this identity. Absent: the call of the\naccount ends, from whichever device it is in the call.",
+            "description": "The identity of the place that the device leaves. The call of the account ends only\nwhen the account holds its place with this identity, or with the place that a\ncompleted move gave in place of this identity. Absent: the call of the account ends,\nfrom whichever device it is in the call.",
             "required": false,
             "schema": {
               "type": "string"
@@ -12330,6 +12330,7 @@
           },
           {
             "type": "object",
+            "description": "The name, the category or the position of the channel was changed. The setting of\npermanent messages is the one that the channel had after the change; a change of\nthat setting has an entry of its own.",
             "required": [
               "name",
               "position",
@@ -12362,6 +12363,36 @@
               "position": {
                 "type": "integer",
                 "format": "int32"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The messages of the channel are permanent from now on (ADR 0402).",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "permanent_messages_turned_on"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Messages sent from now on are not permanent; earlier permanent messages stay\npermanent (ADR 0402).",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "permanent_messages_turned_off"
+                ]
               }
             }
           },

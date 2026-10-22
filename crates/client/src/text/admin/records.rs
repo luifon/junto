@@ -997,6 +997,14 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
                 files => format!("{files} files"),
             }
         ),
+        AuditEvent::PermanentMessagesTurnedOn => "permanent messages were turned on in the \
+                                                  channel: a message sent from now on cannot \
+                                                  be edited."
+            .to_owned(),
+        AuditEvent::PermanentMessagesTurnedOff => "permanent messages were turned off in the \
+                                                   channel; earlier permanent messages stay \
+                                                   permanent."
+            .to_owned(),
         AuditEvent::PermanentMessageDeleted { .. } => {
             "a message was deleted in a channel with permanent messages.".to_owned()
         }

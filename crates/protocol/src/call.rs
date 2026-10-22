@@ -224,8 +224,9 @@ pub struct CallJoin {
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct LeaveCallQuery {
     /// The identity of the place that the device leaves. The call of the account ends only
-    /// when the account holds its place with this identity. Absent: the call of the
-    /// account ends, from whichever device it is in the call.
+    /// when the account holds its place with this identity, or with the place that a
+    /// completed move gave in place of this identity. Absent: the call of the account ends,
+    /// from whichever device it is in the call.
     #[serde(default)]
     pub identity: Option<String>,
 }

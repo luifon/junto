@@ -19,8 +19,9 @@ use junto_client_core::book::ProfileSync;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::Notice;
+use junto_client_core::model::ServerModel;
 use junto_client_core::profile::{self, InvalidAvatar, ProfileStore};
-use junto_client_core::protocol::account::AccountProfile;
+use junto_client_core::protocol::account::{AccountProfile, OwnAccount};
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
@@ -936,13 +937,7 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
         wanted.insert(
             server_id,
             Wanted {
-                own: Some((
-                    account.id,
-                    account
-                        .avatar
-                        .as_ref()
-                        .and_then(|avatar| PictureHash::parse(&avatar.hash)),
-                )),
+                own: Some(own_wanted(account)),
                 accounts: people,
             },
         );
@@ -972,13 +967,14 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
 /// of the server (ADR 0772). They are named first: the bound on the profiles of one server
 /// keeps the people who are named first (ADR 0783).
 ///
-/// `shown` is the view of the main window. `call_view` derives the view at the place of
-/// the call, and is used only when `shown` does not hold that place.
+/// `shown` is the view of the main window. When it does not hold the place of the call,
+/// the people are read from the state of the server of the call: no second view is
+/// derived at each change.
 pub(super) fn add_call_people(
     wanted: &mut HashMap<ServerId, Wanted>,
     shown: &ShellView,
     call: CallTarget,
-    call_view: impl FnOnce() -> ShellView,
+    servers: &[ServerSnapshot],
 ) {
     let on_server = shown.selected.as_ref().map(|selected| selected.id) == Some(call.server_id);
     let holds_place = on_server
@@ -988,31 +984,77 @@ pub(super) fn add_call_people(
                 .is_some_and(|workspace| workspace.id == workspace_id),
             CallPlace::Direct { .. } => true,
         };
-    let other = (!holds_place).then(call_view);
-    let view = other.as_ref().unwrap_or(shown);
-    let people = match call.place {
-        CallPlace::Channel { channel_id, .. } => view
-            .workspace()
-            .into_iter()
-            .flat_map(|workspace| &workspace.sections)
-            .flat_map(|section| &section.rows)
-            .filter(|row| row.id == channel_id)
-            .filter_map(|row| row.voice.as_ref())
-            .flat_map(|voice| &voice.occupants)
-            .map(|occupant| occupant.account_id)
-            .collect(),
+    let (people, own) = if holds_place {
+        let people = match call.place {
+            CallPlace::Channel { channel_id, .. } => shown
+                .workspace()
+                .into_iter()
+                .flat_map(|workspace| &workspace.sections)
+                .flat_map(|section| &section.rows)
+                .filter(|row| row.id == channel_id)
+                .filter_map(|row| row.voice.as_ref())
+                .flat_map(|voice| &voice.occupants)
+                .map(|occupant| occupant.account_id)
+                .collect(),
+            CallPlace::Direct {
+                low_account_id,
+                high_account_id,
+            } => vec![low_account_id, high_account_id],
+        };
+        (people, None)
+    } else {
+        let model = servers
+            .iter()
+            .find(|server| server.id == call.server_id)
+            .and_then(shown_model);
+        (
+            call_people_of(model, call.place),
+            model.map(|model| own_wanted(&model.account)),
+        )
+    };
+    let held = wanted.entry(call.server_id).or_default();
+    held.own = held.own.or(own);
+    held.accounts.splice(0..0, people);
+}
+
+/// The people of the call of this device in the state of its server, in the order of the
+/// view of the call: the participants, then the person of this device when the state does
+/// not list the account yet.
+fn call_people_of(model: Option<&ServerModel>, place: CallPlace) -> Vec<AccountId> {
+    match place {
+        CallPlace::Channel { channel_id, .. } => {
+            let Some(model) = model else {
+                return Vec::new();
+            };
+            let mut people: Vec<AccountId> = model
+                .channel(channel_id)
+                .and_then(|channel| channel.call.as_ref())
+                .into_iter()
+                .flat_map(|call| &call.participants)
+                .map(|participant| participant.account_id)
+                .collect();
+            let own = model.account.id;
+            if !people.contains(&own) {
+                people.push(own);
+            }
+            people
+        }
         CallPlace::Direct {
             low_account_id,
             high_account_id,
         } => vec![low_account_id, high_account_id],
-    };
-    let own = other
-        .as_ref()
-        .and_then(|view| view.wanted_people.get(&call.server_id))
-        .and_then(|wanted| wanted.own);
-    let held = wanted.entry(call.server_id).or_default();
-    held.own = held.own.or(own);
-    held.accounts.splice(0..0, people);
+    }
+}
+
+/// The account of the session with the avatar that the state of the server tells.
+fn own_wanted(account: &OwnAccount) -> (AccountId, Option<PictureHash>) {
+    (
+        account.id,
+        account
+            .avatar
+            .as_ref()
+            .and_then(|avatar| PictureHash::parse(&avatar.hash)),
+    )
 }
 
 /// The accounts that a page of the administration lists.
@@ -1145,11 +1187,16 @@ impl AppState {
 
     /// After the view is derived: the profiles and the images of the people that the
     /// window shows are read.
-    pub(super) fn follow_people(&mut self, view: &ShellView, cx: &mut Context<Self>) {
+    pub(super) fn follow_people(
+        &mut self,
+        view: &ShellView,
+        servers: &[ServerSnapshot],
+        cx: &mut Context<Self>,
+    ) {
         let mut wanted = view.wanted_people.clone();
         let call = self.media_calls().call.as_ref().map(|call| call.target);
         if let Some(call) = call {
-            add_call_people(&mut wanted, view, call, || self.call_view());
+            add_call_people(&mut wanted, view, call, servers);
         }
         self.people_followed.view = wanted;
         self.want_people(cx);

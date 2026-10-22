@@ -358,14 +358,14 @@ fn the_people_of_the_call_are_named_first_wherever_the_main_window_is() {
         .or_default()
         .accounts
         .extend((0..MOST_PROFILES).map(|_| AccountId::generate()));
-    add_call_people(&mut wanted, &shown, target, || call_view.clone());
+    add_call_people(&mut wanted, &shown, target, servers);
     assert_eq!(wanted[&server.id].accounts[..2], [ana, own]);
     assert!(!wanted[&server.id].accounts.contains(&ben));
 
     // The main window shows another server: only the people of the call are named.
     let elsewhere = derive(&[], &Selection::default(), &Known::default());
     let mut wanted = elsewhere.wanted_people.clone();
-    add_call_people(&mut wanted, &elsewhere, target, || call_view.clone());
+    add_call_people(&mut wanted, &elsewhere, target, servers);
     assert_eq!(
         wanted,
         HashMap::from([(
@@ -377,10 +377,12 @@ fn the_people_of_the_call_are_named_first_wherever_the_main_window_is() {
         )])
     );
 
-    // The main window shows the place of the call: its view is not derived again.
+    // The main window shows the place of the call: the people come from its view, in the
+    // order that the state gives.
     let mut wanted = HashMap::new();
-    add_call_people(&mut wanted, &call_view, target, || {
-        panic!("the view at the place of the call was derived again")
-    });
+    add_call_people(&mut wanted, &call_view, target, servers);
     assert_eq!(wanted[&server.id].accounts, [ana, own]);
+    let mut from_state = HashMap::new();
+    add_call_people(&mut from_state, &elsewhere, target, servers);
+    assert_eq!(from_state[&server.id].accounts, wanted[&server.id].accounts);
 }

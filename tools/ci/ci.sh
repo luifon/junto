@@ -28,13 +28,18 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
 # The jobs of each runner. A commit has passed CI when each job of these lists passed in the
-# latest run of the commit on its runner that has the job.
+# latest run of the commit on its runner that has the job. An optional job runs only when
+# "ci.sh run" names it, and does not decide whether a commit passed.
 linux_jobs="rust-linux licences transcription-worker layout-page"
+linux_optional_jobs="rust-linux-devices"
 macos_jobs="rust-macos deployment"
 windows_jobs="rust-windows"
 runners="linux macos windows"
 jobs_of() {
     case "$1" in linux) echo "$linux_jobs" ;; macos) echo "$macos_jobs" ;; windows) echo "$windows_jobs" ;; esac
+}
+optional_jobs_of() {
+    case "$1" in linux) echo "$linux_optional_jobs" ;; esac
 }
 
 # .env.local of this working tree, or else of the main working tree of the repository.
@@ -212,6 +217,8 @@ start() {
 
 # show <run> [job...]: prints the jobs of a run, or the named jobs of it; returns 0 when each of
 # them passed, 1 when one failed or the run failed outside its jobs, 3 while one has not finished.
+# A named optional job is shown and does not decide; without named jobs every job of the run
+# decides.
 show() {
     run=$1
     shift
@@ -241,9 +248,13 @@ show() {
     result=0
     # A job of the run that failed explains a status of the run other than 0.
     job_failed=$(printf '%s\n' "$files" | awk -F '\t' '$1 == "record" && $6 != 0 { print "yes"; exit }')
-    shown=$jobs
-    if [ "$#" -gt 0 ]; then shown=$*; fi
+    shown=$jobs optional=""
+    if [ "$#" -gt 0 ]; then shown=$* optional=$(optional_jobs_of "$runner"); fi
     for job in $shown; do
+        # outcome: 1 when the job failed, 3 while it has not finished. The outcome of a named
+        # optional job does not change the result.
+        outcome="" kind=""
+        case " $optional " in *" $job "*) kind="  (optional)" ;; esac
         line=$(printf '%s\n' "$files" | awk -F '\t' -v job="$job" '$1 == "record" && $3 == job' | tail -n 1)
         if [ -n "$line" ]; then
             status=$(printf '%s' "$line" | cut -f 6)
@@ -252,25 +263,26 @@ show() {
             if [ "$status" = 0 ]; then
                 printf '  %-22s passed   %s\n' "$job" "$time"
             else
-                result=1
+                outcome=1
                 logs="$root/target/ci-logs/$run"
                 mkdir -p "$logs"
                 on "$runner" "cat 'runs/$run/logs/$job.log'" >"$logs/$job.log" || true
-                printf '  %-22s FAILED   %s  exit %s  log %s\n' "$job" "$time" "$status" "$logs/$job.log"
+                printf '  %-22s FAILED   %s  exit %s  log %s%s\n' "$job" "$time" "$status" "$logs/$job.log" "$kind"
             fi
         elif [ "$(printf '%s' "$current" | cut -f 1)" = "$job" ] && [ -z "$finished" ] && [ -n "$ended" ]; then
-            printf '  %-22s ENDED    without a result, started %s\n' "$job" "$(printf '%s' "$current" | cut -f 2)"
-            result=1
+            printf '  %-22s ENDED    without a result, started %s%s\n' "$job" "$(printf '%s' "$current" | cut -f 2)" "$kind"
+            outcome=1
         elif [ "$(printf '%s' "$current" | cut -f 1)" = "$job" ] && [ -z "$finished" ]; then
-            printf '  %-22s running  since %s\n' "$job" "$(printf '%s' "$current" | cut -f 2)"
-            [ "$result" -ne 0 ] || result=3
+            printf '  %-22s running  since %s%s\n' "$job" "$(printf '%s' "$current" | cut -f 2)" "$kind"
+            outcome=3
         elif [ -n "$finished" ] || [ -n "$ended" ]; then
-            printf '  %-22s not run\n' "$job"
-            result=1
+            printf '  %-22s not run%s\n' "$job" "$kind"
+            outcome=1
         else
-            printf '  %-22s waiting\n' "$job"
-            [ "$result" -ne 0 ] || result=3
+            printf '  %-22s waiting%s\n' "$job" "$kind"
+            outcome=3
         fi
+        if [ -z "$kind" ] && [ -n "$outcome" ] && [ "$result" != 1 ]; then result=$outcome; fi
     done
     if [ -z "$finished" ] && [ -n "$ended" ]; then
         # A shown job without a record is ENDED or not run above.
@@ -312,6 +324,12 @@ runs_of() {
     done" || true
 }
 
+# deciding_run <runs> <job> <every>: the latest of the runs (the output of runs_of) that has the
+# job. With <every> "yes", a run whose jobs cannot be read has the job as well.
+deciding_run() {
+    printf '%s\n' "$1" | awk -F '\t' -v job="$2" -v every="$3" '$1 != "" { n = split($2, jobs, " "); if (n == 0 && every == "yes") last = $1; for (i = 1; i <= n; i++) if (jobs[i] == job) last = $1 } END { print last }'
+}
+
 # A commit has passed CI when each job of each runner passed in the latest run of the commit on
 # that runner that has the job, so a run of only the jobs that failed completes an earlier run.
 # The start of a run writes its jobs before the runner starts; a run whose jobs cannot be read
@@ -328,7 +346,7 @@ status() {
         # of the runs.
         decided=""
         for job in $(jobs_of "$runner"); do
-            run=$(printf '%s\n' "$listed" | awk -F '\t' -v job="$job" '$1 != "" { n = split($2, jobs, " "); if (n == 0) last = $1; for (i = 1; i <= n; i++) if (jobs[i] == job) last = $1 } END { print last }')
+            run=$(deciding_run "$listed" "$job" yes)
             if [ -z "$run" ]; then
                 echo "$runner: no run of $commit has $job"
                 [ "$verdict" = failed ] || verdict=incomplete
@@ -337,10 +355,21 @@ status() {
             decided="$decided$run $job
 "
         done
-        for run in $(printf '%s' "$decided" | cut -d ' ' -f 1 | sort -u); do
+        # The latest run of each optional job is shown with the runs above and decides nothing.
+        shown=$decided
+        for job in $(optional_jobs_of "$runner"); do
+            run=$(deciding_run "$listed" "$job" no)
+            if [ -n "$run" ]; then
+                shown="$shown$run $job
+"
+            fi
+        done
+        for run in $(printf '%s' "$shown" | cut -d ' ' -f 1 | sort -u); do
             result=0
             # shellcheck disable=SC2046 # the jobs are words
-            (show "$run" $(printf '%s' "$decided" | awk -v run="$run" '$1 == run { print $2 }')) || result=$?
+            (show "$run" $(printf '%s' "$shown" | awk -v run="$run" '$1 == run { print $2 }')) || result=$?
+            # A run of only optional jobs decides no job.
+            if ! printf '%s' "$decided" | cut -d ' ' -f 1 | grep -qx -- "$run"; then continue; fi
             if [ "$result" -eq 1 ]; then verdict=failed; fi
             if [ "$result" -ne 0 ] && [ "$verdict" = passed ]; then verdict=incomplete; fi
         done
@@ -379,6 +408,7 @@ run_remote() {
     started=""
     for runner in linux windows; do
         wanted=$(jobs_of "$runner") picked=""
+        if [ "$runner" = linux ]; then wanted="$wanted $linux_optional_jobs"; fi
         for job in "$@"; do
             case " $wanted " in *" $job "*) picked="$picked $job" ;; esac
         done

@@ -602,6 +602,7 @@ pub(crate) async fn update_channel_in(
     record.require_open()?;
 
     let mut channel = record.channel;
+    let permanent_before = channel.permanent_messages;
     if let Some(name) = new_name {
         name.clone_into(&mut channel.name);
     }
@@ -632,19 +633,30 @@ pub(crate) async fn update_channel_in(
     if updated.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
-    audit::record(
-        connection,
-        now,
-        Some(access.account_id),
-        About::Channel(channel.workspace_id, channel_id),
-        &AuditEvent::ChannelUpdated {
+    // The setting of permanent messages has an entry and a system line of its own. A
+    // request that names only that setting records nothing else.
+    let about = About::Channel(channel.workspace_id, channel_id);
+    let only_permanence = change.permanent_messages.is_some()
+        && new_name.is_none()
+        && change.category_id.is_none()
+        && change.position.is_none();
+    if !only_permanence {
+        let updated = AuditEvent::ChannelUpdated {
             name: channel.name.clone(),
             category_id: channel.category_id,
             position: channel.position,
             permanent_messages: channel.permanent_messages,
-        },
-    )
-    .await?;
+        };
+        audit::record(connection, now, Some(access.account_id), about, &updated).await?;
+    }
+    if channel.permanent_messages != permanent_before {
+        let turned = if channel.permanent_messages {
+            AuditEvent::PermanentMessagesTurnedOn
+        } else {
+            AuditEvent::PermanentMessagesTurnedOff
+        };
+        audit::record(connection, now, Some(access.account_id), about, &turned).await?;
+    }
     let updated = Event::ChannelUpdated {
         channel: channel.clone(),
     };

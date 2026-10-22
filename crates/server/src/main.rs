@@ -214,20 +214,16 @@ async fn health() -> ExitCode {
 async fn serve(config: Config) -> Result<(), Failure> {
     let options: PgConnectOptions = config.database_url.parse()?;
     use junto_server::bootstrap::MigrationCopied;
-    match junto_server::bootstrap::copy_before_migration(&options, config.migration_copy).await? {
+    let copied =
+        junto_server::bootstrap::copy_before_migration(&options, config.migration_copy).await?;
+    let line = copied.log_line();
+    match &copied {
         MigrationCopied::Nothing => {}
-        MigrationCopied::Initial => tracing::info!(
-            "continuing the first installation without a migration copy: no installed server state exists"
-        ),
-        MigrationCopied::Made(copy) => tracing::info!(
-            database = %copy,
-            "this version changes the database; a copy of the database was made before"
-        ),
-        MigrationCopied::Unfinished(copy) => tracing::warn!(
-            database = copy.as_deref().unwrap_or("none"),
-            "an upgrade before this start did not apply every migration: no copy of the \
-             database was made; the database named here is the copy from before that upgrade"
-        ),
+        MigrationCopied::Initial => tracing::info!("{line}"),
+        MigrationCopied::Made(copy) => tracing::info!(database = %copy, "{line}"),
+        MigrationCopied::Unfinished(copy) => {
+            tracing::warn!(database = copy.as_deref().unwrap_or("none"), "{line}");
+        }
     }
     let database = connect(&config, DATABASE_CONNECTIONS).await?;
     let listen_address = config.listen_address;

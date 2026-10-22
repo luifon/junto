@@ -1722,6 +1722,8 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "transcript_requested" => (Plain, "{actor} asked for a transcript"),
         "channel_created" => (Plain, "{actor} created this channel"),
         "channel_updated" => (Plain, "{actor} changed this channel"),
+        "permanent_messages_turned_on" => (Plain, "{actor} turned on permanent messages"),
+        "permanent_messages_turned_off" => (Plain, "{actor} turned off permanent messages"),
         "channel_override_set" => (Plain, "{actor} changed the permissions of this channel"),
         "channel_call_settings_updated" => (Plain, "{actor} changed the settings of the room"),
         "call_microphone_blocked" => (Plain, "{actor} closed the microphone of {subject}"),

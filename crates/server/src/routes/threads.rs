@@ -4,7 +4,7 @@ use junto_authz::{Request, WorkspacePermission};
 use junto_protocol::{
     audit::AuditEvent,
     events::Event,
-    ids::{ChannelId, MessageId},
+    ids::{ChannelId, MessageId, WorkspaceRoleId},
     message::{
         FollowedThreads, ForkThread, MarkRead, Message, MessagePage, MessagePlace, SendMessage,
         SetThreadFollow, ThreadPage, ThreadState,
@@ -15,9 +15,9 @@ use sqlx::PgConnection;
 
 use super::messages::{Page, Target, rate, send};
 use crate::{
-    access::Access,
+    access::{Access, stored_override},
     audit::{self, About},
-    db::StoredText,
+    db::{self, StoredText},
     error::{ApiError, ApiResult},
     events,
     extract::{ApiJson, ApiPath, ApiQuery, Bearer},
@@ -192,14 +192,16 @@ pub async fn fork(
             .bind(channel.hides_occupants)
             .execute(&mut *connection)
             .await?;
-        sqlx::query(
+        let mut overrides: Vec<(WorkspaceRoleId, i64, i64)> = sqlx::query_as(
             "insert into channel_overrides(channel_id,role_id,workspace_id,allow,deny) select
-             $1,role_id,workspace_id,allow,deny from channel_overrides where channel_id=$2",
+             $1,role_id,workspace_id,allow,deny from channel_overrides where channel_id=$2
+             returning role_id,allow,deny",
         )
         .bind(channel.id)
         .bind(source_id)
-        .execute(&mut *connection)
+        .fetch_all(&mut *connection)
         .await?;
+        overrides.sort_by_key(|(role_id, _, _)| *role_id);
         let target = Place::channel(connection, &access, channel.id).await?;
         target.ensure(connection).await?;
         let linked = sqlx::query("insert into thread_forks(root_id,channel_id) values($1,$2) on conflict(root_id) do nothing")
@@ -240,6 +242,30 @@ pub async fn fork(
             },
         )
         .await?;
+        // Each copied override is recorded and told as a change of an override is
+        // (ADR 0305).
+        for (role_id, allow, deny) in overrides {
+            let copied = stored_override(allow, deny)?;
+            let (allow, deny) = (
+                db::workspace_list(copied.allow()),
+                db::workspace_list(copied.deny()),
+            );
+            let entry = AuditEvent::ChannelOverrideSet {
+                role_id,
+                allow: allow.clone(),
+                deny: deny.clone(),
+            };
+            let about = About::Channel(workspace_id, channel.id);
+            audit::record(connection, now, Some(access.account_id), about, &entry).await?;
+            let set = Event::ChannelOverrideSet {
+                workspace_id,
+                channel_id: channel.id,
+                role_id,
+                allow,
+                deny,
+            };
+            events::publish(connection, now, &set).await?;
+        }
         events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel.id)
             .await?;
         let (_, source_root) = messages::get(connection, &access, id).await?;

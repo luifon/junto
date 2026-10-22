@@ -284,6 +284,8 @@ impl AuditGroup {
             | AuditEvent::TranscriptRequested { .. }
             | AuditEvent::GlossaryReplaced { .. } => Self::Calls,
             AuditEvent::AttachmentLimitsChanged { .. }
+            | AuditEvent::PermanentMessagesTurnedOn
+            | AuditEvent::PermanentMessagesTurnedOff
             | AuditEvent::PermanentMessageDeleted { .. }
             | AuditEvent::NotificationDefaultChanged { .. }
             | AuditEvent::NotificationDefaultRemoved
@@ -315,7 +317,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 66] = [
+pub const ACTIONS: [(&str, AuditGroup); 68] = [
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -367,6 +369,8 @@ pub const ACTIONS: [(&str, AuditGroup); 66] = [
     ("transcript_requested", AuditGroup::Calls),
     ("glossary_replaced", AuditGroup::Calls),
     ("attachment_limits_changed", AuditGroup::Messages),
+    ("permanent_messages_turned_on", AuditGroup::Messages),
+    ("permanent_messages_turned_off", AuditGroup::Messages),
     ("permanent_message_deleted", AuditGroup::Messages),
     ("notification_default_changed", AuditGroup::Messages),
     ("notification_default_removed", AuditGroup::Messages),
@@ -1472,6 +1476,8 @@ mod tests {
             AuditEvent::WorkspaceMemberRemoved { .. } => 64,
             AuditEvent::InviteWorkspacesChanged { .. } => 65,
             AuditEvent::ServerLogoChanged { .. } => 66,
+            AuditEvent::PermanentMessagesTurnedOn => 67,
+            AuditEvent::PermanentMessagesTurnedOff => 68,
         }
     }
 
@@ -1875,6 +1881,8 @@ mod tests {
                 vec!["“leads”", "position 2"],
             ),
             (AuditEvent::NotificationDefaultRemoved, vec!["sets none"]),
+            (AuditEvent::PermanentMessagesTurnedOn, vec!["turned on"]),
+            (AuditEvent::PermanentMessagesTurnedOff, vec!["turned off"]),
             (AuditEvent::Unknown, vec![txt::UNKNOWN_ACTION]),
         ]
     }
@@ -2739,7 +2747,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..67).collect::<Vec<usize>>());
+        assert_eq!(places, (0..69).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

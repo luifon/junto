@@ -120,6 +120,14 @@ class JobSteps(unittest.TestCase):
         self.assertIn("python3 packaging/check_windows.py", commands)
         self.assertFalse(any("packaging/check_start.py" in c or "packaging/bundle.py" in c for c in commands))
 
+    def test_both_systems_lint_the_device_tests_of_the_media_crate(self):
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            self.assertIn(
+                "cargo clippy --locked -p junto-media --features native-device-tests --all-targets "
+                "--keep-going -- -D warnings", commands, system)
+
 
 if __name__ == "__main__":
     unittest.main()
