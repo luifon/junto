@@ -54,10 +54,15 @@ impl Segmented {
 }
 
 impl RenderOnce for Segmented {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let selector = self.selector;
+        let focus: Vec<_> = (0..self.options.len())
+            .map(|index| {
+                super::reveal::inner_handle(&self.id, &("segment", index).into(), window, cx)
+            })
+            .collect();
         let segments = self.options.into_iter().enumerate().map(|(index, option)| {
             let on = self.selected == Some(index);
             let handler = self.on_select.clone();
@@ -90,8 +95,8 @@ impl RenderOnce for Segmented {
                     segment.border_l_1().border_color(Hsla::from(colors.rule))
                 })
                 .cursor_pointer()
-                .focusable()
-                .tab_stop(true)
+                .track_focus(&focus[index])
+                .children(super::reveal::report(&focus[index], window))
                 .when(!on, |segment| {
                     segment.hover(move |style| style.bg(Hsla::from(colors.travertine)))
                 })

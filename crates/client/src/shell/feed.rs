@@ -41,6 +41,10 @@ use crate::ui::{
     icon, ledge, tooltip,
 };
 
+/// The side of a picture of an author in the thread line of a message, in pixels of the
+/// design, and how far the next picture covers it.
+const AUTHOR_PICTURE: f32 = 15.0;
+const AUTHOR_OVERLAP: f32 = 4.0;
 /// The widest picture of a message, and the tallest, in design pixels.
 const PICTURE_WIDTH: f32 = 292.0;
 const PICTURE_HEIGHT: f32 = 220.0;
@@ -1972,24 +1976,26 @@ impl Shell {
                                 }))
                         })
                         // The first authors of the replies, as the design draws them: three
-                        // small pictures that overlap. A server that states no author
-                        // gives the picture of the author of the last reply.
+                        // small pictures that overlap. They are placed in a box of their
+                        // whole width, so the count after them starts after the last one.
+                        // A server that states no author gives the picture of the author of
+                        // the last reply.
                         .when(!mark.authors.is_empty(), |chip| {
+                            let step = AUTHOR_PICTURE - AUTHOR_OVERLAP;
+                            let width = AUTHOR_PICTURE + step * (mark.authors.len() - 1) as f32;
                             let mut authors = div()
                                 .debug_selector(move || format!("thread-authors:{message_id}"))
-                                .flex()
+                                .relative()
                                 .flex_none()
-                                .items_center();
+                                .w(u(width))
+                                .h(u(AUTHOR_PICTURE));
                             for (place, author) in mark.authors.iter().enumerate() {
                                 authors = authors.child(
-                                    div()
-                                        .flex_none()
-                                        .when(place > 0, |picture| picture.ml(u(-4.0)))
-                                        .child(
-                                            Avatar::new(author.as_uuid().as_u128(), 15.0)
-                                                .radius(2.0)
-                                                .image(faces.image(*author)),
-                                        ),
+                                    div().absolute().top_0().left(u(step * place as f32)).child(
+                                        Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
+                                            .radius(2.0)
+                                            .image(faces.image(*author)),
+                                    ),
                                 );
                             }
                             chip.child(authors)
@@ -2006,6 +2012,7 @@ impl Shell {
                         )
                         .child(
                             div()
+                                .debug_selector(move || format!("thread-count:{message_id}"))
                                 .flex_none()
                                 .font_weight(FontWeight::BOLD)
                                 .ink(colors.terracotta_deep)

@@ -276,7 +276,7 @@ impl AppState {
                 server_id: answered.server_id,
                 page: AdminPage::Glossary,
             });
-        let refused = self.admin.ask.as_ref().is_some_and(|ask| {
+        let refused = self.admin.asks().iter().any(|ask| {
             matches!(ask.state, AskState::Refused(_))
                 && matches!(
                     ask.what,

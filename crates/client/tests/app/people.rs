@@ -8,14 +8,14 @@ use gpui::TestAppContext;
 use junto_client::state::people::{Face, PictureHash};
 use junto_client::state::view::Members;
 use junto_client_core::book::ProfileSync;
-use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId};
 
 use crate::harness::{Admin, Window, World, member, named};
 use crate::messages::document;
 use crate::support::{Fault, FaultProxy, logged_in};
 
 /// A PNG image of one colour.
-fn png(side: u32, shade: u8) -> Vec<u8> {
+pub(crate) fn png(side: u32, shade: u8) -> Vec<u8> {
     let picture = image::RgbaImage::from_pixel(side, side, image::Rgba([shade, 90, 40, 255]));
     let mut bytes = Vec::new();
     picture
@@ -33,14 +33,14 @@ impl Window {
     }
 
     /// The picture of an account as the window drew it last.
-    fn face(&mut self, account_id: AccountId) -> Option<Face> {
+    pub(crate) fn face(&mut self, account_id: AccountId) -> Option<Face> {
         let view = self.view();
         let server_id = view.selected.as_ref()?.id;
         view.faces.face(server_id, account_id).cloned()
     }
 
     /// True when the window drew the account with the image that has this hash.
-    fn shows_picture(&mut self, account_id: AccountId, hash: PictureHash) -> bool {
+    pub(crate) fn shows_picture(&mut self, account_id: AccountId, hash: PictureHash) -> bool {
         self.face(account_id)
             .is_some_and(|face| face.hash == hash && face.image.is_some())
     }
@@ -54,6 +54,11 @@ impl Window {
             state.update(cx, |state, cx| state.select_server(server_id, cx));
         });
         self.cx.run_until_parked();
+    }
+
+    /// True when the window draws the image of the avatar of the account somewhere.
+    pub(crate) fn draws_picture(&mut self, account_id: AccountId) -> bool {
+        self.shows_named(format!("avatar-image:{}", account_id.as_uuid().as_u128()))
     }
 
     /// The requests for profiles and images of the selected server that are on their way.
@@ -95,7 +100,7 @@ fn profile_path(account_id: AccountId) -> String {
     format!("/api/v1/accounts/{account_id}/profile")
 }
 
-fn set_avatar(world: &World, admin: &Admin, image: &[u8]) -> PictureHash {
+pub(crate) fn set_avatar(world: &World, admin: &Admin, image: &[u8]) -> PictureHash {
     let stored = world
         .run(admin.handle.api().set_avatar(image.to_vec()))
         .unwrap();
@@ -181,6 +186,86 @@ fn the_picture_of_an_account_is_shown_at_its_rows_and_the_generated_avatar_after
     });
     assert!(proxy.seen(&profile_path(own)).is_empty());
     assert_eq!(proxy.seen(&avatar_path(own)).len(), 1);
+}
+
+/// A member window on a new server whose owner Ada has a picture and writes in a channel
+/// that the window does not show, so that nothing else that the window shows names her.
+struct PictureScene {
+    _server: crate::support::TestServer,
+    admin: Admin,
+    _directory: tempfile::TempDir,
+    window: Window,
+    random: ChannelId,
+    ada: AccountId,
+    hash: PictureHash,
+}
+
+fn picture_scene(cx: &mut TestAppContext, world: &World) -> PictureScene {
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let ada = logged_in(&admin.handle);
+    let (directory, mut window) = member(cx, world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let random = admin.text_channel(world, &mut window, "random");
+    let hash = set_avatar(world, &admin, &png(48, 200));
+    PictureScene {
+        _server: server,
+        admin,
+        _directory: directory,
+        window,
+        random,
+        ada,
+        hash,
+    }
+}
+
+#[gpui::test]
+fn the_author_of_a_notice_is_drawn_with_the_picture(cx: &mut TestAppContext) {
+    let world = World::new();
+    let PictureScene {
+        _server,
+        admin,
+        _directory,
+        mut window,
+        random,
+        ada,
+        hash,
+    } = picture_scene(cx, &world);
+    let own = window.own_account();
+    admin.mention(&world, random, "the quartz review, ", own);
+    window.until("the notice is counted", |window| {
+        window.unread_notices() == 1
+    });
+    assert!(!window.draws_picture(ada));
+    window.open_notices();
+    window.until("the picture of Ada at the notice", |window| {
+        window.shows_picture(ada, hash) && window.draws_picture(ada)
+    });
+}
+
+#[gpui::test]
+fn the_author_of_a_search_result_is_drawn_with_the_picture(cx: &mut TestAppContext) {
+    let world = World::new();
+    let PictureScene {
+        _server,
+        admin,
+        _directory,
+        mut window,
+        random,
+        ada,
+        hash,
+    } = picture_scene(cx, &world);
+    admin.send(&world, random, document("the quartz review"));
+    assert!(!window.draws_picture(ada));
+    window.search_for("quartz");
+    window.until("the result of Ada", |window| {
+        window.until_searched().results.len() == 1
+    });
+    window.until("the picture of Ada at the result", |window| {
+        window.shows_picture(ada, hash) && window.draws_picture(ada)
+    });
 }
 
 #[gpui::test]

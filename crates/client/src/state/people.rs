@@ -25,13 +25,17 @@ use junto_client_core::protocol::account::{AccountProfile, OwnAccount};
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::protocol::transcript::LineSource;
 use junto_media::calls::CallTarget;
 
 use super::AppState;
 use super::admin::view::people::MemberList;
 use super::admin::view::{AdminView, Listed, Scope, ServerPage};
 use super::feed::{Feed, FeedRow, MessageRow, Quote};
-use super::view::{Content, Members, PinsState, ServerSnapshot, ShellView, shown_model};
+use super::recorded::{CardState, LineFrom, RecordingCard};
+use super::view::{
+    Content, Members, PinsState, ServerSnapshot, ShellView, TranscriptPanelState, shown_model,
+};
 use crate::text;
 
 /// The profiles that the window holds of one server.
@@ -843,8 +847,53 @@ fn feed_people(feed: Option<&Feed>, people: &mut Vec<AccountId>) {
         match row {
             FeedRow::Message(row) => message_people(row, people),
             FeedRow::Waiting(row) => quote_people(row.reply.as_ref(), people),
+            FeedRow::Recording(row) => card_people(&row.card, people),
             _ => {}
         }
+    }
+}
+
+/// The accounts that the side panel names besides messages: the authors of the notices and
+/// of the search results, and the people whose microphone a shown transcript holds.
+fn panel_people(view: &ShellView, people: &mut Vec<AccountId>) {
+    if let Some(notices) = view.lists().and_then(|lists| lists.notices.as_ref()) {
+        people.extend(notices.rows.iter().filter_map(|row| row.author_id));
+    }
+    let Some(workspace) = view.workspace() else {
+        return;
+    };
+    if let Some(search) = &workspace.search {
+        people.extend(search.results.iter().map(|row| row.author_id));
+    }
+    if let Some(TranscriptPanelState::Shown { open, .. }) =
+        workspace.transcript.as_ref().map(|panel| &panel.state)
+    {
+        let mut speakers: Vec<AccountId> = Vec::new();
+        for line in open
+            .lines
+            .lines
+            .iter()
+            .filter(|line| line.source == LineSource::Microphone)
+        {
+            if !speakers.contains(&line.account_id) {
+                speakers.push(line.account_id);
+            }
+        }
+        people.extend(speakers);
+    }
+}
+
+/// The people whose microphone the shown lines of the card of a recording hold.
+fn card_people(card: &RecordingCard, people: &mut Vec<AccountId>) {
+    if let CardState::Shown(detail) = &card.state {
+        people.extend(
+            detail
+                .transcript
+                .lines
+                .iter()
+                .filter(|line| line.source == LineFrom::Microphone)
+                .map(|line| line.account_id),
+        );
     }
 }
 
@@ -919,6 +968,7 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
                 }
             }
         }
+        panel_people(view, &mut people);
         if let Some(lists) = lists {
             people.extend(lists.directs.iter().map(|direct| direct.account_id));
             // The account of a conversation that the server did not open is named in the

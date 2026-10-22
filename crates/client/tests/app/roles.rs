@@ -9,7 +9,7 @@ use junto_client::state::admin::view::roles::{
     Fixed, Locked, NoAssignment, RoleChoice, RoleRow, RolesPage, Standing,
 };
 use junto_client::state::admin::view::{Scope, ServerPage};
-use junto_client::state::admin::{RolePermission, RoleRef};
+use junto_client::state::admin::{Ask, AskKind, AskState, RolePermission, RoleRef};
 use junto_client_core::ServerHandle;
 use junto_client_core::api::ErrorCategory;
 use junto_client_core::protocol::account::AccountStatus;
@@ -20,12 +20,12 @@ use junto_client_core::protocol::roles::{
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use crate::admin_pages::{
-    account, awaited, click_in_page, default_workspace, idle, invite, joined, open_page, sel,
-    try_click, until_model,
+    account, awaited, click_in_page, default_workspace, idle, invite, joined, open_page,
+    owner_window_at, sel, try_click, until_model,
 };
 use crate::harness::{Admin, Window, World, member, named, selector};
 use crate::messages::document;
-use crate::support::{FaultProxy, logged_in};
+use crate::support::{Fault, FaultProxy, logged_in};
 
 /// The page of the roles that the administration shows.
 fn roles_page(window: &mut Window) -> Option<RolesPage> {
@@ -760,4 +760,67 @@ fn an_answer_to_the_form_of_a_new_role_moves_no_row_of_a_role(cx: &mut TestAppCo
         crate::admin_pages::under_form(&mut window, "roles-header", row),
         before
     );
+}
+
+/// The row of a role tells one sentence for the change of its permissions, its deletion and
+/// its move: after a refused change of a permission and a refused move, the move.
+#[gpui::test]
+fn the_row_of_a_role_tells_the_refusal_of_its_newest_request(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let create = |name: &str| {
+        let role = CreateWorkspaceRole {
+            name: name.to_owned(),
+            permissions: Vec::new(),
+        };
+        world
+            .run(owner.api().create_workspace_role(workspace_id, &role))
+            .unwrap()
+            .id
+    };
+    let chiefs = create("Chiefs");
+    create("Leads");
+    let role = RoleRef::Workspace(workspace_id, chiefs);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    window.until("the roles are listed in their order", |window| {
+        role_names(window) == ["Chiefs", "Leads", "everyone"]
+    });
+    let asks = |window: &mut Window| window.admin().map(|view| view.asks).unwrap_or_default();
+    let refused = |what: AskKind| {
+        move |window: &mut Window| {
+            matches!(
+                asks(window).as_slice(),
+                [Ask {
+                    what: held,
+                    state: AskState::Refused(_),
+                }] if *held == what
+            )
+        }
+    };
+
+    // The client sends a request that gets `busy` again, up to its attempts.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    let busy = || std::iter::repeat_n(Fault::Busy, attempts);
+    proxy.fail_ending(&format!("/roles/{chiefs}/permissions"), busy());
+    click_in_page(&mut window, sel("role-permissions", chiefs));
+    window.until("the permissions of the role", |window| {
+        window.shows("role-permission-manage_messages")
+    });
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.until("the refused change", refused(AskKind::UpdateRole(role)));
+    assert!(window.shows("role-refused"));
+
+    proxy.fail_ending("/roles/positions", busy());
+    click_in_page(&mut window, sel("role-down", chiefs));
+    window.until(
+        "only the refused move is told",
+        refused(AskKind::MoveRole(role)),
+    );
+    assert!(window.shows("role-refused"));
 }
