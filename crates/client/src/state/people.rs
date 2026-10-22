@@ -677,6 +677,14 @@ impl People {
             .map_or(0, |held| held.on_way.len())
     }
 
+    /// The accounts whose profiles are wanted for a server, in the order of their reads.
+    pub fn wanted(&self, server_id: ServerId) -> Vec<AccountId> {
+        self.servers
+            .get(&server_id)
+            .map(|held| held.wanted.clone())
+            .unwrap_or_default()
+    }
+
     /// The number of requests in a row for the profile of an account that got no answer,
     /// while no request for it is on its way.
     pub fn unanswered(&self, server_id: ServerId, account_id: AccountId) -> Option<u8> {
@@ -1314,6 +1322,13 @@ impl AppState {
     #[cfg(feature = "test-support")]
     pub fn people_on_way(&self, server_id: ServerId) -> usize {
         self.known.people.on_way(server_id)
+    }
+
+    /// The accounts of a server whose profiles the window wants, in the order in which
+    /// they are read. A test reads them.
+    #[cfg(feature = "test-support")]
+    pub fn people_wanted(&self, server_id: ServerId) -> Vec<AccountId> {
+        self.known.people.wanted(server_id)
     }
 
     /// The number of requests in a row for the profile of an account that got no answer.

@@ -2873,6 +2873,72 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
     assert!(count(&mut window) < 100);
 }
 
+/// The window reads the profiles of the accounts whose rows the list lays out, and those of
+/// the rows that a scroll brings into view, and not the profiles of the other accounts of
+/// a long list (ADR 0783).
+#[gpui::test]
+fn the_people_page_reads_the_profiles_of_the_rows_that_it_lays_out(cx: &mut TestAppContext) {
+    use sqlx::ConnectOptions;
+    let world = World::new();
+    let server = world.server("People profiles");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into accounts (id, name, status, created_at)
+            select gen_random_uuid(), 'Member ' || lpad(n::text, 4, '0'), 'active', now()
+            from generate_series(1, 2000) as n",
+        )
+        .execute(&mut database)
+        .await
+        .unwrap();
+    });
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        server_page!(window, People).is_some_and(|page| {
+            page.accounts
+                .loaded()
+                .is_some_and(|rows| rows.len() == 2001)
+        })
+    });
+    window.settle();
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    let state = window.state.clone();
+    let wanted = |window: &mut Window| {
+        state.read_with(&window.cx, |state, _| state.people_wanted(server_id))
+    };
+    let laid_out = window.in_shell(|shell, _, _| shell.admin_rows_laid_out());
+    let first = wanted(&mut window);
+    assert!(!first.is_empty());
+    assert!(
+        first.len() <= laid_out,
+        "{} profiles wanted for {laid_out} rows laid out",
+        first.len()
+    );
+
+    // A row far below the first 512 accounts comes into view: its profile is wanted.
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to(0.75);
+        cx.notify();
+    });
+    window.settle();
+    let rows = server_page!(&mut window, People)
+        .unwrap()
+        .accounts
+        .loaded()
+        .unwrap()
+        .clone();
+    let seen = rows
+        .iter()
+        .position(|row| in_view(&mut window, sel("account-row", row.id)).is_some())
+        .unwrap();
+    assert!(seen > 512, "the first row in view is row {seen}");
+    let after = wanted(&mut window);
+    assert!(after.contains(&rows[seen].id), "{seen}");
+    assert!(!after.contains(&first[0]));
+}
+
 /// Presses "Load older" of the audit log, one page at a time, until `done` holds for the
 /// loaded page.
 fn load_older_until(
