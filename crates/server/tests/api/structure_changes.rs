@@ -614,6 +614,7 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
             "category_created",
             "channel_created",
             "channel_updated",
+            "permanent_messages_turned_on",
             "channel_created",
             "channel_call_settings_updated",
             "channel_override_set",
