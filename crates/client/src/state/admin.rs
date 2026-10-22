@@ -165,21 +165,55 @@ pub enum AskKind {
     AttachmentLimits,
 }
 
+/// The place of a page that tells the state of a request: one control, or one row or block
+/// that tells the requests of several controls with one sentence (ADR 0761).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AskPlace {
+    /// A control that tells only the requests of its own kind.
+    Own(AskKind),
+    Workspace(WorkspaceId),
+    Category(CategoryId),
+    /// The settings of a channel: its overview, its call settings and its overrides.
+    ChannelSettings(ChannelId),
+    ArchivedChannel(ChannelId),
+    Account(AccountId),
+    /// The roles of an account, open under its row.
+    AccountRoles(AccountId),
+    JoinRequest(JoinRequestId),
+    Role(RoleRef),
+    Logo,
+    /// The terms of the glossary, which the page changes one after another (ADR 0616).
+    Glossary,
+}
+
 impl AskKind {
-    /// True when this request follows `earlier` on its page, so that it replaces what the
-    /// page tells about `earlier`: a request of the same kind, and for the glossary every
-    /// change of its terms, which the page sends one after another (ADR 0616).
-    fn follows(self, earlier: AskKind) -> bool {
-        let term = |what: AskKind| {
-            matches!(
-                what,
-                AskKind::AddTerm
-                    | AskKind::ChangeTerm(_)
-                    | AskKind::RemoveTerm(_)
-                    | AskKind::MoveTerm(_)
-            )
-        };
-        self == earlier || (term(self) && term(earlier))
+    /// Where the page tells the state of this request.
+    fn place(self) -> AskPlace {
+        match self {
+            AskKind::RenameWorkspace(id) | AskKind::DeleteWorkspace(id) => AskPlace::Workspace(id),
+            AskKind::UpdateCategory(id) | AskKind::DeleteCategory(id) => AskPlace::Category(id),
+            AskKind::UpdateChannel(id)
+            | AskKind::CallSettings(id)
+            | AskKind::SetOverride(id, _) => AskPlace::ChannelSettings(id),
+            AskKind::ArchiveChannel(id) | AskKind::RestoreChannel(id) => {
+                AskPlace::ArchivedChannel(id)
+            }
+            AskKind::RemoveAccount(id)
+            | AskKind::BanAccount(id)
+            | AskKind::UnbanAccount(id)
+            | AskKind::RecoverAccount(id) => AskPlace::Account(id),
+            AskKind::AssignRole(_, account_id) => AskPlace::AccountRoles(account_id),
+            AskKind::ApproveRequest(id) | AskKind::DenyRequest(id) => AskPlace::JoinRequest(id),
+            AskKind::UpdateRole(role) | AskKind::DeleteRole(role) | AskKind::MoveRole(role) => {
+                AskPlace::Role(role)
+            }
+            AskKind::SetLogo | AskKind::RemoveLogo => AskPlace::Logo,
+            AskKind::AddTerm
+            | AskKind::ChangeTerm(_)
+            | AskKind::RemoveTerm(_)
+            | AskKind::MoveTerm(_) => AskPlace::Glossary,
+            what => AskPlace::Own(what),
+        }
     }
 }
 
@@ -342,10 +376,12 @@ impl AdminState {
     }
 
     /// Counts a request of the open page. It replaces what the page told about the earlier
-    /// request that it follows; a request of another kind keeps its state.
+    /// requests at the same place, so the place tells the newest one; a request at another
+    /// place keeps its state.
     pub(crate) fn begin(&mut self, what: AskKind) -> Stamp {
         self.asks += 1;
-        self.requests.retain(|(_, ask)| !what.follows(ask.what));
+        let place = what.place();
+        self.requests.retain(|(_, ask)| ask.what.place() != place);
         self.requests.push((
             self.asks,
             Ask {
@@ -739,6 +775,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use junto_client_core::protocol::ids::ServerRoleId;
 
     fn server_page(server_id: ServerId, page: AdminPage) -> AdminOpen {
         AdminOpen::Server { server_id, page }
@@ -870,7 +907,36 @@ mod tests {
     }
 
     #[test]
-    fn a_change_of_the_glossary_follows_every_earlier_change_of_its_terms() {
+    fn a_row_that_tells_several_kinds_of_request_tells_the_newest() {
+        let server_id = ServerId::generate();
+        let mut admin = AdminState::default();
+        admin.show(server_page(server_id, AdminPage::ServerRoles));
+        let role = RoleRef::Server(ServerRoleId::generate());
+        let other = RoleRef::Server(ServerRoleId::generate());
+        let changed = admin.begin(AskKind::UpdateRole(role));
+        assert!(admin.settle(changed, Some("Busy.".to_owned())));
+        let elsewhere = admin.begin(AskKind::MoveRole(other));
+        let moved = admin.begin(AskKind::MoveRole(role));
+        assert_eq!(admin.answered(changed), Answered::Earlier);
+        assert!(admin.settle(moved, Some("No answer.".to_owned())));
+        assert_eq!(admin.answered(elsewhere), Answered::Current);
+        assert_eq!(
+            admin.asks(),
+            [
+                Ask {
+                    what: AskKind::MoveRole(other),
+                    state: AskState::Sending,
+                },
+                Ask {
+                    what: AskKind::MoveRole(role),
+                    state: AskState::Refused("No answer.".to_owned()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_change_of_the_glossary_replaces_the_state_of_every_earlier_change_of_its_terms() {
         let server_id = ServerId::generate();
         let mut admin = AdminState::default();
         admin.show(server_page(server_id, AdminPage::Glossary));

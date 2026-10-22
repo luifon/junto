@@ -225,6 +225,6 @@ impl RenderOnce for Field {
                     .child(Input::new(&self.state)),
             )
             .children(self.trailing)
-            .child(super::reveal::report(&focus))
+            .children(super::reveal::report(&focus, window))
     }
 }

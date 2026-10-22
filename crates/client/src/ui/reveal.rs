@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ElementId, FocusHandle, Global, IntoElement, Pixels, ScrollHandle, Styled,
-    WeakFocusHandle, Window, WindowId, canvas, point, px,
+    App, Bounds, ElementId, FocusHandle, Global, InteractiveElement, IntoElement, ParentElement,
+    Pixels, ScrollHandle, Styled, WeakFocusHandle, Window, WindowId, canvas, div, point, px,
 };
 
 use crate::theme::u;
@@ -54,31 +54,34 @@ pub(crate) fn inner_handle(
 }
 
 /// An element that covers its parent, a control, and reports the bounds of the control to
-/// the innermost area while `focus` is focused.
-pub(crate) fn report(focus: &FocusHandle) -> impl IntoElement + use<> {
-    let focus = focus.clone();
-    canvas(
-        move |bounds, window, cx| {
-            if !focus.is_focused(window) {
-                return;
-            }
-            if !cx.has_global::<Areas>() {
-                return;
-            }
-            let id = window_id(window);
-            if let Some(innermost) = cx
-                .global_mut::<Areas>()
-                .0
-                .get_mut(&id)
-                .and_then(|areas| areas.last_mut())
-            {
-                *innermost = Some(bounds);
-            }
-        },
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .inset_0()
+/// the innermost area. It is drawn only while `focus` is focused, so a control that does not
+/// hold the focus draws no element for it.
+pub(crate) fn report(focus: &FocusHandle, window: &Window) -> Option<impl IntoElement + use<>> {
+    focus.is_focused(window).then(|| {
+        let report = canvas(
+            |bounds, window, cx| {
+                if !cx.has_global::<Areas>() {
+                    return;
+                }
+                let id = window_id(window);
+                if let Some(innermost) = cx
+                    .global_mut::<Areas>()
+                    .0
+                    .get_mut(&id)
+                    .and_then(|areas| areas.last_mut())
+                {
+                    *innermost = Some(bounds);
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .size_full();
+        div()
+            .debug_selector(|| "focus-report".to_owned())
+            .absolute()
+            .inset_0()
+            .child(report)
+    })
 }
 
 /// The first child of the content of an area: the area takes the reports of the controls
@@ -104,8 +107,9 @@ pub(crate) fn start() -> impl IntoElement {
 pub(crate) struct Revealed(Option<WeakFocusHandle>);
 
 /// The last child of the content of an area that `scroll` scrolls. When the focus has
-/// moved to a control of the content that lies outside the view, the area scrolls by the
-/// least distance that shows the control, and by none when the person scrolls later.
+/// moved by the keyboard to a control of the content that lies outside the view, the area
+/// scrolls by the least distance that shows the control, and by none when the person
+/// scrolls later.
 pub(crate) fn end(scroll: &ScrollHandle, revealed: Rc<RefCell<Revealed>>) -> impl IntoElement {
     let scroll = scroll.clone();
     canvas(
@@ -124,6 +128,13 @@ pub(crate) fn end(scroll: &ScrollHandle, revealed: Rc<RefCell<Revealed>>) -> imp
                 return;
             };
             let focused = window.focused(cx);
+            // A press of the pointer focuses a control that the person sees, and a scroll
+            // between its press and its release would move the control away from the
+            // pointer: only a focus that the keyboard moved is shown.
+            if !window.last_input_was_keyboard() {
+                held.0 = focused.as_ref().map(FocusHandle::downgrade);
+                return;
+            }
             if held.0.as_ref().and_then(WeakFocusHandle::upgrade) == focused {
                 return;
             }

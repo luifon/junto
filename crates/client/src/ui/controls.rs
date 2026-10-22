@@ -97,7 +97,7 @@ impl RenderOnce for Toggle {
                 None => toggle
                     .cursor_pointer()
                     .track_focus(&focus)
-                    .child(super::reveal::report(&focus))
+                    .children(super::reveal::report(&focus, window))
                     .focus_visible(move |style| style.shadow(ring))
                     .when_some(self.on_click, |toggle, handler| {
                         toggle.on_click(move |event, window, cx| handler(event, window, cx))
@@ -242,7 +242,7 @@ impl RenderOnce for Stepper {
                     Some(handler) => button
                         .cursor_pointer()
                         .track_focus(&focus)
-                        .child(super::reveal::report(&focus))
+                        .children(super::reveal::report(&focus, window))
                         .hover(move |style| style.bg(Hsla::from(colors.travertine)))
                         .focus_visible(move |style| style.shadow(ring))
                         .on_click(move |event, window, cx| handler(event, window, cx)),
@@ -353,7 +353,7 @@ impl RenderOnce for SelectBox {
             .ink(colors.ink)
             .cursor_pointer()
             .track_focus(&focus)
-            .child(super::reveal::report(&focus))
+            .children(super::reveal::report(&focus, window))
             .hover(move |style| style.bg(Hsla::from(colors.travertine)))
             .focus_visible(move |style| style.shadow(ring))
             .when_some(self.on_click, |select, handler| {
@@ -457,7 +457,7 @@ impl RenderOnce for Tab {
             })
             .cursor_pointer()
             .track_focus(&focus)
-            .child(super::reveal::report(&focus))
+            .children(super::reveal::report(&focus, window))
             .focus_visible(move |style| style.shadow(ring))
             .when_some(self.on_click, |tab, handler| {
                 tab.on_click(move |event, window, cx| handler(event, window, cx))
@@ -523,7 +523,7 @@ impl VolumeSlider {
 }
 
 impl RenderOnce for VolumeSlider {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let value = self.state.read(cx).value().end();
@@ -544,7 +544,7 @@ impl RenderOnce for VolumeSlider {
             .rounded(u(theme.metrics.radius))
             .track_focus(&self.focus)
             .tab_stop(true)
-            .child(super::reveal::report(&self.focus))
+            .children(super::reveal::report(&self.focus, window))
             .focus_visible(move |style| style.shadow(ring))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 let step = match event.keystroke.key.as_str() {

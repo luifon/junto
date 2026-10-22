@@ -189,8 +189,9 @@ pub fn dialog_footer(buttons: impl IntoIterator<Item = AnyElement>) -> impl Into
 #[cfg(test)]
 mod tests {
     use gpui::{
-        Context, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render,
-        Styled, TestAppContext, VisualTestContext, Window, div, px,
+        Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding, Modifiers,
+        MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
+        px,
     };
 
     use super::Dialog;
@@ -202,15 +203,22 @@ mod tests {
 
     struct Host {
         trap: FocusHandle,
+        /// The button that is disabled.
+        disabled: Option<usize>,
+        pressed: Vec<usize>,
     }
 
     impl Render for Host {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let buttons = (0..BUTTONS).map(|index| {
                 let selector: &'static str = Box::leak(format!("b{index}").into_boxed_str());
-                div()
-                    .py(px(4.0))
-                    .child(Button::new(("b", index)).label("Choose").selector(selector))
+                div().py(px(4.0)).child(
+                    Button::new(("b", index))
+                        .label("Choose")
+                        .selector(selector)
+                        .disabled(self.disabled == Some(index))
+                        .on_click(cx.listener(move |this, _, _, _| this.pressed.push(index))),
+                )
             });
             div()
                 .key_context("TestRoot")
@@ -221,6 +229,27 @@ mod tests {
                 .h(px(400.0))
                 .child(Dialog::new("Settings", &self.trap).children(buttons))
         }
+    }
+
+    fn open(cx: &mut TestAppContext) -> (Entity<Host>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            crate::theme::install(crate::theme::Theme::stone(), cx);
+            cx.bind_keys([
+                KeyBinding::new("tab", Next, Some("TestRoot")),
+                KeyBinding::new("shift-tab", Previous, Some("TestRoot")),
+            ]);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host {
+            trap: cx.focus_handle(),
+            disabled: None,
+            pressed: Vec::new(),
+        });
+        settle(cx);
+        let trap = host.read_with(cx, |host, _| host.trap.clone());
+        cx.update(|window, cx| window.focus(&trap, cx));
+        settle(cx);
+        (host, cx)
     }
 
     fn settle(cx: &mut VisualTestContext) {
@@ -234,12 +263,16 @@ mod tests {
         panic!("the window asks for frames without end");
     }
 
+    fn bounds(cx: &mut VisualTestContext, index: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let selector: &'static str = Box::leak(format!("b{index}").into_boxed_str());
+        cx.debug_bounds(selector)
+    }
+
     /// The bounds of the content of the dialog and of button `index`, when the button is
     /// drawn whole in the view of the content.
     fn in_view(cx: &mut VisualTestContext, index: usize) -> Result<(), String> {
         let view = cx.debug_bounds("dialog-content").unwrap();
-        let selector: &'static str = Box::leak(format!("b{index}").into_boxed_str());
-        match cx.debug_bounds(selector) {
+        match bounds(cx, index) {
             Some(button) if button.top() >= view.top() && button.bottom() <= view.bottom() => {
                 Ok(())
             }
@@ -251,25 +284,11 @@ mod tests {
     /// into the view of the content.
     #[gpui::test]
     fn tab_in_a_tall_dialog_shows_the_focused_control(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            crate::theme::install(crate::theme::Theme::stone(), cx);
-            cx.bind_keys([
-                KeyBinding::new("tab", Next, Some("TestRoot")),
-                KeyBinding::new("shift-tab", Previous, Some("TestRoot")),
-            ]);
-        });
-        let (host, cx) = cx.add_window_view(|_, cx| Host {
-            trap: cx.focus_handle(),
-        });
-        settle(cx);
+        let (_, cx) = open(cx);
         assert!(
             in_view(cx, BUTTONS - 1).is_err(),
             "the dialog does not scroll"
         );
-        let trap = host.read_with(cx, |host, _| host.trap.clone());
-        cx.update(|window, cx| window.focus(&trap, cx));
-        settle(cx);
         for index in 0..BUTTONS {
             cx.simulate_keystrokes("tab");
             settle(cx);
@@ -281,5 +300,71 @@ mod tests {
             in_view(cx, index)
                 .unwrap_or_else(|bounds| panic!("shift-tab to button {index}: {bounds}"));
         }
+    }
+
+    /// A press on a button that is partly in view focuses it and scrolls nothing, so the
+    /// release lands on the button and the press is a click.
+    #[gpui::test]
+    fn a_press_on_a_button_partly_in_view_scrolls_nothing(cx: &mut TestAppContext) {
+        let (host, cx) = open(cx);
+        let view = cx.debug_bounds("dialog-content").unwrap();
+        let partly = (0..BUTTONS)
+            .find(|&index| in_view(cx, index).is_err())
+            .unwrap();
+        let button = bounds(cx, partly).unwrap();
+        assert!(button.top() < view.bottom(), "{button:?} in {view:?}");
+        let at = gpui::point(button.center().x, (button.top() + view.bottom()) / 2.0);
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+        settle(cx);
+        assert_eq!(bounds(cx, partly), Some(button));
+        cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+        settle(cx);
+        assert_eq!(host.read_with(cx, |host, _| host.pressed.clone()), [partly]);
+    }
+
+    /// Only the control that holds the focus draws the element that reports its bounds.
+    #[gpui::test]
+    fn only_the_focused_control_draws_its_report(cx: &mut TestAppContext) {
+        let (_, cx) = open(cx);
+        assert_eq!(cx.debug_bounds("focus-report"), None);
+        cx.simulate_keystrokes("tab tab");
+        settle(cx);
+        let report = cx.debug_bounds("focus-report").unwrap();
+        let button = bounds(cx, 1).unwrap();
+        assert!(
+            button.contains(&report.center()),
+            "{report:?} in {button:?}"
+        );
+    }
+
+    /// A button that is disabled for a while keeps its focus handle, so the focus can
+    /// return to it when it is enabled again.
+    #[gpui::test]
+    fn a_disabled_button_keeps_its_focus_handle(cx: &mut TestAppContext) {
+        let (host, cx) = open(cx);
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        let first = focused(cx).unwrap();
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        let second = focused(cx).unwrap();
+        assert_ne!(first, second);
+        for disabled in [Some(0), None] {
+            host.update(cx, |host, cx| {
+                host.disabled = disabled;
+                cx.notify();
+            });
+            settle(cx);
+            for _ in 0..3 {
+                host.update(cx, |_, cx| cx.notify());
+                settle(cx);
+            }
+        }
+        cx.update(|window, cx| window.focus(&first, cx));
+        settle(cx);
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        assert_eq!(focused(cx), Some(second));
     }
 }

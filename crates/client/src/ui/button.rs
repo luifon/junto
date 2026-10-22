@@ -363,7 +363,9 @@ impl RenderOnce for Button {
             _ => theme.types.control,
         };
 
-        let focus = (!disabled).then(|| super::reveal::handle(&self.id, window, cx));
+        // The handle is kept while the button is disabled, so the focus can return to it
+        // when the button takes the focus again; only an enabled button tracks it.
+        let focus = super::reveal::handle(&self.id, window, cx);
         let mut frame = div()
             .id(self.id)
             .role(Role::Button)
@@ -409,12 +411,12 @@ impl RenderOnce for Button {
             })
             .when_some(self.tooltip, |frame, text| frame.tooltip(tooltip(text)))
             .when(disabled, |frame| frame.cursor_not_allowed())
-            .when_some(focus, |frame, focus| {
+            .when(!disabled, |frame| {
                 let (hover, pressed) = (look.hover, look.pressed);
                 frame
                     .cursor_pointer()
                     .track_focus(&focus)
-                    .child(super::reveal::report(&focus))
+                    .children(super::reveal::report(&focus, window))
                     .hover(move |style| style.bg(Hsla::from(hover)))
                     .active(move |style| style.bg(Hsla::from(pressed)))
                     .focus_visible(move |style| style.shadow(ring))

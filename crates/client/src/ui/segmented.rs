@@ -96,7 +96,7 @@ impl RenderOnce for Segmented {
                 })
                 .cursor_pointer()
                 .track_focus(&focus[index])
-                .child(super::reveal::report(&focus[index]))
+                .children(super::reveal::report(&focus[index], window))
                 .when(!on, |segment| {
                     segment.hover(move |style| style.bg(Hsla::from(colors.travertine)))
                 })
