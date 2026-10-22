@@ -77,4 +77,19 @@ fn main() {
     for (name, value) in ["MAJOR", "MINOR", "PATCH"].into_iter().zip(parts) {
         println!("cargo:rustc-env=JUNTO_BUILD_{name}={value}");
     }
+
+    // The recovery program of the Windows package carries the icon of the client, which the MSVC
+    // linker reads from a compiled resource file (ADR 0756).
+    if env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        assert!(
+            env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc"),
+            "the Windows build uses the MSVC tools (ADR 0753), whose linker reads the icon"
+        );
+        let resource = out.join("junto-recover.res");
+        fs::write(&resource, junto_icon::windows_resource().unwrap()).unwrap();
+        println!(
+            "cargo:rustc-link-arg-bin=junto-recover={}",
+            resource.display()
+        );
+    }
 }

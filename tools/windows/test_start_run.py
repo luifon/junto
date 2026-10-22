@@ -64,6 +64,19 @@ def run_folder(temporary):
     return here
 
 
+def waiting_process():
+    """A process that runs until a line is written to its standard input."""
+    return subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"], stdin=subprocess.PIPE,
+                            text=True)
+
+
+def removal(temporary):
+    """Starts the removal copy of start-run.ps1 for the run RUN."""
+    return subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                             str(SCRIPT), "-Directory", temporary, "-Run", RUN, "-Remove"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
 @unittest.skipIf(os.name != "nt", "start-run.ps1 runs on Windows")
 class Session(unittest.TestCase):
     def test_an_account_without_a_desktop_session_cannot_start_a_run(self):
@@ -128,35 +141,52 @@ class Ended(unittest.TestCase):
                              f"the run {RUN} cannot start: the screen is locked")
             self.assertFalse((here / "commit.bundle").exists())
 
-    # The second copy of start-run.ps1 waits for the process of the run, then removes the task
-    # (the run of these tests has none, so it records that the task was not removed).
+    # The second copy of start-run.ps1 waits for the process recorded in the file "process" of the
+    # run, then removes the task (the run of these tests has none, so it records that the task was
+    # not removed).
     def test_the_removal_waits_until_the_process_of_the_run_has_ended(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             here = run_folder(temporary)
-            child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"],
-                                     stdin=subprocess.PIPE, text=True)
+            child = waiting_process()
             try:
-                removal = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
-                                            "Bypass", "-File", str(SCRIPT), "-Directory", temporary, "-Run",
-                                            RUN, "-Remove", "-After", str(child.pid)],
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                (here / "process").write_text(f"{child.pid} {creation_time(child.pid)}\n")
+                remover = removal(temporary)
                 try:
                     with self.assertRaises(subprocess.TimeoutExpired):
-                        removal.wait(timeout=10)
+                        remover.wait(timeout=10)
                 finally:
                     child.communicate("end\n", timeout=60)
-                output, _ = removal.communicate(timeout=120)
+                output, _ = remover.communicate(timeout=120)
             finally:
                 child.kill()
-            self.assertEqual(removal.returncode, 1, output)
+            self.assertEqual(remover.returncode, 1, output)
             self.assertIn("the task of the run was not removed", (here / "task.log").read_text())
             self.assertNotIn("the wait for the process of the run failed", (here / "task.log").read_text())
+
+    # After the console host of the run has ended, Windows can give its number to another
+    # process. The removal does not wait for that process.
+    def test_the_removal_does_not_wait_for_a_later_process_with_the_number_of_the_run(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            here = run_folder(temporary)
+            child = waiting_process()
+            try:
+                (here / "process").write_text(f"{child.pid} {creation_time(child.pid) - 1}\n")
+                remover = removal(temporary)
+                try:
+                    output, _ = remover.communicate(timeout=60)
+                except subprocess.TimeoutExpired:
+                    remover.kill()
+                    raise AssertionError("the removal waits for a process that is not the process of the run")
+                self.assertIsNone(child.poll(), "the process ended before the removal")
+            finally:
+                child.communicate("end\n", timeout=60)
+            self.assertEqual(remover.returncode, 1, output)
+            self.assertIn("the task of the run was not removed", (here / "task.log").read_text())
 
     def test_a_run_ends_when_its_recorded_process_no_longer_runs(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             here = run_folder(temporary)
-            child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"],
-                                     stdin=subprocess.PIPE, text=True)
+            child = waiting_process()
             try:
                 start = creation_time(child.pid)
                 (here / "process").write_text(f"{child.pid} {start}\n")
@@ -183,26 +213,38 @@ class Ended(unittest.TestCase):
             self.assertEqual(result.stdout.strip(), "ended")
 
     # Without the file "process" (the console host was not found, or the start ended before it
-    # wrote the file) the end of the run is read from its start and its task.
+    # wrote the file) the end of the run is read from its start, recorded in the file "start",
+    # and its task.
     def test_a_run_without_its_process_ends_when_neither_its_start_nor_its_task_runs(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             here = run_folder(temporary)
             (here / "started").write_text("")
-            # The run of these tests has no task, and no start of it runs.
+            # The run of these tests has no task, and no start of it is recorded.
             result = script(temporary, "-Ended")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            cases = {
-                "function Get-RunTask { [pscustomobject]@{ State = 'Running' } }; "
-                "function Get-RunStart { }": "False",
-                "function Get-RunTask { [pscustomobject]@{ State = 'Ready' } }; function Get-RunStart { }": "True",
-                "function Get-RunTask { }; function Get-RunStart { 'start' }": "False",
-                "function Get-RunTask { }; function Get-RunStart { }": "True",
-            }
-            for given, expected in cases.items():
-                with self.subTest(given=given):
-                    result = functions(temporary, f"{given}; Test-RunEnded $here {RUN}")
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(result.stdout.strip(), expected)
+            child = waiting_process()
+            try:
+                running = f"{child.pid} {creation_time(child.pid)}\n"
+                # The same number with another creation time is another process.
+                ended = f"{child.pid} {creation_time(child.pid) - 1}\n"
+                cases = [
+                    ("function Get-RunTask { [pscustomobject]@{ State = 'Running' } }", None, "False"),
+                    ("function Get-RunTask { [pscustomobject]@{ State = 'Ready' } }", None, "True"),
+                    ("function Get-RunTask { }", running, "False"),
+                    ("function Get-RunTask { }", ended, "True"),
+                    ("function Get-RunTask { [pscustomobject]@{ State = 'Running' } }", ended, "False"),
+                    ("function Get-RunTask { }", None, "True"),
+                ]
+                for task, start, expected in cases:
+                    with self.subTest(task=task, start=start):
+                        (here / "start").unlink(missing_ok=True)
+                        if start is not None:
+                            (here / "start").write_text(start)
+                        result = functions(temporary, f"{task}; Test-RunEnded $here {RUN}")
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout.strip(), expected)
+            finally:
+                child.communicate("end\n", timeout=60)
 
 
 # The start with the commands that change scheduled tasks replaced, so that the tests create none.
@@ -233,12 +275,20 @@ class Start(unittest.TestCase):
             self.assertIn(f"the run {RUN} did not start: no action", (here / "runner.log").read_text())
             self.assertFalse((here / "commit.bundle").exists())
 
+    # The start records its own process before it registers the task, so that a run whose
+    # start runs is not taken as ended.
     def test_an_error_after_the_run_has_started_leaves_the_run(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             here = run_folder(temporary)
             (here / "started").write_text("")
-            result = functions(temporary, TASKS + "function Get-CimInstance { throw 'no processes' }; Invoke-Start")
+            result = functions(temporary, TASKS + "function Get-CimInstance { throw 'no processes' }; "
+                               "\"start $PID\"; Invoke-Start")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            number = int(result.stdout.split("\n")[0].split()[1])
+            recorded, created = (here / "start").read_text().split()
+            self.assertEqual(int(recorded), number)
+            self.assertGreater(int(created), 0)
+            self.assertFalse((here / "start.new").exists())
             self.assertIn(f"the run {RUN} started, but its start did not complete: no processes", result.stdout)
             self.assertIn("no processes", (here / "task.log").read_text())
             self.assertEqual((here / "tasks.log").read_text().split("\n")[:-1],
@@ -250,22 +300,25 @@ class Start(unittest.TestCase):
     def test_a_start_removes_only_the_tasks_of_ended_runs(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             runs = pathlib.Path(temporary) / "runs"
-            for name in ("finished-run", "starting-run", "ended-run", "running-run"):
+            for name in ("finished-run", "starting-run", "ended-run", "ended-start-run", "running-run"):
                 (runs / name).mkdir(parents=True)
             (runs / "finished-run" / "finished").write_text("0\n")
+            # This process of the tests stands for the start that runs.
+            (runs / "starting-run" / "start").write_text(f"{os.getpid()} {creation_time(os.getpid())}\n")
             (runs / "ended-run" / "process").write_text("4 1\n")  # the System process has another creation time
+            (runs / "ended-start-run" / "start").write_text("4 1\n")
             (runs / "running-run" / "started").write_text("")
-            names = ["finished-run", "gone-run", "starting-run", "ended-run", "running-run", RUN]
+            names = ["finished-run", "gone-run", "starting-run", "ended-run", "ended-start-run", "running-run", RUN]
             listed = ", ".join(f"[pscustomobject]@{{ TaskName = '{name}' }}" for name in names)
             result = functions(temporary, f"function Get-ScheduledTask {{ @({listed}) }}; "
                                "function Unregister-ScheduledTask { [CmdletBinding(SupportsShouldProcess)] param($TaskPath, $TaskName) "
                                "\"removed $TaskName\" }; "
-                               "function Get-RunStart([string]$Name) { if ($Name -eq 'starting-run') { 'start' } }; "
-                               "function Get-RunTask([string]$Name) { [pscustomobject]@{ State = 'Running' } }; "
+                               "function Get-RunTask([string]$Name) { "
+                               "[pscustomobject]@{ State = $(if ($Name -eq 'running-run') { 'Running' } else { 'Ready' }) } }; "
                                "Remove-EndedTask")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.split("\n")[:-1], ["removed finished-run", "removed gone-run",
-                                                                "removed ended-run"])
+                                                                "removed ended-run", "removed ended-start-run"])
 
 
 if __name__ == "__main__":

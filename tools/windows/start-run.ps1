@@ -11,11 +11,11 @@
 # password. Its program is start.sh of the run in the Bash of the setup, under a console host
 # without a window. The task has the rights of the account without elevation, so the run
 # cannot remove its own task: Windows requires elevation for that. This script, which runs
-# elevated in the SSH session, therefore starts a second copy of itself with -Remove -After
-# <process of the run>, through the process creation of the management service, so that the
-# copy is not ended with the SSH session. The copy keeps the machine from sleeping while the
-# process of the run runs, and then removes the task. A start also removes the tasks of earlier
-# runs that have ended; the task of a start in progress stays.
+# elevated in the SSH session, therefore starts a second copy of itself with -Remove, through the
+# process creation of the management service, so that the copy is not ended with the SSH
+# session. The copy keeps the machine from sleeping while the process of the run runs, and then
+# removes the task. A start also removes the tasks of earlier runs that have ended; the task of
+# a start in progress stays.
 #
 # The start is refused when the account has no desktop session, or when its session is
 # disconnected or its screen is locked: the start check of the package needs a window that
@@ -24,8 +24,9 @@
 # and removes the bundle of the commit. A failure after "started" is written to task.log; the
 # run goes on.
 #
-# The file "process" of the run holds the number and the creation time of the console host of
-# the run. "start-run.ps1 -Ended" ends with exit code 0 when the run no longer runs, so that
+# The file "start" of the run holds the number and the creation time of the process of this
+# script that starts the run, and the file "process" those of the console host of the run.
+# "start-run.ps1 -Ended" ends with exit code 0 when the run no longer runs, so that
 # tools/ci/ci.sh can report a run whose processes ended without writing "finished" (a logoff or
 # a restart of Windows ends them); see Test-RunEnded.
 #
@@ -38,7 +39,6 @@ param(
     [Parameter(Mandatory = $true)][string]$Directory,
     [Parameter(Mandatory = $true)][string]$Run,
     [switch]$Remove,
-    [int]$After = 0,
     [switch]$Ended,
     [switch]$Check,
     [string]$User = '',
@@ -77,6 +77,21 @@ public static long CreationTime(int id) {
         long creation, exit, kernel, user;
         if (WaitForSingleObject(process, 0) == 0 || !GetProcessTimes(process, out creation, out exit, out kernel, out user)) return 0;
         return creation;
+    } finally {
+        CloseHandle(process);
+    }
+}
+// Waits until the process with this number and creation time has ended, and returns at once when
+// no such process runs, also when Windows has given the number to a later process. Windows gives
+// the number of a process to no other process while a handle of it is open, so the process whose
+// creation time is compared is the process that is waited for.
+public static void Wait(int id, long created) {
+    IntPtr process = OpenProcess(0x00101000, false, id);
+    if (process == IntPtr.Zero) return;
+    try {
+        long creation, exit, kernel, user;
+        if (!GetProcessTimes(process, out creation, out exit, out kernel, out user) || creation != created) return;
+        WaitForSingleObject(process, 0xFFFFFFFF);
     } finally {
         CloseHandle(process);
     }
@@ -166,23 +181,37 @@ function Get-RunTask([string]$Name) {
     Get-ScheduledTask -TaskPath $TaskPath -TaskName $Name -ErrorAction SilentlyContinue
 }
 
-# The processes of this script that start the run (the command of tools/ci/ci.sh).
-function Get-RunStart([string]$Name) {
-    Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
-        Where-Object { $_.CommandLine -like "*start-run.ps1 -Directory * -Run $Name" }
+# Records a process in a file of the run: "<number> <creation time>". The file is written under
+# another name and then renamed, so that a reader never reads a part of it.
+function Write-Recorded([string]$File, [int]$Number, [long]$Created) {
+    Set-Content -NoNewline -Path "$File.new" -Value "$Number $Created`n"
+    Move-Item -Force -Path "$File.new" -Destination $File
+}
+
+# The number and the creation time of the process that a file of the run records.
+function Read-Recorded([string]$File) {
+    $number, $created = (Get-Content -Raw $File).Trim() -split ' '
+    [int]$number
+    [long]$created
+}
+
+# Whether the process that a file of the run records still runs: a process of that number with
+# that creation time.
+function Test-Recorded([string]$File) {
+    $number, $created = Read-Recorded $File
+    $created -ne 0 -and [JuntoCi.Native]::CreationTime($number) -eq $created
 }
 
 # Whether the run of a folder no longer runs. With the file "process": when the recorded
-# console host no longer runs (no process of that number with that creation time). Without it
-# (the host was not found, or the start ended before it wrote the file): when no start of the run
-# runs and its task does not run. The start is read first: it runs until the task runs.
+# console host no longer runs. Without it (the host was not found, or the start ended before it
+# wrote the file): when the start recorded in the file "start" no longer runs and the task of the
+# run does not run. The start is read first: it runs until the task runs. A folder without
+# "start" is a run whose start has not begun, or a run of an earlier version of this script.
 function Test-RunEnded([string]$Folder, [string]$Name) {
-    $file = Join-Path $Folder 'process'
-    if (Test-Path $file) {
-        $number, $created = (Get-Content -Raw $file).Trim() -split ' '
-        return [JuntoCi.Native]::CreationTime([int]$number) -ne [long]$created
-    }
-    if (Get-RunStart $Name) { return $false }
+    $process = Join-Path $Folder 'process'
+    if (Test-Path $process) { return -not (Test-Recorded $process) }
+    $start = Join-Path $Folder 'start'
+    if ((Test-Path $start) -and (Test-Recorded $start)) { return $false }
     $task = Get-RunTask $Name
     return -not ($task -and $task.State -eq 'Running')
 }
@@ -216,6 +245,7 @@ function Stop-Start([int]$Code, [string]$Message) {
 
 # Starts the run: everything after the check of the session, until the removal copy runs.
 function Start-Run([string]$User) {
+    Write-Recorded (Join-Path $here 'start') $PID ([JuntoCi.Native]::CreationTime($PID))
     $refusal = Get-DesktopRefusal $User @(Get-DesktopSession $User)
     if ($refusal) { Stop-Start 2 $refusal }
     Remove-EndedTask
@@ -250,9 +280,9 @@ function Start-Run([string]$User) {
         Add-Content -Path (Join-Path $here 'task.log') -Value "the process of the run was not found after its start"
         return
     }
-    Set-Content -NoNewline -Path (Join-Path $here 'process') -Value "$($process.ProcessId) $created`n"
+    Write-Recorded (Join-Path $here 'process') $process.ProcessId $created
     $remover = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $here\start-run.ps1 " +
-        "-Directory $Directory -Run $Run -Remove -After $($process.ProcessId)"
+        "-Directory $Directory -Run $Run -Remove"
     $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
         CommandLine = $remover; CurrentDirectory = $here
     }
@@ -302,13 +332,17 @@ if ($Ended) {
     exit 0
 }
 
+# The removal copy waits for the console host recorded in the file "process", by its number and
+# its creation time.
 if ($Remove) {
-    if ($After -gt 0) {
+    $file = Join-Path $here 'process'
+    if (Test-Path $file) {
         try {
             # ES_CONTINUOUS | ES_SYSTEM_REQUIRED (0x80000001, which PowerShell would read as a
             # negative Int32): Windows does not sleep while this thread waits.
             [JuntoCi.Native]::SetThreadExecutionState([uint32]2147483649) | Out-Null
-            Wait-Process -Id $After -ErrorAction SilentlyContinue
+            $number, $created = Read-Recorded $file
+            [JuntoCi.Native]::Wait($number, $created)
         } catch {
             Add-Content -Path (Join-Path $here 'task.log') -Value "the wait for the process of the run failed: $_"
         }

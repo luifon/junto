@@ -93,14 +93,16 @@ class Check:
         expect("Copyright (c) 2011, The WebRTC project authors" in text, "the licence file has no WebRTC licence")
         expect(not any(name.lower().endswith(".dll") for name in names), f"the ZIP holds a library: {names}")
 
-    @step("the program holds the icon group 1 with the rendering of the source at each size")
+    @step("each program holds the icon group 1 with the rendering of the source at each size")
     def program_icon(self):
-        with zipfile.ZipFile(self.zip) as archive:
-            pictures = icons.program_icon(archive.read("Junto/junto.exe"))
-        expect(sorted(pictures) == [16, 24, 32, 48, 64, 256], f"the icon has the sizes {sorted(pictures)}")
-        for size, picture in pictures.items():
-            expect(picture == icons.png(icons.rendering(TARGET / "junto-icon.exe", size)),
-                   f"the icon of {size} pixels is not the rendering of the source")
+        for program in ["junto.exe", "junto-recover.exe"]:
+            with zipfile.ZipFile(self.zip) as archive:
+                pictures = icons.program_icon(archive.read(f"Junto/{program}"))
+            expect(sorted(pictures) == [16, 24, 32, 48, 64, 256],
+                   f"the icon of {program} has the sizes {sorted(pictures)}")
+            for size, picture in pictures.items():
+                expect(picture == icons.png(icons.rendering(TARGET / "junto-icon.exe", size)),
+                       f"the icon of {size} pixels of {program} is not the rendering of the source")
 
     @step("install: extract the ZIP into a folder of the account")
     def install(self):
