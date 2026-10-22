@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use junto_client_core::api::SettingsScope;
 use junto_client_core::model::{AdminPart, CollectionState, Named, PlaceId, ServerModel};
+use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::discovery::{
     DailyQuiet, NotificationKind, NotificationLevel, NotificationSettings,
 };
@@ -120,11 +121,7 @@ pub fn account_names(
     model: &ServerModel,
     known: &Known,
 ) -> HashMap<AccountId, String> {
-    let mut names: HashMap<AccountId, String> = known
-        .people
-        .names(server_id)
-        .map(|(account_id, name)| (account_id, name.to_owned()))
-        .collect();
+    let mut names: HashMap<AccountId, String> = known.people.names(server_id).collect();
     for workspace in &model.workspaces {
         if let Some(members) = workspace.members.loaded() {
             names.extend(
@@ -160,6 +157,7 @@ fn names_of(
     Names {
         accounts: accounts.clone(),
         roles,
+        departed: HashMap::new(),
     }
 }
 
@@ -275,10 +273,20 @@ pub fn excerpt(message: &Message, names: &Names) -> String {
         .unwrap_or_default()
 }
 
-fn author_of(message: &Message, accounts: &HashMap<AccountId, String>) -> String {
+/// The author of a message, with the mark of a departed account (ADR 0121).
+fn author_of(
+    message: &Message,
+    accounts: &HashMap<AccountId, String>,
+    departed: &HashMap<AccountId, Departure>,
+) -> String {
+    let departure = message.author_id.and_then(|id| departed.get(&id).copied());
     message
         .author_name
         .clone()
+        .map(|name| match departure {
+            Some(departure) => text::departed_name(&name, departure),
+            None => name,
+        })
         .or_else(|| message.author_id.and_then(|id| accounts.get(&id).cloned()))
         .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
 }
@@ -291,6 +299,7 @@ fn author_of(message: &Message, accounts: &HashMap<AccountId, String>) -> String
 /// that failed is named in the panel, and its notices are not listed.
 pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) -> NoticesPanel {
     let accounts = account_names(server_id, model, known);
+    let departed = known.people.departures(server_id);
     let mut rows = Vec::with_capacity(model.notices.len());
     let mut reading = false;
     let mut placing = false;
@@ -329,7 +338,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
                     day: text::day_or_today(local.date(), known.today),
                     time: format!("{:02}:{:02}", local.hour(), local.minute()),
                     author_id: message.author_id,
-                    author: author_of(message, &accounts),
+                    author: author_of(message, &accounts, &departed),
                     text: excerpt(
                         message,
                         names
@@ -1107,7 +1116,11 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                 if place == Whereabouts::Unknown {
                     continue;
                 }
-                let author = author_of(message, accounts());
+                let author = author_of(
+                    message,
+                    accounts(),
+                    &scene.known.people.departures(scene.server_id),
+                );
                 (
                     text::alert_title(notice.kind, &author, &place, server),
                     excerpt(message, &names_of(&message.place, model, accounts())),

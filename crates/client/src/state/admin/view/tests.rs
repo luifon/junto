@@ -829,10 +829,13 @@ fn the_view_tells_the_request_of_the_person() {
         page: AdminPage::Workspaces,
     };
     let mut admin = AdminState {
-        ask: Some(Ask {
-            what: AskKind::CreateWorkspace,
-            state: AskState::Sending,
-        }),
+        requests: vec![(
+            1,
+            Ask {
+                what: AskKind::CreateWorkspace,
+                state: AskState::Sending,
+            },
+        )],
         ..AdminState::default()
     };
     let view = derive(
@@ -846,10 +849,13 @@ fn the_view_tells_the_request_of_the_person() {
     assert!(view.sending(AskKind::CreateWorkspace));
     assert!(!view.sending(AskKind::RedeemInvite));
     assert_eq!(view.refused(AskKind::CreateWorkspace), None);
-    admin.ask = Some(Ask {
-        what: AskKind::DeleteWorkspace(scene.lab),
-        state: AskState::Refused("No.".to_owned()),
-    });
+    admin.requests = vec![(
+        2,
+        Ask {
+            what: AskKind::DeleteWorkspace(scene.lab),
+            state: AskState::Refused("No.".to_owned()),
+        },
+    )];
     let view = derive(
         &[scene.server()],
         &Selection::default(),

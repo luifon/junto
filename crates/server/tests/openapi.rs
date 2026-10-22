@@ -301,7 +301,9 @@ fn enum_places(value: &serde_json::Value, path: &str, found: &mut Vec<String>) {
 #[test]
 fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
     use junto_protocol::access_token::TokenAction;
-    use junto_protocol::account::{AccountStatus, DeviceOrigin, ImageType, ModerationNoticeKind};
+    use junto_protocol::account::{
+        AccountStatus, Departure, DeviceOrigin, ImageType, ModerationNoticeKind,
+    };
     use junto_protocol::audit::AuditEvent;
     use junto_protocol::auth::ChallengeOperation;
     use junto_protocol::call::{
@@ -368,6 +370,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         ChallengeOperation,
         ChannelKind,
         ClientMessage by "type",
+        Departure,
         DeviceOrigin,
         EndReason,
         EntryOutcome,

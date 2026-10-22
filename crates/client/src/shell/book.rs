@@ -501,6 +501,8 @@ mod tests {
                 "device key missing",
             ),
             (ServerStatus::Banned, "banned"),
+            (ServerStatus::Inactive, "you left this server"),
+            (ServerStatus::Deleted, "account deleted"),
             (ServerStatus::Unreachable, "cannot be reached"),
             (
                 ServerStatus::Incompatible(Incompatibility::ClientTooOld { server_oldest: 3 }),

@@ -17,7 +17,7 @@ use junto_client_core::model::{
     ChannelModel, Loadable, OpenRecording, PlaceId, ServerModel, WorkspaceModel,
 };
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::account::RecoveryNotice;
+use junto_client_core::protocol::account::{Departure, RecoveryNotice};
 use junto_client_core::protocol::call::{
     BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio,
 };
@@ -432,6 +432,9 @@ pub struct DirectRow {
     pub unread: Unread,
     /// The mute of the conversation as the person set it (ADR 0515).
     pub mute: Mute,
+    /// The other account left the server or was deleted: the conversation is read only
+    /// (ADR 0121).
+    pub departure: Option<Departure>,
 }
 
 /// The thread that the side panel shows (ADR 0403).
@@ -519,6 +522,11 @@ pub enum ServerStatus {
     },
     NoAccount(Option<Notice>),
     Banned,
+    /// The account left the last workspace of the server (ADR 0121). An invite code
+    /// returns it.
+    Inactive,
+    /// The account was deleted (ADR 0121).
+    Deleted,
     Unreachable,
     Incompatible(Incompatibility),
     OtherServer,
@@ -585,6 +593,8 @@ pub fn status(server: &ServerSnapshot) -> ServerStatus {
         },
         AccessState::NoAccount { notice } => ServerStatus::NoAccount(*notice),
         AccessState::Banned { .. } => ServerStatus::Banned,
+        AccessState::Inactive { .. } => ServerStatus::Inactive,
+        AccessState::Deleted { .. } => ServerStatus::Deleted,
     }
 }
 
@@ -2206,6 +2216,7 @@ fn directs(
                 selected: selected == Some(conversation.id),
                 unread: unreads.at(PlaceId::Direct(conversation.id)),
                 mute: Mute::of_direct(other, model, known),
+                departure: known.people.departure(server_id, other),
             }
         })
         .collect();
@@ -2219,6 +2230,22 @@ fn directs(
         key(one).cmp(&key(other)).then(one.id.cmp(&other.id))
     });
     rows
+}
+
+/// A feed whose messages offer no change: a direct conversation with an account that left
+/// the server or was deleted (ADR 0121).
+fn read_only_feed(mut feed: Feed) -> Feed {
+    for row in Arc::make_mut(&mut feed.rows) {
+        if let feed::FeedRow::Message(row) = row {
+            row.can_react = false;
+            row.can_reply = false;
+            row.can_edit = false;
+            row.can_delete = false;
+            row.can_pin = false;
+            row.can_thread = false;
+        }
+    }
+    feed
 }
 
 /// The uploads of the waiting messages of one server, by the number of the upload.
@@ -2297,7 +2324,7 @@ fn server_lists(
     // manages its messages (ADR 0302).
     let feed = match &conversation {
         Some(row) => model.timeline(PlaceId::Direct(row.id)).map(|timeline| {
-            feed::derive(&feed::Source {
+            let feed = feed::derive(&feed::Source {
                 server_id,
                 model,
                 timeline,
@@ -2312,7 +2339,13 @@ fn server_lists(
                 zone: known.zone,
                 today: known.today,
                 cards: None,
-            })
+            });
+            // A conversation with a departed account is read only (ADR 0121).
+            if row.departure.is_some() {
+                read_only_feed(feed)
+            } else {
+                feed
+            }
         }),
         None => channel_feed,
     };
@@ -2732,11 +2765,7 @@ fn names(
     model: &ServerModel,
     known: &Known,
 ) -> Names {
-    let mut accounts: HashMap<AccountId, String> = known
-        .people
-        .names(server_id)
-        .map(|(account_id, name)| (account_id, name.to_owned()))
-        .collect();
+    let mut accounts: HashMap<AccountId, String> = known.people.names(server_id).collect();
     if let Some(members) = workspace.and_then(|workspace| workspace.members.loaded()) {
         accounts.extend(
             members
@@ -2753,6 +2782,7 @@ fn names(
             .iter()
             .map(|role| (role.id, crate::text::label(&role.name)))
             .collect(),
+        departed: known.people.departures(server_id),
     }
 }
 

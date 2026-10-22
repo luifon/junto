@@ -6,7 +6,7 @@ use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
 use crate::state::AppState;
 use crate::{
     events,
-    messages::{self, Place, document},
+    messages::{self, Place, Purpose, document},
     read, store, transact,
 };
 use axum::{Json, extract::State, http::StatusCode};
@@ -27,11 +27,18 @@ pub(super) enum Target {
     Thread(MessageId),
 }
 impl Target {
-    async fn open(self, connection: &mut sqlx::PgConnection, access: &Access) -> ApiResult<Place> {
+    async fn open(
+        self,
+        connection: &mut sqlx::PgConnection,
+        access: &Access,
+        purpose: Purpose,
+    ) -> ApiResult<Place> {
         match self {
             Self::Channel(id) => Place::channel(connection, access, id).await,
-            Self::Direct(id) => Place::direct(connection, access, id).await,
-            Self::Thread(id) => Ok(super::threads::root(connection, access, id).await?.0),
+            Self::Direct(id) => Place::direct(connection, access, id, purpose).await,
+            Self::Thread(id) => Ok(super::threads::root(connection, access, id, purpose)
+                .await?
+                .0),
         }
     }
 }
@@ -92,7 +99,7 @@ async fn history(
     let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, bearer, app.now()).await?;
-        let place = target.open(connection, &access).await?;
+        let place = target.open(connection, &access, Purpose::Read).await?;
         if !counted {
             app.message_history
                 .attempt_of(access.account_id, app.now())
@@ -110,7 +117,7 @@ async fn history(
         };
         let cursor = page.before_message.or(page.after_message);
         let position = if let Some(id) = cursor {
-            let (parent, message) = messages::get(connection, &access, id).await?;
+            let (parent, message) = messages::get(connection, &access, id, Purpose::Read).await?;
             if parent.id != place.id {
                 return Err(ApiError::not_found());
             }
@@ -161,11 +168,11 @@ pub(super) async fn send(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
-        let place = target.open(connection, &access).await?;
+        let place = target.open(connection, &access, Purpose::Change).await?;
         place.require_open()?;
         rate(app, &access, &mut counted)?;
         if let Some(reply) = body.reply_to {
-            let (parent, _) = messages::get(connection, &access, reply).await?;
+            let (parent, _) = messages::get(connection, &access, reply, Purpose::Read).await?;
             if parent.id != place.id {
                 return Err(ApiError::invalid(
                     "a reply stays in its channel or conversation",
@@ -177,7 +184,7 @@ pub(super) async fn send(
             _ => None,
         };
         if let (Some(root), Some(reply)) = (thread_root, body.reply_to) {
-            let (_, replied) = messages::get(connection, &access, reply).await?;
+            let (_, replied) = messages::get(connection, &access, reply, Purpose::Read).await?;
             if reply != root && replied.thread_root != Some(root) {
                 return Err(ApiError::invalid("a thread reply stays in its thread"));
             }
@@ -221,7 +228,7 @@ pub(super) async fn send(
         messages::notifications::create(connection, now, id, None).await?;
         if let Some(root) = thread_root {
             messages::threads::advance(connection, now, &access, root, position).await?;
-            let (_, root_message) = messages::get(connection, &access, root).await?;
+            let (_, root_message) = messages::get(connection, &access, root, Purpose::Read).await?;
             messages::changed(
                 connection,
                 now,
@@ -234,7 +241,9 @@ pub(super) async fn send(
         } else {
             advance_read(connection, now, &access, &place, position).await?;
         }
-        Ok(messages::get(connection, &access, id).await?.1)
+        Ok(messages::get(connection, &access, id, Purpose::Read)
+            .await?
+            .1)
     })
 }
 
@@ -256,7 +265,9 @@ pub async fn get_message(
                 })?;
             counted = true;
         }
-        Ok(messages::get(connection, &access, id).await?.1)
+        Ok(messages::get(connection, &access, id, Purpose::Read)
+            .await?
+            .1)
     })
     .map(Json)
 }
@@ -272,7 +283,7 @@ pub async fn edit_message(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (place, message) = messages::get(connection, &access, id).await?;
+        let (place, message) = messages::get(connection, &access, id, Purpose::Change).await?;
         if message.deleted {
             return Err(ApiError::not_found());
         }
@@ -295,7 +306,9 @@ pub async fn edit_message(
             .await?;
         messages::changed(connection, now, place.value, id, message.position, false).await?;
         messages::notifications::create(connection, now, id, Some(&recipients)).await?;
-        Ok(messages::get(connection, &access, id).await?.1)
+        Ok(messages::get(connection, &access, id, Purpose::Read)
+            .await?
+            .1)
     })
     .map(Json)
 }
@@ -309,7 +322,7 @@ pub async fn delete_message(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (place, message) = messages::get(connection, &access, id).await?;
+        let (place, message) = messages::get(connection, &access, id, Purpose::Change).await?;
         if message.deleted {
             return Err(ApiError::not_found());
         }
@@ -409,7 +422,7 @@ async fn reaction(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
-        let (place, message) = messages::get(connection, &access, id).await?;
+        let (place, message) = messages::get(connection, &access, id, Purpose::Change).await?;
         if message.deleted {
             return Err(ApiError::not_found());
         }
@@ -471,7 +484,7 @@ pub async fn open_conversation(
         let low = access.account_id.min(body.account_id);
         let high = access.account_id.max(body.account_id);
         let (conversation, is_new) = Place::conversation_between(connection, low, high, id).await?;
-        Place::direct(connection, &access, conversation.id)
+        Place::direct(connection, &access, conversation.id, Purpose::Change)
             .await?
             .ensure(connection)
             .await?;
@@ -546,7 +559,7 @@ async fn mark(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, app.now()).await?;
-        let place = target.open(connection, &access).await?;
+        let place = target.open(connection, &access, Purpose::Read).await?;
         rate(app, &access, &mut counted)?;
         place.ensure(connection).await?;
         let head = messages::state(connection, &access, &place, app.now())
@@ -638,7 +651,9 @@ pub async fn channel_message_state(
 ) -> ApiResult<Json<MessageState>> {
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        let place = Target::Channel(id).open(connection, &access).await?;
+        let place = Target::Channel(id)
+            .open(connection, &access, Purpose::Read)
+            .await?;
         messages::state(connection, &access, &place, app.now()).await
     })
     .map(Json)
@@ -652,7 +667,9 @@ pub async fn conversation_message_state(
 ) -> ApiResult<Json<MessageState>> {
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        let place = Target::Direct(id).open(connection, &access).await?;
+        let place = Target::Direct(id)
+            .open(connection, &access, Purpose::Read)
+            .await?;
         messages::state(connection, &access, &place, app.now()).await
     })
     .map(Json)

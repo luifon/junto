@@ -41,7 +41,8 @@ async fn set(app: &AppState, bearer: &Bearer, id: MessageId, pin: bool) -> ApiRe
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, app.now()).await?;
-        let (place, message) = messages::get(connection, &access, id).await?;
+        let (place, message) =
+            messages::get(connection, &access, id, messages::Purpose::Change).await?;
         let scope = place.scope.as_ref().ok_or_else(ApiError::not_found)?;
         access.require(Request::Channel {
             scope,

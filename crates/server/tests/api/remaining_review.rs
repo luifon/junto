@@ -1022,6 +1022,7 @@ async fn review2_workspace_invite_withdrawal_reads_indexed_creator_pages() {
     ))
     .bind(owner.account_id)
     .bind(uuid::Uuid::nil())
+    .bind(server.clock.now())
     .fetch_one(&server.db)
     .await
     .unwrap();

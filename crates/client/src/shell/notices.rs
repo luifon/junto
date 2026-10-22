@@ -28,8 +28,8 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Mosaic, MosaicKind, Notice,
-    ScrollArea, Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
+    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice, ScrollArea,
+    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
     menu_separator, unread_dot,
 };
 
@@ -53,8 +53,10 @@ pub(crate) struct Excerpt {
     pub day: SharedString,
     /// The words at the end of the line of the place, such as "Go to message".
     pub action: Option<SharedString>,
-    /// The seed of the avatar of the author.
+    /// The seed of the generated avatar of the author.
     pub seed: u128,
+    /// The picture of the author, when the window holds it (ADR 0783).
+    pub picture: Option<std::sync::Arc<gpui::RenderImage>>,
     pub author: SharedString,
     pub time: SharedString,
     /// A short word after the time, such as "microphone".
@@ -128,11 +130,12 @@ impl Excerpt {
                 div()
                     .flex()
                     .gap(u(10.0))
-                    .child(div().flex_none().mt(u(2.0)).child(Mosaic::new(
-                        MosaicKind::Large,
-                        self.seed,
-                        30.0,
-                    )))
+                    .child(
+                        div()
+                            .flex_none()
+                            .mt(u(2.0))
+                            .child(Avatar::new(self.seed, 30.0).image(self.picture)),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -378,6 +381,7 @@ impl Shell {
                 .selector("no-notices")
                 .into_any_element()
         } else {
+            let faces = self.faces(server_id);
             let rows = panel.rows.iter().enumerate().map(|(index, row)| {
                 let notice_id = row.id;
                 let shown = Excerpt {
@@ -386,6 +390,7 @@ impl Shell {
                     day: row.day.clone().into(),
                     action: row.jump.map(|_| text::GO_TO_MESSAGE.into()),
                     seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
+                    picture: row.author_id.and_then(|id| faces.image(id)),
                     author: row.author.clone().into(),
                     time: row.time.clone().into(),
                     tag: row.jump.map(|_| text::notice_kind(row.kind).into()),

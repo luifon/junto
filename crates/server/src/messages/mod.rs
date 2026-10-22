@@ -11,7 +11,7 @@ pub mod transfers;
 pub mod uploads;
 
 pub use mentions::{mentioned_among, mentions};
-pub use place::Place;
+pub use place::{Place, Purpose};
 pub use store::{
     REPLY_AUTHORS, VISIBLE, changed, get, load_messages, remove, snapshot, state, state_query,
     system,

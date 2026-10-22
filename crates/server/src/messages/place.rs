@@ -13,6 +13,17 @@ use junto_protocol::{
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+/// Whether a request reads a place or changes its content. A direct conversation whose
+/// other participant is inactive or deleted stays readable for the remaining participant,
+/// and takes no change (ADR 0121, ADR 0408).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// History, single messages, threads, files, read positions, follow choices, exports.
+    Read,
+    /// Sending, editing, deleting, reacting, uploading, pins and forks.
+    Change,
+}
+
 pub struct Place {
     pub id: Uuid,
     pub value: MessagePlace,
@@ -53,6 +64,7 @@ impl Place {
         connection: &mut PgConnection,
         access: &Access,
         id: ConversationId,
+        purpose: Purpose,
     ) -> ApiResult<Self> {
         let row: Option<(AccountId, AccountId)> = sqlx::query_as(
             "select low_account_id, high_account_id from conversations where id = $1",
@@ -71,7 +83,10 @@ impl Place {
         }
         let other = if access.account_id == low { high } else { low };
         if !store::may_reach(connection, access, other).await? {
-            return Err(ApiError::not_found());
+            let read_only = purpose == Purpose::Read && store::departed(connection, other).await?;
+            if !read_only {
+                return Err(ApiError::not_found());
+            }
         }
         Ok(Self {
             id: id.as_uuid(),
@@ -160,22 +175,32 @@ impl Place {
             })
             .collect();
         let contacts = store::contacts(connection, access, &peers).await?;
+        // A conversation with an inactive or deleted account stays listed: it is read only
+        // (ADR 0121).
+        let departed = store::departed_among(connection, &peers).await?;
         Ok(rows
             .into_iter()
             .zip(peers)
             .filter_map(|((id, low, high), other)| {
-                contacts
+                let reachable = contacts
                     .get(&other)
-                    .filter(|contact| access.allows(Request::Contact(**contact)))
-                    .map(|_| junto_protocol::message::Conversation {
+                    .is_some_and(|contact| access.allows(Request::Contact(*contact)));
+                (reachable || departed.contains(&other)).then_some(
+                    junto_protocol::message::Conversation {
                         id,
                         low_account_id: low,
                         high_account_id: high,
-                    })
+                    },
+                )
             })
             .collect())
     }
-    pub async fn load(connection: &mut PgConnection, access: &Access, id: Uuid) -> ApiResult<Self> {
+    pub async fn load(
+        connection: &mut PgConnection,
+        access: &Access,
+        id: Uuid,
+        purpose: Purpose,
+    ) -> ApiResult<Self> {
         let row: Option<(Option<ChannelId>, Option<ConversationId>)> =
             sqlx::query_as("select channel_id, conversation_id from message_places where id = $1")
                 .bind(id)
@@ -183,7 +208,7 @@ impl Place {
                 .await?;
         match row {
             Some((Some(id), None)) => Self::channel(connection, access, id).await,
-            Some((None, Some(id))) => Self::direct(connection, access, id).await,
+            Some((None, Some(id))) => Self::direct(connection, access, id, purpose).await,
             _ => Err(ApiError::not_found()),
         }
     }

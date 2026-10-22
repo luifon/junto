@@ -209,8 +209,8 @@ pub(crate) struct PageList {
     /// The element that holds the list, its entries and its scroll bar.
     area: FocusHandle,
     /// The tab stops before and after the rows. They are drawn while the focus is outside
-    /// the rows of a list that has rows, so that Tab and Shift+Tab enter the list when no
-    /// row in view has a control.
+    /// the rows of a list that has rows, so that Tab and Shift+Tab enter the list at a row
+    /// in view, also when no row in view has a control.
     start: FocusHandle,
     finish: FocusHandle,
     frame: Rc<Frame>,
@@ -436,6 +436,40 @@ impl PageList {
         }
     }
 
+    /// The places of the rows that the last frame drew in the view.
+    fn in_view(&self) -> std::ops::Range<usize> {
+        let viewport = self.state.viewport_bounds();
+        let first = self.state.logical_scroll_top().item_ix;
+        let end = (first..self.rows.len())
+            .take_while(|&index| {
+                self.state
+                    .bounds_for_item(index)
+                    .is_some_and(|bounds| bounds.top() < viewport.bottom())
+            })
+            .last()
+            .map_or(first, |last| last + 1);
+        first..end
+    }
+
+    /// The first (`forward`) or the last row that `fits`, among the rows in view and
+    /// otherwise in the whole list.
+    fn first_fitting(&self, forward: bool, fits: impl Fn(&Entry) -> bool) -> Option<usize> {
+        let view = self.in_view();
+        let shown = &self.rows[view.start.min(self.rows.len())..view.end.min(self.rows.len())];
+        let in_view = if forward {
+            shown.iter().position(&fits)
+        } else {
+            shown.iter().rposition(&fits)
+        };
+        in_view.map(|index| view.start + index).or_else(|| {
+            if forward {
+                self.rows.iter().position(&fits)
+            } else {
+                self.rows.iter().rposition(&fits)
+            }
+        })
+    }
+
     /// Moves the focus to a row when it is drawn in view, and reveals it now.
     fn pend(&mut self, index: usize, target: Target, from: Option<FocusHandle>) {
         self.state.scroll_to_reveal_item(index);
@@ -586,7 +620,8 @@ fn step<V: ListHost>(
 }
 
 /// The focus is on the tab stop before or after the rows: it goes on to the first or the
-/// last row that can hold a control. Answered once for each arrival of the focus.
+/// last row in view that can hold a control, or, when no row in view can, to the first or
+/// the last such row of the list. Answered once for each arrival of the focus.
 fn enter(list: &mut PageList, window: &Window, cx: &App) {
     let reached = if list.start.is_focused(window) {
         Some(true)
@@ -600,33 +635,23 @@ fn enter(list: &mut PageList, window: &Window, cx: &App) {
     }
     list.entered = reached;
     let Some(forward) = reached else { return };
-    let rows = &list.rows;
-    let control = if forward {
-        rows.iter().position(|entry| entry.interactive)
-    } else {
-        rows.iter().rposition(|entry| entry.interactive)
+    let target = if forward { Target::First } else { Target::Last };
+    // Without a row that can hold a control, the focus goes to an item of the list itself,
+    // by the same rule, from which the keys scroll the list.
+    let found = match list.first_fitting(forward, |entry| entry.interactive) {
+        Some(index) => Some((index, target)),
+        None => list
+            .first_fitting(forward, |entry| entry.position.is_some())
+            .or_else(|| {
+                if forward {
+                    (!list.rows.is_empty()).then_some(0)
+                } else {
+                    list.rows.len().checked_sub(1)
+                }
+            })
+            .map(|index| (index, Target::Row)),
     };
-    // Without a row that can hold a control, the focus goes to the first or the last item
-    // of the list itself, from which the keys scroll the list.
-    let (index, target) = match control {
-        Some(index) => (
-            Some(index),
-            if forward { Target::First } else { Target::Last },
-        ),
-        None if forward => (
-            rows.iter()
-                .position(|entry| entry.position.is_some())
-                .or((!rows.is_empty()).then_some(0)),
-            Target::Row,
-        ),
-        None => (
-            rows.iter()
-                .rposition(|entry| entry.position.is_some())
-                .or(rows.len().checked_sub(1)),
-            Target::Row,
-        ),
-    };
-    if let Some(index) = index {
+    if let Some((index, target)) = found {
         list.pend(index, target, window.focused(cx));
     }
 }
@@ -648,7 +673,20 @@ fn resume<V: ListHost>(host: &mut V, painted: bool, window: &mut Window, cx: &mu
             list.state.scroll_to_reveal_item(index);
             list.pending = Some(Pending { frames, ..pending });
             cx.notify();
+            return;
         }
+        // The row was not drawn in the view. From a tab stop before or after the rows,
+        // the move leaves the list, so that the focus does not stay on an empty element.
+        let forward = if pending.from.as_ref() == Some(&list.start) {
+            true
+        } else if pending.from.as_ref() == Some(&list.finish) {
+            false
+        } else {
+            return;
+        };
+        let edge = if forward { &list.finish } else { &list.start };
+        window.focus(edge, cx);
+        host.leave_list(forward, window, cx);
         return;
     }
     let entry = list.rows[index].clone();
@@ -873,8 +911,18 @@ pub(crate) fn element<V: ListHost>(
         }
     };
 
+    // A tab stop holds the focus until the list moves it on: it carries the name of the
+    // list.
+    let named = label.clone();
     let entry = |id: &'static str, handle: FocusHandle| {
-        entries.then(|| div().id(id).track_focus(&handle).size_0())
+        entries.then(|| {
+            div()
+                .id(id)
+                .role(Role::Group)
+                .aria_label(named.clone())
+                .track_focus(&handle)
+                .size_0()
+        })
     };
     div()
         .id("admin-list-area")
@@ -1053,6 +1101,7 @@ mod tests {
         pressed: Vec<String>,
         focused: Vec<Option<FocusHandle>>,
         width: Pixels,
+        height: Pixels,
         /// The accounts that the list told, at each time.
         told: Vec<Vec<AccountId>>,
     }
@@ -1140,7 +1189,7 @@ mod tests {
                 .flex_col()
                 .line_height(px(32.0))
                 .child(div().id("before").track_focus(&self.before).size(px(10.0)))
-                .child(div().w(self.width).h(px(300.0)).child(list))
+                .child(div().w(self.width).h(self.height).child(list))
                 .child(div().id("after").track_focus(&self.after).size(px(10.0)))
         }
     }
@@ -1166,6 +1215,7 @@ mod tests {
                 pressed: Vec::new(),
                 focused: Vec::new(),
                 width: px(400.0),
+                height: px(300.0),
                 told: Vec::new(),
             };
             host.set(lines, cx);
@@ -1562,6 +1612,62 @@ mod tests {
         let top = host.read_with(cx, |host, _| host.list.state.logical_scroll_top());
         assert_eq!((top.item_ix, top.offset_in_item), (1, px(0.0)));
         assert!(in_view(cx, "a0000"));
+    }
+
+    /// Check of the corrections, low point 1: Tab and Shift+Tab from outside enter the list
+    /// at the first and the last row in view that holds a control, and at the first and
+    /// the last item in view of a list without controls, and the view does not move.
+    #[gpui::test]
+    fn tab_enters_the_list_at_the_rows_in_view(cx: &mut TestAppContext) {
+        for control in [true, false] {
+            let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, control)).collect();
+            let (host, cx) = open(cx, lines);
+            scroll_to(&host, cx, 900, 0.0);
+            let before = cx.debug_bounds("row-r0905");
+            assert!(before.is_some());
+            let last = (900..1000)
+                .rev()
+                .map(|index| format!("r{index:04}"))
+                .find(|key| in_view(cx, key))
+                .unwrap();
+            let entered = |host: &Entity<Host>, cx: &mut VisualTestContext, key: &str| {
+                if control {
+                    pressed_after_enter(host, cx) == [key]
+                } else {
+                    let handle = host.read_with(cx, |host, _| host.list.row_focus(key).unwrap());
+                    cx.update(|window, _| handle.is_focused(window))
+                }
+            };
+            focus(&host, cx, |host| host.before.clone());
+            press(cx, "tab");
+            assert!(entered(&host, cx, "r0900"), "control {control}");
+            assert_eq!(cx.debug_bounds("row-r0905"), before);
+            focus(&host, cx, |host| host.after.clone());
+            press(cx, "shift-tab");
+            assert!(entered(&host, cx, &last), "control {control}");
+            assert_eq!(cx.debug_bounds("row-r0905"), before);
+        }
+    }
+
+    /// Check of the corrections, low point 3: when the row that Tab enters is not drawn in
+    /// the view, the focus leaves the list and does not stay on its empty tab stop.
+    #[gpui::test]
+    fn tab_into_a_list_that_draws_no_row_in_view_leaves_it(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..20).map(|index| line(index, 30.0, true)).collect();
+        let (host, cx) = open(cx, lines);
+        host.update(cx, |host, cx| {
+            host.height = px(0.0);
+            cx.notify();
+        });
+        settle(cx);
+        focus(&host, cx, |host| host.before.clone());
+        press(cx, "tab");
+        let (after, start) =
+            host.read_with(cx, |host, _| (host.after.clone(), host.list.start.clone()));
+        cx.update(|window, cx| {
+            assert!(!start.is_focused(window));
+            assert!(after.is_focused(window), "{:?}", window.focused(cx));
+        });
     }
 
     #[test]

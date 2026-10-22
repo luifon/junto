@@ -1,5 +1,5 @@
 //! Message content, page loading, unread summaries and system lines.
-use super::{Place, uploads};
+use super::{Place, Purpose, uploads};
 use crate::{
     access::Access,
     error::{ApiError, ApiResult},
@@ -70,6 +70,7 @@ pub async fn get(
     connection: &mut PgConnection,
     access: &Access,
     id: MessageId,
+    purpose: Purpose,
 ) -> ApiResult<(Place, Message)> {
     let row = sqlx::query(sqlx::AssertSqlSafe(format!("select m.*, a.name as display_name from messages m left join accounts a on a.id=m.author_id where m.id=$1
              and {VISIBLE}")))
@@ -78,7 +79,7 @@ pub async fn get(
         .fetch_optional(&mut *connection)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let place = Place::load(connection, access, row.try_get("place_id")?).await?;
+    let place = Place::load(connection, access, row.try_get("place_id")?, purpose).await?;
     let mut messages = load_messages(connection, access, &place, &[id]).await?;
     Ok((place, messages.pop().ok_or_else(ApiError::not_found)?))
 }

@@ -226,7 +226,21 @@ pub enum Acquaintance {
     /// the server owner or holds the administrator permission: the actor may write to it
     /// (ADR 0307).
     Administrator,
+    /// The other account is inactive or deleted, and the actor is a member of a workspace
+    /// that it left by itself or has a direct conversation with it: the actor reads content
+    /// that it wrote, and sees its profile without an avatar (ADR 0121).
+    Departed,
     Unrelated,
+}
+
+/// What the actor leaves (ADR 0121).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Departing {
+    /// A workspace, while the actor stays a member of another.
+    Workspace,
+    /// The server: the last workspace of the actor, or the account itself. The server owner
+    /// must first hand the position to another account.
+    Server,
 }
 
 /// How the actor stands to the other account of a direct message or a direct call.
@@ -302,6 +316,9 @@ pub enum Request<'a> {
     Moderate {
         target: Target,
     },
+    /// The actor leaves a workspace, or ends its presence on the server: it leaves its last
+    /// workspace or deletes its account (ADR 0121).
+    Depart(Departing),
     OwnerOnly(OwnerAction),
     ViewWorkspace(&'a WorkspaceScope),
     Workspace {

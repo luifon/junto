@@ -20,6 +20,7 @@ mod change_positions;
 mod concurrency;
 mod contacts;
 mod deletions;
+mod departures;
 mod devices;
 mod downloads;
 mod exports;

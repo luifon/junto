@@ -58,7 +58,9 @@ pub async fn start_upload(
         let access = Access::open(connection, &bearer, now).await?;
         let place = match (body.channel_id, body.conversation_id) {
             (Some(id), None) => Place::channel(connection, &access, id).await?,
-            (None, Some(id)) => Place::direct(connection, &access, id).await?,
+            (None, Some(id)) => {
+                Place::direct(connection, &access, id, messages::Purpose::Change).await?
+            }
             _ => return Err(ApiError::invalid("give one channel or conversation")),
         };
         place.require_open()?;
@@ -391,7 +393,13 @@ async fn downloadable(
     .await?
     .ok_or_else(ApiError::not_found)?;
     let message: Option<MessageId> = row.try_get("message_id")?;
-    messages::get(connection, access, message.ok_or_else(ApiError::not_found)?).await?;
+    messages::get(
+        connection,
+        access,
+        message.ok_or_else(ApiError::not_found)?,
+        messages::Purpose::Read,
+    )
+    .await?;
     Ok(row)
 }
 

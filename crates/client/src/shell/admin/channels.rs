@@ -1263,11 +1263,13 @@ impl Shell {
                 )
                 .child(sentence(text::admin::CALL_CONTROLS_HELP, &theme).mt(u(6.0)));
         }
-        // What the server refused of this page, whichever control asked.
+        // What the server refused of this page, whichever control asked: the newest
+        // refusal.
         let refused = view
-            .ask
-            .as_ref()
-            .and_then(|ask| match (&ask.what, &ask.state) {
+            .asks
+            .iter()
+            .rev()
+            .find_map(|ask| match (&ask.what, &ask.state) {
                 (
                     AskKind::UpdateChannel(of)
                     | AskKind::CallSettings(of)

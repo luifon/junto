@@ -89,7 +89,7 @@ impl Window {
     }
 
     /// Types a search text into the field of the header and sends it with Enter.
-    fn search_for(&mut self, text: &str) {
+    pub(crate) fn search_for(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
             shell.type_search(text, window, cx);
             shell.focus_search(window, cx);
@@ -99,7 +99,7 @@ impl Window {
 
     /// Waits for the answer of the search that runs.
     #[track_caller]
-    fn until_searched(&mut self) -> SearchPanel {
+    pub(crate) fn until_searched(&mut self) -> SearchPanel {
         self.until("the search has its answer", |window| {
             window
                 .search_panel()

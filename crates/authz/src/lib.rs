@@ -9,7 +9,7 @@ mod permissions;
 pub use evaluate::authorize;
 pub use model::{
     Acquaintance, Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant,
-    ChannelScope, Contact, Decision, Denial, HeldRole, Membership, MessagePlace,
+    ChannelScope, Contact, Decision, Denial, Departing, HeldRole, Membership, MessagePlace,
     OverlappingOverride, Override, OwnerAction, Participation, Permanence, Position, Reach,
     Request, RoleKey, RoleOverride, Target, WorkspaceScope,
 };

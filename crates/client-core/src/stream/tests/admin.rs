@@ -170,10 +170,14 @@ impl crate::api::Transport for AdminHttp {
         let gate = {
             let mut routes = self.http.routes.lock().unwrap();
             routes.seen.push((path.clone(), token));
+            // The rule of the harness: a text that ends with `/` holds every path that
+            // contains it.
             routes
                 .held
                 .as_ref()
-                .filter(|(end, _)| path.ends_with(*end))
+                .filter(|(end, _)| {
+                    path.ends_with(*end) || (end.ends_with('/') && path.contains(*end))
+                })
                 .map(|(_, gate)| gate.clone())
         };
         let routes = self.http.routes.clone();
@@ -628,9 +632,11 @@ async fn a_reload_reads_every_open_collection_again_and_closes_the_ones_of_a_los
     let model = rig
         .model_when("the collections of the new state", |model| {
             model.cursor.position == 90
-                && [invites, list, settings]
-                    .iter()
-                    .all(|part| model.admin.state(*part) == CollectionState::Loaded)
+                && [invites, list, settings].iter().all(|part| {
+                    let times = model.admin.read_times(*part);
+                    model.admin.state(*part) == CollectionState::Loaded
+                        && times.shown == times.started
+                })
         })
         .await;
     let mut newest_first = vec![first, second];
@@ -1123,13 +1129,16 @@ async fn an_archived_channel_stays_with_its_reader_until_the_archived_list_does_
         .model_when("the snapshot", |model| model.cursor.position == 90)
         .await;
     assert!(model.channel(general).is_none());
-    assert_eq!(model.admin.state(list), CollectionState::Loading);
+    // The list shows its channels of before until its read answers.
+    let times = model.admin.read_times(list);
+    assert_ne!(times.shown, times.started);
     assert_eq!(model.admin.archived_channel(general), Some(&gone));
     assert!(model.timeline(place).is_some());
     gate.add_permits(64);
     let model = rig
         .model_when("the archived channels again", |model| {
-            model.admin.state(list) == CollectionState::Loaded
+            let times = model.admin.read_times(list);
+            model.admin.state(list) == CollectionState::Loaded && times.shown == times.started
         })
         .await;
     assert_eq!(model.admin.archived_channel(general), Some(&gone));
@@ -1143,7 +1152,10 @@ async fn an_archived_channel_stays_with_its_reader_until_the_archived_list_does_
     reload(&rig, &mut peer, 95, |_| {}).await;
     let model = rig
         .model_when("the archived channels without the channel", |model| {
-            model.cursor.position == 95 && model.admin.state(list) == CollectionState::Loaded
+            let times = model.admin.read_times(list);
+            model.cursor.position == 95
+                && model.admin.state(list) == CollectionState::Loaded
+                && times.shown == times.started
         })
         .await;
     assert!(model.admin.archived_channel(general).is_none());
@@ -1643,12 +1655,19 @@ async fn the_permissions_in_an_archived_channel_are_read_again_after_a_reload_an
         })
         .await;
     assert!(model.holds_in(general, ViewChannel));
-    assert_eq!(model.admin.state(list), CollectionState::Loading);
+    // The archived list shows its channels of before until its read answers.
+    let times = model.admin.read_times(list);
+    assert_ne!(times.shown, times.started);
+    assert_eq!(
+        model.admin.archived(workspace_id).loaded(),
+        Some(&vec![gone.clone()])
+    );
     assert_eq!(rig.http.count("/permissions"), 2);
     gate.add_permits(64);
     let model = rig
         .model_when("the archived channels again", |model| {
-            model.admin.state(list) == CollectionState::Loaded
+            let times = model.admin.read_times(list);
+            model.admin.state(list) == CollectionState::Loaded && times.shown == times.started
         })
         .await;
     assert_eq!(model.admin.state(part), CollectionState::Loaded);
@@ -1662,4 +1681,87 @@ async fn the_permissions_in_an_archived_channel_are_read_again_after_a_reload_an
         })
         .await;
     assert_eq!(model.permissions_in(general), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_shows_the_values_of_an_open_collection_until_its_read_answers() {
+    let (rig, mut peer, admin) = served_rig().await;
+    let workspace_id = rig.scene.workspace_id;
+    let (invites, accounts, settings) = (
+        AdminPart::Invites,
+        AdminPart::Accounts,
+        AdminPart::WorkspaceSettings(workspace_id),
+    );
+    let own = rig.scene.account_id;
+    let (first, second) = (invite(own), invite(own));
+    let person = account("Ana");
+    {
+        let mut admin = admin.lock().unwrap();
+        admin.invites = vec![first.clone()];
+        admin.accounts = vec![person.clone()];
+        admin.settings = Some(workspace_settings(Some(30), None, None));
+    }
+    for part in [invites, accounts, settings] {
+        soon("the collection", rig.live.open_admin(part))
+            .await
+            .unwrap();
+    }
+    let model = rig.model();
+    let shown = model.admin.read_times(invites).shown;
+    assert_eq!(model.admin.may_unban(person.id), Some(false));
+
+    // The permissions of the account in the workspace change. Until the snapshot the
+    // settings of the workspace are withdrawn (ADR 0748); the server collections stay.
+    admin.lock().unwrap().invites.push(second.clone());
+    let snapshot = rig.http.hold("/snapshot");
+    let snapshots = rig.http.count("/snapshot");
+    rig.set_snapshot(90, |_| {});
+    peer.event(
+        41,
+        Event::PermissionsChanged {
+            workspace_id: Some(workspace_id),
+        },
+    )
+    .await;
+    rig.when("the reload", |view| view.status == StreamStatus::Connecting)
+        .await;
+    asked(&rig, "/snapshot", snapshots + 1).await;
+    let model = rig.model();
+    assert_eq!(model.admin.state(settings), CollectionState::Loading);
+    assert_eq!(model.admin.invites, Collection::Loaded(vec![first.clone()]));
+
+    // The new state shows the values of before while the collections are read again. A
+    // withdrawn collection has none to show, and the flags of the account state nothing.
+    // Every request after the snapshot waits.
+    let reads = rig.http.hold("/api/v1/");
+    snapshot.add_permits(1);
+    peer.serve().await;
+    asked(&rig, "/invites", 2).await;
+    asked(&rig, "/accounts", 2).await;
+    asked(&rig, "/archive-period", 2).await;
+    let model = rig
+        .model_when("the new state", |model| model.cursor.position == 90)
+        .await;
+    assert_eq!(model.admin.invites, Collection::Loaded(vec![first.clone()]));
+    assert_eq!(model.admin.read_times(invites).shown, shown);
+    assert_eq!(
+        model.admin.accounts,
+        Collection::Loaded(vec![person.clone()])
+    );
+    assert_eq!(model.admin.may_unban(person.id), None);
+    assert_eq!(model.admin.state(settings), CollectionState::Loading);
+
+    reads.add_permits(64);
+    let model = rig
+        .model_when("the reads of the new state", |model| {
+            [invites, accounts, settings].iter().all(|part| {
+                let times = model.admin.read_times(*part);
+                model.admin.state(*part) == CollectionState::Loaded && times.shown == times.started
+            })
+        })
+        .await;
+    let mut newest_first = vec![first, second];
+    newest_first.sort_by_key(|held| std::cmp::Reverse(held.id));
+    assert_eq!(model.admin.invites, Collection::Loaded(newest_first));
+    assert_eq!(model.admin.may_unban(person.id), Some(false));
 }

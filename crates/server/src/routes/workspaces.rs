@@ -443,15 +443,15 @@ pub async fn remove_member(
         access
             .require_above_workspace_account(connection, workspace_id, account_id)
             .await?;
-        let removed =
-            sqlx::query("delete from workspace_members where workspace_id=$1 and account_id=$2")
-                .bind(workspace_id)
-                .bind(account_id)
-                .execute(&mut *connection)
-                .await?;
-        if removed.rows_affected() == 0 {
-            return Err(ApiError::not_found());
-        }
+        super::departures::end_membership(
+            connection,
+            &app,
+            now,
+            access.account_id,
+            account_id,
+            workspace_id,
+        )
+        .await?;
         super::moderation_notices::record(
             connection,
             now,
@@ -459,50 +459,6 @@ pub async fn remove_member(
             Some(workspace_id),
             junto_protocol::account::ModerationNoticeKind::WorkspaceRemoved,
             recipient_message.as_deref(),
-        )
-        .await?;
-        super::invites::withdraw_workspace(
-            connection,
-            now,
-            access.account_id,
-            account_id,
-            workspace_id,
-        )
-        .await?;
-        if let Some(member) = crate::calls::store::member_of(connection, account_id, true).await?
-            && let Some(call) = crate::calls::store::call(
-                connection,
-                crate::calls::store::By::Id(member.call_id),
-                true,
-            )
-            .await?
-            && matches!(call.place, junto_protocol::call::CallPlace::Channel { workspace_id: id, .. } if id == workspace_id)
-        {
-            crate::calls::entry::leave(
-                connection,
-                now,
-                account_id,
-                None,
-                junto_protocol::call::LeaveReason::AccessEnded,
-            )
-            .await?;
-            app.calls.mark(call.room.as_str());
-        }
-        store::contact_changed(connection, now, account_id).await?;
-        events::permissions_changed(
-            connection,
-            now,
-            events::log::Affected::Account(account_id),
-            Some(workspace_id),
-        )
-        .await?;
-        events::publish(
-            connection,
-            now,
-            &Event::WorkspaceMemberRemoved {
-                workspace_id,
-                account_id,
-            },
         )
         .await?;
         audit::record(

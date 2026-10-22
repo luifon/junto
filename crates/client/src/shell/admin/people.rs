@@ -241,6 +241,9 @@ fn account_marks(row: &AccountLine) -> Vec<&'static str> {
         AccountStatus::Active => {}
         AccountStatus::Banned => marks.push(txt::BANNED),
         AccountStatus::Removed => marks.push(txt::REMOVED),
+        AccountStatus::Inactive => marks.push(txt::INACTIVE),
+        AccountStatus::Deleted => marks.push(txt::DELETED),
+        AccountStatus::Unknown => marks.push(txt::UNKNOWN_STATE),
     }
     marks
 }
@@ -857,8 +860,12 @@ impl Shell {
                         }),
                     ));
                 }
-                // A removed account takes no action: its state is the mark of the row.
-                if row.status != AccountStatus::Removed {
+                // A removed or deleted account takes no action: its state is the mark of
+                // the row.
+                if !matches!(
+                    row.status,
+                    AccountStatus::Removed | AccountStatus::Deleted | AccountStatus::Unknown
+                ) {
                     content = content.child(row_action(
                         ("account-remove", account_id.as_uuid().as_u128() as u64),
                         txt::REMOVE,
@@ -901,7 +908,10 @@ impl Shell {
                             }),
                         ));
                     }
-                    AccountStatus::Removed => {}
+                    AccountStatus::Removed
+                    | AccountStatus::Inactive
+                    | AccountStatus::Deleted
+                    | AccountStatus::Unknown => {}
                 }
                 if let Some(recover) = row.recover {
                     content = content.child(row_action(

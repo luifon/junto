@@ -31,7 +31,7 @@ async fn an_unknown_path_and_a_wrong_method_get_the_error_body() {
 
     for (method, path) in [
         (Method::PUT, "/api/server"),
-        (Method::DELETE, "/api/v1/account"),
+        (Method::PUT, "/api/v1/account"),
         (Method::GET, "/api/v1/join"),
         (Method::POST, "/api/v1/audit-log"),
     ] {

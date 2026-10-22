@@ -21,7 +21,7 @@ use crate::{
     error::{ApiError, ApiResult},
     events,
     extract::{ApiJson, ApiPath, ApiQuery, Bearer},
-    messages::{self, Place},
+    messages::{self, Place, Purpose},
     read,
     state::AppState,
     transact, validate,
@@ -31,8 +31,9 @@ pub(super) async fn root(
     connection: &mut PgConnection,
     access: &Access,
     id: MessageId,
+    purpose: Purpose,
 ) -> ApiResult<(Place, Message)> {
-    let (place, message) = messages::get(connection, access, id).await?;
+    let (place, message) = messages::get(connection, access, id, purpose).await?;
     let authored_root: bool =
         sqlx::query_scalar("select call_id is null and readers is null from messages where id=$1")
             .bind(id)
@@ -59,12 +60,12 @@ pub async fn history(
     let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        let (place, root) = root(connection, &access, id).await?;
+        let (place, root) = root(connection, &access, id, Purpose::Read).await?;
         super::search::read_rate(&app, &access, &mut counted)?;
         let ascending = page.after.is_some() || page.after_message.is_some();
         let cursor = page.after_message.or(page.before_message);
         let position = if let Some(cursor) = cursor {
-            let (_, message) = messages::get(connection, &access, cursor).await?;
+            let (_, message) = messages::get(connection, &access, cursor, Purpose::Read).await?;
             if message.thread_root != Some(id) {
                 return Err(ApiError::not_found());
             }
@@ -134,7 +135,7 @@ pub async fn fork(
     let mut counted = false;
     let channel = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (place, _) = root(connection, &access, id).await?;
+        let (place, _) = root(connection, &access, id, Purpose::Change).await?;
         place.require_open()?;
         let MessagePlace::Channel {
             workspace_id,
@@ -268,7 +269,7 @@ pub async fn fork(
         }
         events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel.id)
             .await?;
-        let (_, source_root) = messages::get(connection, &access, id).await?;
+        let (_, source_root) = messages::get(connection, &access, id, Purpose::Change).await?;
         messages::changed(
             connection,
             now,
@@ -368,7 +369,7 @@ pub async fn read_state(
     let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        root(connection, &access, id).await?;
+        root(connection, &access, id, Purpose::Read).await?;
         super::search::read_rate(&app, &access, &mut counted)?;
         messages::threads::state(connection, access.account_id, id).await
     })
@@ -385,7 +386,7 @@ pub async fn mark_read(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        root(connection, &access, id).await?;
+        root(connection, &access, id, Purpose::Read).await?;
         rate(&app, &access, &mut counted)?;
         let state = messages::threads::state(connection, access.account_id, id).await?;
         if body.position > state.latest {
@@ -444,7 +445,7 @@ pub async fn set_follow(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        root(connection, &access, id).await?;
+        root(connection, &access, id, Purpose::Read).await?;
         rate(&app, &access, &mut counted)?;
         let choice = Some(body.following);
         messages::threads::set_follow(connection, app.now(), &access, id, choice).await?;
@@ -464,7 +465,7 @@ pub async fn remove_follow(
     let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        root(connection, &access, id).await?;
+        root(connection, &access, id, Purpose::Read).await?;
         rate(&app, &access, &mut counted)?;
         messages::threads::set_follow(connection, app.now(), &access, id, None).await
     })?;
