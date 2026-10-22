@@ -685,13 +685,16 @@ fn a_program_that_the_client_opens_is_started_by_the_shell_outside_its_tree() {
 
 /// The start of the name of each scheme that a process of this test program registers.
 const SCHEME_PREFIX: &str = "junto-test-open-";
+/// The number of schemes that this process has registered.
+static REGISTERED: AtomicUsize = AtomicUsize::new(0);
 
-/// A scheme of links that only this process of the test program uses, registered for the
-/// account with a command that starts the fixture. The registration is removed when the value
-/// is dropped. A process that is killed drops nothing, so its name holds the number and the
-/// creation time of the process (`junto-test-open-<number>-<creation time>`), and each
-/// registration first removes the schemes of processes that no longer run. The keys are
-/// volatile: Windows also removes them when the account logs off.
+/// A scheme of links that only one registration of this process of the test program uses,
+/// registered for the account with a command that starts the fixture. The registration is
+/// removed when the value is dropped. A process that is killed drops nothing, so its name holds
+/// the number and the creation time of the process and the number of the registration
+/// (`junto-test-open-<number>-<creation time>-<registration>`), and each registration first
+/// removes the schemes of processes that no longer run. The keys are volatile: Windows also
+/// removes them when the account logs off.
 struct Scheme {
     name: String,
     key: String,
@@ -702,7 +705,8 @@ impl Scheme {
         Self::remove_ended();
         let process = std::process::id();
         let created = registry::creation_time(process).unwrap();
-        let name = format!("{SCHEME_PREFIX}{process}-{created}");
+        let registration = REGISTERED.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{SCHEME_PREFIX}{process}-{created}-{registration}");
         let key = format!(r"Software\Classes\{name}");
         registry::set(&key, None, "URL:Junto test");
         registry::set(&key, Some("URL Protocol"), "");
@@ -718,10 +722,9 @@ impl Scheme {
             let Some(process) = name.strip_prefix(SCHEME_PREFIX) else {
                 continue;
             };
-            let (number, created) = match process.split_once('-') {
-                Some((number, created)) => (number, created.parse::<u64>().ok()),
-                None => (process, None),
-            };
+            let mut parts = process.splitn(3, '-');
+            let number = parts.next().unwrap_or_default();
+            let created = parts.next().and_then(|created| created.parse::<u64>().ok());
             let Ok(number) = number.parse::<u32>() else {
                 continue;
             };
@@ -746,9 +749,9 @@ impl Drop for Scheme {
 #[allow(unsafe_code)]
 mod registry {
     use windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_SET_VALUE, REG_OPTION_VOLATILE,
-        REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW, RegOpenKeyExW,
-        RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
+        REG_OPTION_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW,
+        RegOpenKeyExW, RegSetValueExW,
     };
     use windows::core::{HSTRING, PCWSTR, PWSTR};
 
@@ -823,6 +826,36 @@ mod registry {
             let _ = RegCloseKey(opened);
         }
         names
+    }
+
+    /// Whether a key of the account is volatile: below a volatile key Windows refuses to create
+    /// a key that is not volatile (`ERROR_CHILD_MUST_BE_VOLATILE`).
+    pub fn is_volatile(key: &str) -> bool {
+        use windows::Win32::Foundation::ERROR_CHILD_MUST_BE_VOLATILE;
+        let child = format!(r"{key}\junto-test-volatile");
+        let mut opened = HKEY::default();
+        // SAFETY: the string outlives the call; a key opened here is closed before the return.
+        let created = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(child.as_str()),
+                None,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                None,
+                &mut opened,
+                None,
+            )
+        };
+        if created.is_ok() {
+            // SAFETY: the key was opened by the call above.
+            let _ = unsafe { RegCloseKey(opened) };
+            remove(&child);
+            return false;
+        }
+        assert_eq!(created, ERROR_CHILD_MUST_BE_VOLATILE, "{child}");
+        true
     }
 
     /// Sets a text value of a volatile key of the account, the default value without a name.
@@ -987,22 +1020,35 @@ fn a_registration_removes_the_schemes_of_test_processes_that_no_longer_run() {
         format!("{SCHEME_PREFIX}other"),
     ];
     let removed = [
-        format!("{SCHEME_PREFIX}{number}-{}", created - 1),
-        format!("{SCHEME_PREFIX}{}-{created}", ended.id()),
+        format!("{SCHEME_PREFIX}{number}-{}-0", created - 1),
+        format!("{SCHEME_PREFIX}{}-{created}-0", ended.id()),
         format!("{SCHEME_PREFIX}{}", ended.id()),
     ];
     let _keys = Keys(kept.iter().chain(&removed).cloned().collect());
     for name in kept.iter().chain(&removed) {
         registry::set(&format!(r"Software\Classes\{name}"), None, "URL:Junto test");
     }
-    Scheme::remove_ended();
+    let scheme = Scheme::register("unused");
     let classes = registry::classes();
-    for name in &kept {
+    for name in kept.iter().chain([&scheme.name]) {
         assert!(classes.contains(name), "{name} was removed");
     }
     for name in &removed {
         assert!(!classes.contains(name), "{name} was not removed");
     }
+    // Windows removes the keys of the scheme also at a logoff of the account.
+    for key in [
+        scheme.key.clone(),
+        format!(r"{}\shell\open\command", scheme.key),
+    ] {
+        assert!(registry::is_volatile(&key), "{key} is not volatile");
+    }
+    let name = scheme.name.clone();
+    drop(scheme);
+    assert!(
+        !registry::classes().contains(&name),
+        "{name} stayed after the drop"
+    );
     drop(running.stdin.take());
     running.wait().unwrap();
 }

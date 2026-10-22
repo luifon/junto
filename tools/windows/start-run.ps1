@@ -202,16 +202,28 @@ function Test-Recorded([string]$File) {
     $created -ne 0 -and [JuntoCi.Native]::CreationTime($number) -eq $created
 }
 
+# The processes of this script that start the run, found by their command line (the command of
+# tools/ci/ci.sh). This reads the command lines of all powershell.exe processes, about 1 s.
+function Get-RunStart([string]$Name) {
+    Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+        Where-Object { $_.CommandLine -like "*start-run.ps1 -Directory * -Run $Name" }
+}
+
 # Whether the run of a folder no longer runs. With the file "process": when the recorded
 # console host no longer runs. Without it (the host was not found, or the start ended before it
-# wrote the file): when the start recorded in the file "start" no longer runs and the task of the
-# run does not run. The start is read first: it runs until the task runs. A folder without
-# "start" is a run whose start has not begun, or a run of an earlier version of this script.
+# wrote the file): when the start no longer runs and the task of the run does not run. The start
+# is the process recorded in the file "start"; a folder without "start" is a run whose start has
+# not yet written it, or a run of an earlier version of this script, and its start is found by
+# its command line. The start is read first: it runs until the task runs.
 function Test-RunEnded([string]$Folder, [string]$Name) {
     $process = Join-Path $Folder 'process'
     if (Test-Path $process) { return -not (Test-Recorded $process) }
     $start = Join-Path $Folder 'start'
-    if ((Test-Path $start) -and (Test-Recorded $start)) { return $false }
+    if (Test-Path $start) {
+        if (Test-Recorded $start) { return $false }
+    } elseif (Get-RunStart $Name) {
+        return $false
+    }
     $task = Get-RunTask $Name
     return -not ($task -and $task.State -eq 'Running')
 }

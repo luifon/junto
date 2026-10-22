@@ -246,6 +246,30 @@ class Ended(unittest.TestCase):
             finally:
                 child.communicate("end\n", timeout=60)
 
+    # A start that has not yet written the file "start" (during the start of PowerShell and the
+    # compile of its native functions), or a start of an earlier version of the script, is found
+    # by its command line.
+    def test_a_run_whose_start_has_not_recorded_itself_is_found_by_its_command_line(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            here = run_folder(temporary)
+            # A process with the command line of the start of the run RUN, which runs until a line
+            # is written to its input. The script is named without its folder, so that its path
+            # has no quotes in the command line.
+            (here / "start-run.ps1").write_text("[Console]::In.ReadLine() | Out-Null\n")
+            start = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                      "-File", "start-run.ps1", "-Directory", temporary, "-Run", RUN],
+                                     cwd=here, stdin=subprocess.PIPE, text=True)
+            try:
+                result = functions(temporary, f"function Get-RunTask {{ }}; Test-RunEnded $here {RUN}")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "False")
+                result = script(temporary, "-Ended")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            finally:
+                start.communicate("end\n", timeout=60)
+            result = script(temporary, "-Ended")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 # The start with the commands that change scheduled tasks replaced, so that the tests create none.
 # The replaced registration and start write their call to tasks.log of the run.
@@ -300,7 +324,8 @@ class Start(unittest.TestCase):
     def test_a_start_removes_only_the_tasks_of_ended_runs(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             runs = pathlib.Path(temporary) / "runs"
-            for name in ("finished-run", "starting-run", "ended-run", "ended-start-run", "running-run"):
+            for name in ("finished-run", "starting-run", "earlier-start-run", "ended-run", "ended-start-run",
+                         "running-run"):
                 (runs / name).mkdir(parents=True)
             (runs / "finished-run" / "finished").write_text("0\n")
             # This process of the tests stands for the start that runs.
@@ -308,11 +333,15 @@ class Start(unittest.TestCase):
             (runs / "ended-run" / "process").write_text("4 1\n")  # the System process has another creation time
             (runs / "ended-start-run" / "start").write_text("4 1\n")
             (runs / "running-run" / "started").write_text("")
-            names = ["finished-run", "gone-run", "starting-run", "ended-run", "ended-start-run", "running-run", RUN]
+            # A start of an earlier version of the script writes no file "start"; it is found by its
+            # command line, here replaced.
+            names = ["finished-run", "gone-run", "starting-run", "earlier-start-run", "ended-run", "ended-start-run",
+                     "running-run", RUN]
             listed = ", ".join(f"[pscustomobject]@{{ TaskName = '{name}' }}" for name in names)
             result = functions(temporary, f"function Get-ScheduledTask {{ @({listed}) }}; "
                                "function Unregister-ScheduledTask { [CmdletBinding(SupportsShouldProcess)] param($TaskPath, $TaskName) "
                                "\"removed $TaskName\" }; "
+                               "function Get-RunStart([string]$Name) { if ($Name -eq 'earlier-start-run') { 'start' } }; "
                                "function Get-RunTask([string]$Name) { "
                                "[pscustomobject]@{ State = $(if ($Name -eq 'running-run') { 'Running' } else { 'Ready' }) } }; "
                                "Remove-EndedTask")
