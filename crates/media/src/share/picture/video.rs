@@ -1,7 +1,7 @@
 //! A picture of a camera or of the watched share: planes of brightness and colour at the
 //! size at which it is drawn. The form that a window draws is made from the planes when the
 //! window asks for it (ADR 0774).
-use super::{PictureFrame, convert, fit, mirror, planes};
+use super::{PictureFrame, convert, fit, mirror, planes_at};
 use livekit::webrtc::video_frame::{BoxVideoFrame, I420Buffer, VideoBuffer};
 use std::sync::{Arc, OnceLock};
 
@@ -56,16 +56,45 @@ impl VideoPicture {
         if source.0 == 0 || source.1 == 0 {
             return None;
         }
-        let mut planes = planes(buffer)?;
         let (width, height) = fit(source, bound);
-        if (width, height) != source {
-            planes = planes.scale(width as i32, height as i32);
-        }
+        let planes = planes_at(buffer, (width, height))?;
         Some(Self::of(
             Planes::Own(planes),
             (width, height),
             mirrored,
             source,
+        ))
+    }
+
+    /// The picture of BGRA pixels in planes at their size, as a share gives it. For the
+    /// screen tool and the tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn of_bgra(frame: &PictureFrame) -> Option<Self> {
+        let (width, height) = (frame.width, frame.height);
+        if width == 0 || height == 0 || frame.bgra.len() != (width * height * 4) as usize {
+            return None;
+        }
+        let mut planes = I420Buffer::new(width, height);
+        let (stride_y, stride_u, stride_v) = planes.strides();
+        let (y, u, v) = planes.data_mut();
+        // The call library names a format by its bytes from the highest to the lowest.
+        livekit::webrtc::native::yuv_helper::argb_to_i420(
+            &frame.bgra,
+            width * 4,
+            y,
+            stride_y,
+            u,
+            stride_u,
+            v,
+            stride_v,
+            width as i32,
+            height as i32,
+        );
+        Some(Self::of(
+            Planes::Own(planes),
+            (width, height),
+            false,
+            frame.source,
         ))
     }
 

@@ -14,7 +14,8 @@
  * limitations under the License.
  *
  * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
- * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message. `i420_scale`
+ * is added.
  */
 
 #pragma once
@@ -365,6 +366,31 @@ static void argb_to_nv12(const uint8_t* src_argb,
   THROW_ON_ERROR(libyuv::ARGBToNV12(src_argb, src_stride_argb, dst_y,
                                     dst_stride_y, dst_uv, dst_stride_uv, width,
                                     height));
+}
+
+// Modified: added. Scales planes that the caller holds, without a copy of them, with the
+// filter of webrtc::I420Buffer::ScaleFrom.
+static void i420_scale(const uint8_t* src_y,
+                       int src_stride_y,
+                       const uint8_t* src_u,
+                       int src_stride_u,
+                       const uint8_t* src_v,
+                       int src_stride_v,
+                       int src_width,
+                       int src_height,
+                       uint8_t* dst_y,
+                       int dst_stride_y,
+                       uint8_t* dst_u,
+                       int dst_stride_u,
+                       uint8_t* dst_v,
+                       int dst_stride_v,
+                       int dst_width,
+                       int dst_height) {
+  THROW_ON_ERROR(libyuv::I420Scale(src_y, src_stride_y, src_u, src_stride_u, src_v,
+                                   src_stride_v, src_width, src_height, dst_y,
+                                   dst_stride_y, dst_u, dst_stride_u, dst_v,
+                                   dst_stride_v, dst_width, dst_height,
+                                   libyuv::kFilterBox));
 }
 
 }  // namespace livekit_ffi

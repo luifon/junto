@@ -98,4 +98,44 @@ mod tests {
         assert_eq!(span.pipeline_samples(), 1920);
         assert!(PREFERRED_RATES.iter().all(|rate| converts(*rate)));
     }
+
+    /// The chains of the capture, the playout and the shared sound convert one step at a
+    /// time; each step must give the samples of its time in both directions.
+    #[test]
+    fn the_resampler_gives_a_whole_step_for_every_rate_that_the_pipeline_converts() {
+        use livekit::webrtc::native::audio_resampler::AudioResampler;
+        let mut resampler = AudioResampler::default();
+        let mut checked = 0;
+        for rate in (LOWEST_RATE..=HIGHEST_RATE).step_by(25) {
+            let Some(span) = Span::of(rate) else {
+                continue;
+            };
+            // The playout gives two channels to a device of one or two; the capture and the
+            // shared sound keep their channels.
+            for (from, to) in [(1, 1), (2, 2), (2, 1)] {
+                let pipeline = vec![0i16; span.pipeline_samples() * from];
+                let to_device = resampler.remix_and_resample(
+                    &pipeline,
+                    span.pipeline_samples() as u32,
+                    from as u32,
+                    span.pipeline_rate(),
+                    to as u32,
+                    span.device_rate(),
+                );
+                assert_eq!(to_device.len(), span.device_samples * to, "{rate} Hz");
+                let device = vec![0i16; span.device_samples * from];
+                let to_pipeline = resampler.remix_and_resample(
+                    &device,
+                    span.device_samples as u32,
+                    from as u32,
+                    span.device_rate(),
+                    to as u32,
+                    span.pipeline_rate(),
+                );
+                assert_eq!(to_pipeline.len(), span.pipeline_samples() * to, "{rate} Hz");
+            }
+            checked += 1;
+        }
+        assert!(checked > 1000, "{checked}");
+    }
 }

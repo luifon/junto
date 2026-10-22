@@ -40,11 +40,12 @@ use crate::audio::{
     Processing, SAMPLE_RATE,
 };
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
-use crate::share::picture::PictureFrame;
+use crate::share::picture::VideoPicture;
 use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
 
 mod camera;
 mod order;
+mod sent;
 use camera::{OwnCamera, RemoteCamera};
 mod share;
 pub(crate) mod statistics;
@@ -323,12 +324,12 @@ pub struct Engine {
     stops: Arc<Stops>,
     #[cfg(test)]
     asked: Arc<Mutex<Vec<Asked>>>,
-    camera_pictures: watch::Receiver<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>>,
+    camera_pictures: watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>>,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<EngineState>,
     levels: watch::Receiver<Levels>,
     main_picture: watch::Receiver<Option<MainPicture>>,
-    small_pictures: watch::Receiver<HashMap<ShareId, Arc<PictureFrame>>>,
+    small_pictures: watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>>,
 }
 
 impl Engine {
@@ -364,9 +365,7 @@ impl Engine {
     pub(crate) fn gate(&self) -> Arc<CaptureLink> {
         self.link.clone()
     }
-    pub fn camera_pictures(
-        &self,
-    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>> {
+    pub fn camera_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>> {
         self.camera_pictures.clone()
     }
     /// Starts the connection on `runtime`. The result is in [`Engine::state`].
@@ -490,7 +489,7 @@ impl Engine {
     }
 
     /// A small picture of each share of the call, made again about once a second.
-    pub fn small_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<PictureFrame>>> {
+    pub fn small_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>> {
         self.small_pictures.clone()
     }
 
@@ -674,7 +673,7 @@ struct Actor {
     camera_generation: u64,
     camera_views: Option<HashMap<ShareId, (u32, u32)>>,
     remote_cameras: HashMap<TrackSid, RemoteCamera>,
-    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>>,
+    camera_pictures: watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>,
     runtime: tokio::runtime::Handle,
     options: EngineOptions,
     config: VoiceConfig,

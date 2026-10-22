@@ -57,6 +57,9 @@ junto-client-core = { path = "../client-core" }
 # The call implementation on all systems (ADR 0701). The audio processing module, the
 # resampler and the audio sources and sinks of its WebRTC library carry the sound.
 livekit = { version = "=0.9.4", default-features = false, features = ["native", "rustls-tls-native-roots"] }
+# The scale of received planes where they are (ADR 0774), and in the tests the exception
+# bridge (ADR 0733): functions of the vendored WebRTC wrapper.
+webrtc-sys = "=0.3.48"
 # The sound devices (ADR 0733).
 cpal = "0.18.2"
 # The bounded hand-over of captured sound on Linux and Windows (ADR 0751, ADR 0706).
@@ -129,8 +132,6 @@ tokio = { workspace = true, features = ["io-util", "test-util"] }
 tracing-subscriber = { workspace = true }
 url = "2"
 uuid = { workspace = true }
-# The exception bridge of the vendored WebRTC wrapper (ADR 0733).
-webrtc-sys = "=0.3.48"
 
 # The workspace forbids unsafe code. This crate denies it and allows it only in modules
 # that call the platform APIs: macOS permissions and capture, the Windows capture, and

@@ -179,4 +179,45 @@ mod tests {
         processor.capture(&mut frame);
         assert_eq!(frame, before);
     }
+
+    /// The power of one frequency in a frame (the Goertzel filter).
+    fn power(frame: &[i16], hz: f32) -> f64 {
+        let coefficient =
+            2.0 * (std::f64::consts::TAU * f64::from(hz) / f64::from(SAMPLE_RATE)).cos();
+        let (mut one, mut two) = (0.0, 0.0);
+        for sample in frame {
+            let next = f64::from(*sample) + coefficient * one - two;
+            two = one;
+            one = next;
+        }
+        one * one + two * two - coefficient * one * two
+    }
+
+    /// A module that works at 32 kHz inside resamples the microphone and loses everything
+    /// above 16 kHz. The microphone and the pipeline are at 48 kHz (ADR 0733).
+    #[test]
+    fn the_module_keeps_the_microphone_above_16_khz() {
+        let processor = Processor::new(Processing {
+            echo_cancellation: true,
+            noise_suppression: false,
+            automatic_gain: false,
+        });
+        let (mut sent, mut kept) = (0.0, 0.0);
+        for index in 0..300 {
+            let mut played = vec![0i16; FRAME_SAMPLES * PLAYOUT_CHANNELS];
+            processor.render(&mut played);
+            let mut frame = tone(index, 18_000.0, 0.25);
+            let before = frame.clone();
+            processor.capture(&mut frame);
+            if index >= 200 {
+                sent += power(&before, 18_000.0);
+                kept += power(&frame, 18_000.0);
+            }
+        }
+        let change = 10.0 * (kept / sent).log10();
+        assert!(
+            change > -6.0,
+            "the tone of 18 kHz changed by {change:.1} dB"
+        );
+    }
 }

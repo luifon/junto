@@ -147,37 +147,10 @@ impl super::Shell {
     /// and is drawn for them.
     pub(crate) fn show_cameras(
         &mut self,
-        frames: super::prepared::ConvertedCameras,
+        frames: super::prepared::ConvertedPictures,
         cx: &mut gpui::Context<Self>,
     ) -> bool {
-        let mut released = Vec::new();
-        let mut changed = false;
-        self.cameras.retain(|id, (old, picture)| {
-            let keep = frames
-                .get(id)
-                .is_some_and(|(frame, _)| std::sync::Arc::ptr_eq(frame, old));
-            if !keep && let Some(image) = picture.image() {
-                released.push(image.clone());
-            }
-            changed |= !keep;
-            keep
-        });
-        for (id, (frame, converted)) in frames {
-            if !self.cameras.contains_key(&id)
-                && let Some(picture) =
-                    converted.and_then(super::prepared::ConvertedPicture::picture)
-            {
-                self.cameras.insert(id, (frame, picture));
-                changed = true;
-            }
-        }
-        for image in released {
-            crate::images::release(image, cx);
-        }
-        if changed {
-            cx.notify();
-        }
-        changed
+        super::prepared::take(&mut self.cameras, frames, cx)
     }
 }
 
@@ -212,13 +185,7 @@ impl super::Shell {
     }
 }
 
-pub(crate) type ShownCameras = std::collections::HashMap<
-    junto_media::engine::ShareId,
-    (
-        std::sync::Arc<junto_media::share::picture::VideoPicture>,
-        crate::ui::DrawnPicture,
-    ),
->;
+pub(crate) type ShownCameras = super::prepared::Shown;
 
 #[cfg(test)]
 mod tests {

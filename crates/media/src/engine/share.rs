@@ -20,7 +20,7 @@ use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
-use livekit::webrtc::video_frame::{BoxVideoFrame, VideoBuffer, VideoFrame, VideoRotation};
+use livekit::webrtc::video_frame::{BoxVideoFrame, VideoBuffer};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
@@ -32,7 +32,7 @@ use super::order::in_order;
 use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, Stops, account_of};
 use crate::audio::playout::{MAX_GAIN, SourceHandle};
 use crate::audio::{Format, PLAYOUT_CHANNELS, SAMPLE_RATE};
-use crate::share::picture::{self, PictureFrame, VideoPicture};
+use crate::share::picture::VideoPicture;
 use crate::share::sound::{SHARE_CHANNELS, SHARE_FRAME_SAMPLES, SoundChain, WAITING_FRAMES};
 use crate::share::{
     CaptureError, CaptureRequest, CaptureSink, CaptureStream, ShareKind, read_track_name,
@@ -110,14 +110,14 @@ pub(super) fn picture_encoding(size: (u32, u32), frame_rate: u32) -> VideoEncodi
 
 /// A lower simulcast layer would permit bandwidth adaptation to replace readable text.
 pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublishOptions {
-    TrackPublishOptions {
+    super::sent::encoded(TrackPublishOptions {
         source: TrackSource::Screenshare,
         video_encoding: Some(picture_encoding(size, frame_rate)),
         simulcast: false,
         simulcast_layers: None,
         degradation_preference: Some(DegradationPreference::MaintainResolution),
         ..TrackPublishOptions::default()
-    }
+    })
 }
 
 /// A share in the call of this device.
@@ -208,7 +208,7 @@ pub fn watched(choice: Option<ShareId>, own: bool, others: &[AccountId]) -> Opti
 #[derive(Clone)]
 pub(super) struct Pictures {
     pub main: Arc<watch::Sender<Option<MainPicture>>>,
-    pub small: Arc<watch::Sender<HashMap<ShareId, Arc<PictureFrame>>>>,
+    pub small: Arc<watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>>,
 }
 
 impl Pictures {
@@ -229,7 +229,7 @@ impl Pictures {
             }));
         }
         if small_at.is_none_or(|at| at.elapsed() >= SMALL_INTERVAL)
-            && let Some(frame) = picture::convert(buffer.as_ref(), SMALL_PICTURE)
+            && let Some(frame) = VideoPicture::new(buffer.as_ref(), false, SMALL_PICTURE)
         {
             *small_at = Some(Instant::now());
             self.small.send_modify(|small| {
@@ -280,10 +280,7 @@ impl ShareSink {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         if let Some(source) = source {
-            source.capture_frame(&VideoFrame::new(
-                VideoRotation::VideoRotation0,
-                buffer.clone(),
-            ));
+            source.capture_frame(&super::sent::frame(buffer.clone()));
         }
     }
 
@@ -1348,7 +1345,7 @@ mod tests {
         rate: u64,
         count: u64,
     ) -> impl futures_util::Stream<Item = BoxVideoFrame> + Unpin {
-        use livekit::webrtc::video_frame::I420Buffer;
+        use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
         Box::pin(futures_util::stream::unfold(0u64, move |sent| async move {
             if sent == count {
                 return std::future::pending().await;

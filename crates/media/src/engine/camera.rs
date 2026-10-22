@@ -6,7 +6,7 @@ use crate::share::picture::VideoPicture;
 use livekit::options::{VideoEncoding, VideoPreset};
 use livekit::prelude::{LocalVideoTrack, RemoteTrackPublication, RemoteVideoTrack};
 use livekit::track::TrackDimension;
-use livekit::webrtc::video_frame::{BoxVideoFrame, VideoBuffer, VideoFrame, VideoRotation};
+use livekit::webrtc::video_frame::{BoxVideoFrame, VideoBuffer};
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution, native::NativeVideoSource};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,10 +29,7 @@ impl CameraSink for Sink {
             return;
         }
         if let Some(source) = &*self.source.lock().unwrap_or_else(PoisonError::into_inner) {
-            source.capture_frame(&VideoFrame::new(
-                VideoRotation::VideoRotation0,
-                frame.clone(),
-            ));
+            source.capture_frame(&super::sent::frame(frame.clone()));
         }
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(frame);
     }
@@ -276,11 +273,11 @@ impl Actor {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
         {
-            source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, frame));
+            source.capture_frame(&super::sent::frame(frame));
         }
         camera.publication = Publication::Publishing;
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
-        let options = TrackPublishOptions {
+        let options = super::sent::encoded(TrackPublishOptions {
             source: TrackSource::Camera,
             video_encoding: Some(VideoEncoding {
                 max_bitrate: 1_700_000,
@@ -291,7 +288,7 @@ impl Actor {
                 VideoPreset::new(640, 360, 500_000, 30.0),
             ]),
             ..TrackPublishOptions::default()
-        };
+        });
         let (participant, internal) = (room.local_participant(), self.internal.clone());
         self.runtime.spawn(async move {
             let result = match tokio::time::timeout(

@@ -15,6 +15,8 @@
 // Modified: this file differs from the published livekit 0.9.4. The publisher negotiation
 // queue decides with the state of `negotiation_queue.rs` (`NegotiationQueue`,
 // `publisher_negotiation_needed`, `queue_negotiation`, `execute_negotiation_with_retry`).
+// A closed session sends no offer, and an offer that the close ended is no failure
+// (`offer_publisher`).
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -2513,9 +2515,8 @@ impl SessionInner {
 
             self.negotiation_queue.waiting_for_answer.store(true, Ordering::Release);
 
-            if let Err(err) = self.publisher_pc.create_and_send_offer(OfferOptions::default()).await
-            {
-                log::error!("failed to negotiate the publisher: {:?}", err);
+            // Modified: a closed session waits for no answer.
+            if !self.offer_publisher().await {
                 self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
             } else {
                 log::debug!("offer sent, waiting for answer...");
@@ -2553,12 +2554,31 @@ impl SessionInner {
 
             *debouncer = Some(debouncer::debounce(PUBLISHER_NEGOTIATION_FREQUENCY, async move {
                 log::debug!("negotiating the publisher (debounced)");
-                if let Err(err) =
-                    session.publisher_pc.create_and_send_offer(OfferOptions::default()).await
-                {
-                    log::error!("failed to negotiate the publisher: {:?}", err);
-                }
+                // Modified: through `offer_publisher`.
+                session.offer_publisher().await;
             }));
+        }
+    }
+
+    /// Modified: added. Creates and sends an offer of the publisher; true when it was sent. The
+    /// close of a room unpublishes its tracks, which asks for a negotiation, and then closes the
+    /// peer connections while that negotiation can still run. A closed session sends no
+    /// offer, and an offer that fails after the close is the end of the negotiation.
+    async fn offer_publisher(&self) -> bool {
+        if self.closed.load(Ordering::Acquire) {
+            log::debug!("the session is closed: the publisher is not negotiated");
+            return false;
+        }
+        match self.publisher_pc.create_and_send_offer(OfferOptions::default()).await {
+            Ok(()) => true,
+            Err(err) if self.closed.load(Ordering::Acquire) => {
+                log::debug!("the session closed during a negotiation of the publisher: {:?}", err);
+                false
+            }
+            Err(err) => {
+                log::error!("failed to negotiate the publisher: {:?}", err);
+                false
+            }
         }
     }
 

@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. The module processes
+ * at 48 kHz inside.
  */
 
 #pragma once
@@ -39,6 +42,9 @@ struct AudioProcessingConfig {
     config.gain_controller2.adaptive_digital.enabled = gain_controller_enabled;
     config.high_pass_filter.enabled = high_pass_filter_enabled;
     config.noise_suppression.enabled = noise_suppression_enabled;
+    // Modified: the default of this WebRTC version is 32 kHz, which resamples a stream of
+    // 48 kHz on the way in and out and removes everything above 16 kHz.
+    config.pipeline.maximum_internal_processing_rate = 48000;
     return config;
   }
 };

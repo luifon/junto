@@ -2,6 +2,7 @@
 //! that measures what it would hear, and the calls of the client.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use junto_client_core::ServerHandle;
@@ -380,17 +381,56 @@ impl Person {
     }
 }
 
+/// The failed negotiations of a publisher that the call library logged in this test program.
+static NEGOTIATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn negotiation_failures() -> usize {
+    NEGOTIATION_FAILURES.load(Ordering::SeqCst)
+}
+
+/// Counts the errors of the call library that say that a negotiation of the publisher failed.
+struct NegotiationFailures;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for NegotiationFailures {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        if message.0.contains("failed to negotiate the publisher") {
+            NEGOTIATION_FAILURES.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Keep the engine's progress and shutdown logs with the test that owns its threads.
 fn log_into_test_output() {
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let level = std::env::var("JUNTO_LOG_LEVEL")
             .ok()
             .and_then(|level| level.parse::<tracing::Level>().ok())
             .unwrap_or(tracing::Level::INFO);
-        let _ = tracing_subscriber::fmt()
-            .with_test_writer()
-            .with_max_level(level)
+        let _ = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_test_writer()
+                    .with_filter(LevelFilter::from_level(level)),
+            )
+            .with(NegotiationFailures.with_filter(LevelFilter::ERROR))
             .try_init();
     });
 }

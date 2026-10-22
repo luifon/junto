@@ -213,6 +213,8 @@ pub struct PlayoutChain {
     format: Option<Format>,
     /// Samples in the format of the device that the device has not asked for yet.
     ready: VecDeque<f32>,
+    /// One step in the format of the device after a conversion.
+    converted: Vec<i16>,
 }
 
 impl PlayoutChain {
@@ -223,6 +225,7 @@ impl PlayoutChain {
             resampler: AudioResampler::default(),
             format: None,
             ready: VecDeque::new(),
+            converted: Vec::new(),
         }
     }
 
@@ -250,14 +253,20 @@ impl PlayoutChain {
                 if format.sample_rate == SAMPLE_RATE && carried == PLAYOUT_CHANNELS {
                     blocks
                 } else {
-                    self.resampler.remix_and_resample(
-                        blocks,
-                        span.pipeline_samples() as u32,
-                        PLAYOUT_CHANNELS as u32,
-                        span.pipeline_rate(),
-                        carried as u32,
-                        span.device_rate(),
-                    )
+                    // A step gives the device the samples of its time whatever the resampler
+                    // returns, so each pass of the loop adds to `ready`.
+                    self.converted.clear();
+                    self.converted
+                        .extend_from_slice(self.resampler.remix_and_resample(
+                            blocks,
+                            span.pipeline_samples() as u32,
+                            PLAYOUT_CHANNELS as u32,
+                            span.pipeline_rate(),
+                            carried as u32,
+                            span.device_rate(),
+                        ));
+                    self.converted.resize(span.device_samples * carried, 0);
+                    &self.converted
                 };
             for frame in converted.chunks_exact(carried) {
                 self.ready
