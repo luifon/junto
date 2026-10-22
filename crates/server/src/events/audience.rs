@@ -194,8 +194,6 @@ pub struct Seen {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "to", rename_all = "snake_case")]
 pub enum Audience {
-    /// Keeps the position of a silent ring or empty notice without delivering it.
-    Suppressed,
     /// The affected member, and accounts that currently see the workspace.
     WorkspaceMembership {
         workspace_id: WorkspaceId,
@@ -514,8 +512,7 @@ impl Audience {
             | Self::Channel { workspace_id, .. }
             | Self::DeletedChannel { workspace_id, .. }
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
-            Self::Suppressed
-            | Self::Notification { .. }
+            Self::Notification { .. }
             | Self::ActiveAccounts
             | Self::Listed { .. }
             | Self::DeletedWorkspace { .. }
@@ -739,12 +736,6 @@ impl Audience {
     /// Whether a writer may state this audience for `event`.
     pub fn fits(&self, event: &Event) -> bool {
         match (event, self) {
-            (
-                Event::CallInvited { .. }
-                | Event::CallInvitationResolved { .. }
-                | Event::NotificationChanged { .. },
-                Self::Suppressed,
-            ) => true,
             (
                 Event::NotificationChanged { message_id },
                 Self::Notification {
@@ -1053,7 +1044,6 @@ pub fn receives<'a>(
     };
     let workspace = audience.workspace_id().and_then(standing);
     match audience {
-        Audience::Suppressed => false,
         Audience::WorkspaceMembership { account_id, .. } => {
             (*account_id == recipient.account_id && allows(Request::OwnAccount))
                 || workspace.is_some_and(|w| allows(Request::ViewWorkspace(&w.scope)))

@@ -2,9 +2,6 @@
 //! source `packaging/icon/junto.svg` by resvg: the PNG pictures of the Linux icon theme, the
 //! macOS icon file, the Windows icon file and the icon resource of the Windows program.
 
-use resvg::tiny_skia::{Pixmap, Transform};
-use resvg::usvg;
-
 /// The source of every rendering: the rounded square with the margin of the macOS icon grid.
 pub const SVG: &str = include_str!("../../../packaging/icon/junto.svg");
 
@@ -47,8 +44,11 @@ pub const LARGEST: u32 = 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "render")]
     #[error("the SVG source of the icon is not valid: {0}")]
-    Source(#[from] usvg::Error),
+    Source(#[from] resvg::usvg::Error),
+    #[error("this build of junto-icon has no renderer: the build needs its feature `render`")]
+    NoRenderer,
     #[error("an icon picture has a side of 1 to {LARGEST} pixels, not {0}")]
     Size(u32),
     #[error("the PNG picture of {0} pixels was not encoded: {1}")]
@@ -75,40 +75,79 @@ impl Picture {
     }
 }
 
-fn pixmap(size: u32) -> Result<Pixmap, Error> {
-    if !(1..=LARGEST).contains(&size) {
-        return Err(Error::Size(size));
+/// The part of the crate that uses resvg. Without the feature `render` every rendering fails
+/// with [`Error::NoRenderer`] (ADR 0756).
+#[cfg(feature = "render")]
+mod renderer {
+    use resvg::tiny_skia::{Pixmap, Transform};
+    use resvg::usvg;
+
+    use super::{Error, LARGEST, Picture};
+
+    fn pixmap(size: u32) -> Result<Pixmap, Error> {
+        if !(1..=LARGEST).contains(&size) {
+            return Err(Error::Size(size));
+        }
+        let tree = usvg::Tree::from_str(super::SVG, &usvg::Options::default())?;
+        let mut pixmap = Pixmap::new(size, size).ok_or(Error::Size(size))?;
+        let scale = size as f32 / tree.size().width();
+        resvg::render(
+            &tree,
+            Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
+        Ok(pixmap)
     }
-    let tree = usvg::Tree::from_str(SVG, &usvg::Options::default())?;
-    let mut pixmap = Pixmap::new(size, size).ok_or(Error::Size(size))?;
-    let scale = size as f32 / tree.size().width();
-    resvg::render(
-        &tree,
-        Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-    Ok(pixmap)
+
+    pub fn render(size: u32) -> Result<Picture, Error> {
+        let pixmap = pixmap(size)?;
+        let rgba = pixmap
+            .pixels()
+            .iter()
+            .flat_map(|pixel| {
+                let color = pixel.demultiply();
+                [color.red(), color.green(), color.blue(), color.alpha()]
+            })
+            .collect();
+        Ok(Picture { size, rgba })
+    }
+
+    pub fn png(size: u32) -> Result<Vec<u8>, Error> {
+        pixmap(size)?
+            .encode_png()
+            .map_err(|error| Error::Png(size, error.to_string()))
+    }
+
+    pub fn premultiplied(size: u32) -> Result<Vec<u8>, Error> {
+        Ok(pixmap(size)?.take())
+    }
+}
+
+#[cfg(not(feature = "render"))]
+mod renderer {
+    use super::{Error, Picture};
+
+    pub fn render(_: u32) -> Result<Picture, Error> {
+        Err(Error::NoRenderer)
+    }
+
+    pub fn png(_: u32) -> Result<Vec<u8>, Error> {
+        Err(Error::NoRenderer)
+    }
+
+    pub fn premultiplied(_: u32) -> Result<Vec<u8>, Error> {
+        Err(Error::NoRenderer)
+    }
 }
 
 /// The icon rendered at `size` by `size` pixels.
 pub fn render(size: u32) -> Result<Picture, Error> {
-    let pixmap = pixmap(size)?;
-    let rgba = pixmap
-        .pixels()
-        .iter()
-        .flat_map(|pixel| {
-            let color = pixel.demultiply();
-            [color.red(), color.green(), color.blue(), color.alpha()]
-        })
-        .collect();
-    Ok(Picture { size, rgba })
+    renderer::render(size)
 }
 
 /// The icon rendered at `size` by `size` pixels, as a PNG picture.
 pub fn png(size: u32) -> Result<Vec<u8>, Error> {
-    pixmap(size)?
-        .encode_png()
-        .map_err(|error| Error::Png(size, error.to_string()))
+    renderer::png(size)
 }
 
 /// The macOS icon file: an entry for each line of [`ICNS`].
@@ -117,7 +156,7 @@ pub fn icns() -> Result<Vec<u8>, Error> {
     for (kind, size, encoding) in ICNS {
         let picture = match encoding {
             Encoding::Png => png(size)?,
-            Encoding::Argb => argb(&pixmap(size)?),
+            Encoding::Argb => argb(&renderer::premultiplied(size)?),
         };
         entries.extend_from_slice(kind);
         entries.extend_from_slice(&length(8 + picture.len()).to_be_bytes());
@@ -129,11 +168,11 @@ pub fn icns() -> Result<Vec<u8>, Error> {
     Ok(file)
 }
 
-fn argb(picture: &Pixmap) -> Vec<u8> {
+/// The `ARGB` entry of premultiplied RGBA pixels, row by row from the top.
+fn argb(premultiplied: &[u8]) -> Vec<u8> {
     let mut data = b"ARGB".to_vec();
     for channel in [3, 0, 1, 2] {
-        let values: Vec<u8> = picture
-            .data()
+        let values: Vec<u8> = premultiplied
             .as_chunks::<4>()
             .0
             .iter()

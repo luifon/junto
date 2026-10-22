@@ -1199,6 +1199,47 @@ async fn rule_e11_a_deletion_inside_an_export_removes_it() {
     drop(desk.attachments);
 }
 
+/// The person who deletes a message reads the same positions whether the deletion removes
+/// the export of another account or none (ADR 0010, ADR 0011).
+#[tokio::test]
+async fn rule_e11_a_deletion_shows_its_author_nothing_of_the_exports_it_removes() {
+    let mut seen = Vec::new();
+    for exported in [false, true] {
+        let desk = Desk::open().await;
+        let server = &desk.server;
+        let inside = send(server, &desk.owner, &desk.channel, "inside").await;
+        let export = if exported {
+            let export = requested(server, &desk.exporter, desk.channel.id).await;
+            build(server).await;
+            Some(export)
+        } else {
+            None
+        };
+        let before = server.snapshot(&desk.owner).await.cursor;
+        let mut stream = server.stream(&desk.owner).await;
+        stream.subscribe(Level::Full, Some(before)).await;
+        server
+            .delete(&desk.owner, &format!("/api/v1/messages/{}", inside.id))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let after = server.snapshot(&desk.owner).await.cursor;
+        let received: Vec<u64> = server
+            .traffic(&desk.owner, &mut stream)
+            .await
+            .into_iter()
+            .map(|(id, _)| id - before.position)
+            .collect();
+        assert!(!received.is_empty());
+        seen.push((received, after.position - before.position));
+        if let Some(export) = export {
+            export_reply(server, &desk.exporter, export.id)
+                .await
+                .error(ErrorCode::NotFound);
+        }
+    }
+    assert_eq!(seen[0], seen[1]);
+}
+
 #[tokio::test]
 async fn rule_e12_the_requester_removes_an_export() {
     let desk = Desk::open().await;

@@ -82,22 +82,18 @@ async fn read_cursor(
     account: AccountId,
     clock: &dyn crate::clock::Clock,
 ) -> Result<Option<HeaderValue>, sqlx::Error> {
-    let (first, last): (Option<i64>, Option<i64>) = sqlx::query_as(
-        "select nullif(current_setting('junto.event_first', true), '')::bigint,
-                nullif(current_setting('junto.event_cursor', true), '')::bigint",
+    let change: Option<i64> = sqlx::query_scalar(
+        "select nullif(current_setting('junto.event_cursor', true), '')::bigint",
     )
     .fetch_one(&mut *connection)
     .await?;
-    let Some(last) = last else {
+    let Some(change) = change else {
         return Ok(None);
     };
-    let first =
-        first.ok_or_else(|| sqlx::Error::Protocol("event receipt has no first position".into()))?;
     let mut read =
         crate::database::begin_on_connection(connection, crate::database::Mode::ReadOnly).await?;
     let result =
-        crate::events::delivery::last_receivable(&mut read, account, first, last, clock.now())
-            .await;
+        crate::events::delivery::last_receivable(&mut read, account, change, clock.now()).await;
     read.commit().await?;
     let cursor = result.map_err(|error| {
         sqlx::Error::Protocol(format!("receipt delivery decision failed: {error:?}"))

@@ -170,9 +170,7 @@ fn the_run_length_code_repeats_runs_and_copies_the_other_values() {
 
 #[test]
 fn argb_rounds_half_channel_values_up() {
-    let mut picture = Pixmap::new(1, 1).unwrap();
-    picture.data_mut().copy_from_slice(&[57, 54, 49, 98]);
-    let data = argb(&picture);
+    let data = argb(&[57, 54, 49, 98]);
     assert_eq!(&data[..4], b"ARGB");
     assert_eq!(&data[4..], &[0, 98, 0, 148, 0, 141, 0, 128]);
 }

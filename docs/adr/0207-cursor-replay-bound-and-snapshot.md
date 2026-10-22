@@ -37,8 +37,8 @@ What `resync` means:
 What positions tell a recipient:
 
 - Positions are the same for every recipient (ADR 0010). A recipient learns the positions of the events that it receives, of the cursors of `subscribed` and `checkpoint`, and of a snapshot.
-- From them it can tell how many positions the server used in a span of time. That number contains the events that it did not receive and the positions of transactions that failed.
-- It cannot tell which of those positions are events, of which type or class they are, whom they are for, or which workspace or channel they concern.
+- From them it can tell how many positions the server used in a span of time. That number contains the changes that it did not receive and the positions of transactions that failed.
+- It cannot tell which of those positions are changes, how many events a change recorded, of which type or class they are, whom they are for, or which workspace or channel they concern (ADR 0010, ADR 0011).
 - A `checkpoint` is sent only when the connection has read the log to its end, and then carries the newest position. It is the same for both levels.
 - The answers `unknown_cursor` and `too_far_behind` tell nothing more: the first depends on the epoch and the newest position, the second on the number of positions that the log keeps and on the events that the account may receive.
 
@@ -77,4 +77,4 @@ Change of level:
 - The bound of the kept log counts retention units, whoever they are for. A connection whose cursor predates the stored trim boundary loads a snapshot. Every route that records an event for a request of one account has a limit of requests, so one account uses a bounded number of positions per minute: message changes (ADR 0408), the changes of the own profile and of the names of the own devices (ADR 0119), and the requests of calls (ADR 0509).
 - After a restore of an older backup the epoch changes (ADR 0010), every cursor is unknown, and every client loads a snapshot.
 
-The retention bound counts units: a single event, or a message event immediately followed by its notification event. A pair has a unique stored parent link and is removed together. The default 5,000 units therefore retain the same number of ordinary messages as before notifications reserved positions in every mode, with at most 10,000 physical rows after maintenance. Other events still consume one unit each. Replay limits count the rows eligible for the connection, excluding suppressed events and notices addressed to others before applying the bound; final authorization remains at delivery. Global positions and the trimmed cursor boundary keep their existing meaning.
+The retention bound counts units: a single event, or a message event immediately followed by its notification event. A pair has a unique stored parent link and is removed together. The default 5,000 units therefore retain 5,000 ordinary messages whether or not they have notices, with at most 10,000 physical rows after maintenance. Other events still consume one unit each. Replay limits count the rows eligible for the connection, excluding notices addressed to others before applying the bound; final authorization remains at delivery. A message and its notice are written by one change and share its position (ADR 0010); the trimmed cursor boundary is the position of a change, and every row of that change is removed with it.

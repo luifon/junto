@@ -369,13 +369,14 @@ async fn publish_after(
              not $4 or not notification_quiet(account_id,$5)")
         .bind(notice_id).bind(accounts).bind(background).bind(alert).bind(now)
         .execute(&mut *connection).await?.rows_affected();
-    let audience = if inserted == 0 {
-        events::audience::Audience::Suppressed
-    } else {
-        events::audience::Audience::Notification {
-            message_id: id,
-            notice_id,
-        }
+    // A message without a recipient of its notice records no notice. The change of the
+    // message has one position either way (ADR 0011).
+    if inserted == 0 {
+        return Ok(());
+    }
+    let audience = events::audience::Audience::Notification {
+        message_id: id,
+        notice_id,
     };
     events::log::record_with_parent(
         connection,

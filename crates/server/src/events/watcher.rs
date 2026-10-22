@@ -18,6 +18,7 @@ const PAGE: i64 = 500;
 struct Arrival {
     id: uuid::Uuid,
     position: i64,
+    ordinal: i32,
     class: String,
     addressed_to: Option<AccountId>,
     revalidates: Option<AccountId>,
@@ -29,23 +30,28 @@ struct Arrival {
 /// Reads new events and wakes the connections of their recorded recipients. Current
 /// authorization is still checked by delivery. The first call covers a racing subscription.
 pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
-    let Some(mut seen) = seen else {
+    let Some(seen) = seen else {
         let head = read!(app.unattended(), |connection| {
             Ok(log::state(connection).await?.head)
         })?;
         app.streams.wake(&Arrivals::everything());
         return Ok(head);
     };
+    // The rows after the whole change at `seen`, read in pages by position and ordinal; a
+    // page can end inside a change.
+    let mut after = (seen, i32::MAX);
     loop {
         let (rows, receivers) = read!(app.unattended(), |connection| {
             let rows: Vec<Arrival> = sqlx::query_as(
-                "select id, position, class, audience_account_id as addressed_to,
+                "select id, position, ordinal, class, audience_account_id as addressed_to,
                         revalidates_account_id as revalidates, audience->>'to' as audience_kind,
                         audience->>'low_account_id' as low, audience->>'high_account_id' as high
-                 from events where position > $1 order by position limit $2",
+                 from events where (position, ordinal) > ($1, $3)
+                 order by position, ordinal limit $2",
             )
-            .bind(seen)
+            .bind(after.0)
             .bind(PAGE)
+            .bind(after.1)
             .fetch_all(&mut *connection)
             .await?;
             let notices: Vec<_> = rows
@@ -63,9 +69,9 @@ pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
             Ok((rows, receivers))
         })?;
         let Some(last) = rows.last() else {
-            return Ok(seen);
+            return Ok(after.0);
         };
-        seen = last.position;
+        after = (last.position, last.ordinal);
         let full_page = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= PAGE;
         let mut arrivals = Arrivals::default();
         for (account, background) in receivers {
@@ -77,7 +83,7 @@ pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
         }
         for row in rows {
             match row.audience_kind.as_deref() {
-                Some("suppressed" | "notification") => continue,
+                Some("notification") => continue,
                 Some("direct") => {
                     if let (Some(low), Some(high)) = (
                         row.low.and_then(|id| id.parse::<AccountId>().ok()),
@@ -102,7 +108,7 @@ pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
         }
         app.streams.wake(&arrivals);
         if !full_page {
-            return Ok(seen);
+            return Ok(after.0);
         }
     }
 }

@@ -398,21 +398,50 @@ pub(crate) async fn record_with_parent(
     Ok(())
 }
 
+/// The bits of a position of the stream below the position of its change (ADR 0010).
+const INDEX_BITS: u32 = 16;
+
+/// The index that stands after every event of a change.
+pub const END_OF_CHANGE: u64 = (1 << INDEX_BITS) - 1;
+
+/// The position of the stream of the event with `index` among the events of the change at
+/// `change` that a connection receives: the position of the change times 2^16, plus the index
+/// (ADR 0010). [`END_OF_CHANGE`] is the position after the whole change.
+pub fn stream_position(change: i64, index: u64) -> ApiResult<u64> {
+    let change = u64::try_from(change).map_err(|error| ApiError::internal(&error))?;
+    if index > END_OF_CHANGE {
+        return Err(ApiError::internal(
+            &"an event index above the end of its change",
+        ));
+    }
+    change
+        .checked_mul(1 << INDEX_BITS)
+        .map(|position| position | index)
+        .ok_or_else(|| ApiError::internal(&"a change position above the positions of the stream"))
+}
+
+/// The change of a position of the stream. A client that holds a position has applied every
+/// change up to this one: a change reaches it in one message (ADR 0011).
+pub fn change_of(position: u64) -> i64 {
+    i64::try_from(position >> INDEX_BITS).unwrap_or(i64::MAX)
+}
+
 /// The state of the log in one snapshot of the database.
 #[derive(Debug, Clone, Copy)]
 pub struct LogState {
     pub epoch: StreamEpoch,
-    /// Every position at or below this one has been removed from the log.
+    /// Every change at or below this position has been removed from the log.
     pub trimmed_through: i64,
-    /// The highest position that the log has reached.
+    /// The highest position of a change that the log has reached.
     pub head: i64,
 }
 
 impl LogState {
-    pub fn cursor(&self, position: i64) -> ApiResult<Cursor> {
+    /// The cursor after every event of the change at `change`.
+    pub fn cursor(&self, change: i64) -> ApiResult<Cursor> {
         Ok(Cursor {
             epoch: self.epoch,
-            position: u64::try_from(position).map_err(|error| ApiError::internal(&error))?,
+            position: stream_position(change, END_OF_CHANGE)?,
         })
     }
 }

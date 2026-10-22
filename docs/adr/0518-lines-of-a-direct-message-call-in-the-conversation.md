@@ -30,7 +30,7 @@ The caller cannot tell a mute:
 
 - The lines, their order and their times are the same for an account that muted the conversation, for an account in its quiet time and for an account that did not answer. A ring for such an account is the silent invitation of ADR 0515; it ends with the same line as every ring.
 - What differs is stored for the other account only: its notice, its unread sign and its read position. The caller reads none of them.
-- The notice of the other account records one event that only that account receives. The number of positions that the log of events used is therefore one higher for an account that is notified, as it is one higher for an invitation that is not silent. ADR 0207 states what a recipient can read from positions: on a server without other activity, a caller who counts positions can tell the two cases. No rule of this record hides that number.
+- The notice of the other account records one event that only that account receives. It is an event of the same change as the line, and a change has one position whatever events it records (ADR 0010), so the caller reads the same positions for an account that is notified and for one that is not, as for an invitation that is or is not silent.
 - An account that muted the conversation receives the lines as it receives a message of a muted conversation: the event `message_changed`, without a notice and without an unread sign. This narrows the sentence of ADR 0515 that the muted account learns nothing of the call: it is not rung and gets no invitation, and it reads the line in the conversation.
 
 Storage:

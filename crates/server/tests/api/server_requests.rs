@@ -15,12 +15,17 @@ fn cursor(reply: &Reply) -> Option<Cursor> {
     .unwrap()
 }
 
+/// The cursor position after the newest change of the log (ADR 0010).
 async fn last_position(server: &TestServer) -> u64 {
     let n: i64 = sqlx::query_scalar("select max(position) from events")
         .fetch_one(&server.db)
         .await
         .unwrap();
-    n as u64
+    junto_server::events::log::stream_position(n, junto_server::events::log::END_OF_CHANGE).unwrap()
+}
+
+fn change(position: u64) -> i64 {
+    junto_server::events::log::change_of(position)
 }
 
 #[tokio::test]
@@ -54,8 +59,8 @@ async fn mutation_receipts_match_committed_events_and_noops() {
     let receipt = cursor(&reply).unwrap();
     let traffic = server.traffic(&owner, &mut stream).await;
     assert_eq!(
-        receipt.position,
-        traffic.iter().map(|(position, _)| *position).max().unwrap()
+        change(receipt.position),
+        change(traffic.iter().map(|(position, _)| *position).max().unwrap())
     );
     assert!(traffic.iter().any(|(p,e)| *p <= receipt.position && matches!(e, Event::AccountServerRolesChanged{account_id,..} if *account_id == guest.account_id)));
     assert_eq!(cursor(&server.put_empty(&owner, &assignment).await), None);
@@ -1208,7 +1213,7 @@ async fn role_flags_are_private_and_permission_changes_publish_and_audit() {
             .ok::<Value>(StatusCode::OK);
         let events: Vec<Value> =
             sqlx::query_scalar("select payload from events where position>$1 order by position")
-                .bind(before as i64)
+                .bind(change(before))
                 .fetch_all(&server.db)
                 .await
                 .unwrap();
@@ -1313,8 +1318,8 @@ async fn a_get_receipt_survives_a_deferred_commit_failure_and_a_later_eventless_
     assert_eq!(reply.json::<Value>().await.unwrap()["attempts"], 2);
     assert_eq!(receipt.position, last_position(&server).await);
     assert_eq!(
-        receipt.position,
-        before + 2,
+        change(receipt.position),
+        change(before) + 2,
         "the failed commit assigned a position, which was rolled back"
     );
     serving.abort();
@@ -1470,10 +1475,11 @@ async fn receipt_of_moderation(operation: &str) {
         assert!(matches!(traffic[0].1, Event::AccountStatusChanged { .. }));
         let receipt = cursor(&reply).unwrap();
         assert_eq!(
-            receipt.position, traffic[0].0,
+            change(receipt.position),
+            change(traffic[0].0),
             "{operation}, private state={rich}"
         );
-        relative.push(receipt.position - before);
+        relative.push(change(receipt.position) - change(before));
     }
     assert_eq!(
         relative,
@@ -1713,7 +1719,7 @@ async fn a_failed_receipt_read_does_not_refuse_a_committed_change() {
     .unwrap();
     assert_eq!(level, "all");
     let count: i64 = sqlx::query_scalar("select count(*) from events where position>$1")
-        .bind(before as i64)
+        .bind(change(before))
         .fetch_one(&server.db)
         .await
         .unwrap();

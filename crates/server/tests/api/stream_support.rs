@@ -84,6 +84,8 @@ pub struct Stream {
     pub epoch: StreamEpoch,
     /// Every text frame that the server sent, in order.
     pub raw: Vec<String>,
+    /// The events of a change that [`Stream::event`] has not returned yet.
+    queued: std::collections::VecDeque<(u64, Event)>,
 }
 
 /// What a stream yields next.
@@ -247,25 +249,25 @@ impl TestServer {
         name_path: &[&str],
         count: usize,
     ) {
-        sqlx::query(
-            "insert into events (id, recorded_at, class, kind, audience, payload)
-             select gen_random_uuid(), now(), 'general', $2 ->> 'type', $1,
-                    jsonb_set($2, $3, to_jsonb(lpad(change::text, 8000, '0')))
-             from generate_series(0, $4 - 1) as change
-             order by change",
-        )
-        .bind(sqlx::types::Json(audience))
-        .bind(sqlx::types::Json(payload))
-        .bind(name_path)
-        .bind(i32::try_from(count).unwrap())
-        .execute(&self.db)
-        .await
-        .unwrap();
+        for change in 0..i32::try_from(count).unwrap() {
+            sqlx::query(
+                "insert into events (id, recorded_at, class, kind, audience, payload)
+                 values (gen_random_uuid(), now(), 'general', $2 ->> 'type', $1,
+                         jsonb_set($2, $3, to_jsonb(lpad($4::text, 8000, '0'))))",
+            )
+            .bind(sqlx::types::Json(&audience))
+            .bind(sqlx::types::Json(&payload))
+            .bind(name_path)
+            .bind(change)
+            .execute(&self.db)
+            .await
+            .unwrap();
+        }
     }
 
     /// The positions and the types of the events of the log, in the order of the positions.
     pub async fn log(&self) -> Vec<(i64, String)> {
-        sqlx::query_as("select position, kind from events order by position")
+        sqlx::query_as("select position, kind from events order by position, ordinal")
             .fetch_all(&self.db)
             .await
             .unwrap()
@@ -288,6 +290,7 @@ impl Stream {
             socket,
             epoch: StreamEpoch::generate(),
             raw: Vec::new(),
+            queued: std::collections::VecDeque::new(),
         };
         match stream.next().await {
             Frame::Message(ServerMessage::Hello { epoch, .. }) => stream.epoch = epoch,
@@ -364,11 +367,19 @@ impl Stream {
         }
     }
 
-    /// The next event. Checkpoints are passed over.
+    /// The next event, one at a time from the events of each change. Checkpoints are passed
+    /// over.
     pub async fn event(&mut self) -> (u64, Event) {
         loop {
+            if let Some(event) = self.queued.pop_front() {
+                return event;
+            }
             match self.next().await {
-                Frame::Message(ServerMessage::Event { id, event, .. }) => return (id, event),
+                Frame::Message(ServerMessage::Change { events }) => {
+                    assert!(!events.is_empty(), "a change without events");
+                    self.queued
+                        .extend(events.into_iter().map(|event| (event.id, event.event)));
+                }
                 Frame::Message(ServerMessage::Checkpoint { .. }) => {}
                 other => panic!("expected an event: {other:?}"),
             }
@@ -397,6 +408,17 @@ impl Stream {
                 }
             }
         }
+    }
+
+    /// The cursor after every event of the change at the position `change` of the log.
+    pub fn change_cursor(&self, change: i64) -> Cursor {
+        self.cursor(
+            junto_server::events::log::stream_position(
+                change,
+                junto_server::events::log::END_OF_CHANGE,
+            )
+            .unwrap(),
+        )
     }
 
     pub fn cursor(&self, position: u64) -> Cursor {
