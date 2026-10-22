@@ -398,6 +398,11 @@ impl CommitGate {
         self.losses.store(count, Ordering::SeqCst);
     }
 
+    /// The losses of [`CommitGate::lose_next`] that no transaction has used yet.
+    pub fn losses_left(&self) -> usize {
+        self.losses.load(Ordering::SeqCst)
+    }
+
     fn loses(&self) -> bool {
         self.losses
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {

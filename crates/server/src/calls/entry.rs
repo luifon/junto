@@ -484,8 +484,8 @@ async fn ring(
 /// Takes an account out of the call that it is in. Returns the call that it left. With
 /// `identity`, the account leaves only the place that it holds with that identity: a place
 /// that another device or session of the account took stays. The identity of the seat that
-/// a completed move replaced names the seat that the move gave: the device that was moved
-/// holds both until it reads the outcome (ADR 0511).
+/// a completed move replaced names the seat that the move gave, for as long as that seat
+/// exists: the device that was moved holds both until it reads the outcome (ADR 0511).
 pub async fn leave(
     connection: &mut PgConnection,
     now: OffsetDateTime,

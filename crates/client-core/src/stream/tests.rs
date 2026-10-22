@@ -97,6 +97,20 @@ impl Peer {
         (level, cursor)
     }
 
+    /// Sends a frame at each `every`, as a server does at each heartbeat (ADR 0116), until
+    /// the client lets go of the connection.
+    fn beat(&self, every: Duration) {
+        let pings = self.to_client.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                if pings.send(Incoming::Alive).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
     async fn close(&self, code: u16) {
         let closed = Incoming::Closed { code: Some(code) };
         self.to_client.send(closed).await.unwrap();
@@ -631,30 +645,39 @@ async fn repeated_successful_resyncs_are_rate_limited() {
     let mut rig = rig();
     rig.want(ConnectionLevel::Selected, "jst_one");
     let (mut peer, _, _) = rig.served().await;
+    // A server sends a frame at each heartbeat also while the client waits for a snapshot.
+    peer.beat(Duration::from_secs(25));
     // The server asks for a reload as soon as the client subscribed after each snapshot.
-    let start = Instant::now();
-    let mut installed = Vec::new();
-    while start.elapsed() < Duration::from_secs(300) && installed.len() <= 100 {
+    // The first reload reads at once. Each read after it waits a random time between a half
+    // and the whole of a wait that starts at the first wait of the policy and doubles up to
+    // its longest wait.
+    let policy = StreamPolicy::default();
+    let mut whole = Duration::ZERO;
+    for reload in 0..12 {
         let position = rig.model().cursor.position + 1;
         rig.set_snapshot(position, |_| {});
+        let asked = Instant::now();
         peer.send(&ServerMessage::Resync {
             reason: ResyncReason::TooFarBehind,
         })
         .await;
         rig.model_when("the snapshot", |model| model.cursor.position == position)
             .await;
-        installed.push(start.elapsed());
+        let waited = asked.elapsed();
+        assert!(
+            waited >= whole / 2 && waited <= whole,
+            "reload {reload}: waited {waited:?} of {whole:?}"
+        );
+        whole = if reload == 0 {
+            policy.first_delay
+        } else {
+            whole.saturating_mul(2).min(policy.longest_delay)
+        };
         peer.serve().await;
     }
-    // The first reload reads at once; the reads after it wait, longer each time, up to
-    // the longest wait of the policy.
-    let longest = StreamPolicy::default().longest_delay;
-    assert!(installed.len() <= 14, "{} snapshots", installed.len());
-    for pair in installed.windows(2).skip(8) {
-        assert!(pair[1] - pair[0] >= longest / 2, "{pair:?}");
-    }
+    assert_eq!(whole, policy.longest_delay);
     // A state that stays for the settled time is replaced at once again.
-    tokio::time::sleep(StreamPolicy::default().settled_after).await;
+    tokio::time::sleep(policy.settled_after).await;
     let position = rig.model().cursor.position + 1;
     rig.set_snapshot(position, |_| {});
     let before = Instant::now();
@@ -1067,15 +1090,7 @@ async fn the_client_sends_fewer_messages_in_a_minute_than_the_server_allows() {
     let mut rig = rig();
     rig.want(ConnectionLevel::Background, "jst_one");
     let (mut peer, _, _) = rig.served().await;
-    let pings = peer.to_client.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(25)).await;
-            if pings.send(Incoming::Alive).await.is_err() {
-                return;
-            }
-        }
-    });
+    peer.beat(Duration::from_secs(25));
     let started = Instant::now();
     let mut sent_at = vec![started];
     for round in 0..45 {
@@ -1637,15 +1652,7 @@ async fn a_wait_for_the_next_message_that_has_passed_does_not_keep_the_client_bu
     let mut rig = rig();
     rig.want(ConnectionLevel::Background, "jst_one");
     let (mut peer, _, _) = rig.served().await;
-    let pings = peer.to_client.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(25)).await;
-            if pings.send(Incoming::Alive).await.is_err() {
-                return;
-            }
-        }
-    });
+    peer.beat(Duration::from_secs(25));
     // The messages of one minute are used up, so the next subscribe has a time.
     for round in 0..19 {
         let level = if round % 2 == 0 {
@@ -1914,15 +1921,7 @@ async fn pings_do_not_move_the_time_for_the_hello() {
     rig.want(ConnectionLevel::Selected, "jst_one");
     let mut peer = rig.peer().await;
     let opened = Instant::now();
-    let pings = peer.to_client.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            if pings.send(Incoming::Alive).await.is_err() {
-                return;
-            }
-        }
-    });
+    peer.beat(Duration::from_secs(5));
     assert!(peer.dropped().await);
     assert_eq!(opened.elapsed(), Duration::from_secs(10));
 }
