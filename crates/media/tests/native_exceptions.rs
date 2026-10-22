@@ -35,7 +35,7 @@ fn files(directory: &Path, extensions: &[&str], found: &mut Vec<PathBuf>) {
     }
 }
 
-fn sources(extensions: &[&str]) -> Vec<(String, String)> {
+fn sources(extensions: &[&str]) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
     for directory in ["src", "include"] {
         files(&Path::new(WRAPPER).join(directory), extensions, &mut found);
@@ -46,7 +46,7 @@ fn sources(extensions: &[&str]) -> Vec<(String, String)> {
         .into_iter()
         .map(|path| {
             let text = fs::read_to_string(&path).unwrap();
-            (path.display().to_string(), text)
+            (path, text)
         })
         .collect()
 }
@@ -71,14 +71,16 @@ fn operands(code: &str) -> Vec<&str> {
 fn every_throw_of_the_wrapper_throws_the_exception_that_owns_its_message() {
     let mut other = Vec::new();
     for (path, text) in sources(&["cpp", "h"]) {
-        // The test functions of the bridge throw other values on purpose.
-        if path.ends_with("src/exception.cpp") {
+        // The test functions of the bridge throw other values on purpose. The comparison is by
+        // path components, so that it holds with the separator of every system.
+        if path.ends_with(Path::new("src").join("exception.cpp")) {
             continue;
         }
         for (number, line) in text.lines().enumerate() {
             for operand in operands(code(line)) {
                 let rethrow = operand.starts_with(';');
                 if !rethrow && !operand.starts_with("Exception(") {
+                    let path = path.display();
                     other.push(format!("{path}:{}: {}", number + 1, line.trim()));
                 }
             }
@@ -103,7 +105,7 @@ fn every_bridge_with_a_function_that_can_fail_includes_the_catch_of_the_wrapper(
                 .contains("-> Result<")
         });
         if fails && !text.contains("include!(\"livekit/exception.h\");") {
-            missing.push(path);
+            missing.push(path.display().to_string());
         }
     }
     assert!(

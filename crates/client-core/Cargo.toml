@@ -87,5 +87,7 @@ large_stack_frames = "deny"
 [build-dependencies]
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
+# The icon of the recovery program on Windows (ADR 0756).
+junto-icon = { path = "../icon" }
 serde_json = { workspace = true }
 url = "2"

@@ -22,7 +22,7 @@ The source:
 The renderings:
 
 - The crate `junto-icon` (`crates/icon`) renders the source with resvg in the version that gpui uses, without the features that read fonts and raster pictures. It makes a PNG picture of one size, the macOS icon file, the Windows icon file and a compiled Windows resource file (`.res`). Its program `junto-icon` writes one of these into a new file.
-- No raster is committed. The packaging scripts take the program of the same build: `packaging/bundle.py` as its fourth argument, `packaging/linux.py` with `--icon-tool`; the release scripts build it with the client. The build script of the client has the crate as a build dependency.
+- No raster is committed. The packaging scripts take the program of the same build: `packaging/bundle.py` as its fourth argument, `packaging/linux.py` with `--icon-tool`; the release scripts build it with the client. The build scripts of the client and of the client core have the crate as a build dependency.
 - The standalone macOS signing and update checks build `junto-icon` before assembling a bundle, so they work after a clean build directory and rebuild after a change of the SVG source.
 - The pictures of 16 pixels are reductions of the drawing of 1024 pixels. There is no simplified drawing for small sizes.
 
@@ -31,9 +31,9 @@ macOS (`Contents/Resources/Junto.icns`):
 - Each size of the macOS icon grid from 16 to 512 points at 1x and at 2x, with the types that `iconutil` of macOS writes: `ic04` (16) and `ic05` (32) as `ARGB` with the run-length code of the icon file, and PNG pictures in `ic11` (32), `ic12` (64), `ic07` (128), `ic13` and `ic08` (256), `ic14` and `ic09` (512), `ic10` (1024). With PNG pictures in the types `icp4` and `icp5` instead, `iconutil` did not read them as PNG: the picture of 16 pixels that it wrote back was opaque, with other colours, where the rendering is transparent.
 - The straight colour channels of the ARGB entries are computed from the renderer's premultiplied pixels with integer division and half values rounded up, matching `iconutil`. Floating-point demultiplication can round a half value down; in the rendering of 16 pixels this changes six blue values from 128 to 127.
 
-Windows (the program `junto.exe`):
+Windows (the programs `junto.exe` and `junto-recover.exe`):
 
-- The build script writes a compiled resource file with one icon resource for each of 16, 24, 32, 48, 64 and 256 pixels (numbers 1 to 6) and the icon group number 1 that lists them, in the neutral language, and gives it to the MSVC linker for the program `junto` only. The pictures up to 64 pixels are bitmaps of 32 bits per pixel with the mask of their transparent pixels; the picture of 256 pixels is PNG. `junto-icon ico` writes the same pictures as an icon file.
+- The build script writes a compiled resource file with one icon resource for each of 16, 24, 32, 48, 64 and 256 pixels (numbers 1 to 6) and the icon group number 1 that lists them, in the neutral language, and gives it to the MSVC linker for the program `junto` only. The build script of `junto-client-core` gives the same resource file to the linker for its program `junto-recover`, the recovery program of the package (ADR 0755), so that Explorer shows the icon of Junto for both programs of the installation folder. The other programs of that crate, `junto-cli` and `junto-release`, are not in a package and have no icon. The pictures up to 64 pixels are bitmaps of 32 bits per pixel with the mask of their transparent pixels; the picture of 256 pixels is PNG. `junto-icon ico` writes the same pictures as an icon file.
 - The MSVC linker reads a compiled resource file without the resource compiler of the Windows SDK. A build for another Windows target stops in the build script, because ADR 0753 builds for MSVC only.
 
 Linux (the tarball and the AppImage):
@@ -49,11 +49,11 @@ Checks:
 
 - The tests of `junto-icon`: a rendering of 1024 and of 32 pixels has the colour of the source at a point inside each area of the drawing (each disc alone, each pair, all three, the background), transparent corners and the shadow below the square; each entry of both icon files and of the resource file holds the rendering of its size.
 - The packaging tests: the icon file of a bundle holds the rendering of each entry; on macOS `iconutil` reads all ten sizes; its picture of 64 pixels differs from the rendering by at most one step of a channel, and in its pictures of 16 and 32 pixels the alpha of every pixel and the colour of every opaque pixel do. From an `ARGB` entry `iconutil` writes other colours for pixels that are partly transparent, also when it reads the icon file that it wrote itself from the same pictures; the icon theme of the Linux packages and the script of the menu entry; the Windows icon file; and, where the LLVM linker for Windows programs exists (the Linux build image), a library of resources only that this linker makes from the resource file holds the icon group 1 with each rendering.
-- `packaging/check_linux.py` compares the icon theme of the tarball, of the AppImage and of the installed menu entry, and `.DirIcon`, with the renderings; `packaging/check_windows.py` reads the icon group 1 of `junto.exe` from the ZIP and compares each picture with the rendering. A unit test of the client on Linux decodes the window icon.
+- `packaging/check_linux.py` compares the icon theme of the tarball, of the AppImage and of the installed menu entry, and `.DirIcon`, with the renderings; `packaging/check_windows.py` reads the icon group 1 of `junto.exe` and of `junto-recover.exe` from the ZIP and compares each picture with the rendering. A unit test of the client on Linux decodes the window icon.
 - On macOS a packaging test builds an iconset from the same PNG renderings and runs `iconutil -c icns`. It decodes the run-length channels of `ic04` and `ic05` from both files and compares all four channels at every partly transparent pixel. This compares the stored values directly, before the colour changes of reading an icon file back as PNG. The test states its requirement for macOS and `iconutil` when skipped elsewhere.
 
 ## Consequences
 
 - A change of the design is a change of `packaging/icon/junto.svg`; every package gets the new renderings at its next build, and the tests of the crate state the colours and the areas of the drawing.
-- Every build of the client compiles resvg for its build script, also on macOS, where the script uses nothing of it.
+- Every build of the client and of the client core compiles resvg for their build scripts, also on macOS and Linux, where the script of the client core uses nothing of it.
 - The icon is the project's own work, under the licence of the repository (Apache-2.0).
