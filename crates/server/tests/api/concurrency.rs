@@ -527,6 +527,11 @@ async fn a_login_that_runs_again_stores_one_session_whose_token_works() {
         .open("/api/v1/auth/sessions", &login)
         .await
         .ok(StatusCode::CREATED);
+    assert_eq!(
+        server.gate().losses_left(),
+        0,
+        "the login did not run again"
+    );
     assert_eq!(sessions(owner.device_id).await.unwrap(), before + 1);
     let logged_in = crate::support::Member {
         // A request with the token signs nothing.

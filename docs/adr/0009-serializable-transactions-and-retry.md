@@ -24,7 +24,7 @@ Retry:
 - A transaction that PostgreSQL ends with a serialization failure (SQLSTATE 40001) or a detected deadlock (40P01) is rolled back and run again from its start.
 - A transaction runs at most 8 times. Before each further attempt the server waits a random time; the upper bound of the wait starts at 8 milliseconds, doubles with each attempt and stays at 256 milliseconds.
 - After the eighth loss the request gets the error `busy` with the status 503 and `Retry-After: 1`. Nothing was changed, so the client sends the same request again, a signed request included.
-- The work inside a transaction has no effect outside the database, so running it again is safe. Random codes, session tokens and identifiers may be generated inside the transaction: an attempt that is rolled back leaves none of them, and only the values of the attempt that commits reach the answer. Work with an effect outside the database, such as the count of a rate limit or a mark for the admission check, is done before or after the transaction, or is written so that a further attempt does not repeat its effect.
+- A transaction can run several times, so the work inside it has no effect outside the database that an attempt that is rolled back or a further attempt would make wrong. Values that the work generates, such as random codes, session tokens and identifiers, meet this rule: an attempt that is rolled back leaves none of them, and only the values of the attempt that commits reach the answer. A mark of a room for the admission check (ADR 0509) also meets it: a mark that a further attempt sets again adds nothing, and the mark of an attempt that is rolled back makes the check read a room that did not change, which changes nothing in the room. Work whose effect a further attempt would repeat, such as the count of a rate limit, is done before or after the transaction.
 
 Locks:
 
@@ -68,7 +68,7 @@ Other writers:
 
 Test hook:
 
-- The database object has a gate that can hold one transaction between its work and its commit, or make the next transactions lose at their commit. Only tests arm it (ADR 0904). A first start and a login whose first attempts lose are tested: the first start stores one server state, one workspace with its role and two channels, and the owner code of its result; the login stores one session, and the token of its answer works.
+- The database object has a gate that can hold one transaction between its work and its commit, or make the next transactions lose at their commit. Only tests arm it (ADR 0904). A first start and a login whose first attempts lose are tested: the first start stores one server state, one workspace with its role and two channels, and the owner code of its result; the login stores one session, and the token of its answer works. Each of these tests checks that the transaction used every loss that the test asked for, so it fails when the transaction did not run again.
 
 ## Consequences
 

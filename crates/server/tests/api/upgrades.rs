@@ -798,6 +798,11 @@ async fn a_first_start_that_runs_again_gives_one_consistent_result() {
     let started = bootstrap::start(&database, "Server", time::OffsetDateTime::now_utc())
         .await
         .unwrap();
+    assert_eq!(
+        database.commit_gate().losses_left(),
+        0,
+        "the first start did not run again"
+    );
     let (server_id, workspace_id, hash): (uuid::Uuid, uuid::Uuid, Vec<u8>) =
         sqlx::query_as("select server_id, default_workspace_id, owner_code_hash from server_state")
             .fetch_one(database.pool())

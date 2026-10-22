@@ -658,31 +658,19 @@ impl Shell {
                 };
                 let mut shown = vec![recording_mark_reserved(mark, compact, theme)];
                 if control.may_record {
+                    let (label, help) = stop_action(*stopping);
                     shown.push(
-                        labelled(
-                            Button::new("stop-recording"),
-                            if *stopping {
-                                text::RECORDING_STOPS
-                            } else {
-                                text::STOP
-                            },
-                        )
-                        .icon(Icon::Stop)
-                        .icon_colour(colors.cinnabar)
-                        // Without its label the action tells by its tooltip that the
-                        // recording stops.
-                        .tooltip(if *stopping && compact {
-                            text::RECORDING_STOPS
-                        } else {
-                            text::STOP_RECORDING
-                        })
-                        .accessible_label(text::STOP_RECORDING)
-                        .disabled(*stopping || control.busy)
-                        .selector("stop-recording")
-                        .on_click(self.call_listener(cx, |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.stop_recording(cx));
-                        }))
-                        .into_any_element(),
+                        labelled(Button::new("stop-recording"), label)
+                            .icon(Icon::Stop)
+                            .icon_colour(colors.cinnabar)
+                            .tooltip(help)
+                            .accessible_label(help)
+                            .disabled(*stopping || control.busy)
+                            .selector("stop-recording")
+                            .on_click(self.call_listener(cx, |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| state.stop_recording(cx));
+                            }))
+                            .into_any_element(),
                     );
                 }
                 shown
@@ -1446,6 +1434,16 @@ fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
     recording_mark_in(mark, false, false, theme)
 }
 
+/// The Stop action of a running recording: its label in the wide form, and the text of its
+/// tooltip and accessible label. While the recording stops, the disabled action states it.
+fn stop_action(stopping: bool) -> (&'static str, &'static str) {
+    if stopping {
+        (text::RECORDING_STOPS, text::RECORDING_STOPS)
+    } else {
+        (text::STOP, text::STOP_RECORDING)
+    }
+}
+
 /// The mark of the recording of the call of this device. Its time part is as wide as the
 /// widest text that it shows, "REC starting…" or "REC 00:00:00", in the type of the mark:
 /// both texts are laid out in it without height.
@@ -1697,5 +1695,19 @@ impl Shell {
                 ),
             ))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stop_action_of_a_stopping_recording_states_that_it_stops() {
+        assert_eq!(stop_action(false), (text::STOP, text::STOP_RECORDING));
+        assert_eq!(
+            stop_action(true),
+            (text::RECORDING_STOPS, text::RECORDING_STOPS)
+        );
     }
 }
