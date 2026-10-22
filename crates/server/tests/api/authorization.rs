@@ -469,6 +469,7 @@ async fn world() -> World {
             json!({ "name": "Renamed" }),
             &own,
         ),
+        operation(Method::DELETE, "/api/v1/account", &[], none.clone(), &own),
         operation(
             Method::PUT,
             "/api/v1/account/avatar",
@@ -729,6 +730,15 @@ async fn world() -> World {
             &[&closed_id, &outsider.account_id],
             none.clone(),
             &[(Caller::Plain, NotFound)],
+        ),
+        // A caller leaves only a workspace of which it is a member, whatever its
+        // permissions (ADR 0121): neither caller is a member of this one.
+        operation(
+            Method::POST,
+            "/api/v1/workspaces/{workspace_id}/departure",
+            &[&closed_id],
+            none.clone(),
+            &[(Caller::Plain, NotFound), (Caller::Administrator, NotFound)],
         ),
         operation(
             Method::PUT,
