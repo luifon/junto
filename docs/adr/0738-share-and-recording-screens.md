@@ -15,7 +15,7 @@ Starting a share:
 - The share button of the strip of the call opens a dialog. It lists the screens with their size and the windows with their application and size, and has one control for the sound: no sound, all system sound, or one application. With a window, "this application" is the application of that window; with a screen, the person chooses the application from a list.
 - Nothing is chosen when the dialog opens. "Share" works when a picture and a sound are chosen. The sound "one application" names an application through the picture, so another picture ends that choice and the sound is asked again; "no sound" and "all system sound" hold for every picture. The stored switch "Include system audio" of the design is not built (ADR 0502).
 - Without the permission of the system the dialog states how the person gives it (ADR 0736). On a system without a capture the button is disabled and says so.
-- While the share runs, the button has its "on" form, and a press ends the share. A share that ended by itself is told by a notice in the notice area of the shown view until the person closes it.
+- While the share runs, the button has its "on" form, and a press ends the share. A share that ended by itself is told by a notice in the notice area of the shown view until the person closes it. The notice goes at the press of its close: the calls put the ended share away on their own threads, and the window does not wait for them, so the notice is not drawn again in that time. The notice of a later share that ends is drawn again. Test: the window test `call_notices::the_notice_of_an_ended_share_goes_at_the_click_of_the_person`.
 - The dialog shows no preview pictures: a preview needs a capture before the person has chosen.
 
 The stage with a share:

@@ -35,6 +35,7 @@ use crate::harness::{
 };
 
 mod cameras;
+mod channels;
 mod detached;
 mod direct;
 mod lines;
@@ -887,4 +888,91 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     assert!(!window.shows("recording-indicator"));
     window.click("dismiss-recording-error");
     assert!(!window.shows("recording-error") && window.shows("start-recording"));
+}
+
+/// A microphone that the call cannot use is opened again by "Try again": in the warning of
+/// the call after the system refused the permission, and in the settings of the call after
+/// the device failed.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestAppContext) {
+    use junto_media::audio::AudioError;
+    use junto_media::engine::MicrophoneState;
+    use junto_media::permission::MicrophoneAccess;
+
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    turn_processing_off(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: room(&mut window).id,
+        },
+    };
+    enter(&world, &caller, target);
+    let microphone = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().call)
+            .map(|call| call.microphone)
+    };
+
+    // The system refuses the microphone to the application: the call opens no device, and
+    // the warning of the call states it with "Try again".
+    window.permission.set(MicrophoneAccess::Refused);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the microphone has no permission", |window| {
+        microphone(window) == Some(MicrophoneState::NoPermission)
+            && window.shows("warning-retry-microphone")
+    });
+    assert!(window.sound.opened_inputs().is_empty());
+    // The person allows the microphone in the settings of the system, and tries again.
+    window.permission.set(MicrophoneAccess::Allowed);
+    window.click("warning-retry-microphone");
+    window.until("the microphone runs", |window| {
+        microphone(window) == Some(MicrophoneState::Running)
+    });
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Administrator,
+        "after the retry in the warning",
+    );
+    assert!(!window.shows("warning-retry-microphone"));
+
+    // The device stops, and it cannot be opened again by itself: the settings of the call
+    // state it with "Try again".
+    window.click("call-tab-settings");
+    assert!(!window.shows("retry-microphone"));
+    let opened = window.sound.opened_inputs().len();
+    let unplugged = AudioError::Failed("the device was disconnected".to_owned());
+    window.sound.fail_next_input(unplugged.clone());
+    window.sound.break_input(unplugged);
+    window.until("the microphone has failed", |window| {
+        matches!(microphone(window), Some(MicrophoneState::Failed(_)))
+            && window.shows("retry-microphone")
+    });
+    window.click("retry-microphone");
+    window.until("the microphone runs again", |window| {
+        microphone(window) == Some(MicrophoneState::Running)
+    });
+    assert!(window.sound.opened_inputs().len() > opened);
+    caller.sound.clear_played();
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Administrator,
+        "after the retry in the settings",
+    );
+    assert!(!window.shows("retry-microphone"));
+    window.click("leave-call");
+    world.run(caller.calls.leave());
 }

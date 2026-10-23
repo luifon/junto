@@ -172,6 +172,11 @@ pub struct Known {
     /// The call window draws the call. The main window then shows the direct conversation
     /// of a direct-message call as a conversation, in the whole main area (ADR 0735).
     pub call_in_own_window: bool,
+    /// The person put away the notice of the own share that ended. It stays away until
+    /// the calls state the share in another way (see [`AppState::dismiss_share_notice`]).
+    ///
+    /// [`AppState::dismiss_share_notice`]: super::AppState::dismiss_share_notice
+    pub share_notice_dismissed: bool,
     /// The last recording of the call of this device that failed or that the server
     /// stopped, with the server of that call. The state of a server holds a recording
     /// only while it runs (ADR 0719).
@@ -3612,6 +3617,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .calls
             .call
             .as_ref()
+            .filter(|_| !known.share_notice_dismissed)
             .and_then(|call| match &call.share {
                 ShareState::Ended(error) => Some(error.clone()),
                 _ => None,

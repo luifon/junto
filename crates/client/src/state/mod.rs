@@ -181,6 +181,14 @@ fn shown_levels(levels: &Levels) -> ShownLevels {
 }
 
 /// The quality of a share as the media engine takes it.
+/// The calls state that the own share ended by itself, and have not put it away.
+fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
+    calls
+        .call
+        .as_ref()
+        .is_some_and(|call| matches!(call.share, junto_media::engine::ShareState::Ended(_)))
+}
+
 fn share_quality(voice: &VoiceSettings) -> ShareQuality {
     ShareQuality {
         resolution: match voice.share_resolution {
@@ -847,6 +855,7 @@ impl AppState {
             self.calls.dismiss_closed();
         }
         self.known.media.calls = view;
+        self.known.share_notice_dismissed &= share_ended(&self.shown_calls());
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
             // that its acceptance does not replace this call.
@@ -896,6 +905,15 @@ impl AppState {
     /// Ends the share of this device, and puts away the statement that a share ended.
     pub fn stop_share(&mut self) {
         self.calls.stop_share();
+    }
+
+    /// Puts away the notice of the own share that ended by itself. The notice goes at
+    /// once: the calls put the ended share away on their own threads, and until then they
+    /// still state the end.
+    pub fn dismiss_share_notice(&mut self, cx: &mut Context<Self>) {
+        self.known.share_notice_dismissed = true;
+        self.calls.stop_share();
+        self.changed(cx);
     }
 
     pub fn watch_share(&mut self, share: ShareId) {
@@ -1923,6 +1941,7 @@ impl AppState {
     /// uses it to draw a call without a media server.
     #[cfg(feature = "test-support")]
     pub fn show_media_fixture(&mut self, media: MediaSnapshot, cx: &mut Context<Self>) {
+        self.known.share_notice_dismissed &= share_ended(&media.calls);
         self.media_fixture = Some(media);
         self.changed(cx);
     }

@@ -165,6 +165,9 @@ pub struct Window {
     /// of the system in its place; this one is then unused.
     pub capture: SyntheticCapture,
     pub camera: junto_media::camera::synthetic::SyntheticCamera,
+    /// The microphone permission of the system, which a test changes as a person does in
+    /// the settings of the system. It allows the microphone at the start.
+    pub permission: FixedPermission,
     /// How long the application held the thread of the windows in one piece, in each of
     /// the calls of the harness that run its work.
     pub held: Held,
@@ -288,10 +291,11 @@ fn open_client(
     let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
     let capture = SyntheticCapture::new();
     let camera = junto_media::camera::synthetic::SyntheticCamera::new();
+    let permission = FixedPermission::allowed();
     let media = MediaOptions {
         camera: std::sync::Arc::new(camera.clone()),
         host: std::sync::Arc::new(sound.clone()),
-        permission: std::sync::Arc::new(FixedPermission::allowed()),
+        permission: std::sync::Arc::new(permission.clone()),
         capture: system_capture.unwrap_or_else(|| std::sync::Arc::new(capture.clone())),
         timing: CallTiming::default(),
     };
@@ -312,6 +316,7 @@ fn open_client(
     let shell = built.borrow_mut().take().unwrap();
     let window = Window {
         camera,
+        permission,
         cx: VisualTestContext::from_window(window.into(), cx),
         shell,
         state,
@@ -664,6 +669,7 @@ impl Window {
             sound: self.sound.clone(),
             capture: self.capture.clone(),
             camera: self.camera.clone(),
+            permission: self.permission.clone(),
             held: Held::default(),
             holding: 0,
         };

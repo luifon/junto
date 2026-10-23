@@ -291,3 +291,90 @@ fn a_rendered_camera_stop_never_starts_a_replacement_call(cx: &mut TestAppContex
     window.click("leave-call");
     world.run(caller.calls.leave());
 }
+
+/// The control of the focus: in the grid every tile has one size; with the focus the camera
+/// of the person who speaks is drawn large, and the focus follows the person who speaks.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn the_focus_draws_the_camera_of_the_person_who_speaks_large_and_the_grid_returns(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Camera focus");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    // A steady tone is taken as speech only without the processing of a voice.
+    turn_processing_off(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: room(&mut window).id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let ada = admin.handle.account().unwrap();
+    let own = window.view().person.account_id.unwrap();
+    let speaking = |window: &mut Window, account| {
+        occupants(window).into_iter().any(|occupant| {
+            occupant.account_id == account
+                && matches!(occupant.microphone, Microphone::Open { speaking: true })
+        })
+    };
+    let width = |window: &mut Window, account| {
+        window.settle();
+        window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("call-tile:{account}")))
+            .map(|bounds| f32::from(bounds.size.width))
+    };
+
+    // Both cameras run, and only Ada speaks.
+    window.click("microphone");
+    window.click("call-camera");
+    caller.calls.start_camera(None);
+    window.until("both camera pictures are drawn", |window| {
+        window
+            .shell
+            .read_with(&window.cx, |shell, _| shell.drawn_camera_count() == 2)
+    });
+    window.until("Ada speaks and the window does not", |window| {
+        speaking(window, ada) && !speaking(window, own)
+    });
+    // The grid: both tiles have one size.
+    assert!(width(&mut window, ada).is_some());
+    assert_eq!(width(&mut window, ada), width(&mut window, own));
+
+    // The focus draws the camera of Ada large.
+    window.click("camera-focus");
+    window.until("the camera of Ada is focused", |window| {
+        width(window, ada) > width(window, own)
+    });
+    // The person of the window speaks, and Ada does not: the focus follows.
+    caller.calls.set_muted(true);
+    window.click("microphone");
+    window.until("the window speaks and Ada does not", |window| {
+        speaking(window, own) && !speaking(window, ada)
+    });
+    window.until("the own camera is focused", |window| {
+        width(window, own) > width(window, ada)
+    });
+
+    // The grid again.
+    window.click("camera-focus");
+    window.until("both tiles have one size", |window| {
+        width(window, own).is_some() && width(window, own) == width(window, ada)
+    });
+    window.click("leave-call");
+    world.run(caller.calls.leave());
+}
