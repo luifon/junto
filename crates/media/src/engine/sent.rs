@@ -34,16 +34,16 @@ pub(super) enum Encoder {
 /// Whether this system encodes H.264 with the encoder of its hardware.
 const HARDWARE_H264: bool = cfg!(target_os = "macos");
 
-/// The limits of level 5.2 of H.264, the highest level to which the WebRTC library sets the
-/// encoder of macOS: the blocks of 16 × 16 pixels of a picture, the blocks per second, and
-/// the blocks of the longest side (the square root of 8 times the blocks of a picture).
-const H264_BLOCKS: u64 = 36_864;
-const H264_BLOCKS_PER_SECOND: u64 = 2_073_600;
-const H264_SIDE_BLOCKS: u64 = 543;
+/// The limits of level 3.1 of H.264, the level that the media server answers and at which
+/// WebRTC sends (ADR 0737): the blocks of 16 × 16 pixels of a picture, the blocks per second,
+/// and the blocks of the longest side (the square root of 8 times the blocks of a picture).
+const H264_BLOCKS: u64 = 3_600;
+const H264_BLOCKS_PER_SECOND: u64 = 108_000;
+const H264_SIDE_BLOCKS: u64 = 169;
 
 /// The encoder of an own track of `size` pixels at `frame_rate` pictures per second, on a
-/// system that has a hardware H.264 encoder or not. A picture beyond the limits of H.264 is
-/// encoded in VP8 at its size, not made smaller (ADR 0773).
+/// system that has a hardware H.264 encoder or not. A picture beyond the negotiated level of
+/// H.264 is encoded in VP8 at its size, not made smaller (ADR 0773).
 pub(super) fn encoder(hardware_h264: bool, size: (u32, u32), frame_rate: u32) -> Encoder {
     let blocks = |pixels: u32| u64::from(pixels).div_ceil(16);
     let (wide, high) = (blocks(size.0), blocks(size.1));
@@ -88,6 +88,26 @@ mod tests {
         assert!(second.timestamp_us >= first.timestamp_us);
     }
 
+    /// The frames of the own camera and of the own share are made by [`frame`], so none has
+    /// the capture time zero: the engine outside its test modules makes no frame of its own.
+    #[test]
+    fn every_frame_of_an_own_track_is_made_with_a_capture_time() {
+        for (file, source) in [
+            ("camera.rs", include_str!("camera.rs")),
+            ("share.rs", include_str!("share.rs")),
+            ("engine.rs", include_str!("../engine.rs")),
+        ] {
+            let product = source
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .unwrap_or(source);
+            assert!(
+                !product.contains("VideoFrame::new") && !product.contains("VideoFrame {"),
+                "{file} makes a frame without engine::sent::frame"
+            );
+        }
+    }
+
     /// A picture that one system encodes is decoded on every system.
     #[test]
     fn every_system_decodes_the_codecs_that_the_systems_encode() {
@@ -121,24 +141,26 @@ mod tests {
         );
     }
 
-    /// The hardware encoder of H.264 encodes a picture within the limits of level 5.2: 36,864
-    /// blocks of 16 × 16 pixels, 2,073,600 blocks per second, and 543 blocks on each side. A
-    /// larger share is encoded in VP8 at its full size (ADR 0773).
+    /// The hardware encoder of H.264 encodes a picture within the limits of level 3.1, the
+    /// level that the media server answers: 3,600 blocks of 16 × 16 pixels, 108,000 blocks
+    /// per second, and 169 blocks on each side. A larger picture is encoded in VP8 at its full
+    /// size (ADR 0737, ADR 0773).
     #[test]
-    fn a_picture_beyond_the_levels_of_h264_is_encoded_in_vp8_at_its_size() {
+    fn a_picture_beyond_the_negotiated_level_of_h264_is_encoded_in_vp8_at_its_size() {
         use Encoder::{HardwareH264, Vp8};
         let on_macos = |size, frame_rate| encoder(true, size, frame_rate);
+        assert_eq!(on_macos((640, 360), 30), HardwareH264);
         assert_eq!(on_macos((1280, 720), 30), HardwareH264);
-        assert_eq!(on_macos((1920, 1080), 60), HardwareH264);
-        assert_eq!(on_macos((3840, 2160), 60), HardwareH264);
-        assert_eq!(on_macos((4096, 2304), 56), HardwareH264);
-        assert_eq!(on_macos((4096, 2304), 60), Vp8);
-        assert_eq!(on_macos((4096, 2320), 15), Vp8);
+        assert_eq!(on_macos((1280, 720), 31), Vp8);
+        assert_eq!(on_macos((1280, 720), 60), Vp8);
+        assert_eq!(on_macos((960, 540), 30), HardwareH264);
+        assert_eq!(on_macos((960, 540), 60), Vp8);
+        assert_eq!(on_macos((1280, 736), 15), Vp8);
+        assert_eq!(on_macos((1920, 1080), 15), Vp8);
         assert_eq!(on_macos((5120, 2880), 15), Vp8);
-        assert_eq!(on_macos((6016, 3384), 15), Vp8);
-        assert_eq!(on_macos((8688, 400), 15), HardwareH264);
-        assert_eq!(on_macos((8689, 400), 15), Vp8);
-        assert_eq!(on_macos((400, 8689), 15), Vp8);
+        assert_eq!(on_macos((2704, 160), 15), HardwareH264);
+        assert_eq!(on_macos((2705, 160), 15), Vp8);
+        assert_eq!(on_macos((160, 2705), 15), Vp8);
         for (size, frame_rate) in [((1280, 720), 30), ((5120, 2880), 15)] {
             assert_eq!(encoder(false, size, frame_rate), Vp8);
         }

@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. An encoder of a hardware
+ * backend falls back to the software encoder of its codec (`CreateAdaptedEncoder`).
  */
 
 #include "livekit/video_encoder_factory.h"
@@ -299,6 +302,49 @@ using Factory = webrtc::VideoEncoderFactoryTemplate<
     webrtc::LibaomAv1EncoderTemplateAdapter,
 #endif
     webrtc::LibvpxVp9EncoderTemplateAdapter>;
+
+namespace {
+
+// Modified: added. The software encoders of WebRTC, for the encoders of a hardware backend
+// that do not start or that fail.
+class SoftwareFallbackFactory final : public webrtc::VideoEncoderFactory {
+ public:
+  std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
+    return Factory().GetSupportedFormats();
+  }
+
+  std::unique_ptr<webrtc::VideoEncoder> Create(
+      const webrtc::Environment& env,
+      const webrtc::SdpVideoFormat& format) override {
+    auto software = webrtc::FuzzyMatchSdpVideoFormat(
+        Factory().GetSupportedFormats(), StripBackendParameter(format));
+    if (!software) {
+      return nullptr;
+    }
+    return Factory().Create(env, *software);
+  }
+};
+
+// Modified: added. Whether the encoders of `format` fall back to software: those of a
+// hardware backend. A software encoder needs no fallback, and a pass-through encoder must
+// not have one.
+bool FallsBackToSoftware(const webrtc::SdpVideoFormat& format) {
+  auto backend = BackendFromFormat(format);
+  return backend && (*backend == VideoEncoderBackend::Hardware ||
+                     IsSpecificHardwareBackend(*backend));
+}
+
+}  // namespace
+
+std::unique_ptr<webrtc::VideoEncoder> CreateAdaptedEncoder(
+    const webrtc::Environment& env,
+    webrtc::VideoEncoderFactory* primary,
+    const webrtc::SdpVideoFormat& format) {
+  // The adapter keeps the fallback factory for its life: it is never destroyed.
+  static SoftwareFallbackFactory* const software = new SoftwareFallbackFactory();
+  return std::make_unique<webrtc::SimulcastEncoderAdapter>(
+      env, primary, FallsBackToSoftware(format) ? software : nullptr, format);
+}
 
 rust::Vec<VideoEncoderBackend> video_encoder_backend_list() {
   rust::Vec<VideoEncoderBackend> backends;
@@ -689,8 +735,8 @@ std::unique_ptr<webrtc::VideoEncoder> VideoEncoderFactory::Create(
     const webrtc::SdpVideoFormat& format) {
   std::unique_ptr<webrtc::VideoEncoder> encoder;
   if (format.IsCodecInList(internal_factory_->GetSupportedFormats())) {
-    encoder = std::make_unique<webrtc::SimulcastEncoderAdapter>(
-        env, internal_factory_.get(), nullptr, format);
+    // Modified: through `CreateAdaptedEncoder`, with the software fallback.
+    encoder = CreateAdaptedEncoder(env, internal_factory_.get(), format);
   }
 
   if (encoder &&

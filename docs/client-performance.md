@@ -85,7 +85,11 @@ The Rust allocations fell by about 18 MiB: the BGRA pictures of the view and the
 
 ### The processing of the voice works at 48 kHz
 
-The processing module of WebRTC worked at 32 kHz inside, the default of its version: it resampled each frame of the microphone and of the playout from 48 kHz to 32 kHz and back, and removed everything above 16 kHz from the microphone. It now works at 48 kHz (ADR 0733). Measured on an x86-64 Linux machine in the test build, with one program for each rate run in turn three times, a frame of the playout and a frame of the microphone with the echo canceller, the noise suppression and the gain control took medians of 202.7, 186.2 and 199.9 µs at 32 kHz and 187.2, 174.7 and 179.4 µs at 48 kHz (each over six rounds of 3,000 frames). At 48 kHz the module has no resamplers, which saves more than its third band costs: about 16 µs for each 10 ms, 0.16 % of one core less.
+The processing module of WebRTC worked at 32 kHz inside, the default of its version: it resampled each frame of the microphone and of the playout from 48 kHz to 32 kHz and back, and removed everything above 16 kHz from the microphone. It now works at 48 kHz (ADR 0733). Measured on 2026-10-23 with `timing::the_processing_of_one_frame_of_each_direction` of the media engine on an x86-64 Linux machine in the test build, with one program for each rate run in turn three times, a frame of the playout and a frame of the microphone with the echo canceller, the noise suppression and the gain control took medians of 202.7, 186.2 and 199.9 µs at 32 kHz and 187.2, 174.7 and 179.4 µs at 48 kHz (each over six rounds of 3,000 frames). At 48 kHz the module has no resamplers, which saves more than its third band costs: about 16 µs for each 10 ms, 0.16 % of one core less.
+
+### The scale of a received picture reads its planes where they are
+
+A received picture in planes that is drawn smaller is scaled from its planes where they are, without a copy of them first (ADR 0774). Measured on 2026-10-23 with `timing::the_scale_of_a_picture_with_and_without_a_copy_of_its_planes` on an x86-64 Linux machine in the test build, in two runs, a picture of 1920 × 1080 scaled to 1128 × 634 took medians of 2.81 and 3.28 ms with the copy and 1.81 and 1.95 ms without it (each over six rounds of 1,000 pictures). A run on a Mac with Apple silicon on 2026-10-22, of which no record was kept, gave 1.36 ms and 1.25 ms; the copy allocates 3 MiB for each picture.
 
 ## What uses the memory and the processor
 
@@ -98,6 +102,7 @@ From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLog
 
 ## Open points
 
-- The modes have not been measured on macOS since the own share and the own camera are encoded in H.264 by the hardware encoder of the system (ADR 0737) and the processing of the voice works at 48 kHz (ADR 0733). The table above is from before both changes.
+- The modes have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table above is from before both changes.
+- A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes (ADR 0774). The cost on the receiving side is not measured.
 - Slack was measured only idle. The other modes of Slack and the other clients need a person to start calls and shares in them.
 

@@ -15,7 +15,8 @@
 // Modified: this file differs from the published livekit 0.9.4. The publisher negotiation
 // queue decides with the state of `negotiation_queue.rs` (`NegotiationQueue`,
 // `publisher_negotiation_needed`, `queue_negotiation`, `execute_negotiation_with_retry`).
-// A closed session sends no offer, and an offer that the close ended is no failure
+// A session that closes starts no negotiation of the publisher (`begin_close`), sends no
+// offer, waits for no answer, and an offer that the close ended is no failure
 // (`offer_publisher`).
 
 use std::{
@@ -453,6 +454,8 @@ struct SessionInner {
     dt_packet_tx: DataTrackSendQueue,
 
     closed: AtomicBool,
+    // Modified: set when the room begins to close, before it unpublishes its tracks.
+    closing: AtomicBool,
     // Set on a terminal disconnect (server `Leave{Disconnect}`) so the publisher
     // data-channel close it triggers isn't logged as unexpected
     disconnecting: AtomicBool,
@@ -675,6 +678,7 @@ impl RtcSession {
             sub_data_track_dc: Mutex::new(None),
             dt_packet_tx,
             closed: Default::default(),
+            closing: Default::default(),
             disconnecting: Default::default(),
             emitter,
             options,
@@ -802,6 +806,12 @@ impl RtcSession {
 
     pub fn publisher_negotiation_needed(&self) {
         self.inner.publisher_negotiation_needed()
+    }
+
+    /// Modified: added. The room begins to close: the session starts no negotiation of the
+    /// publisher from now on, and a negotiation that waits for an answer ends.
+    pub fn begin_close(&self) {
+        self.inner.begin_close()
     }
 
     pub async fn add_track(&self, req: proto::AddTrackRequest) -> EngineResult<proto::TrackInfo> {
@@ -2075,6 +2085,8 @@ impl SessionInner {
     async fn close(&self, reason: DisconnectReason) {
         self.closed.store(true, Ordering::Release);
         self.pc_state_notify.notify_waiters();
+        // Modified: a negotiation that waits for an answer ends.
+        self.negotiation_queue.waker.notify_one();
 
         // Both awaits below are unbounded, and `PeerTransport::close` is synchronous, so
         // closing here — before the future can suspend — is what stops a cancelled
@@ -2481,7 +2493,24 @@ impl SessionInner {
     }
 
     /// Start publisher negotiation
+    /// Modified: added. See `RtcSession::begin_close`.
+    fn begin_close(&self) {
+        self.closing.store(true, Ordering::Release);
+        self.negotiation_queue.waker.notify_one();
+    }
+
+    /// Modified: added. Whether the session closes or is closed.
+    fn ending(&self) -> bool {
+        self.closing.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire)
+    }
+
     fn publisher_negotiation_needed(self: &Arc<Self>) {
+        // Modified: a session that closes starts no negotiation. The close of a room
+        // unpublishes its tracks, and each unpublish asks for one.
+        if self.ending() {
+            log::debug!("the session is closing: the publisher is not negotiated");
+            return;
+        }
         let fast_publish = self.fast_publish.load(Ordering::Acquire);
         self.has_published.store(true, Ordering::Release);
 
@@ -2515,7 +2544,7 @@ impl SessionInner {
 
             self.negotiation_queue.waiting_for_answer.store(true, Ordering::Release);
 
-            // Modified: a closed session waits for no answer.
+            // Modified: a session that closes waits for no answer.
             if !self.offer_publisher().await {
                 self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
             } else {
@@ -2525,8 +2554,14 @@ impl SessionInner {
                 tokio::pin!(timeout);
 
                 tokio::select! {
+                    // Modified: the close also ends the wait.
                     _ = self.negotiation_queue.waker.notified() => {
-                        log::debug!("answer received successfully");
+                        if self.ending() {
+                            log::debug!("the session is closing: no answer is awaited");
+                            self.negotiation_queue.waiting_for_answer.store(false, Ordering::Release);
+                        } else {
+                            log::debug!("answer received successfully");
+                        }
                     }
                     _ = &mut timeout => {
                         log::debug!("timeout waiting for answer");
@@ -2535,8 +2570,9 @@ impl SessionInner {
                 }
             }
 
-            // Modified: the task ends only after it has set the state to idle.
-            if self.negotiation_queue.tasks.finished() {
+            // Modified: the task ends only after it has set the state to idle. A session that
+            // closes negotiates no more.
+            if self.negotiation_queue.tasks.finished() && !self.ending() {
                 log::debug!("retrying negotiation");
                 continue;
             }
@@ -2560,18 +2596,22 @@ impl SessionInner {
         }
     }
 
-    /// Modified: added. Creates and sends an offer of the publisher; true when it was sent. The
-    /// close of a room unpublishes its tracks, which asks for a negotiation, and then closes the
-    /// peer connections while that negotiation can still run. A closed session sends no
-    /// offer, and an offer that fails after the close is the end of the negotiation.
+    /// Modified: added. Creates and sends an offer of the publisher; true when it was sent and
+    /// an answer is awaited. A session that closes sends no offer and awaits no answer, and an
+    /// offer that fails after the close began is the end of the negotiation: the peer
+    /// connection that it used is closed or about to be.
     async fn offer_publisher(&self) -> bool {
-        if self.closed.load(Ordering::Acquire) {
-            log::debug!("the session is closed: the publisher is not negotiated");
+        if self.ending() {
+            log::debug!("the session is closing: the publisher is not negotiated");
             return false;
         }
         match self.publisher_pc.create_and_send_offer(OfferOptions::default()).await {
+            Ok(()) if self.ending() => {
+                log::debug!("the session closed during a negotiation of the publisher");
+                false
+            }
             Ok(()) => true,
-            Err(err) if self.closed.load(Ordering::Acquire) => {
+            Err(err) if self.ending() => {
                 log::debug!("the session closed during a negotiation of the publisher: {:?}", err);
                 false
             }

@@ -566,9 +566,12 @@ class Scene:
 
 
 def participant_options(arguments: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
-    a = ["--mic-hz", str(TONE_A), "--camera", "--label", "A", "--screen-color", "%02x%02x%02x" % COLOUR_A]
+    # A client on macOS sends its camera, and a share of at most 1280x720 at 30 pictures a
+    # second, in H.264 (ADR 0737); other pictures are VP8. The camera of A and the share of C
+    # are H.264, so the composite decodes both codecs.
+    a = ["--mic-hz", str(TONE_A), "--camera", "--video-codec", "h264", "--label", "A", "--screen-color", "%02x%02x%02x" % COLOUR_A]
     b = ["--mic-hz", str(TONE_B), "--camera", "--label", "B", "--screen-color", "%02x%02x%02x" % COLOUR_B]
-    c = ["--no-mic", "--screen", "--screen-audio-hz", str(TONE_SHARE), "--label", "C", "--screen-color", "%02x%02x%02x" % COLOUR_SHARE]
+    c = ["--no-mic", "--screen", "--video-codec", "h264", "--screen-audio-hz", str(TONE_SHARE), "--label", "C", "--screen-color", "%02x%02x%02x" % COLOUR_SHARE]
     if arguments.speech:
         speech = Path(arguments.speech)
         a += ["--mic-file", str(speech / "en_quick.wav"), "--play-on-stdin"]

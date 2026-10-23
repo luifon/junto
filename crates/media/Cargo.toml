@@ -135,7 +135,8 @@ uuid = { workspace = true }
 
 # The workspace forbids unsafe code. This crate denies it and allows it only in modules
 # that call the platform APIs: macOS permissions and capture, the Windows capture, and
-# Linux audio initialisation and camera capture.
+# Linux audio initialisation and camera capture; and in the scale of received planes
+# through the vendored webrtc-sys (share::picture::scale).
 [lints.rust]
 unsafe_code = "deny"
 

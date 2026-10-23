@@ -2,81 +2,86 @@
 
 use std::time::Duration;
 
-use junto_media::engine::ShareId;
+use livekit::webrtc::stats::RtcStats;
 
 use crate::limit::limited;
 use crate::scene::{
-    PATIENCE, Person, Room, account, media_server_shared, negotiation_failures,
-    negotiations_ended_by_close, offers_in_a_closed_connection,
+    PATIENCE, Person, Room, media_server_alone, negotiation_failures, negotiation_tasks_running,
+    negotiations_started, offers_in_a_closed_connection,
 };
 
 /// Each leave closes a room in which the microphone and the camera were published.
 const LEAVES: usize = 5;
 
-/// The close of a room unpublishes its tracks, each of which asks for a negotiation of the
-/// publisher, and closes the connection of the publisher at once. With two tracks a
-/// negotiation is still asked for when the connection is closed. The closed session makes no
-/// offer for it and ends it without a failure (ADR 0733); each leave ends at least one so.
+/// Waits until no task that negotiates a publisher runs.
+async fn until_no_negotiation_runs() {
+    let idle = tokio::time::timeout(PATIENCE, async {
+        while negotiation_tasks_running() > 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(idle.is_ok(), "a negotiation of the publisher did not end");
+}
+
+/// The close of a room unpublishes its tracks, each of which would ask for a negotiation of
+/// the publisher, and then closes the connection of the publisher. The session stops its
+/// negotiations before the tracks are unpublished, and the engine leaves the unpublishing to
+/// the close, so a leave starts none, and no offer is made in a closed connection (ADR 0733).
+/// The test holds the media server alone and Ann is alone in the room: the counts of the
+/// negotiations are of the whole test program, so they hold only hers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
-async fn a_leave_ends_the_negotiation_of_the_publisher_without_a_failure() {
+async fn a_leave_starts_no_negotiation_of_the_publisher() {
     limited(async {
-        let _media = media_server_shared().await;
-        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
-        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
-        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
-        let ann_id = ShareId::Of(account(&ann_at));
-        ben.enter(room.target).await;
-        let mut cameras = ben.calls.camera_pictures();
-        let (ended, failed, offered) = (
-            negotiations_ended_by_close(),
-            negotiation_failures(),
-            offers_in_a_closed_connection(),
-        );
-        let outcomes = move || {
-            negotiations_ended_by_close() - ended + negotiation_failures() - failed
-                + offers_in_a_closed_connection()
-                - offered
-        };
+        let _media = media_server_alone().await;
+        let ann = Person::new(440.0);
+        let (room, _ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let (failed, offered) = (negotiation_failures(), offers_in_a_closed_connection());
         for _ in 0..LEAVES {
             ann.enter(room.target).await;
             ann.calls.start_camera(None);
-            ben.until_heard_afresh(&ann).await;
-            let shown = tokio::time::timeout(
-                PATIENCE,
-                cameras.wait_for(|pictures| pictures.contains_key(&ann_id)),
-            )
-            .await
-            .is_ok_and(|shown| shown.is_ok());
-            assert!(shown, "no camera picture of Ann arrived");
+            // The microphone and the camera are published and send.
+            let sending = tokio::time::timeout(PATIENCE, async {
+                loop {
+                    if let Ok(stats) = ann.calls.statistics().await {
+                        let kinds: Vec<&str> = (stats.publisher_stats.iter())
+                            .filter_map(|stat| match stat {
+                                RtcStats::OutboundRtp(stat) if stat.sent.packets_sent > 0 => {
+                                    Some(stat.stream.kind.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        if kinds.contains(&"audio") && kinds.contains(&"video") {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await;
+            assert!(
+                sending.is_ok(),
+                "the microphone and the camera of Ann did not send"
+            );
+            // A negotiation that the publications asked for ends before the leave, so that
+            // the count holds only what the leave starts.
+            until_no_negotiation_runs().await;
+            let started = negotiations_started();
             ann.calls.leave().await;
-            ben.until_silent(&ann).await;
-            let gone = tokio::time::timeout(
-                PATIENCE,
-                cameras.wait_for(|pictures| !pictures.contains_key(&ann_id)),
-            )
-            .await
-            .is_ok_and(|gone| gone.is_ok());
-            assert!(gone, "the camera picture of Ann stayed");
+            until_no_negotiation_runs().await;
+            assert_eq!(
+                negotiations_started() - started,
+                0,
+                "negotiations of the publisher started by the leave"
+            );
         }
-        // A negotiation that waits for the answer of the media server ends after 10 seconds.
-        let ends = tokio::time::timeout(PATIENCE, async {
-            while outcomes() < LEAVES {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await;
-        ben.calls.leave().await;
         assert_eq!(negotiation_failures() - failed, 0, "failed negotiations");
         assert_eq!(
             offers_in_a_closed_connection() - offered,
             0,
             "offers in a closed connection"
-        );
-        assert!(
-            ends.is_ok(),
-            "{} negotiations ended by the close of {LEAVES} rooms",
-            negotiations_ended_by_close() - ended
         );
     })
     .await;

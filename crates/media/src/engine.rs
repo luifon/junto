@@ -1287,11 +1287,22 @@ impl Actor {
 
     /// Leaves the room, if there is one, and closes the devices.
     async fn leave(&mut self, events: &mut Option<Events>) {
+        let room = self.room.take();
         self.end_camera(None);
-        self.reset_connection(events).await;
+        self.close_connection(room, events).await;
     }
 
     async fn reset_connection(&mut self, events: &mut Option<Events>) {
+        let room = self.room.take();
+        self.close_connection(room, events).await;
+    }
+
+    /// Ends what the connection of `room` carried and closes the room. The caller takes the
+    /// room from the engine first: the close of the room unpublishes the own tracks after it
+    /// has stopped the negotiations of its session, and a withdrawal of the camera, the share
+    /// or the microphone before it would start one each (ADR 0733). Without the room they
+    /// withdraw nothing.
+    async fn close_connection(&mut self, room: Option<Room>, events: &mut Option<Events>) {
         tracing::info!(attempt = self.attempt, "the media connection is closing");
         self.connected_at = None;
         self.attempt += 1;
@@ -1311,7 +1322,7 @@ impl Actor {
         (self.capture_recovered, self.playout_recovered) = (None, None);
         self.capture_stopped = false;
         *events = None;
-        if let Some(room) = self.room.take() {
+        if let Some(room) = room {
             close_room(room).await;
         }
         self.change(|state| {
