@@ -39,13 +39,12 @@ use junto_server::recordings::{Backend, control, process, transcribe};
 use junto_server::state::AppState;
 use junto_server::storage::FakeDisk;
 use serde_json::{Value, json};
-use sqlx::ConnectOptions;
 use sqlx::postgres::PgConnectOptions;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
+use crate::support::TestDatabase;
 
 /// The stand-in for the transcription worker (ADR 0611). The server runs it as
 /// `<script> run <job> --out <transcript> --audio-root <directory of the recording>`. It
@@ -159,6 +158,8 @@ pub struct RecordingServer {
     recorded: Mutex<Vec<RecordingDetail>>,
     runtime: Option<tokio::runtime::Runtime>,
     shutdown: Option<oneshot::Sender<()>>,
+    /// Declared last: the database is deleted after the runtime of the server has ended.
+    database: TestDatabase,
 }
 
 impl Drop for RecordingServer {
@@ -226,19 +227,7 @@ impl RecordingServer {
         let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_address = proxy.local_addr().unwrap();
         let started = on_runtime(runtime.handle().clone(), move || async move {
-            let admin_url = std::env::var(DATABASE_URL).unwrap_or_else(|_| {
-                panic!(
-                    "{DATABASE_URL} is not set. Run the tests through tools/with-test-postgres.sh."
-                )
-            });
-            let admin = PgConnectOptions::from_str(&admin_url).unwrap();
-            let database = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
-            let mut connection = admin.connect().await.unwrap();
-            sqlx::query(sqlx::AssertSqlSafe(format!("create database {database}")))
-                .execute(&mut connection)
-                .await
-                .unwrap();
-            drop(connection);
+            let database = TestDatabase::create().await;
 
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -264,7 +253,7 @@ impl RecordingServer {
             };
             let limits = &config.limits;
             let connected = Database::connect(
-                admin.database(&database),
+                PgConnectOptions::from_str(&database.url).unwrap(),
                 8,
                 &limits.database,
                 &limits.stream.pool(),
@@ -308,9 +297,9 @@ impl RecordingServer {
                 stop,
                 tasks,
             ));
-            (address, owner_code, state, media, recorder)
+            (address, owner_code, state, media, recorder, database)
         });
-        let (address, owner_code, state, media, recorder) = started.await;
+        let (address, owner_code, state, media, recorder, database) = started.await;
         Self {
             address,
             proxy: Mutex::new(Some(proxy)),
@@ -325,11 +314,16 @@ impl RecordingServer {
             recorded: Mutex::default(),
             runtime: Some(runtime),
             shutdown: Some(shutdown),
+            database,
         }
     }
 
     pub fn address(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    pub fn database_url(&self) -> &str {
+        &self.database.url
     }
 
     /// The listener of the proxy address that the server lists as a public origin, and the

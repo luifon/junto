@@ -138,7 +138,7 @@ impl Drop for Watch {
 
 /// How many sessions the server holds.
 async fn sessions(server: &TestServer) -> i64 {
-    let options: PgConnectOptions = server.database_url.parse().unwrap();
+    let options: PgConnectOptions = server.database_url().parse().unwrap();
     let mut database = options.connect().await.unwrap();
     sqlx::query_scalar("select count(*) from sessions")
         .fetch_one(&mut database)

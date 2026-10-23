@@ -493,6 +493,72 @@ async fn a_start_removes_the_copy_that_a_stopped_start_did_not_finish() {
     delete_databases(&[copy, other_comment, other_number, other_name]).await;
 }
 
+/// ADR 0018: a start that stops at any statement of the copy leaves a state from which the
+/// next start makes one complete copy. The connection of the first start ends at the chosen
+/// statement, before PostgreSQL runs it or after PostgreSQL ran it and before its answer
+/// arrived, as when the process stops there.
+#[tokio::test]
+async fn a_start_after_a_start_that_stopped_at_any_statement_of_the_copy_makes_the_copy() {
+    use crate::postgres_proxy::{Cut, PostgresProxy, Stop};
+    use junto_server::bootstrap::{MigrationCopied, MigrationCopy, copy_before, copy_name};
+
+    let mut server = crate::support::TestServer::start().await;
+    let (options, name) = (options_of(&server), name_of(&server).await);
+    let newest = newest_migration_of(&options).await;
+    server.stop().await;
+    server.state.database.close().await;
+    let later = later_version(&["create table later_first ()"]).await;
+    let copy = copy_name(&name, newest);
+    let making = format!("{name}_making_{newest}");
+    let proxy = PostgresProxy::start(options.clone()).await;
+
+    let intent = format!("comment on database \"{name}\" is 'junto: the server makes");
+    let of_copy = format!("comment on database \"{making}\"");
+    let statements = [
+        intent.as_str(),
+        "create database",
+        of_copy.as_str(),
+        "alter database",
+        "has not finished",
+    ];
+    for statement in statements {
+        for cut in [Cut::Before, Cut::AfterAnswer] {
+            let struck = proxy.arm(Stop::at(statement, cut));
+            let stopped = copy_before(&proxy.options(), MigrationCopy::Database, &later).await;
+            struck.wait().await;
+            assert!(stopped.is_err(), "{statement} {cut:?}: {stopped:?}");
+
+            let next = copy_before(&options, MigrationCopy::Database, &later).await;
+            let expected = if statement == "has not finished" && cut == Cut::AfterAnswer {
+                MigrationCopied::Unfinished(Some(copy.clone()))
+            } else {
+                MigrationCopied::Made(copy.clone())
+            };
+            assert_eq!(next.unwrap(), expected, "{statement} {cut:?}");
+            assert!(
+                databases_from(format!("{name}_making_")).await.is_empty(),
+                "{statement} {cut:?}"
+            );
+            assert_eq!(
+                commented_from(format!("{name}_before_")).await,
+                [(copy.clone(), comment_of_a_copy(&name))],
+                "{statement} {cut:?}"
+            );
+            assert_eq!(
+                comment_of(&name).await,
+                Some(unfinished_line(&copy)),
+                "{statement} {cut:?}"
+            );
+            let of_copy = options.clone().database(&copy);
+            assert_eq!(newest_migration_of(&of_copy).await, newest);
+
+            delete_databases(std::slice::from_ref(&copy)).await;
+            maintain(&[format!("comment on database {name} is null")]).await;
+        }
+    }
+    assert_eq!(proxy.armed(), 0);
+}
+
 /// A database that has the name of the copy and not the comment of a copy is not a copy
 /// that this server made: it stays, and the server does not start.
 #[tokio::test]

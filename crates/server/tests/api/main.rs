@@ -34,7 +34,9 @@ mod layout_page;
 mod limit;
 mod live;
 mod login;
+mod lost_answers;
 mod maintenance;
+mod migration_identifiers;
 mod moderation;
 mod processing;
 mod profiles;
@@ -77,11 +79,13 @@ mod discovery_access;
 mod discovery_support;
 mod notifications;
 mod pins;
+mod postgres_proxy;
 mod retention;
 mod search;
 mod threads;
 
 mod delivery_cost;
+mod notice_fan_out;
 
 mod review_round3;
 

@@ -31,4 +31,4 @@ A device asks for a new token for its seat with the request that asks for a plac
 - The error body has one more optional field. A reader ignores a field that it does not know (ADR 0206).
 - `call_seat_ends` holds at most one row for each account.
 - A renewal of a seat whose token time ended unused takes two requests now: the refusal and a request for a place. Before, one request ended the seat and gave a new one.
-- Tests: `calls_renewal` in the API tests, among them `a_renewal_that_waits_behind_a_removal_gives_no_seat` and `a_renewal_does_not_take_the_seat_of_another_device`.
+- Tests: `calls_renewal` in the API tests, among them `a_renewal_that_waits_behind_a_removal_gives_no_seat`, `a_renewal_does_not_take_the_seat_of_another_device` and `a_renewal_from_another_session_of_the_same_device_does_not_take_the_seat`.

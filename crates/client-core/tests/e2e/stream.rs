@@ -654,7 +654,7 @@ async fn a_session_that_the_server_ended_is_renewed_and_the_stream_goes_on() {
     let before = live(&scene.second, member).await;
     let mut told = member.live().notices();
 
-    let options: PgConnectOptions = scene.server.database_url.parse().unwrap();
+    let options: PgConnectOptions = scene.server.database_url().parse().unwrap();
     let mut database = options.connect().await.unwrap();
     let expired = sqlx::query(
         "update sessions set expires_at = now() - interval '1 hour'

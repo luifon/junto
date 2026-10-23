@@ -81,7 +81,8 @@ pub struct TestServer {
     attachments: tempfile::TempDir,
     /// Where the server writes the files of exports.
     exports: tempfile::TempDir,
-    pub database_url: String,
+    /// Declared last: the database is deleted after the process has ended.
+    database: TestDatabase,
 }
 
 fn setting(name: &str) -> String {
@@ -107,25 +108,7 @@ impl TestServer {
     }
 
     async fn start_as(name: &str, media: Option<String>) -> Self {
-        let database = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
-        let admin = PgConnectOptions::from_str(&admin_url()).unwrap();
-        let mut connection = admin.connect().await.unwrap();
-        // The statement statistics of the database server hold a fixed number of entries
-        // for all databases together, and the tests of the server that read them run on the
-        // same database server. A database of these tests does not record.
-        for statement in [
-            "set pg_stat_statements.track = 'none'".to_owned(),
-            format!("create database {database}"),
-            format!("alter database {database} set pg_stat_statements.track = 'none'"),
-        ] {
-            sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&mut connection)
-                .await
-                .unwrap();
-        }
-        drop(connection);
-        let mut database_url = url::Url::parse(&admin_url()).unwrap();
-        database_url.set_path(&database);
+        let database = TestDatabase::create().await;
         let proxy = StdListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_port = proxy.local_addr().unwrap().port();
         let mut server = Self {
@@ -140,7 +123,7 @@ impl TestServer {
             media,
             attachments: tempfile::tempdir().unwrap(),
             exports: tempfile::tempdir().unwrap(),
-            database_url: database_url.into(),
+            database,
         };
         server.run(true).await;
         server.wait_for_owner_code().await;
@@ -180,7 +163,7 @@ impl TestServer {
     /// True when the process that answers at the port of this server is this server: it
     /// reports the identifier that the database of this server holds.
     async fn answers(&self) -> bool {
-        let options: PgConnectOptions = self.database_url.parse().unwrap();
+        let options: PgConnectOptions = self.database_url().parse().unwrap();
         let Ok(mut database) = options.connect().await else {
             return false;
         };
@@ -217,7 +200,7 @@ impl TestServer {
                 );
         }
         let mut child = command
-            .env("JUNTO_DATABASE_URL", &self.database_url)
+            .env("JUNTO_DATABASE_URL", self.database_url())
             .env("JUNTO_LISTEN_ADDRESS", format!("127.0.0.1:{}", self.port))
             .env("JUNTO_SERVER_NAME", &self.name)
             .env(
@@ -269,6 +252,10 @@ impl TestServer {
         format!("http://127.0.0.1:{}", self.port)
     }
 
+    pub fn database_url(&self) -> &str {
+        &self.database.url
+    }
+
     /// The number of the running process.
     pub fn process_id(&self) -> Option<u32> {
         self.child.as_ref().map(Child::id)
@@ -283,7 +270,7 @@ impl TestServer {
     pub fn host_command(&self, arguments: &[&str]) -> String {
         let output = Command::new(server_binary())
             .args(arguments)
-            .env("JUNTO_DATABASE_URL", &self.database_url)
+            .env("JUNTO_DATABASE_URL", self.database_url())
             .output()
             .unwrap();
         assert!(
@@ -316,6 +303,90 @@ impl TestServer {
         self.stop();
         self.run(false).await;
     }
+}
+
+/// The database of a test server. It does not record statement statistics, and it is
+/// deleted when it is dropped: the database server holds the statistics of every table and
+/// index of every database in a shared memory of fixed size, and the tests of the server
+/// that read statement statistics run on the same database server.
+pub struct TestDatabase {
+    pub name: String,
+    pub url: String,
+}
+
+impl TestDatabase {
+    pub async fn create() -> Self {
+        let name = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
+        let admin = PgConnectOptions::from_str(&admin_url()).unwrap();
+        let mut connection = admin.connect().await.unwrap();
+        for statement in [
+            "set pg_stat_statements.track = 'none'".to_owned(),
+            format!("create database {name}"),
+            format!("alter database {name} set pg_stat_statements.track = 'none'"),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        drop(connection);
+        let mut url = url::Url::parse(&admin_url()).unwrap();
+        url.set_path(&name);
+        Self {
+            name,
+            url: url.into(),
+        }
+    }
+}
+
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        if let Err(problem) = delete_database(self.name.clone(), DATABASE_CLEANUP_LIMIT) {
+            eprintln!("the test database {} was not deleted: {problem}", self.name);
+        }
+    }
+}
+
+/// The longest time that the deletion of a test database may take. A database server that
+/// does not answer would otherwise hold the test, its run and the lock of the machine.
+const DATABASE_CLEANUP_LIMIT: Duration = Duration::from_secs(30);
+
+/// Deletes a test database through a connection of its own, within `limit`, and ends the
+/// sessions that still use it. A drop cannot wait for a future on the runtime of its test,
+/// and a window test runs on no runtime, so the work runs on a thread with its own runtime.
+pub fn delete_database(name: String, limit: Duration) -> Result<(), String> {
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let deleted = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())
+            .and_then(|runtime| {
+                runtime.block_on(async {
+                    let deleting = async {
+                        let admin = PgConnectOptions::from_str(&admin_url())?;
+                        let mut connection = admin.connect().await?;
+                        for statement in [
+                            "set pg_stat_statements.track = 'none'".to_owned(),
+                            format!("drop database if exists {name} with (force)"),
+                        ] {
+                            sqlx::query(sqlx::AssertSqlSafe(statement))
+                                .execute(&mut connection)
+                                .await?;
+                        }
+                        sqlx::Connection::close(connection).await
+                    };
+                    match tokio::time::timeout(limit, deleting).await {
+                        Ok(deleted) => deleted.map_err(|error| error.to_string()),
+                        Err(_) => Err(format!("it did not end within {limit:?}")),
+                    }
+                })
+            });
+        let _ = done.send(deleted);
+    });
+    ended
+        .recv_timeout(limit + Duration::from_secs(5))
+        .map_err(|_| format!("it did not end within {limit:?}"))?
 }
 
 impl Drop for TestServer {

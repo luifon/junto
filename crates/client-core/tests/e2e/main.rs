@@ -672,7 +672,7 @@ async fn a_request_that_timed_out_on_a_database_lock_is_repeated_unchanged() {
     let device = Device::new();
     let handle = device.add(&proxy.address()).await;
 
-    let options = PgConnectOptions::from_str(&server.database_url).unwrap();
+    let options = PgConnectOptions::from_str(server.database_url()).unwrap();
     let mut blocker = options.connect().await.unwrap();
     sqlx::query("begin").execute(&mut blocker).await.unwrap();
     sqlx::query("select 1 from server_state for update")

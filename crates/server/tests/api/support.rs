@@ -34,6 +34,8 @@ use time::{Duration, OffsetDateTime};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use crate::postgres_proxy::PostgresProxy;
+
 /// Bounded statements prepare large fixtures under the normal database time limits.
 /// The directory of this package in the checkout that runs the test: `cargo test` sets it at
 /// run time, while a path compiled into the binary can name another checkout whose build the
@@ -100,6 +102,11 @@ impl DeviceKey {
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).unwrap();
         Self(SigningKey::from_bytes(&seed))
+    }
+
+    /// The same key, for a second session of the same device.
+    pub fn same(&self) -> Self {
+        Self(self.0.clone())
     }
 
     pub fn public(&self) -> PublicKey {
@@ -306,6 +313,40 @@ fn the_deletion_of_a_test_database_whose_server_does_not_answer_ends_after_its_l
         .expect("the deletion ends after its limit");
     assert!(deleted.is_err(), "{deleted:?}");
     drop(silent);
+}
+
+/// A test server that is dropped ends its tasks and its connections before its database is
+/// deleted: the database is kept here to see that nothing of the server still uses it.
+#[tokio::test]
+async fn a_dropped_test_server_leaves_no_task_and_no_connection_to_its_database() {
+    let server = TestServer::start_with_tasks(|_| {}).await;
+    let owner = server.owner().await;
+    let mut stream = server
+        .subscribed(&owner, junto_protocol::events::Level::Full)
+        .await;
+    let kept = server.kept.clone();
+    let mut admin = admin_options().connect().await.unwrap();
+    let connected = "select count(*) from pg_stat_activity where datname = $1";
+
+    drop(server);
+    stream.until_closed().await;
+    let limit = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let count: i64 = sqlx::query_scalar(connected)
+            .bind(&kept.name)
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        if count == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < limit,
+            "{count} connections of a dropped test server still use its database"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    admin.close().await.unwrap();
 }
 
 /// The fake media server of a test server, with the fake recorder that puts its jobs into
@@ -588,6 +629,25 @@ impl TestServer {
         configure(&mut config);
         let now = Some(self.clock.now());
         Self::on_database(self.database.clone(), config, now, setup, self.kept.clone()).await
+    }
+
+    /// Starts a second server process on the database of this one, whose connections to
+    /// PostgreSQL pass through `proxy`.
+    pub async fn through(&self, proxy: &PostgresProxy) -> Self {
+        let setup = Setup {
+            send_buffer: self.send_buffer,
+            media: self.fakes(),
+            tasks: self.tasks,
+            ..Setup::default()
+        };
+        let now = Some(self.clock.now());
+        let (config, kept) = (self.config.clone(), self.kept.clone());
+        Self::on_database(proxy.options(), config, now, setup, kept).await
+    }
+
+    /// The options of the database of this server.
+    pub fn database_options(&self) -> PgConnectOptions {
+        self.database.clone()
     }
 
     /// Connects to the database of this server as a server process with a changed

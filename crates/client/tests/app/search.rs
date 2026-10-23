@@ -28,7 +28,7 @@ async fn seed_transcript(
     speaker: AccountId,
     text: &str,
 ) -> uuid::Uuid {
-    let options = sqlx::postgres::PgConnectOptions::from_str(&server.database_url).unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(server.database_url()).unwrap();
     let mut connection = options.connect().await.unwrap();
     let recording = uuid::Uuid::now_v7();
     let segment = uuid::Uuid::now_v7();

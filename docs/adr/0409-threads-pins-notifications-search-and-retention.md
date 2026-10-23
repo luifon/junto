@@ -107,6 +107,18 @@ Notifications:
   read position marks its notices read in the same transaction. Maintenance keeps at most
   500 notices per account and removes notices older than 90 days in bounded batches.
   Inserts queue their recipients for cap maintenance; unchanged accounts are not scanned.
+  The queue is filled by a trigger that runs once for each inserted notice. Measured for
+  one channel message whose workspace default gives a notice to every member, five
+  messages for each size, on the Linux build image (PostgreSQL 17 with 0.75 processor,
+  a debug build of the server): with 1,000 members the statement that inserts the notices
+  takes 618 ms, of which the trigger takes 40 ms (6%); with 5,000 members 2,743 ms and
+  273 ms (10%); with 10,000 members 5,270 ms and 589 ms (11%), and the whole request
+  7.2 s. A trigger that runs once for each statement and reads the inserted notices from
+  a transition table takes 39 ms, 179 ms and 334 ms at the same sizes and saves 1 to 6%
+  of the statement, so the trigger runs for each notice. The cost of the statement grows
+  by about 0.5 ms for each recipient; at 10,000 members it uses half of the statement
+  time limit of 10 seconds (ADR 0009). The measurement is the ignored test
+  `notice_fan_out::measure_the_queue_of_the_notice_cap_at_large_fan_out`.
   The ordered account index serves the cap, and the age index serves lifetime removal.
   Unknown and foreign notification cursors are invalid requests.
 - Each event records the recipients newly notified by that change. An edit adding a

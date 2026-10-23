@@ -9,7 +9,7 @@ use time::Duration;
 
 use crate::calls_support::{Scene, Seat};
 use crate::devices::link_second_device;
-use crate::support::{Member, Reply, TestServer, drive_until};
+use crate::support::{Member, Reply, TestServer, drive_until, member};
 
 fn renewal_path(channel_id: ChannelId, identity: &str) -> String {
     format!("/api/v1/channels/{channel_id}/call/join?renews={identity}")
@@ -129,6 +129,36 @@ async fn a_renewal_that_names_the_seat_of_another_device_does_not_take_it() {
 
     assert_eq!(seat_ended(&refused), Some(LeaveReason::Switched));
     assert_eq!(seats_of(server, ann).await, [other.identity]);
+}
+
+/// A device holds up to four sessions (ADR 0109). A renewal from another session of the
+/// same device does not take the seat of the session that holds it, and that session still
+/// renews it.
+#[tokio::test]
+async fn a_renewal_from_another_session_of_the_same_device_does_not_take_the_seat() {
+    let scene = Scene::start().await;
+    let (server, ann) = (&scene.server, &scene.ann);
+    let seat = server.enter_call(ann, scene.voice.id).await;
+    let again = member(ann.key.same(), server.login(&ann.key).await);
+    assert_eq!(again.device_id, ann.device_id);
+    assert_ne!(again.token, ann.token);
+
+    let refused = renew(server, &again, scene.voice.id, &seat.identity).await;
+
+    assert_eq!(seat_ended(&refused), Some(LeaveReason::Switched));
+    assert_eq!(
+        seats_of(server, ann).await,
+        std::slice::from_ref(&seat.identity)
+    );
+    let renewed: CallJoin = renew(server, ann, scene.voice.id, &seat.identity)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(renewed.identity, seat.identity);
+    let own = server.own_call(ann).await.call.unwrap().own;
+    assert_eq!(
+        (own.device_id, own.identity),
+        (ann.device_id, seat.identity)
+    );
 }
 
 #[tokio::test]

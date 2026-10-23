@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use sqlx::ConnectOptions;
 use sqlx::postgres::PgConnectOptions;
 
-use crate::support::{TestServer, admin_url};
+use crate::recording_server::RecordingServer;
+use crate::support::{TestServer, admin_url, delete_database};
 
 /// Set in the process that the test below starts and kills.
 const HOLDER: &str = "JUNTO_TEST_SERVER_HOLDER";
@@ -25,7 +26,7 @@ async fn holds_a_server_until_its_process_is_killed() {
         return;
     }
     let server = TestServer::start("held").await;
-    let database = url::Url::parse(&server.database_url).unwrap();
+    let database = url::Url::parse(server.database_url()).unwrap();
     let bystanders = bystanders();
     let numbers: Vec<String> = bystanders
         .iter()
@@ -148,10 +149,66 @@ async fn a_server_that_a_test_started_stops_when_the_process_of_the_test_is_kill
     {
         end(process);
     }
+    // The killed process ran no code that deletes its database.
+    delete_database(database.to_owned(), Duration::from_secs(30)).unwrap();
     assert!(
         stopped,
         "the server still ran 30 s after the process of its test was killed"
     );
+}
+
+/// The setting of statement statistics that a session on the database of `url` gets, and
+/// whether that database exists.
+async fn recorded_and_kept(url: &str) -> (Option<String>, bool) {
+    let name = url::Url::parse(url)
+        .unwrap()
+        .path()
+        .trim_start_matches('/')
+        .to_owned();
+    let admin = PgConnectOptions::from_str(&admin_url()).unwrap();
+    let mut connection = admin.connect().await.unwrap();
+    let kept: bool =
+        sqlx::query_scalar("select exists (select 1 from pg_database where datname = $1)")
+            .bind(&name)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    if !kept {
+        return (None, false);
+    }
+    let mut own = PgConnectOptions::from_str(url)
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let setting = sqlx::query_scalar("select current_setting('pg_stat_statements.track', true)")
+        .fetch_one(&mut own)
+        .await
+        .unwrap();
+    (setting, true)
+}
+
+/// The database of each kind of test server records no statement statistics, which the
+/// tests of the server read on the same database server, and is deleted with its server.
+#[tokio::test]
+async fn the_database_of_a_test_server_records_no_statistics_and_ends_with_the_server() {
+    let server = TestServer::start("dropped").await;
+    let url = server.database_url().to_owned();
+    assert_eq!(
+        recorded_and_kept(&url).await,
+        (Some("none".to_owned()), true)
+    );
+    drop(server);
+    assert_eq!(recorded_and_kept(&url).await, (None, false));
+
+    let server = RecordingServer::start("recorded").await;
+    let url = server.database_url().to_owned();
+    assert_eq!(
+        recorded_and_kept(&url).await,
+        (Some("none".to_owned()), true)
+    );
+    drop(server);
+    assert_eq!(recorded_and_kept(&url).await, (None, false));
 }
 
 /// Ends a process that the test above leaves running.

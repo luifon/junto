@@ -37,6 +37,7 @@ Backups:
 Upgrades:
 
 - Database migrations go forward only.
+- A migration that reads an identifier from stored JSON, such as the payload of an event or of an audit entry, casts it to a UUID only after the text has the form of a UUID, in a filter of the same row. A stored value that is not a UUID then names nothing and does not stop the upgrade. The tests of migrations 0011 and 0013 store such values, run the statements under the plan that PostgreSQL chooses and under a plan of index scans and nested loops, and check the result for an identifier that names nothing (`migration_identifiers` in the API tests).
 - The server copies the database before a migration.
 - The server takes a lock so that only one migration runs.
 - The server does not migrate while a recording runs. It refuses to start instead, and a host command tells beforehand whether a recording runs (ADR 0608).

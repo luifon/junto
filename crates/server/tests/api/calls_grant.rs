@@ -7,6 +7,7 @@ use reqwest::StatusCode;
 use serde_json::{Value, json};
 
 use crate::calls_support::{Scene, Seat};
+use crate::devices::link_second_device;
 use crate::support::{Member, TestServer};
 
 fn meeting_path(channel_id: ChannelId) -> String {
@@ -103,6 +104,55 @@ async fn a_grant_stays_in_the_own_state_after_the_meeting_until_the_person_opens
     report(server, ben, false).await;
     assert_eq!(grant_of(server, ben).await, Some(false));
     assert_eq!(renewal(server, ben, voice).await.meeting_grant, Some(false));
+}
+
+/// A grant belongs to a seat (ADR 0521). A person who moves the call to another device
+/// during the meeting gets a new seat: it gets the block of the meeting, as every entry
+/// does (ADR 0512), and no grant. The seat on the first device ends.
+#[tokio::test]
+async fn a_switch_of_device_during_the_meeting_gives_a_seat_with_the_block_and_no_grant() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    meeting(&scene).await;
+    server
+        .delete(ann, &microphone_block(voice, ben.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(grant_of(server, ben).await, Some(true));
+    let desk = server.own_call(ben).await.call.unwrap().own.identity;
+
+    let laptop = link_second_device(server, ben).await;
+    let moved = server.enter_call(&laptop, voice).await;
+
+    let own = server.own_call(&laptop).await.call.unwrap();
+    assert_eq!(
+        (own.own.device_id, &own.own.identity),
+        (laptop.device_id, &moved.identity)
+    );
+    assert_ne!(moved.identity, desk);
+    assert_eq!(own.meeting_grant, Some(false));
+    assert_eq!(
+        renewal(server, &laptop, voice).await.meeting_grant,
+        Some(false)
+    );
+    let reason: Option<String> = sqlx::query_scalar(
+        "select reason from call_microphone_blocks b join calls c on c.id = b.call_id
+         where c.channel_id = $1 and b.account_id = $2",
+    )
+    .bind(voice)
+    .bind(ben.account_id)
+    .fetch_optional(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("meeting"));
+    let seats: Vec<String> =
+        sqlx::query_scalar("select identity from call_members where account_id = $1")
+            .bind(ben.account_id)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(seats, [moved.identity]);
 }
 
 #[tokio::test]

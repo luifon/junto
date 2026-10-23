@@ -77,7 +77,7 @@ pub(crate) async fn open(handle: &ServerHandle, place: PlaceId) {
 pub async fn seed_transcript(scene: &Pair, voice: ChannelId, text: &str) -> uuid::Uuid {
     use sqlx::ConnectOptions;
     use std::str::FromStr;
-    let options = sqlx::postgres::PgConnectOptions::from_str(&scene.server.database_url).unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(scene.server.database_url()).unwrap();
     let mut connection = options.connect().await.unwrap();
     let recording = uuid::Uuid::now_v7();
     let segment = uuid::Uuid::now_v7();
