@@ -80,8 +80,13 @@ scratch="$destination/.scratch"
 mkdir "$scratch"
 backup=""
 written=""
+# A signal can end the script during a command whose standard error goes to a file of the
+# scratch directory, and the shell runs the trap with that redirection. The trap writes to
+# the standard error of the script, which file descriptor 3 keeps.
+exec 3>&2
 ended() {
     code=$?
+    exec 2>&3
     if [ -n "$backup" ]; then
         in_server junto-server backup-end "$backup" < /dev/null > /dev/null \
             || echo "backup: the server still holds deletions back, for 24 hours at most. End that with: junto-server backup-end $backup" >&2

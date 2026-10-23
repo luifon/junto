@@ -7,6 +7,8 @@
 # - the earlier release runs and gets messages with attachments;
 # - the new server does not start before deploy/database-user.sh ran, and names the cause;
 # - that script gives the database to the role of the server; a second run changes nothing;
+#   from here on PostgreSQL writes every statement to its log, and the log holds no password,
+#   also when the statement that sets the password fails, in that script and in the way back;
 # - a backup with the server image of this release on the database of the earlier one is
 #   refused;
 # - the new server with a role that may not create a database does not start, names the
@@ -15,10 +17,14 @@
 #   from before the upgrade stays over a second start, the comment of the database names
 #   it, the way back with deploy/upgrade-undo.sh takes it, and the earlier release runs on
 #   the data again;
-# - the upgrade: the server copies the database, migrates, and serves the same content;
-# - the way back after a successful upgrade, and the upgrade once more;
+# - a start that is stopped while PostgreSQL creates the copy, and the upgrade after it: the
+#   server copies the database, migrates, and serves the same content;
+# - the way back after a successful upgrade, which gets the stop signal while it lists the
+#   directories without a row, and the upgrade once more;
 # - a backup that the earlier release wrote is refused by deploy/restore.sh before anything
 #   is replaced;
+# - a restore after a start that was stopped while PostgreSQL created the copy, which is ended
+#   between its two deletions, and its second run;
 # - a way back inside this release, to a copy that the test makes: the script lists the
 #   directory that was written after the copy, and the server removes it when it is old.
 # Only the database and the server are started. Everything is removed at the end.
@@ -132,6 +138,92 @@ secrets_in() {
     done
     echo "$found"
 }
+# The log of PostgreSQL since a time.
+postgres_log() {
+    new logs --no-log-prefix --since "$1" postgres > "$work/postgres.log" 2>&1
+}
+# The databases that a stopped start of the server can leave.
+making() {
+    sql "select string_agg(datname, ' ' order by datname) from pg_database where datname like 'junto\\_making\\_%'" postgres
+}
+# Waits until a command prints a value, for 60 seconds at most.
+wait_until() {
+    tries=0
+    until [ "$(eval "$2")" = "$3" ]; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 300 ]; then
+            echo "FAIL  after 60 s this did not hold: $1"
+            exit 1
+        fi
+        sleep 0.2
+    done
+}
+sessions() {
+    sql "select count(*) from pg_stat_activity where $1" postgres
+}
+# A program named "docker" in front of the real one, for the script under test. It runs a
+# step of the test before the one call whose arguments match a pattern (ADR 0911). A new
+# file takes the place of the program, because a shell reads its script while it runs.
+real=$(command -v docker)
+mkdir "$work/bin"
+in_front() {
+    cat > "$work/bin/docker.next" <<EOF
+#!/bin/sh
+case "\$*" in
+    $1)
+$2
+        ;;
+esac
+exec "$real" "\$@"
+EOF
+    chmod +x "$work/bin/docker.next"
+    mv "$work/bin/docker.next" "$work/bin/docker"
+}
+# Runs a script with the program in front of docker, and stores its process identifier, so
+# that a step of the program can end the script. Prints the exit code.
+in_background() {
+    log=$1
+    shift
+    PATH="$work/bin:$PATH" "$@" > "$log" 2>&1 &
+    echo "$!" > "$work/script"
+    code=0
+    wait "$!" || code=$?
+    echo "$code"
+}
+# Stops a start of the server of this release while PostgreSQL creates the copy before a
+# migration: after the server wrote the name of the copy into the comment of the database,
+# and before the copy has its own comment (ADR 0018). PostgreSQL copies a database only
+# while no other session is connected to it, so a session in the database holds the server
+# in its retries. A second session then takes a lock on the database that the creation of
+# the copy waits for, and the first session ends: the creation has begun, and waits, when
+# the server container is killed. After the kill, the second session ends and PostgreSQL
+# finishes the creation.
+stop_during_copy() {
+    new exec -T -e PGAPPNAME=junto-test-connected postgres psql -U junto -d junto -q -c 'select pg_sleep(600)' \
+        < /dev/null > /dev/null 2>&1 &
+    connected=$!
+    wait_until "a session is connected to the database" "sessions \"application_name = 'junto-test-connected' and datname = 'junto'\"" 1
+    new up --no-start --no-deps server
+    docker update --restart no "$(new ps -a -q server)" > /dev/null
+    new start server
+    wait_until "the server wrote the name of its copy into the comment of the database" "comment junto" \
+        "junto: the server makes the copy $1"
+    new exec -T -e PGAPPNAME=junto-test-lock postgres psql -U junto -d postgres -q -c begin \
+        -c "comment on database junto is 'junto: the server makes the copy $1'" -c 'select pg_sleep(600)' \
+        < /dev/null > /dev/null 2>&1 &
+    held=$!
+    wait_until "the second session holds a lock on the database" \
+        "sql \"select count(*) from pg_locks l join pg_stat_activity a using (pid) where a.application_name = 'junto-test-lock' and l.locktype = 'object' and l.classid = 'pg_database'::regclass and l.objid = (select oid from pg_database where datname = 'junto') and l.granted\" postgres" 1
+    sql "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'junto-test-connected'" postgres > /dev/null
+    wait_until "the creation of the copy waits for the lock" \
+        "sessions \"usename = 'junto_server' and wait_event_type = 'Lock' and query like 'create database %'\"" 1
+    docker kill "$(new ps -q server)" > /dev/null
+    wait_until "the server container has ended" "new ps --status running --format '{{.Service}}' server" ""
+    sql "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'junto-test-lock'" postgres > /dev/null
+    wait_until "the creation of the copy has ended" "sessions \"query like 'create database %' and state <> 'idle'\"" 0
+    wait "$connected" || true
+    wait "$held" || true
+}
 
 # Both releases build an image with the same name, so every start names its build. A build
 # that was made before comes from the cache.
@@ -173,12 +265,34 @@ new start server
 check "the step is refused while the server runs" "$([ "$status" -ne 0 ] && grep -c 'the server runs. Stop it first' "$work/user.log")" "1"
 new stop server
 check "that refusal created no role" "$(role)" ""
+# From here on PostgreSQL writes every statement to its log. It writes the statement of a
+# failure also without this setting. The statement that gives the role of the server its
+# password must not be in the log (ADR 0022).
+sql "alter system set log_statement = 'all'" postgres > /dev/null
+sql 'select pg_reload_conf()' postgres > /dev/null
+logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ./database-user.sh local.yaml > "$work/user.log" 2>&1 || { cat "$work/user.log"; exit 1; }
 check "the role of the server may log in and create a database, and has no other attribute" "$(role)" "t|t|f|f|f|f"
 check "the role owns the database, and every table, sequence and routine in it" "$(owners junto)" "junto_server|0"
 check "the output of the step holds no secret" "$(secrets_in "$work/user.log")" "0"
+postgres_log "$logged"
+check "the log of PostgreSQL holds the statements of the step" \
+    "$(grep -c 'statement: alter database junto owner to junto_server' "$work/postgres.log")" "1"
+check "the log of PostgreSQL holds no secret" "$(secrets_in "$work/postgres.log")" "0"
 ./database-user.sh local.yaml > "$work/user.log" 2>&1 || { cat "$work/user.log"; exit 1; }
 check "a second run of the step ends without a failure" "$(grep -c 'database-user: done' "$work/user.log")" "1"
+# In a database that takes no change, the statement that sets the password fails.
+sql 'alter database junto set default_transaction_read_only = on' postgres > /dev/null
+logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+status=0
+./database-user.sh local.yaml > "$work/user.log" 2>&1 || status=$?
+sql 'alter database junto reset default_transaction_read_only' postgres > /dev/null
+postgres_log "$logged"
+check "the step fails at the statement that sets the password" \
+    "$([ "$status" -ne 0 ] && grep -c 'ERROR:  cannot execute ALTER ROLE in a read-only transaction' "$work/postgres.log")" "1"
+check "that failure changed nothing" "$(role) $(owners junto)" "t|t|f|f|f|f junto_server|0"
+check "the output of the failed step holds no secret" "$(secrets_in "$work/user.log")" "0"
+check "the log of PostgreSQL holds no secret after that failure" "$(secrets_in "$work/postgres.log")" "0"
 
 # The owner of a database can change what a name without a schema means in it. The step
 # runs as the first user in that database, so it must not read a name of the role: here a
@@ -254,6 +368,20 @@ check "the role of the server owns the copy" "$(owners "junto_before_$before")" 
 # the secret in this release, which changes the role of the server only.
 sql "alter role junto password 'another'" postgres > /dev/null
 epoch_before=$(epoch)
+# The way back sets that password in the database postgres. While that database takes no
+# change, the statement fails, the way back changes no name, and the log of PostgreSQL holds
+# no secret.
+sql 'alter database postgres set default_transaction_read_only = on' junto > /dev/null
+logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+status=0
+"$work/earlier/deploy/upgrade-undo.sh" local.yaml > "$work/undo.log" 2>&1 || status=$?
+sql 'alter database postgres reset default_transaction_read_only' junto > /dev/null
+postgres_log "$logged"
+check "the way back fails at the statement that sets the password" \
+    "$([ "$status" -ne 0 ] && grep -c 'ERROR:  cannot execute ALTER ROLE in a read-only transaction' "$work/postgres.log")" "1"
+check "that failure changed no name" "$(copies) $(schema)" "junto_before_$before $partly"
+check "the output of that way back holds no secret" "$(secrets_in "$work/undo.log")" "0"
+check "the log of PostgreSQL holds no secret after that failure" "$(secrets_in "$work/postgres.log")" "0"
 "$work/earlier/deploy/upgrade-undo.sh" local.yaml > "$work/undo.log" 2>&1 || { cat "$work/undo.log"; exit 1; }
 check "after the way back no copy is left" "$(copies)" ""
 check "the database has the schema from before the upgrade" "$(schema)" "$before"
@@ -272,11 +400,19 @@ old stop server
 
 # The upgrade. The function that stopped the migration is in the copy too.
 sql 'drop function is_inside_call(uuid, uuid)' > /dev/null
+# A first start is stopped while PostgreSQL creates the copy (ADR 0018).
+new build server > /dev/null 2>&1
+stop_during_copy "junto_making_$before"
+check "the stopped start left the database of its copy, without a comment" \
+    "$(making)|$(comment "junto_making_$before")" "junto_making_$before|"
+check "the comment of the database names that database" "$(comment junto)" "junto: the server makes the copy junto_making_$before"
+check "the stopped start migrated nothing and left no copy" "$(schema)|$(copies)" "$before|"
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 new up -d --build --wait --wait-timeout 600 postgres server
 after=$(schema)
 check "the upgrade applied every migration" "$after" "$newest"
 check "the server made a copy before the migration" "$(copies)" "junto_before_$before"
+check "the server deleted the database that the stopped start left" "$(making)" ""
 check "the log names the copy" "$(log_holds "junto_before_$before")" "yes"
 check "the comment of the database no longer states an upgrade that has not finished" "$(comment junto)" ""
 check "the server is connected as its role" \
@@ -299,7 +435,15 @@ check "a second way back is refused while the database of the first is kept" \
 check "that refusal changed no database" "$(copies) $(sql "select count(*) from pg_database where datname in ('junto', 'junto_undone')" postgres)" "junto_before_$before 2"
 new exec -T postgres dropdb -U junto junto_undone < /dev/null
 epoch_before=$(epoch)
-"$work/earlier/deploy/upgrade-undo.sh" local.yaml "junto_before_$before" > "$work/undo.log" 2>&1 || { cat "$work/undo.log"; exit 1; }
+# This way back gets the stop signal while the server of the checkout lists the directories
+# that no row of the copy names, which is after the renames (ADR 0021).
+in_front '*" unnamed-files"*' "        kill -TERM \"\$(cat '$work/script')\""
+status=$(in_background "$work/undo.log" "$work/earlier/deploy/upgrade-undo.sh" local.yaml "junto_before_$before")
+wait_until "the container of the listing has ended" \
+    "docker ps -q --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.oneoff=True | wc -l | tr -d ' '" 0
+check "a way back that gets the stop signal while it lists the directories ends with the code 143" "$status" "143"
+check "its output states that the database is the copy again" \
+    "$(grep -c "upgrade-undo: the database is the copy junto_before_$before again" "$work/undo.log")" "1"
 check "the way back gave the event stream a new epoch" "$([ "$(epoch)" != "$epoch_before" ] && echo new)" "new"
 old up -d --build --wait --wait-timeout 600 postgres server
 check "the earlier release runs on the schema of the copy" "$(schema)" "$before"
@@ -354,16 +498,37 @@ check "a restore with a server image that does not state its schema is refused" 
 check "that restore stopped nothing" "$(new ps --status running --format '{{.Service}}' server)" "server"
 new build server > /dev/null 2>&1
 
-# What a start of the server leaves that was stopped while it made its copy: a database
-# without a comment, which the comment of the database names. A restore deletes it with the
-# database, and leaves a database of such a name that nothing states.
+# What a start of the server leaves that was stopped while PostgreSQL created its copy: a
+# database without a comment, which only the comment of the database names. The database is
+# the one of the earlier release again, as before an upgrade, so that a migration waits and
+# the server makes its copy. A database of such a name that nothing states stays.
+new stop server
+new exec -T postgres psql -U junto -d postgres -q -v ON_ERROR_STOP=1 -c 'drop database junto with (force)' \
+    -c 'create database junto' < /dev/null
+new exec -T postgres pg_restore -U junto -d junto --exit-on-error < "$work/earlier-backup/database.dump"
+./database-user.sh local.yaml > "$work/user.log" 2>&1 || { cat "$work/user.log"; exit 1; }
 new exec -T postgres psql -U junto_server -d postgres -q -v ON_ERROR_STOP=1 \
-    -c "create database junto_making_$after template template0" \
-    -c 'create database junto_making_1 template template0' \
-    -c "comment on database junto is 'junto: the server makes the copy junto_making_$after'" < /dev/null
+    -c 'create database junto_making_1 template template0' < /dev/null
+stop_during_copy "junto_making_$before"
+check "the second stopped start left the database of its copy, without a comment" \
+    "$(making)|$(comment "junto_making_$before")" "junto_making_1 junto_making_$before|"
+# The restore deletes that database first, while the comment of the database junto names
+# it, and the database junto second (ADR 0021). The restore is ended between the two.
+in_front '*" --force junto"' "        kill -KILL \"\$PPID\"
+        exit 1"
+logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+status=0
+PATH="$work/bin:$PATH" ./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || status=$?
+check "the restore was ended by force" "$status" "137"
+check "it had deleted the database that the stopped start left, and not the database junto" \
+    "$(making) $(sql "select count(*) from pg_database where datname in ('junto', 'junto_restore')" postgres)" "junto_making_1 2"
+check "the database junto is the one from before the restore" "$(schema)" "$before"
 ./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || { cat "$work/restore.log"; exit 1; }
-check "the restore deleted the database that the stopped start left, and no other" \
-    "$(sql "select string_agg(datname, ' ' order by datname) from pg_database where datname like 'junto\\_making\\_%'" postgres)" "junto_making_1"
+check "the second run of the restore ends" "$(grep -c 'restore: done' "$work/restore.log")" "1"
+check "the restored database has the schema of the backup" "$(schema)" "$after"
+check "the database of such a name that nothing states is still there, and no other" "$(making)" "junto_making_1"
+postgres_log "$logged"
+check "the log of PostgreSQL holds no secret after the two restores" "$(secrets_in "$work/postgres.log")" "0"
 new up -d --build --wait --wait-timeout 600 postgres server
 driver check --count 3 || failures=$((failures + 1))
 

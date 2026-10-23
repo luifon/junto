@@ -194,6 +194,7 @@ give_up() {
     fi
     if [ -n "$replaced" ]; then
         echo "restore: the data was replaced, and the restore is complete. The list of the directories that no row names did not end. Start the deployment: docker compose -f $form up -d" >&2
+        echo "restore: list them after the start: docker compose -f $form exec server junto-server unnamed-files" >&2
         exit "$code"
     fi
     now=$(echo "select (select count(*) from pg_database where datname = 'junto') || ' ' || (select count(*) from pg_database where datname = 'junto_restore');" | sql 2>/dev/null) || now=unknown
