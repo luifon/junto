@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-An account has a name and an avatar per server (ADR 0119) and one or more devices, each with its own key (ADR 0104, ADR 0112). The client core has the requests for all of it and the flow that approves a new device (ADR 0712). The window showed none of it: the settings hold the profile preset, which is the start of a new account and not the profile of an account that exists (ADR 0717). The approved design has no view for the profile of one server or for the devices. The administration layer (ADR 0761) fixed how a layer with pages behaves: one request of the person at a time, a refusal at the control that asked, and no answer that reaches another page, another server or another account.
+An account has a name and an avatar per server (ADR 0119) and one or more devices, each with its own key (ADR 0104, ADR 0112). The client core has the requests for all of it and the flow that approves a new device (ADR 0712). The window showed none of it: the settings hold the profile preset, which is the start of a new account and not the profile of an account that exists (ADR 0717). The administration layer (ADR 0761) fixed how a layer with pages behaves: one request of the person at a time, a refusal at the control that asked, and no answer that reaches another page, another server or another account.
 
 ## Decision
 

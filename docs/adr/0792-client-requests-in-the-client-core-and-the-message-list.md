@@ -28,7 +28,7 @@ The quiet time:
 
 The thread line of a message:
 
-- The line shows the pictures of the first authors of the replies that the server states, at most three, small and overlapping, as the approved design draws them. A longer list of a server is cut at three.
+- The line shows the pictures of the first authors of the replies that the server states, at most three, small and overlapping. A longer list of a server is cut at three.
 - A root without stated authors shows the picture of the author of the last reply, as before.
 
 The lines of a direct call:

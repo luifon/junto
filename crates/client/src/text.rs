@@ -483,7 +483,7 @@ pub const SOUND_SYSTEM: &str = "All system sound";
 pub const SOUND_ONE_APPLICATION: &str = "One application";
 pub const SOUND_THIS_APPLICATION: &str = "This application";
 pub const SOUND_CHOICE_HELP: &str =
-    "Choose the sound for each share. The sound of Junto itself is never shared.";
+    "Choose the sound for each share. Sound from other applications may include the call.";
 pub const SOUND_SYSTEM_HELP: &str = "The people in the call hear every sound that this computer plays, except the sound of \
      Junto.";
 pub const SOUND_NONE_HELP: &str = "The people in the call get the picture only.";

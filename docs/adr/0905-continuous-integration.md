@@ -106,6 +106,10 @@ The images and deployment job runs on the macOS machine and not on the Linux hos
 
 The images that the jobs pull (`tools/ci/pins.sh`) keep the name of their registry and are run by digest; Docker gives a pulled image no other name unless it is tagged, and a tag would not stop a run by digest from pulling it again. `docker rmi` with each image reference of `tools/ci/pins.sh` removes them.
 
+When the inspector of a Windows run is missing, `ci.sh forget` copies the current inspector as `check-run.ps1` into that run and asks it whether the run ended. A missing file alone is not proof of termination: the task and recorded processes must have ended before the directory is removed. A failed copy or an inconclusive check leaves the directory in place. A folder with no start, process or job evidence may still be receiving its files and is not removed.
+
+The Windows setup enables the Task Scheduler operational event log. That log preserves scheduling failures for diagnosis; enabling it does not change the sixty-second startup deadline or establish the cause of a past timeout.
+
 ## Consequences
 
 - An error that exists only with PostgreSQL on macOS or Windows is found by CI only when a window test reaches it; the other tests that need PostgreSQL run on Linux only.

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The approved design draws a text channel with its messages (view A), the chat of a voice channel (view G) and the chat tab of a call (view B). ADR 0401 and ADR 0408 define what a message holds: a typed document, replies, reactions, files, system lines. ADR 0721 gives the window a timeline per open place, the waiting messages and the unread summaries. gpui has a list element that measures a row when it is drawn, and the component library has a text area with inline tokens. The design draws no state for a message that waits, no control for the actions of a message, and no direct conversations.
+ADR 0401 and ADR 0408 define what a message holds: a typed document, replies, reactions, files, system lines. ADR 0721 gives the window a timeline per open place, the waiting messages and the unread summaries. gpui has a list element that measures a row when it is drawn, and the component library has a text area with inline tokens.
 
 ## Decision
 
@@ -45,7 +45,7 @@ Waiting messages:
 Composer:
 
 - The composer is a text area that grows to 10 rows. Enter sends, and Shift with Enter adds a line.
-- The text is typed with marks, and the sent message shows formatted text: `**bold**`, `*italic*`, `~~struck~~`, `` `code` ``, a block between lines of three backticks with an optional language, `> ` for a quote, `- ` and `1. ` for lists, `- [ ] ` for a check box, `[text](address)` and bare addresses for links, and a backslash before a mark for plain text. The toolbar of the design puts the marks around the selection.
+- The text is typed with marks, and the sent message shows formatted text: `**bold**`, `*italic*`, `~~struck~~`, `` `code` ``, a block between lines of three backticks with an optional language, `> ` for a quote, `- ` and `1. ` for lists, `- [ ] ` for a check box, `[text](address)` and bare addresses for links, and a backslash before a mark for plain text. The toolbar puts the marks around the selection.
 - The work to read a text for its marks grows with its length and not with its square: the runs of backticks of a text are listed once, a kind of mark that has no closing run is not searched for again, the search for the end of a link stops at the longest address, and marks inside marks are read 8 levels deep. A test counts the steps. A text above 64 KiB is not read for marks and is refused for its length.
 - A mention is a token of the text area and no mark: `@` opens a list of the members and roles of the workspace, and of "everyone" with its permission; the chosen entry is one unit of the text with the identifier of its account or role. In a direct conversation the server takes a mention of its two participants only (ADR 0408), so the list offers the other participant, once the client holds the name of that account.
 - An edit puts the text of the message into the composer with its marks. The arrow up in an empty composer edits the last own message. Escape ends an edit or a reply.
@@ -56,7 +56,7 @@ Composer:
 
 Unread signs:
 
-- A channel with unread messages has a bold name and a dot, and with mentions the sign "@ n" (view A). ADR 0741 makes both follow the notification settings of the person. A workspace of the server book and the icon of a collapsed server carry the same signs for their channels. 100 or more is shown as "99+".
+- A channel with unread messages has a bold name and a dot, and with mentions the sign "@ n". ADR 0741 makes both follow the notification settings of the person. A workspace of the server book and the icon of a collapsed server carry the same signs for their channels. 100 or more is shown as "99+".
 - The read position moves to the last loaded message when the window is active, draws the list, and the list shows its end. The chat of a call is not drawn while the panel shows the members or the settings, and its messages stay unread until the chat tab is shown. "Mark as read" in the header moves the position to the latest one of the channel.
 
 Places:

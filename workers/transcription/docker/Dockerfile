@@ -12,7 +12,11 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.13@sha256:841c8e6fe30a8b07b4478d12d0c608c
 FROM ${UV_IMAGE} AS uv
 
 FROM ${PYTHON_IMAGE} AS toolchain
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT=20261005T000000Z
+RUN rm -f /etc/apt/sources.list.d/* \
+ && echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" > /etc/apt/sources.list \
+ && echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" >> /etc/apt/sources.list \
+ && apt-get update \
  && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

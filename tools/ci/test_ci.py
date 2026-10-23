@@ -38,6 +38,12 @@ exit "${FAKE_SCP_STATUS:-0}"
 POWERSHELL = r'''#!/bin/sh
 case " $* " in
     *" -Ended "*)
+        if [ "${FAKE_REQUIRE_START_SCRIPT:-}" = 1 ]; then
+            case " $* " in
+                *" -File check-run.ps1 "*) test -f check-run.ps1 || exit 2 ;;
+                *) test -f start-run.ps1 || exit 2 ;;
+            esac
+        fi
         if [ -n "${FAKE_FINISH_DURING_CHECK:-}" ]; then
             printf '%s\trust-windows\tstart\tend\t0\tlogs/rust-windows.log\t61\n' "$(cat commit)" >>record.tsv
             rm -f current
@@ -151,6 +157,28 @@ class WindowsRunner(unittest.TestCase):
         self.assertIn("ended without its result", ended.stdout)
         self.assertEqual(self.ci("forget", run, FAKE_ENDED="0").returncode, 0)
         self.assertFalse(here.exists())
+
+    def test_a_run_without_its_inspector_is_forgotten_only_after_a_positive_end_check(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        self.assertFalse((here / "start-run.ps1").exists())
+        refused = self.ci("forget", run, FAKE_ENDED="1", FAKE_REQUIRE_START_SCRIPT="1")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertTrue(here.exists())
+        forgotten = self.ci("forget", run, FAKE_ENDED="0", FAKE_REQUIRE_START_SCRIPT="1")
+        self.assertEqual(forgotten.returncode, 0, forgotten.stdout + forgotten.stderr)
+        self.assertFalse(here.exists())
+
+    def test_a_run_without_start_evidence_is_not_forgotten_during_its_upload(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        (here / "process").unlink()
+        (here / "current").unlink()
+        result = self.ci("forget", run, FAKE_ENDED="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("upload may still be in progress", result.stderr)
+        self.assertTrue(here.exists())
+        self.assertEqual(self.log("scp"), "")
 
     # The run passes while status asks whether its processes have ended.
     def test_a_run_that_finishes_during_the_check_of_its_end_is_reported_with_its_result(self):

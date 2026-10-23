@@ -3,6 +3,7 @@
 
 mod admin;
 mod discovery;
+mod glossary;
 mod live;
 mod messages;
 mod recordings;
@@ -116,6 +117,8 @@ commands:
   threads <action> [arguments] send one request of the thread routes
   pins <action> [arguments]    send one request of the pin routes
   notices <action> [arguments] send one request of the notice and notification routes
+  glossary <action> [arguments]
+                               read and change a workspace glossary
   recordings <action> [arguments]
                                send one request of the routes of recordings and of
                                their transcripts
@@ -210,6 +213,15 @@ actions of notices:
 
 A scope is account, workspace:<id> or channel:<id>. A time is written as
 2026-01-31T00:00:00Z.
+
+actions of glossary:
+  list <workspace>            list terms in priority order
+  add <workspace> --text <term>
+                               append a term
+  change <workspace> --term <old term> --text <new term>
+  remove <workspace> --term <term>
+                               identify the existing term by its exact text; a change
+                               made from a stale list is refused
 
 actions of recordings:
   list <workspace> [--before <recording>] [--limit <n>]
@@ -380,6 +392,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "hide",
     "hours",
     "text",
+    "term",
     "reply",
     "file",
     "before",
@@ -788,6 +801,7 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             discovery::run(&client, command, &arguments).await
         }
         "recordings" => recordings::run(&client, &arguments).await,
+        "glossary" => glossary::run(&client, &arguments).await,
         "deny-request" | "invites" | "redeem" | "workspaces" | "categories" | "channels"
         | "overrides" | "members" | "accounts" | "tokens" | "exports" | "audit" | "logo"
         | "archive-period" | "retention" => admin::run(&client, command, &arguments).await,

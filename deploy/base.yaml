@@ -222,8 +222,8 @@ services:
       timeout: 3s
       retries: 6
       start_period: 60s
-    # A recording that the server ended needs this time to finish its files. The recorder
-    # is stopped only when no recording runs (docs/install.md, "Upgrade").
+    # The recorder has time to finish files after a stop signal. Before an upgrade,
+    # the operator stops recordings and waits for completion (docs/install.md).
     stop_grace_period: 2m
     mem_limit: ${JUNTO_RECORDER_MEMORY:-4g}
     cpus: ${JUNTO_RECORDER_CPUS:-6}

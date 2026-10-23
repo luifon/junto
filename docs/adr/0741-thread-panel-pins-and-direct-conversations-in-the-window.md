@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The approved design draws a thread in a side panel beside the list of its channel, with the controls of a fork (view A), a channel whose messages are permanent (view J), and "Pins" in the header of a channel. It draws no direct conversation. ADR 0722 gives the window a thread as a place of messages, the unread threads, the pin list of a channel and the direct conversations of the state. ADR 0740 built one message list and one composer for the selected channel. ADR 0404 and ADR 0409 make the unread sign of a place depend on the notification settings of the person. The server refuses "also send to the channel" (ADR 0403), tells the count of the replies and the last reply of a thread and no other reply, and does not tell who pinned a message.
+ADR 0722 gives the window a thread as a place of messages, the unread threads, the pin list of a channel and the direct conversations of the state. ADR 0740 built one message list and one composer for the selected channel. ADR 0404 and ADR 0409 make the unread sign of a place depend on the notification settings of the person. The server refuses "also send to the channel" (ADR 0403), tells the count of the replies and the last reply of a thread and no other reply, and does not tell who pinned a message.
 
 ## Decision
 
@@ -65,7 +65,7 @@ Unread signs:
 
 ## Consequences
 
-- A person sees one avatar on a message with a thread, the one of the last reply, where the design draws three.
+- The reply-author pictures follow ADR 0792: at most three authors, small and overlapping.
 - With the default level "mentions only", a channel with new messages and no mention has no dot. The person changes the level to see one.
 - The channel column lists no thread that is read, except the open one: the server lists only threads with something unread.
 - The menu of a message opens at the start of its text. Before this record it opened at the left edge of the list and lay over the channel column.

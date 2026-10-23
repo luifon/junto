@@ -66,7 +66,7 @@ Result:
 
 Recorder restarts:
 
-- The server ends the recordings before the recorder is stopped. The recorder container is stopped with a stop timeout, because a recorder that receives the stop signal finishes its recordings only when it is given the time. A restart with the default timeout ended it after about one second.
+- Before a planned upgrade or restart, the operator stops recordings through the client and waits for them to finish, as described in `docs/install.md`. There is no automatic drain command. The recorder has a two-minute stop grace period to finish its files after a stop signal; this does not prove that every recording finished. Restore stops the server, worker and recorder together before replacing stored data (ADR 0005), and does not preserve recordings made after the backup.
 
 ## Consequences
 

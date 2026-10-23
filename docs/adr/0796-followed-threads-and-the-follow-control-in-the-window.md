@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-An account follows a thread by a rule of the server or by its own choice, and the server lists the threads of a channel that the account follows (ADR 0412, ADR 0413). The client core has the routes and applies `thread_follow_changed` to the unread threads (ADR 0792). The channel column lists under a channel the threads with something unread and the open thread, and the side panel shows one thread (ADR 0741). The state of a server holds the follow state of a thread only while the thread has something unread. The approved design shows threads under a channel and has no control for the choice.
+An account follows a thread by a rule of the server or by its own choice, and the server lists the threads of a channel that the account follows (ADR 0412, ADR 0413). The client core has the routes and applies `thread_follow_changed` to the unread threads (ADR 0792). The channel column lists under a channel the threads with something unread and the open thread, and the side panel shows one thread (ADR 0741). The state of a server holds the follow state of a thread only while the thread has something unread.
 
 ## Decision
 
@@ -40,4 +40,4 @@ Accounts:
 - A person finds a followed thread under its channel after its replies were read.
 - The shown channel costs one read of its followed threads at each trigger, and one read for each root that the state does not hold.
 - A reply of the own account in a thread that is not open, on another device, changes the order of the list only at the next trigger.
-- The control and the row that offers further threads are designed in this record and not in the approved design.
+- The control and the row that offers further threads are designed in this record.

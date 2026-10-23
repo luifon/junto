@@ -203,11 +203,13 @@ pub struct CallJoin {
     /// The requests to enter that wait for an answer of a person inside.
     pub entry_requests: Vec<EntryRequest>,
     /// The block of the caller's microphone in this call. The call lists the caller as a
-    /// participant only after the device has connected, so the answer states the block.
+    /// participant only after the device has connected, so the answer states the block,
+    /// except before admission to a call that hides its occupants (ADR 0517).
     #[serde(default)]
     pub microphone_block: Option<MicrophoneBlock>,
     /// The block of the caller's sound in this call. The client applies it from the first
-    /// moment of its connection (ADR 0503).
+    /// moment of its connection (ADR 0503), except before admission to a call that hides
+    /// its occupants (ADR 0517).
     #[serde(default)]
     pub sound_block: Option<SoundBlock>,
     /// True when a microphone block of the caller ended as a grant of meeting mode and the

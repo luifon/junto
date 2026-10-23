@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The server has the rules of a call: meeting mode with raised hands (ADR 0505, ADR 0512), microphone and sound blocks and the removal of a person (ADR 0503), the lock, the user limit and the setting that hides who is inside (ADR 0504, ADR 0514), requests to enter and invitations (ADR 0514), and moves between voice channels (ADR 0511). The approved design draws them in view B (the invitation of a member, the settings of the room), view D (meeting mode as presenter and as participant), view F (a locked room, a full room) and view K (the menu of a person in a voice channel). It draws no prompt for an invitation or for a request to enter, and no state for a request that the server refused. The client holds the roles of a workspace and no override of a channel (ADR 0719), and the state of a server holds an invitation or a request only while it waits. The media server of this project has no move function: the device joins the room of the destination by itself (ADR 0511). The presenter and a moderator with "mute members" lower the hand of another person with the route of ADR 0516.
+The server has the rules of a call: meeting mode with raised hands (ADR 0505, ADR 0512), microphone and sound blocks and the removal of a person (ADR 0503), the lock, the user limit and the setting that hides who is inside (ADR 0504, ADR 0514), requests to enter and invitations (ADR 0514), and moves between voice channels (ADR 0511). The client holds the roles of a workspace and no override of a channel (ADR 0719), and the state of a server holds an invitation or a request only while it waits. The media server of this project has no move function: the device joins the room of the destination by itself (ADR 0511). The presenter and a moderator with "mute members" lower the hand of another person with the route of ADR 0516.
 
 ## Decision
 
@@ -41,7 +41,7 @@ A room that a person cannot enter without help:
 - The box shows the request of the person: on its way, waiting with "Withdraw request", denied, or without an answer, the last two with "Ask again". An acceptance enters the call at once.
 - A person has one request at a time. A new request withdraws the earlier one, and so does the entry into any call: an acceptance does not replace a call that the person entered meanwhile. An answer that arrives before the server has told the identifier of the request is kept and used when the identifier is known. A request without an answer is shown as ended after the time that the server gave it and 5 seconds.
 - A request of the account that another device made is shown at its voice channel as waiting, with "Withdraw", from the list of the state of the server (ADR 0719). A request of this device that waits or is on its way comes first; a request of this device that was denied or ended does not hide the waiting request of another device, and "Withdraw" then puts away that end and withdraws the other request. A request that the state of the server still lists after this device saw it end is not shown as waiting. Its answer ends it on this device without a notice: an acceptance lets in the device that asked, and this device does not enter. Reason: the server keeps one request per account in a call, so a device that did not show the request offered "Ask to enter", and the server refused it with `conflict` while the request waited. Test: `a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room` in the window live tier and `a_room_that_is_locked_or_full_tells_a_person_outside_and_shows_the_request_to_enter` in `crates/client`, which also failed while an ended request of this device hid the waiting one ("Ask again" was offered, and the server refused it with `conflict`).
-- A full room has the request too, as the server has it. The design draws it for a locked room only.
+- A full room has the request too, as the server has it.
 
 Prompts:
 
@@ -59,7 +59,7 @@ The menu of a person:
 - A row of a person in a voice channel of the channel list opens a menu: with a right click, and from the keyboard, while the row holds the focus, with the Menu key, Shift and F10, Enter or Space. The row of the person of this device has no menu.
 - The menu has "Invite to my room" while the device is in another call of the same workspace, "Move to…" with the other voice channels for a person with "move members", the volume of the person for this listener, and under "Moderation" the microphone block with "mute members", "Lower hand" with "mute members" or for the presenter of meeting mode inside that call, the sound block with "deafen members", and "Disconnect" with "disconnect members". A block that exists is offered for removal.
 - "Lower hand" lowers the hand of the person and changes no microphone block (ADR 0516). While the hand of the person is not raised, the item is drawn disabled and states that no hand is raised: a hand that is raised or lowered while the menu is open moves no item under the pointer.
-- The sound block is not in the design. It is in the menu because the server has it (ADR 0503).
+- The menu offers the sound block of ADR 0503.
 - A moderator acts on a person in any voice channel that the moderator can see, also from outside it (ADR 0514).
 
 A move of the person of this device:

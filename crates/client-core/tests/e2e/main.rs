@@ -6,6 +6,7 @@
 mod admin;
 mod calls_live;
 mod departures;
+mod glossary;
 #[allow(dead_code)]
 mod limit;
 mod limit_tests;

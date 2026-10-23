@@ -6,12 +6,15 @@
 # Every tool is downloaded from its publisher at the version below, checked by its SHA-256,
 # and installed below -Directory, except the parts of the Build Tools that the Visual Studio
 # installer places in fixed folders (the installer itself and the Windows SDK). The script
-# changes no system setting and no PATH. A tool whose recorded version is the pinned one is
+# enables the Task Scheduler operational log and changes no PATH. A tool whose recorded version is the pinned one is
 # left as it is, so a second run downloads nothing.
 #
 # Exit codes: 0 when every tool is ready; 1 when a step failed; 3 when the Build Tools need a
 # restart of Windows to finish. The script never restarts Windows.
-param([Parameter(Mandatory = $true)][string]$Directory)
+param(
+    [Parameter(Mandatory = $true)][string]$Directory,
+    [switch]$FunctionsOnly
+)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -157,7 +160,17 @@ function Install-BuildTools {
     Set-Installed $folder $BuildToolsVersion
 }
 
+function Enable-TaskLog {
+    & wevtutil.exe sl Microsoft-Windows-TaskScheduler/Operational /e:true
+    if ($LASTEXITCODE -ne 0) {
+        throw "could not enable the Task Scheduler operational log (run setup elevated)"
+    }
+}
+
+if ($FunctionsOnly) { return }
+
 try {
+    Enable-TaskLog
     Install-Git
     Install-Python
     Install-Rustup

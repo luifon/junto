@@ -8,7 +8,7 @@ Accepted
 
 The server book lists the servers in the order in which they were added, and a person could not change it. The collapsed server book marks a server that holds unread content with a dot; the expanded server book showed unread content on the rows of the workspaces only, so unread direct messages of a server that is not shown had no sign there.
 
-ADR 0704 decides that the client checks for a new version at start and periodically and shows a notice. The project has no release page and no signing keys yet, so nothing can be downloaded or verified. A server can require a newer client (ADR 0713); the window stated that without naming a version. The approved design has no drag of a server. It draws the update notice as one line of the channel column, directly above the profile strip, with the sentence "New version available" and the action "Update". It draws nothing of the notice in the server book, and no control that puts the notice away.
+ADR 0704 decides that the client checks for a new version at start and periodically and shows a notice. The project has no release page and no signing keys yet, so nothing can be downloaded or verified. A server can require a newer client (ADR 0713); the window stated that without naming a version.
 
 ## Decision
 
@@ -20,7 +20,7 @@ Order of the server book, in the client core:
 
 Order of the server book, in the window:
 
-- The menu of the selected server has "Move up" and "Move down". Each moves the server one place. The design has no drag, and a keyboard path is required.
+- The menu of the selected server has "Move up" and "Move down". Each moves the server one place. These actions provide a keyboard path.
 - The item at the end that it leads to is disabled and says why in its second line. A disabled item of a menu stays a stop of the keyboard, so the keyboard focus stays on an item that a move disabled. The menu stays open after a move.
 - The write runs on the queue of writes of the application (ADR 0730), on a background thread, after the writes that were asked for before. The place is counted when the write runs, so two presses in a row move the server two places. A write that failed is stated in the menu of that server.
 - The rows of the server book follow the list of the client core. The selection is a server, so it stays on the moved server.
@@ -46,8 +46,8 @@ Update notice, in the window:
 
 - While the state is "available", the channel column shows one line directly above the profile strip: the download icon, the sentence "New version available", and the action at the right end. The server book shows nothing of the notice, expanded or collapsed.
 - The window draws the channel column with its profile strip in every state: for a server that shows its lists, for a server that shows a state panel in the main area, and while the server book holds no server. The line is drawn in all of them. It has no second place.
-- The form is the one of the design, in design pixels at 100 %: a height of 30, a margin of 8 at the sides and below and none above, a padding of 9 at the sides, a gap of 7, a corner radius of 3, the cypress wash as the ground with its border of 1 pixel, and text of 13 pixels with the weight 500 in cypress. The action is bold and underlined. The sentence is cut with an ellipsis before it can move the action.
-- The design names the action "Update". This version installs nothing, so the action is "Details". The sentence names no version; the accessible name and the tooltip of the line are "Junto <version> is available.".
+- The form uses logical pixels at 100 %: a height of 30, a margin of 8 at the sides and below and none above, a padding of 9 at the sides, a gap of 7, a corner radius of 3, the cypress wash as the ground with its border of 1 pixel, and text of 13 pixels with the weight 500 in cypress. The action is bold and underlined. The sentence is cut with an ellipsis before it can move the action.
+- The action is "Details" and opens the version settings; the update format and installation are described in ADR 0724 and ADR 0726. The sentence names no version; the accessible name and the tooltip of the line are "Junto <version> is available.".
 - The whole line is one control with the role of a button. It is a stop of the keyboard, and a click, Enter or Space activates it. It opens the settings at their last section, "Version". The content of a dialog scrolls in a window that is lower than the dialog; the settings give the dialog the position of their content, so that this section is shown.
 - No control puts the line away, and the window holds no state of the notice beside the state of the check. The line leaves when a check finds no release that is newer than the build.
 - The section "Version" of the settings states the version of this build, the state of the check, "Check now" when a source exists, and that this version does not install updates by itself. For an available release with a page it shows the address in a field that takes no change, so that it can be selected, and "Copy address". The client opens no browser.
@@ -62,5 +62,5 @@ Update notice, in the window:
 - Unread direct messages of a server in the background are visible in the expanded server book without selecting that server.
 - The application makes no request outside its server book in this version, because it has no source. ADR 0704 stays the decision for the real source: its request, the signing keys, the download and the install are not built.
 - With a source, the client makes at most one request every 6 hours by itself, and one per press of "Check now" while no check runs.
-- A person sees the notice in every state of the window while a newer release is known, also in a narrow window, where the server book is collapsed. A person cannot put it away. The line takes 38 design pixels of the height of the channel list.
+- A person sees the notice in every state of the window while a newer release is known, also in a narrow window, where the server book is collapsed. A person cannot put it away. The line takes 38 logical pixels of the height of the channel list.
 - A person copies the address of a release and opens it in a browser by hand.

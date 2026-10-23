@@ -10,7 +10,7 @@ Administrators and moderators can change roles, change channel settings, move pe
 
 ## Decision
 
-- The server records these actions: role changes, channel settings, moves, recording start and stop, exports, invites, approvals, removals, bans, recoveries, and message deletions in permanent-message channels.
+- The server records these actions: role changes, channel settings, moves, recording start and stop, exports, invites, approvals, removals, bans, recoveries, and deletions of messages that were sent while permanent messages were enabled, even after that setting is turned off (ADR 0402).
 - Each entry states who did it, what was done and when.
 - The log is read-only.
 - A viewer sees an entry about a channel only if the viewer can see that channel.

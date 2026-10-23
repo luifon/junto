@@ -65,6 +65,8 @@ Tests:
 
 ## Consequences
 
+- The share dialog warns that sound from other applications may include the call; it makes no unconditional promise to exclude the client.
+
 - A share shows the yellow border of the system around the shared screen or window. The border is not in the pictures.
 - The sound of an application includes the sound of its child processes. A program whose sound is played by a process outside its tree, such as an application of the store whose sound a broker plays, has that sound only in all system sound.
 - Whether the capture depends on the volume of the speakers or of the session of the application was not tested.

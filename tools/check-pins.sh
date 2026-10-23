@@ -173,14 +173,16 @@ for file in "$server" "$worker" "$speech" deploy/images/link/Dockerfile; do
 done
 
 # A Debian package is pinned by the dated snapshot of the archive that it comes from
-# (ADR 0014). In these two definitions, an instruction that names a package program has
+# (ADR 0014). In these three definitions, an instruction that names a package program has
 # one form only, so that this rule reads all of it: it removes the package sources of the
 # base image, writes the two sources of the snapshot, and installs packages by their names
 # without a further option. The snapshot is an argument of the same build stage. An
 # instruction that names the configuration of the package program in another way fails.
 same "Debian snapshot of the server image and of the speech image" \
     "$(argument "$server" DEBIAN_SNAPSHOT)" "$(argument "$speech" DEBIAN_SNAPSHOT)"
-for file in "$server" "$speech"; do
+same "Debian snapshot of the server image and of the worker image" \
+    "$(argument "$server" DEBIAN_SNAPSHOT)" "$(argument "$worker" DEBIAN_SNAPSHOT)"
+for file in "$server" "$speech" "$worker"; do
     unpinned=$(awk '
         { instruction = instruction $0 }
         /\\$/ { sub(/\\$/, "", instruction); next }
