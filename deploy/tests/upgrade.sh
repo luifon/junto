@@ -138,9 +138,19 @@ secrets_in() {
     done
     echo "$found"
 }
-# The log of PostgreSQL since a time.
+# A statement that marks a place in the log of PostgreSQL, which writes every statement from
+# the first mark on. A time of the host would depend on the clock of the Docker daemon.
+mark() {
+    sql "select 'junto-test-mark-$1'" postgres > /dev/null
+}
+# The log of the PostgreSQL container from a mark on. A log without the mark fails the test,
+# so that a check of the log never reads an empty file.
 postgres_log() {
-    new logs --no-log-prefix --since "$1" postgres > "$work/postgres.log" 2>&1
+    new logs --no-log-prefix postgres 2>&1 | sed -n "/junto-test-mark-$1/,\$p" > "$work/postgres.log"
+    if ! grep -q "junto-test-mark-$1" "$work/postgres.log"; then
+        echo "FAIL  the log of the PostgreSQL container does not hold the mark $1"
+        exit 1
+    fi
 }
 # The databases that a stopped start of the server can leave.
 making() {
@@ -148,10 +158,9 @@ making() {
 }
 # Waits until a command prints a value, for 60 seconds at most.
 wait_until() {
-    tries=0
+    ends=$(($(date +%s) + 60))
     until [ "$(eval "$2")" = "$3" ]; do
-        tries=$((tries + 1))
-        if [ "$tries" -ge 300 ]; then
+        if [ "$(date +%s)" -ge "$ends" ]; then
             echo "FAIL  after 60 s this did not hold: $1"
             exit 1
         fi
@@ -193,35 +202,44 @@ in_background() {
 # Stops a start of the server of this release while PostgreSQL creates the copy before a
 # migration: after the server wrote the name of the copy into the comment of the database,
 # and before the copy has its own comment (ADR 0018). PostgreSQL copies a database only
-# while no other session is connected to it, so a session in the database holds the server
-# in its retries. A second session then takes a lock on the database that the creation of
-# the copy waits for, and the first session ends: the creation has begun, and waits, when
-# the server container is killed. After the kill, the second session ends and PostgreSQL
-# finishes the creation.
+# while no other session is connected to it, and the server tries again for 30 seconds. A
+# session that is connected to the database holds the server in these tries. A second
+# session waits for an advisory lock that a third holds; when it gets it, it takes a lock on
+# the database that the creation of the copy waits for, and ends the first session. So only
+# the end of the third session falls into the 30 seconds. The test reads that the creation
+# waits for the lock and kills the server container. Then the second session ends, and
+# PostgreSQL finishes the creation after the end of its client.
 stop_during_copy() {
     new exec -T -e PGAPPNAME=junto-test-connected postgres psql -U junto -d junto -q -c 'select pg_sleep(600)' \
         < /dev/null > /dev/null 2>&1 &
     connected=$!
-    wait_until "a session is connected to the database" "sessions \"application_name = 'junto-test-connected' and datname = 'junto'\"" 1
+    new exec -T -e PGAPPNAME=junto-test-gate postgres psql -U junto -d postgres -q \
+        -c 'select pg_advisory_lock(4711)' -c 'select pg_sleep(600)' < /dev/null > /dev/null 2>&1 &
+    gate=$!
+    wait_until "a session is connected to the database, and a session holds the advisory lock" \
+        "sessions \"(application_name = 'junto-test-connected' and datname = 'junto' and state = 'active') or (application_name = 'junto-test-gate' and query like 'select pg_sleep%')\"" 2
+    new exec -T -e PGAPPNAME=junto-test-lock postgres psql -U junto -d postgres -q -c begin \
+        -c 'select pg_advisory_lock(4711)' \
+        -c "comment on database junto is 'junto: the server makes the copy $1'" \
+        -c "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'junto-test-connected'" \
+        -c 'select pg_sleep(600)' < /dev/null > /dev/null 2>&1 &
+    held=$!
+    wait_until "the second session waits for the advisory lock" \
+        "sessions \"application_name = 'junto-test-lock' and wait_event_type = 'Lock' and wait_event = 'advisory'\"" 1
     new up --no-start --no-deps server
     docker update --restart no "$(new ps -a -q server)" > /dev/null
     new start server
     wait_until "the server wrote the name of its copy into the comment of the database" "comment junto" \
         "junto: the server makes the copy $1"
-    new exec -T -e PGAPPNAME=junto-test-lock postgres psql -U junto -d postgres -q -c begin \
-        -c "comment on database junto is 'junto: the server makes the copy $1'" -c 'select pg_sleep(600)' \
-        < /dev/null > /dev/null 2>&1 &
-    held=$!
-    wait_until "the second session holds a lock on the database" \
-        "sql \"select count(*) from pg_locks l join pg_stat_activity a using (pid) where a.application_name = 'junto-test-lock' and l.locktype = 'object' and l.classid = 'pg_database'::regclass and l.objid = (select oid from pg_database where datname = 'junto') and l.granted\" postgres" 1
-    sql "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'junto-test-connected'" postgres > /dev/null
-    wait_until "the creation of the copy waits for the lock" \
+    sql "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'junto-test-gate'" postgres > /dev/null
+    wait_until "the creation of the copy waits for the lock of the second session" \
         "sessions \"usename = 'junto_server' and wait_event_type = 'Lock' and query like 'create database %'\"" 1
     docker kill "$(new ps -q server)" > /dev/null
     wait_until "the server container has ended" "new ps --status running --format '{{.Service}}' server" ""
     sql "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'junto-test-lock'" postgres > /dev/null
     wait_until "the creation of the copy has ended" "sessions \"query like 'create database %' and state <> 'idle'\"" 0
     wait "$connected" || true
+    wait "$gate" || true
     wait "$held" || true
 }
 
@@ -270,12 +288,12 @@ check "that refusal created no role" "$(role)" ""
 # password must not be in the log (ADR 0022).
 sql "alter system set log_statement = 'all'" postgres > /dev/null
 sql 'select pg_reload_conf()' postgres > /dev/null
-logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mark role-step
 ./database-user.sh local.yaml > "$work/user.log" 2>&1 || { cat "$work/user.log"; exit 1; }
 check "the role of the server may log in and create a database, and has no other attribute" "$(role)" "t|t|f|f|f|f"
 check "the role owns the database, and every table, sequence and routine in it" "$(owners junto)" "junto_server|0"
 check "the output of the step holds no secret" "$(secrets_in "$work/user.log")" "0"
-postgres_log "$logged"
+postgres_log role-step
 check "the log of PostgreSQL holds the statements of the step" \
     "$(grep -c 'statement: alter database junto owner to junto_server' "$work/postgres.log")" "1"
 check "the log of PostgreSQL holds no secret" "$(secrets_in "$work/postgres.log")" "0"
@@ -283,11 +301,11 @@ check "the log of PostgreSQL holds no secret" "$(secrets_in "$work/postgres.log"
 check "a second run of the step ends without a failure" "$(grep -c 'database-user: done' "$work/user.log")" "1"
 # In a database that takes no change, the statement that sets the password fails.
 sql 'alter database junto set default_transaction_read_only = on' postgres > /dev/null
-logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mark read-only-step
 status=0
 ./database-user.sh local.yaml > "$work/user.log" 2>&1 || status=$?
 sql 'alter database junto reset default_transaction_read_only' postgres > /dev/null
-postgres_log "$logged"
+postgres_log read-only-step
 check "the step fails at the statement that sets the password" \
     "$([ "$status" -ne 0 ] && grep -c 'ERROR:  cannot execute ALTER ROLE in a read-only transaction' "$work/postgres.log")" "1"
 check "that failure changed nothing" "$(role) $(owners junto)" "t|t|f|f|f|f junto_server|0"
@@ -370,13 +388,15 @@ sql "alter role junto password 'another'" postgres > /dev/null
 epoch_before=$(epoch)
 # The way back sets that password in the database postgres. While that database takes no
 # change, the statement fails, the way back changes no name, and the log of PostgreSQL holds
-# no secret.
+# no secret. The way back starts PostgreSQL with the Compose file of its checkout; the test
+# does that first, so that the mark is in the log of the container that runs.
+old up -d --wait postgres
 sql 'alter database postgres set default_transaction_read_only = on' junto > /dev/null
-logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mark way-back
 status=0
 "$work/earlier/deploy/upgrade-undo.sh" local.yaml > "$work/undo.log" 2>&1 || status=$?
 sql 'alter database postgres reset default_transaction_read_only' junto > /dev/null
-postgres_log "$logged"
+postgres_log way-back
 check "the way back fails at the statement that sets the password" \
     "$([ "$status" -ne 0 ] && grep -c 'ERROR:  cannot execute ALTER ROLE in a read-only transaction' "$work/postgres.log")" "1"
 check "that failure changed no name" "$(copies) $(schema)" "junto_before_$before $partly"
@@ -516,7 +536,7 @@ check "the second stopped start left the database of its copy, without a comment
 # it, and the database junto second (ADR 0021). The restore is ended between the two.
 in_front '*" --force junto"' "        kill -KILL \"\$PPID\"
         exit 1"
-logged=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mark restores
 status=0
 PATH="$work/bin:$PATH" ./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || status=$?
 check "the restore was ended by force" "$status" "137"
@@ -527,7 +547,7 @@ check "the database junto is the one from before the restore" "$(schema)" "$befo
 check "the second run of the restore ends" "$(grep -c 'restore: done' "$work/restore.log")" "1"
 check "the restored database has the schema of the backup" "$(schema)" "$after"
 check "the database of such a name that nothing states is still there, and no other" "$(making)" "junto_making_1"
-postgres_log "$logged"
+postgres_log restores
 check "the log of PostgreSQL holds no secret after the two restores" "$(secrets_in "$work/postgres.log")" "0"
 new up -d --build --wait --wait-timeout 600 postgres server
 driver check --count 3 || failures=$((failures + 1))

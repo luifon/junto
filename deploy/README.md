@@ -21,7 +21,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 | `entry/Caddyfile` | The entry on port 443 with three server names. |
 | `images/server/` | The server image: Dockerfile, hand-over of transcription jobs, volume owners. |
 | `images/worker/` | The loop that runs transcription jobs in the worker container. |
-| `images/recorder/` | The start script of the recorder, which saves partial files. |
+| `images/recorder/` | The start script of the recorder, which saves partial files and passes the stop of the container on to the recorder. |
 | `images/link/` | The image of the private link of form 2. |
 | `images/postgres/` | The access rules of PostgreSQL, and the file that creates the role of the server. |
 | `tests/` | Tests that need Docker and no public address. |

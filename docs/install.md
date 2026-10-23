@@ -398,7 +398,7 @@ docker compose -f one-host.yaml exec server junto-server unnamed-files --remove
 
 The server is never updated automatically (ADR 0005). An upgrade is a new checkout of the repository and a new build.
 
-1. Stop the server, so that no recording can start, and check that none runs. The command ends with the code 3 while one does; then start the server again (`docker compose -f one-host.yaml start server`), end the recording and repeat. Do not stop, restart or replace the recorder during a recording: the recording is lost (ADR 0601).
+1. Stop the server, so that no recording can start, and check that none runs. The command ends with the code 3 while one does; then start the server again (`docker compose -f one-host.yaml start server`), end the recording and repeat. Do not stop, restart or replace the recorder during a recording: the recording then ends as `partly_failed`, with the files up to the stop (ADR 0601).
 
    ```sh
    docker compose -f one-host.yaml stop server

@@ -222,11 +222,9 @@ services:
       timeout: 3s
       retries: 6
       start_period: 60s
-    # A recording that the server ended needs this time to finish its files. The recorder
-    # is stopped only when no recording runs (docs/install.md, "Upgrade"). On SIGTERM the
-    # recorder waits for its jobs to end, which only the server ends, and is killed at the
-    # end of this time; on SIGINT it ends each job and finishes its files (ADR 0601).
-    stop_signal: SIGINT
+    # A recording that the server ended needs time to finish its files, and the start script
+    # waits for that before it passes the stop on to the recorder (ADR 0601). The recorder is
+    # stopped only when no recording runs (docs/install.md, "Upgrade").
     stop_grace_period: 2m
     mem_limit: ${JUNTO_RECORDER_MEMORY:-4g}
     cpus: ${JUNTO_RECORDER_CPUS:-6}

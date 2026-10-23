@@ -36,6 +36,9 @@ fi
 compose() {
     docker compose --env-file "$settings" -f "$form" -f restore-images.yaml "$@"
 }
+# The command that lists the directories that no row names, for the settings file and the
+# project of this run.
+listing="docker compose${JUNTO_ENV_FILE:+ --env-file $settings}${COMPOSE_PROJECT_NAME:+ -p $COMPOSE_PROJECT_NAME} -f $form exec server junto-server unnamed-files"
 verify() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum -c SHA256SUMS
@@ -194,7 +197,7 @@ give_up() {
     fi
     if [ -n "$replaced" ]; then
         echo "restore: the data was replaced, and the restore is complete. The list of the directories that no row names did not end. Start the deployment: docker compose -f $form up -d" >&2
-        echo "restore: list them after the start: docker compose -f $form exec server junto-server unnamed-files" >&2
+        echo "restore: list them after the start: $listing" >&2
         exit "$code"
     fi
     now=$(echo "select (select count(*) from pg_database where datname = 'junto') || ' ' || (select count(*) from pg_database where datname = 'junto_restore');" | sql 2>/dev/null) || now=unknown
@@ -303,5 +306,6 @@ if unnamed=$(once server unnamed-files < /dev/null); then
     fi
 else
     echo "restore: the server could not list the directories that no row of the restored database names (junto-server unnamed-files). The restore is complete." >&2
+    echo "restore: list them after the start: $listing" >&2
 fi
 echo "restore: done. Start the deployment: docker compose -f $form up -d"

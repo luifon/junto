@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -37,6 +38,7 @@ from server_output import newest_owner_code, standard_output
 RECORDINGS = "/var/lib/junto/recordings"
 RECORDER_WORK = "/home/egress/tmp"
 SPOOL = "/var/lib/junto/spool"
+HOLD_OUTPUT = Path(__file__).resolve().parent / "hold_output.py"
 # The user of a transcription job in the worker container (deploy/base.yaml).
 JOB_USER = "10001"
 SOURCES = ["composite", "microphone", "microphone", "screen_share_audio"]
@@ -126,19 +128,27 @@ class Deployment:
         for file in arguments.compose_file:
             self.command += ["-f", file]
 
-    def script(self, name: str, *arguments: str, seconds: float = 900) -> tuple[int, str]:
-        """Runs a script of deploy/ on this deployment, as an operator runs it, and returns its
-        exit code and its output."""
-        done = subprocess.run(
+    def start_script(self, name: str, *arguments: str, front: Path | None = None) -> subprocess.Popen[str]:
+        """Starts a script of deploy/ on this deployment, as an operator runs it. `front` is a
+        directory whose program `docker` comes first in the `PATH` of the script (ADR 0911)."""
+        environment = {**os.environ, "JUNTO_ENV_FILE": self.env_file, "COMPOSE_PROJECT_NAME": self.project}
+        if front is not None:
+            environment["PATH"] = f"{front}{os.pathsep}{environment['PATH']}"
+        return subprocess.Popen(
             [str(self.directory / name), *arguments],
             cwd=self.directory,
-            env={**os.environ, "JUNTO_ENV_FILE": self.env_file, "COMPOSE_PROJECT_NAME": self.project},
-            capture_output=True,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=seconds,
-            check=False,
         )
-        return done.returncode, done.stdout + done.stderr
+
+    def script(self, name: str, *arguments: str, seconds: float = 900) -> tuple[int, str]:
+        """Runs a script of deploy/ and returns its exit code and its output."""
+        process = self.start_script(name, *arguments)
+        output, _ = process.communicate(timeout=seconds)
+        return process.returncode, output
 
     def secrets(self) -> list[str]:
         """The values of the secret settings of the deployment."""
@@ -168,13 +178,19 @@ class Deployment:
             f"for d in /proc/[0-9]*; do [ \"$(stat -c %u \"$d\" 2>/dev/null)\" = {JOB_USER} ] && echo \"${{d#/proc/}}\"; done; true",
         ).split()
 
-    def handovers(self) -> int:
-        """The processes of the hand-over script of transcription jobs in the server container."""
+    def processes(self, service: str, pattern: str) -> int:
+        """The number of processes in the container of a service whose command line matches a
+        pattern of grep. The pattern must not match its own text, for example with a class of
+        one letter."""
         count = self.inside(
-            "server",
-            "for f in /proc/[0-9]*/cmdline; do tr '\\000' ' ' < \"$f\" 2>/dev/null; echo; done | grep -c '[j]unto-transcribe-handover' || true",
+            service,
+            f"for f in /proc/[0-9]*/cmdline; do tr '\\000' ' ' < \"$f\" 2>/dev/null; echo; done | grep -c '{pattern}' || true",
         ).strip()
         return int(count) if count.isdigit() else 0
+
+    def handovers(self) -> int:
+        """The processes of the hand-over script of transcription jobs in the server container."""
+        return self.processes("server", "[j]unto-transcribe-handover")
 
     def answers(self, origin: str) -> bool:
         try:
@@ -531,8 +547,6 @@ class Scene:
         self.channel_id = next(channel["id"] for channel in workspace["channels"] if channel["kind"] == "voice")
         self.participants: list[Participant] = []
         self.in_call: list[Device] = []
-        # The request of the spool that the removal during a transcript leaves.
-        self.left_in_spool: str | None = None
 
     def enter(self, device: Device, name: str, options: list[str]) -> Participant:
         join = device.call("POST", f"/api/v1/channels/{self.channel_id}/call/join", expect=(200, 201)).json()
@@ -1272,6 +1286,20 @@ def speak(scene: Scene) -> None:
         time.sleep(9)
 
 
+def spoken_recording(scene: Scene, arguments: argparse.Namespace) -> str:
+    """A recording of a call in which each participant plays its speech file, ready, after
+    which everybody leaves."""
+    start_call(scene, arguments)
+    recording_id = scene.start_recording()
+    scene.wait_recording(recording_id, SOURCES)
+    speak(scene)
+    scene.stop_recording()
+    detail = scene.wait_final(recording_id)
+    report.check("the recording is ready", detail["recording"]["state"] == "ready", detail["recording"]["state"])
+    scene.everybody_leaves()
+    return recording_id
+
+
 def taken_job(scene: Scene) -> tuple[str, dict[str, str]] | None:
     """The request of the spool that the loop of the worker has taken and not ended."""
     for name, files in scene.deployment.spool().items():
@@ -1353,13 +1381,47 @@ def phase_server_restart(scene: Scene, arguments: argparse.Namespace) -> None:
     scene.remove_and_check_nothing_is_left(recording_id, "server restart")
 
 
+def start_recorder(scene: Scene) -> None:
+    started = time.time()
+    scene.deployment.run("start", "recorder", seconds=180)
+
+    def healthy() -> bool:
+        state = scene.deployment.run("ps", "--format", "{{.Health}}", "recorder")
+        return "healthy" in state and "unhealthy" not in state
+
+    wait_for("the recorder container is healthy", healthy, 180, 1)
+    report.ok(f"the recorder container is healthy {time.time() - started:.1f} s after its start")
+
+
 def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
-    """The recorder container is stopped during a recording and stays stopped. The server ends
-    the recording by itself and keeps what was recorded; a recording that starts while no
-    recorder runs fails. Then the recorder is started again and records (ADR 0601, ADR 0604)."""
+    """The recorder container is stopped right after a person stopped a recording, and then
+    during a recording, after which it stays stopped. A recording that was stopped is ready.
+    The server ends a recording that runs by itself and keeps what was recorded; a recording
+    that starts while no recorder runs fails. Then the recorder is started again and records
+    (ADR 0601, ADR 0604)."""
     deployment = scene.deployment
     start_call(scene, arguments)
     everybody = scene.people_in_call()
+
+    # The stop of the recorder container follows the stop of the recording at once, while the
+    # recorder finishes the files of the jobs that the server ended.
+    ended = scene.start_recording()
+    scene.wait_recording(ended, SOURCES)
+    time.sleep(6)
+    scene.stop_recording()
+    stopped = time.time()
+    deployment.run("stop", "recorder", seconds=180)
+    report.ok(f"the recorder container was stopped {time.time() - stopped:.1f} s after the stop of the recording")
+    detail = scene.wait_final(ended, 240)
+    report.check(
+        "a recording that was stopped right before the stop of the recorder is ready, with four ended segments and checked files",
+        detail["recording"]["state"] == "ready"
+        and len(detail["segments"]) == 4
+        and all(segment["state"] == "ended" and (segment.get("file") or {}).get("check") == "passed" for segment in detail["segments"]),
+        [(segment["source"], segment["state"], segment.get("failure"), (segment.get("file") or {}).get("check")) for segment in detail["segments"]],
+    )
+    start_recorder(scene)
+
     recording_id = scene.start_recording()
     first = scene.wait_recording(recording_id, SOURCES)
     first_ids = {segment["id"] for segment in first["segments"]}
@@ -1382,16 +1444,18 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     kept = sorted(segment["source"] for segment in segments if segment["id"] in first_ids and (segment.get("file") or {}).get("check") == "passed")
     report.check("each source has the file of what was recorded before the stop, and the file passed the check", kept == sorted(SOURCES), summary)
     later = [segment for segment in segments if segment["id"] not in first_ids]
-    # The server stops asking for the job of one track, or for the composite, after three
-    # requests in a row that no recorder took (ADR 0604).
-    by_track: dict[str, int] = {}
+    # The server asks for a new job for each of the four tracks, and stops asking for the job
+    # of one track after three requests in a row that no recorder took (ADR 0604).
+    tracks = {f"{segment['source']} {segment.get('account_id') or ''}".strip() for segment in segments if segment["id"] in first_ids}
+    by_track = {track: 0 for track in tracks}
     for segment in later:
         track = f"{segment['source']} {segment.get('account_id') or ''}".strip()
         by_track[track] = by_track.get(track, 0) + 1
     report.check(
-        "every later request to start a job failed with `recorder_unavailable`, and the server stopped asking after three for one track",
-        all(segment["state"] == "failed" and segment.get("failure") == "recorder_unavailable" for segment in later)
-        and all(count <= 3 for count in by_track.values()),
+        "the server asked again for each of the four tracks, every request failed with `recorder_unavailable`, and it stopped after three for one track",
+        len(by_track) == 4
+        and all(1 <= count <= 3 for count in by_track.values())
+        and all(segment["state"] == "failed" and segment.get("failure") == "recorder_unavailable" for segment in later),
         (by_track, summary),
     )
     report.check("the reservation has ended", scene.reservation(recording_id) == "")
@@ -1408,15 +1472,7 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     report.check("it holds no reservation", scene.reservation(refused) == "")
 
     # The recorder starts again.
-    started = time.time()
-    deployment.run("start", "recorder", seconds=180)
-    wait_for(
-        "the recorder container is healthy",
-        lambda: "healthy" in deployment.run("ps", "--format", "{{.Health}}", "recorder") and "unhealthy" not in deployment.run("ps", "--format", "{{.Health}}", "recorder"),
-        180,
-        1,
-    )
-    report.ok(f"the recorder container is healthy {time.time() - started:.1f} s after its start")
+    start_recorder(scene)
     again = scene.start_recording()
     scene.wait_recording(again, SOURCES, 90)
     time.sleep(6)
@@ -1428,6 +1484,7 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
         [(segment["source"], segment["state"], segment.get("failure")) for segment in detail["segments"]],
     )
     scene.everybody_leaves()
+    remove_recording(scene, ended)
     remove_recording(scene, recording_id)
     remove_recording(scene, refused)
     scene.remove_and_check_nothing_is_left(again, "recorder stopped")
@@ -1442,14 +1499,7 @@ def phase_removal_during_transcript(scene: Scene, arguments: argparse.Namespace)
         report.info("removal during a transcript: not run; the worker runs a job only with the model files")
         return
     deployment = scene.deployment
-    start_call(scene, arguments)
-    recording_id = scene.start_recording()
-    scene.wait_recording(recording_id, SOURCES)
-    speak(scene)
-    scene.stop_recording()
-    detail = scene.wait_final(recording_id)
-    report.check("the recording is ready", detail["recording"]["state"] == "ready", detail["recording"]["state"])
-    scene.everybody_leaves()
+    recording_id = spoken_recording(scene, arguments)
     job = hold_running_job(scene, recording_id)
     try:
         transcript = scene.owner.get(f"/api/v1/recordings/{recording_id}/transcript")["state"]
@@ -1465,7 +1515,10 @@ def phase_removal_during_transcript(scene: Scene, arguments: argparse.Namespace)
     finally:
         deployment.run("unpause", "worker")
     wait_for("the loop of the worker ended the job", lambda: deployment.spool().get(job, {}).get("result", "").startswith("taken exit "), 60)
-    report.info(f"the files of the request: {deployment.spool().get(job)}")
+    # The loop sees the cancel file and ends the job with the stop signal, and with the kill
+    # signal 8 seconds later (ADR 0016). Any other code is a job that ran on.
+    result = deployment.spool().get(job, {}).get("result")
+    report.check("the loop ended the cancelled job with the stop or the kill signal", result in ("taken exit 143", "taken exit 137"), result)
     try:
         wait_for("no process of the job is left in the worker container", lambda: not deployment.job_processes(), 30)
     except Failed:
@@ -1493,7 +1546,85 @@ def phase_removal_during_transcript(scene: Scene, arguments: argparse.Namespace)
     )
     answer = scene.owner.call("GET", f"/api/v1/recordings/{recording_id}")
     report.check("the removed recording is not found", answer.status == 404, answer.status)
-    scene.left_in_spool = job
+
+    # The removal while the worker runs: the loop sees the cancel file within its poll, and the
+    # hand-over reads the end of the job and removes the request (ADR 0016).
+    second = spoken_recording(scene, arguments)
+    wait_for(
+        "the transcript of the second recording runs",
+        lambda: scene.owner.get(f"/api/v1/recordings/{second}/transcript")["state"] == "running",
+        300,
+    )
+    taken = wait_for("the loop of the worker has taken the second job", lambda: taken_job(scene), 120, 0.2)
+    report.check("the hand-over of the second job removed the request that the first removal left", job not in deployment.spool(), deployment.spool())
+    scene.owner.call("DELETE", f"/api/v1/recordings/{second}", expect=204)
+    removed = time.time()
+    try:
+        wait_for("the request of the second job leaves the spool", lambda: taken[0] not in deployment.spool(), 60)
+        report.ok(f"the request of the second job left the spool {time.time() - removed:.1f} s after the removal")
+    except Failed:
+        report.fail("the request of the second job left the spool", deployment.spool())
+    try:
+        wait_for("no process of the second job is left", lambda: not deployment.job_processes() and deployment.handovers() == 0, 30)
+    except Failed:
+        pass
+    report.check(
+        "removal while the worker runs: no process of the job and no hand-over is left",
+        not deployment.job_processes() and deployment.handovers() == 0,
+        (deployment.job_processes(), deployment.handovers()),
+    )
+    try:
+        wait_for("the files of the second recording are deleted", lambda: not deployment.recording_files_of(second) and deployment.sql("select count(*) from file_removals") == "0", 120)
+    except Failed:
+        pass
+    report.check("removal while the worker runs: nothing of the recording is left", not deployment.recording_files_of(second), deployment.recording_files_of(second)[:6])
+    report.check("removal while the worker runs: no removal waits, and the spool is empty", deployment.sql("select count(*) from file_removals") == "0" and deployment.spool() == {}, deployment.spool())
+
+
+def backup_while_the_job_ends(scene: Scene, recording_id: str, recorded: dict[str, str], secrets: list[str]) -> None:
+    """A backup whose archive step reads the directory of the recording while the job of its
+    transcript ends. A program in front of `docker` holds the output of `tar` after its first
+    MiB, so that `tar` waits inside that directory. The worker container, paused while its job
+    runs, continues; the job ends, and the server stores the transcript file in the directory.
+    Then `tar` goes on, finds that the directory changed while it read it, and ends with the
+    code 1, which deploy/backup.sh accepts (ADR 0021)."""
+    deployment = scene.deployment
+    work = Path(scene.arguments.work)
+    front, held, go = work / "front", work / "archive-held", work / "archive-go"
+    front.mkdir(exist_ok=True)
+    real = shutil.which("docker")
+    program = front / "docker"
+    program.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f"    *--verbatim-files-from*) exec python3 -B '{HOLD_OUTPUT}' 1048576 '{held}' '{go}' 900 '{real}' \"$@\" ;;\n"
+        "esac\n"
+        f"exec '{real}' \"$@\"\n"
+    )
+    program.chmod(0o755)
+    destination = work / "backup-while-the-job-ends"
+    process = deployment.start_script("backup.sh", deployment.forms[0], str(destination), front=front)
+    try:
+        wait_for("the archive step holds the output of tar", held.exists, 300, 0.2)
+        report.check("tar runs and waits inside the archive", deployment.processes("server", "^[t]ar --numeric-owner -cf") == 1)
+        deployment.run("unpause", "worker")
+        wait_for(
+            "the transcript is stored while tar waits",
+            lambda: scene.owner.get(f"/api/v1/recordings/{recording_id}/transcript")["state"] in ("ready", "partial", "failed"),
+            1500,
+            2,
+        )
+        stored = deployment.inside("server", f"test -f {RECORDINGS}/{recording_id}/transcript.json && echo stored", check=False).strip()
+        report.check("the server wrote the transcript file into the directory of the recording while tar waited", stored == "stored")
+        report.check("tar still waits inside the archive after the end of the job", deployment.processes("server", "^[t]ar --numeric-owner -cf") == 1)
+    finally:
+        go.touch()
+    output, _ = process.communicate(timeout=900)
+    report.check("a backup during which the job of the transcript ends is written", process.returncode == 0, output[-1500:])
+    report.check("tar stated that the directory of the recording changed while it read it", f"recordings/{recording_id}: file changed as we read it" in output, output[-1500:])
+    report.check("its output holds no secret", not any(value in output for value in secrets))
+    archived = files_in_archive(destination / "files.tar", recording_id) if process.returncode == 0 else {}
+    report.check("its archive holds the files of the recording with their bytes", archived == recorded, (sorted(archived), sorted(recorded)))
 
 
 def phase_backup(scene: Scene, arguments: argparse.Namespace) -> None:
@@ -1537,19 +1668,17 @@ def phase_backup(scene: Scene, arguments: argparse.Namespace) -> None:
     during_transcript = work / "backup-during-transcript"
     if arguments.models:
         job = hold_running_job(scene, recording_id)
-        if scene.left_in_spool is not None:
-            report.check(
-                "the hand-over of this job removed the request that the removal during a transcript left",
-                scene.left_in_spool not in deployment.spool(),
-                deployment.spool(),
-            )
         try:
             code, output = deployment.script("backup.sh", deployment.forms[0], str(during_transcript))
             transcript = scene.owner.get(f"/api/v1/recordings/{recording_id}/transcript")["state"]
+            running = taken_job(scene)
+            report.check("a backup while the transcript runs is written", code == 0, output[-1500:])
+            report.check("the transcript ran during the backup", transcript == "running" and running is not None and running[0] == job, (transcript, running))
+            backup_while_the_job_ends(scene, recording_id, recorded, secrets)
         finally:
-            deployment.run("unpause", "worker")
-        report.check("a backup while the transcript runs is written", code == 0, output[-1500:])
-        report.check("the transcript ran during the backup", transcript == "running" and taken_job(scene) is not None, (transcript, job))
+            # backup_while_the_job_ends continues the container itself; this one is for a
+            # failure before it.
+            deployment.run("unpause", "worker", check=False)
     else:
         report.info("backup during a transcript: the worker runs no job without the model files; the backup follows the failed transcript")
         code, output = deployment.script("backup.sh", deployment.forms[0], str(during_transcript))
