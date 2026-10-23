@@ -93,6 +93,10 @@ pub(crate) struct AdminUi {
     pub(crate) invalid: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The requests of forms of the open page whose answer has not arrived, also after the
+    /// form was put away. The other controls of the place of such a request send nothing
+    /// until its answer arrives (ADR 0761).
+    pub(crate) awaited: Vec<AskKind>,
     /// The term of the glossary whose row shows the open form or question. The form
     /// closes when the list holds another term at its position.
     pub(crate) opened_term: Option<String>,
@@ -149,6 +153,7 @@ impl AdminUi {
             new_kind: ChannelKind::Text,
             invalid: None,
             sent: None,
+            awaited: Vec::new(),
             opened_term: None,
             space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
@@ -520,6 +525,27 @@ impl Shell {
     /// form, with the reason.
     pub(crate) fn admin_sent(&mut self, what: AskKind) {
         self.admin.sent = Some(what);
+        self.await_admin_form(what);
+    }
+
+    /// Holds the request of a form until its answer arrives: a Cancel, Escape or another
+    /// form does not end it.
+    pub(crate) fn await_admin_form(&mut self, what: AskKind) {
+        if !self.admin.awaited.contains(&what) {
+            self.admin.awaited.push(what);
+        }
+    }
+
+    /// Whether the request of a form of the open page waits for its answer: the other
+    /// controls of its place are then disabled (ADR 0761).
+    #[cfg(feature = "test-support")]
+    pub fn admin_form_waits(&self, what: AskKind) -> bool {
+        self.admin.awaited.contains(&what)
+    }
+
+    /// Whether the request of a form at this place is on its way.
+    pub(crate) fn admin_form_awaited(&self, view: &AdminView, what: AskKind) -> bool {
+        self.admin.awaited.contains(&what) && view.sending(what)
     }
 
     fn settle_admin_form(&mut self, view: &AdminView, window: &mut Window, cx: &mut Context<Self>) {
@@ -731,6 +757,7 @@ impl Shell {
             return div().into_any_element();
         };
         self.settle_admin_form(&view, window, cx);
+        self.admin.awaited.retain(|what| view.sending(*what));
         self.admin.list.drawn = false;
         let theme = theme(cx);
         let colors = theme.colors;

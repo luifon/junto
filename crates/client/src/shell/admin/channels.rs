@@ -1070,8 +1070,7 @@ impl Shell {
         // While the new name or the category of the form is on its way, the other controls of
         // the settings send nothing: a later request would replace the state of the request
         // that the form follows (ADR 0761).
-        let answering = self.admin.sent == Some(AskKind::UpdateChannel(channel_id))
-            && view.sending(AskKind::UpdateChannel(channel_id));
+        let answering = self.admin_form_awaited(view, AskKind::UpdateChannel(channel_id));
         let waiting = answering.then_some(text::admin::FORM_SENT);
         let held = archived.or(waiting);
         let mut column = div().flex().flex_col().child(page_title(

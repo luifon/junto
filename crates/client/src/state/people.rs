@@ -312,9 +312,15 @@ impl Held {
     /// derives the pictures.
     fn settle(&mut self, dropped: &mut Vec<Arc<RenderImage>>) {
         let now = self.clock;
+        // Every held entry that is shown is marked first, so that a missing entry does not
+        // take the place of one that is shown later in the list.
         for account_id in &self.wanted {
             if let Some(entry) = self.profiles.get_mut(account_id) {
                 entry.used = now;
+            }
+        }
+        for account_id in &self.wanted {
+            if self.profiles.contains_key(account_id) {
                 continue;
             }
             if make_room(&mut self.profiles, MOST_PROFILES, now).is_err() {
@@ -338,9 +344,13 @@ impl Held {
                     .filter_map(|account_id| self.profiles.get(account_id)?.value.as_ref()?.avatar),
             )
             .collect();
-        for hash in hashes {
-            if let Some(entry) = self.images.get_mut(&hash) {
+        for hash in &hashes {
+            if let Some(entry) = self.images.get_mut(hash) {
                 entry.used = now;
+            }
+        }
+        for hash in hashes {
+            if self.images.contains_key(&hash) {
                 continue;
             }
             match make_room(&mut self.images, MOST_IMAGES, now) {
@@ -1067,6 +1077,35 @@ pub(super) fn add_call_people(
     held.accounts.splice(0..0, people);
 }
 
+/// The people that the window shows, the most visible first: the people of the call of this
+/// device, the accounts of the laid-out rows of the open page of the administration that the
+/// page still lists (`admin`: its server and the accounts that it lists), and the people of
+/// the view, which the layer covers while it is open (ADR 0783).
+fn followed_people(
+    followed: &Followed,
+    admin: Option<(ServerId, &HashSet<AccountId>)>,
+) -> HashMap<ServerId, Wanted> {
+    let mut wanted = followed.view.clone();
+    if let Some((server_id, listed)) = admin {
+        let rows = followed
+            .admin_rows
+            .iter()
+            .copied()
+            .filter(|account_id| listed.contains(account_id));
+        wanted
+            .entry(server_id)
+            .or_default()
+            .accounts
+            .splice(0..0, rows);
+    }
+    for (server_id, call) in &followed.call {
+        let held = wanted.entry(*server_id).or_default();
+        held.own = held.own.or(call.own);
+        held.accounts.splice(0..0, call.accounts.iter().copied());
+    }
+    wanted
+}
+
 /// The people of the call of this device in the state of its server, in the order of the
 /// view of the call: the participants, then the person of this device when the state does
 /// not list the account yet.
@@ -1268,31 +1307,19 @@ impl AppState {
         self.want_people(cx);
     }
 
-    /// Gives the cache the people that the window shows, the most visible first: the people
-    /// of the call of this device, the accounts of the laid-out rows of the open page of the
-    /// administration that the page still lists, and the people of the view, which the layer
-    /// covers while it is open (ADR 0783).
+    /// Gives the cache the people that the window shows, in the order of
+    /// [`followed_people`].
     fn want_people(&mut self, cx: &mut Context<Self>) {
-        let followed = &self.people_followed;
-        let mut wanted = followed.view.clone();
-        if let Some(admin) = self.admin_view() {
+        let admin = self.admin_view().map(|admin| {
             let listed: HashSet<AccountId> = admin_people(&admin).into_iter().collect();
-            let rows = followed
-                .admin_rows
-                .iter()
-                .copied()
-                .filter(|account_id| listed.contains(account_id));
-            wanted
-                .entry(admin.server_id)
-                .or_default()
-                .accounts
-                .splice(0..0, rows);
-        }
-        for (server_id, call) in &followed.call {
-            let held = wanted.entry(*server_id).or_default();
-            held.own = held.own.or(call.own);
-            held.accounts.splice(0..0, call.accounts.iter().copied());
-        }
+            (admin.server_id, listed)
+        });
+        let wanted = followed_people(
+            &self.people_followed,
+            admin
+                .as_ref()
+                .map(|(server_id, listed)| (*server_id, listed)),
+        );
         self.known.people.want_all(&wanted);
         self.read_people(true, cx);
     }

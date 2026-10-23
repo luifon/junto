@@ -4,7 +4,7 @@
 
 use gpui::TestAppContext;
 use junto_client::state::admin::view::{AdminView, ChannelPageView, Scope, ServerPage};
-use junto_client::state::admin::{AdminOpen, AdminPage, ChannelPage};
+use junto_client::state::admin::{AdminOpen, AdminPage, AskKind, ChannelPage};
 use junto_client::state::view::ServerStatus;
 use junto_client_core::ServerHandle;
 use junto_client_core::model::ServerModel;
@@ -14,7 +14,7 @@ use junto_client_core::protocol::structure::{
 };
 
 use crate::harness::{Admin, Window, World, member, named, selector};
-use crate::support::{Device, FaultProxy, join, logged_in};
+use crate::support::{Device, Fault, FaultProxy, join, logged_in};
 
 impl Admin {
     fn default_workspace(&self, world: &World) -> WorkspaceId {
@@ -656,6 +656,102 @@ fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
         !window.shows(choice) && window.shows("channel-move")
     });
     assert_eq!(changes(&proxy), 2);
+}
+
+/// A Cancel of the form of a new name while the name is on its way does not end the wait:
+/// the settings of the channel send nothing until the answer arrives, and the refusal of
+/// the name is told (ADR 0761).
+#[gpui::test]
+fn a_cancelled_form_of_a_channel_keeps_its_settings_waiting_and_tells_the_refusal(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Ada");
+    window.find_server(&proxy.address());
+    window.join_with_code(&server.owner_code().unwrap());
+    window.until_ready();
+    let owner = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers())
+        .remove(0);
+    let default = world
+        .run(owner.api().workspaces())
+        .unwrap()
+        .into_iter()
+        .find(|workspace| workspace.is_default)
+        .unwrap()
+        .id;
+    let channel = CreateChannel {
+        name: "plans".to_owned(),
+        kind: ChannelKind::Text,
+        category_id: None,
+        position: None,
+    };
+    let plans = world
+        .run(owner.api().create_channel(default, &channel))
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    let settings = selector(format!("channel-settings-{plans}"));
+    window.until("the channel has its row", |window| window.shows(settings));
+    window.click(settings);
+    window.until("the settings of the channel are open", |window| {
+        window.shows("channel-rename") && window.shows("channel-permanent")
+    });
+    let changed = format!("/api/v1/channels/{plans}");
+    let changes = |proxy: &FaultProxy| {
+        proxy
+            .seen(&changed)
+            .into_iter()
+            .filter(|seen| seen.method == "PATCH")
+            .collect::<Vec<_>>()
+    };
+    let waits = |window: &mut Window| {
+        window.in_shell(|shell, _, _| shell.admin_form_waits(AskKind::UpdateChannel(plans)))
+    };
+
+    // Every try of the new name is answered `busy`, so the name is refused.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail_ending(
+        &format!("/channels/{plans}"),
+        std::iter::repeat_n(Fault::Busy, attempts),
+    );
+    proxy.hold_request("PATCH", &format!("/channels/{plans}"));
+    window.click("channel-rename");
+    window.send_form("roadmap");
+    window.until("the new name is on its way", |_| {
+        !changes(&proxy).is_empty()
+    });
+    window.click("admin-form-cancel");
+    window.until("the form is put away", |window| {
+        !window.shows("channel-name")
+    });
+    assert!(waits(&mut window));
+    window.click("channel-permanent");
+    window.settle();
+    assert!(waits(&mut window));
+
+    proxy.release();
+    window.until("the refusal of the new name is told", |window| {
+        window.shows("channel-settings-refused")
+    });
+    assert!(!waits(&mut window));
+    let sent = changes(&proxy);
+    assert_eq!(sent.len(), attempts);
+    assert!(
+        sent.iter()
+            .all(|seen| String::from_utf8_lossy(&seen.body).contains("roadmap")),
+        "a rule of the channel was sent while its new name was on its way"
+    );
+    assert!(matches!(
+        window.admin().map(|view| view.scope),
+        Some(Scope::Channel(settings))
+            if matches!(&settings.page, ChannelPageView::Overview(page)
+                if !page.permanent && page.name == "plans")
+    ));
 }
 
 /// The channels page of the open administration.

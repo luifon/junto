@@ -632,8 +632,9 @@ fn step<V: ListHost>(
 }
 
 /// The focus is on the tab stop before or after the rows: it goes on to the first or the
-/// last row in view that can hold a control, or, when no row in view can, to the first or
-/// the last such row of the list. Answered once for each arrival of the focus.
+/// last row that can hold a control, chosen by [`PageList::first_fitting`] among the rows
+/// that the view shows whole, then those that it shows in part, then the whole list.
+/// Answered once for each arrival of the focus.
 fn enter(list: &mut PageList, window: &Window, cx: &App) {
     let reached = if list.start.is_focused(window) {
         Some(true)
@@ -1290,6 +1291,13 @@ mod tests {
             .is_some_and(|row| row.top() >= viewport.top() && row.bottom() <= viewport.bottom())
     }
 
+    /// Whether the view shows any part of the row.
+    fn in_part(cx: &mut VisualTestContext, key: &str) -> bool {
+        let viewport = cx.debug_bounds("admin-page").unwrap();
+        cx.debug_bounds(selector(format!("row-{key}")))
+            .is_some_and(|row| row.top() < viewport.bottom() && row.bottom() > viewport.top())
+    }
+
     fn pressed_after_enter(host: &Entity<Host>, cx: &mut VisualTestContext) -> Vec<String> {
         host.update(cx, |host, _| host.pressed.clear());
         press(cx, "enter");
@@ -1404,9 +1412,47 @@ mod tests {
         let lines: Vec<Line> = (0..20).map(|index| line(index, 500.0, true)).collect();
         let (host, cx) = open(cx, lines);
         scroll_to(&host, cx, 5, 100.0);
+        let shown: Vec<String> = (0..20)
+            .map(|index| format!("r{index:04}"))
+            .filter(|key| in_part(cx, key))
+            .collect();
+        assert_eq!(shown.first().map(String::as_str), Some("r0005"));
+        assert!(!shown.iter().any(|key| in_view(cx, key)));
         focus(&host, cx, |host| host.before.clone());
         press(cx, "tab");
         assert_eq!(pressed_after_enter(&host, cx), ["r0005"]);
+        scroll_to(&host, cx, 5, 100.0);
+        focus(&host, cx, |host| host.after.clone());
+        press(cx, "shift-tab");
+        assert_eq!(
+            pressed_after_enter(&host, cx),
+            [shown.last().unwrap().as_str()]
+        );
+    }
+
+    /// At the top and at the end of the list, Tab and Shift+Tab from outside enter the first
+    /// and the last row that the view shows whole (ADR 0761).
+    #[gpui::test]
+    fn tab_enters_the_rows_in_view_at_the_ends_of_the_list(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, true)).collect();
+        let (host, cx) = open(cx, lines);
+        for (item_ix, end) in [(0, "r0000"), (1999, "r1999")] {
+            scroll_to(&host, cx, item_ix, 0.0);
+            let whole: Vec<String> = (0..2000)
+                .map(|index| format!("r{index:04}"))
+                .filter(|key| in_view(cx, key))
+                .collect();
+            let (first, last) = (whole.first().unwrap(), whole.last().unwrap());
+            let edge = if item_ix == 0 { first } else { last };
+            assert_eq!(edge, end, "at {item_ix}: {whole:?}");
+            focus(&host, cx, |host| host.before.clone());
+            press(cx, "tab");
+            assert_eq!(pressed_after_enter(&host, cx), [first.as_str()]);
+            scroll_to(&host, cx, item_ix, 0.0);
+            focus(&host, cx, |host| host.after.clone());
+            press(cx, "shift-tab");
+            assert_eq!(pressed_after_enter(&host, cx), [last.as_str()]);
+        }
     }
 
     /// Point 1 of the review: a row above the view that moves elsewhere moves no row in

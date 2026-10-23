@@ -227,6 +227,7 @@ impl Shell {
                     return;
                 }
                 self.admin.roles.sent = Some(AskKind::UpdateRole(role));
+                self.await_admin_form(AskKind::UpdateRole(role));
                 self.state
                     .update(cx, |state, cx| state.rename_role(server_id, role, name, cx));
             }
@@ -345,8 +346,7 @@ impl Shell {
         let changing = asked.is_some();
         // While the new name of the role is on its way, its permissions send nothing: a change
         // would replace the state of the request that the form follows (ADR 0761).
-        let naming = self.admin.roles.sent == Some(AskKind::UpdateRole(role))
-            && view.sending(AskKind::UpdateRole(role));
+        let naming = self.admin_form_awaited(view, AskKind::UpdateRole(role));
         let (permission, on) = (switch.permission, asked.unwrap_or(switch.on));
         // A permission that the person does not hold cannot be given; taking it needs
         // the managing permission only (ADR 0304).
