@@ -330,6 +330,22 @@ impl ServerApi {
         self.send(Method::Patch, path, &RenameDevice { name }).await
     }
 
+    /// Leaves a workspace. Leaving the last workspace makes the account inactive and ends
+    /// every session of it; an invite or an approved join request returns it (ADR 0121).
+    pub async fn leave_workspace(&self, workspace_id: WorkspaceId) -> Result<(), ApiError> {
+        self.act(
+            Method::Post,
+            format!("/workspaces/{workspace_id}/departure"),
+        )
+        .await
+    }
+
+    /// Deletes the account. Its content and audit entries stay; it cannot return
+    /// (ADR 0121).
+    pub async fn delete_account(&self) -> Result<(), ApiError> {
+        self.act(Method::Delete, "/account".to_owned()).await
+    }
+
     /// Removes a device of the account and ends its sessions. The last device of an
     /// account cannot be removed.
     pub async fn remove_device(&self, device_id: DeviceId) -> Result<(), ApiError> {

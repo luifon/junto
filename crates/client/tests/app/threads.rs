@@ -206,6 +206,23 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
         })
     });
     assert!(window.shows_named(format!("thread-unread:{root_id}")));
+    // The pictures of the two reply authors overlap each other and end before the count of
+    // the replies starts.
+    window.until("the two reply authors", |window| {
+        window.messages().iter().any(|row| {
+            row.thread
+                .as_ref()
+                .is_some_and(|mark| mark.authors.len() == 2)
+        })
+    });
+    let bounds = |window: &mut Window, name: String| {
+        let name: &'static str = Box::leak(name.into_boxed_str());
+        window.cx.debug_bounds(name).unwrap()
+    };
+    let authors = bounds(&mut window, format!("thread-authors:{root_id}"));
+    let count = bounds(&mut window, format!("thread-count:{root_id}"));
+    assert!(authors.size.width.as_f32() > 15.0, "{authors:?}");
+    assert!(authors.right() <= count.left(), "{authors:?} {count:?}");
     // The mention of the thread counts in the sign of its channel. The summary of the
     // channel arrives by itself, after the entry of the thread or before it.
     window.until("the mention in the sign of the channel", |window| {

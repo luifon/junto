@@ -17,6 +17,7 @@ mod notice;
 mod panel;
 mod pattern;
 mod picture;
+mod reveal;
 mod rows;
 mod scroll;
 mod segmented;

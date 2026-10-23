@@ -247,7 +247,12 @@ fn a_member_corrects_a_line_names_a_voice_and_reads_who_changed_them(cx: &mut Te
         spoken(own, None, 190, "Yes."),
     ];
     world.run(server.transcribe(recording_id, &said));
+    // The lines of the microphone of Ada show her picture: nothing else on screen names her.
+    let picture = crate::people::set_avatar(&world, &admin, &crate::people::png(48, 200));
     open_panel(&mut window, recording_id, 4);
+    window.until("the picture of Ada at her lines", |window| {
+        window.shows_picture(ada, picture) && window.draws_picture(ada)
+    });
 
     // The person corrects the second line. A text that the server would refuse is not
     // sent.

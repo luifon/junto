@@ -36,6 +36,7 @@ fn profile(id: AccountId, name: &str, avatar: Option<PictureHash>) -> AccountPro
             width: 4,
             height: 4,
         }),
+        departure: None,
     }
 }
 
@@ -750,4 +751,82 @@ fn the_picture_of_the_preset_is_read_from_a_regular_file_only() {
     assert!(store.avatar().unwrap().is_none());
     assert!(matches!(store_picture(&store, &picture), Ok(Some(_))));
     assert!(store.avatar().unwrap().is_some());
+}
+
+#[test]
+fn a_departed_account_is_named_with_its_mark_and_without_its_picture() {
+    let mut scene = scene();
+    let shown = accounts(2);
+    let (ana, bruno) = (shown[0], shown[1]);
+    scene.show(&shown);
+    for ask in scene.next(true) {
+        let Asked::Profile(account_id) = ask.what else {
+            continue;
+        };
+        let read = if account_id == ana {
+            AccountProfile {
+                departure: Some(Departure::Inactive),
+                ..profile(ana, "Ana", Some(hash(1)))
+            }
+        } else {
+            profile(bruno, "Bruno", None)
+        };
+        scene.people.profile_answered(&ask, Answer::Read(read));
+    }
+    assert_eq!(
+        scene.people.name(scene.server, ana).as_deref(),
+        Some("Ana (inactive)")
+    );
+    assert_eq!(
+        scene.people.departure(scene.server, ana),
+        Some(Departure::Inactive)
+    );
+    // A departed profile names no picture, even when a server sends one.
+    assert!(!scene.people.faces(scene.server).contains_key(&ana));
+    let names: HashMap<AccountId, String> = scene.people.names(scene.server).collect();
+    assert_eq!(names[&ana], "Ana (inactive)");
+    assert_eq!(names[&bruno], "Bruno");
+    assert_eq!(
+        scene.people.departures(scene.server),
+        HashMap::from([(ana, Departure::Inactive)])
+    );
+}
+
+#[test]
+fn a_departure_event_marks_the_name_at_once_and_reads_the_profile_again() {
+    let mut scene = scene();
+    let shown = accounts(1);
+    let ana = shown[0];
+    scene.show(&shown);
+    let asks = scene.next(true);
+    scene
+        .people
+        .profile_answered(&asks[0], Answer::Read(profile(ana, "Ana", Some(hash(1)))));
+    assert!(scene.people.faces(scene.server).contains_key(&ana));
+
+    assert!(
+        scene
+            .people
+            .departure_changed(scene.server, ana, Some(Departure::Deleted))
+    );
+    assert_eq!(
+        scene.people.name(scene.server, ana).as_deref(),
+        Some("Ana (deleted account)")
+    );
+    assert!(!scene.people.faces(scene.server).contains_key(&ana));
+    let again = scene.next(false);
+    assert!(
+        again.iter().any(|ask| ask.what == Asked::Profile(ana)),
+        "the profile is read again"
+    );
+
+    // A return removes the mark; the profile that is read again brings the picture back.
+    assert!(scene.people.departure_changed(scene.server, ana, None));
+    assert_eq!(scene.people.name(scene.server, ana).as_deref(), Some("Ana"));
+    // An account that the cache does not hold changes nothing.
+    assert!(
+        !scene
+            .people
+            .departure_changed(scene.server, AccountId::generate(), None)
+    );
 }

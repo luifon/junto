@@ -790,6 +790,7 @@ impl World {
                     name: body.name,
                     created_at: now,
                     expires_at: now + time::Duration::days(7),
+                    returning_account_id: None,
                 };
                 json(201, &created).map_err(plain)
             }
@@ -964,6 +965,7 @@ impl World {
                     id: account_id,
                     name: known.name.clone(),
                     avatar: self.avatar_description(account_id),
+                    departure: None,
                 },
             ),
             (Method::Get, "avatar") => Ok((200, known.avatar.clone().ok_or("not_found")?)),

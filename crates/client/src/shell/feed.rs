@@ -16,6 +16,7 @@ use gpui::{
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
+use junto_client_core::protocol::account::Departure;
 #[cfg(feature = "test-support")]
 use junto_client_core::protocol::ids::AttachmentId;
 use junto_client_core::protocol::ids::{MessageId, ServerId};
@@ -41,6 +42,10 @@ use crate::ui::{
     icon, ledge, tooltip,
 };
 
+/// The side of a picture of an author in the thread line of a message, in pixels of the
+/// design, and how far the next picture covers it.
+const AUTHOR_PICTURE: f32 = 15.0;
+const AUTHOR_OVERLAP: f32 = 4.0;
 /// The widest picture of a message, and the tallest, in design pixels.
 const PICTURE_WIDTH: f32 = 292.0;
 const PICTURE_HEIGHT: f32 = 220.0;
@@ -871,11 +876,63 @@ impl Shell {
                     .children(stale),
             )
             .child(body)
-            .child(match self.shown_archived() {
+            .child(match (self.shown_archived(), self.shown_departure(pane)) {
                 // An archived channel takes no message (ADR 0410).
-                Some(archived) => self.render_archived_bar(pane, archived, cx),
-                None => self.render_composer(pane, shown.draft, compact, shown.permanent, cx),
+                (Some(archived), _) => self.render_archived_bar(pane, archived, cx),
+                // Nor does a conversation with a departed account (ADR 0121).
+                (None, Some(departure)) => self.render_departed_bar(pane, departure, cx),
+                (None, None) => {
+                    self.render_composer(pane, shown.draft, compact, shown.permanent, cx)
+                }
             })
+            .into_any_element()
+    }
+
+    /// The departure of the other account of the direct conversation that the main area
+    /// shows (ADR 0121).
+    pub(crate) fn shown_departure(&self, pane: Pane) -> Option<Departure> {
+        if pane != Pane::Main {
+            return None;
+        }
+        self.view
+            .as_ref()?
+            .lists()?
+            .conversation
+            .as_ref()?
+            .departure
+    }
+
+    /// The statement in place of the composer of a conversation with a departed account:
+    /// it stays readable, and nobody can write in it.
+    fn render_departed_bar(
+        &mut self,
+        pane: Pane,
+        departure: Departure,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = crate::theme::theme(cx);
+        let colors = theme.colors;
+        div()
+            .id(pane.id("departed-bar"))
+            .debug_selector(move || pane.id("departed-bar").to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(10.0))
+            .min_h(u(44.0))
+            .py(u(8.0))
+            .px(u(16.0))
+            .border_t_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.limestone))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .typeface(theme.types.control_strong, &theme)
+                    .ink(colors.ink)
+                    .child(text::departed_conversation(departure)),
+            )
             .into_any_element()
     }
 
@@ -1972,24 +2029,26 @@ impl Shell {
                                 }))
                         })
                         // The first authors of the replies, as the design draws them: three
-                        // small pictures that overlap. A server that states no author
-                        // gives the picture of the author of the last reply.
+                        // small pictures that overlap. They are placed in a box of their
+                        // whole width, so the count after them starts after the last one.
+                        // A server that states no author gives the picture of the author of
+                        // the last reply.
                         .when(!mark.authors.is_empty(), |chip| {
+                            let step = AUTHOR_PICTURE - AUTHOR_OVERLAP;
+                            let width = AUTHOR_PICTURE + step * (mark.authors.len() - 1) as f32;
                             let mut authors = div()
                                 .debug_selector(move || format!("thread-authors:{message_id}"))
-                                .flex()
+                                .relative()
                                 .flex_none()
-                                .items_center();
+                                .w(u(width))
+                                .h(u(AUTHOR_PICTURE));
                             for (place, author) in mark.authors.iter().enumerate() {
                                 authors = authors.child(
-                                    div()
-                                        .flex_none()
-                                        .when(place > 0, |picture| picture.ml(u(-4.0)))
-                                        .child(
-                                            Avatar::new(author.as_uuid().as_u128(), 15.0)
-                                                .radius(2.0)
-                                                .image(faces.image(*author)),
-                                        ),
+                                    div().absolute().top_0().left(u(step * place as f32)).child(
+                                        Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
+                                            .radius(2.0)
+                                            .image(faces.image(*author)),
+                                    ),
                                 );
                             }
                             chip.child(authors)
@@ -2006,6 +2065,7 @@ impl Shell {
                         )
                         .child(
                             div()
+                                .debug_selector(move || format!("thread-count:{message_id}"))
                                 .flex_none()
                                 .font_weight(FontWeight::BOLD)
                                 .ink(colors.terracotta_deep)

@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, InteractiveElement, IntoElement, ListAlignment,
-    ListOffset, ListState, ParentElement, Role, SharedString, StatefulInteractiveElement, Styled,
-    Window, anchored, deferred, div, list, prelude::FluentBuilder, px,
+    ListOffset, ListState, ParentElement, RenderImage, Role, SharedString,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, list,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::model::OpenRecording;
@@ -30,8 +31,8 @@ use crate::state::view::{TranscriptPanel, TranscriptPanelState};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Chip, Dialog, Menu, MenuItem, Mosaic, MosaicKind, Notice, SideHeader,
-    StatePanel, StyleExt, dialog_footer, icon, menu_label,
+    Avatar, Button, ButtonKind, Chip, Dialog, Menu, MenuItem, Notice, SideHeader, StatePanel,
+    StyleExt, dialog_footer, icon, menu_label,
 };
 
 /// The list of the lines of the transcript in the side panel. The rows are the count of
@@ -368,7 +369,13 @@ impl Shell {
 
     /// One line of a transcript (view G of the design): its time, its speaker with the
     /// source of the sound, and its text.
-    fn transcript_line(row: &LineRow, wide: bool, marked: bool, theme: &Theme) -> AnyElement {
+    fn transcript_line(
+        row: &LineRow,
+        picture: Option<Arc<RenderImage>>,
+        wide: bool,
+        marked: bool,
+        theme: &Theme,
+    ) -> AnyElement {
         let corrected = row.corrected.then(|| {
             div()
                 .flex_none()
@@ -386,13 +393,16 @@ impl Shell {
             .ink(theme.colors.ink)
             .child(SharedString::from(row.text.clone()))
             .into_any_element();
-        Self::line_frame(row, wide, marked, theme, corrected, spoken, None)
+        Self::line_frame(row, picture, wide, marked, theme, corrected, spoken, None)
     }
 
     /// A line of a transcript with the parts that the card or the side panel give it: the
     /// mark of a correction beside the speaker, the text, and a control at the right.
+    /// `picture` is the picture of the person of a microphone line (ADR 0783).
+    #[allow(clippy::too_many_arguments)]
     fn line_frame(
         row: &LineRow,
+        picture: Option<Arc<RenderImage>>,
         wide: bool,
         marked: bool,
         theme: &Theme,
@@ -407,11 +417,10 @@ impl Shell {
             LineFrom::Shared { of } => text::shared_audio_of(of).into(),
         };
         let mark: AnyElement = match row.source {
-            LineFrom::Microphone => {
-                Mosaic::new(MosaicKind::Large, row.account_id.as_uuid().as_u128(), 22.0)
-                    .radius(2.0)
-                    .into_any_element()
-            }
+            LineFrom::Microphone => Avatar::new(row.account_id.as_uuid().as_u128(), 22.0)
+                .radius(2.0)
+                .image(picture)
+                .into_any_element(),
             LineFrom::Shared { .. } => div()
                 .flex()
                 .flex_none()
@@ -564,8 +573,10 @@ impl Shell {
         if !ready {
             return parts;
         }
+        let faces = self.faces(server_id);
         for row in transcript.lines.iter().take(SHOWN_LINES) {
-            parts.push(Self::transcript_line(row, true, false, theme));
+            let picture = faces.image(row.account_id);
+            parts.push(Self::transcript_line(row, picture, true, false, theme));
         }
         let shown = transcript.lines.len().min(SHOWN_LINES);
         parts.push(
@@ -1311,7 +1322,8 @@ impl Shell {
         let (body, control) = self.line_body(server_id, recording_id, row, transcript, theme, cx);
         let key = (recording_id, TranscriptChange::Line(row.line));
         let open = self.transcript_edit.open.map(|(_, open)| open);
-        let line = Self::line_frame(row, false, marked, theme, corrected, body, control);
+        let picture = self.faces(server_id).image(row.account_id);
+        let line = Self::line_frame(row, picture, false, marked, theme, corrected, body, control);
         self.transcript_edit
             .space
             .row(open, &[key], line)

@@ -16,7 +16,7 @@ First start:
 
 Joining:
 
-- The address field of the server book starts the flow "add a server". A failure is told under the field. When the server answered, the dialog "Join a server" opens with its name and address.
+- The address field of the server book starts the flow "add a server". A failure is told under the field. When the server answered, the dialog "Join a server" opens with its name and address. When the server is saved in the server book, the field is emptied if it still holds the text that the flow started with, so a second server needs no removal of the first address; a text that the person typed meanwhile stays. A dialog that is closed without a saved server leaves the address in the field, so Enter asks the server again. Test: `flows::the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server`, `flows::a_second_server_has_its_own_row_its_own_state_and_can_be_removed`.
 - The dialog states that the person who operates the server has technical access to its data.
 - One code field takes an invite code and an owner code. A text with 20 symbols is sent as an owner code and every other text as an invite code (ADR 0110 fixes both lengths). An empty field is not sent.
 - "Request access" sends a join request with the name of the preset.

@@ -84,6 +84,35 @@
       ],
       "type": "object"
     },
+    "account_departure_changed": {
+      "description": "An account became inactive, was deleted, or returned (`departure` absent) (ADR 0121).\nEvery active account receives it.",
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "departure": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Departure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "account_departure_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "account_profile_updated": {
       "description": "The name or the avatar of an account that the recipient may see has changed.",
       "properties": {
@@ -2097,6 +2126,17 @@
               }
             ]
           },
+          "departure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Departure",
+                "description": "Present when the account is inactive or deleted. Such a profile has no avatar."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "$ref": "#/components/schemas/AccountId"
           },
@@ -2111,10 +2151,13 @@
         "type": "object"
       },
       "AccountStatus": {
+        "description": "The state of an account (ADR 0113, ADR 0121).\n\nA server can add states within one API version (ADR 0209). A state that this build does\nnot know is read as [`AccountStatus::Unknown`]. `Unknown` is never written.",
         "enum": [
           "active",
           "banned",
-          "removed"
+          "removed",
+          "inactive",
+          "deleted"
         ],
         "type": "string"
       },
@@ -2637,6 +2680,14 @@
         ],
         "type": "object"
       },
+      "Departure": {
+        "description": "Why an account is no longer on the server, as its profile states it to other accounts\n(ADR 0121). A ban and a removal are not stated.",
+        "enum": [
+          "inactive",
+          "deleted"
+        ],
+        "type": "string"
+      },
       "DeviceId": {
         "format": "uuid",
         "type": "string"
@@ -2680,7 +2731,9 @@
           "removed",
           "device_removed",
           "recovered",
-          "session_ended"
+          "session_ended",
+          "inactive",
+          "deleted"
         ],
         "type": "string"
       },
@@ -4748,6 +4801,35 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "An account became inactive, was deleted, or returned (`departure` absent) (ADR 0121).\nEvery active account receives it.",
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "departure": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Departure"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "account_departure_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -4951,6 +5033,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "returning_account_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The inactive account to which the key of the request belongs. An approval makes that\naccount active again with its own name, not the name of the request (ADR 0121)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [

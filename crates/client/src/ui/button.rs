@@ -333,7 +333,7 @@ fn look(kind: ButtonKind, disabled: bool, theme: &Theme) -> Look {
 }
 
 impl RenderOnce for Button {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let metrics = theme.metrics;
         let disabled = self.disabled || self.kind == ButtonKind::SquareHeld;
@@ -363,6 +363,9 @@ impl RenderOnce for Button {
             _ => theme.types.control,
         };
 
+        // The handle is kept while the button is disabled, so the focus can return to it
+        // when the button takes the focus again; only an enabled button tracks it.
+        let focus = super::reveal::handle(&self.id, window, cx);
         let mut frame = div()
             .id(self.id)
             .role(Role::Button)
@@ -412,8 +415,8 @@ impl RenderOnce for Button {
                 let (hover, pressed) = (look.hover, look.pressed);
                 frame
                     .cursor_pointer()
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&focus)
+                    .children(super::reveal::report(&focus, window))
                     .hover(move |style| style.bg(Hsla::from(hover)))
                     .active(move |style| style.bg(Hsla::from(pressed)))
                     .focus_visible(move |style| style.shadow(ring))

@@ -48,6 +48,10 @@ pub enum Blocked {
     OwnAccount,
     /// A removed account takes no removal, ban or unban.
     Removed,
+    /// An inactive account takes a removal and no ban (ADR 0121).
+    Inactive,
+    /// A deleted account takes no removal, ban or unban (ADR 0121).
+    Deleted,
     /// A ban needs an active account, and this one is banned.
     Banned,
     /// An unban needs a banned account.
@@ -216,6 +220,12 @@ impl AccountLine {
                 Err(Blocked::Removed),
                 Err(Blocked::Removed),
                 Err(Blocked::Removed),
+            ),
+            AccountStatus::Inactive => (Ok(()), Err(Blocked::Inactive), Err(Blocked::NotBanned)),
+            AccountStatus::Deleted | AccountStatus::Unknown => (
+                Err(Blocked::Deleted),
+                Err(Blocked::Deleted),
+                Err(Blocked::Deleted),
             ),
         };
         Self {
@@ -1873,6 +1883,7 @@ mod tests {
             name: name.to_owned(),
             created_at,
             expires_at: created_at + Duration::days(7),
+            returning_account_id: None,
         };
         let (first, second) = (
             request("Nina", time()),

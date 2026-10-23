@@ -814,6 +814,11 @@ impl Shell {
             .update(cx, |field, cx| field.set_value(address, window, cx));
     }
 
+    /// The text of the address field of the server book.
+    pub fn typed_address(&self, cx: &App) -> String {
+        self.address.read(cx).value().to_string()
+    }
+
     /// Moves the keyboard focus into the address field of the server book.
     pub fn focus_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_field(&self.address.clone(), window, cx);

@@ -29,6 +29,7 @@ pub mod auth;
 pub mod calls;
 pub mod channels;
 pub mod contacts;
+pub mod departures;
 pub mod exports;
 pub mod glossary;
 pub mod health;
@@ -217,7 +218,11 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(auth::log_out));
     add(&mut router, || routes!(auth::claim_owner));
     add(&mut router, || {
-        routes!(account::get_own_account, account::update_own_account)
+        routes!(
+            account::get_own_account,
+            account::update_own_account,
+            departures::delete_account
+        )
     });
     add(&mut router, || {
         routes!(account::set_avatar, account::remove_avatar)
@@ -294,6 +299,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(workspaces::list_members));
     add(&mut router, || routes!(workspaces::add_member));
     add(&mut router, || routes!(workspaces::remove_member));
+    add(&mut router, || routes!(departures::leave_workspace));
     add(&mut router, || {
         routes!(
             workspace_roles::list_workspace_roles,

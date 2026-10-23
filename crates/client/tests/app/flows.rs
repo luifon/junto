@@ -64,6 +64,8 @@ fn the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server(cx: &mut 
     window.join_with_code(&server.owner_code().unwrap());
     window.until_ready();
     assert!(!window.shows("join-dialog"));
+    // The server is added: the field of the server book is empty for the next one.
+    assert_eq!(window.in_shell(|shell, _, cx| shell.typed_address(cx)), "");
     let view = window.view();
     assert_eq!(view.servers.len(), 1);
     assert_eq!(view.servers[0].name, "Acme Studio");
@@ -272,6 +274,8 @@ fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut Tes
     window.until_ready();
     let code = admin.invite(&world, 1);
     window.find_server(&second.address());
+    // A text that the person types while the server is added stays in the field.
+    window.in_shell(|shell, window, cx| shell.type_address("next.example.test", window, cx));
     window.join_with_code(code.expose());
     window.until("the second server is shown", |window| {
         let view = window.view();
@@ -293,6 +297,10 @@ fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut Tes
         view.servers[0].status == ServerStatus::Ready && view.servers[0].workspaces.len() == 1
     });
     assert!(!window.view().servers[0].workspaces[0].selected);
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.typed_address(cx)),
+        "next.example.test"
+    );
 
     // The address of a saved server is not added twice.
     window.enter_address(&first.address());

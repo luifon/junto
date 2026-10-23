@@ -37,11 +37,31 @@ macro_rules! stored_text {
     };
 }
 
-stored_text!(AccountStatus {
-    Active => "active",
-    Banned => "banned",
-    Removed => "removed",
-});
+impl StoredText for AccountStatus {
+    /// `unknown` is refused by the check of the column: the server never writes a state that
+    /// it read from a newer server.
+    fn stored(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Banned => "banned",
+            Self::Removed => "removed",
+            Self::Inactive => "inactive",
+            Self::Deleted => "deleted",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn from_stored(text: &str) -> Option<Self> {
+        match text {
+            "active" => Some(Self::Active),
+            "banned" => Some(Self::Banned),
+            "removed" => Some(Self::Removed),
+            "inactive" => Some(Self::Inactive),
+            "deleted" => Some(Self::Deleted),
+            _ => None,
+        }
+    }
+}
 
 stored_text!(DeviceOrigin {
     OwnerCode => "owner_code",
@@ -131,7 +151,10 @@ mod tests {
             AccountStatus::Active,
             AccountStatus::Banned,
             AccountStatus::Removed,
+            AccountStatus::Inactive,
+            AccountStatus::Deleted,
         ]);
+        assert_eq!(AccountStatus::from_stored("unknown"), None);
         check(&[
             DeviceOrigin::OwnerCode,
             DeviceOrigin::Invite,

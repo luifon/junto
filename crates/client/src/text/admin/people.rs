@@ -17,6 +17,9 @@ pub const NO_ACCOUNTS: &str = "The server has no account.";
 pub const NO_BANNED: &str = "No account is banned.";
 pub const BANNED: &str = "Banned";
 pub const REMOVED: &str = "Removed";
+pub const INACTIVE: &str = "Inactive";
+pub const DELETED: &str = "Deleted";
+pub const UNKNOWN_STATE: &str = "Unknown state";
 pub const OWNER: &str = "Server owner";
 pub const YOU: &str = "You";
 pub const REMOVE: &str = "Remove";
@@ -103,6 +106,10 @@ pub const fn blocked(reason: Blocked) -> &'static str {
         Blocked::Owner => "The server owner cannot be removed or banned.",
         Blocked::OwnAccount => "You cannot remove or ban your own account.",
         Blocked::Removed => "The account is removed.",
+        Blocked::Inactive => {
+            "The account left the server. A removal keeps it from returning; a ban does not apply."
+        }
+        Blocked::Deleted => "The account was deleted.",
         Blocked::Banned => "The account is banned already.",
         Blocked::NotBanned => "The account is not banned.",
         Blocked::Outranked => OUTRANKED,

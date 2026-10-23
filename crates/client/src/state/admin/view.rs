@@ -419,8 +419,9 @@ pub struct AdminView {
     pub server_id: ServerId,
     pub server_name: String,
     pub scope: Scope,
-    /// The request of the person that is on its way or was refused.
-    pub ask: Option<Ask>,
+    /// The requests of the person that are on their way or were refused: one for each kind
+    /// of request, in the order in which they were made.
+    pub asks: Vec<Ask>,
     /// What the last request made and the person has not put away.
     pub made: Option<Made>,
     /// The permissions of roles that the person changed and whose change the state does
@@ -442,11 +443,11 @@ impl AdminView {
             .map(|(_, _, on)| *on)
     }
 
-    /// The state of the request `what`, when it is the one that the page tells about.
+    /// The state of the request `what`, when the page tells one.
     pub fn asked(&self, what: super::AskKind) -> Option<&super::AskState> {
-        self.ask
-            .as_ref()
-            .filter(|ask| ask.what == what)
+        self.asks
+            .iter()
+            .find(|ask| ask.what == what)
             .map(|ask| &ask.state)
     }
 
@@ -1028,7 +1029,7 @@ pub fn derive(
         server_id,
         server_name: server.name.clone(),
         scope,
-        ask: admin.ask.clone(),
+        asks: admin.asks(),
         made: admin.made.clone(),
         changing_roles: admin.role_changes.of(server_id),
     })

@@ -239,7 +239,11 @@ impl AuditGroup {
             | AuditEvent::AccountUnbanned { .. }
             | AuditEvent::AccountRecovered { .. }
             | AuditEvent::WorkspaceMemberAdded { .. }
-            | AuditEvent::WorkspaceMemberRemoved { .. } => Self::Members,
+            | AuditEvent::WorkspaceMemberRemoved { .. }
+            | AuditEvent::WorkspaceMemberLeft { .. }
+            | AuditEvent::AccountLeft { .. }
+            | AuditEvent::AccountDeleted { .. }
+            | AuditEvent::AccountReturned { .. } => Self::Members,
             AuditEvent::InviteCreated { .. }
             | AuditEvent::InviteWorkspacesChanged { .. }
             | AuditEvent::InviteRevoked { .. }
@@ -317,7 +321,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 68] = [
+pub const ACTIONS: [(&str, AuditGroup); 72] = [
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -325,6 +329,10 @@ pub const ACTIONS: [(&str, AuditGroup); 68] = [
     ("account_recovered", AuditGroup::Members),
     ("workspace_member_added", AuditGroup::Members),
     ("workspace_member_removed", AuditGroup::Members),
+    ("workspace_member_left", AuditGroup::Members),
+    ("account_left", AuditGroup::Members),
+    ("account_deleted", AuditGroup::Members),
+    ("account_returned", AuditGroup::Members),
     ("invite_created", AuditGroup::Invites),
     ("invite_workspaces_changed", AuditGroup::Invites),
     ("invite_revoked", AuditGroup::Invites),
@@ -1478,6 +1486,10 @@ mod tests {
             AuditEvent::ServerLogoChanged { .. } => 66,
             AuditEvent::PermanentMessagesTurnedOn => 67,
             AuditEvent::PermanentMessagesTurnedOff => 68,
+            AuditEvent::WorkspaceMemberLeft { .. } => 69,
+            AuditEvent::AccountLeft { .. } => 70,
+            AuditEvent::AccountDeleted { .. } => 71,
+            AuditEvent::AccountReturned { .. } => 72,
         }
     }
 
@@ -1716,6 +1728,30 @@ mod tests {
                 vec!["“leads”", "Ana"],
             ),
             (AuditEvent::WorkspaceMemberAdded { account_id }, vec!["Ana"]),
+            (
+                AuditEvent::WorkspaceMemberLeft { account_id },
+                vec!["Ana", "left the workspace"],
+            ),
+            (
+                AuditEvent::AccountLeft { account_id },
+                vec!["Ana", "last workspace", "inactive"],
+            ),
+            (
+                AuditEvent::AccountDeleted {
+                    account_id,
+                    workspace_ids: vec![scene.lab],
+                },
+                vec!["Ana", "deleted", "“Lab”"],
+            ),
+            (
+                AuditEvent::AccountReturned {
+                    account_id,
+                    invite_id: Some(invite_id),
+                    invite_created_by: Some(account_id),
+                    join_request_id: None,
+                },
+                vec!["Ana", "returned", "invite"],
+            ),
             (
                 AuditEvent::CategoryCreated {
                     category_id: scene.projects,
@@ -2747,7 +2783,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..69).collect::<Vec<usize>>());
+        assert_eq!(places, (0..73).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

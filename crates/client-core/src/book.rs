@@ -11,21 +11,22 @@ use crate::address::ServerAddress;
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 4;
+pub const BOOK_FORMAT_VERSION: u32 = 5;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
-    migrations: &[unchanged, unchanged, unchanged],
+    migrations: &[unchanged, unchanged, unchanged, unchanged],
     limit: 4 * 1024 * 1024,
 };
 
 /// Version 2 added the state `refused` of the profile preset, version 3 the moderation
-/// notices that the person put away, and version 4 the logout of the person. Every book of
-/// an earlier version is a book of the next one, with no notice put away and no logout; the
-/// version tells an older client that it cannot read the file, so that it does not drop the
-/// field when it writes the book.
+/// notices that the person put away, version 4 the logout of the person, and version 5 the
+/// memberships `inactive` and `deleted` (ADR 0121). Every book of an earlier version is a
+/// book of the next one, with no notice put away and no logout; the version tells an older
+/// client that it cannot read the file, so that it does not drop the field or the entry
+/// when it writes the book.
 fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
     Ok(value)
 }
@@ -68,6 +69,15 @@ pub enum Membership {
     },
     /// The server no longer knows the key that was a device of an account.
     Removed,
+    /// The account left the last workspace of which it was a member. The key stays, so that
+    /// an invite or an approved join request returns the same account (ADR 0121).
+    Inactive {
+        account_id: AccountId,
+    },
+    /// The account was deleted on another device. The key no longer belongs to an account.
+    Deleted {
+        account_id: Option<AccountId>,
+    },
 }
 
 /// The position of this device in the event stream of one server. The client stores it and
@@ -604,6 +614,41 @@ mod tests {
     }
 
     #[test]
+    fn an_inactive_and_a_deleted_membership_are_stored_and_read_back() {
+        let (_directory, data_dir, book) = book();
+        let account_id = AccountId::generate();
+        let first = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        let second = book
+            .add(entry("https://globex.example.test", "Globex"))
+            .unwrap();
+        book.update(first.key(), |entry| {
+            entry.membership = Membership::Inactive { account_id };
+        })
+        .unwrap();
+        book.update(second.key(), |entry| {
+            entry.membership = Membership::Deleted {
+                account_id: Some(account_id),
+            };
+        })
+        .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 5);
+        assert_eq!(stored["servers"][0]["membership"]["state"], "inactive");
+        assert_eq!(stored["servers"][1]["membership"]["state"], "deleted");
+        let entries = book.entries().unwrap();
+        assert_eq!(entries[0].membership, Membership::Inactive { account_id });
+        assert_eq!(
+            entries[1].membership,
+            Membership::Deleted {
+                account_id: Some(account_id)
+            }
+        );
+    }
+
+    #[test]
     fn an_update_keeps_the_identifier_and_the_address() {
         let (_directory, _data_dir, book) = book();
         let saved = book
@@ -737,7 +782,7 @@ mod tests {
             .unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 4);
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
         assert_eq!(stored["servers"][0]["logged_out"], true);
         assert!(book.entries().unwrap()[0].logged_out);
     }
@@ -1101,13 +1146,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":5,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":6,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 5,
-                supported: 4,
+                found: 6,
+                supported: 5,
                 ..
             })
         ));

@@ -1407,6 +1407,7 @@ fn members_follow_the_events_once_they_are_loaded() {
             id: ana.account_id,
             name: "Ana Maria".to_owned(),
             avatar: None,
+            departure: None,
         },
     });
     model.apply(&Event::AccountProfileUpdated {
@@ -1414,6 +1415,7 @@ fn members_follow_the_events_once_they_are_loaded() {
             id: scene.account_id,
             name: "Luca B.".to_owned(),
             avatar: None,
+            departure: None,
         },
     });
     assert_eq!(members(&model), ["Ana Maria", "Bruno", "Luca B."]);

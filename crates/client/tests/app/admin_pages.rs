@@ -485,7 +485,7 @@ fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId)
 
 /// True when no request of the open page is on its way and none was refused.
 pub(crate) fn idle(window: &mut Window) -> bool {
-    window.admin().is_some_and(|view| view.ask.is_none())
+    window.admin().is_some_and(|view| view.asks.is_empty())
 }
 
 /// True when the member list of the shown workspace holds a member with this name.
@@ -1237,7 +1237,7 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         window.shows("override-manage_messages-allow") && window.shows("override-ceiling")
     });
     click_in_page(&mut window, "override-manage_messages-allow");
-    assert!(window.admin().is_none_or(|view| view.ask.is_none()));
+    assert!(window.admin().is_none_or(|view| view.asks.is_empty()));
 
     // "Deny" works, and it reaches the client of the owner.
     world
@@ -1276,12 +1276,12 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
     for word in ["default", "allow"] {
         click_in_page(&mut window, sel("override-manage_messages", word));
         assert!(
-            window.admin().is_none_or(|view| view.ask.is_none()),
+            window.admin().is_none_or(|view| view.asks.is_empty()),
             "{word} sent a request"
         );
     }
     click_in_page(&mut window, sel("override-clear", everyone.id));
-    assert!(window.admin().is_none_or(|view| view.ask.is_none()));
+    assert!(window.admin().is_none_or(|view| view.asks.is_empty()));
     let stored = world.run(api.channel_overrides(plans)).unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(

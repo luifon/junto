@@ -15,6 +15,7 @@ use super::recorded::{self, RecordingCard};
 use junto_client_core::model::{
     PendingMessage, PlaceId, ReadFailure, Reading, SendState, ServerModel, Timeline,
 };
+use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::ids::{
     AccountId, ChannelId, MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceRoleId,
 };
@@ -424,8 +425,11 @@ impl Feed {
 /// The names that the messages of a place mention.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Names {
+    /// The names of departed accounts carry their mark here (ADR 0121).
     pub accounts: HashMap<AccountId, String>,
     pub roles: HashMap<WorkspaceRoleId, String>,
+    /// The accounts that left the server or were deleted.
+    pub departed: HashMap<AccountId, Departure>,
 }
 
 /// What the derivation of one list reads.
@@ -543,11 +547,18 @@ fn mentions(document: &Document, own: AccountId, own_roles: &[WorkspaceRoleId]) 
 }
 
 fn author_name(message: &Message, names: &Names) -> String {
+    let departure = message
+        .author_id
+        .and_then(|id| names.departed.get(&id).copied());
     message
         .author_name
         .as_deref()
         .map(crate::text::label)
         .filter(|name| !name.trim().is_empty())
+        .map(|name| match departure {
+            Some(departure) => crate::text::departed_name(&name, departure),
+            None => name,
+        })
         .or_else(|| {
             message
                 .author_id
@@ -1086,6 +1097,7 @@ mod tests {
         let names = Names {
             accounts: HashMap::from([(own, "Luca".to_owned()), (ana, "Ana".to_owned())]),
             roles: HashMap::from([(role, "Leads".to_owned())]),
+            departed: HashMap::new(),
         };
         Scene {
             model: ServerModel::from_snapshot(crate::state::fixtures::stated(snapshot)),

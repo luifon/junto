@@ -341,6 +341,31 @@ pub enum AuditEvent {
     ExportRequested {
         export_id: crate::ids::ExportId,
     },
+    /// The account left the workspace itself (ADR 0121).
+    WorkspaceMemberLeft {
+        account_id: AccountId,
+    },
+    /// The account left the last workspace of which it was a member and became inactive
+    /// (ADR 0121).
+    AccountLeft {
+        account_id: AccountId,
+    },
+    /// The person deleted the account, which left these workspaces (ADR 0121).
+    AccountDeleted {
+        account_id: AccountId,
+        workspace_ids: Vec<WorkspaceId>,
+    },
+    /// An inactive account became active again, with an invite or an approved join request
+    /// (ADR 0121).
+    AccountReturned {
+        account_id: AccountId,
+        #[serde(default)]
+        invite_id: Option<InviteId>,
+        #[serde(default)]
+        invite_created_by: Option<AccountId>,
+        #[serde(default)]
+        join_request_id: Option<JoinRequestId>,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -417,6 +442,10 @@ impl AuditEvent {
             Self::ServerRoleDeleted { .. } => "server_role_deleted",
             Self::WorkspaceDeleted { .. } => "workspace_deleted",
             Self::ExportRequested { .. } => "export_requested",
+            Self::WorkspaceMemberLeft { .. } => "workspace_member_left",
+            Self::AccountLeft { .. } => "account_left",
+            Self::AccountDeleted { .. } => "account_deleted",
+            Self::AccountReturned { .. } => "account_returned",
             Self::Unknown => "unknown",
         }
     }
@@ -573,6 +602,18 @@ mod tests {
             },
             AuditEvent::ExportRequested {
                 export_id: crate::ids::ExportId::generate(),
+            },
+            AuditEvent::WorkspaceMemberLeft { account_id },
+            AuditEvent::AccountLeft { account_id },
+            AuditEvent::AccountDeleted {
+                account_id,
+                workspace_ids: vec![WorkspaceId::generate()],
+            },
+            AuditEvent::AccountReturned {
+                account_id,
+                invite_id: Some(InviteId::generate()),
+                invite_created_by: Some(AccountId::generate()),
+                join_request_id: None,
             },
         ];
         for event in events {

@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use junto_protocol::account::ModerationNoticePage;
 use junto_protocol::error::ErrorCode;
+use junto_protocol::events::EndReason;
 use junto_protocol::ids::{AccountId, DeviceId, RecoveryId, ServerId};
 use junto_protocol::invite::JoinRequestState;
 use junto_protocol::keys::PublicKey;
@@ -22,7 +23,8 @@ use crate::api::session::{
 };
 use crate::api::{
     AccessLoss, ApiClient, ApiError, AvatarImage, ErrorCategory, ExpectedAccount, ReqwestTransport,
-    RetryPolicy, ServerApi, Transport, TransportError, TransportErrorKind, logo_at, server_info,
+    RetryPolicy, ServerApi, Session, Transport, TransportError, TransportErrorKind, logo_at,
+    server_info,
 };
 use crate::book::{
     BookError, ConnectionMode, EntryKey, Membership, Owner, ProfileSync, ServerBook, ServerEntry,
@@ -1011,7 +1013,7 @@ fn held_of(probe: &Probe) -> Option<Held> {
             account_id: session.account_id,
             device_id: session.device_id,
         }),
-        Probe::UnknownDevice | Probe::Banned => None,
+        Probe::UnknownDevice | Probe::Banned | Probe::Inactive | Probe::Deleted => None,
     }
 }
 
@@ -1505,6 +1507,7 @@ impl Server {
                 Ok(Probe::UnknownDevice)
             }
             Err(error) if error.code() == Some(ErrorCode::AccountBanned) => Ok(Probe::Banned),
+            Err(error) if error.code() == Some(ErrorCode::AccountInactive) => Ok(Probe::Inactive),
             Err(error) => Err(error),
         }
     }
@@ -1524,8 +1527,13 @@ impl Server {
                     },
                     membership: Membership::Removed,
                 },
+                Membership::Deleted { account_id } => Settled {
+                    state: AccessState::Deleted { account_id },
+                    membership: Membership::Deleted { account_id },
+                },
                 Membership::Member { .. }
                 | Membership::Banned { .. }
+                | Membership::Inactive { .. }
                 | Membership::JoinRequested { .. } => Settled {
                     state: AccessState::NoAccount {
                         notice: Some(Notice::KeyMissing),
@@ -1632,8 +1640,11 @@ impl Server {
         creates: Creates,
     ) -> Result<(), FlowError> {
         let held = held_of(&probe);
+        // A join of an inactive account returns it with its own name and avatar
+        // (ADR 0121): the profile preset is not sent to it.
+        let returning = |session: &Session| matches!(self.membership(), Membership::Inactive { account_id } if account_id == session.account_id);
         let new_account = match (&probe, creates) {
-            (Probe::LoggedIn(_), Creates::Account) => true,
+            (Probe::LoggedIn(session), Creates::Account) => !returning(session),
             (Probe::LoggedIn(session), Creates::Owner) => session.recoveries.is_empty(),
             _ => false,
         };
@@ -1905,6 +1916,16 @@ impl Server {
     /// removed, or the account was banned, removed or recovered. The device logs in again
     /// with its key, and the answer decides the state.
     async fn renew(&self, ended: &SecretToken) -> Result<(ApiClient, Held), ApiError> {
+        self.renew_after(ended, None).await
+    }
+
+    /// [`Server::renew`] after the event stream told why the session ended. A deletion is
+    /// stated only there: the key is unknown afterwards, as after a removal (ADR 0121).
+    async fn renew_after(
+        &self,
+        ended: &SecretToken,
+        reason: Option<EndReason>,
+    ) -> Result<(ApiClient, Held), ApiError> {
         let _gate = self.gate.lock().await;
         let (api, current) = self.session()?;
         if current.token != *ended {
@@ -1930,7 +1951,7 @@ impl Server {
         };
         self.core.notify();
         let running = Running(self);
-        let result = self.log_in_again(&before, api, current).await;
+        let result = self.log_in_again(&before, api, current, reason).await;
         running.finish(result.as_ref().err().map(FlowError::from));
         result
     }
@@ -1946,6 +1967,7 @@ impl Server {
         before: &AccessState,
         api: ApiClient,
         ended: Held,
+        reason: Option<EndReason>,
     ) -> Result<(ApiClient, Held), ApiError> {
         let account_id = ended.account_id;
         let logged_out = || {
@@ -1993,10 +2015,18 @@ impl Server {
             }
         };
         lock(&self.state).login_wait = None;
+        let probe = match (probe, reason) {
+            (Probe::UnknownDevice, Some(EndReason::Deleted)) => Probe::Deleted,
+            (probe, _) => probe,
+        };
         let outcome = match held_of(&probe) {
             Some(held) => Ok((api, held)),
-            None if probe == Probe::Banned => Err(ApiError::AccessLost(AccessLoss::Banned)),
-            None => Err(ApiError::AccessLost(AccessLoss::Removed)),
+            None => Err(ApiError::AccessLost(match probe {
+                Probe::Banned => AccessLoss::Banned,
+                Probe::Inactive => AccessLoss::Inactive,
+                Probe::Deleted => AccessLoss::Deleted,
+                Probe::LoggedIn(_) | Probe::UnknownDevice => AccessLoss::Removed,
+            })),
         };
         if let Err(error) = self.settle_probe(before, probe, Creates::Nothing) {
             tracing::warn!(server = %self.id, %error, "the server book was not updated");
@@ -2186,14 +2216,14 @@ struct StreamHost(Weak<Server>);
 impl Host for StreamHost {
     /// Logs in again with the device key, once (ADR 0712). The result reaches the stream
     /// client as another session, or as the level `off`.
-    fn session_ended(&self, token: &SecretToken) {
+    fn session_ended(&self, token: &SecretToken, reason: Option<EndReason>) {
         let Some(server) = self.0.upgrade() else {
             return;
         };
         let token = token.clone();
         let runtime = server.core.runtime.clone();
         drop(runtime.run(async move {
-            let _ = server.renew(&token).await;
+            let _ = server.renew_after(&token, reason).await;
         }));
     }
 

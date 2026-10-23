@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use junto_authz::{Acquaintance, Contact, Request};
 use junto_protocol::account::{
-    AccountProfile, AccountStatus, AccountSummary, Avatar, Device, DeviceOrigin, ImageType,
-    OwnAccount, RecoveryNotice,
+    AccountProfile, AccountStatus, AccountSummary, Avatar, Departure, Device, DeviceOrigin,
+    ImageType, OwnAccount, RecoveryNotice,
 };
 use junto_protocol::auth::SessionCreated;
 use junto_protocol::error::ErrorCode;
@@ -405,23 +405,43 @@ pub async fn avatar_of(
     row.map(avatar).transpose()
 }
 
-/// The profile of an account that exists.
+/// The profile of an account that exists. The profile of an inactive or a deleted account
+/// states its departure and has no avatar (ADR 0121).
 pub async fn profile_of(
     connection: &mut PgConnection,
     account_id: AccountId,
 ) -> ApiResult<Option<AccountProfile>> {
-    let name: Option<String> = sqlx::query_scalar("select name from accounts where id = $1")
-        .bind(account_id)
-        .fetch_optional(&mut *connection)
-        .await?;
-    let Some(name) = name else {
+    let row: Option<(String, String)> =
+        sqlx::query_as("select name, status from accounts where id = $1")
+            .bind(account_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let Some((name, status)) = row else {
         return Ok(None);
+    };
+    let departure = departure_of(AccountStatus::read(&status)?);
+    let avatar = match departure {
+        Some(_) => None,
+        None => avatar_of(connection, account_id).await?,
     };
     Ok(Some(AccountProfile {
         id: account_id,
         name,
-        avatar: avatar_of(connection, account_id).await?,
+        avatar,
+        departure,
     }))
+}
+
+/// The departure that a profile states for an account in this state.
+pub const fn departure_of(status: AccountStatus) -> Option<Departure> {
+    match status {
+        AccountStatus::Inactive => Some(Departure::Inactive),
+        AccountStatus::Deleted => Some(Departure::Deleted),
+        AccountStatus::Active
+        | AccountStatus::Banned
+        | AccountStatus::Removed
+        | AccountStatus::Unknown => None,
+    }
 }
 
 /// Records the current profile of an account for the accounts that may see it.
@@ -476,6 +496,25 @@ pub async fn acquaintance(
 ) -> ApiResult<Acquaintance> {
     if account_id == access.account_id {
         return Ok(Acquaintance::Own);
+    }
+    // The profile of a departed account goes to the members of the workspaces that it left
+    // by itself and to its conversation peers (ADR 0121); a holder of `ban_members` sees it
+    // as every profile.
+    let witness: bool = sqlx::query_scalar(
+        "select exists (select 1 from accounts where id = $1 and status in ('inactive', 'deleted'))
+            and (exists (select 1 from account_departures d
+                         join workspace_members m on m.workspace_id = d.workspace_id
+                         where d.account_id = $1 and m.account_id = $2)
+                 or exists (select 1 from conversations
+                            where (low_account_id = $1 and high_account_id = $2)
+                               or (low_account_id = $2 and high_account_id = $1)))",
+    )
+    .bind(account_id)
+    .bind(access.account_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if witness {
+        return Ok(Acquaintance::Departed);
     }
     let fellows = fellow_members(connection, access.account_id, &[account_id]).await?;
     if fellows.contains(&account_id) {
@@ -559,6 +598,32 @@ pub async fn contact(
     }))
 }
 
+/// Whether an account departed: it is inactive or deleted, or a moderator removed it after
+/// its departure. A direct conversation with it stays readable (ADR 0121).
+pub async fn departed(connection: &mut PgConnection, account_id: AccountId) -> ApiResult<bool> {
+    Ok(departed_among(connection, &[account_id])
+        .await?
+        .contains(&account_id))
+}
+
+/// The accounts of `account_ids` that departed, as [`departed`] states it.
+pub async fn departed_among(
+    connection: &mut PgConnection,
+    account_ids: &[AccountId],
+) -> ApiResult<HashSet<AccountId>> {
+    if account_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let departed: Vec<AccountId> = sqlx::query_scalar(
+        "select id from accounts where id = any($1) and departed_at is not null
+           and status in ('inactive', 'deleted', 'removed')",
+    )
+    .bind(account_ids)
+    .fetch_all(connection)
+    .await?;
+    Ok(departed.into_iter().collect())
+}
+
 /// Whether the caller and another account may exchange direct messages and direct calls
 /// now: both are active, and they share a workspace or one of them administers the server
 /// (ADR 0307). Every decision about a direct message or a direct call uses this function or
@@ -623,6 +688,8 @@ pub enum SessionEnd {
     Banned,
     Removed,
     Recovered(RecoveryId),
+    Inactive,
+    Deleted,
 }
 
 impl SessionEnd {
@@ -633,6 +700,8 @@ impl SessionEnd {
             Self::Banned => "banned",
             Self::Removed => "removed",
             Self::Recovered(_) => "recovered",
+            Self::Inactive => "inactive",
+            Self::Deleted => "deleted",
         }
     }
 }

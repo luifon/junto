@@ -80,7 +80,10 @@ pub async fn log_in(
         match AccountStatus::read(&status)? {
             AccountStatus::Active => {}
             AccountStatus::Banned => return Err(proof::account_banned()),
-            AccountStatus::Removed => return Err(proof::unknown_device()),
+            AccountStatus::Inactive => return Err(proof::account_inactive()),
+            AccountStatus::Removed | AccountStatus::Deleted | AccountStatus::Unknown => {
+                return Err(proof::unknown_device());
+            }
         }
         if proven.account_id != Some(account_id) {
             return Err(ApiError::new(
