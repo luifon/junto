@@ -383,26 +383,38 @@ impl Person {
 
 /// The failed negotiations of a publisher that the call library logged in this test program.
 static NEGOTIATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
-/// The negotiations of a publisher that the call library ended because its session was closed.
-static NEGOTIATIONS_ENDED_BY_CLOSE: AtomicUsize = AtomicUsize::new(0);
+/// The negotiations of a publisher that the call library started in this test program.
+static NEGOTIATIONS_STARTED: AtomicUsize = AtomicUsize::new(0);
 /// The offers that the call library tried to make in a closed connection of a publisher.
 static OFFERS_IN_A_CLOSED_CONNECTION: AtomicUsize = AtomicUsize::new(0);
+/// The tasks of the fast publish mode that negotiate a publisher, started and ended.
+static NEGOTIATION_TASKS_STARTED: AtomicUsize = AtomicUsize::new(0);
+static NEGOTIATION_TASKS_ENDED: AtomicUsize = AtomicUsize::new(0);
 
 pub fn negotiation_failures() -> usize {
     NEGOTIATION_FAILURES.load(Ordering::SeqCst)
 }
 
-pub fn negotiations_ended_by_close() -> usize {
-    NEGOTIATIONS_ENDED_BY_CLOSE.load(Ordering::SeqCst)
+pub fn negotiations_started() -> usize {
+    NEGOTIATIONS_STARTED.load(Ordering::SeqCst)
 }
 
 pub fn offers_in_a_closed_connection() -> usize {
     OFFERS_IN_A_CLOSED_CONNECTION.load(Ordering::SeqCst)
 }
 
-/// Counts the lines of the call library that end a negotiation of the publisher: an error of
-/// a failed negotiation, the debug line of a closed session, or the warning of an offer in a
-/// closed connection.
+/// The tasks that negotiate a publisher in the fast publish mode and have not ended.
+pub fn negotiation_tasks_running() -> usize {
+    NEGOTIATION_TASKS_STARTED
+        .load(Ordering::SeqCst)
+        .saturating_sub(NEGOTIATION_TASKS_ENDED.load(Ordering::SeqCst))
+}
+
+/// Counts the lines of the call library about the negotiation of a publisher: the start and
+/// the end of a task of the fast publish mode, the start of each negotiation, an error of a
+/// failed one, and the warning of an offer in a closed connection.
+/// The counts are of the whole test program; a test that reads them holds the media server
+/// alone, so that no other test negotiates meanwhile.
 struct Negotiations;
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Negotiations {
@@ -421,14 +433,12 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Negotiations {
         if level == tracing::Level::ERROR && message.0.contains("failed to negotiate the publisher")
         {
             NEGOTIATION_FAILURES.fetch_add(1, Ordering::SeqCst);
-        } else if message
-            .0
-            .contains("the session is closed: the publisher is not negotiated")
-            || message
-                .0
-                .contains("the session closed during a negotiation of the publisher")
-        {
-            NEGOTIATIONS_ENDED_BY_CLOSE.fetch_add(1, Ordering::SeqCst);
+        } else if message.0.starts_with("negotiating the publisher") {
+            NEGOTIATIONS_STARTED.fetch_add(1, Ordering::SeqCst);
+        } else if message.0 == "queue_negotiation: starting new negotiation" {
+            NEGOTIATION_TASKS_STARTED.fetch_add(1, Ordering::SeqCst);
+        } else if message.0 == "negotiation completed" {
+            NEGOTIATION_TASKS_ENDED.fetch_add(1, Ordering::SeqCst);
         } else if message
             .0
             .contains("peer connection is closed, cannot create offer")

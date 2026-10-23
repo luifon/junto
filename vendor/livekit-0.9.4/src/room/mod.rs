@@ -13,7 +13,8 @@
 // limitations under the License.
 //
 // Modified: this file differs from the published livekit 0.9.4. After a resume the local
-// participant sends the mute state of each local track again (`handle_resumed`).
+// participant sends the mute state of each local track again (`handle_resumed`). The close
+// stops the negotiations of the session before it unpublishes the tracks (`close`).
 
 pub use crate::utils::take_cell::TakeCell;
 use bmrng::unbounded::UnboundedRequestReceiver;
@@ -1184,6 +1185,10 @@ impl RoomSession {
 
     async fn close(&self, reason: DisconnectReason) -> RoomResult<()> {
         let Some(handle) = self.handle.lock().await.take() else { Err(RoomError::AlreadyClosed)? };
+
+        // Modified: the session negotiates no more before the tracks are unpublished, so the
+        // unpublishes start no negotiation with a peer connection that closes next.
+        self.rtc_engine.begin_close();
 
         // remove published tracks
         for (sid, _) in self.local_participant.track_publications().iter() {
