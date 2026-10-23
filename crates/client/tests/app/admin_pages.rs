@@ -2991,6 +2991,10 @@ fn the_people_page_reads_its_rows_before_the_members_of_the_shown_workspace(
     use sqlx::ConnectOptions;
     let world = World::new();
     let server = world.server("People first");
+    // The profiles get no answer: the test reads which profiles the window wants, and each
+    // answer would derive the main view of 601 members and the page of 2,001 rows again.
+    let proxy = world.run(crate::support::FaultProxy::start(&server));
+    proxy.hold_request("GET", "/profile");
     world.run(async {
         let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
         let mut database = options.connect().await.unwrap();
@@ -3012,7 +3016,7 @@ fn the_people_page_reads_its_rows_before_the_members_of_the_shown_workspace(
         .await
         .unwrap();
     });
-    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    let (_directory, mut window, _owner) = owner_window_at(cx, &server, &proxy.address());
     window.until(
         "the main view names the members of the workspace",
         |window| {
