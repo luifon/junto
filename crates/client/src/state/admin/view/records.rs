@@ -723,16 +723,16 @@ pub fn tokens(
     TokensPage {
         more: tokens.loaded().is_some() && model.admin.access_tokens_more,
         tokens,
-        made: match &admin.made {
-            Some(Made::Token {
+        made: admin.made.iter().find_map(|made| match made {
+            Made::Token {
                 access_token_id,
                 token,
-            }) => Some(NewToken {
+            } => Some(NewToken {
                 access_token_id: *access_token_id,
                 token: token.clone(),
             }),
             _ => None,
-        },
+        }),
         may_create: model.is_administrator(),
     }
 }
@@ -2024,10 +2024,10 @@ mod tests {
         let model = scene.model(with_tokens(Vec::new()));
         let access_token_id = AccessTokenId::generate();
         let admin = AdminState {
-            made: Some(Made::Token {
+            made: vec![Made::Token {
                 access_token_id,
                 token: AccessToken::new("jat_secret-value"),
-            }),
+            }],
             ..AdminState::default()
         };
         let page = tokens(scene.server_id, &model, &known(), &admin);
@@ -2039,7 +2039,7 @@ mod tests {
         assert_eq!(page.made, None);
         // What another request made is not the secret of a token.
         let admin = AdminState {
-            made: Some(Made::Export(ExportId::generate())),
+            made: vec![Made::Export(ExportId::generate())],
             ..AdminState::default()
         };
         assert_eq!(tokens(scene.server_id, &model, &known(), &admin).made, None);

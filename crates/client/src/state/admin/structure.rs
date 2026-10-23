@@ -206,7 +206,7 @@ impl AppState {
             AskKind::RedeemInvite,
             |api| async move { api.redeem_invite(code).await },
             |this, redemption, _| {
-                this.admin.made = Some(Made::Entered(redemption.workspace_ids));
+                this.admin.make(Made::Entered(redemption.workspace_ids));
             },
             cx,
         );
@@ -614,7 +614,7 @@ impl AppState {
             server_id,
             AskKind::RequestExport,
             |api| async move { api.export_channel(channel_id).await },
-            |this, export, _| this.admin.made = Some(Made::Export(export.id)),
+            |this, export, _| this.admin.make(Made::Export(export.id)),
             cx,
         );
     }
@@ -630,7 +630,7 @@ impl AppState {
             server_id,
             AskKind::RequestExport,
             |api| async move { api.export_conversation(conversation_id).await },
-            |this, export, _| this.admin.made = Some(Made::Export(export.id)),
+            |this, export, _| this.admin.make(Made::Export(export.id)),
             cx,
         );
     }

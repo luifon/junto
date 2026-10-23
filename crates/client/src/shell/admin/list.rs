@@ -184,8 +184,9 @@ struct Frame {
     wheel: Cell<Wheel>,
     /// The rows laid out in the frame.
     laid_out: Cell<usize>,
-    /// The accounts of the rows laid out in the frame, and those that the host was told.
-    accounts: RefCell<Vec<AccountId>>,
+    /// The accounts of the rows laid out in the frame, each with the place of its row, and
+    /// those that the host was told.
+    accounts: RefCell<Vec<(usize, AccountId)>>,
     told: RefCell<Vec<AccountId>>,
 }
 
@@ -436,8 +437,9 @@ impl PageList {
         }
     }
 
-    /// The places of the rows that the last frame drew in the view.
-    fn in_view(&self) -> std::ops::Range<usize> {
+    /// The places of the rows that the last frame drew in the view: those that it drew
+    /// whole, and those that it drew whole or in part.
+    fn in_view(&self) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
         let viewport = self.state.viewport_bounds();
         let first = self.state.logical_scroll_top().item_ix;
         let end = (first..self.rows.len())
@@ -448,26 +450,36 @@ impl PageList {
             })
             .last()
             .map_or(first, |last| last + 1);
-        first..end
+        let whole = |index: &usize| {
+            self.state.bounds_for_item(*index).is_some_and(|bounds| {
+                bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom()
+            })
+        };
+        let drawn_whole = match ((first..end).find(whole), (first..end).rev().find(whole)) {
+            (Some(start), Some(last)) => start..last + 1,
+            _ => end..end,
+        };
+        (drawn_whole, first..end)
     }
 
-    /// The first (`forward`) or the last row that `fits`, among the rows in view and
-    /// otherwise in the whole list.
+    /// The first (`forward`) or the last row that `fits`: among the rows that the view shows
+    /// whole, then among the rows that it shows in part, and otherwise in the whole list. A
+    /// move of the focus to a row that the view cuts scrolls the view (ADR 0761).
     fn first_fitting(&self, forward: bool, fits: impl Fn(&Entry) -> bool) -> Option<usize> {
-        let view = self.in_view();
-        let shown = &self.rows[view.start.min(self.rows.len())..view.end.min(self.rows.len())];
-        let in_view = if forward {
-            shown.iter().position(&fits)
-        } else {
-            shown.iter().rposition(&fits)
-        };
-        in_view.map(|index| view.start + index).or_else(|| {
+        let (whole, shown) = self.in_view();
+        let find = |range: std::ops::Range<usize>| {
+            let range = range.start.min(self.rows.len())..range.end.min(self.rows.len());
+            let rows = &self.rows[range.clone()];
             if forward {
-                self.rows.iter().position(&fits)
+                rows.iter().position(&fits)
             } else {
-                self.rows.iter().rposition(&fits)
+                rows.iter().rposition(&fits)
             }
-        })
+            .map(|index| range.start + index)
+        };
+        find(whole)
+            .or_else(|| find(shown))
+            .or_else(|| find(0..self.rows.len()))
     }
 
     /// Moves the focus to a row when it is drawn in view, and reveals it now.
@@ -773,8 +785,8 @@ pub(crate) fn element<V: ListHost>(
         // A row can be laid out twice in a frame, to measure it and to draw it.
         if let Some(account) = entry.account {
             let mut accounts = laid_out.accounts.borrow_mut();
-            if !accounts.contains(&account) {
-                accounts.push(account);
+            if !accounts.iter().any(|(_, held)| *held == account) {
+                accounts.push((index, account));
             }
         }
         let key = entry.key.clone();
@@ -865,8 +877,12 @@ pub(crate) fn element<V: ListHost>(
             },
             move |_, (), window, cx| {
                 // The host learns the accounts of the drawn rows after the frame, so that a
-                // change of its state does not happen while the window draws.
-                let laid_out = accounts.accounts.borrow().clone();
+                // change of its state does not happen while the window draws. The list lays
+                // out rows above the first row in view, and at the end of the list, upward.
+                let mut rows = accounts.accounts.borrow().clone();
+                rows.sort_unstable_by_key(|(index, _)| *index);
+                let laid_out: Vec<AccountId> =
+                    rows.into_iter().map(|(_, account)| account).collect();
                 if *accounts.told.borrow() != laid_out {
                     accounts.told.replace(laid_out.clone());
                     let host = entity.clone();
@@ -1309,6 +1325,88 @@ mod tests {
         assert_eq!(told(&host, cx).len(), times + 1);
         assert!(after.contains(&account("r1500")));
         assert!(!after.contains(&account("r0000")));
+    }
+
+    /// The host learns the accounts of the laid-out rows in the order of the rows, also
+    /// where the list lays them out in another order: the rows above the first row in
+    /// view, and the rows that fill the view upward from the end of the list (ADR 0783).
+    #[gpui::test]
+    fn the_host_learns_the_laid_out_accounts_in_the_order_of_the_rows(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, true)).collect();
+        let places: HashMap<AccountId, usize> = lines
+            .iter()
+            .enumerate()
+            .map(|(place, line)| (account(&line.key), place))
+            .collect();
+        let (host, cx) = open(cx, lines);
+        for (item_ix, offset) in [(1999, 0.0), (900, 10.0), (0, 0.0)] {
+            scroll_to(&host, cx, item_ix, offset);
+            let told = host.read_with(cx, |host, _| host.told.last().cloned().unwrap());
+            let order: Vec<usize> = told.iter().map(|account| places[account]).collect();
+            assert!(
+                order.is_sorted() && !order.is_empty(),
+                "at {item_ix}: {order:?}"
+            );
+        }
+    }
+
+    /// Tab and Shift+Tab from outside enter the list at the first and the last row that the
+    /// view shows whole: the rows that the view cuts at its top and its bottom are not
+    /// entered, so the view does not move (ADR 0761).
+    #[gpui::test]
+    fn tab_enters_the_list_at_the_rows_that_the_view_shows_whole(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000).map(|index| line(index, 30.0, true)).collect();
+        let (host, cx) = open(cx, lines);
+        scroll_to(&host, cx, 900, 10.0);
+        let before = cx.debug_bounds("row-r0905");
+        assert!(before.is_some());
+        let cut = |cx: &mut VisualTestContext, key: &str| {
+            cx.debug_bounds(selector(format!("row-{key}"))).is_some() && !in_view(cx, key)
+        };
+        assert!(cut(cx, "r0900") && cut(cx, "r0910"));
+        assert!(in_view(cx, "r0901") && in_view(cx, "r0909"));
+        focus(&host, cx, |host| host.before.clone());
+        press(cx, "tab");
+        assert_eq!(pressed_after_enter(&host, cx), ["r0901"]);
+        assert_eq!(cx.debug_bounds("row-r0905"), before);
+        focus(&host, cx, |host| host.after.clone());
+        press(cx, "shift-tab");
+        assert_eq!(pressed_after_enter(&host, cx), ["r0909"]);
+        assert_eq!(cx.debug_bounds("row-r0905"), before);
+    }
+
+    /// When no row that the view shows whole can hold a control, Tab and Shift+Tab from
+    /// outside enter the list at the rows that the view cuts, which a small scroll shows,
+    /// and not at the first or the last row of the list (ADR 0761).
+    #[gpui::test]
+    fn tab_enters_a_cut_row_before_a_row_outside_the_view(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..2000)
+            .map(|index| line(index, 30.0, [0, 900, 910, 1999].contains(&index)))
+            .collect();
+        let (host, cx) = open(cx, lines);
+        scroll_to(&host, cx, 900, 10.0);
+        assert!(in_view(cx, "r0901") && in_view(cx, "r0909") && !in_view(cx, "r0900"));
+        focus(&host, cx, |host| host.before.clone());
+        press(cx, "tab");
+        assert_eq!(pressed_after_enter(&host, cx), ["r0900"]);
+        assert!(in_view(cx, "r0905"));
+        scroll_to(&host, cx, 900, 10.0);
+        focus(&host, cx, |host| host.after.clone());
+        press(cx, "shift-tab");
+        assert_eq!(pressed_after_enter(&host, cx), ["r0910"]);
+        assert!(in_view(cx, "r0905"));
+    }
+
+    /// A row that is taller than the view is never shown whole: Tab enters the list at the
+    /// row that the view shows in part, and not at a row far away.
+    #[gpui::test]
+    fn tab_enters_a_row_taller_than_the_view_that_the_view_shows(cx: &mut TestAppContext) {
+        let lines: Vec<Line> = (0..20).map(|index| line(index, 500.0, true)).collect();
+        let (host, cx) = open(cx, lines);
+        scroll_to(&host, cx, 5, 100.0);
+        focus(&host, cx, |host| host.before.clone());
+        press(cx, "tab");
+        assert_eq!(pressed_after_enter(&host, cx), ["r0005"]);
     }
 
     /// Point 1 of the review: a row above the view that moves elsewhere moves no row in

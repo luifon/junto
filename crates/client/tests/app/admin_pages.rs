@@ -1040,7 +1040,7 @@ fn a_member_with_the_permission_follows_the_invites_and_creates_one_with_the_for
             && !window.shows("invite-code")
             && !window.shows("invite-made")
             && server_page!(window, Invites).is_some_and(|page| page.made.is_none())
-            && window.admin().is_some_and(|view| view.made.is_none())
+            && window.admin().is_some_and(|view| view.made.is_empty())
     });
 }
 
@@ -1368,7 +1368,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     assert!(window.shows(token_row));
     assert!(!window.shows("token-secret") && !window.shows("token-made"));
     assert!(server_page!(window, Tokens).is_some_and(|page| page.made.is_none()));
-    assert!(window.admin().is_some_and(|view| view.made.is_none()));
+    assert!(window.admin().is_some_and(|view| view.made.is_empty()));
 
     // The revocation removes the row, and the server refuses the token.
     click_in_page(&mut window, sel("token-revoke", token_id));
@@ -1419,8 +1419,8 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
     let export_id = awaited(
         &mut window,
         "the export was asked for",
-        |window| match window.admin()?.made {
-            Some(Made::Export(export_id)) if window.shows("show-exports") => Some(export_id),
+        |window| match window.admin()?.made.as_slice() {
+            [Made::Export(export_id)] if window.shows("show-exports") => Some(*export_id),
             _ => None,
         },
     );
@@ -2979,6 +2979,82 @@ fn the_people_page_reads_the_profiles_of_the_rows_that_it_lays_out(cx: &mut Test
     assert_eq!(wanted(&mut window), first);
     assert_eq!(requests(&mut window), asked);
     assert_eq!(draws(&mut window) - drawn, 1);
+}
+
+/// While the administration is open, the rows that its list lays out are read before the
+/// people of the main view, which the layer covers: the 601 members of the shown workspace
+/// do not take every place of the 512 profiles (ADR 0783).
+#[gpui::test]
+fn the_people_page_reads_its_rows_before_the_members_of_the_shown_workspace(
+    cx: &mut TestAppContext,
+) {
+    use sqlx::ConnectOptions;
+    let world = World::new();
+    let server = world.server("People first");
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into accounts (id, name, status, created_at)
+            select gen_random_uuid(), 'Member ' || lpad(n::text, 4, '0'), 'active', now()
+            from generate_series(1, 2000) as n",
+        )
+        .execute(&mut database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into workspace_members (workspace_id, account_id, joined_at)
+            select state.default_workspace_id, accounts.id, now()
+            from accounts, server_state as state
+            where accounts.name <= 'Member 0600'",
+        )
+        .execute(&mut database)
+        .await
+        .unwrap();
+    });
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    window.until(
+        "the main view names the members of the workspace",
+        |window| {
+            matches!(
+                window.view().workspace().map(|workspace| &workspace.members),
+                Some(Members::Loaded(members)) if members.len() == 601
+            )
+        },
+    );
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        server_page!(window, People).is_some_and(|page| {
+            page.accounts
+                .loaded()
+                .is_some_and(|rows| rows.len() == 2001)
+        })
+    });
+    window.in_shell(|shell, _, cx| {
+        shell.scroll_admin_page_to(0.75);
+        cx.notify();
+    });
+    window.settle();
+    let rows = server_page!(&mut window, People)
+        .unwrap()
+        .accounts
+        .loaded()
+        .unwrap()
+        .clone();
+    let seen = rows
+        .iter()
+        .position(|row| in_view(&mut window, sel("account-row", row.id)).is_some())
+        .unwrap();
+    assert!(
+        rows[seen].name.as_str() > "Member 0600",
+        "{}",
+        rows[seen].name
+    );
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    let wanted = window
+        .state
+        .read_with(&window.cx, |state, _| state.people_wanted(server_id));
+    assert!(wanted.contains(&rows[seen].id), "row {seen}");
 }
 
 /// Presses "Load older" of the audit log, one page at a time, until `done` holds for the

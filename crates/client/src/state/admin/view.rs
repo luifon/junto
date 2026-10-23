@@ -422,8 +422,9 @@ pub struct AdminView {
     /// The requests of the person that are on their way or were refused: one for each kind
     /// of request, in the order in which they were made.
     pub asks: Vec<Ask>,
-    /// What the last request made and the person has not put away.
-    pub made: Option<Made>,
+    /// What the requests of the page made and the person has not put away, one for each
+    /// place of the page.
+    pub made: Vec<Made>,
     /// The permissions of roles that the person changed and whose change the state does
     /// not hold yet, with the asked state: their switches show it and take no further
     /// change (ADR 0791, ADR 0311).

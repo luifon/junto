@@ -88,7 +88,7 @@ impl AppState {
             AskKind::RecoverAccount(account_id),
             |api| async move { api.recover_account(account_id, &recovery).await },
             move |this, notice, _| {
-                this.admin.made = Some(Made::Recovered { account_id, notice });
+                this.admin.make(Made::Recovered { account_id, notice });
             },
             cx,
         );
@@ -140,7 +140,7 @@ impl AppState {
             AskKind::CreateInvite,
             |api| async move { api.create_invite(&invite).await },
             |this, created, _| {
-                this.admin.made = Some(Made::Invite {
+                this.admin.make(Made::Invite {
                     invite_id: created.invite.id,
                     code: created.code,
                 });

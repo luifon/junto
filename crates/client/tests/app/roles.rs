@@ -824,3 +824,72 @@ fn the_row_of_a_role_tells_the_refusal_of_its_newest_request(cx: &mut TestAppCon
     );
     assert!(window.shows("role-refused"));
 }
+
+/// While the new name of a role is on its way, the switches of its permissions send
+/// nothing: the row and its form tell the answer to the name, and no later request at the
+/// row replaces it (ADR 0761).
+#[gpui::test]
+fn the_permissions_of_a_role_wait_for_the_answer_to_its_new_name(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let chiefs = world
+        .run(owner.api().create_workspace_role(
+            workspace_id,
+            &CreateWorkspaceRole {
+                name: "Chiefs".to_owned(),
+                permissions: Vec::new(),
+            },
+        ))
+        .unwrap()
+        .id;
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    window.until("the role is listed", |window| {
+        role_names(window) == ["Chiefs", "everyone"]
+    });
+    click_in_page(&mut window, sel("role-permissions", chiefs));
+    window.until("the permissions of the role", |window| {
+        window.shows("role-permission-manage_messages")
+    });
+    let renamed = format!("/api/v1/workspaces/{workspace_id}/roles/{chiefs}");
+    let changed = format!("{renamed}/permissions");
+
+    click_in_page(&mut window, sel("role-rename", chiefs));
+    proxy.hold_request("PATCH", &format!("/roles/{chiefs}"));
+    send_role_form(&mut window, "Heads");
+    window.until("the new name is on its way", |_| {
+        !proxy.seen(&renamed).is_empty()
+    });
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.settle();
+    assert!(
+        proxy.seen(&changed).is_empty(),
+        "a permission was sent while the new name was on its way"
+    );
+    assert!(window.shows("role-name"));
+
+    proxy.release();
+    window.until(
+        "the role has its new name and the form is closed",
+        |window| role_names(window) == ["Heads", "everyone"] && !window.shows("role-name"),
+    );
+    // The press while the name was on its way sent nothing, also after the answer.
+    world.run(owner.api().own_account()).unwrap();
+    window.settle();
+    assert!(proxy.seen(&changed).is_empty());
+    let granted = role_row(&mut window, RoleRef::Workspace(workspace_id, chiefs))
+        .unwrap()
+        .permissions
+        .iter()
+        .any(|switch| switch.on);
+    assert!(!granted);
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.until("the change of the permission reached the server", |_| {
+        !proxy.seen(&changed).is_empty()
+    });
+}

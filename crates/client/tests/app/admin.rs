@@ -9,7 +9,9 @@ use junto_client::state::view::ServerStatus;
 use junto_client_core::ServerHandle;
 use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
-use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, UpdateChannel};
+use junto_client_core::protocol::structure::{
+    ChannelKind, CreateCategory, CreateChannel, UpdateChannel,
+};
 
 use crate::harness::{Admin, Window, World, member, named, selector};
 use crate::support::{Device, FaultProxy, join, logged_in};
@@ -345,6 +347,11 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
             .channel(plans)
             .is_some_and(|held| held.channel.name == "roadmap")
     });
+    // The rules of the channel take a press after the window has the answer to the name
+    // (ADR 0761).
+    window.until("the window has the answer to the new name", |window| {
+        !window.shows("channel-name")
+    });
     window.click("channel-permanent");
     until_model(&world, &other, "permanent messages", |model| {
         model
@@ -457,9 +464,94 @@ fn a_form_that_is_sent_twice_makes_one_request(cx: &mut TestAppContext) {
 
 /// A press that starts on a control while the answer to a form above it is on its way, and
 /// ends after the window has the answer, reaches that control: the answer does not move
-/// the controls under the form (ADR 0730).
+/// the controls under the form (ADR 0730). The control is at another place than the form:
+/// the controls at the place of a form send nothing while its request is on its way
+/// (ADR 0761).
 #[gpui::test]
 fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Ada");
+    window.find_server(&proxy.address());
+    window.join_with_code(&server.owner_code().unwrap());
+    window.until_ready();
+    let owner = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers())
+        .remove(0);
+    let default = world
+        .run(owner.api().workspaces())
+        .unwrap()
+        .into_iter()
+        .find(|workspace| workspace.is_default)
+        .unwrap()
+        .id;
+    let lab = world
+        .run(owner.api().create_workspace("lab".to_owned()))
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-workspaces");
+    let rename = |id: WorkspaceId| selector(format!("workspace-rename-{id}"));
+    window.until("the workspaces have their rows", |window| {
+        window.shows(rename(default)) && window.shows(rename(lab))
+    });
+    let (form_row, under) = {
+        let default_row = window.cx.debug_bounds(rename(default)).unwrap();
+        let lab_row = window.cx.debug_bounds(rename(lab)).unwrap();
+        if default_row.top() < lab_row.top() {
+            (default, lab)
+        } else {
+            (lab, default)
+        }
+    };
+
+    // The new name reaches the server, and its answer waits at the proxy.
+    window.click(rename(form_row));
+    proxy.hold_answer_ending("PATCH", &format!("/workspaces/{form_row}"));
+    window.send_form("studio");
+    window.until("the answer to the rename waits at the proxy", |_| {
+        proxy.answers_waiting() == 1
+    });
+    window.settle();
+    let before = window.cx.debug_bounds(rename(under)).unwrap();
+
+    // The press starts while the answer waits and ends after the window has drawn it.
+    let position = before.center();
+    window.dispatch(gpui::MouseDownEvent {
+        position,
+        modifiers: gpui::Modifiers::none(),
+        button: gpui::MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    proxy.release();
+    window.until("the window has the answer to the rename", |window| {
+        window.workspace_names().contains(&"studio".to_owned()) && !window.shows("workspace-name")
+    });
+    window.settle();
+    assert_eq!(
+        window.cx.debug_bounds(rename(under)).unwrap(),
+        before,
+        "the answer moved the control under the form"
+    );
+    window.dispatch(gpui::MouseUpEvent {
+        position,
+        modifiers: gpui::Modifiers::none(),
+        button: gpui::MouseButton::Left,
+        click_count: 1,
+    });
+    window.until("the pressed control opened its form", |window| {
+        window.shows("workspace-name")
+    });
+}
+
+/// While the new name of a channel is on its way, the other controls of its settings send
+/// nothing: the form follows the answer to its own request, and no later request at the
+/// settings replaces it (ADR 0761).
+#[gpui::test]
+fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");
     let proxy = world.run(FaultProxy::start(&server));
@@ -496,47 +588,74 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
     window.until("the settings of the channel are open", |window| {
         window.shows("channel-rename") && window.shows("channel-permanent")
     });
+    let changed = format!("/api/v1/channels/{plans}");
+    let changes = |proxy: &FaultProxy| {
+        proxy
+            .seen(&changed)
+            .iter()
+            .filter(|seen| seen.method == "PATCH")
+            .count()
+    };
 
-    // The new name reaches the server, and its answer waits at the proxy.
     window.click("channel-rename");
-    proxy.hold_answer_ending("PATCH", &format!("/channels/{plans}"));
+    proxy.hold_request("PATCH", &format!("/channels/{plans}"));
     window.send_form("roadmap");
-    window.until("the answer to the rename waits at the proxy", |_| {
-        proxy.answers_waiting() == 1
-    });
-    let before = window.cx.debug_bounds("channel-permanent").unwrap();
-
-    // The press starts while the answer waits and ends after the window has drawn it.
-    let position = before.center();
-    window.dispatch(gpui::MouseDownEvent {
-        position,
-        modifiers: gpui::Modifiers::none(),
-        button: gpui::MouseButton::Left,
-        click_count: 1,
-        first_mouse: false,
-    });
-    proxy.release();
-    window.until("the window has the answer to the rename", |window| {
-        !window.shows("channel-name")
-    });
+    window.until("the new name is on its way", |_| changes(&proxy) == 1);
+    window.click("channel-permanent");
+    window.settle();
     assert_eq!(
-        window.cx.debug_bounds("channel-permanent").unwrap(),
-        before,
-        "the answer moved the switch under the form"
+        changes(&proxy),
+        1,
+        "a rule of the channel was sent while its new name was on its way"
     );
-    window.dispatch(gpui::MouseUpEvent {
-        position,
-        modifiers: gpui::Modifiers::none(),
-        button: gpui::MouseButton::Left,
-        click_count: 1,
+    assert!(window.shows("channel-name"));
+
+    proxy.release();
+    window.until(
+        "the channel has its new name and the form is closed",
+        |window| {
+            !window.shows("channel-name") && window.channel_names().contains(&"roadmap".to_owned())
+        },
+    );
+    window.settle();
+    assert!(matches!(
+        window.admin().map(|view| view.scope),
+        Some(Scope::Channel(settings))
+            if matches!(&settings.page, ChannelPageView::Overview(page) if !page.permanent)
+    ));
+    assert_eq!(changes(&proxy), 1);
+
+    // The choice of a category is a form too: while its request is on its way, neither a
+    // second press of it nor a rule of the channel is sent.
+    let ideas = world
+        .run(owner.api().create_category(
+            default,
+            &CreateCategory {
+                name: "ideas".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    let choice = selector(format!("category-choice-{ideas}"));
+    window.click("channel-move");
+    window.until("the categories are offered", |window| window.shows(choice));
+    proxy.hold_request("PATCH", &format!("/channels/{plans}"));
+    window.click(choice);
+    window.until("the category is on its way", |_| changes(&proxy) == 2);
+    window.click(choice);
+    window.click("channel-permanent");
+    window.settle();
+    assert_eq!(
+        changes(&proxy),
+        2,
+        "a second change was sent while the category was on its way"
+    );
+    proxy.release();
+    window.until("the form of the category is closed", |window| {
+        !window.shows(choice) && window.shows("channel-move")
     });
-    window.until("the switch is on", |window| {
-        matches!(
-            window.admin().map(|view| view.scope),
-            Some(Scope::Channel(settings))
-                if matches!(&settings.page, ChannelPageView::Overview(page) if page.permanent)
-        )
-    });
+    assert_eq!(changes(&proxy), 2);
 }
 
 /// The channels page of the open administration.

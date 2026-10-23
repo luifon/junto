@@ -730,13 +730,13 @@ pub fn invites(
                 .collect()
         }),
         grant: Grant::of(model),
-        made: match &admin.made {
-            Some(Made::Invite { invite_id, code }) => Some(NewCode {
+        made: admin.made.iter().find_map(|made| match made {
+            Made::Invite { invite_id, code } => Some(NewCode {
                 invite_id: *invite_id,
                 code: code.clone(),
             }),
             _ => None,
-        },
+        }),
     }
 }
 
@@ -1812,10 +1812,10 @@ mod tests {
         let model = scene.model(with_invites(Vec::new()));
         let invite_id = InviteId::generate();
         let admin = AdminState {
-            made: Some(Made::Invite {
+            made: vec![Made::Invite {
                 invite_id,
                 code: InviteCode::new("ABCD-EFGH-JKMN-PQRS"),
-            }),
+            }],
             ..AdminState::default()
         };
         let page = invites(scene.server_id, &model, &known(), &admin);
@@ -1827,7 +1827,7 @@ mod tests {
         assert_eq!(page.made, None);
         // What another request made is not a code of an invite.
         let admin = AdminState {
-            made: Some(Made::Entered(vec![scene.lab])),
+            made: vec![Made::Entered(vec![scene.lab])],
             ..AdminState::default()
         };
         let page = invites(scene.server_id, &model, &known(), &admin);

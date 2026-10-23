@@ -343,6 +343,10 @@ impl Shell {
         // does not hold it yet: the switch shows the asked state (ADR 0791, ADR 0311).
         let asked = view.permission_asked(role, switch.permission);
         let changing = asked.is_some();
+        // While the new name of the role is on its way, its permissions send nothing: a change
+        // would replace the state of the request that the form follows (ADR 0761).
+        let naming = self.admin.roles.sent == Some(AskKind::UpdateRole(role))
+            && view.sending(AskKind::UpdateRole(role));
         let (permission, on) = (switch.permission, asked.unwrap_or(switch.on));
         // A permission that the person does not hold cannot be given; taking it needs
         // the managing permission only (ADR 0304).
@@ -351,7 +355,8 @@ impl Shell {
             .locked
             .map(|reason| txt::locked(reason).into())
             .or_else(|| beyond.clone().map(SharedString::from))
-            .or_else(|| changing.then(|| text::admin::SENDING.into()));
+            .or_else(|| changing.then(|| text::admin::SENDING.into()))
+            .or_else(|| naming.then(|| text::admin::FORM_SENT.into()));
         let toggle = Toggle::new(
             ("role-permission", index),
             txt::permission_label(permission, &row.name),

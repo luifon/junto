@@ -1182,7 +1182,9 @@ fn store_picture(
 /// The people whose profiles the window reads, apart from the cache.
 #[derive(Debug, Default)]
 pub(super) struct Followed {
-    /// The people of the last derived view, with those of the call.
+    /// The people of the call of this device, which are named before all others.
+    call: HashMap<ServerId, Wanted>,
+    /// The people of the last derived view.
     view: HashMap<ServerId, Wanted>,
     /// The accounts of the rows of the administration that the list laid out last.
     admin_rows: Vec<AccountId>,
@@ -1243,12 +1245,13 @@ impl AppState {
         servers: &[ServerSnapshot],
         cx: &mut Context<Self>,
     ) {
-        let mut wanted = view.wanted_people.clone();
+        let mut call_people = HashMap::new();
         let call = self.media_calls().call.as_ref().map(|call| call.target);
         if let Some(call) = call {
-            add_call_people(&mut wanted, view, call, servers);
+            add_call_people(&mut call_people, view, call, servers);
         }
-        self.people_followed.view = wanted;
+        self.people_followed.call = call_people;
+        self.people_followed.view = view.wanted_people.clone();
         self.want_people(cx);
     }
 
@@ -1265,18 +1268,30 @@ impl AppState {
         self.want_people(cx);
     }
 
-    /// Gives the cache the people of the view, and the accounts of the laid-out rows of the
-    /// open page of the administration that the page still lists.
+    /// Gives the cache the people that the window shows, the most visible first: the people
+    /// of the call of this device, the accounts of the laid-out rows of the open page of the
+    /// administration that the page still lists, and the people of the view, which the layer
+    /// covers while it is open (ADR 0783).
     fn want_people(&mut self, cx: &mut Context<Self>) {
-        let mut wanted = self.people_followed.view.clone();
+        let followed = &self.people_followed;
+        let mut wanted = followed.view.clone();
         if let Some(admin) = self.admin_view() {
             let listed: HashSet<AccountId> = admin_people(&admin).into_iter().collect();
-            wanted.entry(admin.server_id).or_default().accounts.extend(
-                self.people_followed
-                    .admin_rows
-                    .iter()
-                    .filter(|account_id| listed.contains(account_id)),
-            );
+            let rows = followed
+                .admin_rows
+                .iter()
+                .copied()
+                .filter(|account_id| listed.contains(account_id));
+            wanted
+                .entry(admin.server_id)
+                .or_default()
+                .accounts
+                .splice(0..0, rows);
+        }
+        for (server_id, call) in &followed.call {
+            let held = wanted.entry(*server_id).or_default();
+            held.own = held.own.or(call.own);
+            held.accounts.splice(0..0, call.accounts.iter().copied());
         }
         self.known.people.want_all(&wanted);
         self.read_people(true, cx);

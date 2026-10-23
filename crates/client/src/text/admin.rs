@@ -36,6 +36,8 @@ pub const SETTINGS: &str = "Settings";
 pub const NEVER: &str = "Never";
 pub const CHANGE: &str = "Change";
 pub const SENDING: &str = "Sending…";
+/// The reason of a control whose place waits for the answer to its form (ADR 0761).
+pub const FORM_SENT: &str = "Wait until the server has answered the form.";
 pub const UP: &str = "Up";
 pub const DOWN: &str = "Down";
 pub const FIRST_ALREADY: &str = "It is the first one.";

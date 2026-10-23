@@ -457,7 +457,12 @@ impl Shell {
 
     /// The recovery that the server did, in the row of its account until the person puts
     /// it away.
-    fn render_recovered(&mut self, at: OffsetDateTime, cx: &mut Context<Self>) -> AnyElement {
+    fn render_recovered(
+        &mut self,
+        account_id: AccountId,
+        at: OffsetDateTime,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex_none()
             .mt(u(4.0))
@@ -473,11 +478,15 @@ impl Shell {
                             .selector("recovered-done")
                             .h(u(28.0))
                             .px(u(10.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.admin.people.space.release();
                                 this.admin.list.state.remeasure();
-                                this.state
-                                    .update(cx, |state, cx| state.dismiss_admin_made(cx));
+                                this.state.update(cx, |state, cx| {
+                                    state.dismiss_admin_made(
+                                        AskKind::RecoverAccount(account_id),
+                                        cx,
+                                    );
+                                });
                             })),
                     ),
             )
@@ -936,13 +945,14 @@ impl Shell {
         if self.admin.people.open == Some(Open::RecoverAccount(account_id)) {
             under.push(self.render_recovery_fields(theme));
         }
-        if let Some(Made::Recovered {
-            account_id: recovered,
-            notice,
-        }) = &view.made
-            && *recovered == account_id
-        {
-            under.push(self.render_recovered(notice.performed_at, cx));
+        if let Some(notice) = view.made.iter().find_map(|made| match made {
+            Made::Recovered {
+                account_id: recovered,
+                notice,
+            } if *recovered == account_id => Some(notice),
+            _ => None,
+        }) {
+            under.push(self.render_recovered(account_id, notice.performed_at, cx));
         }
         // The server keeps the account banned for the person: the row states it without a
         // pointer (ADR 0311).
@@ -1596,8 +1606,9 @@ impl Shell {
                         this.admin.people.space.release();
                         this.admin.list.state.remeasure();
                         this.admin.people.new_invite.release();
-                        this.state
-                            .update(cx, |state, cx| state.dismiss_admin_made(cx));
+                        this.state.update(cx, |state, cx| {
+                            state.dismiss_admin_made(AskKind::CreateInvite, cx);
+                        });
                     })),
             );
         div()
