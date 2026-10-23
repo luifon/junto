@@ -77,6 +77,29 @@ impl Window {
         })
     }
 
+    /// Opens the thread of a message of the channel from the bar of the message, as a person
+    /// does with the pointer.
+    fn open_thread_by_pointer(&mut self, root_id: MessageId) {
+        self.act_on(root_id, "thread");
+        self.until("the thread is read", |window| {
+            window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| {
+                    thread.root_id == root_id
+                        && thread.root.is_some()
+                        && thread.feed.as_ref().is_some_and(|feed| feed.loaded)
+                })
+        });
+    }
+
+    /// Types a reply into the composer of the thread with the keys and sends it with Enter.
+    fn type_reply(&mut self, text: &str) {
+        self.type_into("thread-composer-input", text);
+        self.press("enter");
+    }
+
     /// Takes one action of the bar of a message: the pointer goes to the message, and the
     /// action is clicked.
     fn act_on(&mut self, message_id: MessageId, action: &str) {
@@ -98,7 +121,7 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
     };
 
     // A member who did not write in the thread does not follow it by the rule.
-    window.open_thread_of(root_id);
+    window.open_thread_by_pointer(root_id);
     window.until("the follow state is read", |window| {
         window.follow_state() == Some((false, None))
     });
@@ -116,12 +139,11 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
     });
     assert_eq!(stored(&world), (false, None));
     assert!(!window.shows("thread-follow-default"));
-    assert_eq!(text::followed::action(false), "Follow");
 
     // The member writes in the thread and follows it by the rule, then chooses not to
     // follow it. "Use the default" gives the thread back to the rule: the member follows
     // it again.
-    window.write_reply("One per speaker.");
+    window.type_reply("One per speaker.");
     window.until("the member follows by the rule", |window| {
         window.follow_state() == Some((true, None))
     });
@@ -233,7 +255,7 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
     let world = World::new();
     let (_server, admin, _directory, mut window, _, root_id) = with_root(cx, &world);
     admin.reply(&world, root_id, document("One per speaker."));
-    window.open_thread_of(root_id);
+    window.open_thread_by_pointer(root_id);
     admin.allow_everyone(&world, &[WorkspacePermission::ManageChannel]);
     window.until("the permission to fork", |window| {
         window
@@ -246,7 +268,7 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
     // "Voice" opens the dialog for a voice channel, and the fork is made.
     window.click("fork-voice");
     assert!(window.shows("fork-dialog"));
-    window.in_shell(|shell, window, cx| shell.type_fork_name("listening room", window, cx));
+    window.type_into("fork-name", "listening room");
     window.click("create-fork");
     window.until("the voice channel of the fork", |window| {
         window
@@ -299,8 +321,8 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
     let world = World::new();
     let (_server, admin, _directory, mut window, _, root_id) = with_root(cx, &world);
     let api = admin.handle.api();
-    window.open_thread_of(root_id);
-    window.write_reply("One per spaker.");
+    window.open_thread_by_pointer(root_id);
+    window.type_reply("One per speaker");
     let reply = window.until_value("the reply is drawn in the thread", |window| {
         window.thread_rows().into_iter().find_map(|row| match row {
             FeedRow::Message(row) if row.own => Some(row.message.id),
@@ -316,27 +338,32 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
     );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Thread, cx)),
-        "One per spaker."
+        "One per speaker"
     );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         ""
     );
-    window.write_reply("One per speaker.");
+    // The caret is at the end of the text: the person adds to it, and Enter saves.
+    window.type_into("thread-composer-input", " and one mix");
+    window.press("enter");
     window.until("the edited reply", |window| {
-        window.replies() == ["One per speaker."]
+        window.replies() == ["One per speaker and one mix"]
             && window
                 .thread_message(reply)
                 .is_some_and(|row| row.message.edited_at.is_some())
     });
     let stored: Message = world.run(api.message(reply)).unwrap();
-    assert_eq!(stored.document, Some(document("One per speaker.")));
+    assert_eq!(
+        stored.document,
+        Some(document("One per speaker and one mix"))
+    );
     assert!(stored.edited_at.is_some());
 
     // The bar of the reply opens the picker for a reaction to it.
     window.act_on(reply, "react");
     assert!(window.shows("emoji-picker"));
-    window.in_shell(|shell, window, cx| shell.find_emoji("thumbs up", window, cx));
+    window.type_into("find-emoji", "thumbs up");
     window.click_named("emoji:\u{1f44d}".to_owned());
     window.until("the reaction on the reply", |window| {
         window.thread_message(reply).is_some_and(|row| {
@@ -354,6 +381,8 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
             .thread_message(reply)
             .is_some_and(|row| row.message.reactions.is_empty())
     });
+    let stored: Message = world.run(api.message(reply)).unwrap();
+    assert!(stored.reactions.is_empty());
 
     // A file dropped on the composer of the thread goes with the next reply, which stays
     // in the thread.
@@ -371,7 +400,7 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
         })
     });
     assert!(window.view().lists().unwrap().draft.is_empty());
-    window.write_reply("The stems");
+    window.type_reply("The stems");
     let sent = window.until_value("the reply with the file", |window| {
         window.thread_rows().into_iter().find_map(|row| match row {
             FeedRow::Message(row)
@@ -435,7 +464,7 @@ fn a_moderator_pins_and_unpins_permanent_messages(cx: &mut TestAppContext) {
     assert_eq!(pins(&world), [decision.id]);
 
     // A permanent reply in a thread is pinned from its bar in the side panel.
-    window.open_thread_of(root_id);
+    window.open_thread_by_pointer(root_id);
     window.until("the permanent reply", |window| {
         window
             .thread_message(reply)

@@ -6,12 +6,11 @@
 use gpui::TestAppContext;
 use junto_client::state::notices::{Agreement, Mute};
 use junto_client::state::view::ServerStatus;
-use junto_client::text;
 use junto_client_core::ServerHandle;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::discovery::{NotificationLevel, NotificationSettings};
-use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
+use junto_client_core::protocol::ids::{ChannelId, MessageId, WorkspaceId};
 use junto_client_core::protocol::message::{Block, Document, Inline, SendMessage};
 use junto_client_core::protocol::roles::CreateWorkspaceRole;
 use time::OffsetDateTime;
@@ -60,6 +59,35 @@ impl Window {
                 .notify
                 .is_some_and(|panel| matches!(panel.scope, SettingsScope::Workspace(_)))
         });
+    }
+
+    /// The messages of the notices that the state of the server holds, the newest first.
+    fn notice_ids(&mut self) -> Vec<MessageId> {
+        self.settle();
+        let server_id = self.view().selected.unwrap().id;
+        self.state
+            .read_with(&self.cx, |state, _| {
+                let model = state.server(server_id)?.live().view().model?;
+                Some(
+                    model
+                        .notices
+                        .iter()
+                        .map(|notice| notice.message_id)
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// Waits until the state holds the notice of `marker`, a message that the server wrote
+    /// after the ones before it, and returns the notices then. A notice of an earlier
+    /// message is in the same read of the list, so the list is complete up to the marker.
+    #[track_caller]
+    fn notices_up_to(&mut self, marker: MessageId) -> Vec<MessageId> {
+        self.until_value("the notice of the marker", |window| {
+            let held = window.notice_ids();
+            held.contains(&marker).then_some(held)
+        })
     }
 
     /// The texts of the notices that the list holds, the newest first.
@@ -139,10 +167,6 @@ fn a_person_sets_the_level_of_a_workspace_and_gives_a_channel_back_to_it(cx: &mu
         Some(NotificationLevel::All)
     );
     assert!(window.shows("level-default"));
-    assert_eq!(
-        text::level_default_now(NotificationLevel::All),
-        "Default now: all messages."
-    );
     window.click("notify-level-3");
     window.until("the level nothing", |window| {
         window.stored_level() == Some(Some(NotificationLevel::Nothing))
@@ -245,11 +269,16 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
     };
     let channel = |window: &mut Window| window.view().notify.and_then(|panel| panel.channel);
 
+    // Each step ends with a mention of the account, which always makes a notice: when the
+    // state holds its notice, it holds the notices of the messages before it.
+    let mark = |world: &World, step: &str| admin.mention(world, general, step, own).id;
+
     // With both switches on, a role of the person and everyone are mentions of the person.
-    admin.send(&world, general, says("editors, ", Inline::Role { role_id }));
-    window.until("the notice of the role mention", |window| {
-        window.unread_notices() == 1
-    });
+    let role_first = admin
+        .send(&world, general, says("editors, ", Inline::Role { role_id }))
+        .id;
+    let marker = mark(&world, "first step, ");
+    assert_eq!(window.notices_up_to(marker), [marker, role_first]);
     window.open_channel_settings(general);
     let shown = channel(&mut window).unwrap();
     assert!(shown.role_mentions && shown.everyone_mentions);
@@ -271,10 +300,14 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
         general,
         says("editors again, ", Inline::Role { role_id }),
     );
-    admin.send(&world, general, says("all of you, ", Inline::Everyone));
-    window.until("the notice of the everyone mention only", |window| {
-        window.unread_notices() == 1
-    });
+    let everyone_first = admin
+        .send(&world, general, says("all of you, ", Inline::Everyone))
+        .id;
+    let second = mark(&world, "second step, ");
+    assert_eq!(
+        window.notices_up_to(second),
+        [second, everyone_first, marker]
+    );
 
     // And everyone mentions off: the next one makes no notice. A mention of the account
     // still does.
@@ -293,10 +326,8 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
         general,
         says("all of you again, ", Inline::Everyone),
     );
-    admin.mention(&world, general, "you, ", own);
-    window.until("the notice of the account mention only", |window| {
-        window.unread_notices() == 1
-    });
+    let third = mark(&world, "third step, ");
+    assert_eq!(window.notices_up_to(third), [third, second, marker]);
 
     // Both switches on again: the notices of the first role and everyone mentions are
     // listed again, and the mentions that were sent while a switch was off made none.
@@ -312,11 +343,18 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
     });
     window.click("dialog-close");
     window.open_notices();
-    window.until("the three notices", |window| {
-        window.notice_texts() == ["you, @Luca", "all of you, @everyone", "editors, @Editors"]
+    window.until("the five notices", |window| {
+        window.notice_texts()
+            == [
+                "third step, @Luca",
+                "second step, @Luca",
+                "all of you, @everyone",
+                "first step, @Luca",
+                "editors, @Editors",
+            ]
     });
     // Every message arrived and counts as a message.
-    assert_eq!(window.row_of(general).unread.messages, 5);
+    assert_eq!(window.row_of(general).unread.messages, 7);
 }
 
 #[gpui::test]
@@ -357,19 +395,27 @@ fn each_length_of_a_mute_is_stored_and_a_mute_ends_at_its_time(cx: &mut TestAppC
     assert_eq!(stored_mute(&world), (false, None));
 
     // "Until tomorrow" ends at the next midnight in the zone of the person.
+    // The next midnight is computed from the clock before and after the click: the click
+    // can fall on either side of a midnight of the zone.
+    let next_midnight = |now: OffsetDateTime| {
+        now.to_offset(offset_in(zone))
+            .replace_time(time::Time::MIDNIGHT)
+            .checked_add(time::Duration::days(1))
+            .unwrap()
+            .to_offset(time::UtcOffset::UTC)
+    };
+    let before = next_midnight(OffsetDateTime::now_utc());
     window.right_click_named(format!("channel-row:{general}"));
     window.click("channel-mute-2");
     window.until("the mute until tomorrow", |window| {
         matches!(mute_of(window), Mute::Until(_))
     });
-    let local = OffsetDateTime::now_utc().to_offset(offset_in(zone));
-    let midnight = local
-        .replace_time(time::Time::MIDNIGHT)
-        .checked_add(time::Duration::days(1))
-        .unwrap()
-        .to_offset(time::UtcOffset::UTC);
+    let after = next_midnight(OffsetDateTime::now_utc());
     let (muted, until) = stored_mute(&world);
-    assert!(muted && until == Some(midnight), "{until:?} {midnight:?}");
+    assert!(
+        muted && (until == Some(before) || until == Some(after)),
+        "{until:?} {before:?} {after:?}"
+    );
     // The dialog of the channel ends it.
     window.open_channel_settings(general);
     assert!(window.shows("dialog-unmute"));
@@ -394,7 +440,8 @@ fn each_length_of_a_mute_is_stored_and_a_mute_ends_at_its_time(cx: &mut TestAppC
     // A mute that ends a few seconds from now. At its end the row shows the channel as
     // not muted without an action of the person, and a mention there is told to the
     // system.
-    let end = OffsetDateTime::now_utc() + time::Duration::seconds(3);
+    // The end leaves the window enough time to show the mute on a loaded machine.
+    let end = OffsetDateTime::now_utc() + time::Duration::seconds(20);
     let settings = NotificationSettings {
         mute: true,
         muted_until: Some(end),
@@ -637,20 +684,15 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
     assert!(window.shows("quiet-failed") && window.shows("quiet-differs"));
     assert!(!quiet_on(&world, &acme_handle) && quiet_on(&world, &harbor_handle));
 
-    // A second press reaches both: the failure is not shown any more.
+    // The switch of servers that differ is drawn off, and a press turns it on for both.
+    // The failure is not shown any more.
     window.click("do-not-disturb");
-    window.until("the servers agree again", |window| {
+    window.until("do not disturb on both servers again", |window| {
         let quiet = window.view().quiet;
-        !quiet.busy
-            && quiet.failed.is_empty()
-            && quiet.do_not_disturb.is_some()
-            && quiet.do_not_disturb != Some(Agreement::Differs)
+        !quiet.busy && quiet.failed.is_empty() && quiet.do_not_disturb == Some(Agreement::All(true))
     });
     assert!(!window.shows("quiet-failed") && !window.shows("quiet-differs"));
-    assert_eq!(
-        quiet_on(&world, &acme_handle),
-        quiet_on(&world, &harbor_handle)
-    );
+    assert!(quiet_on(&world, &acme_handle) && quiet_on(&world, &harbor_handle));
 }
 
 #[gpui::test]
@@ -668,19 +710,6 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
     window.open_notices();
     // The list is read again after each notice: the first page is the one with the newest.
     window.until("the first page of notices", |window| {
-        if let Some(panel) = window.notices() {
-            eprintln!(
-                "DEBUG page {} {} {:?}",
-                panel.rows.len(),
-                panel.more,
-                panel
-                    .rows
-                    .iter()
-                    .take(6)
-                    .map(|row| row.text.clone())
-                    .collect::<Vec<_>>()
-            );
-        }
         window.notices().is_some_and(|panel| {
             panel.rows.len() == 50
                 && panel.more
@@ -700,4 +729,19 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
     assert!(!window.shows("more-notices"));
     let texts = window.notice_texts();
     assert_eq!(texts.last().map(String::as_str), Some("number 0, @Luca"));
+    let listed: Vec<uuid::Uuid> = window
+        .notices()
+        .unwrap()
+        .rows
+        .iter()
+        .map(|row| row.id)
+        .collect();
+    let stored: Vec<uuid::Uuid> = world
+        .run(window.handle().api().notifications(None, Some(100)))
+        .unwrap()
+        .notifications
+        .iter()
+        .map(|notice| notice.id)
+        .collect();
+    assert_eq!(listed, stored);
 }

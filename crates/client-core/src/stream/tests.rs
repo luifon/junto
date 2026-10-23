@@ -179,8 +179,9 @@ struct Routes {
     most_active: usize,
     /// Paths of the requests in the order of their arrival, with their tokens.
     seen: Vec<(String, String)>,
-    /// The next requests whose path ends with the text fail with the status and code.
-    failures: Vec<(&'static str, u16, &'static str)>,
+    /// The next requests whose path ends with the text fail with the status, the code and
+    /// the wait that the answer names.
+    failures: Vec<(&'static str, u16, &'static str, Option<Duration>)>,
     /// Requests whose path ends with the text wait for a permit. A text that ends with
     /// `/` holds every path that contains it. A text that starts with `PUT ` holds only
     /// the requests of that method.
@@ -223,12 +224,24 @@ impl Http {
         gate
     }
 
+    /// A limited request names [`LIMITED_WAIT`].
     fn fail(&self, end: &'static str, status: u16, code: &'static str) {
+        let wait = (code == "rate_limited").then_some(LIMITED_WAIT);
+        self.fail_naming(end, status, code, wait);
+    }
+
+    fn fail_naming(
+        &self,
+        end: &'static str,
+        status: u16,
+        code: &'static str,
+        wait: Option<Duration>,
+    ) {
         self.routes
             .lock()
             .unwrap()
             .failures
-            .push((end, status, code));
+            .push((end, status, code, wait));
     }
 }
 
@@ -283,14 +296,13 @@ fn answer_of(
     let failure = routes
         .failures
         .iter()
-        .position(|(end, _, _)| path.ends_with(end));
+        .position(|(end, _, _, _)| path.ends_with(end));
     if let Some(position) = failure {
-        let (_, status, code) = routes.failures.remove(position);
+        let (_, status, code, wait) = routes.failures.remove(position);
         let body = format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#);
         return Ok(HttpResponse {
             status,
-            // A limited request names the time after which the server takes the next one.
-            retry_after: (code == "rate_limited").then_some(LIMITED_WAIT),
+            retry_after: wait,
             body: body.into_bytes().into(),
             receipt: crate::api::Receipt::NotStated,
         });

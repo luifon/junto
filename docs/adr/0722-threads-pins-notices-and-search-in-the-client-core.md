@@ -47,7 +47,7 @@ Pins:
 
 Notices and settings:
 
-- The state holds the notices of the snapshot and the notification settings of the account. `notification_changed` reads the first page of the notices again. Two reads of the first page are at least 2 seconds apart, as two reads of the unread threads are; the events during that time make one read at its end. A mention in each of many messages would otherwise make one read for each, and with the reads of the unread threads they pass the limit of the server for reads (120 in a minute, shared with the history). A reader asks for the page after the last notice; that page is added only while that notice is still the last one. The state holds at most 500 notices, the number that the server keeps.
+- The state holds the notices of the snapshot and the notification settings of the account. `notification_changed` reads the first page of the notices again. Two reads of the first page are at least 2 seconds apart, as two reads of the unread threads are; the events during that time make one read at its end. After a read of one of these lists that the server refused with `Retry-After`, no read of that list is sent before the try at the end of that time; an event during it is answered by that try. A mention in each of many messages would otherwise make one read for each, and with the reads of the unread threads they pass the limit of the server for reads (120 in a minute, shared with the history). A reader asks for the page after the last notice; that page is added only while that notice is still the last one. The state holds at most 500 notices, the number that the server keeps.
 - `message_read` and `thread_read` read the notices again when an unread notice can be marked by that position: its message lies in that place at or before the position, or its message was not read yet.
 - `message_read` at the latest position of a place sets its unread count to zero. Its sign ends without a read of the summary only when the summary showed no mention: a mention can be one of a thread, which the read position of the channel does not reach. This narrows the rule of ADR 0721.
 - `notification_settings_changed` reloads the state, as `call_access_ended` does (ADR 0719). A setting changes the unread sign, the mute and the mention count of every summary in its scope, and only the snapshot lists every setting.
@@ -65,6 +65,7 @@ Tool:
 
 ## Consequences
 
+- A notice that arrives within 2 seconds after a read of the first page of the notices, also a read that `message_read`, `thread_read` or `notifications_read` started, is listed, and told to the system, up to 2 seconds later.
 - A reply that the server tells costs the client the read of its message when a thread or the timeline of its channel is open, and one read of the unread threads within 2 seconds.
 - A channel with many new messages and no thread activity costs no thread request.
 - The unread threads of a server at the background level are as old as its last snapshot or its last mention, because that level delivers no change of a channel (ADR 0107).

@@ -28,7 +28,7 @@ The choice to follow a thread:
 - A choice stays when the account writes in the thread or is named in it afterwards. Only the account changes or removes it. Removing the choice returns to the rule; an account that follows again by the rule has read the replies up to that moment.
 - `PUT /api/v1/messages/{id}/thread/follow` with `following` stores the choice and `DELETE` on the same path removes it. Both need what the read position of a thread needs: the caller sees the channel, and the message is an authored root (ADR 0409).
 - The state of a thread carries `following` and `follow_setting`. A change records `thread_follow_changed` for the account, at every connection level.
-- A reply that makes an account follow a thread by the rule also records `thread_follow_changed` for that account, with `following` true and no choice: the author of a first reply, the root author at the first reply of the thread, and an account that a reply or the edit of a reply names. The server compares the followers among these accounts before and after the reply in the same transaction, so a second reply and a named account that chose not to follow record nothing. Without the event the other connections of the account, and the follow control of a window that shows the thread, keep the state from before the reply.
+- A reply that makes an account follow a thread by the rule also records `thread_follow_changed` for that account, with `following` true and no choice: the author of a first reply, the root author at the first reply of the thread, and an account that a reply or the edit of a reply names. The server compares the followers among these accounts before and after the reply in the same transaction, so a second reply and a named account that chose not to follow record nothing. The event is delivered only while the account may see the channel of the thread (`view_channel`), as the audience of an event about a place is (ADR 0510): a reply can name a member of the workspace who does not see the channel, and the root author can have lost the channel before the first reply; they follow by the rule and are told nothing. Without the event the other connections of the account, and the follow control of a window that shows the thread, keep the state from before the reply.
 
 A default that is not set:
 
@@ -50,7 +50,7 @@ The quiet time by time zone:
 
 - A client marks all notices read with one request and one event.
 - A person leaves a thread without leaving its channel, and follows a thread without writing in it.
-- A reply costs one read of the follow state of at most its author, the root author and the accounts that it names, before and after it.
+- A reply in a thread costs a read of its root author, and a read of the follow state of at most its author, the root author and the accounts that it names, before and after it. An edit of a reply costs the read of the follow state of the accounts that it names, before and after it.
 - A client shows "not set" for the default of a workspace and offers its removal.
 - A quiet time from 22:00 to 07:00 stays at these hours of the clock of the person through the year.
 - A quiet time that the migration converted shows hours of UTC until the person sets it again.

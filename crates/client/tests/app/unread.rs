@@ -102,6 +102,13 @@ fn the_end_of_a_list_in_the_active_window_is_read_without_an_action(cx: &mut Tes
     assert!(window.in_shell(|shell, _, _| shell.feed_is_at_end(junto_client::shell::Pane::Main)));
     assert_eq!(window.unread_of(random), (2, 0));
     assert_eq!(stored(&world), 2);
+    // A further message is drawn at the end of the list of the inactive window, and it
+    // stays unread too: the window reads nothing later by itself.
+    admin.send(&world, random, document("more news"));
+    window.until_message("more news");
+    window.until("the server counts the three messages", |window| {
+        window.unread_of(random) == (3, 0) && stored(&world) == 3
+    });
 
     // The person looks at the window: the end of the list is shown, and the messages are
     // read on the server.

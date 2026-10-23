@@ -5,9 +5,10 @@ use crate::{
     events,
 };
 use junto_protocol::{
+    call::CallPlace,
     events::Event,
     ids::{AccountId, ChannelId, MessageId},
-    message::{FollowedThreads, Inline, ThreadState, UnreadThreads},
+    message::{FollowedThreads, Inline, MessagePlace, ThreadState, UnreadThreads},
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -248,22 +249,38 @@ pub async fn following_among(
 
 /// Tells each account of `candidates` that follows the thread now and is not in `before`
 /// that it follows the thread. A reply made it follow by the rule, so it has no choice
-/// (ADR 0412).
+/// (ADR 0412). The event is delivered only while the account sees the channel of the
+/// thread: a reply can name a member without `view_channel`, and a root author can have
+/// lost the channel.
 pub async fn tell_new_followers(
     connection: &mut PgConnection,
     now: OffsetDateTime,
+    place: MessagePlace,
     root: MessageId,
     candidates: &[AccountId],
     before: &[AccountId],
 ) -> ApiResult<()> {
+    let MessagePlace::Channel {
+        workspace_id,
+        channel_id,
+    } = place
+    else {
+        // A direct conversation has no threads.
+        return Ok(());
+    };
+    let seen = [CallPlace::Channel {
+        workspace_id,
+        channel_id,
+    }];
     for account_id in following_among(connection, root, candidates).await? {
         if before.contains(&account_id) {
             continue;
         }
-        events::tell_account(
+        events::tell_account_at(
             connection,
             now,
             account_id,
+            &seen,
             &Event::ThreadFollowChanged {
                 root_id: root,
                 following: true,

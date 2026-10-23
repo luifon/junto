@@ -55,6 +55,9 @@ const SEARCH_PAGES: usize = 5;
 /// again without an end, with the longest of these waits.
 const READ_TRIES: u8 = 5;
 const READ_RETRY: Duration = Duration::from_secs(2);
+/// The longest wait before a read is tried again: the doubled wait of the last try, which
+/// also bounds the time that a refusal names in `Retry-After`.
+const LONGEST_READ_WAIT: Duration = Duration::from_secs(2 << READ_TRIES);
 /// The entries of one page of the unread threads, and of one page of the notices.
 pub(super) const LIST_PAGE: u32 = 200;
 pub(super) const NOTICES_PAGE: u32 = 50;
@@ -282,6 +285,11 @@ impl Spaced {
         self.at = Some(now + interval);
         self.wait = false;
         true
+    }
+
+    /// No read is sent before `until`.
+    fn hold(&mut self, until: Instant) {
+        self.at = Some(self.at.map_or(until, |at| at.max(until)));
     }
 
     /// The time of a read that waits.
@@ -828,15 +836,31 @@ impl Client {
             };
         if again {
             // A server that limits the reads names the time after which it takes the next
-            // one; an earlier try is refused again.
+            // one; an earlier try is refused again. The named time is bounded as the
+            // longest doubled wait: a proxy can name hours.
+            let named = error
+                .retry_after()
+                .unwrap_or_default()
+                .min(LONGEST_READ_WAIT);
             let wait = READ_RETRY
                 .saturating_mul(1 << tries.min(READ_TRIES))
-                .max(error.retry_after().unwrap_or_default());
-            self.messages.retries.push((
-                part,
-                tries.saturating_add(1).min(READ_TRIES),
-                Instant::now() + wait,
-            ));
+                .max(named);
+            let due = Instant::now() + wait;
+            self.messages
+                .retries
+                .push((part, tries.saturating_add(1).min(READ_TRIES), due));
+            // An event during the named time asks for the same list: it waits for the try
+            // at the end of that time.
+            let spaced = match part {
+                Part::UnreadThreads => Some(&mut self.messages.threads),
+                Part::Notices => Some(&mut self.messages.notices),
+                _ => None,
+            };
+            if let Some(spaced) = spaced
+                && !named.is_zero()
+            {
+                spaced.hold(due);
+            }
             if let Part::Recording(recording_id) = part {
                 // The reader of a recording is told of the first failure, and the state
                 // tells it until a read succeeds.

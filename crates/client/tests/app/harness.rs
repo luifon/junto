@@ -631,6 +631,15 @@ impl Window {
         self.settle();
     }
 
+    /// Clicks the field with this name and types the text into it with the keys, one
+    /// character after the other.
+    #[track_caller]
+    pub fn type_into(&mut self, field: &'static str, text: &str) {
+        self.click(field);
+        self.holding(|this| this.cx.simulate_input(text));
+        self.settle();
+    }
+
     /// Turns the wheel over the list with the name `list` until the element with the name
     /// `target` is drawn whole inside the list, as a person scrolls to a control.
     #[track_caller]

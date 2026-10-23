@@ -698,6 +698,44 @@ async fn an_account_that_a_reply_makes_follow_a_thread_is_told() {
     assert!(thread_state(&server, &later, root.id).await.following);
 }
 
+#[tokio::test]
+async fn a_follow_by_the_rule_is_not_told_to_an_account_that_does_not_see_the_channel() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let outsider = server.join(&owner, "Outsider").await;
+    let former = server.join(&owner, "Former").await;
+    let channel = channel(&server, &owner, "text").await;
+    // The root author writes while the channel is open to every member.
+    let root = send(&server, &former, &channel, "root").await;
+    // Then the channel is for one role only, which the writer holds.
+    let insiders = server
+        .grant_workspace(&owner, &writer, channel.workspace_id, &[])
+        .await;
+    server
+        .make_private(&owner, channel.workspace_id, channel.id, insiders)
+        .await;
+    let cursors = [
+        server.snapshot(&writer).await.cursor,
+        server.snapshot(&outsider).await.cursor,
+        server.snapshot(&former).await.cursor,
+    ];
+
+    // The reply names a member without `view_channel`, and it is the first reply of a root
+    // whose author lost the channel. Both follow by the rule; only the writer is told.
+    named_reply(&server, &writer, root.id, &outsider).await;
+    assert_eq!(
+        follow_changes(&server, &writer, cursors[0]).await,
+        [Event::ThreadFollowChanged {
+            root_id: root.id,
+            following: true,
+            follow_setting: None,
+        }]
+    );
+    assert_eq!(follow_changes(&server, &outsider, cursors[1]).await, []);
+    assert_eq!(follow_changes(&server, &former, cursors[2]).await, []);
+}
+
 fn default_path(workspace_id: WorkspaceId) -> String {
     format!("/api/v1/workspaces/{workspace_id}/notification-default")
 }

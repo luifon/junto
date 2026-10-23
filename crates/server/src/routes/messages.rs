@@ -243,8 +243,15 @@ pub(super) async fn send(
         }
         messages::mentions(connection, &access, &place, id, &body.document, now).await?;
         if let Some((root, candidates, before)) = &followers {
-            messages::threads::tell_new_followers(connection, now, *root, candidates, before)
-                .await?;
+            messages::threads::tell_new_followers(
+                connection,
+                now,
+                place.value,
+                *root,
+                candidates,
+                before,
+            )
+            .await?;
         }
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
         let message_event = uuid::Uuid::now_v7();
@@ -337,7 +344,15 @@ pub async fn edit_message(
         let recipients =
             messages::mentions(connection, &access, &place, id, &body.document, now).await?;
         if let Some(root) = message.thread_root {
-            messages::threads::tell_new_followers(connection, now, root, &named, &before).await?;
+            messages::threads::tell_new_followers(
+                connection,
+                now,
+                place.value,
+                root,
+                &named,
+                &before,
+            )
+            .await?;
         }
         sqlx::query("update messages set document=$2,edited_at=$3 where id=$1")
             .bind(id)
