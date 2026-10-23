@@ -180,7 +180,7 @@ impl Scene {
 
     fn model(&self) -> ServerModel {
         let mut model =
-            ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
+            ServerModel::from_snapshot(crate::state::fixtures::from_roles(self.snapshot.clone()));
         model.admin = Arc::new(self.admin.clone());
         model
     }

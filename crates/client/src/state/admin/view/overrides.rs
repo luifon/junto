@@ -342,8 +342,9 @@ mod tests {
         }
 
         fn page(&self) -> PermissionsPage {
-            let mut model =
-                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
+            let mut model = ServerModel::from_snapshot(crate::state::fixtures::from_roles(
+                self.snapshot.clone(),
+            ));
             model.admin = Arc::new(self.admin.clone());
             let workspace = model.workspace(self.studio).unwrap();
             let channel = model.readable_channel(self.general).unwrap();

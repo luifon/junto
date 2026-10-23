@@ -97,6 +97,12 @@ impl Window {
         self.press("enter");
     }
 
+    /// True when the search that runs has its answer.
+    fn searched_now(&mut self) -> bool {
+        self.search_panel()
+            .is_some_and(|panel| panel.state != SearchShown::Searching && !panel.reading_more)
+    }
+
     /// Waits for the answer of the search that runs.
     #[track_caller]
     pub(crate) fn until_searched(&mut self) -> SearchPanel {
@@ -697,4 +703,101 @@ fn a_further_page_moves_no_result_and_no_control_of_the_pages_before(cx: &mut Te
         panel.results[0].target,
         ResultTarget::Transcript { .. }
     ));
+}
+
+/// What the account may see changes while the results are shown and while a read of them
+/// is on its way (ADR 0748): the results leave at once, the answer of the read that
+/// started before the change is not taken, and the search is read again.
+#[gpui::test]
+fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let random = admin.text_channel(&world, &mut window, "random");
+    admin.send(&world, general, document("quartz in general"));
+    admin.send(&world, random, document("quartz in random"));
+    window.until_message("quartz in general");
+    let texts = |panel: &SearchPanel| -> Vec<String> {
+        let mut texts: Vec<String> = panel
+            .messages()
+            .iter()
+            .map(|result| result.text.clone())
+            .collect();
+        texts.sort();
+        texts
+    };
+    window.search_for("quartz");
+    let panel = window.until_searched();
+    assert_eq!(texts(&panel), ["quartz in general", "quartz in random"]);
+
+    // The search is read again, and the server answers with both results: the answer
+    // waits at the proxy.
+    proxy.hold_answer_ending("GET", "/search");
+    window.search_for("quartz");
+    window.until("the answer of the read waits", |_| {
+        proxy.answers_waiting() == 1
+    });
+
+    // The administrator hides "general" from the role of every member. The results leave
+    // the panel at once, and the search is read again.
+    let api = admin.handle.api();
+    let workspace_id = window.view().workspace().unwrap().id;
+    let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap().id;
+    let hide = SetChannelOverride {
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::ViewChannel],
+    };
+    world
+        .run(api.set_channel_override(general, everyone, &hide))
+        .unwrap();
+    window.until("the results left the panel", |window| {
+        window
+            .search_panel()
+            .is_some_and(|panel| panel.messages().is_empty())
+    });
+    // The change is read again for the event and for the state that the event replaces;
+    // each read waits.
+    window.until_read(
+        "a later read waits",
+        |_| {
+            let reads: Vec<Option<u16>> = proxy
+                .all()
+                .iter()
+                .filter(|seen| seen.path.starts_with("/api/v1/search"))
+                .map(|seen| seen.answer.as_ref().map(|(status, _)| *status))
+                .collect();
+            (proxy.answers_waiting(), reads)
+        },
+        |(waiting, _)| *waiting >= 2,
+    );
+    assert!(
+        window
+            .search_panel()
+            .is_some_and(|panel| panel.messages().is_empty())
+    );
+
+    // Both answers arrive. The one of the read before the change is not taken.
+    proxy.release();
+    let searches = |proxy: &FaultProxy| -> Vec<bool> {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.path.starts_with("/api/v1/search"))
+            .map(|seen| seen.answer.is_some())
+            .collect()
+    };
+    window.until("every read of the search has its answer", |window| {
+        searches(&proxy).iter().all(|answered| *answered) && window.searched_now()
+    });
+    let panel = window.search_panel().unwrap();
+    assert_eq!(texts(&panel), ["quartz in random"]);
 }

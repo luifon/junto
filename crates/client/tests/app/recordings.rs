@@ -3,6 +3,7 @@
 //! files of the recording are real media files that the server processed.
 
 use std::path::Path;
+use std::time::Duration;
 
 use gpui::TestAppContext;
 use junto_client::state::feed::FeedRow;
@@ -617,4 +618,248 @@ fn a_transcript_read_error_keeps_the_pagination_control_in_place(cx: &mut TestAp
         window.shows("transcript-lines-failed")
     });
     assert_eq!(window.cx.debug_bounds("more-lines"), Some(before));
+}
+
+/// A server with the recorder in memory, its owner Ada, and the window of the member Luca
+/// with the voice channel "Daily". Returns the identifier of the channel and the client of
+/// the server of the window.
+fn recorded_scene(
+    cx: &mut TestAppContext,
+    world: &World,
+) -> (
+    RecordingServer,
+    Admin,
+    tempfile::TempDir,
+    Window,
+    junto_client_core::protocol::ids::ChannelId,
+    junto_client_core::ServerHandle,
+) {
+    let server = world.run(RecordingServer::start("Acme Studio"));
+    let admin = world.run(async {
+        let device = Device::new();
+        let handle = device.add(&server.address()).await;
+        let claim = AccessAction::ClaimOwner {
+            code: OwnerCode::new(server.owner_code()),
+            name: "Ada".to_owned(),
+            device_name: "First device".to_owned(),
+        };
+        handle.dispatch(claim).await.unwrap();
+        logged_in(&handle);
+        Admin { device, handle }
+    });
+    let (directory, mut window) = member(cx, world, &server.address(), &admin, "Luca");
+    voice_channel(world, &admin, &mut window, "Daily");
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.name == "Daily")
+        .unwrap()
+        .id;
+    let luca = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers())
+        .remove(0);
+    (server, admin, directory, window, voice, luca)
+}
+
+/// The page of the recordings that the open administration shows.
+fn recordings_page(
+    window: &mut Window,
+) -> Option<junto_client::state::admin::view::recordings::RecordingsPage> {
+    use junto_client::state::admin::view::{Scope, ServerPage};
+    match window.admin()?.scope {
+        Scope::Server {
+            page: ServerPage::Recordings(page),
+            ..
+        } => Some(page),
+        _ => None,
+    }
+}
+
+#[gpui::test]
+fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_content(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::admin::view::recordings::RecordingsRead;
+    use junto_client_core::protocol::recording::RecordingState;
+
+    let world = World::new();
+    let (server, admin, _directory, mut window, voice, luca) = recorded_scene(cx, &world);
+    let ada = logged_in(&admin.handle);
+    window.open_administration();
+    window.until("the page of the recordings is offered", |window| {
+        window.shows("admin-nav-recordings")
+    });
+    window.click("admin-nav-recordings");
+    window.until("the page states that there is no recording", |window| {
+        window.shows("recordings-empty")
+    });
+
+    // Ada and Luca are in a call of "Daily", and Ada records it. The events of the
+    // recording make the open page read its list again, without a click.
+    let first = world.run(server.record(voice, &[&admin.handle, &luca]));
+    window.until("the page lists the finished recording", |window| {
+        window.cx.executor().advance_clock(Duration::from_secs(1));
+        recordings_page(window)
+            .is_some_and(|page| page.rows.len() == 1 && page.rows[0].state == RecordingState::Ready)
+    });
+    let page = recordings_page(&mut window).unwrap();
+    assert_eq!(page.state, RecordingsRead::Loaded);
+    let row = &page.rows[0];
+    assert_eq!(row.id, first);
+    assert_eq!(row.channel.as_deref(), Some("Daily"));
+    assert_eq!(row.started_by.as_deref(), Some("Ada"));
+    assert!(row.started);
+    assert_eq!(row.length, Some(std::time::Duration::from_secs(2)));
+    // The video of the composite, the two microphones and the shared sound.
+    assert_eq!((row.segments, row.failed_segments), (4, 0));
+    assert!(row.bytes.is_some_and(|bytes| bytes > 0));
+    assert_ne!(row.transcript, TranscriptState::Ready);
+    assert!(window.shows_named(format!("recording-row-{first}")));
+    assert!(!window.shows("recordings-empty"));
+
+    // The worker writes the transcript: the row tells it.
+    let line = Spoken {
+        account_id: ada,
+        speaker: None,
+        start_ms: 100,
+        end_ms: 120,
+        text: "The plan for the week.".to_owned(),
+    };
+    world.run(server.transcribe(first, std::slice::from_ref(&line)));
+    // A read that an event causes starts at the earliest one second after the read before
+    // (ADR 0784). The clock of the test platform moves only when the test moves it.
+    window.until_read(
+        "the row tells the transcript",
+        |window| {
+            window.cx.executor().advance_clock(Duration::from_secs(1));
+            recordings_page(window).map(|page| {
+                page.rows
+                    .iter()
+                    .map(|row| (row.state, row.transcript, row.transcript_lines))
+                    .collect::<Vec<_>>()
+            })
+        },
+        |rows| {
+            rows.as_deref()
+                .is_some_and(|rows| rows == [(RecordingState::Ready, TranscriptState::Ready, 1)])
+        },
+    );
+
+    // A second recording comes first: the newest first.
+    let second = world.run(server.record(voice, &[&admin.handle, &luca]));
+    window.until("the page lists both recordings", |window| {
+        window.cx.executor().advance_clock(Duration::from_secs(1));
+        recordings_page(window).is_some_and(|page| {
+            page.rows.iter().map(|row| row.id).collect::<Vec<_>>() == [second, first]
+                && page.rows[0].state == RecordingState::Ready
+        })
+    });
+    assert!(window.shows_named(format!("recording-row-{second}")));
+    assert!(window.shows_named(format!("recording-row-{first}")));
+}
+
+#[gpui::test]
+fn the_window_holds_open_the_24_recordings_around_the_place_of_the_list(cx: &mut TestAppContext) {
+    use std::collections::HashSet;
+
+    use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+    use junto_client::shell::Pane;
+
+    let world = World::new();
+    let (server, admin, _directory, mut window, voice, luca) = recorded_scene(cx, &world);
+    let made: Vec<RecordingId> = (0..26)
+        .map(|_| world.run(server.record(voice, &[&admin.handle, &luca])))
+        .collect();
+    let open = |window: &mut Window| -> HashSet<RecordingId> {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.client().servers())
+            .remove(0)
+            .live()
+            .view()
+            .model
+            .map(|model| {
+                model
+                    .recordings
+                    .iter()
+                    .map(|recording| recording.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let set = |ids: &[RecordingId]| ids.iter().copied().collect::<HashSet<_>>();
+    let shown = |window: &mut Window, recording_id| {
+        window
+            .card(recording_id)
+            .is_some_and(|card| matches!(card.state, CardState::Shown(_)))
+    };
+
+    // The wheel over the message list moves it by this much, up or down.
+    let wheel = |window: &mut Window, by: f32| {
+        let list = window
+            .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+            .expect("the list was drawn");
+        window.dispatch(ScrollWheelEvent {
+            position: list.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+            ..Default::default()
+        });
+    };
+
+    // The chat of "Daily" names each recording in a message. The person moves the list
+    // up until the window has read every message.
+    window.click_channel("Daily");
+    window.until("the list of the chat is drawn", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+            && window
+                .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+                .is_some()
+    });
+    window.until_read(
+        "the chat holds every recording",
+        |window| {
+            wheel(window, 4000.0);
+            window.feed().map(|feed| {
+                let recordings = feed
+                    .rows
+                    .iter()
+                    .filter(|row| matches!(row, FeedRow::Recording(_)))
+                    .count();
+                (feed.more_before, feed.rows.len(), recordings)
+            })
+        },
+        |read| matches!(read, Some((false, _, count)) if *count == made.len()),
+    );
+
+    // The list stands at its first row: the 24 oldest recordings are open, and the two
+    // newest are not.
+    window.until("the oldest recordings are open", |window| {
+        open(window) == set(&made[..24])
+    });
+    window.until("the card of the oldest recording is shown", |window| {
+        shown(window, made[0])
+    });
+    assert!(!shown(&mut window, made[25]));
+
+    // At the end of the list the 24 newest are open: the two oldest are released.
+    window.until_read(
+        "the newest recordings are open",
+        |window| {
+            // The person moves the list down; it reads the newer messages near its end.
+            wheel(window, -4000.0);
+            let at_end = window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main))
+                && window.feed().is_some_and(|feed| !feed.more_after);
+            let open = open(window);
+            let indices: Vec<usize> = (0..made.len())
+                .filter(|index| open.contains(&made[*index]))
+                .collect();
+            (at_end, indices)
+        },
+        |(_, indices)| *indices == (2..made.len()).collect::<Vec<_>>(),
+    );
+    window.until("the card of the newest recording is shown", |window| {
+        shown(window, made[25])
+    });
+    assert!(!shown(&mut window, made[0]));
 }

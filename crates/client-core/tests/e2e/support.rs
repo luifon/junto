@@ -485,8 +485,8 @@ struct ProxyState {
     /// A request with this method whose path without its query ends with this text waits
     /// too.
     held_requests: Vec<(String, String)>,
-    /// The answer to a request with this method whose path ends with this text waits at
-    /// the proxy, after the server gave it.
+    /// The answer to a request with this method whose path without its query ends with
+    /// this text waits at the proxy, after the server gave it.
     held_answers: Vec<(String, String)>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
@@ -598,8 +598,8 @@ impl FaultProxy {
             .push((method.to_owned(), end.to_owned()));
     }
 
-    /// From now on the answer to a request with `method` whose path ends with `end` waits
-    /// at the proxy until [`FaultProxy::release`]. The server has handled the request by
+    /// From now on the answer to a request with `method` whose path without its query ends
+    /// with `end` waits at the proxy until [`FaultProxy::release`]. The server has handled the request by
     /// then. A test of the window uses it to act between a change on the server and its
     /// answer.
     #[allow(dead_code)]
@@ -873,7 +873,7 @@ async fn serve(
         state
             .held_answers
             .iter()
-            .any(|(of, end)| *of == method && path.ends_with(end.as_str()))
+            .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
     if answer_held(&state.lock().unwrap()) {
         state.lock().unwrap().answers_waiting += 1;

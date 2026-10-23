@@ -739,3 +739,159 @@ fn the_history_of_direct_calls_ends_with_the_account_of_the_device(cx: &mut Test
         held(window) == 0
     });
 }
+
+/// Two servers state a recovery with one identifier: the second server copied it (ADR
+/// 0745). Each server shows its notice, and each acknowledgement goes to its own server
+/// only.
+#[gpui::test]
+fn two_servers_with_one_recovery_identifier_take_one_acknowledgement_each(cx: &mut TestAppContext) {
+    use junto_client_core::flow::access::AccessState;
+    use sqlx::ConnectOptions;
+
+    let world = World::new();
+    let acme = world.server("Acme Studio");
+    let harbor = world.server("Harbor");
+    let acme_admin = world.owner(&acme);
+    let harbor_admin = world.owner(&harbor);
+    let (directory, mut window) = member(cx, &world, &acme.address(), &acme_admin, "Luca");
+    let code = harbor_admin.invite(&world, 1);
+    window.find_server(&harbor.address());
+    window.join_with_code(code.expose());
+    window.until("both servers are ready", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view
+                .servers
+                .iter()
+                .all(|server| server.status == ServerStatus::Ready)
+    });
+    let handles = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers());
+    let (on_acme, on_harbor) = (handles[0].clone(), handles[1].clone());
+    let logged = |handle: &junto_client_core::ServerHandle| match handle.access().state {
+        AccessState::LoggedIn {
+            account_id,
+            device_id,
+            ..
+        } => (account_id, device_id),
+        other => panic!("not logged in: {other:?}"),
+    };
+
+    // The owner of Acme gives a new device access to the account there.
+    let (account_id, _) = logged(&on_acme);
+    let _replacement = world.run(async {
+        let device = Device::new();
+        let handle = device.add(&acme.address()).await;
+        handle.connect().await.unwrap();
+        acme_admin
+            .handle
+            .api()
+            .recover_account(
+                account_id,
+                &RecoverAccount {
+                    public_key: handle.device_public_key().unwrap(),
+                    device_name: "Replacement".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        (device, handle)
+    });
+    window.until("the recovery of Acme is told", |_| {
+        matches!(
+            on_acme.access().state,
+            AccessState::LoggedIn { ref recoveries, .. } if recoveries.len() == 1
+        )
+    });
+    let recovery_id = match on_acme.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries[0].id,
+        other => panic!("not logged in: {other:?}"),
+    };
+
+    // Harbor states a recovery with the same identifier for this device.
+    let (harbor_account, harbor_device) = logged(&on_harbor);
+    let harbor_owner = logged_in(&harbor_admin.handle);
+    let notices_on_harbor = || -> i64 {
+        world.run(async {
+            let options: sqlx::postgres::PgConnectOptions = harbor.database_url.parse().unwrap();
+            let mut database = options.connect().await.unwrap();
+            sqlx::query_scalar("select count(*) from recovery_notices where recovery_id = $1")
+                .bind(recovery_id.as_uuid())
+                .fetch_one(&mut database)
+                .await
+                .unwrap()
+        })
+    };
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = harbor.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into recoveries (id, account_id, device_id, performed_by, performed_at)
+             values ($1, $2, null, $3, now())",
+        )
+        .bind(recovery_id.as_uuid())
+        .bind(harbor_account.as_uuid())
+        .bind(harbor_owner.as_uuid())
+        .execute(&mut database)
+        .await
+        .unwrap();
+        sqlx::query("insert into recovery_notices (recovery_id, device_id) values ($1, $2)")
+            .bind(recovery_id.as_uuid())
+            .bind(harbor_device.as_uuid())
+            .execute(&mut database)
+            .await
+            .unwrap();
+    });
+
+    // The next start logs in on both servers: each shows the recovery.
+    drop((on_acme, on_harbor, handles));
+    window.close();
+    let mut window = open(cx, directory.path());
+    window.until("both servers tell the recovery", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view
+                .servers
+                .iter()
+                .all(|server| server.status == ServerStatus::Ready && server.has_recovery)
+    });
+    let recoveries = |window: &mut Window, index: usize| window.view().servers[index].has_recovery;
+
+    // The person states on Acme that the recovery was seen. Harbor keeps its notice, and
+    // its button is no button that sends.
+    window.click("server-0");
+    window.until("the notice of Acme is drawn", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.name == "Acme Studio")
+            && window.shows("recovery-notice")
+    });
+    window.click("recovery-seen");
+    window.until("the notice of Acme is gone", |window| {
+        !recoveries(window, 0)
+    });
+    assert!(recoveries(&mut window, 1));
+    assert_eq!(notices_on_harbor(), 1);
+
+    // On Harbor the notice is acknowledged by its own button.
+    window.click("server-1");
+    window.until("the notice of Harbor is drawn", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.name == "Harbor")
+            && window.shows("recovery-notice")
+    });
+    assert_eq!(
+        window.view().selected.unwrap().recoveries[0].id,
+        recovery_id
+    );
+    window.click("recovery-seen");
+    window.until("the notice of Harbor is gone", |window| {
+        !recoveries(window, 1)
+    });
+    assert_eq!(notices_on_harbor(), 0);
+    assert!(!window.shows("recovery-error"));
+}

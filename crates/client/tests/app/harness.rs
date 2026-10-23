@@ -277,6 +277,7 @@ fn open_client(
     system_capture: Option<std::sync::Arc<dyn ScreenCapture>>,
 ) -> Window {
     log_into_test_output();
+    junto_client_core::storage::refuse_locks_while(window_thread_works);
     // The client core answers from threads of its own runtime, at real times. The
     // scheduler of the test accepts that only when it is told so.
     cx.executor().allow_parking();
@@ -334,11 +335,20 @@ impl Window {
     pub fn holding<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
         self.holding += 1;
         let started = Instant::now();
-        let result = work(self);
+        let result = self.as_window(work);
         self.holding -= 1;
         if self.holding == 0 {
             self.held.add(started.elapsed());
         }
+        result
+    }
+
+    /// Runs `work` as work of the thread of the window: a lock of a data directory that is
+    /// taken in it outside a background task fails the test (ADR 0730).
+    pub fn as_window<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
+        WINDOW_WORK.with_borrow_mut(|works| works.push(self.cx.executor()));
+        let result = work(self);
+        WINDOW_WORK.with_borrow_mut(|works| works.pop());
         result
     }
 
@@ -511,6 +521,31 @@ impl Window {
         }
     }
 
+    /// Waits until `holds` accepts what `read` gives, as [`Window::until`] does. A failure
+    /// states the last value that was read.
+    #[track_caller]
+    pub fn until_read<T: std::fmt::Debug>(
+        &mut self,
+        what: &str,
+        mut read: impl FnMut(&mut Self) -> T,
+        mut holds: impl FnMut(&T) -> bool,
+    ) -> T {
+        crate::limit::step(what);
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            self.settle();
+            let value = read(self);
+            if holds(&value) {
+                return value;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "after {PATIENCE:?} this did not hold: {what}; the last value: {value:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Waits until `value` gives a value, and returns it.
     #[track_caller]
     pub fn until_value<T>(
@@ -627,9 +662,10 @@ impl Window {
         act: impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) -> R,
     ) -> R {
         let shell = self.shell.clone();
-        let result = self
-            .cx
-            .update(|window, cx| shell.update(cx, |shell, cx| act(shell, window, cx)));
+        let result = self.as_window(|this| {
+            this.cx
+                .update(|window, cx| shell.update(cx, |shell, cx| act(shell, window, cx)))
+        });
         self.settle();
         result
     }
@@ -802,6 +838,23 @@ fn pointer_press(
 /// few names, so each one is kept until the test process ends.
 pub(crate) fn selector(name: String) -> &'static str {
     Box::leak(name.into_boxed_str())
+}
+
+thread_local! {
+    /// The executors of the windows whose work runs on this thread now, the innermost last.
+    static WINDOW_WORK: std::cell::RefCell<Vec<gpui::BackgroundExecutor>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// True while a window runs its work on this thread and the task that runs is not one of its
+/// background tasks. The test platform runs the background tasks on the thread of the test
+/// too, and its scheduler states which kind of task runs (ADR 0730).
+fn window_thread_works() -> bool {
+    WINDOW_WORK.with_borrow(|works| {
+        works
+            .last()
+            .is_some_and(gpui::BackgroundExecutor::is_main_thread)
+    })
 }
 
 /// The lock of a data directory, held as another program that uses the directory holds it

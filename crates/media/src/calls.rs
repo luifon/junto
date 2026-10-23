@@ -3060,6 +3060,13 @@ impl Session {
         }
     }
 
+    /// The seat that the next request for a new token names: the seat of this device,
+    /// unless the server stated that it ended without a media connection, and then none, so
+    /// that a place is asked for (ADR 0520). That statement serves one request.
+    fn renewal_seat(&mut self) -> Option<String> {
+        (!std::mem::take(&mut self.renew_open)).then(|| self.place.identity().to_owned())
+    }
+
     /// Starts what is due now and returns when the next thing is due.
     fn work(&mut self, now: Instant, done: &mpsc::UnboundedSender<Done>) -> Instant {
         let mut wake = far();
@@ -3083,10 +3090,7 @@ impl Session {
                 self.retry = None;
                 self.rejoining = true;
                 self.apply_controls();
-                // The seat is named, unless the server stated that it ended without a
-                // media connection: then a place is asked for.
-                let seat = (!std::mem::take(&mut self.renew_open))
-                    .then(|| self.place.identity().to_owned());
+                let seat = self.renewal_seat();
                 drop(self.inner.in_turn(renew(
                     self.inner.clone(),
                     self.server.clone(),

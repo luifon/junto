@@ -30,6 +30,7 @@ mod admin;
 mod admin_pages;
 mod calls;
 mod contacts;
+mod data_directory;
 mod departures;
 mod flows;
 mod glossary;

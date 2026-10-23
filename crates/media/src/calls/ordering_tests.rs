@@ -2619,6 +2619,9 @@ async fn a_refusal_of_a_renewal_states_how_the_seat_ended() {
         assert!(f.session.renew_open, "{left:?}");
         assert!(f.session.retry.is_some());
         assert_eq!(f.session.fate, Fate::Held);
+        // The next request names no seat, and the one after it names the seat again.
+        assert_eq!(f.session.renewal_seat(), None, "{left:?}");
+        assert_eq!(f.session.renewal_seat().as_deref(), Some("seat"));
         f.session.engine.close().await;
     }
     // Every other reason ends the call with it, and nothing is asked again.
@@ -2640,6 +2643,7 @@ async fn a_refusal_of_a_renewal_states_how_the_seat_ended() {
             .finished(Done::Rejoined(Box::new(refusal(left)), taken));
         assert_eq!(f.session.fate, Fate::End(reason), "{left:?}");
         assert!(!f.session.renew_open && f.session.retry.is_none());
+        assert_eq!(f.session.renewal_seat().as_deref(), Some("seat"));
         f.session.engine.close().await;
     }
     // A move: its events decide, as without the request; nothing is asked again.

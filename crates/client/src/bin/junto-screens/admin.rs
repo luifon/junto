@@ -1530,6 +1530,27 @@ fn draw_records(studio: &mut Studio) -> Result<(), String> {
         )?;
     }
 
+    // A person who is no administrator: the page lists the tokens of the own account, which
+    // the person can revoke, and offers no form for a new one (ADR 0210).
+    let own_tokens = || {
+        access_tokens()
+            .into_iter()
+            .filter(|token| token.created_by == person("Luca"))
+            .collect::<Vec<_>>()
+    };
+    for (name, tokens) in [
+        ("admin-tokens-own", own_tokens()),
+        ("admin-tokens-own-empty", Vec::new()),
+    ] {
+        studio.draw(
+            Screen::new(
+                name,
+                servers(|model| collections(model).access_tokens = Collection::Loaded(tokens)),
+            ),
+            |shell, window, cx| open_page(shell, AdminPage::Tokens, window, cx),
+        )?;
+    }
+
     // The exports of the person.
     let listed = || with_exports(Collection::Loaded(exports()));
     studio.draw(
