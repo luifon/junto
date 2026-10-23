@@ -11,6 +11,9 @@ use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution, native::Nat
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The most pictures per second of the own camera.
+const CAMERA_FRAME_RATE: u32 = 30;
+
 pub(super) struct Sink {
     generation: u64,
     internal: mpsc::UnboundedSender<Internal>,
@@ -277,18 +280,22 @@ impl Actor {
         }
         camera.publication = Publication::Publishing;
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
-        let options = super::sent::encoded(TrackPublishOptions {
+        let options = super::sent::encoded(
+            TrackPublishOptions {
             source: TrackSource::Camera,
             video_encoding: Some(VideoEncoding {
                 max_bitrate: 1_700_000,
-                max_framerate: 30.0,
+                max_framerate: f64::from(CAMERA_FRAME_RATE),
             }),
             simulcast_layers: Some(vec![
                 VideoPreset::new(320, 180, 150_000, 15.0),
                 VideoPreset::new(640, 360, 500_000, 30.0),
             ]),
             ..TrackPublishOptions::default()
-        });
+            },
+            (stream.width, stream.height),
+            CAMERA_FRAME_RATE,
+        );
         let (participant, internal) = (room.local_participant(), self.internal.clone());
         self.runtime.spawn(async move {
             let result = match tokio::time::timeout(

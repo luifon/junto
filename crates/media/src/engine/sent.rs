@@ -21,22 +21,45 @@ pub(super) fn frame<T: AsRef<dyn VideoBuffer>>(buffer: T) -> VideoFrame<T> {
     frame
 }
 
-/// The codec and the encoder of the own camera and the own share. On macOS the encoder of the
-/// system hardware (VideoToolbox) encodes H.264; the other systems encode VP8 in software.
-/// Every system decodes both (ADR 0737).
-pub(super) fn encoded(options: TrackPublishOptions) -> TrackPublishOptions {
-    if cfg!(target_os = "macos") {
-        TrackPublishOptions {
-            video_codec: VideoCodec::H264,
-            video_encoder: VideoEncoderBackend::VideoToolbox,
-            ..options
-        }
+/// How the pictures of an own track are encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Encoder {
+    /// H.264, by the encoder of the system hardware (VideoToolbox on macOS).
+    HardwareH264,
+    /// VP8, by the encoder that WebRTC chooses: its software encoder on every system that
+    /// this client is built for.
+    Vp8,
+}
+
+/// Whether this system encodes H.264 with the encoder of its hardware.
+const HARDWARE_H264: bool = cfg!(target_os = "macos");
+
+/// The encoder of an own track of `size` pixels at `frame_rate` pictures per second, on a
+/// system that has a hardware H.264 encoder or not.
+pub(super) fn encoder(hardware_h264: bool, size: (u32, u32), frame_rate: u32) -> Encoder {
+    let _ = (size, frame_rate);
+    if hardware_h264 {
+        Encoder::HardwareH264
     } else {
-        TrackPublishOptions {
-            video_codec: VideoCodec::VP8,
-            video_encoder: VideoEncoderBackend::Auto,
-            ..options
-        }
+        Encoder::Vp8
+    }
+}
+
+/// The options of an own track of `size` pixels at `frame_rate` pictures per second with the
+/// codec and the encoder of [`encoder`]. Every system decodes both codecs (ADR 0737).
+pub(super) fn encoded(
+    options: TrackPublishOptions,
+    size: (u32, u32),
+    frame_rate: u32,
+) -> TrackPublishOptions {
+    let (video_codec, video_encoder) = match encoder(HARDWARE_H264, size, frame_rate) {
+        Encoder::HardwareH264 => (VideoCodec::H264, VideoEncoderBackend::VideoToolbox),
+        Encoder::Vp8 => (VideoCodec::VP8, VideoEncoderBackend::Auto),
+    };
+    TrackPublishOptions {
+        video_codec,
+        video_encoder,
+        ..options
     }
 }
 
@@ -77,12 +100,41 @@ mod tests {
                 "{name} is not decoded: {decoded:?}"
             );
         }
-        let own = encoded(TrackPublishOptions::default()).video_codec;
+        let own = encoded(TrackPublishOptions::default(), (1920, 1080), 30).video_codec;
         let encoded = mime(factory.get_rtp_sender_capabilities(MediaType::Video).codecs);
         let name = format!("video/{}", own.as_str());
         assert!(
             encoded.contains(&name),
             "{name} is not encoded: {encoded:?}"
+        );
+    }
+
+    /// The hardware encoder of H.264 encodes a picture within the limits of level 5.2, the
+    /// highest level of the encoder of macOS: 36,864 blocks of 16 × 16 pixels, 2,073,600
+    /// blocks per second, and 543 blocks on each side. A larger share is encoded in VP8 at
+    /// its full size (ADR 0773).
+    #[test]
+    fn a_picture_beyond_the_levels_of_h264_is_encoded_in_vp8_at_its_size() {
+        use Encoder::{HardwareH264, Vp8};
+        let on_macos = |size, frame_rate| encoder(true, size, frame_rate);
+        assert_eq!(on_macos((1280, 720), 30), HardwareH264);
+        assert_eq!(on_macos((1920, 1080), 60), HardwareH264);
+        assert_eq!(on_macos((3840, 2160), 60), HardwareH264);
+        assert_eq!(on_macos((4096, 2304), 56), HardwareH264);
+        assert_eq!(on_macos((4096, 2304), 60), Vp8);
+        assert_eq!(on_macos((4096, 2320), 15), Vp8);
+        assert_eq!(on_macos((5120, 2880), 15), Vp8);
+        assert_eq!(on_macos((6016, 3384), 15), Vp8);
+        assert_eq!(on_macos((8688, 400), 15), HardwareH264);
+        assert_eq!(on_macos((8689, 400), 15), Vp8);
+        assert_eq!(on_macos((400, 8689), 15), Vp8);
+        for (size, frame_rate) in [((1280, 720), 30), ((5120, 2880), 15)] {
+            assert_eq!(encoder(false, size, frame_rate), Vp8);
+        }
+        let options = encoded(TrackPublishOptions::default(), (5120, 2880), 15);
+        assert_eq!(
+            (options.video_codec, options.video_encoder),
+            (VideoCodec::VP8, VideoEncoderBackend::Auto)
         );
     }
 }

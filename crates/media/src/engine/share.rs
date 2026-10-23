@@ -110,14 +110,18 @@ pub(super) fn picture_encoding(size: (u32, u32), frame_rate: u32) -> VideoEncodi
 
 /// A lower simulcast layer would permit bandwidth adaptation to replace readable text.
 pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublishOptions {
-    super::sent::encoded(TrackPublishOptions {
+    super::sent::encoded(
+        TrackPublishOptions {
         source: TrackSource::Screenshare,
         video_encoding: Some(picture_encoding(size, frame_rate)),
         simulcast: false,
         simulcast_layers: None,
         degradation_preference: Some(DegradationPreference::MaintainResolution),
-        ..TrackPublishOptions::default()
-    })
+            ..TrackPublishOptions::default()
+        },
+        size,
+        frame_rate,
+    )
 }
 
 /// A share in the call of this device.

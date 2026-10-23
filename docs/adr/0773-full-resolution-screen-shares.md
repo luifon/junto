@@ -10,7 +10,7 @@ Text in a shared screen must remain readable when the bandwidth estimate falls. 
 
 ## Decision
 
-- Publish a screen or window as one full-resolution VP8 stream, with simulcast disabled and the explicit `MaintainResolution` degradation preference. Preserve the chosen capture frame rate and the bitrate cap calculated in ADR 0737. There is no lower-resolution encoding to select when the bandwidth estimate falls.
+- Publish a screen or window as one full-resolution stream, in the codec of the system (ADR 0737: H.264 of the hardware encoder on macOS, VP8 elsewhere), with simulcast disabled and the explicit `MaintainResolution` degradation preference. Preserve the chosen capture frame rate and the bitrate cap calculated in ADR 0737. There is no lower-resolution encoding to select when the bandwidth estimate falls.
 - The viewer still reports drawing bounds, and conversion uses those bounds. Thumbnail and main-picture conversions remain separate. Requests stay ordered for interoperability with peers that publish multiple layers.
 - The pinned Rust SDK exposes a maximum bitrate, frame rate, degradation preference and simulcast choices. Its publication options expose no minimum bitrate, bandwidth-estimate override or supported operation to force an inactive full layer to resume. The client does not patch private transport internals.
 - A constrained connection can reduce frame cadence or suspend delivery. This policy preserves the dimensions of available frames; it does not promise uninterrupted motion or legible compression at arbitrarily low bandwidth.
