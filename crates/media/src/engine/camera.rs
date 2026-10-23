@@ -282,16 +282,16 @@ impl Actor {
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
         let options = super::sent::encoded(
             TrackPublishOptions {
-            source: TrackSource::Camera,
-            video_encoding: Some(VideoEncoding {
-                max_bitrate: 1_700_000,
-                max_framerate: f64::from(CAMERA_FRAME_RATE),
-            }),
-            simulcast_layers: Some(vec![
-                VideoPreset::new(320, 180, 150_000, 15.0),
-                VideoPreset::new(640, 360, 500_000, 30.0),
-            ]),
-            ..TrackPublishOptions::default()
+                source: TrackSource::Camera,
+                video_encoding: Some(VideoEncoding {
+                    max_bitrate: 1_700_000,
+                    max_framerate: f64::from(CAMERA_FRAME_RATE),
+                }),
+                simulcast_layers: Some(vec![
+                    VideoPreset::new(320, 180, 150_000, 15.0),
+                    VideoPreset::new(640, 360, 500_000, 30.0),
+                ]),
+                ..TrackPublishOptions::default()
             },
             (stream.width, stream.height),
             CAMERA_FRAME_RATE,

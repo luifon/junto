@@ -383,15 +383,29 @@ impl Person {
 
 /// The failed negotiations of a publisher that the call library logged in this test program.
 static NEGOTIATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
+/// The negotiations of a publisher that the call library ended because its session was closed.
+static NEGOTIATIONS_ENDED_BY_CLOSE: AtomicUsize = AtomicUsize::new(0);
+/// The offers that the call library tried to make in a closed connection of a publisher.
+static OFFERS_IN_A_CLOSED_CONNECTION: AtomicUsize = AtomicUsize::new(0);
 
 pub fn negotiation_failures() -> usize {
     NEGOTIATION_FAILURES.load(Ordering::SeqCst)
 }
 
-/// Counts the errors of the call library that say that a negotiation of the publisher failed.
-struct NegotiationFailures;
+pub fn negotiations_ended_by_close() -> usize {
+    NEGOTIATIONS_ENDED_BY_CLOSE.load(Ordering::SeqCst)
+}
 
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for NegotiationFailures {
+pub fn offers_in_a_closed_connection() -> usize {
+    OFFERS_IN_A_CLOSED_CONNECTION.load(Ordering::SeqCst)
+}
+
+/// Counts the lines of the call library that end a negotiation of the publisher: an error of
+/// a failed negotiation, the debug line of a closed session, or the warning of an offer in a
+/// closed connection.
+struct Negotiations;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Negotiations {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         struct Message(String);
         impl tracing::field::Visit for Message {
@@ -401,13 +415,25 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for NegotiationFailure
                 }
             }
         }
-        if *event.metadata().level() != tracing::Level::ERROR {
-            return;
-        }
         let mut message = Message(String::new());
         event.record(&mut message);
-        if message.0.contains("failed to negotiate the publisher") {
+        let level = *event.metadata().level();
+        if level == tracing::Level::ERROR && message.0.contains("failed to negotiate the publisher")
+        {
             NEGOTIATION_FAILURES.fetch_add(1, Ordering::SeqCst);
+        } else if message
+            .0
+            .contains("the session is closed: the publisher is not negotiated")
+            || message
+                .0
+                .contains("the session closed during a negotiation of the publisher")
+        {
+            NEGOTIATIONS_ENDED_BY_CLOSE.fetch_add(1, Ordering::SeqCst);
+        } else if message
+            .0
+            .contains("peer connection is closed, cannot create offer")
+        {
+            OFFERS_IN_A_CLOSED_CONNECTION.fetch_add(1, Ordering::SeqCst);
         }
     }
 }
@@ -430,7 +456,13 @@ fn log_into_test_output() {
                     .with_test_writer()
                     .with_filter(LevelFilter::from_level(level)),
             )
-            .with(NegotiationFailures.with_filter(LevelFilter::ERROR))
+            .with(
+                Negotiations.with_filter(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_target("livekit::rtc_engine::rtc_session", tracing::Level::DEBUG)
+                        .with_target("livekit::rtc_engine::peer_transport", tracing::Level::WARN),
+                ),
+            )
             .try_init();
     });
 }

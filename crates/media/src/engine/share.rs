@@ -112,11 +112,11 @@ pub(super) fn picture_encoding(size: (u32, u32), frame_rate: u32) -> VideoEncodi
 pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublishOptions {
     super::sent::encoded(
         TrackPublishOptions {
-        source: TrackSource::Screenshare,
-        video_encoding: Some(picture_encoding(size, frame_rate)),
-        simulcast: false,
-        simulcast_layers: None,
-        degradation_preference: Some(DegradationPreference::MaintainResolution),
+            source: TrackSource::Screenshare,
+            video_encoding: Some(picture_encoding(size, frame_rate)),
+            simulcast: false,
+            simulcast_layers: None,
+            degradation_preference: Some(DegradationPreference::MaintainResolution),
             ..TrackPublishOptions::default()
         },
         size,
