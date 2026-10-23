@@ -621,6 +621,83 @@ async fn a_change_of_the_follow_setting_is_told_to_the_account_only() {
     );
 }
 
+/// The changes of the follow state that an account was told after a cursor.
+async fn follow_changes(
+    server: &TestServer,
+    member: &Member,
+    after: junto_protocol::events::Cursor,
+) -> Vec<Event> {
+    events(server, member, after, Level::Background)
+        .await
+        .into_iter()
+        .filter(|event| matches!(event, Event::ThreadFollowChanged { .. }))
+        .collect()
+}
+
+#[tokio::test]
+async fn an_account_that_a_reply_makes_follow_a_thread_is_told() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let named = server.join(&owner, "Named").await;
+    let refuser = server.join(&owner, "Refuser").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = send(&server, &owner, &channel, "root").await;
+    follow(&server, &refuser, root.id, false).await;
+    let cursors = [
+        server.snapshot(&owner).await.cursor,
+        server.snapshot(&writer).await.cursor,
+        server.snapshot(&named).await.cursor,
+        server.snapshot(&refuser).await.cursor,
+    ];
+    let rule = Event::ThreadFollowChanged {
+        root_id: root.id,
+        following: true,
+        follow_setting: None,
+    };
+
+    // The first reply makes its author and the author of the root follow by the rule. A
+    // second reply changes nothing.
+    reply(&server, &writer, root.id, "first").await;
+    reply(&server, &writer, root.id, "second").await;
+    assert_eq!(
+        follow_changes(&server, &writer, cursors[1]).await,
+        std::slice::from_ref(&rule)
+    );
+    assert_eq!(
+        follow_changes(&server, &owner, cursors[0]).await,
+        std::slice::from_ref(&rule)
+    );
+    assert!(thread_state(&server, &writer, root.id).await.following);
+
+    // An account that a reply names follows by the rule. An account that chose not to
+    // follow is named and does not follow: it is told nothing.
+    named_reply(&server, &writer, root.id, &named).await;
+    named_reply(&server, &writer, root.id, &refuser).await;
+    assert_eq!(
+        follow_changes(&server, &named, cursors[2]).await,
+        std::slice::from_ref(&rule)
+    );
+    assert_eq!(follow_changes(&server, &refuser, cursors[3]).await, []);
+    assert!(!thread_state(&server, &refuser, root.id).await.following);
+
+    // An edit that names another account makes it follow, and it is told.
+    let later = server.join(&owner, "Later").await;
+    let after = server.snapshot(&later).await.cursor;
+    let edited = reply(&server, &writer, root.id, "for nobody").await;
+    server
+        .put(
+            &writer,
+            &message(edited.id),
+            &json!({"document":{"blocks":[{"kind":"paragraph","content":[
+                {"kind":"text","text":"for"},{"kind":"account","account_id":later.account_id}]}]}}),
+        )
+        .await
+        .ok::<Message>(StatusCode::OK);
+    assert_eq!(follow_changes(&server, &later, after).await, [rule]);
+    assert!(thread_state(&server, &later, root.id).await.following);
+}
+
 fn default_path(workspace_id: WorkspaceId) -> String {
     format!("/api/v1/workspaces/{workspace_id}/notification-default")
 }

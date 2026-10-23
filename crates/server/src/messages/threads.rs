@@ -7,7 +7,7 @@ use crate::{
 use junto_protocol::{
     events::Event,
     ids::{AccountId, ChannelId, MessageId},
-    message::{FollowedThreads, ThreadState, UnreadThreads},
+    message::{FollowedThreads, Inline, ThreadState, UnreadThreads},
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -217,6 +217,62 @@ pub async fn unread(
         more,
         next,
     })
+}
+
+/// The accounts that a document names.
+pub fn named(mentions: &[&Inline]) -> Vec<AccountId> {
+    mentions
+        .iter()
+        .filter_map(|inline| match inline {
+            Inline::Account { account_id } => Some(*account_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The accounts among `candidates` that follow a thread.
+pub async fn following_among(
+    connection: &mut PgConnection,
+    root: MessageId,
+    candidates: &[AccountId],
+) -> ApiResult<Vec<AccountId>> {
+    Ok(sqlx::query_scalar(
+        "select account_id from thread_reads
+         where root_id=$1 and following and account_id=any($2)",
+    )
+    .bind(root)
+    .bind(candidates)
+    .fetch_all(&mut *connection)
+    .await?)
+}
+
+/// Tells each account of `candidates` that follows the thread now and is not in `before`
+/// that it follows the thread. A reply made it follow by the rule, so it has no choice
+/// (ADR 0412).
+pub async fn tell_new_followers(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    root: MessageId,
+    candidates: &[AccountId],
+    before: &[AccountId],
+) -> ApiResult<()> {
+    for account_id in following_among(connection, root, candidates).await? {
+        if before.contains(&account_id) {
+            continue;
+        }
+        events::tell_account(
+            connection,
+            now,
+            account_id,
+            &Event::ThreadFollowChanged {
+                root_id: root,
+                following: true,
+                follow_setting: None,
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn advance(

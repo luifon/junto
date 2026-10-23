@@ -33,7 +33,7 @@ Reads that events ask for:
 - These reads follow the rule of ADR 0719 for parts in one changed form: an event that arrives while such a read is on its way is kept; the answer is applied, and then the kept events start the read of what they name again. The answer can be older than those events, and no event carries the content that could be applied to it.
 - The answer to an edit, a deletion or a reaction of a reader is not put into the state: the change arrives with its event and is read as this section states (ADR 0746).
 - A read of a summary or of one message that is on its way is not started a second time. At most 4 reads of single messages are on their way; the others wait in a queue.
-- A read of a summary or of a message that gets no answer is sent again after 2 seconds, with waits that double. No event tells the change a second time. A read of a message is sent 5 times; after that the timeline is marked as not current, and a reader offers to read it again. A read of a summary has no last try and is sent every 64 seconds after the fifth: no reader can ask for a summary, and a place that nobody has open has no timeline to mark.
+- A read of a summary or of a message that gets no answer is sent again after 2 seconds, with waits that double. After `rate_limited` the wait is at least the time that the answer names in `Retry-After`: an earlier try is refused again and counts against the same limit. No event tells the change a second time. A read of a message is sent 5 times; after that the timeline is marked as not current, and a reader offers to read it again. A read of a summary has no last try and is sent every 64 seconds after the fifth: no reader can ask for a summary, and a place that nobody has open has no timeline to mark.
 
 Reload:
 

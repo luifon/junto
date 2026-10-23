@@ -18,7 +18,7 @@ use crate::harness::{Admin, Window, World, member};
 use crate::messages::document;
 
 impl Admin {
-    fn reply(&self, world: &World, root_id: MessageId, document: Document) -> MessageId {
+    pub(crate) fn reply(&self, world: &World, root_id: MessageId, document: Document) -> MessageId {
         let message = SendMessage {
             document,
             reply_to: None,
@@ -31,7 +31,7 @@ impl Admin {
     }
 
     /// Gives every member of the first workspace these permissions too.
-    fn allow_everyone(&self, world: &World, more: &[WorkspacePermission]) {
+    pub(crate) fn allow_everyone(&self, world: &World, more: &[WorkspacePermission]) {
         let api = self.handle.api();
         let workspace_id = world.run(api.workspaces()).unwrap()[0].id;
         let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
@@ -50,7 +50,7 @@ impl Admin {
 
 impl Window {
     /// The texts of the replies that the thread panel draws, in their order.
-    fn replies(&mut self) -> Vec<String> {
+    pub(crate) fn replies(&mut self) -> Vec<String> {
         let view = self.view();
         let Some(feed) = view
             .workspace()
@@ -72,7 +72,7 @@ impl Window {
             .collect()
     }
 
-    fn open_thread_of(&mut self, root_id: MessageId) {
+    pub(crate) fn open_thread_of(&mut self, root_id: MessageId) {
         self.in_shell(|shell, window, cx| {
             shell.open_message_menu(Pane::Main, root_id, window, cx);
         });
@@ -88,7 +88,7 @@ impl Window {
         });
     }
 
-    fn write_reply(&mut self, text: &str) {
+    pub(crate) fn write_reply(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
             shell.type_message(Pane::Thread, text, window, cx);
             shell.focus_composer(Pane::Thread, window, cx);
@@ -99,7 +99,7 @@ impl Window {
 
 /// A window of a member in the text channel of a new server, with one message of the
 /// administrator in it.
-fn with_root(
+pub(crate) fn with_root(
     cx: &mut TestAppContext,
     world: &World,
 ) -> (

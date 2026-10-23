@@ -163,6 +163,9 @@ fn unreachable() -> OpenError {
     OpenError::Failed(TransportError::new(TransportErrorKind::Connect, "refused"))
 }
 
+/// The wait that a played server names when it limits a request.
+const LIMITED_WAIT: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 struct Routes {
     snapshot: Option<Snapshot>,
@@ -286,7 +289,8 @@ fn answer_of(
         let body = format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#);
         return Ok(HttpResponse {
             status,
-            retry_after: None,
+            // A limited request names the time after which the server takes the next one.
+            retry_after: (code == "rate_limited").then_some(LIMITED_WAIT),
             body: body.into_bytes().into(),
             receipt: crate::api::Receipt::NotStated,
         });
