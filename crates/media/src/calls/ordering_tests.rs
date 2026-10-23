@@ -204,7 +204,7 @@ fn fixture() -> Fixture {
         sound_block: None,
         blocks_untold: false,
         refresh: None,
-        removal_read: false,
+        removal_read: None,
         accepted: model.cursor,
         seat_told: None,
         grants: MeetingHistory::new(model.cursor, &call, account_id, false),
@@ -1391,6 +1391,7 @@ async fn a_removal_by_the_media_server_waits_for_a_new_state_before_a_token() {
             );
             // A removal after another connection is another loss.
             state.connection = Connection::Connected;
+            state.attempt += 1;
             f.session.engine_changed(&state);
             state.connection = Connection::Lost(Lost::Removed);
             f.session.engine_changed(&state);
@@ -1399,6 +1400,44 @@ async fn a_removal_by_the_media_server_waits_for_a_new_state_before_a_token() {
         }
         f.session.engine.close().await;
     }
+}
+
+/// The session sees the last state of the engine only. When the engine takes the token, its
+/// next connection is made and the media server removes it again before the session reads
+/// a state in between, the second removal is another loss: it asks for a state of its own
+/// before the next token.
+#[tokio::test]
+async fn a_removal_of_the_next_media_connection_asks_for_a_state_of_its_own() {
+    let mut f = fixture();
+    f.session.rejoining = false;
+    f.session.fate = f.session.read_state(StreamStatus::Live, Some(&f.model));
+    let mut state = f.session.engine.state().borrow().clone();
+    state.connection = Connection::Lost(Lost::Removed);
+    f.session.engine_changed(&state);
+    assert!(f.session.refresh.is_some());
+    f.session.refresh = None;
+    // The state from after the loss shows the place: the token is asked for.
+    let cursor = Cursor {
+        epoch: f.model.cursor.epoch,
+        position: 45,
+    };
+    f.model.cursor = cursor;
+    f.session.reloaded_at(cursor);
+    f.session.fate = f.session.read_state(StreamStatus::Live, Some(&f.model));
+    assert_eq!(f.session.fate, Fate::Held);
+    assert!(asks_for_a_token(&mut f));
+    // The engine connects with the token, and the media server removes that connection.
+    f.session.rejoining = false;
+    f.session.retry = None;
+    state.attempt += 1;
+    f.session.engine_changed(&state);
+    assert!(
+        f.session.refresh.is_some(),
+        "the removal of the next connection was taken as the one before"
+    );
+    assert!(!asks_for_a_token(&mut f));
+    f.session.refresh = None;
+    f.session.engine.close().await;
 }
 
 #[tokio::test]
@@ -1751,6 +1790,55 @@ impl Looping {
         let _ = self.commands.send(SessionCommand::End { done });
         let _ = ended.await;
         let _ = self.task.await;
+    }
+}
+
+/// The end of a call waits for the work of a move to close the connection that it made to
+/// the room of the destination, so that what follows the end can use the same identity
+/// there, and it waits at most `CallTiming::move_end`.
+#[tokio::test]
+async fn the_end_of_a_call_waits_for_the_work_of_a_move_within_its_limit() {
+    // Work that closes its connection, and work that does not end.
+    for closes in [true, false] {
+        let mut f = fixture();
+        f.session.rejoining = false;
+        let limit = if closes {
+            Duration::from_secs(60)
+        } else {
+            Duration::from_millis(500)
+        };
+        f.session.timing.move_end = limit;
+        let (close, closed) = oneshot::channel::<()>();
+        let work = f.session.inner.runtime.spawn(async move {
+            let _ = closed.await;
+        });
+        f.session.probes.push(work);
+        let looping = looping(f);
+        let started = Instant::now();
+        let (done, mut ended) = oneshot::channel();
+        looping.commands.send(SessionCommand::End { done }).unwrap();
+        looping
+            .until("the call has ended for the person", |view| {
+                view.call.is_none()
+            })
+            .await;
+        let waited = tokio::time::timeout(Duration::from_millis(200), &mut ended).await;
+        assert!(
+            waited.is_err(),
+            "the end did not wait for the work of the move"
+        );
+        if closes {
+            close.send(()).unwrap();
+        }
+        let identity = tokio::time::timeout(Duration::from_secs(20), ended)
+            .await
+            .unwrap_or_else(|_| panic!("the end waits after the work of the move has ended"))
+            .unwrap();
+        assert_eq!(identity, "seat");
+        if !closes {
+            assert!(started.elapsed() >= limit);
+        }
+        let _ = looping.task.await;
     }
 }
 

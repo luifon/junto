@@ -68,6 +68,9 @@ pub struct CallTiming {
     /// device means that the place has ended. Before, the events of the join may not have
     /// arrived.
     pub settle: Duration,
+    /// How long the end of a call waits for the work of a move to close its connection to
+    /// the room of the destination.
+    pub move_end: Duration,
 }
 
 impl Default for CallTiming {
@@ -80,6 +83,7 @@ impl Default for CallTiming {
             speaking_spacing: Duration::from_millis(700),
             speaking_renewal: Duration::from_secs(3),
             settle: Duration::from_secs(10),
+            move_end: Duration::from_secs(20),
         }
     }
 }
@@ -315,6 +319,8 @@ enum SessionCommand {
     Statistics(crate::engine::statistics::Reply),
     #[cfg(feature = "test-support")]
     SoundCheck(crate::engine::statistics::SoundReply),
+    #[cfg(feature = "test-support")]
+    HoldEngine(oneshot::Sender<(oneshot::Receiver<()>, crate::engine::HeldEngine)>),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
     End {
@@ -787,6 +793,22 @@ impl Calls {
         async move { check.await.ok() }
     }
 
+    /// Holds the task of the media engine of the call of this device, for a test of what goes
+    /// on while it does not run, until the returned value is dropped. Ends when the task
+    /// waits. Nothing when this device has no call.
+    #[cfg(feature = "test-support")]
+    pub fn hold_engine(
+        &self,
+    ) -> impl Future<Output = Option<crate::engine::HeldEngine>> + Send + 'static + use<> {
+        let (reply, held) = oneshot::channel();
+        self.inner.tell(SessionCommand::HoldEngine(reply));
+        async move {
+            let (waits, held) = held.await.ok()?;
+            waits.await.ok()?;
+            Some(held)
+        }
+    }
+
     /// Starts the camera of this device at the seat that the person saw. At another seat
     /// nothing starts and the view tells it (ADR 0788).
     pub fn start_camera_in(&self, seat: &Seat, device: Option<String>) {
@@ -1235,7 +1257,7 @@ fn start(
         sound_block: answer.sound_block,
         blocks_untold,
         refresh,
-        removal_read: false,
+        removal_read: None,
         accepted,
         seat_told: answer.cursor,
         grants,
@@ -1993,9 +2015,9 @@ struct Session {
     /// from the first moment of the media connection (ADR 0503).
     blocks_untold: bool,
     refresh: Option<FreshState>,
-    /// A state was asked for after the media server removed the device, and the media
-    /// connection has not changed since.
-    removal_read: bool,
+    /// The number of the media connection after whose removal by the media server a state
+    /// was asked for.
+    removal_read: Option<u64>,
     accepted: Cursor,
     /// The cursor of the newest answer of the server that stated the seat of the place
     /// (ADR 0519). It is the membership of the person until a state is as new (ADR 0785).
@@ -2044,8 +2066,6 @@ struct Moving {
 
 /// How long the outcome of a move is waited for.
 const MOVE_OUTCOME_LIMIT: Duration = Duration::from_secs(45);
-/// How long the end of a call waits for the work of a move to close its connection.
-const MOVE_END_LIMIT: Duration = Duration::from_secs(20);
 
 /// What became of the connection of a device to the room of the destination of a move.
 #[derive(Debug, PartialEq, Eq)]
@@ -2171,6 +2191,7 @@ impl Session {
             engine,
             mut place,
             probes,
+            timing,
             ..
         } = self;
         // The media connection and the devices close at once. The cause of the end is
@@ -2222,7 +2243,7 @@ impl Session {
         // left: what follows the end can use the same identity in the room of the
         // destination.
         for task in probes {
-            let _ = tokio::time::timeout(MOVE_END_LIMIT, task).await;
+            let _ = tokio::time::timeout(timing.move_end, task).await;
         }
         if let Some(ended) = ended {
             let _ = ended.send(place.identity);
@@ -2501,6 +2522,10 @@ impl Session {
             SessionCommand::Statistics(reply) => self.engine.statistics(reply),
             #[cfg(feature = "test-support")]
             SessionCommand::SoundCheck(reply) => self.engine.sound_check(reply),
+            #[cfg(feature = "test-support")]
+            SessionCommand::HoldEngine(reply) => {
+                let _ = reply.send(self.engine.hold());
+            }
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
             #[cfg(feature = "test-support")]
@@ -2883,20 +2908,20 @@ impl Session {
                     .get_or_insert_with(OffsetDateTime::now_utc);
                 if self.retry.is_none() && !self.rejoining {
                     self.retry = Some(Instant::now() + self.backoff.take());
-                    if lost == Lost::Removed && self.refresh.is_none() && !self.removal_read {
+                    if lost == Lost::Removed
+                        && self.refresh.is_none()
+                        && self.removal_read != Some(state.attempt)
+                    {
                         // The media server removed the device. A rule of the server can
                         // be the cause, and its event can be on its way: a new token is
                         // asked for only when a state from after the loss shows the
-                        // place. One state per loss is asked for, also when the engine
-                        // tells the same loss again after the token.
+                        // place. One state per removed connection is asked for, also when
+                        // the engine tells the same loss again after the token.
                         self.refresh = Some(fresh_state(self.server.clone()));
-                        self.removal_read = true;
+                        self.removal_read = Some(state.attempt);
                     }
                 }
             }
-        }
-        if state.connection != Connection::Lost(Lost::Removed) {
-            self.removal_read = false;
         }
         if state.input_replaced && !self.inner.shared().muted {
             self.close_setting(MicrophoneClosed::DeviceChanged);

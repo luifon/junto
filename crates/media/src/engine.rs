@@ -54,6 +54,8 @@ pub use share::{
     DEFAULT_VIEW, MainPicture, SMALL_PICTURE, SeenShare, ShareId, ShareInfo, ShareState, watched,
 };
 use share::{OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
+#[cfg(feature = "test-support")]
+pub use statistics::{CameraCheck, CameraPublication, HeldEngine};
 
 /// The frames of the microphone that wait for the media connection: half a second.
 const WAITING_FRAMES: usize = 50;
@@ -163,6 +165,9 @@ pub struct EngineState {
     pub camera: crate::camera::CameraState,
     pub cameras: Vec<AccountId>,
     pub connection: Connection,
+    /// The number of the media connection that `connection` describes. Each connection
+    /// that the engine starts has the next number.
+    pub attempt: u64,
     pub microphone: MicrophoneState,
     /// The microphone permission as the system held it when the engine last read it.
     pub access: MicrophoneAccess,
@@ -258,6 +263,12 @@ enum Command {
     Statistics(statistics::Reply),
     #[cfg(feature = "test-support")]
     SoundCheck(statistics::SoundReply),
+    #[cfg(feature = "test-support")]
+    CameraCheck(statistics::CameraReply),
+    /// Holds the task of the engine: it tells the first value, and waits until the second
+    /// one ends.
+    #[cfg(feature = "test-support")]
+    Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
     Close(oneshot::Sender<()>),
 }
 
@@ -383,6 +394,7 @@ impl Engine {
             camera: crate::camera::CameraState::Off,
             cameras: Vec::new(),
             connection: Connection::Connecting,
+            attempt: 0,
             microphone: MicrophoneState::Closed,
             access,
             published: false,
@@ -436,6 +448,7 @@ impl Engine {
             input_held: false,
             input_used: None,
             camera_wait: (0, false),
+            camera_answers: 0,
             frames,
             source,
             pump,
@@ -695,6 +708,8 @@ struct Actor {
     /// The wait of a camera for a media connection: its number, and whether its time
     /// runs. A connection ends the wait.
     camera_wait: (u64, bool),
+    /// The answers of the media server to publications of the camera that were taken.
+    camera_answers: u64,
     frames: mpsc::Sender<Frame>,
     source: Arc<Mutex<Option<NativeAudioSource>>>,
     pump: JoinHandle<()>,
@@ -879,7 +894,10 @@ impl Actor {
     fn connect(&mut self, join: MediaJoin) {
         self.attempt += 1;
         let attempt = self.attempt;
-        self.change(|state| state.connection = Connection::Connecting);
+        self.change(|state| {
+            state.connection = Connection::Connecting;
+            state.attempt = attempt;
+        });
         let internal = self.internal.clone();
         self.runtime.spawn(async move {
             let connection = Room::connect(&join.url, join.token.expose(), RoomOptions::default());
@@ -975,6 +993,13 @@ impl Actor {
             Command::Statistics(reply) => self.statistics(reply).await,
             #[cfg(feature = "test-support")]
             Command::SoundCheck(reply) => self.sound_check(reply),
+            #[cfg(feature = "test-support")]
+            Command::CameraCheck(reply) => self.camera_check(reply),
+            #[cfg(feature = "test-support")]
+            Command::Hold(held, released) => {
+                let _ = held.send(());
+                let _ = released.await;
+            }
             #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
                 if let Some(room) = &self.room {

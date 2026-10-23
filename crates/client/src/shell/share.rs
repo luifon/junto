@@ -571,6 +571,39 @@ impl Shell {
         self.pictures_converting || self.pictures_prepared.is_some()
     }
 
+    /// Takes the pictures of the call as on a system whose graphics processor is emulated in
+    /// software, or as on one with a graphics processor, for a test: the follower of the
+    /// pictures starts again with the choice.
+    #[cfg(feature = "test-support")]
+    pub fn set_software_video(
+        &mut self,
+        software: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.software_video = software;
+        self.follow_pictures(window, cx);
+    }
+
+    /// The width at which each camera picture that the window holds was sent.
+    #[cfg(feature = "test-support")]
+    pub fn camera_widths(&self) -> HashMap<ShareId, u32> {
+        self.cameras
+            .iter()
+            .map(|(id, (frame, _))| (*id, frame.source.0))
+            .collect()
+    }
+
+    /// The width at which each small picture of a share that the window holds was sent.
+    #[cfg(feature = "test-support")]
+    pub fn small_widths(&self) -> HashMap<ShareId, u32> {
+        self.pictures
+            .small
+            .iter()
+            .map(|(id, (frame, _))| (*id, frame.source.0))
+            .collect()
+    }
+
     /// The images of the pictures of the call that the window holds now: the watched
     /// share, the small pictures of the shares and the cameras that are drawn as images.
     #[cfg(feature = "test-support")]

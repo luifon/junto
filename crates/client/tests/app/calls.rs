@@ -1,6 +1,8 @@
 //! The controls of calls that need no media server: the person's own microphone and sound
 //! settings, the sound settings of the application, and a join that the server refuses.
 
+use std::time::Duration;
+
 use gpui::TestAppContext;
 use junto_client::state::view::{CallNotice, MicrophoneButton, Relation};
 use junto_client_core::flow::FlowError;
@@ -346,15 +348,23 @@ pub(crate) fn show_call(window: &mut Window, call: junto_media::calls::ActiveCal
 }
 
 /// ADR 0793: received pictures cause at most one drawing per frame of the display, whatever
-/// their number. The follower converts the newest picture on a thread of the runtime before
-/// it asks for a frame. After a burst of pictures a frame draws the picture whose
-/// conversion started first, which can already be the newest one, and the next frame the
-/// newest one: one or two drawings.
+/// their number and their source: the watched share, the small pictures of the shares and
+/// the cameras. The follower converts the newest pictures on a thread of the runtime before
+/// it asks for a frame. After a burst of pictures a frame draws the pictures whose conversion
+/// started first, which can already be the newest ones, and the next frame the newest ones:
+/// one or two drawings. The test counts every drawing of the window: a drawing that no
+/// picture asked for fails it, with the number of changes of the state of the application in
+/// that time, which is the other cause that can draw this window.
 #[gpui::test]
 fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ids::AccountId;
     use junto_media::engine::{MainPicture, ShareId};
     use junto_media::share::picture::VideoPicture;
     use junto_media::share::synthetic::two_colours;
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use std::sync::Arc;
 
     let world = World::new();
     let server = world.server("Acme Studio");
@@ -367,80 +377,129 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
-    // A picture of a share, `width` pixels wide.
-    let picture = |width: u32| {
+    // A picture `width` pixels wide.
+    let frame = |width: u32| {
         let pixels = two_colours(width, 2, (255, 255, 255), (255, 255, 255));
-        MainPicture {
-            share: ShareId::Own,
-            frame: std::sync::Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap()),
-        }
+        Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap())
     };
-    // (every drawing of the window, the drawings that pictures asked for, the width held)
-    let draws = |window: &Window| window.shell.read_with(&window.cx, |shell, _| shell.draws());
-    // The window can still hold work for a frame from what it loaded before: it is given
-    // some frames, until it holds none.
-    for _ in 0..20 {
-        if window.frame() == 0 {
-            break;
-        }
-        window.park();
-    }
+    let (share, camera) = (
+        ShareId::Of(AccountId::generate()),
+        ShareId::Of(AccountId::generate()),
+    );
+    // The three sources, and all of them at once.
+    let main = |width: u32| {
+        calls.show_main_picture_for_test(Some(MainPicture {
+            share: ShareId::Own,
+            frame: frame(width),
+        }));
+    };
+    let small = |width: u32| {
+        calls.show_small_pictures_for_test(HashMap::from([(share, frame(width))]));
+    };
+    let cameras = |width: u32| {
+        calls.show_camera_pictures_for_test(HashMap::from([(camera, frame(width))]));
+    };
+    let every = |width: u32| {
+        main(width);
+        small(width);
+        cameras(width);
+    };
+    // The width of the picture that the window holds of each source.
+    let held = |window: &Window| {
+        window.shell.read_with(&window.cx, |shell, _| {
+            (
+                shell.draws().2,
+                shell.small_widths().get(&share).copied(),
+                shell.camera_widths().get(&camera).copied(),
+            )
+        })
+    };
+    // (every drawing of the window, the drawings that pictures asked for)
+    let draws = |window: &Window| {
+        let (all, asked, _) = window.shell.read_with(&window.cx, |shell, _| shell.draws());
+        (all, asked)
+    };
+    let changes = Rc::new(Cell::new(0usize));
+    let counted = changes.clone();
+    let state = window.state.clone();
+    let _changes = window
+        .cx
+        .update(|_, cx| cx.observe(&state, move |_, _| counted.set(counted.get() + 1)));
+    // The window can hold work for a frame from what it loaded before: it is given frames
+    // until it holds none.
+    window.until("the window has no work for a frame", |window| {
+        window.frame() == 0
+    });
 
-    // Fifty pictures arrive, and the application does its work after each one. No frame
-    // of the display passes: no picture asks for a drawing, and the application comes to
-    // rest each time. Another cause can draw the window in this time (an event of the
-    // server); the pictures do not, so the drawings stay far below one per picture.
-    let (all, before, _) = draws(&window);
-    for width in 1..=50 {
-        calls.show_main_picture_for_test(Some(picture(width)));
+    let sources: [(&str, &dyn Fn(u32)); 4] = [
+        ("the watched share", &main),
+        ("the small pictures", &small),
+        ("the cameras", &cameras),
+        ("all three", &every),
+    ];
+    let mut width = 0;
+    for (source, show) in sources {
+        // Fifty pictures arrive, and the application does its work after each one. No frame
+        // of the display passes: nothing is drawn.
+        let (all, asked) = draws(&window);
+        let changed = changes.get();
+        for _ in 0..50 {
+            width += 1;
+            show(width);
+            window.park();
+        }
+        assert_eq!(
+            draws(&window),
+            (all, asked),
+            "{source}: the window was drawn without a frame; the state of the application \
+             changed {} times",
+            changes.get() - changed
+        );
+        // The pictures whose conversion started first, and then the newest ones.
+        window.until_pictures_taken();
+        let (all_after, asked_after) = draws(&window);
+        assert!(
+            (1..=2).contains(&(asked_after - asked)),
+            "{source}: {} drawings for a burst of fifty pictures",
+            asked_after - asked
+        );
+        assert_eq!(
+            all_after - all,
+            asked_after - asked,
+            "{source}: a drawing that no picture asked for; the state of the application \
+             changed {} times",
+            changes.get() - changed
+        );
+        let newest = Some(width);
+        match source {
+            "the watched share" => assert_eq!(held(&window).0, newest),
+            "the small pictures" => assert_eq!(held(&window).1, newest),
+            "the cameras" => assert_eq!(held(&window).2, newest),
+            _ => assert_eq!(held(&window), (newest, newest, newest)),
+        }
+        // Without a newer picture a frame draws nothing.
+        window.frame();
         window.park();
-    }
-    let (all_after, asked, _) = draws(&window);
-    assert_eq!(
-        asked, before,
-        "a picture was drawn without a frame of the display"
-    );
-    assert!(
-        all_after - all < 10,
-        "the window was drawn {} times for fifty pictures without a frame",
-        all_after - all
-    );
-    // The picture whose conversion started first, and then the newest one.
-    window.until_pictures_taken();
-    let (_, after_burst, width) = draws(&window);
-    assert!(
-        (before + 1..=before + 2).contains(&after_burst),
-        "{} drawings for a burst of fifty pictures",
-        after_burst - before
-    );
-    assert_eq!(width, Some(50));
-    // Without a newer picture a frame draws nothing more.
-    window.frame();
-    window.park();
-    assert_eq!(draws(&window).1, after_burst);
-    // Five pictures between two waits for frames: at most two drawings each time, and the
-    // last picture is drawn.
-    for width in 51..=60 {
-        calls.show_main_picture_for_test(Some(picture(width)));
-        window.park();
-        if width % 5 == 0 {
-            let drawn = draws(&window).1;
+        assert_eq!(draws(&window), (all_after, asked_after));
+        // Five pictures between two waits for frames: at most two drawings each time, all
+        // of them asked for by the pictures, and the last picture is held.
+        for round in 0..2 {
+            let (all, asked) = draws(&window);
+            for _ in 0..5 {
+                width += 1;
+                show(width);
+                window.park();
+            }
             window.until_pictures_taken();
-            let (_, now, shown) = draws(&window);
+            let (all_now, asked_now) = draws(&window);
             assert!(
-                now - drawn <= 2,
-                "{} drawings for five pictures",
-                now - drawn
+                (1..=2).contains(&(asked_now - asked)),
+                "{source}, round {round}: {} drawings for five pictures",
+                asked_now - asked
             );
-            assert_eq!(shown, Some(width));
+            assert_eq!(all_now - all, asked_now - asked, "{source}, round {round}");
         }
     }
-    let (all_end, _, _) = draws(&window);
-    eprintln!(
-        "drawings of the window for any cause: {} for fifty pictures without a frame, {} in the whole test",
-        all_after - all,
-        all_end - all
-    );
 }
 
 /// ADR 0774: a picture of a call that a newer one replaced is removed from the GPU images of
@@ -905,4 +964,142 @@ fn sound_settings_that_cannot_be_read_are_told_and_close_the_microphone(cx: &mut
         told.is_some_and(|told| told.contains("sound settings")),
         "no notice tells that the microphone was closed"
     );
+}
+
+/// A share dialog belongs to the call that the window showed when the person opened it.
+/// When that call ends while the person chooses, the dialog closes, the window tells that
+/// nothing is shared, and nothing is captured (ADR 0736).
+#[gpui::test]
+fn a_share_dialog_closes_and_tells_when_its_call_ends(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    let media = junto_client::state::view::MediaSnapshot {
+        calls: junto_media::calls::CallsView {
+            call: Some(call),
+            ..junto_media::calls::CallsView::default()
+        },
+        can_share: true,
+        ..junto_client::state::view::MediaSnapshot::default()
+    };
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| state.show_media_fixture(media, cx));
+    });
+    window.settle();
+    window.click("call-share");
+    assert!(window.shows("share-picker"));
+    assert!(window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+
+    // The call ends while the dialog is open.
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.show_media_fixture(junto_client::state::view::MediaSnapshot::default(), cx)
+        });
+    });
+    window.settle();
+    assert!(!window.shows("share-picker"));
+    assert!(!window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+    assert!(window.shows("call-told"));
+    assert_eq!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.pending().call_told.clone())
+            .as_deref(),
+        Some(junto_client::text::SHARE_DIALOG_CLOSED)
+    );
+    assert!(window.capture.started().is_empty());
+    window.click("dismiss-call-told");
+    assert!(!window.shows("call-told"));
+}
+
+/// ADR 0793: without a graphics processor the window takes the pictures of the cameras at
+/// most once in 200 ms, and the pictures of the shares as they arrive. With one it takes
+/// each newer picture of a camera.
+#[gpui::test]
+fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::ids::AccountId;
+    use junto_media::engine::{MainPicture, ShareId};
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    show_call(&mut window, call);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let frame = |width: u32| {
+        let pixels = two_colours(width, 2, (255, 255, 255), (255, 255, 255));
+        Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap())
+    };
+    let camera = ShareId::Of(AccountId::generate());
+    let show_camera = |width: u32| {
+        calls.show_camera_pictures_for_test(HashMap::from([(camera, frame(width))]));
+    };
+    let held = |window: &mut Window| {
+        window.until_pictures_taken();
+        let (_, _, main) = window.shell.read_with(&window.cx, |shell, _| shell.draws());
+        let cameras = window
+            .shell
+            .read_with(&window.cx, |shell, _| shell.camera_widths());
+        (main, cameras.get(&camera).copied())
+    };
+
+    // With a graphics processor each newer picture of a camera is taken.
+    show_camera(10);
+    assert_eq!(held(&mut window).1, Some(10));
+    show_camera(11);
+    assert_eq!(held(&mut window).1, Some(11));
+
+    // Without one, a picture of a camera is taken, and the cameras rest for 200 ms.
+    window.in_shell(|shell, window, cx| shell.set_software_video(true, window, cx));
+    // The follower starts again and can take the picture that the window holds: a rest that
+    // this begins ends first.
+    window.until_pictures_taken();
+    window
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(200));
+    window.park();
+    show_camera(20);
+    assert_eq!(held(&mut window).1, Some(20));
+    // A picture of a camera that arrives in the rest waits; one of the share is taken.
+    show_camera(21);
+    calls.show_main_picture_for_test(Some(MainPicture {
+        share: ShareId::Own,
+        frame: frame(30),
+    }));
+    assert_eq!(held(&mut window), (Some(30), Some(20)));
+    window
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(199));
+    window.park();
+    assert_eq!(held(&mut window), (Some(30), Some(20)));
+    // At the end of the rest the picture that waited is taken, and the next rest begins.
+    window.cx.executor().advance_clock(Duration::from_millis(1));
+    window.park();
+    assert_eq!(held(&mut window).1, Some(21));
+    show_camera(22);
+    assert_eq!(held(&mut window).1, Some(21));
+    window
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(200));
+    window.park();
+    assert_eq!(held(&mut window).1, Some(22));
 }

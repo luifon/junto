@@ -214,3 +214,141 @@ async fn a_media_connection_waits_for_the_server_listing_before_becoming_ready()
     })
     .await;
 }
+
+/// A person in a call that hides who is inside enters the same call on a second device. The
+/// server ends the place of the first device, and the place of the second one has the rules
+/// of a new place of that call (ADR 0514, ADR 0517): a token for pictures only until the
+/// admission check has seen the device in the room, and the sound block of a moderator from
+/// its first moment, although the server states no block in its answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_place_that_moves_to_another_device_in_a_hidden_call_keeps_its_rules() {
+    limited(async {
+        use junto_media::calls::Outcome;
+
+        let _media = media_server_shared().await;
+        let (ann, phone, laptop, cal) = (
+            Person::new(440.0),
+            Person::new(880.0),
+            Person::new(660.0),
+            Person::new(1320.0),
+        );
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let phone_at = room.member(&ann_at, &phone, "Ben").await;
+        let laptop_at = room.second_device(&phone_at, &laptop).await;
+        let cal_at = room.member(&ann_at, &cal, "Cal").await;
+        let (ann_id, ben_id) = (account(&ann_at), account(&phone_at));
+        let place = room.target.place;
+        ann_at
+            .api()
+            .update_call_settings(
+                room.voice,
+                &UpdateCallSettings {
+                    user_limit: None,
+                    hides_occupants: Some(true),
+                },
+            )
+            .await
+            .unwrap();
+        ann.enter(room.target).await;
+        phone.enter(room.target).await;
+        ann.until_heard(&phone).await;
+        phone.until_heard(&ann).await;
+        ann_at.api().block_sound(room.voice, ben_id).await.unwrap();
+        phone
+            .until("the phone has the sound block", |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.sound_block.is_some())
+            })
+            .await;
+
+        // Ben enters the call on the laptop. The call of the phone ends, and its microphone
+        // and output close.
+        laptop.host.clear_played();
+        let cleared = tokio::time::Instant::now();
+        laptop.enter(room.target).await;
+        let identity = laptop.calls.view().call.unwrap().identity;
+        let ended = phone
+            .until("the call of the phone has ended", |view| {
+                view.call.is_none()
+            })
+            .await;
+        assert!(
+            matches!(ended.outcome, Some(Outcome::Ended { target, .. }) if target == room.target),
+            "{:?}",
+            ended.outcome
+        );
+        ann.until_silent(&phone).await;
+
+        // The laptop has the block from its first moment: the tone of Ann is in none of the
+        // sound that it played since the join.
+        laptop
+            .until(
+                "the server tells the sound block of the new place",
+                |view| {
+                    view.call
+                        .as_ref()
+                        .is_some_and(|call| call.sound_block.is_some())
+                },
+            )
+            .await;
+        let (played, rate) = laptop.host.played_since_clear();
+        // The sink keeps the last 12 seconds: everything since the join is examined.
+        assert!(cleared.elapsed() < Duration::from_secs(10));
+        for part in played.chunks(rate as usize / 4) {
+            let heard = tone_level(part, rate, ann.hz);
+            assert!(heard < ABSENT_DBFS, "{heard}");
+        }
+
+        // The admission check gives the place of the laptop its microphone: Ann hears it.
+        laptop
+            .until("the microphone of the laptop runs", |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.microphone == MicrophoneState::Running)
+            })
+            .await;
+        ann.until_heard(&laptop).await;
+
+        // The server lists Ben once, at the place of the laptop, to the people inside; a
+        // person outside learns only that the channel is in use.
+        model_when(
+            &ann_at,
+            "Ann reads Ben at the place of the laptop",
+            |model| {
+                model.call_at(&place).is_some_and(|call| {
+                    call.participants.len() == 2
+                        && call
+                            .participant(ben_id)
+                            .is_some_and(|ben| ben.identity == identity)
+                        && call.participant(ann_id).is_some()
+                })
+            },
+        )
+        .await;
+        model_when(&laptop_at, "the laptop reads who is inside", |model| {
+            model.call_at(&place).is_some_and(|call| {
+                call.participant(ann_id).is_some()
+                    && call
+                        .participant(ben_id)
+                        .is_some_and(|ben| ben.identity == identity)
+            })
+        })
+        .await;
+        let outside = model_when(&cal_at, "the channel is in use", |model| {
+            model.channel(room.voice).is_some_and(|held| held.in_use)
+        })
+        .await;
+        assert_eq!(outside.channel(room.voice).unwrap().call, None);
+
+        // Without the block the laptop hears the call.
+        ann_at
+            .api()
+            .unblock_sound(room.voice, ben_id)
+            .await
+            .unwrap();
+        laptop.until_heard_afresh(&ann).await;
+    })
+    .await;
+}

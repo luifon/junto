@@ -1,6 +1,7 @@
 //! Two people in one call: what each hears of the other, and what the server is told.
 
 use junto_client_core::protocol::call::{BlockReason, LeaveReason};
+use junto_media::audio::synthetic::tone_level;
 use junto_media::calls::{EndReason, Outcome, Phase};
 use junto_media::engine::MicrophoneState;
 use livekit_protocol::{MuteTrackRequest, signal_request};
@@ -524,6 +525,174 @@ async fn an_open_written_to_a_lost_signal_connection_reaches_the_media_server_af
         ben.until_heard_afresh(&ann).await;
     })
     .await;
+}
+
+/// ADR 0794: a close of the microphone stops its frames at once, before the task of the
+/// media engine takes it. While the task of the engine of Ann does not run, a mute of Ann
+/// stops her sound for Ben, the sound of Ben goes on for Ann, and an open of Ann waits for
+/// her engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_close_stops_the_sound_while_the_task_of_the_engine_does_not_run() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        room.member(&ann_at, &ben, "Ben").await;
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ben.until_heard(&ann).await;
+        ann.until_heard(&ben).await;
+
+        let held = ann.calls.hold_engine().await.unwrap();
+        // The sound that Ann receives does not pass through the task of her engine.
+        ann.until_heard_afresh(&ben).await;
+        ann.calls.set_muted(true);
+        ben.until_silent(&ann).await;
+        // An open is taken by the engine: a second of the sound that Ben plays after the
+        // open holds no sound of Ann.
+        ann.calls.set_muted(false);
+        let (played, rate) = played_for(&ben, std::time::Duration::from_secs(1)).await;
+        for part in played.chunks(rate as usize / 4) {
+            let level = tone_level(part, rate, ann.hz);
+            assert!(
+                level < ABSENT_DBFS,
+                "Ben hears Ann at {level} dBFS while her engine does not run"
+            );
+        }
+        drop(held);
+        ben.until_heard_afresh(&ann).await;
+    })
+    .await;
+}
+
+/// The left channel of what `listener` plays from now on, once it covers `duration`.
+async fn played_for(listener: &Person, duration: std::time::Duration) -> (Vec<f32>, u32) {
+    listener.host.clear_played();
+    let started = tokio::time::Instant::now();
+    loop {
+        let (played, rate) = listener.host.played_since_clear();
+        if rate > 0 && played.len() as f64 >= f64::from(rate) * duration.as_secs_f64() {
+            return (played, rate);
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "after {PATIENCE:?} {duration:?} of sound was not played"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// ADR 0733: the mute requests of a track that wait together for the restored signal
+/// connection reach the media server in the order of the changes, and the mute state that
+/// the call library sends again after the resume comes after them. The media server holds
+/// the last change. The answers of the media server to the connections that restore the
+/// lost ones are held while Ann changes her microphone, so that each request of a change
+/// waits for the resume.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn mute_requests_that_wait_for_a_resume_reach_the_media_server_in_their_order() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let proxy = SignalProxy::start().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::with_media_at("Acme", &ann, "Ann", &proxy.url()).await;
+        room.member(&ann_at, &ben, "Ben").await;
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ben.until_heard(&ann).await;
+
+        // The signal connections stop passing bytes. The clients find the loss and open new
+        // connections, whose answers wait in the proxy: the call library of Ann restores its
+        // session until the answers pass.
+        let open = proxy.connections();
+        proxy.hold_answers();
+        proxy.hold_open();
+        ann.until("the interruption is shown", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Reconnecting)
+        })
+        .await;
+        until("a client opens a new signal connection", || {
+            proxy.connections() > open
+        })
+        .await;
+        proxy.record();
+        let changes = [true, false, true, false, true, false, true];
+        for muted in changes {
+            ann.calls.set_muted(muted);
+            until_own_microphone(&ann, muted).await;
+        }
+        proxy.pass_answers().await;
+        ann.until("the call is back", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected)
+        })
+        .await;
+
+        // The requests of the track of Ann. A change gives two requests with its state
+        // (ADR 0733), and the resume one more with the state after the changes. The other
+        // client sends the state of its own track once.
+        let of_ann = || {
+            let mut tracks: Vec<(String, Vec<bool>)> = Vec::new();
+            for (_, request) in proxy.recorded() {
+                if let Some(signal_request::Message::Mute(MuteTrackRequest { sid, muted })) =
+                    request.message
+                {
+                    match tracks.iter_mut().find(|(held, _)| *held == sid) {
+                        Some((_, states)) => states.push(muted),
+                        None => tracks.push((sid, vec![muted])),
+                    }
+                }
+            }
+            tracks
+                .into_iter()
+                .map(|(_, states)| states)
+                .max_by_key(Vec::len)
+                .unwrap_or_default()
+        };
+        let in_turn = |states: &[bool]| {
+            let mut turns = states.to_vec();
+            turns.dedup();
+            turns
+        };
+        until(
+            "the requests of every change and of the resume are written",
+            || {
+                let states = of_ann();
+                states.len() > changes.len() && in_turn(&states).len() >= changes.len()
+            },
+        )
+        .await;
+        let states = of_ann();
+        assert_eq!(
+            in_turn(&states),
+            changes,
+            "the mute requests of the track of Ann: {states:?}"
+        );
+        until_microphone_muted(&ben, true).await;
+    })
+    .await;
+}
+
+/// Waits until the room of the engine of `person` holds the microphone track of the device
+/// as muted or open.
+async fn until_own_microphone(person: &Person, muted: bool) {
+    let started = tokio::time::Instant::now();
+    loop {
+        let check = person.calls.sound_check().await.unwrap();
+        if check.own_track == Some(muted) {
+            return;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "after {PATIENCE:?} the own microphone track is not {}: {check}",
+            if muted { "muted" } else { "open" }
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 /// Waits until the media server tells `listener` that the microphone track of the other

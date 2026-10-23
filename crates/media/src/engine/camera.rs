@@ -77,6 +77,20 @@ impl OwnCamera {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl OwnCamera {
+    /// Whether the engine has taken the running capture, and the publication.
+    pub(super) fn check(&self) -> (bool, super::statistics::CameraPublication) {
+        use super::statistics::CameraPublication;
+        let publication = match self.publication {
+            Publication::None => CameraPublication::None,
+            Publication::Publishing => CameraPublication::Publishing,
+            Publication::Published(_) => CameraPublication::Published,
+        };
+        (self.stream.is_some(), publication)
+    }
+}
+
 /// What becomes of the result of a publication of the camera.
 #[derive(Debug, PartialEq, Eq)]
 enum Taken {
@@ -320,6 +334,7 @@ impl Actor {
         round: u64,
         result: Result<LocalTrackPublication, String>,
     ) {
+        self.camera_answers += 1;
         if attempt != self.attempt {
             return;
         }

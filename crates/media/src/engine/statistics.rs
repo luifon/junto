@@ -15,6 +15,8 @@ use super::{Command, Engine};
 pub(crate) type Reply = oneshot::Sender<Result<SessionStats, String>>;
 #[cfg(feature = "test-support")]
 pub(crate) type SoundReply = oneshot::Sender<SoundCheck>;
+#[cfg(feature = "test-support")]
+pub(crate) type CameraReply = oneshot::Sender<CameraCheck>;
 
 /// The time that the lines of a [`SoundCheck`] cover.
 const SPAN: Duration = Duration::from_millis(600);
@@ -86,6 +88,36 @@ impl std::fmt::Display for SoundCheck {
     }
 }
 
+/// What an engine knows of the camera of its device at one moment, for a test.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraCheck {
+    /// A camera was asked for, and the engine has taken its running capture.
+    pub capture: bool,
+    pub publication: CameraPublication,
+    /// The answers of the media server to the publications of a camera that the engine has
+    /// taken.
+    pub answers: u64,
+    /// The camera tracks of this device that the room holds.
+    pub tracks: usize,
+}
+
+/// The publication of the camera of the device, as the engine holds it.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraPublication {
+    None,
+    /// Asked for, and the media server has not answered.
+    Publishing,
+    Published,
+}
+
+/// The task of an engine waits while this value lives.
+#[cfg(feature = "test-support")]
+pub struct HeldEngine {
+    _released: oneshot::Sender<()>,
+}
+
 #[cfg(feature = "test-support")]
 impl Engine {
     pub(crate) fn statistics(&self, reply: Reply) {
@@ -94,6 +126,30 @@ impl Engine {
 
     pub(crate) fn sound_check(&self, reply: SoundReply) {
         let _ = self.commands.send(Command::SoundCheck(reply));
+    }
+
+    /// What the engine knows of the camera of its device now. Nothing when the engine has
+    /// ended.
+    pub fn camera_check(&self) -> impl Future<Output = Option<CameraCheck>> + Send + 'static {
+        let (reply, check) = oneshot::channel();
+        let _ = self.commands.send(Command::CameraCheck(reply));
+        async move { check.await.ok() }
+    }
+
+    /// Holds the task of the engine, for a test of what goes on while it does not run: the
+    /// commands, the events of the room and the own work of the engine wait until the
+    /// [`HeldEngine`] is dropped. The commands that were sent before run first. The first
+    /// value ends when the task waits.
+    pub fn hold(&self) -> (oneshot::Receiver<()>, HeldEngine) {
+        let (held, waits) = oneshot::channel();
+        let (released, release) = oneshot::channel();
+        let _ = self.commands.send(Command::Hold(held, release));
+        (
+            waits,
+            HeldEngine {
+                _released: released,
+            },
+        )
     }
 }
 
@@ -116,6 +172,27 @@ impl Actor {
     #[cfg(feature = "test-support")]
     pub(super) fn sound_check(&self, reply: SoundReply) {
         let _ = reply.send(self.sound_snapshot());
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn camera_check(&self, reply: CameraReply) {
+        let tracks = self.room.as_ref().map_or(0, |room| {
+            room.local_participant()
+                .track_publications()
+                .values()
+                .filter(|publication| publication.source() == livekit::track::TrackSource::Camera)
+                .count()
+        });
+        let (capture, publication) = self
+            .camera
+            .as_ref()
+            .map_or((false, CameraPublication::None), |camera| camera.check());
+        let _ = reply.send(CameraCheck {
+            capture,
+            publication,
+            answers: self.camera_answers,
+            tracks,
+        });
     }
 
     pub(super) fn sound_snapshot(&self) -> SoundCheck {
