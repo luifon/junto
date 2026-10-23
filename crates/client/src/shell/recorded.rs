@@ -271,7 +271,10 @@ impl Shell {
                             .kind(ButtonKind::Ghost)
                             .icon(Icon::Open)
                             .tooltip(text::SHOW_IN_FOLDER)
-                            .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.show_in_folder(path.clone(), cx));
+                            })),
                     )
                     .child(forget("forget-recorded", text::DISMISS, cx))
                     .into_any_element()

@@ -446,7 +446,24 @@ impl AppState {
         }
     }
 
-    /// Lets the application open saved files with the applications of the system.
+    /// Shows a saved file in the file manager of the system. A start of the application
+    /// state without the applications of the system, such as a test, keeps the path.
+    pub fn show_in_folder(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.opens_files {
+            cx.reveal_path(&path);
+        } else {
+            self.kept_shown.push(path);
+        }
+    }
+
+    /// The files that a start without the applications of the system would have shown in
+    /// the file manager.
+    pub fn kept_shown(&self) -> &[PathBuf] {
+        &self.kept_shown
+    }
+
+    /// Lets the application open saved files with the applications of the system, and show
+    /// them in its file manager.
     pub fn set_opens_files(&mut self, opens: bool) {
         self.opens_files = opens;
     }

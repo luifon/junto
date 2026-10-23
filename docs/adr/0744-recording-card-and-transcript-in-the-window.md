@@ -25,7 +25,7 @@ Files:
 - "Open" saves the video to the download directory and gives the saved file to the application of the system for it, when the download ends, also when the window shows another place then. A video that was saved in this run of the application is opened without a second download while its path names a file of the saved length; a file that the person deleted or replaced is saved again.
 - "Download" opens a list of the files: the video and each audio file with its person and its size, and the transcript as text. A choice saves that file. The window is told a change of the stage of a download and each further hundredth of the file. The card lists each file that is saved with its progress, "Saved" with the control that shows it in its folder, or the reason of a failure.
 - A saved file is named by the channel, the day and the time of the start, what the file is, and its person.
-- The opening of a file is behind a setting of the application state, as the notifications of the system are (ADR 0742): only the binary opens a file with an application of the system. A test keeps the path.
+- The opening of a file and the showing of a saved file in its folder are behind a setting of the application state, as the notifications of the system are (ADR 0742): only the binary opens a file with an application of the system or shows it in the file manager of the system. A test keeps the path. Reason: the test platform of gpui implements neither call and panics at both, so a test could not press "Open" or "Show in folder".
 
 Transcript:
 

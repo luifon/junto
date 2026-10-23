@@ -470,10 +470,13 @@ pub struct AppState {
     transcript_asks: u64,
     /// The downloads whose file is opened when it is saved.
     opening: HashSet<(ServerId, RecordingId, RecordedFile)>,
-    /// A saved file is opened with the application of the system for it.
+    /// A saved file is opened with the application of the system for it, and shown in the
+    /// file manager of the system.
     opens_files: bool,
     /// The files that a start without the applications of the system would have opened.
     kept_opened: Vec<std::path::PathBuf>,
+    /// The files that a start without the applications of the system would have shown.
+    kept_shown: Vec<std::path::PathBuf>,
     /// The number of the last request of a search. An answer to an earlier request is
     /// not used.
     search_asks: u64,
@@ -730,6 +733,7 @@ impl AppState {
             opening: HashSet::new(),
             opens_files: false,
             kept_opened: Vec::new(),
+            kept_shown: Vec::new(),
             search_asks: 0,
             search_next: None,
             jump: None,

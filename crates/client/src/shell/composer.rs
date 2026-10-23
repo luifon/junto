@@ -1548,17 +1548,24 @@ impl Shell {
                                 .child(state),
                         )
                         .child(
-                            Button::new(("remove-file", index))
-                                .kind(ButtonKind::Ghost)
-                                .icon(Icon::X)
-                                .tooltip(text::REMOVE_FILE)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some((server_id, place)) = place {
-                                        this.state.update(cx, |state, cx| {
-                                            state.remove_attachment(server_id, place, upload, cx);
-                                        });
-                                    }
-                                })),
+                            div()
+                                .flex_none()
+                                .debug_selector(move || format!("remove-file:{index}"))
+                                .child(
+                                    Button::new(("remove-file", index))
+                                        .kind(ButtonKind::Ghost)
+                                        .icon(Icon::X)
+                                        .tooltip(text::REMOVE_FILE)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some((server_id, place)) = place {
+                                                this.state.update(cx, |state, cx| {
+                                                    state.remove_attachment(
+                                                        server_id, place, upload, cx,
+                                                    );
+                                                });
+                                            }
+                                        })),
+                                ),
                         )
                 }))
                 .children(attaching.then(|| {

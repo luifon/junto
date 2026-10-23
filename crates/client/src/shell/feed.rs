@@ -471,6 +471,16 @@ impl CodeTokens {
         tokens
     }
 
+    /// The number of coloured parts of a drawn code block, without counting a use of them.
+    #[cfg(feature = "test-support")]
+    fn drawn(&self, code: &str, language: &str) -> Option<usize> {
+        let rules = highlight::rules_of(language)?;
+        self.held
+            .get(rules)?
+            .get(code)
+            .map(|(tokens, _)| tokens.len())
+    }
+
     fn drop_oldest(&mut self) {
         let oldest = self
             .held
@@ -667,6 +677,13 @@ impl Shell {
             offset_in_item: px(0.0),
         });
         cx.notify();
+    }
+
+    /// How many coloured parts the window drew for a code block in this language. Absent
+    /// when it drew no such block.
+    #[cfg(feature = "test-support")]
+    pub fn code_colours(&self, code: &str, language: &str) -> Option<usize> {
+        self.code_tokens.drawn(code, language)
     }
 
     /// Shows the end of the history of a pane: the list goes there, and the latest page
@@ -1742,29 +1759,42 @@ impl Shell {
                 .ink(colour)
                 .child(sentence)
         };
+        // Each control is named by its file, for the tests of the window.
+        let named = |id: &'static str, button: Button| {
+            div()
+                .flex_none()
+                .debug_selector(move || format!("{id}:{attachment_id}"))
+                .child(button)
+        };
         let forget = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
-            Button::new((id, index))
-                .kind(ButtonKind::Ghost)
-                .icon(Icon::X)
-                .tooltip(label)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.forget_download(server_id, attachment_id, cx);
-                    });
-                }))
+            named(
+                id,
+                Button::new((id, index))
+                    .kind(ButtonKind::Ghost)
+                    .icon(Icon::X)
+                    .tooltip(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.forget_download(server_id, attachment_id, cx);
+                        });
+                    })),
+            )
         };
         let start = |cx: &mut Context<Self>| {
             let attachment = attachment.clone();
-            Button::new(("download", index))
-                .kind(ButtonKind::Ghost)
-                .icon(Icon::Download)
-                .icon_colour(colors.cypress)
-                .tooltip(text::DOWNLOAD)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.download(server_id, &attachment, cx);
-                    });
-                }))
+            named(
+                "download",
+                Button::new(("download", index))
+                    .kind(ButtonKind::Ghost)
+                    .icon(Icon::Download)
+                    .icon_colour(colors.cypress)
+                    .tooltip(text::DOWNLOAD)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.download(server_id, &attachment, cx);
+                        });
+                    })),
+            )
         };
         let row = div().flex().flex_none().items_center().gap(u(4.0));
         match progress.map(|progress| (progress.stage.clone(), progress)) {
@@ -1785,13 +1815,17 @@ impl Shell {
                 .into_any_element(),
             Some((DownloadStage::Saved(path), _)) => row
                 .child(small(text::DOWNLOAD_SAVED.into(), colors.cypress))
-                .child(
+                .child(named(
+                    "show-file",
                     Button::new(("show-file", index))
                         .kind(ButtonKind::Ghost)
                         .icon(Icon::Open)
                         .tooltip(text::SHOW_IN_FOLDER)
-                        .on_click(move |_, _, cx| cx.reveal_path(&path)),
-                )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.show_in_folder(path.clone(), cx));
+                        })),
+                ))
                 .into_any_element(),
             Some((DownloadStage::Failed(failure), _)) => row
                 .child(
