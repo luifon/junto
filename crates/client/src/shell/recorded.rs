@@ -267,14 +267,25 @@ impl Shell {
                 let path = path.clone();
                 row.child(small(text::DOWNLOAD_SAVED.into(), colors.cypress))
                     .child(
-                        Button::new(("show-recorded", index))
-                            .kind(ButtonKind::Ghost)
-                            .icon(Icon::Open)
-                            .tooltip(text::SHOW_IN_FOLDER)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.show_in_folder(path.clone(), cx));
-                            })),
+                        div()
+                            .flex_none()
+                            .debug_selector(move || match file {
+                                RecordedFile::Segment(segment_id) => {
+                                    format!("show-recorded-{segment_id}")
+                                }
+                                RecordedFile::Text => format!("show-recorded-text-{recording_id}"),
+                            })
+                            .child(
+                                Button::new(("show-recorded", index))
+                                    .kind(ButtonKind::Ghost)
+                                    .icon(Icon::Open)
+                                    .tooltip(text::SHOW_IN_FOLDER)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.show_in_folder(path.clone(), cx)
+                                        });
+                                    })),
+                            ),
                     )
                     .child(forget("forget-recorded", text::DISMISS, cx))
                     .into_any_element()

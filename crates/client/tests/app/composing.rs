@@ -345,6 +345,17 @@ fn an_upload_goes_on_after_its_connection_was_cut_and_the_draft_says_so(cx: &mut
             && !draft[0].progress.interrupted
             && matches!(draft[0].progress.stage, UploadStage::Complete(_))
     });
+    // The upload went on at the part that did not arrive: the first part was sent once,
+    // the cut part twice, the rest once.
+    let sent = |offset: usize| {
+        let end = format!("/chunks/{offset}");
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.path.ends_with(&end))
+            .count()
+    };
+    assert_eq!([sent(0), sent(megabyte), sent(2 * megabyte)], [1, 2, 1]);
     window.in_shell(|shell, window, cx| {
         shell.type_message(Pane::Main, "The recording", window, cx);
         shell.focus_composer(Pane::Main, window, cx);

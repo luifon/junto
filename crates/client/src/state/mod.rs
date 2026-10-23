@@ -472,7 +472,7 @@ pub struct AppState {
     opening: HashSet<(ServerId, RecordingId, RecordedFile)>,
     /// A saved file is opened with the application of the system for it, and shown in the
     /// file manager of the system.
-    opens_files: bool,
+    uses_system_applications: bool,
     /// The files that a start without the applications of the system would have opened.
     kept_opened: Vec<std::path::PathBuf>,
     /// The files that a start without the applications of the system would have shown.
@@ -731,7 +731,7 @@ impl AppState {
             download_asks: 0,
             transcript_asks: 0,
             opening: HashSet::new(),
-            opens_files: false,
+            uses_system_applications: false,
             kept_opened: Vec::new(),
             kept_shown: Vec::new(),
             search_asks: 0,

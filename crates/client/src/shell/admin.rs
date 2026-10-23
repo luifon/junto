@@ -463,7 +463,7 @@ impl Shell {
     }
 
     /// The text of the name field, without the spaces around it.
-    pub(crate) fn admin_name(&self, cx: &App) -> String {
+    pub fn admin_name(&self, cx: &App) -> String {
         self.admin.name.read(cx).value().trim().to_owned()
     }
 

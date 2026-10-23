@@ -1160,6 +1160,10 @@ fn an_administrator_renames_reorders_and_deletes_categories_in_the_window(cx: &m
     // A new name: the form holds the old name, and Save sends the new one.
     crate::admin_pages::click_in_page(&mut window, selector(format!("category-rename-{projects}")));
     assert!(window.shows("category-name"));
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.admin_name(cx)),
+        "Projects"
+    );
     window.send_form("Current projects");
     window.until("the page shows the new name", |window| {
         page_categories(window) == ["Current projects", "Later"] && !window.shows("category-name")

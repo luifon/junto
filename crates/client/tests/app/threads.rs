@@ -1064,7 +1064,10 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
             })
         })
     };
-    type_text(&mut window, "Review please, @Edi");
+    // The words are put in, and the mention is typed key by key, so that the picker
+    // opens through the input of the text area.
+    type_text(&mut window, "Review please, ");
+    window.cx.simulate_input("@Edi");
     candidate(&mut window, "Editors");
     window.press("enter");
     let role_node = Inline::Role { role_id: editors };
@@ -1083,7 +1086,8 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
     );
 
     // Everyone: chosen in the picker, sent.
-    type_text(&mut window, "Meeting at noon, @every");
+    type_text(&mut window, "Meeting at noon, ");
+    window.cx.simulate_input("@every");
     candidate(&mut window, text::EVERYONE);
     window.press("enter");
     let to_all = sent_with(&mut window, &Inline::Everyone);

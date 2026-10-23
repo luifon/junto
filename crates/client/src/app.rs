@@ -75,7 +75,7 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
     });
     state.update(cx, |state, _| {
         state.set_notifier(notifier);
-        state.set_opens_files(true);
+        state.set_uses_system_applications(true);
     });
     state
 }

@@ -1759,7 +1759,6 @@ impl Shell {
                 .ink(colour)
                 .child(sentence)
         };
-        // Each control is named by its file, for the tests of the window.
         let named = |id: &'static str, button: Button| {
             div()
                 .flex_none()

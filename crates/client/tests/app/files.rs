@@ -85,13 +85,16 @@ fn the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file(
     window.until("the download is cancelled", |window| {
         stage(window).is_none() && window.shows(start)
     });
+    // The unfinished file is removed by the download task of the client core, after the
+    // window has taken the download away. The request that waited is passed on: a download
+    // that was not ended would now save the file.
     proxy.release();
-    window.settle();
-    let left: Vec<_> = std::fs::read_dir(downloads.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
-    assert!(left.is_empty(), "a cancelled download left {left:?}");
+    window.until("the cancelled download left no file", |_| {
+        std::fs::read_dir(downloads.path())
+            .unwrap()
+            .next()
+            .is_none()
+    });
 
     // Download: the file is saved, and the control shows the folder of the file.
     window.click(start);

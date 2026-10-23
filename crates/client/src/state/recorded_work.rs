@@ -439,7 +439,7 @@ impl AppState {
     /// Opens a saved file with the application of the system for it. A start of the
     /// application state without that, such as a test, keeps the path.
     fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.opens_files {
+        if self.uses_system_applications {
             crate::opening::open_with_system(&path, cx);
         } else {
             self.kept_opened.push(path);
@@ -449,7 +449,7 @@ impl AppState {
     /// Shows a saved file in the file manager of the system. A start of the application
     /// state without the applications of the system, such as a test, keeps the path.
     pub fn show_in_folder(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.opens_files {
+        if self.uses_system_applications {
             cx.reveal_path(&path);
         } else {
             self.kept_shown.push(path);
@@ -464,8 +464,8 @@ impl AppState {
 
     /// Lets the application open saved files with the applications of the system, and show
     /// them in its file manager.
-    pub fn set_opens_files(&mut self, opens: bool) {
-        self.opens_files = opens;
+    pub fn set_uses_system_applications(&mut self, uses: bool) {
+        self.uses_system_applications = uses;
     }
 
     /// The files that a start without the applications of the system would have opened.
