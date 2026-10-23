@@ -19,6 +19,16 @@ Automated tests:
 - CI regenerates the API documentation and fails on a difference (ADR 0202), and checks the licence of every dependency (ADR 0801).
 - A test that repeats an action identifies each result separately. An invitation already consumed by the test is not returned as the result of the next invitation, even while the recipient's event stream still holds it. Receiving a resolution on the sender does not prove that the recipient has applied it. The window invitation test interrupts the recipient stream to check this order.
 - The PostgreSQL and LiveKit test wrappers print container state and timestamped logs into the test output before removing a failed run's containers. Failure to read those logs does not replace the test's exit status or prevent cleanup. Wrapper tests exercise these failure paths without starting containers.
+- Administration window tests perform role changes, overrides, retention settings,
+  workspace redemption and selection, invite grants and revocation, request approvals,
+  and token revocation through drawn controls. They check the visible result and the
+  state read through the server API. The export tests read the saved ZIP contents,
+  including thread replies, attachments, recording files and transcripts. The archive
+  warning runs server maintenance with the test clock, and the recordings page reads
+  enough stored rows to exercise its older-page control and event refresh.
+- The gpui test platform has no clipboard implementation. The invite-code and token
+  tests check the valid value, the drawn Copy control and its removal when the value is
+  put away; copying the value to the system clipboard remains a native-system check.
 
 Tests on real systems:
 

@@ -65,6 +65,12 @@ macro_rules! server_page {
     };
 }
 
+#[path = "admin_actions.rs"]
+mod actions;
+
+#[path = "admin_exports.rs"]
+mod exports_actions;
+
 /// The name of the element of one row. gpui finds a drawn element by a name that lives as
 /// long as the program, and a test builds few names.
 pub(crate) fn sel(prefix: &str, of: impl std::fmt::Display) -> &'static str {
@@ -1340,6 +1346,8 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
         "the secret has the prefix of an access token"
     );
     assert!(!window.shows("token-form"));
+    reveal_in_page(&mut window, "token-secret-copy");
+    assert!(window.shows("token-secret-copy"));
 
     // The state holds the token. While the secret is shown, the list does not draw it
     // (ADR 0730).
@@ -1367,6 +1375,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     click_in_page(&mut window, "token-secret-done");
     assert!(window.shows(token_row));
     assert!(!window.shows("token-secret") && !window.shows("token-made"));
+    assert!(!window.shows("token-secret-copy"));
     assert!(server_page!(window, Tokens).is_some_and(|page| page.made.is_none()));
     assert!(window.admin().is_some_and(|view| view.made.is_empty()));
 

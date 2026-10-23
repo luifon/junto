@@ -155,6 +155,7 @@ pub struct RecordingServer {
     /// The script of the worker, and the transcripts that the tests gave.
     worker: tempfile::TempDir,
     _attachments: tempfile::TempDir,
+    _exports: tempfile::TempDir,
     /// The recordings that [`RecordingServer::record`] made.
     recorded: Mutex<Vec<RecordingDetail>>,
     runtime: Option<tokio::runtime::Runtime>,
@@ -203,6 +204,8 @@ impl RecordingServer {
         let directory = tempfile::tempdir().unwrap();
         let worker = tempfile::tempdir().unwrap();
         let attachments = tempfile::tempdir().unwrap();
+        let exports = tempfile::tempdir().unwrap();
+        let exports_directory = exports.path().to_path_buf();
         let script = worker.path().join("worker.sh");
         std::fs::write(&script, WORKER_SCRIPT).unwrap();
         let recorder_settings = RecorderSettings {
@@ -245,7 +248,7 @@ impl RecordingServer {
             let origin = Origin::parse(&format!("http://{address}")).unwrap();
             let proxy_origin = Origin::parse(&format!("http://{proxy_address}")).unwrap();
             let config = Config {
-                exports_directory: None,
+                exports_directory: Some(exports_directory),
                 migration_copy: junto_server::bootstrap::MigrationCopy::None,
                 recorder_layout_directory: None,
                 stop_with_process: None,
@@ -294,6 +297,10 @@ impl RecordingServer {
             .await
             .unwrap();
             let state = prepared.state.clone();
+            state
+                .exports
+                .space()
+                .use_disk(Arc::new(FakeDisk::new(1 << 40)));
             let owner_code = prepared
                 .owner_code
                 .map(|code| code.expose().to_owned())
@@ -322,6 +329,7 @@ impl RecordingServer {
             directory,
             worker,
             _attachments: attachments,
+            _exports: exports,
             recorded: Mutex::default(),
             runtime: Some(runtime),
             shutdown: Some(shutdown),
@@ -357,7 +365,7 @@ impl RecordingServer {
     }
 
     /// Runs work of the server on the runtime of the server.
-    async fn on<T, F>(&self, work: impl FnOnce(AppState) -> F + Send + 'static) -> T
+    pub(crate) async fn on<T, F>(&self, work: impl FnOnce(AppState) -> F + Send + 'static) -> T
     where
         F: Future<Output = T>,
         T: Send + 'static,
