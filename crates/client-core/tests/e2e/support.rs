@@ -81,7 +81,7 @@ pub struct TestServer {
     attachments: tempfile::TempDir,
     /// Where the server writes the files of exports.
     exports: tempfile::TempDir,
-    /// Declared last: the database is deleted after the process has ended.
+    /// Declared last: the drop ends the process and waits for it, then deletes the database.
     database: TestDatabase,
 }
 
@@ -256,6 +256,10 @@ impl TestServer {
         &self.database.url
     }
 
+    pub fn database(&self) -> &TestDatabase {
+        &self.database
+    }
+
     /// The number of the running process.
     pub fn process_id(&self) -> Option<u32> {
         self.child.as_ref().map(Child::id)
@@ -312,9 +316,22 @@ impl TestServer {
 pub struct TestDatabase {
     pub name: String,
     pub url: String,
+    /// How the deletion ended, once it has run.
+    deletion: Arc<Mutex<Option<Result<Deleted, String>>>>,
+}
+
+/// How a test database was deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deleted {
+    /// No session used the database.
+    Unused,
+    /// Sessions still used the database, and the deletion ended them.
+    Forced,
 }
 
 impl TestDatabase {
+    /// Creates a database. The value exists from the moment the database exists, so a
+    /// failure of a later step deletes it.
     pub async fn create() -> Self {
         let name = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
         let admin = PgConnectOptions::from_str(&admin_url()).unwrap();
@@ -322,28 +339,45 @@ impl TestDatabase {
         for statement in [
             "set pg_stat_statements.track = 'none'".to_owned(),
             format!("create database {name}"),
-            format!("alter database {name} set pg_stat_statements.track = 'none'"),
         ] {
             sqlx::query(sqlx::AssertSqlSafe(statement))
                 .execute(&mut connection)
                 .await
                 .unwrap();
         }
+        let mut created = Self {
+            name,
+            url: String::new(),
+            deletion: Arc::default(),
+        };
+        let tracked = format!(
+            "alter database {} set pg_stat_statements.track = 'none'",
+            created.name
+        );
+        sqlx::query(sqlx::AssertSqlSafe(tracked))
+            .execute(&mut connection)
+            .await
+            .unwrap();
         drop(connection);
         let mut url = url::Url::parse(&admin_url()).unwrap();
-        url.set_path(&name);
-        Self {
-            name,
-            url: url.into(),
-        }
+        url.set_path(&created.name);
+        created.url = url.into();
+        created
+    }
+
+    /// How the deletion of this database ended, once it has run.
+    pub fn deletion(&self) -> Arc<Mutex<Option<Result<Deleted, String>>>> {
+        self.deletion.clone()
     }
 }
 
 impl Drop for TestDatabase {
     fn drop(&mut self) {
-        if let Err(problem) = delete_database(self.name.clone(), DATABASE_CLEANUP_LIMIT) {
+        let deleted = delete_database(self.name.clone(), DATABASE_CLEANUP_LIMIT);
+        if let Err(problem) = &deleted {
             eprintln!("the test database {} was not deleted: {problem}", self.name);
         }
+        *self.deletion.lock().unwrap() = Some(deleted);
     }
 }
 
@@ -351,10 +385,11 @@ impl Drop for TestDatabase {
 /// does not answer would otherwise hold the test, its run and the lock of the machine.
 const DATABASE_CLEANUP_LIMIT: Duration = Duration::from_secs(30);
 
-/// Deletes a test database through a connection of its own, within `limit`, and ends the
-/// sessions that still use it. A drop cannot wait for a future on the runtime of its test,
-/// and a window test runs on no runtime, so the work runs on a thread with its own runtime.
-pub fn delete_database(name: String, limit: Duration) -> Result<(), String> {
+/// Deletes a test database through a connection of its own, within `limit`. The deletion
+/// waits for sessions that still use the database as PostgreSQL does (5 seconds), then ends
+/// them. A drop cannot wait for a future on the runtime of its test, and a window test runs
+/// on no runtime, so the work runs on a thread with its own runtime.
+pub fn delete_database(name: String, limit: Duration) -> Result<Deleted, String> {
     let (done, ended) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let deleted = tokio::runtime::Builder::new_current_thread()
@@ -366,15 +401,29 @@ pub fn delete_database(name: String, limit: Duration) -> Result<(), String> {
                     let deleting = async {
                         let admin = PgConnectOptions::from_str(&admin_url())?;
                         let mut connection = admin.connect().await?;
-                        for statement in [
-                            "set pg_stat_statements.track = 'none'".to_owned(),
-                            format!("drop database if exists {name} with (force)"),
-                        ] {
-                            sqlx::query(sqlx::AssertSqlSafe(statement))
-                                .execute(&mut connection)
-                                .await?;
-                        }
-                        sqlx::Connection::close(connection).await
+                        sqlx::query("set pg_stat_statements.track = 'none'")
+                            .execute(&mut connection)
+                            .await?;
+                        let unused = format!("drop database if exists {name}");
+                        let deleted = match sqlx::query(sqlx::AssertSqlSafe(unused))
+                            .execute(&mut connection)
+                            .await
+                        {
+                            Ok(_) => Deleted::Unused,
+                            Err(error)
+                                if error.as_database_error().and_then(|e| e.code()).as_deref()
+                                    == Some("55006") =>
+                            {
+                                let forced = format!("drop database if exists {name} with (force)");
+                                sqlx::query(sqlx::AssertSqlSafe(forced))
+                                    .execute(&mut connection)
+                                    .await?;
+                                Deleted::Forced
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        sqlx::Connection::close(connection).await?;
+                        Ok(deleted)
                     };
                     match tokio::time::timeout(limit, deleting).await {
                         Ok(deleted) => deleted.map_err(|error| error.to_string()),

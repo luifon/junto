@@ -31,6 +31,9 @@ struct Measured {
     request_ms: f64,
     insert_ms: f64,
     trigger_ms: f64,
+    /// The calls of the trigger in the statistics right after the last request, and all calls.
+    first_calls: i64,
+    calls: i64,
 }
 
 async fn measure(members: i64, per_statement: bool) -> Measured {
@@ -88,10 +91,6 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
         send(&server, &owner, &room, &format!("to everyone {number}")).await;
     }
     let request_ms = started.elapsed().as_secs_f64() * 1000.0 / f64::from(MESSAGES);
-    sqlx::query("select pg_stat_force_next_flush()")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let notices: i64 = sqlx::query_scalar("select count(*) from notifications")
         .fetch_one(&server.db)
         .await
@@ -106,34 +105,74 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
     .await
     .unwrap();
     assert_eq!(calls, i64::from(MESSAGES));
-    let trigger_total: f64 = sqlx::query_scalar(
-        "select coalesce(sum(total_time), 0)::float8 from pg_stat_user_functions
-         where funcname in ('queue_notification_trim', 'queue_notification_trim_of_statement')",
-    )
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
+    // A session sends its statistics of functions at the end of a transaction only when a
+    // second has passed since it last sent them, and otherwise when it has been idle for up
+    // to 10 seconds: the figures are read when they hold every call of the trigger.
+    let expected = if per_statement {
+        i64::from(MESSAGES)
+    } else {
+        members * i64::from(MESSAGES)
+    };
+    let read = async || -> (i64, f64) {
+        sqlx::raw_sql("select pg_stat_clear_snapshot()")
+            .execute(&server.db)
+            .await
+            .unwrap();
+        sqlx::query_as(
+            "select coalesce(sum(calls), 0)::bigint, coalesce(sum(total_time), 0)::float8
+             from pg_stat_user_functions
+             where funcname in
+                 ('queue_notification_trim', 'queue_notification_trim_of_statement')",
+        )
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    let (first_calls, _) = read().await;
+    let limit = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let trigger_total = loop {
+        let (calls, total) = read().await;
+        if calls == expected {
+            break total;
+        }
+        assert!(
+            calls < expected,
+            "{calls} calls of the trigger, {expected} expected"
+        );
+        assert!(
+            std::time::Instant::now() < limit,
+            "the statistics hold {calls} of {expected} calls of the trigger after 30 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
     Measured {
         request_ms,
         insert_ms: insert_total / f64::from(MESSAGES),
         trigger_ms: trigger_total / f64::from(MESSAGES),
+        first_calls,
+        calls: expected,
     }
 }
 
 #[tokio::test]
 #[ignore = "a measurement for ADR 0409; run it alone with --nocapture"]
 async fn measure_the_queue_of_the_notice_cap_at_large_fan_out() {
-    println!("members | form | request ms | notice insert ms | trigger ms | trigger share");
+    println!(
+        "members | form | request ms | notice insert ms | trigger ms | trigger share | \
+         calls read at once"
+    );
     for members in [100, 1_000, 5_000, 10_000] {
         for per_statement in [false, true] {
             let measured = measure(members, per_statement).await;
             println!(
-                "{members} | {} | {:.1} | {:.1} | {:.1} | {:.0}%",
+                "{members} | {} | {:.1} | {:.1} | {:.1} | {:.1}% | {} of {}",
                 if per_statement { "statement" } else { "row" },
                 measured.request_ms,
                 measured.insert_ms,
                 measured.trigger_ms,
-                100.0 * measured.trigger_ms / measured.insert_ms
+                100.0 * measured.trigger_ms / measured.insert_ms,
+                measured.first_calls,
+                measured.calls
             );
         }
     }

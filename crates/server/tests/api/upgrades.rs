@@ -511,6 +511,12 @@ async fn a_start_after_a_start_that_stopped_at_any_statement_of_the_copy_makes_t
     let copy = copy_name(&name, newest);
     let making = format!("{name}_making_{newest}");
     let proxy = PostgresProxy::start(options.clone()).await;
+    // The copy and the comment of each case, removed after it, also after a failure.
+    let left = Left(vec![
+        format!("drop database if exists {making} with (force)"),
+        format!("drop database if exists {copy} with (force)"),
+        format!("comment on database {name} is null"),
+    ]);
 
     let intent = format!("comment on database \"{name}\" is 'junto: the server makes");
     let of_copy = format!("comment on database \"{making}\"");
@@ -552,11 +558,31 @@ async fn a_start_after_a_start_that_stopped_at_any_statement_of_the_copy_makes_t
             let of_copy = options.clone().database(&copy);
             assert_eq!(newest_migration_of(&of_copy).await, newest);
 
-            delete_databases(std::slice::from_ref(&copy)).await;
-            maintain(&[format!("comment on database {name} is null")]).await;
+            maintain(&left.0).await;
         }
     }
     assert_eq!(proxy.armed(), 0);
+}
+
+/// Statements on the database server that remove what a test left there. They run when the
+/// value is dropped, so a test that fails leaves nothing either.
+struct Left(Vec<String>);
+
+impl Drop for Left {
+    fn drop(&mut self) {
+        let statements = std::mem::take(&mut self.0);
+        // A drop cannot wait for a future on the runtime of its test.
+        let ran = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map(|runtime| runtime.block_on(maintain(&statements)))
+        })
+        .join();
+        if !matches!(ran, Ok(Ok(()))) {
+            eprintln!("the databases that a test of the copy left were not removed");
+        }
+    }
 }
 
 /// A database that has the name of the copy and not the comment of a copy is not a copy

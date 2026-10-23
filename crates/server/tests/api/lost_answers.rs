@@ -26,9 +26,9 @@ async fn a_change_whose_commit_answer_is_lost_is_unavailable_and_stays_made() {
 
     let struck = proxy.arm(Stop::at("commit", Cut::AfterAnswer).after("insert into messages"));
     let reply = server.post(&owner, &path, &text("kept")).await;
-    struck.wait().await;
     reply.error(ErrorCode::Unavailable);
     assert!(reply.retry_after.is_none());
+    struck.wait().await;
 
     let page: MessagePage = direct.get(&reader, &path).await.ok(StatusCode::OK);
     let stored: Vec<MessageId> = page

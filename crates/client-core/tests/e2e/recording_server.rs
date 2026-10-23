@@ -88,6 +88,20 @@ impl Clock for TestClock {
     }
 }
 
+/// The clock of the state of the server. It holds the database of the test, and the state
+/// drops its database, with every connection, before its clock: so the database is deleted
+/// after the last task and the last request of the server have dropped the state.
+struct ServerClock {
+    clock: Arc<TestClock>,
+    _database: Arc<TestDatabase>,
+}
+
+impl Clock for ServerClock {
+    fn now(&self) -> OffsetDateTime {
+        self.clock.now()
+    }
+}
+
 /// One line that a test lets the transcription worker write. The times count in
 /// milliseconds from the start of the timeline of the recording, and lie inside the two
 /// seconds that each file of a recording of this server has.
@@ -158,15 +172,25 @@ pub struct RecordingServer {
     recorded: Mutex<Vec<RecordingDetail>>,
     runtime: Option<tokio::runtime::Runtime>,
     shutdown: Option<oneshot::Sender<()>>,
-    /// Declared last: the database is deleted after the runtime of the server has ended.
-    database: TestDatabase,
+    /// The state holds the database too (see [`ServerClock`]): the drop waits until the tasks
+    /// of the runtime have ended, and the database is deleted when the state is dropped.
+    database: Arc<TestDatabase>,
 }
+
+/// The longest wait for the tasks of a recording server to end when it is dropped.
+const RUNTIME_END_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Drop for RecordingServer {
     fn drop(&mut self) {
         drop(self.shutdown.take());
         if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_background();
+            // A runtime cannot wait for its tasks from the asynchronous context of a test, so
+            // a thread of its own waits until every task of the server has been dropped.
+            let ended =
+                std::thread::spawn(move || runtime.shutdown_timeout(RUNTIME_END_LIMIT)).join();
+            if ended.is_err() {
+                eprintln!("the runtime of the recording server did not end");
+            }
         }
     }
 }
@@ -227,7 +251,7 @@ impl RecordingServer {
         let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_address = proxy.local_addr().unwrap();
         let started = on_runtime(runtime.handle().clone(), move || async move {
-            let database = TestDatabase::create().await;
+            let database = Arc::new(TestDatabase::create().await);
 
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -273,10 +297,14 @@ impl RecordingServer {
                 &limits.recordings,
             );
             let media_server: Arc<dyn MediaServer> = media.clone();
+            let state_clock: Arc<dyn Clock> = Arc::new(ServerClock {
+                clock: server_clock,
+                _database: database.clone(),
+            });
             let prepared = junto_server::prepare_with(
                 connected,
                 config,
-                server_clock,
+                state_clock,
                 Some(media_server),
                 Some(backend),
             )
@@ -324,6 +352,10 @@ impl RecordingServer {
 
     pub fn database_url(&self) -> &str {
         &self.database.url
+    }
+
+    pub fn database(&self) -> &TestDatabase {
+        &self.database
     }
 
     /// The listener of the proxy address that the server lists as a public origin, and the

@@ -1,7 +1,9 @@
 //! A proxy between a server process and PostgreSQL that ends a connection at a chosen
 //! statement, as when the process stops there or the network loses the answer (ADR 0904).
 //! It reads the messages of the protocol of PostgreSQL to find the statement and the end of
-//! its answer, and passes every byte through unchanged otherwise.
+//! its answer, and passes every byte through unchanged otherwise, with two exceptions: it
+//! answers a request for TLS or GSS encryption itself with `N`, and it passes no part of an
+//! answer that a stop holds.
 
 use std::sync::{Arc, Mutex};
 
@@ -63,12 +65,30 @@ impl Drop for PostgresProxy {
     }
 }
 
+/// The longest wait for a connection to reach an armed stop. A stop that no statement
+/// reaches, because the statement has another text or is not sent, fails the test.
+pub const STOP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Resolves when the stop of [`PostgresProxy::arm`] has ended its connection.
-pub struct Struck(Arc<Notify>);
+pub struct Struck {
+    struck: Arc<Notify>,
+    stop: Stop,
+    armed: Arc<Mutex<Vec<Armed>>>,
+}
 
 impl Struck {
     pub async fn wait(&self) {
-        self.0.notified().await;
+        if tokio::time::timeout(STOP_PATIENCE, self.struck.notified())
+            .await
+            .is_err()
+        {
+            let armed = self.armed.lock().unwrap().len();
+            panic!(
+                "no connection reached the stop {:?} within {STOP_PATIENCE:?}; {armed} stops \
+                 of the proxy are armed",
+                self.stop
+            );
+        }
     }
 }
 
@@ -80,12 +100,21 @@ impl PostgresProxy {
         let armed: Arc<Mutex<Vec<Armed>>> = Arc::default();
         let (host, port) = (target.get_host().to_owned(), target.get_port());
         let shared = armed.clone();
+        // The set ends the connections when the proxy ends this task.
         let accepting = tokio::spawn(async move {
-            while let Ok((client, _)) = listener.accept().await {
-                let Ok(server) = TcpStream::connect((host.as_str(), port)).await else {
-                    continue;
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let client = match listener.accept().await {
+                    Ok((client, _)) => client,
+                    Err(error) => panic!("the proxy accepts no further connection: {error}"),
                 };
-                tokio::spawn(Connection::new(client, server, shared.clone()).run());
+                match TcpStream::connect((host.as_str(), port)).await {
+                    Ok(server) => {
+                        connections.spawn(Connection::new(client, server, shared.clone()).run());
+                    }
+                    Err(error) => eprintln!("the proxy did not reach PostgreSQL: {error}"),
+                }
+                while connections.try_join_next().is_some() {}
             }
         });
         Self {
@@ -109,10 +138,14 @@ impl PostgresProxy {
     pub fn arm(&self, stop: Stop) -> Struck {
         let struck = Arc::new(Notify::new());
         self.armed.lock().unwrap().push(Armed {
-            stop,
+            stop: stop.clone(),
             struck: struck.clone(),
         });
-        Struck(struck)
+        Struck {
+            struck,
+            stop,
+            armed: self.armed.clone(),
+        }
     }
 
     /// The stops that no connection has reached yet.
@@ -379,4 +412,17 @@ fn parsed(message: &[u8]) -> Option<(Vec<u8>, String)> {
 fn cstring(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let end = bytes.iter().position(|byte| *byte == 0)?;
     Some((&bytes[..end], &bytes[end + 1..]))
+}
+
+/// A stop that no statement reaches ends the wait for it with a failure that names the stop.
+#[tokio::test]
+#[should_panic(expected = "no connection reached the stop")]
+async fn the_wait_for_a_stop_that_no_statement_reaches_fails_and_names_the_stop() {
+    let target: PgConnectOptions =
+        std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap();
+    let proxy = PostgresProxy::start(target).await;
+    let struck = proxy.arm(Stop::at("a statement that nobody sends", Cut::Before));
+    tokio::time::timeout(STOP_PATIENCE * 2, struck.wait())
+        .await
+        .expect("the wait for an unreached stop ended within twice its limit");
 }

@@ -10,7 +10,7 @@ use sqlx::ConnectOptions;
 use sqlx::postgres::PgConnectOptions;
 
 use crate::recording_server::RecordingServer;
-use crate::support::{TestServer, admin_url, delete_database};
+use crate::support::{Deleted, TestServer, admin_url, delete_database};
 
 /// Set in the process that the test below starts and kills.
 const HOLDER: &str = "JUNTO_TEST_SERVER_HOLDER";
@@ -122,12 +122,19 @@ async fn a_server_that_a_test_started_stops_when_the_process_of_the_test_is_kill
         .expect("the holder names the process and the database of its server");
     let mut parts = line.splitn(3, ' ');
     let (server, database) = (parts.next().unwrap(), parts.next().unwrap());
-    let bystanders: Vec<&str> = parts
+    let bystanders: Vec<String> = parts
         .next()
         .unwrap_or_default()
         .split(',')
         .filter(|number| !number.is_empty())
+        .map(str::to_owned)
         .collect();
+    // The killed process runs no code that ends its processes or deletes its database.
+    let mut left = Left {
+        processes: bystanders,
+        server: Some(server.to_owned()),
+        database: database.to_owned(),
+    };
     assert!(sessions_on(database).await > 0);
 
     // The process ends without running any code of its own: SIGKILL on Unix,
@@ -143,18 +150,35 @@ async fn a_server_that_a_test_started_stops_when_the_process_of_the_test_is_kill
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    for process in bystanders
-        .iter()
-        .chain(if stopped { None } else { Some(&server) })
-    {
-        end(process);
+    if stopped {
+        // The number of a process that has ended can name another process later.
+        left.server = None;
     }
-    // The killed process ran no code that deletes its database.
-    delete_database(database.to_owned(), Duration::from_secs(30)).unwrap();
+    drop(left);
     assert!(
         stopped,
         "the server still ran 30 s after the process of its test was killed"
     );
+}
+
+/// What the killed holder leaves: its bystanders, its server while it runs, and the
+/// database of the server. The drop ends the processes and deletes the database, also when
+/// the test fails.
+struct Left {
+    processes: Vec<String>,
+    server: Option<String>,
+    database: String,
+}
+
+impl Drop for Left {
+    fn drop(&mut self) {
+        for process in self.processes.iter().chain(&self.server) {
+            end(process);
+        }
+        if let Err(problem) = delete_database(self.database.clone(), Duration::from_secs(30)) {
+            eprintln!("the database {} was not deleted: {problem}", self.database);
+        }
+    }
 }
 
 /// The setting of statement statistics that a session on the database of `url` gets, and
@@ -185,29 +209,39 @@ async fn recorded_and_kept(url: &str) -> (Option<String>, bool) {
         .fetch_one(&mut own)
         .await
         .unwrap();
+    sqlx::Connection::close(own).await.unwrap();
     (setting, true)
 }
 
 /// The database of each kind of test server records no statement statistics, which the
-/// tests of the server read on the same database server, and is deleted with its server.
+/// tests of the server read on the same database server, and is deleted with its server
+/// after the server has ended: the deletion finds no session on it.
 #[tokio::test]
 async fn the_database_of_a_test_server_records_no_statistics_and_ends_with_the_server() {
     let server = TestServer::start("dropped").await;
-    let url = server.database_url().to_owned();
+    let (url, deletion) = (
+        server.database_url().to_owned(),
+        server.database().deletion(),
+    );
     assert_eq!(
         recorded_and_kept(&url).await,
         (Some("none".to_owned()), true)
     );
     drop(server);
+    assert_eq!(*deletion.lock().unwrap(), Some(Ok(Deleted::Unused)));
     assert_eq!(recorded_and_kept(&url).await, (None, false));
 
     let server = RecordingServer::start("recorded").await;
-    let url = server.database_url().to_owned();
+    let (url, deletion) = (
+        server.database_url().to_owned(),
+        server.database().deletion(),
+    );
     assert_eq!(
         recorded_and_kept(&url).await,
         (Some("none".to_owned()), true)
     );
     drop(server);
+    assert_eq!(*deletion.lock().unwrap(), Some(Ok(Deleted::Unused)));
     assert_eq!(recorded_and_kept(&url).await, (None, false));
 }
 

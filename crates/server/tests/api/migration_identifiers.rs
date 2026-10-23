@@ -1,7 +1,9 @@
 //! The statements of migrations 0011 and 0013 that read an identifier from stored JSON and
 //! cast it to a UUID guard the cast: a stored value that is not a UUID does not stop the
 //! upgrade, and the row gets the result that the migration states for an identifier that
-//! names nothing.
+//! names nothing. The first two tests run the statements on the newest schema beside valid
+//! identifiers; the third runs the migrations themselves on a database of the schema before
+//! 0011.
 
 use junto_protocol::ids::WorkspaceId;
 use serde_json::{Value, json};
@@ -223,5 +225,122 @@ async fn migration_0013_reads_malformed_invite_identifiers_as_naming_nothing() {
                 "{plan:?} {payload}"
             );
         }
+    }
+}
+
+/// The migrations of `MIGRATIONS` up to `version`.
+fn migrations_up_to(version: i64) -> sqlx::migrate::Migrator {
+    let migrations = junto_server::bootstrap::MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= version)
+        .cloned()
+        .collect();
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(migrations),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
+/// An upgrade from the schema of migration 0010 runs 0011 to 0013 on stored values that are
+/// not UUIDs, with the indexes of that time and under each plan, and then the rest of the
+/// migrations.
+#[tokio::test]
+async fn an_upgrade_from_before_0011_reads_malformed_identifiers_as_naming_nothing() {
+    use sqlx::{ConnectOptions, Connection};
+
+    let unknown = uuid::Uuid::new_v4().to_string();
+    for plan in PLANS {
+        let database = crate::support::empty_database().await;
+        let mut connection = database.options.connect().await.unwrap();
+        migrations_up_to(10).run(&mut connection).await.unwrap();
+
+        let mut values = malformed(&unknown);
+        values.push(json!(unknown));
+        let earlier = json!({ "to": "server_permission", "permission": "create_invites" });
+        let mut stored = Vec::new();
+        for value in values {
+            let events: [(&str, Value, Value); 3] = [
+                (
+                    "recording_probe",
+                    json!({ "to": "call" }),
+                    json!({ "recording_id": value }),
+                ),
+                (
+                    "invite_created",
+                    earlier.clone(),
+                    json!({ "invite": { "id": value } }),
+                ),
+                (
+                    "invite_revoked",
+                    earlier.clone(),
+                    json!({ "invite_id": value }),
+                ),
+            ];
+            for (kind, audience, mut payload) in events {
+                payload["type"] = json!(kind);
+                let id = uuid::Uuid::now_v7();
+                sqlx::query(
+                    "insert into events (id, recorded_at, class, kind, audience, payload)
+                     values ($1, now(), 'general', $2, $3, $4)",
+                )
+                .bind(id)
+                .bind(kind)
+                .bind(audience)
+                .bind(payload)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+                stored.push((kind, value.clone(), id));
+            }
+            let entry = uuid::Uuid::now_v7();
+            sqlx::query(
+                "insert into audit_entries (id, occurred_at, action, event)
+                 values ($1, now(), 'recording_started', $2)",
+            )
+            .bind(entry)
+            .bind(json!({ "action": "recording_started", "recording_id": value }))
+            .execute(&mut connection)
+            .await
+            .unwrap();
+            stored.push(("audit_entry", value, entry));
+        }
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(plan.replace("set local", "set")))
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        migrations_up_to(13)
+            .run(&mut connection)
+            .await
+            .unwrap_or_else(|error| panic!("plan {plan:?}: {error}"));
+
+        for (kind, value, id) in stored {
+            if kind == "audit_entry" {
+                let call: Option<uuid::Uuid> =
+                    sqlx::query_scalar("select call_id from audit_entries where id = $1")
+                        .bind(id)
+                        .fetch_one(&mut connection)
+                        .await
+                        .unwrap();
+                assert_eq!(call, None, "{plan:?} {value}");
+                continue;
+            }
+            let audience: Value = sqlx::query_scalar("select audience from events where id = $1")
+                .bind(id)
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            let expected = if kind == "recording_probe" {
+                json!({ "to": "call", "call_id": NIL })
+            } else {
+                json!({ "to": "server_permission", "permission": "administrator" })
+            };
+            assert_eq!(audience, expected, "{plan:?} {kind} {value}");
+        }
+        junto_server::bootstrap::MIGRATIONS
+            .run(&mut connection)
+            .await
+            .unwrap_or_else(|error| panic!("plan {plan:?}: {error}"));
+        connection.close().await.unwrap();
     }
 }
