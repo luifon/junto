@@ -91,6 +91,18 @@ impl Database {
         timeouts: &Timeouts,
         stream: &StreamPool,
     ) -> Result<Self, sqlx::Error> {
+        Self::connect_with(PgPoolOptions::new(), options, connections, timeouts, stream).await
+    }
+
+    /// Connects as [`Database::connect`] does, with both pools built from `pools`. The size
+    /// and the wait for a connection of each pool replace those of `pools`.
+    pub async fn connect_with(
+        pools: PgPoolOptions,
+        options: PgConnectOptions,
+        connections: u32,
+        timeouts: &Timeouts,
+        stream: &StreamPool,
+    ) -> Result<Self, sqlx::Error> {
         let milliseconds = |limit: time::Duration| limit.whole_milliseconds().max(1).to_string();
         let limited = |statement, lock, idle_in_transaction| {
             options.clone().options([
@@ -103,7 +115,8 @@ impl Database {
                 ),
             ])
         };
-        let pool = PgPoolOptions::new()
+        let pool = pools
+            .clone()
             .max_connections(connections)
             .acquire_timeout(timeouts.acquire.unsigned_abs())
             .connect_with(limited(
@@ -112,7 +125,7 @@ impl Database {
                 timeouts.idle_in_transaction,
             ))
             .await?;
-        let stream_pool = PgPoolOptions::new()
+        let stream_pool = pools
             .max_connections(stream.connections.max(1))
             .acquire_timeout(stream.time_limit.unsigned_abs())
             .connect_lazy_with(limited(

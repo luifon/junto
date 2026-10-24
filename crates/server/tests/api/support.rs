@@ -28,7 +28,7 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions, Connection, PgPool};
 use time::{Duration, OffsetDateTime};
 use tokio::net::TcpListener;
@@ -210,8 +210,8 @@ pub struct TestServer {
     tasks: Tasks,
     shutdown: Option<oneshot::Sender<()>>,
     served: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
-    /// The database, for a further process on it. The state of the process holds it too, so
-    /// it is deleted when the state has ended (see [`ServerClock`]).
+    /// The database, for a further process on it. The pools of the process hold it too, so
+    /// it is deleted when the last connection of the process has ended (see [`held_by`]).
     kept: Arc<TestDatabase>,
 }
 
@@ -224,8 +224,8 @@ impl Drop for TestServer {
     }
 }
 
-/// The database of a test. It is deleted when the last holder drops it: each server process
-/// holds it through its clock ([`ServerClock`]). The database server holds statistics for
+/// The database of a test. It is deleted when the last holder drops it: each pool of a server
+/// process holds it ([`held_by`]). The database server holds statistics for
 /// every table and index of every database in a shared memory of fixed size, so the databases
 /// of a whole run do not fit.
 struct TestDatabase {
@@ -315,18 +315,17 @@ pub async fn empty_database() -> EmptyDatabase {
     }
 }
 
-/// The clock of one server process. It holds the database of the test, and the state of the
-/// process drops its database, with every connection, before its clock: so the database is
-/// deleted after the last task and the last request of every process on it have ended.
-struct ServerClock {
-    clock: Arc<ManualClock>,
-    _database: Arc<TestDatabase>,
-}
-
-impl Clock for ServerClock {
-    fn now(&self) -> OffsetDateTime {
-        self.clock.now()
-    }
+/// Settings of the pools of a server process on the database of a test: each pool holds the
+/// database. A pool keeps its settings until its last connection has ended, and a connection
+/// that a cancelled task held goes back to its pool on a task of its own that holds the pool.
+/// So the database is deleted after the last connection of every pool on it, also when the
+/// state of a process has already been dropped.
+fn held_by(database: &Arc<TestDatabase>) -> PgPoolOptions {
+    let database = database.clone();
+    PgPoolOptions::new().after_connect(move |_, _| {
+        let _held = &database;
+        Box::pin(async { Ok(()) })
+    })
 }
 
 /// The longest time that the deletion of a test database may take. A database server that
@@ -453,6 +452,58 @@ async fn a_dropped_test_server_ends_its_tasks_and_connections_before_its_databas
             .await
             .unwrap();
     assert!(!exists);
+    admin.close().await.unwrap();
+}
+
+/// A task that is cancelled while PostgreSQL runs its statement leaves its connection to a
+/// task of the pool, which waits for the answer before it returns the connection. The last
+/// state of the process is dropped on the runtime of the test before that task runs; the
+/// database is deleted only after the connection has ended, and the deletion finds no session.
+#[tokio::test]
+async fn a_task_cancelled_during_its_statement_ends_its_connection_before_the_database_is_deleted()
+{
+    let server = TestServer::start().await;
+    let (name, deletion) = (server.kept.name.clone(), server.kept.deletion.clone());
+    let state = server.state.clone();
+    let query = tokio::spawn(async move {
+        let mut connection = state.database.pool().acquire().await.unwrap();
+        sqlx::query("select pg_sleep(2)")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+    let mut admin = admin_options().connect().await.unwrap();
+    loop {
+        let sleeping: bool = sqlx::query_scalar(
+            "select exists (select 1 from pg_stat_activity
+             where datname = $1 and wait_event = 'PgSleep')",
+        )
+        .bind(&name)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+        if sleeping {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    drop(server);
+    query.abort();
+    assert!(query.await.unwrap_err().is_cancelled());
+    let limit = std::time::Instant::now() + DATABASE_CLEANUP_LIMIT + DATABASE_CLEANUP_LIMIT;
+    let deleted = loop {
+        if let Some(deleted) = deletion.lock().unwrap().clone() {
+            break deleted;
+        }
+        assert!(
+            std::time::Instant::now() < limit,
+            "the database of a dropped test server was not deleted"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(deleted, Ok(Deleted::Unused));
     admin.close().await.unwrap();
 }
 
@@ -738,7 +789,8 @@ impl TestServer {
         let mut config = self.config.clone();
         configure(&mut config);
         let limits = &config.limits;
-        Database::connect(
+        Database::connect_with(
+            held_by(&self.kept),
             self.database.clone(),
             4,
             &limits.database,
@@ -785,18 +837,21 @@ impl TestServer {
         } = setup;
         let limits = &config.limits;
         let stream_pool = limits.stream.pool();
-        let connected = Database::connect(database.clone(), 8, &limits.database, &stream_pool)
-            .await
-            .unwrap();
+        let connected = Database::connect_with(
+            held_by(&kept),
+            database.clone(),
+            8,
+            &limits.database,
+            &stream_pool,
+        )
+        .await
+        .unwrap();
         let db = connected.pool().clone();
         let clock = Arc::new(ManualClock::starting_at(
             now.unwrap_or_else(OffsetDateTime::now_utc),
             follows_time,
         ));
-        let server_clock: Arc<dyn Clock> = Arc::new(ServerClock {
-            clock: clock.clone(),
-            _database: kept.clone(),
-        });
+        let server_clock: Arc<dyn Clock> = clock.clone();
         let fakes = match media {
             Media::Configured => None,
             Media::Fake(Some(fakes)) => Some(fakes),

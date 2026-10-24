@@ -221,18 +221,22 @@ async fn name_of(server: &crate::support::TestServer) -> String {
 
 /// Runs statements on the database server, outside the database of a test.
 async fn maintain(statements: &[String]) {
-    use sqlx::{ConnectOptions, Connection};
+    let admin = std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap();
+    maintain_on(admin, statements).await.unwrap();
+}
 
-    let admin: sqlx::postgres::PgConnectOptions =
-        std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap();
-    let mut connection = admin.connect().await.unwrap();
+async fn maintain_on(
+    admin: sqlx::postgres::PgConnectOptions,
+    statements: &[String],
+) -> Result<(), sqlx::Error> {
+    use sqlx::{ConnectOptions, Connection};
+    let mut connection = admin.connect().await?;
     for statement in statements {
         sqlx::query(sqlx::AssertSqlSafe(statement.clone()))
             .execute(&mut connection)
-            .await
-            .unwrap();
+            .await?;
     }
-    connection.close().await.unwrap();
+    connection.close().await
 }
 
 /// The databases whose names start with `prefix`, each with its comment, in the order of
@@ -512,7 +516,7 @@ async fn a_start_after_a_start_that_stopped_at_any_statement_of_the_copy_makes_t
     let making = format!("{name}_making_{newest}");
     let proxy = PostgresProxy::start(options.clone()).await;
     // The copy and the comment of each case, removed after it, also after a failure.
-    let left = Left(vec![
+    let left = Left::new(vec![
         format!("drop database if exists {making} with (force)"),
         format!("drop database if exists {copy} with (force)"),
         format!("comment on database {name} is null"),
@@ -558,31 +562,92 @@ async fn a_start_after_a_start_that_stopped_at_any_statement_of_the_copy_makes_t
             let of_copy = options.clone().database(&copy);
             assert_eq!(newest_migration_of(&of_copy).await, newest);
 
-            maintain(&left.0).await;
+            maintain(&left.statements).await;
         }
     }
     assert_eq!(proxy.armed(), 0);
 }
 
 /// Statements on the database server that remove what a test left there. They run when the
-/// value is dropped, so a test that fails leaves nothing either.
-struct Left(Vec<String>);
+/// value is dropped, so a test that fails leaves nothing either. They end within `limit`: a
+/// database server that does not answer or a lock that is not released would otherwise hold
+/// the test, also while it unwinds after a failure.
+struct Left {
+    statements: Vec<String>,
+    admin: sqlx::postgres::PgConnectOptions,
+    limit: std::time::Duration,
+}
+
+impl Left {
+    fn new(statements: Vec<String>) -> Self {
+        Self {
+            statements,
+            admin: std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap(),
+            limit: std::time::Duration::from_secs(30),
+        }
+    }
+}
 
 impl Drop for Left {
     fn drop(&mut self) {
-        let statements = std::mem::take(&mut self.0);
-        // A drop cannot wait for a future on the runtime of its test.
-        let ran = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
+        let statements = std::mem::take(&mut self.statements);
+        let (admin, limit) = (self.admin.clone(), self.limit);
+        // A drop cannot wait for a future on the runtime of its test, so the statements run on
+        // a thread with its own runtime, which ends them at the limit. The wait has a margin
+        // for the start of the thread and its runtime.
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ran = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map(|runtime| runtime.block_on(maintain(&statements)))
-        })
-        .join();
-        if !matches!(ran, Ok(Ok(()))) {
-            eprintln!("the databases that a test of the copy left were not removed");
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async {
+                        match tokio::time::timeout(limit, maintain_on(admin, &statements)).await {
+                            Ok(ran) => ran.map_err(|error| error.to_string()),
+                            Err(_) => Err(format!("they did not end within {limit:?}")),
+                        }
+                    })
+                });
+            let _ = done.send(ran);
+        });
+        let ran = ended
+            .recv_timeout(limit + std::time::Duration::from_secs(5))
+            .map_err(|_| format!("they did not end within {limit:?}"))
+            .and_then(|ran| ran);
+        if let Err(problem) = ran {
+            eprintln!("the databases that a test of the copy left were not removed: {problem}");
         }
     }
+}
+
+/// The removal of what a test of the copy left ends after its limit when the database server
+/// does not answer, also while the test unwinds after a failure.
+#[test]
+fn the_removal_after_a_failed_copy_test_ends_after_its_limit_when_postgres_does_not_answer() {
+    // The listener accepts connections into its queue and never answers them.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let admin = sqlx::postgres::PgConnectOptions::new()
+        .host("127.0.0.1")
+        .port(silent.local_addr().unwrap().port())
+        .username("postgres");
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _left = Left {
+                statements: vec!["select 1".to_owned()],
+                admin,
+                limit: std::time::Duration::from_millis(200),
+            };
+            panic!("the test fails before its removal");
+        }));
+        let _ = done.send(failed.is_err());
+    });
+    let unwound = ended
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the removal ends after its limit");
+    assert!(unwound, "the failure of the test stays a failure");
+    drop(silent);
 }
 
 /// A database that has the name of the copy and not the comment of a copy is not a copy

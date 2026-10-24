@@ -39,7 +39,7 @@ use junto_server::recordings::{Backend, control, process, transcribe};
 use junto_server::state::AppState;
 use junto_server::storage::FakeDisk;
 use serde_json::{Value, json};
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -88,18 +88,16 @@ impl Clock for TestClock {
     }
 }
 
-/// The clock of the state of the server. It holds the database of the test, and the state
-/// drops its database, with every connection, before its clock: so the database is deleted
-/// after the last task and the last request of the server have dropped the state.
-struct ServerClock {
-    clock: Arc<TestClock>,
-    _database: Arc<TestDatabase>,
-}
-
-impl Clock for ServerClock {
-    fn now(&self) -> OffsetDateTime {
-        self.clock.now()
-    }
+/// Settings of the pools of the server: each pool holds the database of the test. A pool
+/// keeps its settings until its last connection has ended, also a connection that a dropped
+/// task held and that the pool returns on a task of its own; so the database is deleted after
+/// the last connection of the server.
+fn held_by(database: &Arc<TestDatabase>) -> PgPoolOptions {
+    let database = database.clone();
+    PgPoolOptions::new().after_connect(move |_, _| {
+        let _held = &database;
+        Box::pin(async { Ok(()) })
+    })
 }
 
 /// One line that a test lets the transcription worker write. The times count in
@@ -172,8 +170,9 @@ pub struct RecordingServer {
     recorded: Mutex<Vec<RecordingDetail>>,
     runtime: Option<tokio::runtime::Runtime>,
     shutdown: Option<oneshot::Sender<()>>,
-    /// The state holds the database too (see [`ServerClock`]): the drop waits until the tasks
-    /// of the runtime have ended, and the database is deleted when the state is dropped.
+    /// The pools of the state hold the database too (see [`held_by`]): the drop waits until
+    /// the tasks of the runtime have ended, and the database is deleted when the state and its
+    /// connections have ended.
     database: Arc<TestDatabase>,
 }
 
@@ -276,7 +275,8 @@ impl RecordingServer {
                 limits: Limits::default(),
             };
             let limits = &config.limits;
-            let connected = Database::connect(
+            let connected = Database::connect_with(
+                held_by(&database),
                 PgConnectOptions::from_str(&database.url).unwrap(),
                 8,
                 &limits.database,
@@ -297,10 +297,7 @@ impl RecordingServer {
                 &limits.recordings,
             );
             let media_server: Arc<dyn MediaServer> = media.clone();
-            let state_clock: Arc<dyn Clock> = Arc::new(ServerClock {
-                clock: server_clock,
-                _database: database.clone(),
-            });
+            let state_clock: Arc<dyn Clock> = server_clock;
             let prepared = junto_server::prepare_with(
                 connected,
                 config,
@@ -751,4 +748,74 @@ fn transcript_of(detail: &RecordingDetail, given: &Written<'_>) -> Value {
         "timing": {"total_ms": 1, "audio_ms": 1, "speech_ms": 1, "stages_ms": {},
                    "peak_memory_mb": null},
     })
+}
+
+/// The drop of a recording server returns only after the runtime has dropped every task of
+/// the server. A task holds the state, and the drop of its value waits until the test lets it
+/// end: the drop of the server must not return while that task is being dropped, and the
+/// database is deleted after it, with no session on it.
+#[tokio::test]
+async fn the_drop_of_a_recording_server_waits_until_its_tasks_are_dropped() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Tells when its drop starts, and ends its drop when the test lets it.
+    struct Held {
+        dropping: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        _state: AppState,
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let _ = self.dropping.send(());
+            let _ = self.release.recv_timeout(Duration::from_secs(20));
+        }
+    }
+
+    let server = RecordingServer::start("held").await;
+    let deletion = server.database().deletion();
+    let (dropping, drop_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let held = Held {
+        dropping,
+        release: released,
+        _state: server.state.clone(),
+    };
+    let (running, started) = oneshot::channel();
+    server.runtime.as_ref().unwrap().spawn(async move {
+        let _held = held;
+        let _ = running.send(());
+        std::future::pending::<()>().await;
+    });
+    started.await.unwrap();
+
+    let (returned, drop_returned) = mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(server);
+        let _ = returned.send(());
+    });
+    drop_started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the runtime drops the task of the test");
+    // The drop of the task cannot end before the release, so a drop of the server that
+    // returns in this time has not waited for it.
+    let early = drop_returned.recv_timeout(Duration::from_secs(2));
+    let deleted_early = deletion.lock().unwrap().clone();
+    release.send(()).unwrap();
+    if early.is_err() {
+        drop_returned
+            .recv_timeout(RUNTIME_END_LIMIT)
+            .expect("the drop of the server returns after its tasks have been dropped");
+    }
+    dropper.join().unwrap();
+    assert_eq!(
+        early,
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "the drop of the server returned while a task of its runtime was being dropped"
+    );
+    assert_eq!(deleted_early, None);
+    assert_eq!(
+        *deletion.lock().unwrap(),
+        Some(Ok(crate::support::Deleted::Unused))
+    );
 }
