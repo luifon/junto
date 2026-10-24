@@ -189,3 +189,5 @@ The client keeps no copy of messages or files on disk. Its local data of a serve
 - A deleted account cannot be restored. Its person can join again only as a new account, through an invite or an approval.
 - An owner who wants to leave needs host access, through `assign-owner`.
 - A departed account's audit history, name and content stay in backups as before.
+
+Ordinary removal from the server book also waits for a running access action or session renewal. Selection belongs to an entry generation, so cleanup of a removed entry cannot clear selection of a replacement with the same server identifier. Account deletion keeps its original entry and account through local cleanup; a late answer changes the account page and removal result only for that entry and request. A replacement page and its pending operation are independent of the old deletion.

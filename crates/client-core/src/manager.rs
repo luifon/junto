@@ -137,7 +137,9 @@ pub(crate) struct Core {
     /// order of two saves.
     #[cfg(test)]
     before_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    selected: Mutex<Option<ServerId>>,
+    #[cfg(test)]
+    after_remove: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    selected: Mutex<Option<EntryKey>>,
     streams: Mutex<Option<Arc<dyn EventStreams>>>,
     changes: watch::Sender<u64>,
 }
@@ -216,6 +218,8 @@ impl Client {
             stream_policy: options.stream,
             #[cfg(test)]
             before_write: Mutex::new(None),
+            #[cfg(test)]
+            after_remove: Mutex::new(None),
             selected: Mutex::new(None),
             streams: Mutex::new(None),
             changes,
@@ -360,9 +364,13 @@ impl Client {
         }
         lock(&self.inner.servers).retain(|kept| !Arc::ptr_eq(kept, server));
         server.retire();
+        #[cfg(test)]
+        if let Some(after_remove) = lock(&self.inner.core.after_remove).clone() {
+            after_remove();
+        }
         {
             let mut selected = lock(&self.inner.core.selected);
-            if *selected == Some(server_id) {
+            if *selected == Some(server.key) {
                 *selected = None;
             }
         }
@@ -413,7 +421,16 @@ impl Client {
     /// The server that the interface shows. It gets every event; the others get the
     /// background events (ADR 0107).
     pub fn select(&self, server_id: Option<ServerId>) {
-        *lock(&self.inner.core.selected) = server_id;
+        {
+            let servers = lock(&self.inner.servers);
+            let entry = server_id.and_then(|id| {
+                servers
+                    .iter()
+                    .find(|server| server.id == id)
+                    .map(|server| server.key)
+            });
+            *lock(&self.inner.core.selected) = entry;
+        }
         for handle in self.servers() {
             handle.server.announce_level();
         }
@@ -421,7 +438,7 @@ impl Client {
     }
 
     pub fn selected(&self) -> Option<ServerId> {
-        *lock(&self.inner.core.selected)
+        lock(&self.inner.core.selected).map(|entry| entry.server_id)
     }
 
     /// Starts the event streams: from now on every saved server has the connection that
@@ -1176,7 +1193,7 @@ impl Server {
         };
         // A call goes on while another server is shown (ADR 0107), so the server of a
         // call keeps a connection in every connection mode.
-        let level = if selected == Some(self.id) {
+        let level = if selected == Some(self.key) {
             ConnectionLevel::Selected
         } else if state.entry.connection_mode == ConnectionMode::Always || state.in_call {
             ConnectionLevel::Background

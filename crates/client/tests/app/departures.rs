@@ -271,3 +271,102 @@ fn deletion_during_renewal(cx: &mut TestAppContext, close_page: bool) {
     .unwrap();
     assert!(reopened.servers().is_empty());
 }
+
+#[gpui::test]
+fn ordinary_server_removal_waits_for_session_renewal(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+    use junto_client_core::flow::access::ActionKind;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let server_id = handle.id();
+    proxy.hold_request("POST", "/auth/challenges");
+    let workspace = world.run(handle.api().own_account()).unwrap().workspace_ids[0];
+    world.run(handle.api().leave_workspace(workspace)).unwrap();
+    window.until("renewal holds the action mutex", |_| {
+        handle.access().in_progress == Some(ActionKind::LogIn)
+            && proxy
+                .seen("/api/v1/auth/challenges")
+                .iter()
+                .any(|seen| seen.answer.is_none())
+    });
+    window.click("server-menu-button");
+    window.click("menu-remove-server");
+    window.click("confirm");
+    window.until("the ordinary removal was requested", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.pending().removing.contains(&server_id)
+                || state.pending().remove_failed.contains_key(&server_id)
+        })
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    proxy.release_requests();
+    window.until("the removed server leaves the list", |window| {
+        window.view().servers.is_empty()
+    });
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.client().selected().is_none())
+    );
+    assert!(
+        !directory
+            .path()
+            .join("junto/keys")
+            .join(format!("{server_id}.key"))
+            .exists()
+    );
+}
+
+#[gpui::test]
+fn a_late_deletion_answer_preserves_the_replacement_account_page(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let old = window.handle();
+    let client = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().clone());
+    window.open_account();
+    window.click("account-nav-departure");
+    window.click("account-delete");
+    proxy.hold_answer_ending("DELETE", "/account");
+    window.click("account-delete-confirm");
+    window.until("the server deleted the original account", |_| {
+        proxy.answers_waiting() == 1
+    });
+    world.run(client.remove_server_when_free(old.id())).unwrap();
+    window.until("the original entry is gone", |window| {
+        window.view().servers.is_empty()
+    });
+    let code = admin.invite(&world, 1);
+    window.find_server(&proxy.address());
+    window.join_with_code(code.expose());
+    window.until_ready();
+    let replacement = window.handle();
+    let owner = replacement.owner().unwrap();
+    let key = replacement.device_public_key().unwrap();
+    assert_ne!(replacement.entry().key(), old.entry().key());
+    window.open_account();
+    proxy.release_answers();
+    window.until("the old deletion callback has completed", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.pending().deleting.is_empty())
+    });
+    assert!(window.account().is_some());
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    assert_eq!(replacement.owner(), Some(owner));
+    assert_eq!(replacement.device_public_key().unwrap(), key);
+    assert_eq!(client.selected(), Some(replacement.id()));
+}

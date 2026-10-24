@@ -189,15 +189,25 @@ async fn another_device_of_a_deleted_account_states_the_deletion_and_not_a_remov
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_denied_return_request_keeps_the_inactive_account() {
-    ended_return_request_keeps_the_account(false).await;
+    ended_return_request_keeps_the_account(false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_expired_return_request_keeps_the_inactive_account() {
-    ended_return_request_keeps_the_account(true).await;
+    ended_return_request_keeps_the_account(true, false).await;
 }
 
-async fn ended_return_request_keeps_the_account(expired: bool) {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_return_request_does_not_hide_a_return_on_another_device() {
+    ended_return_request_keeps_the_account(false, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_return_request_does_not_hide_a_return_on_another_device() {
+    ended_return_request_keeps_the_account(true, true).await;
+}
+
+async fn ended_return_request_keeps_the_account(expired: bool, elsewhere: bool) {
     use junto_client_core::protocol::invite::ApproveJoinRequest;
     use sqlx::ConnectOptions;
     use sqlx::postgres::PgConnectOptions;
@@ -212,6 +222,35 @@ async fn ended_return_request_keeps_the_account(expired: bool) {
     member.dispatch(join(&code, "Grace")).await.unwrap();
     let account_id = logged_in(&member);
     let key = member.device_public_key().unwrap();
+    let linked = if elsewhere {
+        let device = Device::new();
+        let handle = device.add(&server.address()).await;
+        handle
+            .dispatch(AccessAction::RequestLink {
+                device_name: "Phone".to_owned(),
+            })
+            .await
+            .unwrap();
+        let AccessState::WaitingForLink {
+            code, public_key, ..
+        } = handle.access().state
+        else {
+            panic!("the phone does not wait for a link");
+        };
+        member
+            .api()
+            .approve_device_link(code, public_key)
+            .await
+            .unwrap();
+        handle
+            .dispatch_when_free(AccessAction::Check)
+            .await
+            .unwrap();
+        assert_eq!(logged_in(&handle), account_id);
+        Some((device, handle))
+    } else {
+        None
+    };
     let workspace = member.api().own_account().await.unwrap().workspace_ids[0];
     member.api().leave_workspace(workspace).await.unwrap();
     member
@@ -267,6 +306,43 @@ async fn ended_return_request_keeps_the_account(expired: bool) {
         member.entry().membership,
         Membership::Inactive { account_id }
     );
+    if let Some((_device, phone)) = linked {
+        phone.dispatch_when_free(AccessAction::Check).await.unwrap();
+        phone
+            .dispatch_when_free(AccessAction::RequestAccess {
+                name: "Phone return".to_owned(),
+            })
+            .await
+            .unwrap();
+        let AccessState::WaitingForApproval {
+            join_request_id: Some(next),
+            ..
+        } = phone.access().state
+        else {
+            panic!("the phone return is not pending");
+        };
+        owner
+            .api()
+            .approve_join_request(next, &ApproveJoinRequest::default())
+            .await
+            .unwrap();
+        phone.dispatch_when_free(AccessAction::Check).await.unwrap();
+        assert_eq!(logged_in(&phone), account_id);
+        // Load the inactive book before either client observes the return.
+        let reopened = second.restarted();
+        let reopened_member = reopened.servers().remove(0);
+        member
+            .dispatch_when_free(AccessAction::Check)
+            .await
+            .unwrap();
+        reopened_member.connect_when_free().await.unwrap();
+        for returning in [&member, &reopened_member] {
+            assert_eq!(logged_in(returning), account_id);
+            assert_eq!(returning.device_public_key().unwrap(), key);
+            assert_eq!(returning.api().own_account().await.unwrap().name, "Grace");
+        }
+        return;
+    }
     member
         .dispatch_when_free(AccessAction::RequestAccess {
             name: "Another name".to_owned(),

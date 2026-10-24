@@ -4238,3 +4238,50 @@ async fn the_update_check_starts_with_the_event_streams_and_ends_with_the_client
     assert_eq!(source.checks(), 2);
     assert_eq!(Arc::strong_count(&source), 1);
 }
+
+#[test]
+fn removal_cleanup_preserves_a_replacement_selected_after_the_book_write() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let network = Arc::new(Network::default());
+    let host = network.host("acme");
+    host.add_invite("AGAIN", 1);
+    let device = device(&network);
+    let old = runtime.block_on(device.add("acme"));
+    runtime.block_on(old.dispatch(claim())).unwrap();
+    device.client.select(Some(old.id()));
+    let (entered, has_entered) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel::<()>();
+    let resumed = Mutex::new(resumed);
+    *device.client.inner.core.after_remove.lock().unwrap() = Some(Arc::new(move || {
+        entered.send(()).unwrap();
+        resumed.lock().unwrap().recv().unwrap();
+    }));
+    let removing = {
+        let client = device.client.clone();
+        std::thread::spawn(move || client.remove_server(old.id()))
+    };
+    has_entered.recv().unwrap();
+    let again = runtime.block_on(device.add("acme"));
+    runtime.block_on(again.dispatch(join("AGAIN"))).unwrap();
+    let key = again.device_public_key().unwrap();
+    device.client.select(Some(again.id()));
+    resume.send(()).unwrap();
+    removing.join().unwrap().unwrap();
+    assert_eq!(device.client.selected(), Some(again.id()));
+    assert_eq!(again.server.level().0, ConnectionLevel::Selected);
+    assert_eq!(device.client.servers().len(), 1);
+    assert_eq!(again.device_public_key().unwrap(), key);
+    assert!(device.client.data_dir().key_file(again.id()).exists());
+    assert_eq!(
+        device
+            .client
+            .inner
+            .core
+            .book
+            .entry(again.id())
+            .unwrap()
+            .unwrap()
+            .key(),
+        again.entry().key()
+    );
+}

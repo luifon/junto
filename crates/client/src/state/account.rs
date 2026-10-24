@@ -927,29 +927,60 @@ impl AppState {
         let Some(stamp) = self.account.begin(what) else {
             return;
         };
+        let owner = junto_client_core::book::Owner {
+            entry: server.entry().key(),
+            account_id,
+        };
+        self.pending.deleting.insert(owner);
         let server_id = server.id();
         let api = server.api_for(account_id);
         let removing = self.client.remove_server_when_free(server_id);
         cx.spawn(async move |this, cx| match api.delete_account().await {
             Ok(()) => {
+                let marked = this
+                    .update(cx, |this, cx| {
+                        let current = this
+                            .client
+                            .server(server_id)
+                            .is_some_and(|server| server.entry().key() == owner.entry);
+                        let marked = if current {
+                            if this.account.account == Some(account_id)
+                                && this.account.settle(stamp, what, None)
+                            {
+                                this.account.close();
+                            }
+                            this.pending.begin_removal(owner.entry)
+                        } else {
+                            false
+                        };
+                        this.changed(cx);
+                        marked
+                    })
+                    .unwrap_or(false);
+                let removed = cx.background_executor().spawn(removing).await;
                 let _ = this.update(cx, |this, cx| {
-                    if this
-                        .account
-                        .open
-                        .is_some_and(|open| open.server_id == server_id)
-                    {
-                        this.account.close();
+                    this.pending.deleting.remove(&owner);
+                    if marked {
+                        this.removed_entry(owner.entry, removed, cx);
                     }
-                    this.pending.removing.insert(server_id);
                     this.changed(cx);
                 });
-                let removed = cx.background_executor().spawn(removing).await;
-                let _ = this.update(cx, |this, cx| this.removed(server_id, removed, cx));
             }
             Err(error) => {
                 let _ = this.update(cx, |this, cx| {
-                    this.account
-                        .settle(stamp, what, Some(text::account::refusal(what, &error)));
+                    this.pending.deleting.remove(&owner);
+                    if this
+                        .client
+                        .server(server_id)
+                        .is_some_and(|server| server.entry().key() == owner.entry)
+                        && this.account.account == Some(account_id)
+                    {
+                        this.account.settle(
+                            stamp,
+                            what,
+                            Some(text::account::refusal(what, &error)),
+                        );
+                    }
                     this.changed(cx);
                 });
             }
