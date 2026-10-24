@@ -484,11 +484,11 @@ pub const SOUND_ONE_APPLICATION: &str = "One application";
 pub const SOUND_THIS_APPLICATION: &str = "This application";
 pub const SOUND_CHOICE_HELP: &str =
     "Choose the sound for each share. Sound from other applications may include the call.";
-pub const SOUND_SYSTEM_HELP: &str = "The people in the call hear every sound that this computer plays, except the sound of \
-     Junto.";
+pub const SOUND_SYSTEM_HELP: &str = "The people in the call hear system sound. Sound from another running copy of Junto may \
+     include the call.";
 pub const SOUND_NONE_HELP: &str = "The people in the call get the picture only.";
-pub const SOUND_APPLICATION_HELP: &str = "The people in the call hear the sound of the application that you choose here, and of \
-     no other one.";
+pub const SOUND_APPLICATION_HELP: &str = "The people in the call hear the chosen application. Its sound may include the sound of \
+     this call.";
 pub const NO_APPLICATIONS: &str = if cfg!(target_os = "linux") {
     "No other application is available to share sound."
 } else {
@@ -526,7 +526,7 @@ pub fn pixels(size: (u32, u32)) -> String {
 pub fn sound_of_window(application: &str) -> String {
     format!(
         "The people in the call hear the sound of {application}, the application of this \
-         window, and of no other one."
+         window. Its sound may include the sound of this call."
     )
 }
 

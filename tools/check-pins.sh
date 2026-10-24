@@ -176,7 +176,8 @@ done
 # (ADR 0014). In these three definitions, an instruction that names a package program has
 # one form only, so that this rule reads all of it: it removes the package sources of the
 # base image, writes the two sources of the snapshot, and installs packages by their names
-# without a further option. The snapshot is an argument of the same build stage. An
+# with an optional exact preference for snapshot versions over newer base packages.
+# The snapshot is an argument of the same build stage. An
 # instruction that names the configuration of the package program in another way fails.
 same "Debian snapshot of the server image and of the speech image" \
     "$(argument "$server" DEBIAN_SNAPSHOT)" "$(argument "$speech" DEBIAN_SNAPSHOT)"
@@ -192,6 +193,13 @@ for file in "$server" "$speech" "$worker"; do
         /^ARG DEBIAN_SNAPSHOT=[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z$/ { dated = 1 }
         /^ARG DEBIAN_SNAPSHOT/ { next }
         tolower($0) !~ /(apt|dpkg|sources\.list)/ { next }
+        {
+            pin = " && printf \047Package: *\\nPin: origin snapshot.debian.org\\nPin-Priority: 1001\\n\047 > /etc/apt/preferences.d/junto-snapshot"
+            install = " && apt-get update && apt-get install -y --no-install-recommends"
+            form = pin install " --allow-downgrades"
+            at = index($0, form)
+            if (at) { $0 = substr($0, 1, at - 1) install substr($0, at + length(form)) }
+        }
         dated && /^RUN rm -f \/etc\/apt\/sources\.list\.d\/\* && echo "deb \[check-valid-until=no\] http:\/\/snapshot\.debian\.org\/archive\/debian\/\$\{DEBIAN_SNAPSHOT\} [a-z]+ main" > \/etc\/apt\/sources\.list && echo "deb \[check-valid-until=no\] http:\/\/snapshot\.debian\.org\/archive\/debian-security\/\$\{DEBIAN_SNAPSHOT\} [a-z]+-security main" >> \/etc\/apt\/sources\.list && apt-get update && apt-get install -y --no-install-recommends( [a-z0-9][a-z0-9.+-]*)+ && rm -rf \/var\/lib\/apt\/lists\/\*$/ { next }
         { print }
     ')

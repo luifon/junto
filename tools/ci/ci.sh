@@ -312,7 +312,7 @@ show() {
 ended_check() {
     if [ "$1" = windows ]; then
         windows_settings
-        printf '%s' "if [ ! -f finished ] && powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '${3:-start-run.ps1}' -Directory '$windows_dir' -Run '$2' -Ended >/dev/null; then printf 'ended\t1\n'; fi"
+        printf '%s' "if [ ! -f finished ] && powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File start-run.ps1 -Directory '$windows_dir' -Run '$2' -Ended >/dev/null; then printf 'ended\t1\n'; fi"
     fi
 }
 
@@ -389,7 +389,6 @@ forget() {
                     git --git-dir=repo.git gc --quiet --prune=now'" ;;
         *-windows)
             windows_settings
-            inspector=start-run.ps1
             missing=$(on windows "if [ -d 'runs/$run' ] && [ ! -f 'runs/$run/finished' ] && [ ! -f 'runs/$run/start-run.ps1' ]; then
                 cd 'runs/$run'
                 if [ -f start ] || [ -f started ] || [ -f process ] || [ -f current ] || [ -f record.tsv ]; then echo missing
@@ -399,14 +398,13 @@ forget() {
                 echo 'the run has no start evidence; its upload may still be in progress' >&2
                 return 1
             fi
-            if [ "$missing" = missing ]; then
-                inspector=check-run.ps1
-                windows_ssh scp -q "$root/tools/windows/start-run.ps1" \
-                    "$windows_host:$windows_dir/runs/$run/$inspector" || return 1
-            fi
+            inspector=check-run.ps1
+            windows_ssh scp -q "$root/tools/windows/start-run.ps1" \
+                "$windows_host:$windows_dir/runs/$run/$inspector" || return 1
             on windows "cd 'runs/$run' || exit 1
-                ended=\$($(ended_check windows "$run" "$inspector"))
-                if [ ! -f finished ] && [ -z \"\$ended\" ]; then echo 'the run has not finished' >&2; exit 1; fi
+                if ! powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '$inspector' -Directory '$windows_dir' -Run '$run' -Forget; then
+                    echo 'the run has not finished or its task could not be removed' >&2; exit 1
+                fi
                 cd ../.. && rm -rf 'runs/$run'" ;;
         *-macos)
             test -f "$local_dir/runs/$run/finished" || { echo 'the run has not finished' >&2; exit 1; }

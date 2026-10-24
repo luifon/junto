@@ -29,6 +29,7 @@ Pinned inputs:
 
 - Every base image, and the Dockerfile frontend, is named by tag and digest. This includes the frontend line of the worker definition, which named a tag only.
 - The Debian packages of the build stages of the server image, the transcription worker image and the speech tooling of the worker tests (`workers/transcription/tests/speech/Dockerfile`), come from one dated snapshot of the Debian archive: the instruction that installs them removes the package sources of the base image and writes the two sources of the snapshot.
+- The worker toolchain gives packages from the snapshot priority 1001 and permits downgrades during installation. Its digest-pinned Python base can contain a package newer than the snapshot; preferring the snapshot lets exact-version dependencies remain consistent without taking packages from a moving archive. The pin checker accepts only this exact preference and install form.
 - The images that the deployment pulls (PostgreSQL, Redis, LiveKit, LiveKit Egress, the entry) are named by tag and digest in the Compose files.
 - The link image installs four Alpine packages at stated versions.
 - `rust-toolchain.toml` states the Rust version. The server image and CI use that version.

@@ -37,6 +37,9 @@ exit "${FAKE_SCP_STATUS:-0}"
 # its process then ends.
 POWERSHELL = r'''#!/bin/sh
 case " $* " in
+    *" -Forget "*)
+        if [ ! -f finished ] && [ "${FAKE_ENDED:-1}" != 0 ]; then exit 1; fi
+        exit "${FAKE_FORGET:-0}" ;;
     *" -Ended "*)
         if [ "${FAKE_REQUIRE_START_SCRIPT:-}" = 1 ]; then
             case " $* " in
@@ -179,6 +182,21 @@ class WindowsRunner(unittest.TestCase):
         self.assertIn("upload may still be in progress", result.stderr)
         self.assertTrue(here.exists())
         self.assertEqual(self.log("scp"), "")
+
+    def test_a_dead_run_is_kept_when_its_task_cannot_be_removed(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        result = self.ci("forget", run, FAKE_ENDED="0", FAKE_FORGET="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(here.exists())
+
+    def test_a_finished_run_is_kept_when_its_task_cannot_be_removed(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        (here / "finished").write_text("0\n")
+        result = self.ci("forget", run, FAKE_ENDED="0", FAKE_FORGET="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(here.exists())
 
     # The run passes while status asks whether its processes have ended.
     def test_a_run_that_finishes_during_the_check_of_its_end_is_reported_with_its_result(self):

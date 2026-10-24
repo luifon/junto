@@ -104,6 +104,31 @@ impl SharePicker {
         }
     }
 
+    fn sound_help(&self, sources: &ShareSources) -> SharedString {
+        let shared_window = match self.picture {
+            Some(PictureSource::Window(id)) => {
+                sources.windows.iter().find(|window| window.id == id)
+            }
+            _ => None,
+        };
+        let window_application = shared_window.map(|window| window.application_name.clone());
+        let started_the_client = shared_window
+            .is_some_and(|window| sources.started_the_client.contains(&window.application));
+        match (self.sound, &window_application) {
+            (None, _) => text::SOUND_CHOICE_HELP.into(),
+            (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
+            (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
+            (Some(SoundKind::Application), _) if sources.creators_unknown => {
+                text::SOUND_CREATORS_UNKNOWN.into()
+            }
+            (Some(SoundKind::Application), Some(name)) if started_the_client => {
+                text::sound_includes_junto(name).into()
+            }
+            (Some(SoundKind::Application), Some(name)) => text::sound_of_window(name).into(),
+            (Some(SoundKind::Application), None) => text::SOUND_APPLICATION_HELP.into(),
+        }
+    }
+
     fn sound_kinds(&self) -> Vec<SoundKind> {
         let Some(sources) = self.sources() else {
             return vec![SoundKind::None];
@@ -540,6 +565,14 @@ impl Shell {
         }
     }
 
+    /// The sound description used by the open share dialog for its current selection.
+    pub fn share_picker_sound_help(&self) -> Option<SharedString> {
+        match &self.layer {
+            Layer::SharePicker(picker) => Some(picker.sound_help(picker.sources()?)),
+            _ => None,
+        }
+    }
+
     /// Chooses the picture of the share in its dialog, as a click on its row does.
     pub fn pick_share_picture(&mut self, picture: PictureSource, cx: &mut Context<Self>) {
         if let Some(picker) = self.picker() {
@@ -969,8 +1002,6 @@ impl Shell {
             _ => None,
         };
         let window_application = shared_window.map(|window| window.application_name.clone());
-        let started_the_client = shared_window
-            .is_some_and(|window| sources.started_the_client.contains(&window.application));
         let kinds: Vec<SharedString> = sound_kinds
             .iter()
             .map(|kind| match kind {
@@ -982,19 +1013,7 @@ impl Shell {
                 SoundKind::Application => text::SOUND_ONE_APPLICATION.into(),
             })
             .collect();
-        let sound_help: SharedString = match (sound, &window_application) {
-            (None, _) => text::SOUND_CHOICE_HELP.into(),
-            (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
-            (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
-            (Some(SoundKind::Application), _) if sources.creators_unknown => {
-                text::SOUND_CREATORS_UNKNOWN.into()
-            }
-            (Some(SoundKind::Application), Some(name)) if started_the_client => {
-                text::sound_includes_junto(name).into()
-            }
-            (Some(SoundKind::Application), Some(name)) => text::sound_of_window(name).into(),
-            (Some(SoundKind::Application), None) => text::SOUND_APPLICATION_HELP.into(),
-        };
+        let sound_help = picker.sound_help(&sources);
         let applications: Vec<AnyElement> =
             if sound == Some(SoundKind::Application) && window_application.is_none() {
                 let mut listed: Vec<AnyElement> = sources

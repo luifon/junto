@@ -19,7 +19,11 @@ class TaskLog(unittest.TestCase):
             command = (
                 f". {quoted(SCRIPT)} -Directory {quoted(temporary)} -FunctionsOnly; "
                 "function wevtutil.exe { Write-Output ($args -join '|'); "
-                f"$global:LASTEXITCODE = {status} }}; Enable-TaskLog"
+                f"$global:LASTEXITCODE = {status} }}; "
+                "function Install-Git { 'installed Git' }; "
+                "function Install-Python { 'installed Python' }; "
+                "function Install-Rustup { 'installed rustup' }; "
+                "function Install-BuildTools { 'installed Build Tools' }; Invoke-Setup"
             )
             return subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -28,13 +32,18 @@ class TaskLog(unittest.TestCase):
     def test_setup_enables_the_task_scheduler_operational_log(self):
         result = self.invoke(0)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.strip(),
-                         "sl|Microsoft-Windows-TaskScheduler/Operational|/e:true")
+        self.assertEqual(result.stdout.splitlines()[:5], [
+            "sl|Microsoft-Windows-TaskScheduler/Operational|/e:true",
+            "installed Git", "installed Python", "installed rustup", "installed Build Tools"])
+        self.assertEqual(result.stdout.count("/e:true"), 1)
+        self.assertIn("ready:", result.stdout)
 
     def test_setup_reports_failure_to_enable_the_operational_log(self):
         result = self.invoke(5)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not enable the Task Scheduler operational log", result.stderr)
+        self.assertIn("the setup failed: could not enable the Task Scheduler operational log", result.stdout)
+        self.assertNotIn("installed ", result.stdout)
+        self.assertNotIn("ready:", result.stdout)
 
 
 if __name__ == "__main__":

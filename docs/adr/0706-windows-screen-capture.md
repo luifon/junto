@@ -65,7 +65,7 @@ Tests:
 
 ## Consequences
 
-- The share dialog warns that sound from other applications may include the call; it makes no unconditional promise to exclude the client.
+- The share dialog keeps a warning after sound is selected. The system-sound description states that another running copy of the client may include the call; both application descriptions, for a screen and for a window, state that their sound may include the call. They make no unconditional promise to exclude the client. The live window tests in `live::sound_help` choose each sound kind and check the description used by the dialog before sharing.
 
 - A share shows the yellow border of the system around the shared screen or window. The border is not in the pictures.
 - The sound of an application includes the sound of its child processes. A program whose sound is played by a process outside its tree, such as an application of the store whose sound a broker plays, has that sound only in all system sound.

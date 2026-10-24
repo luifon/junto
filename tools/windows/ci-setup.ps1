@@ -167,17 +167,20 @@ function Enable-TaskLog {
     }
 }
 
-if ($FunctionsOnly) { return }
-
-try {
-    Enable-TaskLog
-    Install-Git
-    Install-Python
-    Install-Rustup
-    Install-BuildTools
-} catch {
-    Write-Output "the setup failed: $_"
-    exit 1
+function Invoke-Setup {
+    try {
+        Enable-TaskLog
+        Install-Git
+        Install-Python
+        Install-Rustup
+        Install-BuildTools
+    } catch {
+        Write-Output "the setup failed: $_"
+        exit 1
+    }
+    Write-Output "ready: Git $GitVersion, Python $PythonVersion, rustup $RustupVersion, Build Tools $BuildToolsVersion in $Directory"
+    exit 0
 }
-Write-Output "ready: Git $GitVersion, Python $PythonVersion, rustup $RustupVersion, Build Tools $BuildToolsVersion in $Directory"
-exit 0
+
+if ($FunctionsOnly) { return }
+Invoke-Setup

@@ -350,5 +350,67 @@ class Start(unittest.TestCase):
                                                                 "removed ended-run", "removed ended-start-run"])
 
 
+@unittest.skipIf(os.name != "nt", "start-run.ps1 runs on Windows")
+class Forget(unittest.TestCase):
+    def entry(self, temporary, commands):
+        return powershell("-Command", "Import-Module ScheduledTasks; " + commands +
+                          f"; . '{SCRIPT}' -Directory '{temporary}' -Run {RUN} -Forget")
+
+    def invoke(self, temporary, behavior="remove"):
+        here = run_folder(temporary)
+        (here / "process").write_text("4 1\n")
+        commands = (
+            "$script:present = $true; "
+            "function Get-ScheduledTask { [CmdletBinding()] param() "
+            "if ($script:present) { [pscustomobject]@{ TaskPath = '\\junto-ci\\'; "
+            f"TaskName = '{RUN}'; State = 'Ready' }} }} "
+            "else { Write-Host 'absence verified' } }; "
+            "function Unregister-ScheduledTask { [CmdletBinding(SupportsShouldProcess)] "
+            "param($TaskPath, $TaskName) "
+            f"if ($TaskPath -ne '\\junto-ci\\' -or $TaskName -ne '{RUN}') {{ throw 'wrong task' }}; "
+            "'unregister attempted'; "
+            + ("throw 'removal refused'" if behavior == "refuse" else
+               "$script:present = $false" if behavior == "remove" else "") + " }"
+        )
+        return self.entry(temporary, commands), here
+
+    def test_forgetting_a_dead_run_removes_its_registered_task(self):
+        with tempfile.TemporaryDirectory(prefix="junto-forget-") as temporary:
+            result, here = self.invoke(temporary)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["unregister attempted", "absence verified"])
+            self.assertTrue(here.exists(), "the inspector must leave deletion to ci.sh")
+
+    def test_a_refused_task_removal_preserves_the_run(self):
+        with tempfile.TemporaryDirectory(prefix="junto-forget-") as temporary:
+            result, here = self.invoke(temporary, "refuse")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unregister attempted", result.stdout)
+            self.assertIn("removal refused", result.stdout)
+            self.assertNotIn("absence verified", result.stdout)
+            self.assertTrue(here.exists())
+
+    def test_a_task_that_remains_after_removal_is_not_forgotten(self):
+        with tempfile.TemporaryDirectory(prefix="junto-forget-") as temporary:
+            result, here = self.invoke(temporary, "keep")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unregister attempted", result.stdout)
+            self.assertNotIn("absence verified", result.stdout)
+            self.assertTrue(here.exists())
+
+    def test_a_failed_task_query_preserves_the_run(self):
+        with tempfile.TemporaryDirectory(prefix="junto-forget-") as temporary:
+            here = run_folder(temporary)
+            (here / "process").write_text("4 1\n")
+            result = self.entry(temporary,
+                               "function Get-ScheduledTask { [CmdletBinding()] param() "
+                               "Write-Host 'query attempted'; throw 'query refused' }; "
+                               "function Unregister-ScheduledTask { throw 'must not remove' }")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("query refused", result.stdout)
+            self.assertNotIn("absence verified", result.stdout)
+            self.assertTrue(here.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
