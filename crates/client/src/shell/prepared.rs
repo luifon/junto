@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::RenderImage;
 use junto_media::engine::{MainPicture, ShareId};
-use junto_media::share::picture::{PictureFrame, VideoPicture};
+use junto_media::share::picture::VideoPicture;
 
 use super::share::render_image;
 use crate::ui::DrawnPicture;
@@ -16,7 +16,7 @@ use crate::ui::DrawnPicture;
 /// picture is absent.
 pub(crate) struct Wanted {
     pub main: Option<Option<MainPicture>>,
-    pub small: Option<HashMap<ShareId, Arc<PictureFrame>>>,
+    pub small: Option<HashMap<ShareId, Arc<VideoPicture>>>,
     pub cameras: Option<HashMap<ShareId, Arc<VideoPicture>>>,
 }
 
@@ -24,7 +24,7 @@ pub(crate) struct Wanted {
 #[derive(Default)]
 pub(crate) struct Held {
     pub main: Option<Arc<VideoPicture>>,
-    pub small: HashMap<ShareId, Arc<PictureFrame>>,
+    pub small: HashMap<ShareId, Arc<VideoPicture>>,
     pub cameras: HashMap<ShareId, Arc<VideoPicture>>,
 }
 
@@ -36,11 +36,9 @@ pub(crate) struct ConvertedMain {
     pub shown: Option<(ShareId, ConvertedPicture)>,
 }
 
-/// The small pictures of the shares after a conversion, each with its image.
-pub(crate) type ConvertedSmall = HashMap<ShareId, (Arc<PictureFrame>, Option<Arc<RenderImage>>)>;
-
-/// The camera pictures after a conversion, each in the form that the window draws.
-pub(crate) type ConvertedCameras = HashMap<ShareId, (Arc<VideoPicture>, Option<ConvertedPicture>)>;
+/// The small pictures of the shares or the camera pictures after a conversion, each in the
+/// form that the window draws.
+pub(crate) type ConvertedPictures = HashMap<ShareId, (Arc<VideoPicture>, Option<ConvertedPicture>)>;
 
 /// The pictures of the sources that had a newer one, converted. An entry without an image
 /// is a picture that the window held when the conversion started; it was not converted
@@ -48,8 +46,8 @@ pub(crate) type ConvertedCameras = HashMap<ShareId, (Arc<VideoPicture>, Option<C
 /// does not take it.
 pub(crate) struct Converted {
     pub main: Option<ConvertedMain>,
-    pub small: Option<ConvertedSmall>,
-    pub cameras: Option<ConvertedCameras>,
+    pub small: Option<ConvertedPictures>,
+    pub cameras: Option<ConvertedPictures>,
 }
 
 /// A picture of a camera or of the watched share in the form that the window draws.
@@ -82,6 +80,69 @@ impl ConvertedPicture {
     }
 }
 
+/// The pictures of the cameras or the small pictures of the shares that a window holds, each
+/// in the form that it draws.
+pub(crate) type Shown = HashMap<ShareId, (Arc<VideoPicture>, DrawnPicture)>;
+
+/// Puts converted pictures in place of the ones that the window holds: a picture that the
+/// window holds is kept, and a converted one is taken; the image of a replaced picture is
+/// released from the GPU (ADR 0774). Returns whether the window holds other pictures than
+/// before, and is drawn for them.
+pub(crate) fn take<V: 'static>(
+    shown: &mut Shown,
+    pictures: ConvertedPictures,
+    cx: &mut gpui::Context<V>,
+) -> bool {
+    let mut released = Vec::new();
+    let mut changed = false;
+    shown.retain(|id, (old, picture)| {
+        let keep = pictures
+            .get(id)
+            .is_some_and(|(frame, _)| Arc::ptr_eq(frame, old));
+        if !keep && let Some(image) = picture.image() {
+            released.push(image.clone());
+        }
+        changed |= !keep;
+        keep
+    });
+    for (id, (frame, converted)) in pictures {
+        if !shown.contains_key(&id)
+            && let Some(picture) = converted.and_then(ConvertedPicture::picture)
+        {
+            shown.insert(id, (frame, picture));
+            changed = true;
+        }
+    }
+    for image in released {
+        crate::images::release(image, cx);
+    }
+    if changed {
+        cx.notify();
+    }
+    changed
+}
+
+/// Converts each picture that the window does not hold.
+fn convert_new(
+    pictures: HashMap<ShareId, Arc<VideoPicture>>,
+    held: &HashMap<ShareId, Arc<VideoPicture>>,
+) -> ConvertedPictures {
+    pictures
+        .into_iter()
+        .map(|(id, frame)| {
+            let kept = held
+                .get(&id)
+                .is_some_and(|taken| Arc::ptr_eq(taken, &frame));
+            let picture = if kept {
+                None
+            } else {
+                ConvertedPicture::of(&frame)
+            };
+            (id, (frame, picture))
+        })
+        .collect()
+}
+
 impl Wanted {
     /// Converts every wanted picture that the window does not hold. Copies pixels: it
     /// runs on a blocking thread of the runtime, not on the thread of the window.
@@ -100,40 +161,12 @@ impl Wanted {
                 }),
             })
         });
-        let small = self.small.map(|pictures| {
-            pictures
-                .into_iter()
-                .map(|(share, frame)| {
-                    let kept = held
-                        .small
-                        .get(&share)
-                        .is_some_and(|taken| Arc::ptr_eq(taken, &frame));
-                    let image = if kept {
-                        None
-                    } else {
-                        render_image(PictureFrame::clone(&frame))
-                    };
-                    (share, (frame, image))
-                })
-                .collect()
-        });
-        let cameras = self.cameras.map(|frames| {
-            frames
-                .into_iter()
-                .map(|(id, frame)| {
-                    let kept = held
-                        .cameras
-                        .get(&id)
-                        .is_some_and(|taken| Arc::ptr_eq(taken, &frame));
-                    let picture = if kept {
-                        None
-                    } else {
-                        ConvertedPicture::of(&frame)
-                    };
-                    (id, (frame, picture))
-                })
-                .collect()
-        });
+        let small = self
+            .small
+            .map(|pictures| convert_new(pictures, &held.small));
+        let cameras = self
+            .cameras
+            .map(|pictures| convert_new(pictures, &held.cameras));
         Converted {
             main,
             small,
@@ -148,15 +181,6 @@ mod tests {
     use junto_client_core::protocol::ids::AccountId;
     use junto_media::share::synthetic::two_colours;
 
-    fn picture(width: u32) -> Arc<PictureFrame> {
-        Arc::new(PictureFrame {
-            width,
-            height: 2,
-            bgra: vec![255; (width * 2 * 4) as usize],
-            source: (width, 2),
-        })
-    }
-
     fn video(width: u32) -> Arc<VideoPicture> {
         let pixels = two_colours(width, 2, (255, 255, 255), (255, 255, 255));
         Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap())
@@ -168,7 +192,7 @@ mod tests {
             ShareId::Of(AccountId::generate()),
             ShareId::Of(AccountId::generate()),
         );
-        let (held_small, new_small, watched) = (picture(2), picture(3), video(4));
+        let (held_small, new_small, watched) = (video(2), video(3), video(4));
         let held = Held {
             main: Some(watched.clone()),
             small: [(one, held_small.clone())].into_iter().collect(),
@@ -190,14 +214,11 @@ mod tests {
         // The watched picture is the one that the window holds: nothing to take.
         assert!(converted.main.is_none());
         let small = converted.small.unwrap();
-        let (frame, image) = &small[&one];
-        assert!(Arc::ptr_eq(frame, &held_small) && image.is_none());
-        let (frame, image) = &small[&two];
-        assert!(Arc::ptr_eq(frame, &new_small));
-        assert_eq!(
-            image.as_ref().unwrap().size(0),
-            gpui::size(3.into(), 2.into())
-        );
+        let (frame, picture) = &small[&one];
+        assert!(Arc::ptr_eq(frame, &held_small) && picture.is_none());
+        let (frame, picture) = small.into_iter().find(|(id, _)| *id == two).unwrap().1;
+        assert!(Arc::ptr_eq(&frame, &new_small));
+        assert_eq!(picture.unwrap().picture().unwrap().width(), 3);
         assert!(converted.cameras.is_none());
 
         // A newer watched picture is converted; a share that ends leaves no image.

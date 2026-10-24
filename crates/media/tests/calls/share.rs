@@ -1006,3 +1006,135 @@ async fn the_local_admission_gate_withdraws_share_sound_with_a_permissive_token(
     })
     .await;
 }
+
+/// On macOS the own share and the own camera are encoded in H.264 by the encoder of the
+/// system hardware, and the other person decodes both (ADR 0737).
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn on_macos_the_own_share_and_camera_are_encoded_by_the_hardware_of_the_system() {
+    use livekit::webrtc::stats::RtcStats;
+
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let ann_id = account(&ann_at);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ann.calls.start_share(screen(SoundChoice::None));
+        ann.until_sharing().await;
+        ann.calls.start_camera(None);
+        ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        let mut cameras = ben.calls.camera_pictures();
+        let camera = tokio::time::timeout(
+            PATIENCE,
+            cameras.wait_for(|pictures| pictures.contains_key(&ShareId::Of(ann_id))),
+        )
+        .await;
+        assert!(camera.is_ok(), "no camera picture of Ann arrived");
+
+        // Each encoding that sends pictures: the share and at least one layer of the camera.
+        let started = tokio::time::Instant::now();
+        let encoders = loop {
+            let stats = ann.calls.statistics().await.unwrap();
+            let encoders: Vec<(String, bool)> = (stats.publisher_stats.iter())
+                .filter_map(|stat| match stat {
+                    RtcStats::OutboundRtp(stat)
+                        if stat.stream.kind == "video" && stat.outbound.frames_encoded > 0 =>
+                    {
+                        Some((
+                            stat.outbound.encoder_implementation.clone(),
+                            stat.outbound.power_efficient_encoder,
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if encoders.len() >= 2 || started.elapsed() > PATIENCE {
+                break encoders;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert!(encoders.len() >= 2, "{encoders:?}");
+        assert!(
+            encoders
+                .iter()
+                .all(|(name, hardware)| name.contains("VideoToolbox") && *hardware),
+            "{encoders:?}"
+        );
+        let codecs: Vec<String> = (ann.calls.statistics().await.unwrap().publisher_stats)
+            .iter()
+            .filter_map(|stat| match stat {
+                RtcStats::Codec(codec) if codec.codec.mime_type.starts_with("video/") => {
+                    Some(codec.codec.mime_type.to_lowercase())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !codecs.is_empty() && codecs.iter().all(|codec| codec == "video/h264"),
+            "{codecs:?}"
+        );
+    })
+    .await;
+}
+
+/// A share of a display larger than the levels of H.264 (5120 × 2880 at its source size) is
+/// sent in VP8 on every system and arrives at its size: the hardware encoder of macOS encodes
+/// H.264 only within level 5.2, and the share keeps its full size (ADR 0737, ADR 0773).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_share_larger_than_the_levels_of_h264_arrives_at_its_size_in_vp8() {
+    use junto_media::share::{DisplaySource, Resolution, ShareSources};
+    use livekit::webrtc::stats::RtcStats;
+
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let ann_id = account(&ann_at);
+        ann.capture.set_sources(ShareSources {
+            displays: vec![DisplaySource {
+                id: 2,
+                width: 5120,
+                height: 2880,
+            }],
+            windows: Vec::new(),
+            applications: Vec::new(),
+            portal: Vec::new(),
+            system_sound: false,
+            started_the_client: Vec::new(),
+            creators_unknown: false,
+        });
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ann.calls.start_share(CaptureRequest {
+            picture: PictureSource::Display(2),
+            sound: SoundChoice::None,
+            quality: ShareQuality {
+                resolution: Resolution::Source,
+                frame_rate: 15,
+            },
+        });
+        assert_eq!(ann.until_sharing().await.size, (5120, 2880));
+        let picture = ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        assert_eq!(picture.frame.source, (5120, 2880));
+        let codecs: Vec<String> = (ann.calls.statistics().await.unwrap().publisher_stats)
+            .iter()
+            .filter_map(|stat| match stat {
+                RtcStats::Codec(codec) if codec.codec.mime_type.starts_with("video/") => {
+                    Some(codec.codec.mime_type.to_lowercase())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !codecs.is_empty() && codecs.iter().all(|codec| codec == "video/vp8"),
+            "{codecs:?}"
+        );
+    })
+    .await;
+}

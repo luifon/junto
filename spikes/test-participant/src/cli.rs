@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "test-participant", about = "Synthetic LiveKit participant for media tests")]
@@ -103,6 +103,9 @@ pub struct PublishArgs {
     pub label: Option<String>,
     #[arg(long)]
     pub simulcast: bool,
+    /// The codec of the camera and screen tracks.
+    #[arg(long, value_enum, default_value_t = VideoCodecArg::Vp8)]
+    pub video_codec: VideoCodecArg,
 
     /// Mute the microphone this many seconds after start.
     #[arg(long)]
@@ -137,4 +140,11 @@ pub struct SubscribeArgs {
     /// screen_share_audio). Repeatable. The exit status is 1 when one is not met.
     #[arg(long = "expect")]
     pub expectations: Vec<String>,
+}
+
+/// A codec of the video tracks; the software encoder of WebRTC encodes each.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum VideoCodecArg {
+    Vp8,
+    H264,
 }

@@ -817,10 +817,19 @@ struct Writer<'a> {
 }
 
 impl Writer<'_> {
+    /// Writes a mention on one line: a control character of the name, such as a line break,
+    /// is written as a space, so no line prefix or escape is put inside the mention.
     fn mention(&mut self, target: MentionTarget) {
         let start = self.text.len();
         self.text.push('@');
-        self.text.push_str(&(self.name)(target));
+        self.text
+            .extend((self.name)(target).chars().map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            }));
         self.mentions.push(Mention {
             range: start..self.text.len(),
             target,
@@ -1408,6 +1417,31 @@ mod tests {
             [plain("xhttps://example.test")]
         );
         assert_eq!(one("https://"), [plain("https://")]);
+    }
+
+    #[test]
+    fn a_name_with_a_line_break_is_written_as_one_mention_on_one_line() {
+        let name = |_: MentionTarget| "Ann\n- Bø".to_owned();
+        let account_id = AccountId::generate();
+        let document = Document {
+            blocks: vec![
+                paragraph(vec![
+                    plain("to "),
+                    Inline::Account { account_id },
+                    plain(" now"),
+                ]),
+                Block::Quote {
+                    content: vec![plain("to "), Inline::Account { account_id }],
+                },
+            ],
+        };
+        let shown = written(&document, &name);
+        assert_eq!(shown.text, "to @Ann - Bø now\n\n> to @Ann - Bø");
+        assert_eq!(shown.mentions.len(), 2);
+        for mention in &shown.mentions {
+            assert_eq!(shown.text.get(mention.range.clone()), Some("@Ann - Bø"));
+        }
+        assert_eq!(parse(&shown.text, &shown.mentions), document);
     }
 
     #[test]

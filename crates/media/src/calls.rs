@@ -39,7 +39,7 @@ use crate::engine::{
     MicrophoneState, OutputState, SeenShare, ShareId, ShareState, VoiceConfig, Watching,
 };
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
-use crate::share::picture::PictureFrame;
+use crate::share::picture::VideoPicture;
 use crate::share::{
     CaptureError, CaptureRequest, Pending, ScreenAccess, ScreenCapture, ShareSources,
 };
@@ -361,7 +361,7 @@ struct Shared {
 type Turn = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 struct Inner {
-    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>>,
+    camera_pictures: watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>,
     client: Client,
     runtime: tokio::runtime::Handle,
     options: MediaOptions,
@@ -369,7 +369,7 @@ struct Inner {
     view: watch::Sender<CallsView>,
     levels: watch::Sender<Levels>,
     main_picture: watch::Sender<Option<MainPicture>>,
-    small_pictures: watch::Sender<HashMap<ShareId, Arc<PictureFrame>>>,
+    small_pictures: watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>,
     turns: mpsc::UnboundedSender<Turn>,
 }
 
@@ -740,17 +740,14 @@ impl Calls {
     /// Gives small pictures of the shares to the readers, as the session of a call does,
     /// for a test of a reader.
     #[cfg(feature = "test-support")]
-    pub fn show_small_pictures_for_test(&self, pictures: HashMap<ShareId, Arc<PictureFrame>>) {
+    pub fn show_small_pictures_for_test(&self, pictures: HashMap<ShareId, Arc<VideoPicture>>) {
         self.inner.small_pictures.send_replace(pictures);
     }
 
     /// Gives pictures of the cameras to the readers, as the session of a call does, for a
     /// test of a reader.
     #[cfg(feature = "test-support")]
-    pub fn show_camera_pictures_for_test(
-        &self,
-        pictures: HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>,
-    ) {
+    pub fn show_camera_pictures_for_test(&self, pictures: HashMap<ShareId, Arc<VideoPicture>>) {
         self.inner.camera_pictures.send_replace(pictures);
     }
 
@@ -815,9 +812,7 @@ impl Calls {
         self.inner.tell(SessionCommand::StopCamera);
     }
 
-    pub fn camera_pictures(
-        &self,
-    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>> {
+    pub fn camera_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>> {
         self.inner.camera_pictures.subscribe()
     }
 
@@ -826,7 +821,7 @@ impl Calls {
     }
 
     /// A small picture of each share of the call of this device.
-    pub fn small_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<PictureFrame>>> {
+    pub fn small_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>> {
         self.inner.small_pictures.subscribe()
     }
 

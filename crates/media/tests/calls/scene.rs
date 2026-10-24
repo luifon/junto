@@ -126,6 +126,23 @@ fn docker_within(arguments: &[&str], limit: Duration) {
     }
 }
 
+/// Runs a Docker command, such as the pause of the media server by a test that holds it
+/// alone, and fails when it fails.
+#[allow(dead_code)]
+pub async fn docker(arguments: &[&str]) {
+    // A test that a limit cancels while the command runs ends the command too.
+    let docker = tokio::process::Command::new("docker")
+        .args(arguments)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let _adopted = docker.id().map(crate::limit::adopt);
+    let done = docker.wait_with_output().await.unwrap();
+    assert!(done.status.success(), "{done:?}");
+}
+
 /// True when the API of the media server answers a request at once.
 pub fn livekit_answers() -> bool {
     std::env::var("JUNTO_TEST_LIVEKIT_API_URL").is_ok_and(|url| answers(&url))
@@ -380,17 +397,109 @@ impl Person {
     }
 }
 
+/// A line of the call library about the negotiation of a publisher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegotiationLine {
+    /// A task of the fast publish mode starts.
+    TaskStarted,
+    /// A negotiation starts, in a task or after the wait of the debounced mode.
+    Negotiating,
+    /// An offer was sent, and its answer is awaited.
+    OfferSent,
+    /// A task of the fast publish mode ends.
+    TaskEnded,
+    /// A negotiation failed (an error).
+    Failed,
+    /// An offer was asked of a closed connection (a warning).
+    OfferInClosedConnection,
+}
+
+/// The lines about the negotiation of a publisher that the call library logged in this test
+/// program, with the time at which each arrived. A test reads the lines from the length that
+/// the list had when it started, so it counts only its own; one that reads them holds the
+/// media server alone in a test program of its own, so that no other test negotiates in the
+/// process and no task of another test is cancelled with its lines half written.
+static NEGOTIATION_LINES: std::sync::Mutex<Vec<(std::time::Instant, NegotiationLine)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The lines about the negotiation of a publisher from position `from` of the list on.
+#[allow(dead_code)]
+pub fn negotiation_lines(from: usize) -> Vec<(std::time::Instant, NegotiationLine)> {
+    let lines = NEGOTIATION_LINES.lock().unwrap();
+    lines.get(from..).unwrap_or_default().to_vec()
+}
+
+/// The number of lines about the negotiation of a publisher so far: the start of a count.
+#[allow(dead_code)]
+pub fn negotiation_line_count() -> usize {
+    NEGOTIATION_LINES.lock().unwrap().len()
+}
+
+/// Notes the lines of the call library about the negotiation of a publisher.
+struct Negotiations;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Negotiations {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        let text = message.0.as_str();
+        let line = if *event.metadata().level() == tracing::Level::ERROR
+            && text.contains("failed to negotiate the publisher")
+        {
+            NegotiationLine::Failed
+        } else if text.starts_with("negotiating the publisher") {
+            NegotiationLine::Negotiating
+        } else if text == "queue_negotiation: starting new negotiation" {
+            NegotiationLine::TaskStarted
+        } else if text == "negotiation completed" {
+            NegotiationLine::TaskEnded
+        } else if text.starts_with("offer sent, waiting for answer") {
+            NegotiationLine::OfferSent
+        } else if text.contains("peer connection is closed, cannot create offer") {
+            NegotiationLine::OfferInClosedConnection
+        } else {
+            return;
+        };
+        NEGOTIATION_LINES
+            .lock()
+            .unwrap()
+            .push((std::time::Instant::now(), line));
+    }
+}
+
 /// Keep the engine's progress and shutdown logs with the test that owns its threads.
 fn log_into_test_output() {
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let level = std::env::var("JUNTO_LOG_LEVEL")
             .ok()
             .and_then(|level| level.parse::<tracing::Level>().ok())
             .unwrap_or(tracing::Level::INFO);
-        let _ = tracing_subscriber::fmt()
-            .with_test_writer()
-            .with_max_level(level)
+        let _ = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_test_writer()
+                    .with_filter(LevelFilter::from_level(level)),
+            )
+            .with(
+                Negotiations.with_filter(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_target("livekit::rtc_engine::rtc_session", tracing::Level::DEBUG)
+                        .with_target("livekit::rtc_engine::peer_transport", tracing::Level::WARN),
+                ),
+            )
             .try_init();
     });
 }

@@ -55,10 +55,11 @@ impl Recent {
         });
     }
 
-    /// The counts of the slots that end at `now`, the oldest first.
+    /// The counts of the slots that end at `now`, the oldest first. A span shorter than one
+    /// slot reads the slot of `now`.
     fn counts_at(&self, now: Instant, span: Duration) -> Vec<u32> {
         let last = self.slot_at(now);
-        let slots = (span.as_millis() / SLOT.as_millis()).min(SLOTS as u128 - 1) as u64;
+        let slots = (span.as_millis() / SLOT.as_millis()).clamp(1, SLOTS as u128 - 1) as u64;
         (last.saturating_sub(slots - 1).max(1)..=last)
             .map(|number| {
                 let held = self.slots[(number % SLOTS as u64) as usize].load(Ordering::Relaxed);
@@ -112,5 +113,16 @@ mod tests {
             recent.counts_at(at(2_600), Duration::from_millis(600)),
             [0; 60]
         );
+    }
+
+    #[test]
+    fn a_span_shorter_than_one_slot_reads_the_slot_of_now() {
+        let recent = Recent::default();
+        let start = recent.origin;
+        let at = |milliseconds: u64| start + Duration::from_millis(milliseconds);
+        recent.count_at(at(25));
+        recent.count_at(at(29));
+        assert_eq!(recent.counts_at(at(29), Duration::from_millis(5)), [2]);
+        assert_eq!(recent.counts_at(at(29), Duration::ZERO), [2]);
     }
 }

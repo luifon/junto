@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 // Modified: this file differs from the published livekit 0.9.4 by the module
-// `negotiation_queue`.
+// `negotiation_queue` and by `begin_close`.
 
 use libwebrtc::prelude::*;
 use livekit_datatrack::backend as dt;
@@ -462,6 +462,12 @@ impl RtcEngine {
 
     pub fn session(&self) -> Arc<RtcSession> {
         self.inner.running_handle.read().session.clone()
+    }
+
+    /// Modified: added. The room begins to close: its session starts no negotiation of the
+    /// publisher from now on (`RtcSession::begin_close`).
+    pub fn begin_close(&self) {
+        self.session().begin_close()
     }
 
     /// Test-only: force the next `count` resume attempts to fail, so tests can

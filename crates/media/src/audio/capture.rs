@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use super::host::Format;
 use super::level::{LevelCell, Speaking};
 use super::processing::Processor;
-use super::rate::Span;
+use super::rate::{Span, whole_step};
 use super::recent::Recent;
 use super::{FRAME_SAMPLES, SAMPLE_RATE, to_i16};
 
@@ -225,22 +225,20 @@ impl CaptureChain {
         let mut taken = 0;
         while self.pending.len() - taken >= step {
             let part = &self.pending[taken..taken + step];
-            self.converted.clear();
-            if format.sample_rate == SAMPLE_RATE {
-                self.converted.extend_from_slice(part);
+            let converted = if format.sample_rate == SAMPLE_RATE {
+                part
             } else {
-                self.converted
-                    .extend_from_slice(self.resampler.remix_and_resample(
-                        part,
-                        step as u32,
-                        1,
-                        span.device_rate(),
-                        1,
-                        span.pipeline_rate(),
-                    ));
-            }
+                self.resampler.remix_and_resample(
+                    part,
+                    step as u32,
+                    1,
+                    span.device_rate(),
+                    1,
+                    span.pipeline_rate(),
+                )
+            };
+            whole_step(&mut self.converted, converted, span.pipeline_samples());
             taken += step;
-            self.converted.resize(span.pipeline_samples(), 0);
             for index in 0..span.frames {
                 let from = index * FRAME_SAMPLES;
                 let frame = self.converted[from..from + FRAME_SAMPLES].to_vec();

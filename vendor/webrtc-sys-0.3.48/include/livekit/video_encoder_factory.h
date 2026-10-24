@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. It declares
+ * `CreateAdaptedEncoder`.
  */
 
 #pragma once
@@ -21,6 +24,8 @@
 #include <optional>
 #include <vector>
 
+#include "api/environment/environment.h"
+#include "api/video_codecs/sdp_video_format.h"
 #include "api/video_codecs/video_encoder.h"
 #include "api/video_codecs/video_encoder_factory.h"
 
@@ -69,4 +74,13 @@ class VideoEncoderFactory : public webrtc::VideoEncoderFactory {
  private:
   std::unique_ptr<InternalFactory> internal_factory_;
 };
+
+// Modified: added. An encoder of `format` that the simulcast adapter of WebRTC makes from the
+// encoders of `primary`. When `format` asks for a hardware backend, each encoder of the
+// adapter falls back to the software encoder of the same codec if the hardware encoder does
+// not start or fails, so the track keeps its codec and its pictures.
+std::unique_ptr<webrtc::VideoEncoder> CreateAdaptedEncoder(
+    const webrtc::Environment& env,
+    webrtc::VideoEncoderFactory* primary,
+    const webrtc::SdpVideoFormat& format);
 }  // namespace livekit_ffi

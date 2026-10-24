@@ -5,6 +5,8 @@
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFormatType};
 
+#[allow(unsafe_code)]
+mod scale;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod surface;
@@ -69,9 +71,18 @@ impl PictureFrame {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The pictures that [`planes`] copied or converted into new planes on this thread.
+    static NEW_PLANES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The picture of a buffer in planes of brightness and colour, whatever form the buffer
-/// has: the decoder of a system gives its own form.
+/// has: the decoder of a system gives its own form. Each call makes new planes of the whole
+/// picture.
 pub(crate) fn planes(buffer: &dyn VideoBuffer) -> Option<I420Buffer> {
+    #[cfg(test)]
+    NEW_PLANES.with(|made| made.set(made.get() + 1));
     if let Some(buffer) = buffer.as_i420() {
         return Some(buffer.to_i420());
     }
@@ -94,6 +105,23 @@ pub(crate) fn planes(buffer: &dyn VideoBuffer) -> Option<I420Buffer> {
     buffer.as_i010().map(VideoFrameBufferExt::to_i420)
 }
 
+/// The picture of a buffer in planes of `size`. Planes are scaled where they are; a buffer
+/// of another form is converted first.
+pub(crate) fn planes_at(buffer: &dyn VideoBuffer, size: (u32, u32)) -> Option<I420Buffer> {
+    let source = (buffer.width(), buffer.height());
+    match buffer.as_i420() {
+        Some(held) if size != source => scale::scaled(held, size),
+        _ => {
+            let converted = planes(buffer)?;
+            if size == source {
+                Some(converted)
+            } else {
+                scale::scaled(&converted, size)
+            }
+        }
+    }
+}
+
 /// Converts a picture of a share for an interface that draws it inside `bound` pixels.
 /// Returns nothing for a buffer without a size, or of a form that this build cannot read.
 pub fn convert(buffer: &dyn VideoBuffer, bound: (u32, u32)) -> Option<PictureFrame> {
@@ -105,13 +133,7 @@ pub fn convert(buffer: &dyn VideoBuffer, bound: (u32, u32)) -> Option<PictureFra
     let bgra = match buffer.as_i420() {
         // Planes at the size of the drawing are read where they are.
         Some(planes) if (width, height) == source => argb(planes, width, height),
-        _ => {
-            let mut planes = planes(buffer)?;
-            if (width, height) != source {
-                planes = planes.scale(width as i32, height as i32);
-            }
-            argb(&planes, width, height)
-        }
+        _ => argb(&planes_at(buffer, (width, height))?, width, height),
     };
     Some(PictureFrame {
         width,
@@ -180,6 +202,42 @@ mod tests {
         assert_eq!(fit((1920, 1080), (176, 110)), (176, 99));
         assert_eq!(fit((10_000, 1), (100, 100)), (100, 1));
         assert_eq!(fit((0, 0), (0, 0)), (1, 1));
+    }
+
+    /// Planes that are drawn smaller are scaled from where they are, without new planes of
+    /// the whole picture first (ADR 0774).
+    #[test]
+    fn held_planes_drawn_smaller_are_not_copied_first() {
+        let source = I420Buffer::new(64, 36);
+        let made = || NEW_PLANES.with(std::cell::Cell::get);
+        let before = made();
+        let picture = video::VideoPicture::new(&source, false, (32, 18)).unwrap();
+        let drawn = picture.picture().unwrap();
+        assert_eq!((drawn.width, drawn.height), (32, 18));
+        assert!(planes_at(&source, (32, 18)).is_some());
+        assert_eq!(made() - before, 0, "new planes of the whole picture");
+    }
+
+    /// Planes that are drawn smaller are scaled where they are, with the filter of the call
+    /// library.
+    #[test]
+    fn held_planes_are_scaled_as_the_call_library_scales_them() {
+        let mut source = I420Buffer::new(64, 36);
+        let (y, u, v) = source.data_mut();
+        for (index, value) in y.iter_mut().enumerate() {
+            *value = (index * 7 % 251) as u8;
+        }
+        for (index, value) in u.iter_mut().enumerate() {
+            *value = (index * 3 % 241) as u8;
+        }
+        for (index, value) in v.iter_mut().enumerate() {
+            *value = (index * 5 % 239) as u8;
+        }
+        let ours = planes_at(&source, (22, 13)).unwrap();
+        let theirs = source.scale(22, 13);
+        assert_eq!((ours.width(), ours.height()), (22, 13));
+        assert_eq!(ours.strides(), theirs.strides());
+        assert_eq!(ours.data(), theirs.data());
     }
 
     #[test]

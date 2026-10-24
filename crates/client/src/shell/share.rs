@@ -7,9 +7,9 @@ use std::future::Future;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ObjectFit, ParentElement,
-    RenderImage, Role, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledImage,
-    StyledText, Window, canvas, div, img, prelude::FluentBuilder,
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, RenderImage, Role,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, canvas,
+    div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::call::ShareAudio;
 use junto_media::calls::{ActiveCall, CallsView, Seat};
@@ -173,7 +173,7 @@ impl SharePicker {
 #[derive(Default)]
 pub(crate) struct ShownPictures {
     pub main: Option<(ShareId, DrawnPicture)>,
-    pub small: HashMap<ShareId, (Arc<PictureFrame>, Arc<RenderImage>)>,
+    pub small: prepared::Shown,
 }
 
 /// Waits until one of the three sources of pictures has a newer one, or the window asks
@@ -426,35 +426,10 @@ impl Shell {
     /// before, and is drawn for them.
     pub(crate) fn show_small(
         &mut self,
-        pictures: prepared::ConvertedSmall,
+        pictures: prepared::ConvertedPictures,
         cx: &mut Context<Self>,
     ) -> bool {
-        let mut released = Vec::new();
-        self.pictures.small.retain(|share, (frame, image)| {
-            let kept = pictures
-                .get(share)
-                .is_some_and(|(now, _)| Arc::ptr_eq(now, frame));
-            if !kept {
-                released.push(image.clone());
-            }
-            kept
-        });
-        let mut changed = !released.is_empty();
-        for (share, (frame, image)) in pictures {
-            if !self.pictures.small.contains_key(&share)
-                && let Some(image) = image
-            {
-                self.pictures.small.insert(share, (frame, image));
-                changed = true;
-            }
-        }
-        for image in released {
-            crate::images::release(image, cx);
-        }
-        if changed {
-            cx.notify();
-        }
-        changed
+        prepared::take(&mut self.pictures.small, pictures, cx)
     }
 
     /// The share button of the strip of the call: it opens the dialog, or ends the share
@@ -579,9 +554,10 @@ impl Shell {
         self.show_main(main, cx);
         let small = small
             .into_iter()
-            .map(|(share, frame)| {
-                let image = render_image(frame.clone());
-                (share, (Arc::new(frame), image))
+            .filter_map(|(share, frame)| {
+                let picture = Arc::new(junto_media::share::picture::VideoPicture::of_bgra(&frame)?);
+                let converted = prepared::ConvertedPicture::of(&picture);
+                Some((share, (picture, converted)))
             })
             .collect();
         self.show_small(small, cx);
@@ -600,7 +576,7 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn picture_images(&self) -> Vec<Arc<RenderImage>> {
         let main = (self.pictures.main.iter()).filter_map(|(_, picture)| picture.image());
-        let small = self.pictures.small.values().map(|(_, image)| image);
+        let small = (self.pictures.small.values()).filter_map(|(_, picture)| picture.image());
         let cameras = self
             .cameras
             .values()
@@ -1142,7 +1118,7 @@ impl Shell {
                     .pictures
                     .small
                     .get(&share.id)
-                    .map(|(_, image)| image.clone());
+                    .map(|(_, picture)| picture.clone());
                 let ring = focus_ring(colors.ochre, theme.metrics.focus_ring);
                 div()
                     .id(("share-card", index))
@@ -1194,9 +1170,7 @@ impl Shell {
                             .border_1()
                             .border_color(Hsla::from(colors.basalt_deep))
                             .bg(Hsla::from(colors.stage))
-                            .when_some(small, |frame, image| {
-                                frame.child(img(image).size_full().object_fit(ObjectFit::Contain))
-                            }),
+                            .when_some(small, |frame, picture| frame.child(picture.element())),
                     )
                     .child(
                         div()

@@ -13,7 +13,8 @@
 // limitations under the License.
 //
 // Modified: this file differs from the published webrtc-sys 0.3.48. Its bridge includes
-// `livekit/exception.h`, whose catch turns every C++ exception into an error.
+// `livekit/exception.h`, whose catch turns every C++ exception into an error, and it
+// declares `i420_scale`.
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::missing_safety_doc)]
@@ -312,6 +313,26 @@ pub mod ffi {
             dst_stride_uv: i32,
             width: i32,
             height: i32,
+        ) -> Result<()>;
+
+        // Modified: added.
+        unsafe fn i420_scale(
+            src_y: *const u8,
+            src_stride_y: i32,
+            src_u: *const u8,
+            src_stride_u: i32,
+            src_v: *const u8,
+            src_stride_v: i32,
+            src_width: i32,
+            src_height: i32,
+            dst_y: *mut u8,
+            dst_stride_y: i32,
+            dst_u: *mut u8,
+            dst_stride_u: i32,
+            dst_v: *mut u8,
+            dst_stride_v: i32,
+            dst_width: i32,
+            dst_height: i32,
         ) -> Result<()>;
     }
 }

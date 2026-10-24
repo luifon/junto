@@ -70,6 +70,15 @@ pub const PREFERRED_RATES: [u32; 8] = [
     48_000, 44_100, 96_000, 32_000, 88_200, 24_000, 16_000, 192_000,
 ];
 
+/// Puts the samples of one step into `step`: the samples that a conversion gave, made `samples`
+/// long. A shorter result is filled with silence and a longer one is cut, so that each step
+/// gives the time of its step whatever the resampler returns (ADR 0733).
+pub fn whole_step(step: &mut Vec<i16>, converted: &[i16], samples: usize) {
+    step.clear();
+    step.extend_from_slice(&converted[..converted.len().min(samples)]);
+    step.resize(samples, 0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +106,56 @@ mod tests {
         );
         assert_eq!(span.pipeline_samples(), 1920);
         assert!(PREFERRED_RATES.iter().all(|rate| converts(*rate)));
+    }
+
+    #[test]
+    fn a_step_is_filled_with_silence_or_cut_to_its_samples() {
+        let mut step = vec![9; 7];
+        whole_step(&mut step, &[1, 2, 3], 5);
+        assert_eq!(step, [1, 2, 3, 0, 0]);
+        whole_step(&mut step, &[1, 2, 3, 4, 5, 6, 7], 5);
+        assert_eq!(step, [1, 2, 3, 4, 5]);
+        whole_step(&mut step, &[], 3);
+        assert_eq!(step, [0, 0, 0]);
+    }
+
+    /// The chains of the capture, the playout and the shared sound convert one step at a
+    /// time; each step must give the samples of its time in both directions.
+    #[test]
+    fn the_resampler_gives_a_whole_step_for_every_rate_that_the_pipeline_converts() {
+        use livekit::webrtc::native::audio_resampler::AudioResampler;
+        let mut resampler = AudioResampler::default();
+        let mut checked = 0;
+        for rate in (LOWEST_RATE..=HIGHEST_RATE).step_by(25) {
+            let Some(span) = Span::of(rate) else {
+                continue;
+            };
+            // The playout gives two channels to a device of one or two; the capture and the
+            // shared sound keep their channels.
+            for (from, to) in [(1, 1), (2, 2), (2, 1)] {
+                let pipeline = vec![0i16; span.pipeline_samples() * from];
+                let to_device = resampler.remix_and_resample(
+                    &pipeline,
+                    span.pipeline_samples() as u32,
+                    from as u32,
+                    span.pipeline_rate(),
+                    to as u32,
+                    span.device_rate(),
+                );
+                assert_eq!(to_device.len(), span.device_samples * to, "{rate} Hz");
+                let device = vec![0i16; span.device_samples * from];
+                let to_pipeline = resampler.remix_and_resample(
+                    &device,
+                    span.device_samples as u32,
+                    from as u32,
+                    span.device_rate(),
+                    to as u32,
+                    span.pipeline_rate(),
+                );
+                assert_eq!(to_pipeline.len(), span.pipeline_samples() * to, "{rate} Hz");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 3_521);
     }
 }

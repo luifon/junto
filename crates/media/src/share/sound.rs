@@ -8,7 +8,7 @@
 use livekit::webrtc::native::audio_resampler::AudioResampler;
 use tokio::sync::mpsc;
 
-use crate::audio::rate::Span;
+use crate::audio::rate::{Span, whole_step};
 use crate::audio::{FRAME_SAMPLES, Format, SAMPLE_RATE, to_i16};
 
 /// The channels of the track of a share.
@@ -76,18 +76,20 @@ impl SoundChain {
                 self.send(part.to_vec());
                 continue;
             }
-            let mut converted = self
-                .resampler
-                .remix_and_resample(
-                    part,
-                    span.device_samples as u32,
-                    SHARE_CHANNELS as u32,
-                    span.device_rate(),
-                    SHARE_CHANNELS as u32,
-                    span.pipeline_rate(),
-                )
-                .to_vec();
-            converted.resize(span.pipeline_samples() * SHARE_CHANNELS, 0);
+            let resampled = self.resampler.remix_and_resample(
+                part,
+                span.device_samples as u32,
+                SHARE_CHANNELS as u32,
+                span.device_rate(),
+                SHARE_CHANNELS as u32,
+                span.pipeline_rate(),
+            );
+            let mut converted = Vec::new();
+            whole_step(
+                &mut converted,
+                resampled,
+                span.pipeline_samples() * SHARE_CHANNELS,
+            );
             for frame in converted.as_chunks::<SHARE_FRAME_SAMPLES>().0 {
                 self.send(frame.to_vec());
             }

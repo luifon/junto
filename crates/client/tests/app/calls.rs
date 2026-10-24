@@ -447,9 +447,8 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
 /// every window and is freed. Many pictures of the watched share, of the small pictures of
 /// the shares and of the cameras are drawn in the window and then in the separate call
 /// window; each window then holds GPU images only for the pictures that it draws now,
-/// whatever their number. The pictures of the watched share and of the cameras that were
-/// replaced are freed, and on macOS so are their pixel buffers of Core Video, which the
-/// atlas does not show.
+/// whatever their number. The pictures that were replaced are freed, and on macOS so are
+/// their pixel buffers of Core Video, which the atlas does not show.
 #[gpui::test]
 fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut TestAppContext) {
     use std::collections::HashMap;
@@ -463,7 +462,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     use junto_media::camera::CameraState;
     use junto_media::engine::{MainPicture, SeenShare, ShareId, ShareInfo, ShareState};
     use junto_media::share::ShareKind;
-    use junto_media::share::picture::{PictureFrame, VideoPicture};
+    use junto_media::share::picture::VideoPicture;
     use junto_media::share::synthetic::two_colours;
 
     const PICTURES: u8 = 40;
@@ -498,31 +497,29 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         .read_with(&window.cx, |state, _| state.calls().clone());
 
     // Each source gives a new picture, the window gets a frame of the display, and the test
-    // keeps every image that a window held for a picture, a weak reference of each picture
-    // of the watched share and of the cameras, and on macOS their pixel buffers.
+    // keeps every image that a window held for a picture, a weak reference of each picture,
+    // and on macOS their pixel buffers.
     let mut seen: Vec<Arc<RenderImage>> = Vec::new();
     let given: std::cell::RefCell<Vec<Vec<std::sync::Weak<VideoPicture>>>> = Default::default();
     #[cfg(target_os = "macos")]
     let buffers: std::cell::RefCell<Vec<Vec<core_video::pixel_buffer::CVPixelBuffer>>> =
         Default::default();
     let mut give = |window: &mut Window, shells: &[&gpui::Entity<Shell>], shade: u8| {
-        let share = || {
-            Arc::new(PictureFrame {
-                width: 64,
-                height: 36,
-                bgra: vec![shade; 64 * 36 * 4],
-                source: (64, 36),
-            })
-        };
         let camera = |own: bool| {
             let pixels = two_colours(64, 36, (shade, 0, 0), (0, 0, shade));
             Arc::new(VideoPicture::new(&pixels, own, (64, 36)).unwrap())
+        };
+        let small = || {
+            let pixels = two_colours(64, 36, (shade, shade, 0), (0, shade, shade));
+            Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap())
         };
         let watched = two_colours(64, 36, (0, shade, 0), (0, 0, shade));
         let pictures = [
             Arc::new(VideoPicture::new(&watched, false, (64, 36)).unwrap()),
             camera(true),
             camera(false),
+            small(),
+            small(),
         ];
         given
             .borrow_mut()
@@ -532,8 +529,8 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
             frame: pictures[0].clone(),
         }));
         calls.show_small_pictures_for_test(HashMap::from([
-            (ShareId::Own, share()),
-            (ShareId::Of(other), share()),
+            (ShareId::Own, pictures[3].clone()),
+            (ShareId::Of(other), pictures[4].clone()),
         ]));
         calls.show_camera_pictures_for_test(HashMap::from([
             (ShareId::Own, pictures[1].clone()),
@@ -570,8 +567,8 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     let held = |window: &Window, shell: &gpui::Entity<Shell>| {
         shell.read_with(&window.cx, |shell, _| shell.picture_images())
     };
-    // The pictures of the watched share and of the cameras that are not freed, and on macOS
-    // their pixel buffers that something other than the test holds, among the pictures
+    // The pictures that are not freed, and on macOS their pixel buffers that something other
+    // than the test holds, among the pictures
     // given before the last `newest` ones. A frame of the display draws first, so that the
     // scene of the window holds only what the window draws now.
     let not_freed = |window: &mut Window, newest: usize| {
@@ -612,18 +609,20 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         images = give(&mut window, &[&main_shell], shade);
     }
     let shown = held(&window, &main_shell);
-    assert!(
-        images.len() >= usize::from(PICTURES),
-        "{} images for {PICTURES} pictures of each source",
-        images.len()
-    );
-    // The small pictures of the shares are images on every system, and so are the watched
-    // share and the cameras on other systems than macOS. A camera whose tile is not in view
-    // is held and not drawn.
-    assert!(
-        in_gpu(&mut window.cx, &shown) >= 2,
-        "the window did not draw the small pictures of the shares"
-    );
+    // On other systems than macOS every picture is an image. A camera whose tile is not in
+    // view is held and not drawn; the two small pictures of the shares are drawn.
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(
+            images.len() >= usize::from(PICTURES),
+            "{} images for {PICTURES} pictures of each source",
+            images.len()
+        );
+        assert!(
+            in_gpu(&mut window.cx, &shown) >= 2,
+            "the window did not draw the small pictures of the shares"
+        );
+    }
     assert_eq!(
         kept(&mut window.cx, &images, &shown),
         0,
@@ -633,7 +632,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     assert_eq!(
         not_freed(&mut window, 1),
         (0, 0),
-        "(pictures, pixel buffers) of the watched share and the cameras that were replaced and not freed"
+        "(pictures, pixel buffers) that were replaced and not freed"
     );
 
     // The call moves to its own window, which draws the pictures from then on.
@@ -654,9 +653,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         images = give(&mut window, &[&main_shell, &detached_shell], shade);
     }
     let shown = held(&window, &detached_shell);
-    // The small pictures of the shares are images on every system, and so are the watched
-    // share and the cameras on other systems than macOS. A camera whose tile is not in view
-    // is held and not drawn.
+    #[cfg(not(target_os = "macos"))]
     assert!(
         in_gpu(&mut detached, &shown) >= 2,
         "the call window did not draw the small pictures of the shares"
@@ -790,6 +787,91 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
             "the window did not draw the image of the watched share"
         );
     }
+}
+
+/// The small pictures of the shares are drawn as camera pictures are (ADR 0774): on macOS
+/// from a pixel buffer of Core Video without an image of gpui, and on the other systems as an
+/// image that holds the converted pixels.
+#[gpui::test]
+fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
+    cx: &mut TestAppContext,
+) {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_client_core::protocol::ids::AccountId;
+    use junto_media::engine::{SeenShare, ShareId, ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let other: AccountId = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f".parse().unwrap();
+    // Two shares: the bar of the shares shows a small picture of each.
+    let mut call = connected_call(&mut window, "Daily");
+    call.share = ShareState::Running(ShareInfo {
+        kind: ShareKind::Window,
+        sound: ShareAudio::None,
+        sound_held: false,
+        size: (64, 36),
+        frame_rate: 30,
+    });
+    call.shares = vec![SeenShare {
+        account_id: other,
+        kind: Some(ShareKind::Screen),
+        frame_rate: Some(30),
+        size: Some((64, 36)),
+    }];
+    call.watched = Some(ShareId::Of(other));
+    show_call(&mut window, call);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let small = || {
+        let pixels = two_colours(64, 36, (200, 30, 30), (30, 30, 200));
+        Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap())
+    };
+    calls.show_small_pictures_for_test(HashMap::from([
+        (ShareId::Own, small()),
+        (ShareId::Of(other), small()),
+    ]));
+    window.until_pictures_taken();
+    let images = window
+        .shell
+        .read_with(&window.cx, |shell, _| shell.picture_images());
+    #[cfg(target_os = "macos")]
+    {
+        assert!(
+            images.is_empty(),
+            "the window holds {} images of gpui for the small pictures",
+            images.len()
+        );
+        let record = junto_client::ui::record_painted_surfaces();
+        window.cx.update(|window, _| window.refresh());
+        window.settle();
+        let painted = junto_client::ui::take_painted_surfaces();
+        drop(record);
+        // The selectors of gpui live as long as the program.
+        let other_card: &'static str = format!("share-card:{other}").leak();
+        for card in ["share-card:own", other_card] {
+            let bounds = window.cx.debug_bounds(card).unwrap();
+            assert!(
+                painted
+                    .iter()
+                    .any(|surface| surface.size == (64, 36)
+                        && bounds.contains(&surface.bounds.center())),
+                "no pixel buffer of a small picture was painted inside {card} {bounds:?}: {painted:?}"
+            );
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(images.len(), 2);
 }
 
 /// Sound settings that cannot be read are not replaced by an open microphone without a

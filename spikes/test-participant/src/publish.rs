@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, sleep_until, Instant};
 
-use crate::cli::PublishArgs;
+use crate::cli::{PublishArgs, VideoCodecArg};
 use crate::events::emit;
 use crate::pattern::{self, Pattern, PatternKind};
 use crate::session::{self, source_name};
@@ -201,7 +201,7 @@ async fn join(args: &PublishArgs, files: &Files, sharing: bool, muted: bool) -> 
         let (width, height) = pattern::parse_size(&args.camera_size)?;
         let pattern =
             Pattern::new(PatternKind::Camera, (width, height), &label(args), color(args)?, marker(args));
-        let options = video_options(TrackSource::Camera, args.simulcast);
+        let options = video_options(TrackSource::Camera, args);
         Some(publish_pattern(&room, "camera", pattern, (width, height), args.camera_fps, options).await?)
     } else {
         None
@@ -215,7 +215,7 @@ async fn publish_screen(room: &Room, args: &PublishArgs, files: &Files) -> Resul
     let (width, height) = pattern::parse_size(&args.screen_size)?;
     let pattern =
         Pattern::new(PatternKind::Screen, (width, height), &label(args), color(args)?, marker(args));
-    let options = video_options(TrackSource::Screenshare, args.simulcast);
+    let options = video_options(TrackSource::Screenshare, args);
     let mut tracks =
         vec![publish_pattern(room, "screen", pattern, (width, height), args.screen_fps, options).await?];
     if args.screen_audio_hz.is_some() || files.screen_audio.is_some() {
@@ -248,8 +248,12 @@ fn color(args: &PublishArgs) -> Result<(u8, u8, u8)> {
     }
 }
 
-fn video_options(source: TrackSource, simulcast: bool) -> TrackPublishOptions {
-    TrackPublishOptions { source, simulcast, video_codec: VideoCodec::VP8, ..Default::default() }
+fn video_options(source: TrackSource, args: &PublishArgs) -> TrackPublishOptions {
+    let video_codec = match args.video_codec {
+        VideoCodecArg::Vp8 => VideoCodec::VP8,
+        VideoCodecArg::H264 => VideoCodec::H264,
+    };
+    TrackPublishOptions { source, simulcast: args.simulcast, video_codec, ..Default::default() }
 }
 
 async fn publish_tone(
