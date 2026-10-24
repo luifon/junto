@@ -360,14 +360,38 @@ pub(crate) fn after_probe(
     }
 }
 
+pub(crate) fn request_membership(
+    previous: &Membership,
+    join_request_id: Option<JoinRequestId>,
+    name: &str,
+) -> Membership {
+    match previous {
+        Membership::Inactive { .. } => previous.clone(),
+        _ => Membership::JoinRequested {
+            join_request_id,
+            name: name.to_owned(),
+        },
+    }
+}
+
 /// The state after the server told the result of the join request of this device. `None`
 /// when the request was approved: the device then logs in.
-pub(crate) fn after_request_status(status: &JoinRequestStatus, name: &str) -> Option<Settled> {
-    let ended = |notice| Settled {
-        state: AccessState::NoAccount {
-            notice: Some(notice),
+pub(crate) fn after_request_status(
+    status: &JoinRequestStatus,
+    name: &str,
+    membership: &Membership,
+) -> Option<Settled> {
+    let ended = |notice| match membership {
+        Membership::Inactive { .. } => Settled {
+            state: initial(membership, false),
+            membership: membership.clone(),
         },
-        membership: Membership::None,
+        _ => Settled {
+            state: AccessState::NoAccount {
+                notice: Some(notice),
+            },
+            membership: Membership::None,
+        },
     };
     match status.state {
         JoinRequestState::Pending => Some(Settled {
@@ -375,10 +399,7 @@ pub(crate) fn after_request_status(status: &JoinRequestStatus, name: &str) -> Op
                 join_request_id: Some(status.id),
                 name: name.to_owned(),
             },
-            membership: Membership::JoinRequested {
-                join_request_id: Some(status.id),
-                name: name.to_owned(),
-            },
+            membership: request_membership(membership, Some(status.id), name),
         }),
         JoinRequestState::Approved => None,
         JoinRequestState::Denied => Some(ended(Notice::RequestDenied)),
@@ -843,7 +864,9 @@ mod tests {
             state,
             account_id: None,
         };
-        let pending = after_request_status(&status(JoinRequestState::Pending), "Ada").unwrap();
+        let pending =
+            after_request_status(&status(JoinRequestState::Pending), "Ada", &Membership::None)
+                .unwrap();
         assert_eq!(
             pending.state,
             AccessState::WaitingForApproval {
@@ -858,12 +881,19 @@ mod tests {
                 name: "Ada".to_owned()
             }
         );
-        assert!(after_request_status(&status(JoinRequestState::Approved), "Ada").is_none());
+        assert!(
+            after_request_status(
+                &status(JoinRequestState::Approved),
+                "Ada",
+                &Membership::None
+            )
+            .is_none()
+        );
         for (state, notice) in [
             (JoinRequestState::Denied, Notice::RequestDenied),
             (JoinRequestState::Expired, Notice::RequestExpired),
         ] {
-            let settled = after_request_status(&status(state), "Ada").unwrap();
+            let settled = after_request_status(&status(state), "Ada", &Membership::None).unwrap();
             assert_eq!(
                 settled.state,
                 AccessState::NoAccount {

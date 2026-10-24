@@ -1449,6 +1449,50 @@ async fn a_server_is_not_removed_while_its_flow_runs_an_action() {
     assert!(device.client.servers().is_empty());
 }
 
+#[tokio::test(start_paused = true)]
+async fn removing_a_server_waits_for_its_flow_and_retires_queued_actions() {
+    let network = Arc::new(Network::default());
+    network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let running = handle.server.gate.lock().await;
+    let mut removing = Box::pin(device.client.remove_server_when_free(handle.id()));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(removing.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    let later = handle.dispatch_when_free(AccessAction::Check);
+    drop(running);
+    removing.await.unwrap();
+    assert!(matches!(later.await, Err(FlowError::NotAvailable)));
+    assert!(device.client.servers().is_empty());
+    assert!(!device.client.data_dir().key_file(handle.id()).exists());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiting_removal_keeps_a_replacement_entry_and_its_key() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("AGAIN", 1);
+    let device = device(&network);
+    let old = device.add("acme").await;
+    old.dispatch(claim()).await.unwrap();
+    let removing = device.client.remove_server_when_free(old.id());
+    device.client.remove_server(old.id()).unwrap();
+    let again = device.add("acme").await;
+    again.dispatch(join("AGAIN")).await.unwrap();
+    let key = again.device_public_key().unwrap();
+    device.client.select(Some(again.id()));
+    assert!(removing.await.is_err());
+    assert_eq!(device.client.selected(), Some(again.id()));
+    assert_eq!(device.client.servers().len(), 1);
+    assert!(device.client.data_dir().key_file(again.id()).exists());
+    assert_eq!(again.device_public_key().unwrap(), key);
+    logged_in(&again);
+}
+
 #[derive(Default)]
 struct Recorder {
     calls: Mutex<Vec<(ServerId, ConnectionLevel, Option<StreamTarget>)>>,

@@ -194,3 +194,80 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
     assert_eq!(held.status, AccountStatus::Deleted);
     assert_eq!(held.name, "Luca");
 }
+
+#[gpui::test]
+fn deleting_the_account_waits_for_a_session_renewal_before_removing_the_server(
+    cx: &mut TestAppContext,
+) {
+    for close_page in [false, true] {
+        deletion_during_renewal(cx, close_page);
+    }
+}
+
+fn deletion_during_renewal(cx: &mut TestAppContext, close_page: bool) {
+    use crate::support::FaultProxy;
+    use junto_client_core::flow::access::ActionKind;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let server_id = handle.id();
+    window.open_account();
+    window.click("account-nav-departure");
+    window.click("account-delete");
+    proxy.hold_answer_ending("DELETE", "/account");
+    proxy.hold_request("POST", "/auth/challenges");
+    window.click("account-delete-confirm");
+    window.until("deletion is done while its session renewal waits", |_| {
+        proxy.answers_waiting() == 1
+            && handle.access().in_progress == Some(ActionKind::LogIn)
+            && proxy
+                .seen("/api/v1/auth/challenges")
+                .iter()
+                .any(|seen| seen.answer.is_none())
+    });
+    if close_page {
+        window.click("account-close");
+        assert!(window.account().is_none());
+    }
+    // Release the deletion answer, but keep the renewal holding the flow lock.
+    proxy.release_answers();
+    window.until("the removal was requested", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.pending().removing.contains(&server_id)
+                || state.pending().remove_failed.contains_key(&server_id)
+        })
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    proxy.release_requests();
+    window.until("the deleted server leaves the list", |window| {
+        window.view().servers.is_empty()
+    });
+    assert_eq!(
+        proxy
+            .seen("/api/v1/account")
+            .iter()
+            .filter(|seen| seen.method == "DELETE")
+            .count(),
+        1
+    );
+    assert!(handle.device_public_key().is_err());
+    assert!(
+        !directory
+            .path()
+            .join("junto/keys")
+            .join(format!("{server_id}.key"))
+            .exists()
+    );
+    window.close();
+    let reopened = junto_client_core::Client::open(junto_client_core::ClientOptions::new(
+        directory.path().join("junto"),
+    ))
+    .unwrap();
+    assert!(reopened.servers().is_empty());
+}

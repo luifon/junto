@@ -163,6 +163,12 @@ async fn another_device_of_a_deleted_account_states_the_deletion_and_not_a_remov
         |state| matches!(state, AccessState::Deleted { .. }),
     )
     .await;
+    // The state can be visible while renewal still owns the flow. Queue the later
+    // check behind it; the now unknown key must keep the deletion.
+    on_phone
+        .dispatch_when_free(AccessAction::Check)
+        .await
+        .unwrap();
     assert_eq!(
         on_phone.access().state,
         AccessState::Deleted {
@@ -179,10 +185,122 @@ async fn another_device_of_a_deleted_account_states_the_deletion_and_not_a_remov
         on_phone.access().actions,
         [ActionKind::Check, ActionKind::ForgetAccount]
     );
-    // A later check finds the key unknown, and the deletion stays.
-    on_phone.dispatch(AccessAction::Check).await.unwrap();
-    assert!(matches!(
-        on_phone.access().state,
-        AccessState::Deleted { .. }
-    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_return_request_keeps_the_inactive_account() {
+    ended_return_request_keeps_the_account(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_return_request_keeps_the_inactive_account() {
+    ended_return_request_keeps_the_account(true).await;
+}
+
+async fn ended_return_request_keeps_the_account(expired: bool) {
+    use junto_client_core::protocol::invite::ApproveJoinRequest;
+    use sqlx::ConnectOptions;
+    use sqlx::postgres::PgConnectOptions;
+
+    let server = TestServer::start("Acme").await;
+    let first = Device::new();
+    let owner = first.add(&server.address()).await;
+    owner.dispatch(claim(&server, "Ada")).await.unwrap();
+    let code = crate::invite(&owner, 2).await;
+    let second = Device::new();
+    let member = second.add(&server.address()).await;
+    member.dispatch(join(&code, "Grace")).await.unwrap();
+    let account_id = logged_in(&member);
+    let key = member.device_public_key().unwrap();
+    let workspace = member.api().own_account().await.unwrap().workspace_ids[0];
+    member.api().leave_workspace(workspace).await.unwrap();
+    member
+        .dispatch_when_free(AccessAction::Check)
+        .await
+        .unwrap();
+    member
+        .dispatch_when_free(AccessAction::RequestAccess {
+            name: "Another name".to_owned(),
+        })
+        .await
+        .unwrap();
+    let AccessState::WaitingForApproval {
+        join_request_id: Some(id),
+        ..
+    } = member.access().state
+    else {
+        panic!("the return request is not pending");
+    };
+    if expired {
+        let options: PgConnectOptions = server.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "update join_requests set expires_at = now() - interval '1 hour' where id = $1",
+        )
+        .bind(id.as_uuid())
+        .execute(&mut database)
+        .await
+        .unwrap();
+    } else {
+        owner.api().deny_join_request(id).await.unwrap();
+    }
+    member
+        .dispatch_when_free(AccessAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(
+        member.entry().membership,
+        Membership::Inactive { account_id }
+    );
+    assert_eq!(
+        member.access().state,
+        AccessState::Inactive {
+            account_id: Some(account_id)
+        }
+    );
+    assert_eq!(member.device_public_key().unwrap(), key);
+
+    let restarted = second.restarted();
+    let member = restarted.servers().remove(0);
+    member.connect_when_free().await.unwrap();
+    assert_eq!(
+        member.entry().membership,
+        Membership::Inactive { account_id }
+    );
+    member
+        .dispatch_when_free(AccessAction::RequestAccess {
+            name: "Another name".to_owned(),
+        })
+        .await
+        .unwrap();
+    let AccessState::WaitingForApproval {
+        join_request_id: Some(next),
+        ..
+    } = member.access().state
+    else {
+        panic!("the next return request is not pending");
+    };
+    assert_ne!(id, next);
+    let restarted = second.restarted();
+    let member = restarted.servers().remove(0);
+    member.connect_when_free().await.unwrap();
+    assert!(
+        matches!(member.access().state, AccessState::WaitingForApproval { join_request_id: Some(found), .. } if found == next)
+    );
+    assert_eq!(
+        member.entry().membership,
+        Membership::Inactive { account_id }
+    );
+    owner
+        .api()
+        .approve_join_request(next, &ApproveJoinRequest::default())
+        .await
+        .unwrap();
+    member
+        .dispatch_when_free(AccessAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(logged_in(&member), account_id);
+    assert_eq!(member.device_public_key().unwrap(), key);
+    assert_eq!(member.api().own_account().await.unwrap().name, "Grace");
 }

@@ -915,18 +915,47 @@ impl AppState {
     /// Deletes the account on the server of the layer (ADR 0121). The key of this device
     /// no longer belongs to an account, so the server leaves the book with its key.
     pub fn delete_account(&mut self, cx: &mut Context<Self>) {
-        let Some(server_id) = self.account.open.map(|open| open.server_id) else {
+        let Some((server, account_id)) = self
+            .account
+            .open
+            .and_then(|open| self.client.server(open.server_id))
+            .zip(self.account.account)
+        else {
             return;
         };
-        self.account_ask(
-            AskKind::DeleteAccount,
-            |api| async move { api.delete_account().await },
-            move |this, cx| {
-                this.account.close();
-                this.remove_server(server_id, cx);
-            },
-            cx,
-        );
+        let what = AskKind::DeleteAccount;
+        let Some(stamp) = self.account.begin(what) else {
+            return;
+        };
+        let server_id = server.id();
+        let api = server.api_for(account_id);
+        let removing = self.client.remove_server_when_free(server_id);
+        cx.spawn(async move |this, cx| match api.delete_account().await {
+            Ok(()) => {
+                let _ = this.update(cx, |this, cx| {
+                    if this
+                        .account
+                        .open
+                        .is_some_and(|open| open.server_id == server_id)
+                    {
+                        this.account.close();
+                    }
+                    this.pending.removing.insert(server_id);
+                    this.changed(cx);
+                });
+                let removed = cx.background_executor().spawn(removing).await;
+                let _ = this.update(cx, |this, cx| this.removed(server_id, removed, cx));
+            }
+            Err(error) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.account
+                        .settle(stamp, what, Some(text::account::refusal(what, &error)));
+                    this.changed(cx);
+                });
+            }
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Sets the name of the account on the server of the layer (ADR 0119). The name is
