@@ -335,6 +335,10 @@ impl Held {
                 },
             );
         }
+        // The images are bounded below the profiles: only the first distinct hashes in the
+        // order of the wanted people are marked, so a newly first person takes the place of
+        // an image that is now beyond the bound.
+        let mut distinct = HashSet::new();
         let hashes: Vec<PictureHash> = self
             .own_picture
             .into_iter()
@@ -343,6 +347,8 @@ impl Held {
                     .iter()
                     .filter_map(|account_id| self.profiles.get(account_id)?.value.as_ref()?.avatar),
             )
+            .filter(|hash| distinct.insert(*hash))
+            .take(MOST_IMAGES)
             .collect();
         for hash in &hashes {
             if let Some(entry) = self.images.get_mut(hash) {

@@ -261,6 +261,14 @@ impl Shell {
 
     /// Puts a dragged role at the place of the row that it was dropped on.
     fn drop_role(&mut self, drag: RoleDrag, to: usize, cx: &mut Context<Self>) {
+        let naming = self
+            .state
+            .read(cx)
+            .admin_view()
+            .is_some_and(|view| self.admin_form_awaited(&view, AskKind::UpdateRole(drag.role)));
+        if naming {
+            return;
+        }
         self.state.update(cx, |state, cx| {
             state.move_role(drag.server_id, drag.role, to, cx);
         });
@@ -328,6 +336,41 @@ impl Shell {
             })
     }
 
+    /// Why the switch of a permission of a role takes no press, or None when a press
+    /// changes the permission.
+    fn role_permission_hold(
+        &self,
+        view: &AdminView,
+        row: &RoleRow,
+        switch: &PermissionSwitch,
+    ) -> Option<SharedString> {
+        let changing = view.permission_asked(row.role, switch.permission).is_some();
+        // While the new name of the role is on its way, its permissions send nothing: a change
+        // would replace the state of the request that the form follows (ADR 0761).
+        let naming = self.admin_form_awaited(view, AskKind::UpdateRole(row.role));
+        row.locked
+            .map(|reason| txt::locked(reason).into())
+            .or_else(|| beyond_own(switch, switched(view, row, switch)).map(SharedString::from))
+            .or_else(|| changing.then(|| text::admin::SENDING.into()))
+            .or_else(|| naming.then(|| text::admin::FORM_SENT.into()))
+    }
+
+    /// The reason that the switch of `permission` of the role of `row` is drawn with, as the
+    /// window draws it now.
+    #[cfg(feature = "test-support")]
+    pub fn role_permission_held(
+        &self,
+        view: &AdminView,
+        row: &RoleRow,
+        permission: crate::state::admin::RolePermission,
+    ) -> Option<SharedString> {
+        let switch = row
+            .permissions
+            .iter()
+            .find(|switch| switch.permission == permission)?;
+        self.role_permission_hold(view, row, switch)
+    }
+
     /// One permission of a role: its name, what it gives, and its switch.
     fn render_role_permission(
         &mut self,
@@ -340,23 +383,9 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let (server_id, role) = (view.server_id, row.role);
-        // A change of this permission is on its way, or the server did it and the state
-        // does not hold it yet: the switch shows the asked state (ADR 0791, ADR 0311).
-        let asked = view.permission_asked(role, switch.permission);
-        let changing = asked.is_some();
-        // While the new name of the role is on its way, its permissions send nothing: a change
-        // would replace the state of the request that the form follows (ADR 0761).
-        let naming = self.admin_form_awaited(view, AskKind::UpdateRole(role));
-        let (permission, on) = (switch.permission, asked.unwrap_or(switch.on));
-        // A permission that the person does not hold cannot be given; taking it needs
-        // the managing permission only (ADR 0304).
-        let beyond = (!on && switch.beyond_own).then(|| txt::beyond_own(permission));
-        let held: Option<SharedString> = row
-            .locked
-            .map(|reason| txt::locked(reason).into())
-            .or_else(|| beyond.clone().map(SharedString::from))
-            .or_else(|| changing.then(|| text::admin::SENDING.into()))
-            .or_else(|| naming.then(|| text::admin::FORM_SENT.into()));
+        let (permission, on) = (switch.permission, switched(view, row, switch));
+        let beyond = beyond_own(switch, on);
+        let held = self.role_permission_hold(view, row, switch);
         let toggle = Toggle::new(
             ("role-permission", index),
             txt::permission_label(permission, &row.name),
@@ -420,13 +449,19 @@ impl Shell {
         let number = role.number();
         let written = role.written();
         let moving = view.sending(AskKind::MoveRole(role));
+        // While the new name of the role is on its way, also after a Cancel of its form, a
+        // move or a deletion would replace the state of the request (ADR 0761).
+        let naming = self
+            .admin_form_awaited(view, AskKind::UpdateRole(role))
+            .then_some(text::admin::FORM_SENT);
         let locked = row.locked.map(txt::locked);
         let mut actions = Vec::new();
         for (up, place) in [(true, row.up), (false, row.down)] {
             let held = place
                 .err()
                 .map(|reason| txt::fixed(reason, up))
-                .or(moving.then_some(text::admin::SENDING));
+                .or(moving.then_some(text::admin::SENDING))
+                .or(naming);
             let mut button = Button::new((if up { "role-up" } else { "role-down" }, number))
                 .label(if up {
                     text::admin::UP
@@ -489,7 +524,7 @@ impl Shell {
             }));
         actions.push(named(format!("role-permissions-{written}"), toggle).into_any_element());
         if row.named {
-            let held = row.deletion().err().map(txt::no_deletion);
+            let held = row.deletion().err().map(txt::no_deletion).or(naming);
             let mut delete = Button::new(("role-delete", number))
                 .label(text::admin::DELETE)
                 .h(u(28.0))
@@ -601,8 +636,10 @@ impl Shell {
                 .into_any_element(),
             _ => {
                 // The handle is the place where a drag starts. A role that the person
-                // cannot move has none.
-                let free = row.locked.is_none() && !row.is_everyone;
+                // cannot move, or whose new name is on its way, has none.
+                let free = row.locked.is_none()
+                    && !row.is_everyone
+                    && !self.admin_form_awaited(view, AskKind::UpdateRole(role));
                 let name: SharedString = row.name.clone().into();
                 let handle = div()
                     .id(("role-handle", role.number()))
@@ -944,4 +981,18 @@ impl Shell {
             .children(refusal(refused, "account-role-refused"))
             .into_any_element()
     }
+}
+
+/// The state that the switch of a permission shows: the asked state while a change of it
+/// is on its way, or the server did it and the state does not hold it yet (ADR 0791,
+/// ADR 0311).
+fn switched(view: &AdminView, row: &RoleRow, switch: &PermissionSwitch) -> bool {
+    view.permission_asked(row.role, switch.permission)
+        .unwrap_or(switch.on)
+}
+
+/// A permission that the person does not hold cannot be given; taking it needs the managing
+/// permission only (ADR 0304).
+fn beyond_own(switch: &PermissionSwitch, on: bool) -> Option<String> {
+    (!on && switch.beyond_own).then(|| txt::beyond_own(switch.permission))
 }

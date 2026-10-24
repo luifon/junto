@@ -6,6 +6,7 @@ use gpui::TestAppContext;
 use junto_client::state::admin::view::{AdminView, ChannelPageView, Scope, ServerPage};
 use junto_client::state::admin::{AdminOpen, AdminPage, AskKind, ChannelPage};
 use junto_client::state::view::ServerStatus;
+use junto_client::text::admin::FORM_SENT;
 use junto_client_core::ServerHandle;
 use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
@@ -547,6 +548,16 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
     });
 }
 
+/// The reason that the controls of the open settings of a channel are drawn with, when they
+/// take no press.
+fn settings_held(window: &mut Window) -> Option<&'static str> {
+    let view = window.admin()?;
+    let Scope::Channel(settings) = &view.scope else {
+        return None;
+    };
+    window.in_shell(|shell, _, _| shell.channel_settings_held(&view, settings))
+}
+
 /// While the new name of a channel is on its way, the other controls of its settings send
 /// nothing: the form follows the answer to its own request, and no later request at the
 /// settings replaces it (ADR 0761).
@@ -601,6 +612,7 @@ fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
     proxy.hold_request("PATCH", &format!("/channels/{plans}"));
     window.send_form("roadmap");
     window.until("the new name is on its way", |_| changes(&proxy) == 1);
+    assert_eq!(settings_held(&mut window), Some(FORM_SENT));
     window.click("channel-permanent");
     window.settle();
     assert_eq!(
@@ -624,6 +636,7 @@ fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
             if matches!(&settings.page, ChannelPageView::Overview(page) if !page.permanent)
     ));
     assert_eq!(changes(&proxy), 1);
+    assert_eq!(settings_held(&mut window), None);
 
     // The choice of a category is a form too: while its request is on its way, neither a
     // second press of it nor a rule of the channel is sent.
@@ -643,6 +656,7 @@ fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
     proxy.hold_request("PATCH", &format!("/channels/{plans}"));
     window.click(choice);
     window.until("the category is on its way", |_| changes(&proxy) == 2);
+    assert_eq!(settings_held(&mut window), Some(FORM_SENT));
     window.click(choice);
     window.click("channel-permanent");
     window.settle();
@@ -730,15 +744,18 @@ fn a_cancelled_form_of_a_channel_keeps_its_settings_waiting_and_tells_the_refusa
         !window.shows("channel-name")
     });
     assert!(waits(&mut window));
+    assert_eq!(settings_held(&mut window), Some(FORM_SENT));
     window.click("channel-permanent");
     window.settle();
     assert!(waits(&mut window));
+    assert_eq!(settings_held(&mut window), Some(FORM_SENT));
 
     proxy.release();
     window.until("the refusal of the new name is told", |window| {
         window.shows("channel-settings-refused")
     });
     assert!(!waits(&mut window));
+    assert_eq!(settings_held(&mut window), None);
     let sent = changes(&proxy);
     assert_eq!(sent.len(), attempts);
     assert!(

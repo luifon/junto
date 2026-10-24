@@ -1054,6 +1054,35 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Why the controls of the settings of a channel take no press: the channel is
+    /// archived, or the new name or the category of its form is on its way, also after a
+    /// Cancel of the form. A later request would replace the state of the request that the
+    /// form follows (ADR 0761).
+    fn channel_settings_hold(
+        &self,
+        view: &AdminView,
+        settings: &ChannelSettings,
+    ) -> Option<&'static str> {
+        settings
+            .archived
+            .then_some(text::admin::ARCHIVED_NO_CHANGE)
+            .or_else(|| {
+                self.admin_form_awaited(view, AskKind::UpdateChannel(settings.channel_id))
+                    .then_some(text::admin::FORM_SENT)
+            })
+    }
+
+    /// The reason that the controls of the settings of a channel are drawn with, as the
+    /// window draws them now.
+    #[cfg(feature = "test-support")]
+    pub fn channel_settings_held(
+        &self,
+        view: &AdminView,
+        settings: &ChannelSettings,
+    ) -> Option<&'static str> {
+        self.channel_settings_hold(view, settings)
+    }
+
     /// The overview of the settings of one channel.
     pub(crate) fn render_channel_overview(
         &mut self,
@@ -1067,12 +1096,9 @@ impl Shell {
         let server_id = view.server_id;
         let channel_id = settings.channel_id;
         let archived = settings.archived.then_some(text::admin::ARCHIVED_NO_CHANGE);
-        // While the new name or the category of the form is on its way, the other controls of
-        // the settings send nothing: a later request would replace the state of the request
-        // that the form follows (ADR 0761).
         let answering = self.admin_form_awaited(view, AskKind::UpdateChannel(channel_id));
         let waiting = answering.then_some(text::admin::FORM_SENT);
-        let held = archived.or(waiting);
+        let held = self.channel_settings_hold(view, settings);
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::channel_page_name(ChannelPage::Overview),
             text::admin::OVERVIEW_HELP,

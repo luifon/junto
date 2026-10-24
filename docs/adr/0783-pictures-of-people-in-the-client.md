@@ -30,7 +30,7 @@ Images:
 - An image is held by its hash. It is read from `GET /api/v1/accounts/{account_id}/avatar` of an account whose profile names that hash, once for the hash, also when several accounts have the same image.
 - The answer is decoded on a background thread. The decoder refuses an image with a side of more than 1024 pixels, whatever the server states, and has a bound for its memory. The middle square of the image is kept and reduced to at most 192 by 192 pixels: the largest avatar of the window has 153 pixels of a display.
 - Bytes whose computed hash differs from the hash of the profile, bytes that cannot be decoded, and a refusal are final for that hash: the image is not asked for again. The generated avatar is drawn.
-- A server has at most 256 decoded images, which are at most 36 MiB of pixels. The image that was shown longest ago gives way, by the rule of the profiles, and its texture is removed from the window.
+- A server has at most 256 decoded images, which are at most 36 MiB of pixels. The image that was shown longest ago gives way, by the rule of the profiles, and its texture is removed from the window. Shown now means one of the first 256 different images in the order of the list, the picture of the own account first: the 512 profiles can name more images than the bound, and a person who moves to the front of the list takes the place of the image that moved beyond the 256th (`state::people::tests::a_person_moved_before_256_shown_images_takes_the_place_of_the_last_image`).
 
 View and component:
 
