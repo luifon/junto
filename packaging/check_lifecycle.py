@@ -157,14 +157,16 @@ def interruptions(running):
 
 
 def lock_descriptors(environment):
-    value = environment.get("JUNTO_LOCK_FD", "")
-    if value.isdigit():
-        try:
-            os.fstat(int(value))
-            return (int(value),)
-        except OSError:
-            pass
-    return ()
+    """The open descriptors that JUNTO_LOCK_FD names, separated by commas (tools/windows/lock.py)."""
+    numbers = []
+    for value in environment.get("JUNTO_LOCK_FD", "").split(","):
+        if value.isdigit() and int(value) not in numbers:
+            try:
+                os.fstat(int(value))
+            except OSError:
+                continue
+            numbers.append(int(value))
+    return tuple(numbers)
 
 
 def command(arguments, *, timeout=180, **options):

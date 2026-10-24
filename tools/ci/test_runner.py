@@ -33,12 +33,15 @@ fi
 # network, volume or image, and keeps its volumes in directories below FAKE_ROOT/volumes on a
 # disk with 1000 GiB free. cygpath of Git for Windows prints the path it is given.
 DOCKER = """#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 from pathlib import Path
 root = Path(os.environ["FAKE_ROOT"]) / "volumes"
 arguments = sys.argv[1:]
+if os.environ.get("DOCKER_RECORD"):
+    with open(os.environ["DOCKER_RECORD"], "a") as record:
+        record.write(json.dumps(arguments) + "\\n")
 if arguments[:1] == ["info"]:
-    print(8)
+    print(os.environ.get("FAKE_HOST_CPUS", "8"))
 elif arguments[:2] == ["volume", "inspect"]:
     sys.exit(0 if (root / arguments[2]).is_dir() else 1)
 elif arguments[:1] == ["run"] and "-v" in arguments:
@@ -114,6 +117,45 @@ def appeared(path, seconds=60):
         if time.monotonic() > deadline:
             raise AssertionError(f"{path} did not appear")
         time.sleep(0.05)
+
+
+class LinuxCpuBudget(unittest.TestCase):
+    def test_other_linux_jobs_and_layout_livekit_keep_the_ci_reservation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = root / "docker-commands"
+            source = repository_with(root, SERIAL.format(check=""))
+            directory = root / "ci"
+            environment = prepared(str(directory), dict(os.environ, FAKE_HOST_CPUS="16", DOCKER_RECORD=str(record)))
+            installed = directory / "tools"
+            installed.mkdir()
+            images = subprocess.check_output(["sh", "-c", '. "$1"; printf "%s %s" "$JUNTO_CI_UV_IMAGE" "$JUNTO_CI_DOCKER_CLI_IMAGE"',
+                                              "sh", TOOLS / "ci/pins.sh"], text=True)
+            (installed / "images").write_text(images)
+            result = subprocess.run(["sh", RUNNER, str(directory), "sample-run", "linux", str(source),
+                                     "transcription-worker", "layout-page"],
+                                    env=environment, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            commands = [json.loads(line) for line in record.read_text().splitlines()]
+            for name in ("junto-ci-worker", "junto-ci-layout"):
+                command = next(args for args in commands if args[:1] == ["run"] and name in args)
+                self.assertEqual(command[command.index("--cpuset-cpus") + 1], "8-15")
+                if name == "junto-ci-layout":
+                    self.assertIn("JUNTO_TEST_LIVEKIT_CPUSET=8-15", command)
+
+    def test_ci_reserves_the_upper_eight_processors(self):
+        for host, expected in [(16, "8 4 12"), (8, "0 4 4"), (2, "0 1 1")]:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                probe = root / "cpu-budget"
+                script = '#!/bin/sh\nprintf "%s %s %s" "$JUNTO_LINUX_CPU_FIRST" "$JUNTO_LINUX_CPUS" "$JUNTO_LINUX_SERVICE_CPU_FIRST" > "$CPU_PROBE"\n'
+                source = repository_with(root, SERIAL.format(check=""), {"tools/ci/rust-linux.sh": script})
+                directory = str(root / "ci")
+                environment = prepared(directory, dict(os.environ, FAKE_HOST_CPUS=str(host), CPU_PROBE=str(probe)))
+                result = subprocess.run(["sh", RUNNER, directory, "sample-run", "linux", str(source), "rust-linux"],
+                                        env=environment, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertEqual(probe.read_text(), expected)
 
 
 class Checkout(unittest.TestCase):

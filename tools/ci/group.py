@@ -11,11 +11,11 @@ ended.
   or when this process receives TERM, INT or HUP, this process sends TERM to the group, sends
   KILL to the processes that remain after KILL_SECONDS, and waits until the group is empty. A
   process that changes its process group (setpgid, as Command::process_group of Rust does, or a
-  session of its own) leaves the group and is not ended or awaited. When JUNTO_LOCK_FD names an
-  open descriptor (the run lock of tools/windows/lock.py), the command and every process that
-  it starts inherit it, so the run lock lasts until the last of them has ended, also when this
-  process and its callers are killed, and also for a process that left the group. --end is not
-  used on Unix: a signal to this process ends the group.
+  session of its own) leaves the group and is not ended or awaited. When JUNTO_LOCK_FD names open
+  descriptors (the run lock and the machine gate of tools/windows/lock.py), the command and every
+  process that it starts inherit them, so the locks last until the last of them has ended, also
+  when this process and its callers are killed, and also for a process that left the group.
+  --end is not used on Unix: a signal to this process ends the group.
 - On Windows the command runs in a job object named <name> (tools/windows/lock.py), and its
   child processes are in the job from their start. When the command ends, every process of the
   job is ended and awaited. A signal from the Bash of Git for Windows ends a native process at
@@ -50,7 +50,7 @@ def unix(command):
 
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, on_signal)
-    process = subprocess.Popen(command, start_new_session=True, pass_fds=lock_descriptor())
+    process = subprocess.Popen(command, start_new_session=True, pass_fds=lock_descriptors())
     groups.append(process.pid)
     if received:
         on_signal(received[0], None)
@@ -61,16 +61,9 @@ def unix(command):
     return 128 - code if code < 0 else code
 
 
-def lock_descriptor():
-    """The descriptor of the run lock that the caller holds, to pass to the command."""
-    value = os.environ.get("JUNTO_LOCK_FD", "")
-    if not value.isdigit():
-        return []
-    try:
-        os.fstat(int(value))
-    except OSError:
-        return []
-    return [int(value)]
+def lock_descriptors():
+    """The descriptors of the locks that the caller holds, to pass to the command."""
+    return lock_module().descriptors(os.environ)
 
 
 def end(group, process):

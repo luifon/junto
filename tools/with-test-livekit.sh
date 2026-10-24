@@ -71,7 +71,13 @@ webhook:
 ${common}
 "
 
-docker run -d --name "$name" \
+run_livekit() {
+    if [ -n "${JUNTO_TEST_LIVEKIT_CPUSET:-}" ]; then
+        set -- "--cpuset-cpus=$JUNTO_TEST_LIVEKIT_CPUSET" "$@"
+    fi
+    docker run "$@"
+}
+run_livekit -d --name "$name" \
     --cpus "${JUNTO_TEST_LIVEKIT_CPUS:-2}" --memory "${JUNTO_TEST_LIVEKIT_MEMORY:-1g}" \
     --memory-swap "${JUNTO_TEST_LIVEKIT_MEMORY:-1g}" \
     --add-host=host.docker.internal:host-gateway \

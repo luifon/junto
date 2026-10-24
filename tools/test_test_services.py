@@ -88,6 +88,11 @@ exit 0
                 self.assertEqual(sum(command.startswith("rm -f -v ")
                                      for command in commands), 2)
 
+    def test_livekit_stays_in_the_requested_ci_processor_set(self):
+        result, commands = self.run_wrapped(["livekit"], 0, settings={"JUNTO_TEST_LIVEKIT_CPUSET": "8-15"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(" --cpuset-cpus=8-15 ", "\n".join(commands))
+
     def test_the_server_always_has_the_common_settings_of_the_deployment(self):
         common = (TOOLS.parent / "deploy/livekit-common.yaml").read_text(encoding="utf-8").strip()
         result, commands = self.run_wrapped(["livekit"], 0)

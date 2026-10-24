@@ -16,7 +16,7 @@ case "$backend" in
     x11)
         unset WAYLAND_DISPLAY
         export DISPLAY=:99
-        Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp >/tmp/junto-linux-x11.log 2>&1 &
+        Xvfb "$DISPLAY" -screen 0 1920x1080x24 -noreset -nolisten tcp >/tmp/junto-linux-x11.log 2>&1 &
         display_pid=$!
         ready() { xdpyinfo >/dev/null 2>&1; }
         ;;

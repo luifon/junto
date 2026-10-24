@@ -4,6 +4,7 @@ command has ended."""
 import fcntl
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import unittest
 
 GROUP = Path(__file__).with_name("group.py")
 LOCK = Path(__file__).resolve().parents[1] / "windows" / "lock.py"
+SERIAL = Path(__file__).resolve().parents[1] / "serial.sh"
 # Starts group.py with a time before KILL of `seconds`.
 WITH_KILL_SECONDS = """
 import importlib.util, sys
@@ -30,6 +32,24 @@ def running(number):
     except ProcessLookupError:
         return False
     return True
+
+
+def descendants(number):
+    """The numbers of every process below the process `number`."""
+    children = [int(child) for child in subprocess.run(["pgrep", "-P", str(number)], capture_output=True,
+                                                       text=True).stdout.split()]
+    return [found for child in children for found in [child, *descendants(child)]]
+
+
+def held(path):
+    """Whether another process holds the lock of the file."""
+    with open(path, "a") as file:
+        try:
+            fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+        return False
 
 
 def appeared(path, seconds=60):
@@ -102,6 +122,37 @@ class Group(unittest.TestCase):
         with open(lock, "a") as file:
             with self.assertRaises(BlockingIOError):
                 fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.kill(job, signal.SIGKILL)
+
+    # On a Linux host below 16 processors the run lock and the machine gate are two lock.py
+    # processes of tools/serial.sh. The job keeps both when every process above it is killed.
+    def test_the_processes_of_the_command_hold_the_run_lock_and_the_machine_gate(self):
+        lock, gate, started = self.root / "run.lock", self.root / "machine.lock", self.root / "started"
+        (self.root / "windows").mkdir()
+        shutil.copy(LOCK, self.root / "windows" / "lock.py")
+        serial = self.root / "serial.sh"
+        serial.write_text(SERIAL.read_text().replace("/tmp/junto-heavy-machine.lock", str(gate)))
+        for name, output in [("uname", "Linux"), ("getconf", "8")]:
+            program = self.root / name
+            program.write_text(f"#!/bin/sh\necho {output}\n")
+            program.chmod(0o755)
+        environment = dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}", JUNTO_HEAVY_LOCK=str(lock))
+        environment.pop("JUNTO_MACHINE_GATE_HELD", None)
+        environment.pop("JUNTO_LOCK_FD", None)
+        holder = subprocess.Popen(["sh", str(serial), "--inherited", sys.executable, str(GROUP), "sample", "sh", "-c",
+                                   f"echo $$ > {self.root / 'pid'}; echo > {started}; exec sleep 60"],
+                                  env=environment)
+        appeared(started)
+        job = int((self.root / "pid").read_text())
+        self.addCleanup(lambda: running(job) and os.kill(job, signal.SIGKILL))
+        above = [number for number in [holder.pid, *descendants(holder.pid)] if number != job]
+        self.assertTrue(held(lock) and held(gate))
+        for number in above:
+            os.kill(number, signal.SIGKILL)
+        holder.wait(timeout=60)
+        self.assertTrue(running(job))
+        self.assertTrue(held(lock), "the job lost the run lock")
+        self.assertTrue(held(gate), "the job lost the machine gate")
         os.kill(job, signal.SIGKILL)
 
 
