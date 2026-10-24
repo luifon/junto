@@ -180,7 +180,6 @@ fn shown_levels(levels: &Levels) -> ShownLevels {
     }
 }
 
-/// The quality of a share as the media engine takes it.
 /// The calls state that the own share ended by itself, and have not put it away.
 fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
     calls
@@ -189,6 +188,7 @@ fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
         .is_some_and(|call| matches!(call.share, junto_media::engine::ShareState::Ended(_)))
 }
 
+/// The quality of a share as the media engine takes it.
 fn share_quality(voice: &VoiceSettings) -> ShareQuality {
     ShareQuality {
         resolution: match voice.share_resolution {

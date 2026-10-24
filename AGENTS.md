@@ -39,7 +39,7 @@ Outside the workspace:
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
   - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a push after a review by a maintainer.
-- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes, scheduled tasks and registry keys that a test must not leave behind, ADR 0916 the window tests and the start check on macOS.
+- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes, scheduled tasks, registry keys and dialogs that a test must not leave behind, ADR 0916 the window tests and the start check on macOS.
 - `docs/step-0/README.md` lists the technical tests of step 0 (ADR 0903).
 
 ## Documents for people who install Junto
@@ -95,7 +95,7 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
 - `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.
-- The Linux job runs format, clippy, the workspace build and suite, the ignored `junto-media` tests `linux_audio` and `tls_trust`, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with PostgreSQL; macOS also runs the media unit tests, the signing and update checks, and the start of the bundle of the client build until its first frame; Windows also runs the check of the Windows package.
+- The Linux job runs format, clippy, the workspace build and suite, the ignored `junto-media` tests `linux_audio` and `tls_trust`, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with PostgreSQL; macOS also runs the media unit tests, the signing and update checks, and the start of the bundle of the client build until its first frame; Windows also runs the check of the Windows package, and fails when a dialog of the system that its tests opened stays open (ADR 0915).
 
 ## `vendor/`
 

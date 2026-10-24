@@ -352,9 +352,10 @@ pub(crate) fn show_call(window: &mut Window, call: junto_media::calls::ActiveCal
 /// the cameras. The follower converts the newest pictures on a thread of the runtime before
 /// it asks for a frame. After a burst of pictures a frame draws the pictures whose conversion
 /// started first, which can already be the newest ones, and the next frame the newest ones:
-/// one or two drawings. The test counts every drawing of the window: a drawing that no
-/// picture asked for fails it, with the number of changes of the state of the application in
-/// that time, which is the other cause that can draw this window.
+/// one or two drawings. The test counts every drawing of the window. A change of the state of
+/// the application, such as a late event of the server, can also draw this window, once for
+/// each change at most: in each step the drawings that no picture asked for may not be more
+/// than the changes of the state counted in that step.
 #[gpui::test]
 fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
     use junto_client_core::protocol::ids::AccountId;
@@ -425,6 +426,20 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
     let _changes = window
         .cx
         .update(|_, cx| cx.observe(&state, move |_, _| counted.set(counted.get() + 1)));
+    // The drawings of a step that no picture asked for, from the counts before and after it,
+    // are at most the changes of the state in that step.
+    let unasked_within_changes = |step: &str,
+                                  (all, asked): (usize, usize),
+                                  (all_now, asked_now): (usize, usize),
+                                  changed| {
+        let unasked = (all_now - all) - (asked_now - asked);
+        let state_changes = changes.get() - changed;
+        assert!(
+            unasked <= state_changes,
+            "{step}: {unasked} drawings that no picture asked for, with {state_changes} \
+             changes of the state of the application"
+        );
+    };
     // The window can hold work for a frame from what it loaded before: it is given frames
     // until it holds none.
     window.until("the window has no work for a frame", |window| {
@@ -449,12 +464,11 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
             window.park();
         }
         assert_eq!(
-            draws(&window),
-            (all, asked),
-            "{source}: the window was drawn without a frame; the state of the application \
-             changed {} times",
-            changes.get() - changed
+            draws(&window).1,
+            asked,
+            "{source}: the pictures asked for a drawing without a frame"
         );
+        unasked_within_changes(source, (all, asked), draws(&window), changed);
         // The pictures whose conversion started first, and then the newest ones.
         window.until_pictures_taken();
         let (all_after, asked_after) = draws(&window);
@@ -463,13 +477,7 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
             "{source}: {} drawings for a burst of fifty pictures",
             asked_after - asked
         );
-        assert_eq!(
-            all_after - all,
-            asked_after - asked,
-            "{source}: a drawing that no picture asked for; the state of the application \
-             changed {} times",
-            changes.get() - changed
-        );
+        unasked_within_changes(source, (all, asked), (all_after, asked_after), changed);
         let newest = Some(width);
         match source {
             "the watched share" => assert_eq!(held(&window).0, newest),
@@ -478,13 +486,20 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
             _ => assert_eq!(held(&window), (newest, newest, newest)),
         }
         // Without a newer picture a frame draws nothing.
+        let changed = changes.get();
         window.frame();
         window.park();
-        assert_eq!(draws(&window), (all_after, asked_after));
+        assert_eq!(
+            draws(&window).1,
+            asked_after,
+            "{source}: a frame without a picture"
+        );
+        unasked_within_changes(source, (all_after, asked_after), draws(&window), changed);
         // Five pictures between two waits for frames: at most two drawings each time, all
         // of them asked for by the pictures, and the last picture is held.
         for round in 0..2 {
             let (all, asked) = draws(&window);
+            let changed = changes.get();
             for _ in 0..5 {
                 width += 1;
                 show(width);
@@ -497,7 +512,12 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
                 "{source}, round {round}: {} drawings for five pictures",
                 asked_now - asked
             );
-            assert_eq!(all_now - all, asked_now - asked, "{source}, round {round}");
+            unasked_within_changes(
+                &format!("{source}, round {round}"),
+                (all, asked),
+                (all_now, asked_now),
+                changed,
+            );
         }
     }
 }

@@ -2,11 +2,11 @@
 
 use gpui::TestAppContext;
 use junto_client_core::protocol::call::CallPlace;
-use junto_media::calls::{ActiveCall, CallTarget, Phase};
+use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
 use junto_media::engine::{MicrophoneState, OutputState, ShareState};
 use junto_media::share::CaptureError;
 
-use crate::calls::{show_call, voice_channel};
+use crate::calls::voice_channel;
 use crate::harness::{Window, World, member};
 
 /// A connected call of this device in the voice channel with this name, with this state of
@@ -42,6 +42,19 @@ fn call_with_share(window: &mut Window, channel: &str, share: ShareState) -> Act
     }
 }
 
+/// The calls of the window state this call of this device, as a session states it, and the
+/// state of the application takes the change as it takes every change of the calls.
+fn give_calls(window: &mut Window, call: ActiveCall) {
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    calls.show_view_for_test(CallsView {
+        call: Some(call),
+        ..CallsView::default()
+    });
+    window.settle();
+}
+
 /// The notice of a share that ended by itself goes with the click of the person. The calls
 /// put the ended share away on their own threads; the window does not wait for them, so
 /// the notice is not shown again while they do.
@@ -58,18 +71,18 @@ fn the_notice_of_an_ended_share_goes_at_the_click_of_the_person(cx: &mut TestApp
         "Daily",
         ShareState::Ended(CaptureError::SourceGone),
     );
-    show_call(&mut window, ended.clone());
+    give_calls(&mut window, ended.clone());
     assert!(window.shows("share-notice"));
 
     // The calls have not put the share away: they still state the end.
     window.click("dismiss-share-notice");
     assert!(!window.shows("share-notice"));
-    show_call(&mut window, ended.clone());
+    give_calls(&mut window, ended.clone());
     assert!(!window.shows("share-notice"));
 
     // A later share that ends is told again.
     let running = call_with_share(&mut window, "Daily", ShareState::Off);
-    show_call(&mut window, running);
-    show_call(&mut window, ended);
+    give_calls(&mut window, running);
+    give_calls(&mut window, ended);
     assert!(window.shows("share-notice"));
 }

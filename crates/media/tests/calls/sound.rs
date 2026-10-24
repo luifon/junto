@@ -653,24 +653,22 @@ async fn mute_requests_that_wait_for_a_resume_reach_the_media_server_in_their_or
                 .max_by_key(Vec::len)
                 .unwrap_or_default()
         };
-        let in_turn = |states: &[bool]| {
-            let mut turns = states.to_vec();
-            turns.dedup();
-            turns
-        };
+        // The two requests of each change in the order of the changes, and then the request
+        // of the resume with the state after the changes.
+        let expected: Vec<bool> = changes
+            .iter()
+            .flat_map(|&muted| [muted, muted])
+            .chain(changes.last().copied())
+            .collect();
         until(
             "the requests of every change and of the resume are written",
-            || {
-                let states = of_ann();
-                states.len() > changes.len() && in_turn(&states).len() >= changes.len()
-            },
+            || of_ann().len() >= expected.len(),
         )
         .await;
         let states = of_ann();
         assert_eq!(
-            in_turn(&states),
-            changes,
-            "the mute requests of the track of Ann: {states:?}"
+            states, expected,
+            "the mute requests of the track of Ann, with the request of the resume last"
         );
         until_microphone_muted(&ben, true).await;
     })

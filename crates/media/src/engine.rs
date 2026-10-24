@@ -1793,7 +1793,16 @@ mod tests {
     /// WebRTC replaces the description at each negotiation. The wrapper copies a description
     /// on the signaling thread (vendor/README.md): a copy on the reading thread read a
     /// description that the signaling thread had freed, and the process ended with SIGSEGV.
+    /// Each local description starts the gathering of candidates, which opens sockets on the
+    /// network interfaces; the call library has no setting that gathers none. On Windows the
+    /// first such socket of a new program opens a prompt of the firewall on the desktop, which
+    /// stays until a person closes it (ADR 0915), so the test does not run there.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "opens sockets on the network interfaces: Windows asks at the desktop whether \
+                  the test program may receive from the network (ADR 0915)"
+    )]
     fn the_descriptions_can_be_read_while_negotiations_replace_them() {
         use livekit::webrtc::MediaType;
         use livekit::webrtc::peer_connection::{AnswerOptions, OfferOptions};
