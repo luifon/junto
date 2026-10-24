@@ -237,6 +237,13 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     assert_eq!(held.len() as u64, own_file.bytes);
     assert!(std::fs::read(&saved).unwrap() == held);
     assert!(window.shows_named(format!("recorded-download-{position}")));
+    // "Show in folder" hands the saved file to the file manager of the system. A test has
+    // no file manager: the application keeps the path.
+    window.click_named(format!("show-recorded-{}", own_file.segment_id));
+    let shown = window
+        .state
+        .read_with(&window.cx, |state, _| state.kept_shown().to_vec());
+    assert_eq!(shown, std::slice::from_ref(&saved));
 
     // The transcript is saved as a text file with the time and the speaker of each line.
     window.click("download-recording");

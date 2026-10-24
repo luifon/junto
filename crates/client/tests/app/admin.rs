@@ -3,7 +3,7 @@
 //! administrator manages workspaces, categories and channels in the window.
 
 use gpui::TestAppContext;
-use junto_client::state::admin::view::{AdminView, ChannelPageView, Scope, ServerPage};
+use junto_client::state::admin::view::{AdminView, ChannelPageView, Privacy, Scope, ServerPage};
 use junto_client::state::admin::{AdminOpen, AdminPage, ChannelPage};
 use junto_client::state::view::ServerStatus;
 use junto_client_core::ServerHandle;
@@ -1088,4 +1088,206 @@ fn a_refused_move_of_a_channel_that_is_gone_is_stated_on_the_page(cx: &mut TestA
             && channels_page(window)
                 .is_some_and(|page| page.channel(last).is_some_and(|line| line.moves_up.is_ok()))
     });
+}
+
+/// The categories of the default workspace on the server, in their order, with their names.
+fn server_categories(
+    world: &World,
+    owner: &ServerHandle,
+    workspace_id: WorkspaceId,
+) -> Vec<String> {
+    let mut categories = world
+        .run(owner.api().channels(workspace_id))
+        .unwrap()
+        .categories;
+    categories.sort_by_key(|category| category.position);
+    categories
+        .into_iter()
+        .map(|category| category.name)
+        .collect()
+}
+
+/// The names of the categories of the channels page, in the order of the page.
+fn page_categories(window: &mut Window) -> Vec<String> {
+    channels_page(window)
+        .map(|page| {
+            page.categories()
+                .map(|category| category.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[gpui::test]
+fn an_administrator_renames_reorders_and_deletes_categories_in_the_window(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    let category = |name: &str| {
+        world
+            .run(owner.api().create_category(
+                default,
+                &CreateCategory {
+                    name: name.to_owned(),
+                    position: None,
+                },
+            ))
+            .unwrap()
+            .id
+    };
+    let projects = category("Projects");
+    let later = category("Later");
+    let plans = world
+        .run(owner.api().create_channel(
+            default,
+            &CreateChannel {
+                name: "plans".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: Some(projects),
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows both categories", |window| {
+        page_categories(window) == ["Projects", "Later"]
+    });
+
+    // A new name: the form holds the old name, and Save sends the new one.
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-rename-{projects}")));
+    assert!(window.shows("category-name"));
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.admin_name(cx)),
+        "Projects"
+    );
+    window.send_form("Current projects");
+    window.until("the page shows the new name", |window| {
+        page_categories(window) == ["Current projects", "Later"] && !window.shows("category-name")
+    });
+    assert_eq!(
+        server_categories(&world, &owner, default),
+        ["Current projects", "Later"]
+    );
+
+    // Down and Up change the order of the categories on the server and on the page.
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-down-{projects}")));
+    window.until("the category is second", |window| {
+        page_categories(window) == ["Later", "Current projects"] && crate::admin_pages::idle(window)
+    });
+    assert_eq!(
+        server_categories(&world, &owner, default),
+        ["Later", "Current projects"]
+    );
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-up-{projects}")));
+    window.until("the category is first again", |window| {
+        page_categories(window) == ["Current projects", "Later"] && crate::admin_pages::idle(window)
+    });
+    assert_eq!(
+        server_categories(&world, &owner, default),
+        ["Current projects", "Later"]
+    );
+
+    // The deletion asks first; Cancel keeps the category.
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-delete-{later}")));
+    assert!(window.shows("category-delete-confirm"));
+    crate::admin_pages::click_in_page(&mut window, "category-delete-cancel");
+    assert!(!window.shows("category-delete-confirm"));
+    assert_eq!(page_categories(&mut window), ["Current projects", "Later"]);
+
+    // A deleted category with a channel: the channel stays, without a category.
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-delete-{projects}")));
+    crate::admin_pages::click_in_page(&mut window, "category-delete-confirm");
+    window.until("the category is gone from the page", |window| {
+        page_categories(window) == ["Later"]
+            && channels_page(window)
+                .and_then(|page| page.channel(plans).map(|line| line.category_id))
+                == Some(None)
+    });
+    assert_eq!(server_categories(&world, &owner, default), ["Later"]);
+    let held = world.run(owner.api().channels(default)).unwrap().channels;
+    let moved = held.iter().find(|channel| channel.id == plans).unwrap();
+    assert_eq!(moved.category_id, None);
+    assert!(!window.shows("category-refused"));
+}
+
+#[gpui::test]
+fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    let code = crate::admin_pages::invite(&world, &owner, Vec::new());
+    let (_device, member) = crate::admin_pages::joined(&world, &server, &code, "Luca");
+    let plans = world
+        .run(owner.api().create_channel(
+            default,
+            &CreateChannel {
+                name: "plans".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: None,
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    until_model(&world, &member, "the member has the channel", |model| {
+        model.channel(plans).is_some()
+    });
+    let privacy = |window: &mut Window| match window.admin().map(|view| view.scope) {
+        Some(Scope::Channel(settings)) => match settings.page {
+            ChannelPageView::Overview(page) => Some(page.privacy),
+            _ => None,
+        },
+        _ => None,
+    };
+    let everyone_denied = |world: &World| {
+        let roles = world.run(owner.api().workspace_roles(default)).unwrap();
+        let everyone = roles.iter().find(|role| role.is_everyone).unwrap().id;
+        world
+            .run(owner.api().channel_overrides(plans))
+            .unwrap()
+            .iter()
+            .any(|held| {
+                held.role_id == everyone
+                    && held
+                        .deny
+                        .contains(&junto_client_core::protocol::WorkspacePermission::ViewChannel)
+            })
+    };
+
+    window.open_administration();
+    window.click("admin-nav-channels");
+    let settings = selector(format!("channel-settings-{plans}"));
+    window.until("the channel has its row", |window| window.shows(settings));
+    window.click(settings);
+    window.until("the switch knows that the channel is open", |window| {
+        privacy(window) == Some(Privacy::Open)
+    });
+
+    // On: the role of everyone may not see the channel, and the member loses it.
+    window.click("channel-private");
+    window.until("the switch shows a private channel", |window| {
+        privacy(window) == Some(Privacy::Private)
+    });
+    assert!(everyone_denied(&world));
+    until_model(&world, &member, "the member lost the channel", |model| {
+        model.channel(plans).is_none()
+    });
+
+    // Off: the member has the channel again.
+    window.click("channel-private");
+    window.until("the switch shows an open channel", |window| {
+        privacy(window) == Some(Privacy::Open)
+    });
+    assert!(!everyone_denied(&world));
+    until_model(
+        &world,
+        &member,
+        "the member has the channel again",
+        |model| model.channel(plans).is_some(),
+    );
 }

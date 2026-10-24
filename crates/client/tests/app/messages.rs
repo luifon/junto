@@ -1559,3 +1559,306 @@ fn a_message_whose_files_the_retention_removed_says_so(cx: &mut TestAppContext) 
     assert!(row.message.attachments.is_empty());
     assert!(!window.shows_named("file:0".to_owned()));
 }
+
+impl Window {
+    /// Moves the pointer over a message, as a person does before a click on the bar of its
+    /// actions.
+    #[track_caller]
+    pub fn hover_message(&mut self, message_id: MessageId) {
+        use gpui::{Modifiers, MouseButton};
+        self.settle();
+        let bounds = self
+            .cx
+            .debug_bounds(crate::harness::selector(format!("message:{message_id}")))
+            .expect("the message is drawn");
+        self.cx
+            .simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none());
+        self.settle();
+    }
+
+    /// The texts of the messages that the window draws and that wait for the server.
+    fn waiting_texts(&mut self) -> Vec<String> {
+        let Some(feed) = self.feed() else {
+            return Vec::new();
+        };
+        feed.rows
+            .iter()
+            .filter_map(|row| match row {
+                FeedRow::Waiting(waiting) => {
+                    Some(plain_text(&waiting.pending.document, &feed.names, 200))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The texts of the messages of a place that the server holds, oldest first.
+fn server_texts(world: &World, admin: &Admin, place: PlaceId) -> Vec<String> {
+    let page = junto_client_core::api::PageQuery {
+        limit: Some(200),
+        ..Default::default()
+    };
+    let mut messages = world
+        .run(admin.handle.api().messages(place, &page))
+        .unwrap()
+        .messages;
+    messages.sort_by_key(|message| message.position);
+    messages
+        .iter()
+        .filter(|message| message.system.is_none())
+        .filter_map(|message| message.document.as_ref())
+        .map(|document| plain_text(document, &Default::default(), 200))
+        .collect()
+}
+
+#[gpui::test]
+fn scrolling_up_reads_the_older_history_of_a_channel(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let channel_id = world
+        .run(admin.handle.api().snapshot())
+        .unwrap()
+        .snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.channels)
+        .find(|channel| channel.kind == ChannelKind::Text)
+        .unwrap()
+        .id;
+    // More than three pages of 50 messages, written before the person opens the channel,
+    // so that the window reads the first page and three older ones. Two accounts write
+    // them: the server takes at most 120 writes of one account in a minute.
+    let code = admin.invite(&world, 1);
+    let (_device, bruno) = crate::admin_pages::joined(&world, &server, &code, "Bruno");
+    let expected: Vec<String> = (0..170).map(|number| format!("Line {number}")).collect();
+    for (number, text) in expected.iter().enumerate() {
+        if number % 2 == 0 {
+            admin.send(&world, channel_id, document(text));
+        } else {
+            let message = SendMessage {
+                document: document(text),
+                reply_to: None,
+                attachments: Vec::new(),
+            };
+            world
+                .run(
+                    bruno
+                        .api()
+                        .send_message(PlaceId::Channel(channel_id), &message),
+                )
+                .unwrap();
+        }
+    }
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until_message("Line 169");
+    assert_eq!(window.selected_channel(), channel_id);
+    let first_page = window.texts();
+    assert!(
+        !first_page.contains(&"Line 0".to_owned()),
+        "the first page holds the whole history"
+    );
+    assert!(window.feed().unwrap().more_before);
+    let reads = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| {
+                seen.method == "GET"
+                    && seen
+                        .path
+                        .starts_with(&format!("/api/v1/channels/{channel_id}/messages"))
+            })
+            .count()
+    };
+    let before = reads(&proxy);
+
+    // The wheel over the list moves it up; near its start the window reads the page
+    // before, until the first message of the channel is drawn.
+    window.until("the first message of the channel is drawn", |window| {
+        let list = window
+            .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+            .expect("the list was drawn");
+        window.dispatch(ScrollWheelEvent {
+            position: list.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(1500.0))),
+            ..Default::default()
+        });
+        window.texts().first().map(String::as_str) == Some("Line 0")
+    });
+    assert!(
+        reads(&proxy) >= before + 3,
+        "the three older pages were read: {} reads after the first page",
+        reads(&proxy) - before
+    );
+    let feed = window.feed().unwrap();
+    assert!(!feed.more_before);
+    assert_eq!(window.texts(), expected);
+    assert_eq!(server_texts(&world, &admin, feed.place), expected);
+}
+
+#[gpui::test]
+fn a_failed_message_is_sent_again_or_discarded_at_its_row(cx: &mut TestAppContext) {
+    use crate::support::Fault;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let place = window.feed().unwrap().place;
+    let channel_id = window.selected_channel();
+    let path = format!("/api/v1/channels/{channel_id}/messages");
+
+    // The server answers busy to each attempt of the retry policy: the message waits at
+    // its row with the reason, Send again and Discard.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail(&path, vec![Fault::Busy; attempts]);
+    window.write("Sent at the second try");
+    window.until(
+        "the row of the failed message offers Send again",
+        |window| {
+            window.waiting_texts() == ["Sent at the second try"]
+                && window.shows("send-again")
+                && window.shows("discard-message")
+        },
+    );
+    assert!(server_texts(&world, &admin, place).is_empty());
+
+    // Send again: the message is sent once and the row of the wait is gone.
+    window.click("send-again");
+    window.until_message("Sent at the second try");
+    assert!(window.waiting_texts().is_empty());
+    assert!(!window.shows("send-again"));
+    assert_eq!(
+        server_texts(&world, &admin, place),
+        ["Sent at the second try"]
+    );
+
+    // Discard: the message leaves the list and never reaches the server.
+    proxy.fail(&path, vec![Fault::Busy; attempts]);
+    window.write("Not wanted");
+    window.until("the row of the second failed message", |window| {
+        window.waiting_texts() == ["Not wanted"] && window.shows("discard-message")
+    });
+    let posts = |proxy: &FaultProxy| {
+        proxy
+            .seen(&path)
+            .iter()
+            .filter(|seen| seen.method == "POST")
+            .count()
+    };
+    let sent = posts(&proxy);
+    window.click("discard-message");
+    window.until("the discarded message is gone", |window| {
+        window.waiting_texts().is_empty() && !window.shows("discard-message")
+    });
+    assert!(window.texts().iter().all(|text| text != "Not wanted"));
+    // The client core holds nothing more to send for the place.
+    let server_id = window.view().selected.unwrap().id;
+    let outbox = window.state.read_with(&window.cx, |state, _| {
+        state
+            .server(server_id)
+            .and_then(|server| server.live().view().model)
+            .map(|model| {
+                model
+                    .outbox
+                    .iter()
+                    .filter(|pending| pending.place == place)
+                    .count()
+            })
+    });
+    assert_eq!(outbox, Some(0));
+    assert_eq!(posts(&proxy), sent, "a discarded message is not sent");
+    assert_eq!(
+        server_texts(&world, &admin, place),
+        ["Sent at the second try"]
+    );
+}
+
+#[gpui::test]
+fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::roles::CreateWorkspaceRole;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let code = admin.invite(&world, 1);
+    let (_device, luca) = crate::admin_pages::joined(&world, &server, &code, "Luca");
+    // The window is of a member whose one permission beyond the role of everyone is
+    // "manage messages", through a role: the permission of an administrator does not
+    // decide here.
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Mia");
+    let workspace_id = world.run(api.workspaces()).unwrap()[0].id;
+    let moderators = world
+        .run(api.create_workspace_role(
+            workspace_id,
+            &CreateWorkspaceRole {
+                name: "Moderators".to_owned(),
+                permissions: vec![WorkspacePermission::ManageMessages],
+            },
+        ))
+        .unwrap()
+        .id;
+    let mia = window.own_account();
+    world
+        .run(api.assign_workspace_role(workspace_id, mia, moderators))
+        .unwrap();
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let place = PlaceId::Channel(window.selected_channel());
+    let send = |text: &str| {
+        let message = SendMessage {
+            document: document(text),
+            reply_to: None,
+            attachments: Vec::new(),
+        };
+        world.run(luca.api().send_message(place, &message)).unwrap()
+    };
+    let kept = send("The plan for Monday");
+    let wrong = send("A message in the wrong channel");
+    window.until_message("The plan for Monday");
+    let row = window.until_value("the role lets the member delete the message", |window| {
+        let row = window.until_message("A message in the wrong channel");
+        row.can_delete.then_some(row)
+    });
+    assert!(!row.own && !row.message.permanent && !row.can_edit);
+
+    // The bar of the message under the pointer has Delete; the question names no
+    // permanent message, and Delete removes the message.
+    window.hover_message(wrong.id);
+    window.click_named(format!("delete:{}", wrong.id));
+    assert!(window.shows("confirm-delete-message"));
+    assert!(!window.shows("confirm-delete-permanent"));
+    window.click("delete-message");
+    window.until("the message is gone", |window| {
+        !window.holds_message(wrong.id)
+    });
+    assert!(window.holds_message(kept.id));
+    let held: Vec<MessageId> = world
+        .run(luca.api().messages(place, &Default::default()))
+        .unwrap()
+        .messages
+        .iter()
+        .map(|message| message.id)
+        .collect();
+    assert!(held.contains(&kept.id) && !held.contains(&wrong.id));
+    // No line states the deletion: only a permanent message leaves one (ADR 0402).
+    let feed = window.feed().unwrap();
+    assert!(
+        !feed
+            .rows
+            .iter()
+            .any(|row| matches!(row, FeedRow::System(line)
+            if line.message.system.as_ref().is_some_and(|system| {
+                system.action == "permanent_message_deleted"
+            })))
+    );
+}

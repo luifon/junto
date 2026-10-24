@@ -895,3 +895,212 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
     assert_eq!(entry(&mut window), None);
     assert!(!window.shows_named(format!("thread-row:{root_id}")));
 }
+
+impl Window {
+    /// Opens the direct conversation with a member through the members panel.
+    fn open_conversation_with(
+        &mut self,
+        account_id: junto_client_core::protocol::ids::AccountId,
+        name: &str,
+    ) -> PlaceId {
+        self.click("members-button");
+        self.until("the members", |window| window.shows_member(name));
+        self.click_named(format!("message-member:{account_id}"));
+        self.until("the conversation is shown", |window| {
+            window
+                .view()
+                .lists()
+                .is_some_and(|lists| lists.conversation.is_some())
+                && window.feed().is_some_and(|feed| feed.loaded)
+        });
+        let conversation = self.view().lists().unwrap().conversation.clone().unwrap();
+        PlaceId::Direct(conversation.id)
+    }
+}
+
+#[gpui::test]
+fn in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::transfers::UploadStage;
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _channel_id, _root_id) = with_root(cx, &world);
+    let ada = admin.handle.account().unwrap();
+    let api = admin.handle.api();
+    let direct = window.open_conversation_with(ada, "Ada");
+    let question = SendMessage {
+        document: document("Can you send the mix?"),
+        reply_to: None,
+        attachments: Vec::new(),
+    };
+    let question = world.run(api.send_message(direct, &question)).unwrap().id;
+    window.until_message("Can you send the mix?");
+
+    // Reply at the bar of the message, with a file chosen in the file dialog.
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("mix.flac");
+    std::fs::write(&path, b"the mix of the second take").unwrap();
+    window.hover_message(question);
+    window.click_named(format!("reply:{question}"));
+    assert!(window.shows("compose-state"));
+    window.click("attach-file");
+    let chosen = path.clone();
+    window
+        .cx
+        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.until("the file is uploaded", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists.draft.len() == 1
+                && matches!(lists.draft[0].progress.stage, UploadStage::Complete(_))
+        })
+    });
+    window.write("Here it is");
+    let answer = window.until_message("Here it is");
+    assert_eq!(answer.message.reply_to, Some(question));
+    assert_eq!(answer.message.attachments.len(), 1);
+    assert!(window.shows_named("file:0".to_owned()));
+    let held = world.run(api.message(answer.message.id)).unwrap();
+    assert_eq!(held.reply_to, Some(question));
+    assert_eq!(held.attachments[0].name, "mix.flac");
+    assert_eq!(held.attachments[0].bytes, 26);
+
+    // Edit at the bar of the own message.
+    window.hover_message(answer.message.id);
+    window.click_named(format!("edit:{}", answer.message.id));
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
+        (None, Some(answer.message.id))
+    );
+    window.write("Here it is, the second take");
+    let edited = window.until_message("Here it is, the second take");
+    assert_eq!(edited.message.id, answer.message.id);
+    let held = world.run(api.message(answer.message.id)).unwrap();
+    assert!(held.edited_at.is_some());
+    assert_eq!(
+        held.document
+            .as_ref()
+            .map(|document| plain_text(document, &Default::default(), 200)),
+        Some("Here it is, the second take".to_owned())
+    );
+
+    // A reaction at the bar of the message of the other person.
+    window.hover_message(question);
+    window.click_named(format!("react:{question}"));
+    assert!(window.shows("emoji-picker"));
+    window.in_shell(|shell, window, cx| shell.find_emoji("thumbs up", window, cx));
+    window.click_named("emoji:\u{1f44d}".to_owned());
+    window.until("the reaction is drawn", |window| {
+        window.messages().iter().any(|row| {
+            row.message.id == question
+                && row
+                    .message
+                    .reactions
+                    .iter()
+                    .any(|reaction| reaction.emoji == "\u{1f44d}" && reaction.own)
+        })
+    });
+    let held = world.run(api.message(question)).unwrap();
+    assert!(
+        held.reactions
+            .iter()
+            .any(|reaction| reaction.emoji == "\u{1f44d}" && reaction.count == 1)
+    );
+}
+
+#[gpui::test]
+fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel_id, _root_id) = with_root(cx, &world);
+    let ada = admin.handle.account().unwrap();
+    let api = admin.handle.api();
+    let workspace_id = world.run(api.workspaces()).unwrap()[0].id;
+    let role = CreateWorkspaceRole {
+        name: "Editors".to_owned(),
+        permissions: Vec::new(),
+    };
+    let editors = world
+        .run(api.create_workspace_role(workspace_id, &role))
+        .unwrap()
+        .id;
+    world
+        .run(api.assign_workspace_role(workspace_id, ada, editors))
+        .unwrap();
+    admin.allow_everyone(&world, &[WorkspacePermission::MentionEveryone]);
+    window.until("the role and the mention of everyone are known", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            workspace.roles.iter().any(|(_, name)| name == "Editors")
+                && workspace.allowed.mention_everyone
+        })
+    });
+    let type_text = |window: &mut Window, text: &str| {
+        window.in_shell(|shell, window, cx| {
+            shell.type_message(Pane::Main, text, window, cx);
+            shell.focus_composer(Pane::Main, window, cx);
+        });
+    };
+    let candidate = |window: &mut Window, name: &str| {
+        let names = window.in_shell(|shell, _, _| shell.mention_names(Pane::Main));
+        let index = names
+            .iter()
+            .position(|held| held == name)
+            .unwrap_or_else(|| panic!("the picker does not offer {name}: {names:?}"));
+        window.click_named(format!("candidate:{index}"));
+    };
+
+    // The role: typed, chosen in the picker, sent.
+    let holds = |document: &Document, node: &Inline| {
+        document
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Paragraph { content } if content.contains(node)))
+    };
+    let sent_with = |window: &mut Window, node: &Inline| {
+        window.until_value("the message with the mention is drawn", |window| {
+            window.messages().into_iter().find(|row| {
+                row.message
+                    .document
+                    .as_ref()
+                    .is_some_and(|document| holds(document, node))
+            })
+        })
+    };
+    // The words are put in, and the mention is typed key by key, so that the picker
+    // opens through the input of the text area.
+    type_text(&mut window, "Review please, ");
+    window.cx.simulate_input("@Edi");
+    candidate(&mut window, "Editors");
+    window.press("enter");
+    let role_node = Inline::Role { role_id: editors };
+    let to_role = sent_with(&mut window, &role_node);
+    let drawn = to_role.message.document.as_ref().unwrap();
+    let names = window.feed().unwrap().names;
+    assert_eq!(
+        plain_text(drawn, &names, 200).trim_end(),
+        "Review please, @Editors"
+    );
+    let held = world.run(api.message(to_role.message.id)).unwrap();
+    assert!(
+        held.document
+            .as_ref()
+            .is_some_and(|document| holds(document, &role_node))
+    );
+
+    // Everyone: chosen in the picker, sent.
+    type_text(&mut window, "Meeting at noon, ");
+    window.cx.simulate_input("@every");
+    candidate(&mut window, text::EVERYONE);
+    window.press("enter");
+    let to_all = sent_with(&mut window, &Inline::Everyone);
+    let held = world.run(api.message(to_all.message.id)).unwrap();
+    assert!(
+        held.document
+            .as_ref()
+            .is_some_and(|document| holds(document, &Inline::Everyone))
+    );
+
+    // Both mentions reach the administrator, who holds the role and is one of everyone.
+    let state = world
+        .run(api.message_state(PlaceId::Channel(channel_id)))
+        .unwrap();
+    assert_eq!(state.mentions, 2, "{state:?}");
+}
