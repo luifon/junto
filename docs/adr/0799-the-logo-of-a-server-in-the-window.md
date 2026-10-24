@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-A server has a public logo that an administrator sets and removes (ADR 0101). The public information of the server names its path, the event `server_logo_changed` states its description, and the snapshot does not carry it. The client core holds what the events stated and reads the image without a session (ADR 0795). The server book of the window drew a generated picture for every server (ADR 0731, ADR 0780). The window reads and decodes the pictures of people with a cache of plain data (ADR 0783). The approved design has no view that sets a logo.
+A server has a public logo that an administrator sets and removes (ADR 0101). The public information of the server names its path, the event `server_logo_changed` states its description, and the snapshot does not carry it. The client core holds what the events stated and reads the image without a session (ADR 0795). The server book of the window drew a generated picture for every server (ADR 0731, ADR 0780). The window reads and decodes the pictures of people with a cache of plain data (ADR 0783).
 
 ## Decision
 
@@ -33,4 +33,4 @@ Administration:
 - A member sees a new logo without an act: the event states it, and the window reads the image once.
 - A server with a logo costs each window one request of its image at the start, one after the first state of the server, and one after each later reload of that state.
 - The picture of a server that the window cannot draw, or that it has not read yet, is the generated picture.
-- The page "Server" is designed in this record and not in the approved design.
+- The page "Server" is designed in this record.

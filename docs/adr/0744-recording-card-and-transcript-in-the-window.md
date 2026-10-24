@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The approved design draws a finished recording as one message in the chat of its voice channel, with the video, "Open" and "Download", and the transcript with a label for each speaker (view G). ADR 0602 and ADR 0608 decide that the client has no player: it saves the video and gives the copy to the player of the system, and "Download" offers the video and, separately, the audio files. ADR 0723 gives the window a recording that a reader opens, with its segments, its transcript, the lines that were read, and the downloads of its files. The server posts a finished recording as the system message `recording_ready`, which names the recording; removing a recording needs "manage recordings" (ADR 0608).
+ADR 0602 and ADR 0608 decide that the client has no player: it saves the video and gives the copy to the player of the system, and "Download" offers the video and, separately, the audio files. ADR 0723 gives the window a recording that a reader opens, with its segments, its transcript, the lines that were read, and the downloads of its files. The server posts a finished recording as the system message `recording_ready`, which names the recording; removing a recording needs "manage recordings" (ADR 0608).
 
 ## Decision
 
@@ -45,9 +45,9 @@ Removal:
 ## Consequences
 
 - The prediction of "Remove" reads the roles of the workspace and not the overrides of the channel: a person who holds "manage recordings" only through an override of the voice channel sees the control disabled.
-- The window has no list of the recordings of a workspace: the approved design draws none. The route is in the client core (ADR 0723).
+- The list of recordings of a workspace is described in ADR 0784 and uses the route of the client core (ADR 0723).
 - The correction of a line, the name of a voice, the original text with who changed it, the details of a transcript, the new request for a transcript and the parts of a recording are in ADR 0616. The window follows a correction and a name that another client made.
 - A person in a call reads the card of an earlier recording of that voice channel after the call.
 - The state holds one range of lines without a hole: lines read around a line replace the lines from the start, and the person reads on in both directions. The bound of 20,000 lines drops lines at the end when lines are added before them.
-- The card draws no frame of the video. A thumbnail from the server would be needed for the picture of the design.
+- The card draws no frame of the video. Showing a video frame would require a thumbnail from the server.
 - The window test against the real server makes a recording with the recorder in memory of the server, and checks the card with its files and its speakers, a saved audio file and the saved video against the files of the server, the transcript as text, the opening of the video, the transcript in the side panel, the jump from a search result, the refusal of a removal without the permission, and the removal with it.

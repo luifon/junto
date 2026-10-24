@@ -30,6 +30,7 @@
 # tools/ci/ci.sh can report a run whose processes ended without writing "finished" (a logoff or
 # a restart of Windows ends them); see Test-RunEnded.
 #
+# "-Forget" proves termination, removes this run's task and verifies its absence.
 # Other modes: "-Check [-User <account>]" prints whether a run of the account can start now.
 # "-FunctionsOnly" only defines the functions, for the tests of tools/windows.
 #
@@ -40,6 +41,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Run,
     [switch]$Remove,
     [switch]$Ended,
+    [switch]$Forget,
     [switch]$Check,
     [string]$User = '',
     [switch]$FunctionsOnly
@@ -310,6 +312,23 @@ function Stop-RunTask {
     Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $Run -Confirm:$false -ErrorAction SilentlyContinue
 }
 
+# Removes only this ended run's task; an inconclusive query leaves the run's evidence.
+function Remove-RunTaskForForget {
+    if (-not (Test-RunEnded $here $Run)) { throw 'the run has not finished' }
+    $task = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        $_.TaskPath -eq $TaskPath -and $_.TaskName -eq $Run
+    })
+    if ($task | Where-Object { $_.State -in @('Running', 'Queued') }) {
+        throw 'the task of the run has not finished'
+    }
+    if ($task.Count -gt 0) {
+        Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $Run -Confirm:$false -ErrorAction Stop
+    }
+    if (Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        $_.TaskPath -eq $TaskPath -and $_.TaskName -eq $Run
+    }) { throw 'the task of the run remains registered' }
+}
+
 # Start-Run with the handling of every error: before "started" the run has not started, and its
 # end is recorded; after it the run goes on.
 function Invoke-Start {
@@ -335,6 +354,11 @@ if ($Check) {
     $refusal = Get-DesktopRefusal $account @(Get-DesktopSession $account)
     if ($refusal) { Write-Output $refusal; exit 2 }
     Write-Output "a run of $account can start"
+    exit 0
+}
+
+if ($Forget) {
+    try { Remove-RunTaskForForget } catch { Write-Output "the run cannot be forgotten: $_"; exit 1 }
     exit 0
 }
 

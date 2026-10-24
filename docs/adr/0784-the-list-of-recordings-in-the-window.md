@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-A server keeps the recordings of calls of a workspace and lists them, the newest first, in pages (ADR 0604). The list holds the recordings of the voice channels that the account can view. The window showed a recording only while it ran in the call of this device (ADR 0738). The state of a server holds a recording only while it runs (ADR 0719), so a list of past recordings is not in the state. The server tells a change of a recording with the events `recording_started`, `recording_updated` and `recording_removed`. The approved design has no view for the list. The administration has a layer with pages, and its audit log is a list that is read in pages on demand (ADR 0761).
+A server keeps the recordings of calls of a workspace and lists them, the newest first, in pages (ADR 0604). The list holds the recordings of the voice channels that the account can view. The window showed a recording only while it ran in the call of this device (ADR 0738). The state of a server holds a recording only while it runs (ADR 0719), so a list of past recordings is not in the state. The server tells a change of a recording with the events `recording_started`, `recording_updated` and `recording_removed`. The administration has a layer with pages, and its audit log is a list that is read in pages on demand (ADR 0761).
 
 ## Decision
 

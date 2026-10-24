@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR 0405 and ADR 0409 define the search: full-text search over messages and transcript lines with the web-search syntax of PostgreSQL and the `simple` configuration, filters for a channel, an author and a time span, pages with an opaque continuation, and results that are decided by what the account can read at the time of each request. A result holds plain text, a place identifier, an author and a time; a message result names its message, and a transcript result names its recording and its line. ADR 0722 keeps no search in the state of a server. The approved design draws the search field in the header of a channel and the results in the side panel (view H). The search is counted against the limit of 120 history reads in a minute.
+ADR 0405 and ADR 0409 define the search: full-text search over messages and transcript lines with the web-search syntax of PostgreSQL and the `simple` configuration, filters for a channel, an author and a time span, pages with an opaque continuation, and results that are decided by what the account can read at the time of each request. A result holds plain text, a place identifier, an author and a time; a message result names its message, and a transcript result names its recording and its line. ADR 0722 keeps no search in the state of a server. The search is counted against the limit of 120 history reads in a minute.
 
 ## Decision
 

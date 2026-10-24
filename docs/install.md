@@ -105,12 +105,10 @@ The first command refuses to overwrite an existing file. If the file exists, ins
    git clone <address of the repository> junto && cd junto/deploy
    ```
 
-2. Create the settings file with new secrets. `.env` is not tracked by git.
+2. Create the settings file with new secrets. `.env` is not tracked by git. The parentheses keep the restrictive file mode inside this command; later checkouts and build inputs keep their usual readable modes.
 
    ```sh
-   umask 077
-   cp env.example .env
-   ./generate-secrets.sh >> .env
+   (umask 077 && cp env.example .env && ./generate-secrets.sh >> .env)
    ```
 
    Edit `.env`: set `JUNTO_SERVER_HOST`, `JUNTO_LIVEKIT_HOST`, `JUNTO_TURN_HOST`, `JUNTO_PUBLIC_IP`, `JUNTO_ACME_EMAIL` and `JUNTO_MODELS_DIR`. `env.example` explains every setting. No secret has a default: Compose stops with the name of the variable when one is missing. A secret consists of letters and digits; PostgreSQL, Redis and the media server stop with a message when one has another character.
@@ -179,7 +177,7 @@ The first command refuses to overwrite an existing file. If the file exists, ins
 
 Both hosts get the repository and a `deploy/.env`. The LiveKit key, the LiveKit secret and the Redis password are the same on both hosts; the PostgreSQL password is needed on the data host only.
 
-1. On the data host: `umask 077 && cp env.example .env && ./generate-secrets.sh >> .env`. On the public host: `umask 077 && cp env.example .env`. Copy the lines `JUNTO_LIVEKIT_API_KEY`, `JUNTO_LIVEKIT_API_SECRET` and `JUNTO_REDIS_PASSWORD` of the data host to the end of the `.env` of the public host, over a channel that you trust.
+1. On the data host: `(umask 077 && cp env.example .env && ./generate-secrets.sh >> .env)`. On the public host: `(umask 077 && cp env.example .env)`. Copy the lines `JUNTO_LIVEKIT_API_KEY`, `JUNTO_LIVEKIT_API_SECRET` and `JUNTO_REDIS_PASSWORD` of the data host to the end of the `.env` of the public host, over a channel that you trust.
 2. On both hosts: set the names and `JUNTO_PUBLIC_IP` in `.env`. The public host needs `JUNTO_TURN_HOST` and `JUNTO_ACME_EMAIL`; the data host needs `JUNTO_MODELS_DIR`. Then compare the CPU limits with each host: `./check-limits.sh two-hosts-public.yaml` on the public host and `./check-limits.sh two-hosts-data.yaml` on the data host. A public host with one CPU needs `JUNTO_LIVEKIT_CPUS=1` (see "Requirements").
 3. Create the key of each end of the link. The private key stays in a volume of its host; the command prints the public key.
 
@@ -230,9 +228,7 @@ The machine is a Linux host with Docker Engine, or a Mac with Docker Desktop. On
 1. Create the settings file with new secrets, and set `JUNTO_MODELS_DIR` to a directory of your user, for example `/Users/<you>/junto-models` on a Mac:
 
    ```sh
-   umask 077
-   cp env.example .env
-   ./generate-secrets.sh >> .env
+   (umask 077 && cp env.example .env && ./generate-secrets.sh >> .env)
    ```
 
 2. Install the transcription models as in step 3 of "One host", with the file `local.yaml` and the image `junto-local-worker`. A directory of your user needs no `sudo`:

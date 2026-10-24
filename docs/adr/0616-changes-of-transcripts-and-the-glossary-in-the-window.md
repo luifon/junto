@@ -24,6 +24,13 @@ A replacement made from an older list:
 - Without `replaces`, the route replaces the glossary as before. A server of an older version ignores the field.
 - The window always sends it. A change of the window therefore never undoes a change of another person that the window had not received.
 
+The glossary from a terminal:
+
+- `junto-cli glossary list <workspace>` lists terms in their priority order, numbered from one.
+- `add <workspace> --text <term>` appends a term, `change <workspace> --term <old term> --text <new term>` changes it in place, and `remove <workspace> --term <term>` removes it. The old term is matched by exact text, not its position: another person can reorder a list between commands. Options allow a term to begin with a hyphen.
+- Each command reads the public glossary route. Each change sends the entire replacement with `replaces` set to the list just read. A conflict is reported without another write; the person lists the glossary again before deciding what to change. Every command ends its session, also after a refusal.
+- The server enforces membership, the manage-glossary permission, term validity, uniqueness and the list bound. Printed terms omit control characters, as other terminal output does.
+
 The glossary page:
 
 - The administration has the page "Glossary" in the group of the shown workspace, after "Recordings", for every member. It lists the terms with their position, the most important first.
@@ -60,7 +67,7 @@ The recording of a call:
 ## Consequences
 
 - A change of the glossary costs one request, the read of the glossary after its answer, and the read after its event; an event that arrives while the read after the answer is on its way ends that read and starts another. Two people who change the glossary at the same time: the second change is refused and is made again from the list that the page then shows.
-- The CLI of the client core has no glossary command.
+- The CLI reads, adds, changes and removes glossary terms through the same public routes, with the same permission and conflict checks.
 - The window offers no removal of the name of a voice: the server keeps the names of a voice and shows the newest, and takes no empty name.
 - The page takes the next change at once after an answer. A page that shows its answered list while another person changed the glossary meanwhile gets a refusal at the next change, and then shows the state.
 - Two people who correct the same line or name the same voice at the same time: the second change is refused, and its form shows the first one; a second Save replaces it knowingly.

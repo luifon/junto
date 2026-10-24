@@ -388,9 +388,23 @@ forget() {
                 flock repo.lock sh -c 'git --git-dir=repo.git reflog expire --expire=now --all &&
                     git --git-dir=repo.git gc --quiet --prune=now'" ;;
         *-windows)
+            windows_settings
+            missing=$(on windows "if [ -d 'runs/$run' ] && [ ! -f 'runs/$run/finished' ] && [ ! -f 'runs/$run/start-run.ps1' ]; then
+                cd 'runs/$run'
+                if [ -f start ] || [ -f started ] || [ -f process ] || [ -f current ] || [ -f record.tsv ]; then echo missing
+                else echo unknown; fi
+                fi")
+            if [ "$missing" = unknown ]; then
+                echo 'the run has no start evidence; its upload may still be in progress' >&2
+                return 1
+            fi
+            inspector=check-run.ps1
+            windows_ssh scp -q "$root/tools/windows/start-run.ps1" \
+                "$windows_host:$windows_dir/runs/$run/$inspector" || return 1
             on windows "cd 'runs/$run' || exit 1
-                ended=\$($(ended_check windows "$run"))
-                if [ ! -f finished ] && [ -z \"\$ended\" ]; then echo 'the run has not finished' >&2; exit 1; fi
+                if ! powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '$inspector' -Directory '$windows_dir' -Run '$run' -Forget; then
+                    echo 'the run has not finished or its task could not be removed' >&2; exit 1
+                fi
                 cd ../.. && rm -rf 'runs/$run'" ;;
         *-macos)
             test -f "$local_dir/runs/$run/finished" || { echo 'the run has not finished' >&2; exit 1; }

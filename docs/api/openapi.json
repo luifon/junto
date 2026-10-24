@@ -13599,7 +13599,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/MicrophoneBlock",
-                "description": "The block of the caller's microphone in this call. The call lists the caller as a\nparticipant only after the device has connected, so the answer states the block."
+                "description": "The block of the caller's microphone in this call. The call lists the caller as a\nparticipant only after the device has connected, so the answer states the block,\nexcept before admission to a call that hides its occupants (ADR 0517)."
               },
               {
                 "type": "null"
@@ -13610,7 +13610,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/SoundBlock",
-                "description": "The block of the caller's sound in this call. The client applies it from the first\nmoment of its connection (ADR 0503)."
+                "description": "The block of the caller's sound in this call. The client applies it from the first\nmoment of its connection (ADR 0503), except before admission to a call that hides\nits occupants (ADR 0517)."
               },
               {
                 "type": "null"

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR 0404 defines unread signs, the notification level, the mute and "do not disturb". ADR 0409 defines their routes: one notice per recipient and message without text and without a place, a level for the account on a server, for a workspace and for a channel, a mute and two mention switches for a channel, and "do not disturb" with a daily quiet time as data of the account on one server. ADR 0722 gives the window the notices of the state, the messages that they name, the notification settings and the answer whether the account is in its quiet time. The approved design draws no list of notices and no notification settings. gpui shows a notification of the operating system, takes one away by its tag, and tells a press on one; on macOS that works only from an application bundle, and the system asks the person for the permission at the first notification (ADR 0701).
+ADR 0404 defines unread signs, the notification level, the mute and "do not disturb". ADR 0409 defines their routes: one notice per recipient and message without text and without a place, a level for the account on a server, for a workspace and for a channel, a mute and two mention switches for a channel, and "do not disturb" with a daily quiet time as data of the account on one server. ADR 0722 gives the window the notices of the state, the messages that they name, the notification settings and the answer whether the account is in its quiet time. gpui shows a notification of the operating system, takes one away by its tag, and tells a press on one; on macOS that works only from an application bundle, and the system asks the person for the permission at the first notification (ADR 0701).
 
 The server marks every notice up to a time as read with one request, and states with the snapshot whether a workspace has a level of its administrators (ADR 0412, ADR 0792). It has no setting for a thread. The server tells no notice while the account is in a quiet time, so a client learns of the notices of that time when the quiet time has ended.
 
@@ -60,7 +60,7 @@ System notifications:
 
 ## Consequences
 
-- The notices and the notification settings have no screen in the approved design. They are built from its components.
+- The notices and notification settings use the components of ADR 0731.
 - "Mark all as read" costs one request.
 - A thread has no notification setting, because the server has none.
 - The settings show the time zone of the daily quiet time, and the person chooses another one from the list of ADR 0798.

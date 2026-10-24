@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR 0105 defines joining with an invite code and with a request that an administrator approves, and ADR 0712 gives the flows that carry it. The approved design types the address in the server book and shows one dialog with the server that answered, a notice about the operator, and two ways in. A person on a new server has the owner code that the server printed, not an invite code (ADR 0110, ADR 0114). The window must also show what a saved server is when it is not usable: unreachable, waiting, banned, removed, incompatible, or answering as another server (ADR 0712, ADR 0713, ADR 0714).
+ADR 0105 defines joining with an invite code and with a request that an administrator approves, and ADR 0712 gives the flows that carry it. A person on a new server has the owner code that the server printed, not an invite code (ADR 0110, ADR 0114). The window must also show what a saved server is when it is not usable: unreachable, waiting, banned, removed, incompatible, or answering as another server (ADR 0712, ADR 0713, ADR 0714).
 
 ## Decision
 

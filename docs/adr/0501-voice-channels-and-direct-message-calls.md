@@ -28,7 +28,9 @@ Media:
 
 Event lines:
 
-- Call start, recording start and stop, a member joining by invite link, and the start of a screen share appear as system lines in the text chat of the voice channel.
+- Call start, recording start and stop, a member accepting a call invitation, and the start of a screen share appear as system lines in the text chat of the voice channel.
+
+A call invitation is the invitation of an existing member to a call (ADR 0506). It is distinct from an invite code that joins a server (ADR 0105); using that code writes no call-join system line.
 
 ## Consequences
 

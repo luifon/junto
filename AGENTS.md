@@ -50,9 +50,7 @@ Outside the workspace:
 
 ## Release
 
-The release document does not exist yet. When it is written, it is linked in this section.
-
-Until then: `packaging/README.md` describes the release tooling, the keys and the release source. ADR 0724, 0725, 0726, 0754 and 0755 describe the release format and the packages, and ADR 0902 names the systems that a release needs.
+`docs/release.md` describes the release checks, client packages, server images, publication, freshness renewal and withdrawal. `packaging/README.md` gives the commands and key handling; ADR 0724, 0725, 0726, 0754 and 0755 describe the formats and packages, and ADR 0902 names the required systems.
 
 ## `deploy/`
 

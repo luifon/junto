@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-A role has a position, and a person changes, moves, gives and takes only the roles below the highest role that the person holds. Removal, ban and unban need the person above the account in the order of the server roles (ADR 0309). The server states a refusal of role order as `forbidden` without a detail. The roles of a workspace are in the snapshot with their positions; the server roles are a collection that an administrator and a holder of "ban members" read (ADR 0309, ADR 0760). The server tells a new position with the event of the role, and the shift that a new role causes with `server_role_positions_shifted` and `workspace_role_positions_shifted`, which carry absolute positions. The approved design has no view for roles. ADR 0761 left the roles screen out. ADR 0702 requires a keyboard path for every drag action, and a disabled control is no tab stop (ADR 0731).
+A role has a position, and a person changes, moves, gives and takes only the roles below the highest role that the person holds. Removal, ban and unban need the person above the account in the order of the server roles (ADR 0309). The server states a refusal of role order as `forbidden` without a detail. The roles of a workspace are in the snapshot with their positions; the server roles are a collection that an administrator and a holder of "ban members" read (ADR 0309, ADR 0760). The server tells a new position with the event of the role, and the shift that a new role causes with `server_role_positions_shifted` and `workspace_role_positions_shifted`, which carry absolute positions. ADR 0761 left the roles screen out. ADR 0702 requires a keyboard path for every drag action, and a disabled control is no tab stop (ADR 0731).
 
 ## Decision
 
@@ -63,7 +63,7 @@ Refusals:
 
 ## Consequences
 
-- Every screen of roles is designed in this record and not in the approved design.
+- Every screen of roles is designed in this record.
 - A person sees which roles and which accounts the person can act on before a request is sent.
 - A change of the order by another person reaches an open page as events, and the rows follow.
 - The state of a row can be older than the server by the time of one event. The server decides, and its refusal is a sentence.

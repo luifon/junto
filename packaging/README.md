@@ -2,7 +2,7 @@
 
 The packages, the signed release format and the update step are described in ADR 0724 (format and source), ADR 0725 (macOS bundle and signing identity), ADR 0726 (archive, record and rollback), ADR 0754 (Linux) and ADR 0755 (Windows). The install instructions for people are `docs/client-macos.md`, `docs/client-linux.md` and `docs/client-windows.md`.
 
-The build machine needs Python 3.11 or later.
+The end-to-end release procedure is in [docs/release.md](../docs/release.md). The build machine needs Python 3.11 or later.
 
 ## Keys
 

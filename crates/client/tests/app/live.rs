@@ -41,6 +41,7 @@ mod lines;
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 mod native_share;
 mod rules;
+mod sound_help;
 #[cfg(target_os = "windows")]
 mod windows_share;
 

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR 0761 describes the administration layer and ADR 0791 the pages of the roles. The server now takes a reason at a ban and at a removal, removes a member from one workspace, filters the audit log, names the creator of an invite, changes one permission of an override, and states the last device with a code of its own (ADR 0795). The route of the notification level of a workspace answers that no level is set and removes a level (ADR 0412); no page of the window set that level. The approved design has no view for any of these.
+ADR 0761 describes the administration layer and ADR 0791 the pages of the roles. The server now takes a reason at a ban and at a removal, removes a member from one workspace, filters the audit log, names the creator of an invite, changes one permission of an override, and states the last device with a code of its own (ADR 0795). The route of the notification level of a workspace answers that no level is set and removes a level (ADR 0412); no page of the window set that level.
 
 ## Decision
 
