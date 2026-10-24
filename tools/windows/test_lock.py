@@ -232,6 +232,21 @@ class Lock(unittest.TestCase):
                 first.kill()
                 first.communicate()
 
+    # tools/serial.sh on a small Linux host runs lock.py for the machine gate under the lock.py of
+    # the run lock: the command inherits both locked files.
+    @unittest.skipIf(os.name == "nt", "on Windows the keeper holds the lock")
+    def test_a_lock_under_another_lock_passes_on_both_descriptors(self):
+        with tempfile.TemporaryDirectory(prefix="junto-lock-") as temporary:
+            outer, inner = pathlib.Path(temporary) / "run.lock", pathlib.Path(temporary) / "machine.lock"
+            report = ("import os\nnumbers = os.environ['JUNTO_LOCK_FD'].split(',')\n"
+                      "print(len(numbers), *sorted(os.fstat(int(number)).st_ino for number in numbers))")
+            environment = {key: value for key, value in os.environ.items() if key != "JUNTO_LOCK_FD"}
+            command = locked(outer, [sys.executable, str(LOCK), str(inner), sys.executable, "-c", report],
+                             stdout=subprocess.PIPE, env=environment)
+            output, _ = command.communicate(timeout=60)
+            self.assertEqual(command.returncode, 0)
+            self.assertEqual(output.split(), ["2", *map(str, sorted(path.stat().st_ino for path in [inner, outer]))])
+
     def test_a_command_that_cannot_start_is_a_failure(self):
         with tempfile.TemporaryDirectory(prefix="junto-lock-") as temporary:
             lock = pathlib.Path(temporary) / "run.lock"

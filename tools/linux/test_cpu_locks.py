@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 SERIAL = Path(__file__).resolve().parents[1] / "serial.sh"
@@ -44,6 +45,29 @@ class WorkerCpuSets(unittest.TestCase):
         self.assertEqual(self.allocation("/tmp/junto-heavy.lock", system="Darwin"), "unset 4")
 
 
+def tree(number):
+    """The process `number` and every process below it."""
+    children = subprocess.run(["pgrep", "-P", str(number)], capture_output=True, text=True).stdout.split()
+    return [number, *[found for child in children for found in tree(int(child))]]
+
+
+def waits_for_a_lock(process):
+    """Waits until a process of the tree of `process` waits for a flock lock, which the kernel
+    lists with "->" in /proc/locks. Fails if the process ends first."""
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        numbers = {str(number) for number in tree(process.pid)}
+        for line in Path("/proc/locks").read_text().splitlines():
+            fields = line.split()
+            if fields[1:3] == ["->", "FLOCK"] and fields[5] in numbers:
+                return True
+        time.sleep(0.05)
+    raise AssertionError("the worker neither waited for a lock nor ended")
+
+
+@unittest.skipUnless(Path("/proc/locks").exists(), "the waiting locks are read from /proc/locks")
 class SmallHostGate(unittest.TestCase):
     def test_ci_and_worker_locks_share_the_machine_gate(self):
         for processors in (8, 12):
@@ -74,7 +98,9 @@ class SmallHostGate(unittest.TestCase):
                     worker = subprocess.Popen(["sh", serial, "echo", "worker"],
                         env=dict(environment, JUNTO_HEAVY_LOCK=str(root / "worker.lock")),
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                    self.assertFalse(select.select([worker.stdout], [], [], 0.2)[0], "worker overlapped CI")
+                    # Only the gate is held by another process, so a waiting worker waits for the gate.
+                    self.assertTrue(waits_for_a_lock(worker), "worker ran while CI held the machine gate")
+                    self.assertFalse(select.select([worker.stdout], [], [], 0)[0], "worker overlapped CI")
                     ci.communicate("release\n", timeout=10)
                     self.assertEqual(worker.communicate(timeout=10)[0], "worker\n")
                     self.assertEqual(worker.returncode, 0)

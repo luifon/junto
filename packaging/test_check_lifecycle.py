@@ -85,6 +85,16 @@ class LifecycleTests(unittest.TestCase):
                 env=dict(os.environ, JUNTO_LOCK_FD=str(lock.fileno())))
             self.assertEqual(output.strip(), "held")
 
+    # tools/windows/lock.py under another lock.py names both descriptors.
+    @unittest.skipIf(os.name == "nt", "the Unix CI lock is an inherited file descriptor")
+    def test_commands_inherit_every_named_ci_lock(self):
+        with tempfile.TemporaryFile() as run, tempfile.TemporaryFile() as gate:
+            output = check_lifecycle.command(
+                [sys.executable, "-c", "import os\nfor value in os.environ['JUNTO_LOCK_FD'].split(','): "
+                 "os.fstat(int(value))\nprint('held')"],
+                env=dict(os.environ, JUNTO_LOCK_FD=f"{run.fileno()},{gate.fileno()}"))
+            self.assertEqual(output.strip(), "held")
+
     @unittest.skipIf(os.name == "nt", "Unix signals and inherited pipe descriptors")
     def test_termination_stops_the_command_and_closes_its_inherited_lock(self):
         read, write = os.pipe()

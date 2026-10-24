@@ -34,8 +34,9 @@ if [ "$(uname -s)" = Linux ]; then
     host_cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null) || host_cpus=1
     case "$host_cpus" in ''|*[!0-9]*|0) host_cpus=1 ;; esac
     if [ "$host_cpus" -lt 16 ] && [ "${JUNTO_MACHINE_GATE_HELD:-}" != 1 ]; then
-        # Take the caller's lock first, then the shared gate. Descendants retain the gate
-        # descriptor and may take their private locks without taking the gate again.
+        # Take the caller's lock first, then the shared gate. With --inherited, descendants
+        # retain both descriptors (JUNTO_LOCK_FD of tools/windows/lock.py). Descendants may take
+        # their private locks without taking the gate again.
         set -- sh "$0" --machine-gate "$@"
     fi
 fi
