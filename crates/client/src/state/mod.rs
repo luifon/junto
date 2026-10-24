@@ -313,6 +313,11 @@ impl Pending {
         self.cancelling.get(&entry.server_id) == Some(&entry)
     }
 
+    /// True while a waiting request of any entry of this server is being given up.
+    pub fn cancels_on(&self, server_id: ServerId) -> bool {
+        self.cancelling.contains_key(&server_id)
+    }
+
     /// True while the acknowledgement of this recovery is on its way for the owner of a
     /// server that the window shows.
     pub fn acknowledges(&self, owner: Option<Owner>, recovery_id: RecoveryId) -> bool {

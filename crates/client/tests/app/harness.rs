@@ -921,7 +921,7 @@ impl Window {
                 return false;
             };
             let cancelling = window.state.read_with(&window.cx, |state, _| {
-                state.pending().cancelling.contains(&server.id)
+                state.pending().cancels_on(server.id)
             });
             !server.busy && !cancelling
         });

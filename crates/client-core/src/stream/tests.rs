@@ -562,10 +562,13 @@ async fn the_readers_get_the_state_after_at_most_256_frames_that_waited() {
     // goes on (ADR 0719). The test puts them into the connection without a wait, so the
     // client reads none of them before the last one is there.
     for id in base + 1..=base + 600 {
-        let message = ServerMessage::Event {
-            id,
-            at: time(),
-            event: created(&rig.scene, &format!("channel {id}")),
+        let message = ServerMessage::Change {
+            position: id,
+            events: vec![junto_protocol::events::StreamEvent {
+                id,
+                at: time(),
+                event: created(&rig.scene, &format!("channel {id}")),
+            }],
         };
         let text = serde_json::to_string(&message).unwrap();
         peer.to_client.try_send(Incoming::Text(text)).unwrap();

@@ -1537,7 +1537,7 @@ fn a_message_whose_files_the_retention_removed_says_so(cx: &mut TestAppContext) 
         ))
         .unwrap();
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query("update attachments set retention_at = now() - interval '2 days'")
             .execute(&mut database)
@@ -1856,6 +1856,10 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
             if line.message.system.as_ref().is_some_and(|system| {
                 system.action == "permanent_message_deleted"
             })))
+    );
+}
+
+
 /// The file dialog is opened for a channel, and the device gets another account on that
 /// server before the dialog is answered: the composer shows the same channel, for another
 /// account. The files are not attached (ADR 0746).

@@ -271,7 +271,7 @@ async fn ended_return_request_keeps_the_account(expired: bool, elsewhere: bool) 
         panic!("the return request is not pending");
     };
     if expired {
-        let options: PgConnectOptions = server.database_url.parse().unwrap();
+        let options: PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query(
             "update join_requests set expires_at = now() - interval '1 hour' where id = $1",

@@ -154,7 +154,9 @@ class Deployment:
         for sent, wait in ((signal.SIGTERM, 10.0), (signal.SIGKILL, 10.0)):
             try:
                 os.killpg(process.pid, sent)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
+                # macOS answers EPERM for a group whose processes have all exited and wait
+                # to be collected; Linux answers ESRCH. Both mean the group has ended.
                 break
             try:
                 process.communicate(timeout=wait)
@@ -164,7 +166,7 @@ class Deployment:
         # A command of the group that ignores the stop signal is ended with the kill signal.
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         process.wait()
 
