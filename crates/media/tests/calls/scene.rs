@@ -2,7 +2,6 @@
 //! that measures what it would hear, and the calls of the client.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use junto_client_core::ServerHandle;
@@ -125,6 +124,23 @@ fn docker_within(arguments: &[&str], limit: Duration) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Runs a Docker command, such as the pause of the media server by a test that holds it
+/// alone, and fails when it fails.
+#[allow(dead_code)]
+pub async fn docker(arguments: &[&str]) {
+    // A test that a limit cancels while the command runs ends the command too.
+    let docker = tokio::process::Command::new("docker")
+        .args(arguments)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let _adopted = docker.id().map(crate::limit::adopt);
+    let done = docker.wait_with_output().await.unwrap();
+    assert!(done.status.success(), "{done:?}");
 }
 
 /// True when the API of the media server answers a request at once.
@@ -381,40 +397,45 @@ impl Person {
     }
 }
 
-/// The failed negotiations of a publisher that the call library logged in this test program.
-static NEGOTIATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
-/// The negotiations of a publisher that the call library started in this test program.
-static NEGOTIATIONS_STARTED: AtomicUsize = AtomicUsize::new(0);
-/// The offers that the call library tried to make in a closed connection of a publisher.
-static OFFERS_IN_A_CLOSED_CONNECTION: AtomicUsize = AtomicUsize::new(0);
-/// The tasks of the fast publish mode that negotiate a publisher, started and ended.
-static NEGOTIATION_TASKS_STARTED: AtomicUsize = AtomicUsize::new(0);
-static NEGOTIATION_TASKS_ENDED: AtomicUsize = AtomicUsize::new(0);
-
-pub fn negotiation_failures() -> usize {
-    NEGOTIATION_FAILURES.load(Ordering::SeqCst)
+/// A line of the call library about the negotiation of a publisher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegotiationLine {
+    /// A task of the fast publish mode starts.
+    TaskStarted,
+    /// A negotiation starts, in a task or after the wait of the debounced mode.
+    Negotiating,
+    /// An offer was sent, and its answer is awaited.
+    OfferSent,
+    /// A task of the fast publish mode ends.
+    TaskEnded,
+    /// A negotiation failed (an error).
+    Failed,
+    /// An offer was asked of a closed connection (a warning).
+    OfferInClosedConnection,
 }
 
-pub fn negotiations_started() -> usize {
-    NEGOTIATIONS_STARTED.load(Ordering::SeqCst)
+/// The lines about the negotiation of a publisher that the call library logged in this test
+/// program, with the time at which each arrived. A test reads the lines from the length that
+/// the list had when it started, so it counts only its own; one that reads them holds the
+/// media server alone in a test program of its own, so that no other test negotiates in the
+/// process and no task of another test is cancelled with its lines half written.
+static NEGOTIATION_LINES: std::sync::Mutex<Vec<(std::time::Instant, NegotiationLine)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The lines about the negotiation of a publisher from position `from` of the list on.
+#[allow(dead_code)]
+pub fn negotiation_lines(from: usize) -> Vec<(std::time::Instant, NegotiationLine)> {
+    let lines = NEGOTIATION_LINES.lock().unwrap();
+    lines.get(from..).unwrap_or_default().to_vec()
 }
 
-pub fn offers_in_a_closed_connection() -> usize {
-    OFFERS_IN_A_CLOSED_CONNECTION.load(Ordering::SeqCst)
+/// The number of lines about the negotiation of a publisher so far: the start of a count.
+#[allow(dead_code)]
+pub fn negotiation_line_count() -> usize {
+    NEGOTIATION_LINES.lock().unwrap().len()
 }
 
-/// The tasks that negotiate a publisher in the fast publish mode and have not ended.
-pub fn negotiation_tasks_running() -> usize {
-    NEGOTIATION_TASKS_STARTED
-        .load(Ordering::SeqCst)
-        .saturating_sub(NEGOTIATION_TASKS_ENDED.load(Ordering::SeqCst))
-}
-
-/// Counts the lines of the call library about the negotiation of a publisher: the start and
-/// the end of a task of the fast publish mode, the start of each negotiation, an error of a
-/// failed one, and the warning of an offer in a closed connection.
-/// The counts are of the whole test program; a test that reads them holds the media server
-/// alone, so that no other test negotiates meanwhile.
+/// Notes the lines of the call library about the negotiation of a publisher.
 struct Negotiations;
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Negotiations {
@@ -429,22 +450,28 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Negotiations {
         }
         let mut message = Message(String::new());
         event.record(&mut message);
-        let level = *event.metadata().level();
-        if level == tracing::Level::ERROR && message.0.contains("failed to negotiate the publisher")
+        let text = message.0.as_str();
+        let line = if *event.metadata().level() == tracing::Level::ERROR
+            && text.contains("failed to negotiate the publisher")
         {
-            NEGOTIATION_FAILURES.fetch_add(1, Ordering::SeqCst);
-        } else if message.0.starts_with("negotiating the publisher") {
-            NEGOTIATIONS_STARTED.fetch_add(1, Ordering::SeqCst);
-        } else if message.0 == "queue_negotiation: starting new negotiation" {
-            NEGOTIATION_TASKS_STARTED.fetch_add(1, Ordering::SeqCst);
-        } else if message.0 == "negotiation completed" {
-            NEGOTIATION_TASKS_ENDED.fetch_add(1, Ordering::SeqCst);
-        } else if message
-            .0
-            .contains("peer connection is closed, cannot create offer")
-        {
-            OFFERS_IN_A_CLOSED_CONNECTION.fetch_add(1, Ordering::SeqCst);
-        }
+            NegotiationLine::Failed
+        } else if text.starts_with("negotiating the publisher") {
+            NegotiationLine::Negotiating
+        } else if text == "queue_negotiation: starting new negotiation" {
+            NegotiationLine::TaskStarted
+        } else if text == "negotiation completed" {
+            NegotiationLine::TaskEnded
+        } else if text.starts_with("offer sent, waiting for answer") {
+            NegotiationLine::OfferSent
+        } else if text.contains("peer connection is closed, cannot create offer") {
+            NegotiationLine::OfferInClosedConnection
+        } else {
+            return;
+        };
+        NEGOTIATION_LINES
+            .lock()
+            .unwrap()
+            .push((std::time::Instant::now(), line));
     }
 }
 

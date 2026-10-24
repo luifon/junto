@@ -132,7 +132,8 @@ mod tests {
                 "{name} is not decoded: {decoded:?}"
             );
         }
-        let own = encoded(TrackPublishOptions::default(), (1920, 1080), 30).video_codec;
+        // A picture within the negotiated level: H.264 on macOS, VP8 elsewhere.
+        let own = encoded(TrackPublishOptions::default(), (1280, 720), 30).video_codec;
         let encoded = mime(factory.get_rtp_sender_capabilities(MediaType::Video).codecs);
         let name = format!("video/{}", own.as_str());
         assert!(
