@@ -2,6 +2,8 @@
 //! the real server (ADR 0121). The other members keep the messages of the person, with
 //! the name marked.
 
+use std::time::{Duration, Instant};
+
 use gpui::TestAppContext;
 use junto_client::state::account::{AccountPage, PageView};
 use junto_client::state::feed::plain_text;
@@ -11,7 +13,7 @@ use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::account::{AccountStatus, Departure};
 use junto_client_core::protocol::message::SendMessage;
 
-use crate::harness::{Window, World, member};
+use crate::harness::{PATIENCE, Window, World, member, named};
 
 impl Window {
     /// The workspaces that the server book lists for the selected server.
@@ -39,6 +41,22 @@ impl Window {
             })
             .map(|row| row.author)
             .collect()
+    }
+
+    /// Runs the tasks of the application one at a time, and checks `holds` before each
+    /// task. A test acts between two tasks that one settle of the window would run
+    /// together.
+    fn step_until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
+        let deadline = Instant::now() + PATIENCE;
+        while !holds(self) {
+            if !self.holding(|window| window.cx.executor().tick()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "after {PATIENCE:?} this did not hold: {what}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 }
 
@@ -193,4 +211,243 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
     let held = accounts.iter().find(|account| account.id == luca).unwrap();
     assert_eq!(held.status, AccountStatus::Deleted);
     assert_eq!(held.name, "Luca");
+}
+
+#[gpui::test]
+fn deleting_the_account_waits_for_a_session_renewal_before_removing_the_server(
+    cx: &mut TestAppContext,
+) {
+    for close_page in [false, true] {
+        deletion_during_renewal(cx, close_page);
+    }
+}
+
+fn deletion_during_renewal(cx: &mut TestAppContext, close_page: bool) {
+    use crate::support::FaultProxy;
+    use junto_client_core::flow::access::ActionKind;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let server_id = handle.id();
+    window.open_account();
+    window.click("account-nav-departure");
+    window.click("account-delete");
+    proxy.hold_answer_ending("DELETE", "/account");
+    proxy.hold_request("POST", "/auth/challenges");
+    window.click("account-delete-confirm");
+    window.until("deletion is done while its session renewal waits", |_| {
+        proxy.answers_waiting() == 1
+            && handle.access().in_progress == Some(ActionKind::LogIn)
+            && proxy
+                .seen("/api/v1/auth/challenges")
+                .iter()
+                .any(|seen| seen.answer.is_none())
+    });
+    if close_page {
+        window.click("account-close");
+        assert!(window.account().is_none());
+    }
+    // Release the deletion answer, but keep the renewal holding the flow lock.
+    proxy.release_answers();
+    window.until("the removal was requested", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.pending().removing.contains(&server_id)
+                || state.pending().remove_failed.contains_key(&server_id)
+        })
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    proxy.release_requests();
+    window.until("the deleted server leaves the list", |window| {
+        window.view().servers.is_empty()
+    });
+    assert_eq!(
+        proxy
+            .seen("/api/v1/account")
+            .iter()
+            .filter(|seen| seen.method == "DELETE")
+            .count(),
+        1
+    );
+    assert!(handle.device_public_key().is_err());
+    assert!(
+        !directory
+            .path()
+            .join("junto/keys")
+            .join(format!("{server_id}.key"))
+            .exists()
+    );
+    window.close();
+    let reopened = junto_client_core::Client::open(junto_client_core::ClientOptions::new(
+        directory.path().join("junto"),
+    ))
+    .unwrap();
+    assert!(reopened.servers().is_empty());
+}
+
+#[gpui::test]
+fn ordinary_server_removal_waits_for_session_renewal(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+    use junto_client_core::flow::access::ActionKind;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let server_id = handle.id();
+    proxy.hold_request("POST", "/auth/challenges");
+    let workspace = world.run(handle.api().own_account()).unwrap().workspace_ids[0];
+    world.run(handle.api().leave_workspace(workspace)).unwrap();
+    window.until("renewal holds the action mutex", |_| {
+        handle.access().in_progress == Some(ActionKind::LogIn)
+            && proxy
+                .seen("/api/v1/auth/challenges")
+                .iter()
+                .any(|seen| seen.answer.is_none())
+    });
+    window.click("server-menu-button");
+    window.click("menu-remove-server");
+    window.click("confirm");
+    window.until("the ordinary removal was requested", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.pending().removing.contains(&server_id)
+                || state.pending().remove_failed.contains_key(&server_id)
+        })
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    proxy.release_requests();
+    window.until("the removed server leaves the list", |window| {
+        window.view().servers.is_empty()
+    });
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.client().selected().is_none())
+    );
+    assert!(
+        !directory
+            .path()
+            .join("junto/keys")
+            .join(format!("{server_id}.key"))
+            .exists()
+    );
+}
+
+#[gpui::test]
+fn a_late_deletion_answer_preserves_the_replacement_account_page(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let old = window.handle();
+    let client = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().clone());
+    window.open_account();
+    window.click("account-nav-departure");
+    window.click("account-delete");
+    proxy.hold_answer_ending("DELETE", "/account");
+    window.click("account-delete-confirm");
+    window.until("the server deleted the original account", |_| {
+        proxy.answers_waiting() == 1
+    });
+    world.run(client.remove_server_when_free(old.id())).unwrap();
+    window.until("the original entry is gone", |window| {
+        window.view().servers.is_empty()
+    });
+    let code = admin.invite(&world, 1);
+    window.find_server(&proxy.address());
+    window.join_with_code(code.expose());
+    window.until_ready();
+    let replacement = window.handle();
+    let owner = replacement.owner().unwrap();
+    let key = replacement.device_public_key().unwrap();
+    assert_ne!(replacement.entry().key(), old.entry().key());
+    window.open_account();
+    proxy.release_answers();
+    window.until("the old deletion callback has completed", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.pending().deleting.is_empty())
+    });
+    assert!(window.account().is_some());
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    assert_eq!(replacement.owner(), Some(owner));
+    assert_eq!(replacement.device_public_key().unwrap(), key);
+    assert_eq!(client.selected(), Some(replacement.id()));
+}
+
+#[gpui::test]
+fn a_cancellation_that_ends_after_a_replacement_removal_frees_the_server(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let _admin = world.owner(&server);
+    let (_directory, mut window) = named(cx, "Luca");
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the request waits", |window| {
+        window.shows("cancel-request")
+            && matches!(
+                window.status(),
+                Some(ServerStatus::WaitingForApproval { .. })
+            )
+    });
+    let client = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().clone());
+    let original = window.handle();
+    let server_id = original.id();
+    let entry = original.entry().key();
+
+    // The cancellation removes the original entry on the background executor. Its
+    // completion on the window thread has not run yet when the same server is added again
+    // and the person removes that replacement.
+    window.press_as_drawn("cancel-request");
+    window.step_until("the cancellation removed the original entry", |_| {
+        client.server(server_id).is_none()
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().removing.contains(&server_id) && state.pending().cancels(entry)
+    }));
+    let replacement = world.run(crate::support::add(&client, &server.address()));
+    assert_ne!(replacement.entry().key(), entry);
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.remove_server(server_id, cx)
+    }));
+    window.until("both removals have completed", |window| {
+        window.view().servers.is_empty()
+            && window
+                .state
+                .read_with(&window.cx, |state, _| state.pending().removing.is_empty())
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        !state.pending().cancels(entry) && state.pending().remove_failed.is_empty()
+    }));
+
+    // A later request to the same server can be given up.
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the later request waits", |window| {
+        window.shows("cancel-request")
+            && matches!(
+                window.status(),
+                Some(ServerStatus::WaitingForApproval { .. })
+            )
+    });
+    window.click("cancel-request");
+    window.until("the later entry is removed", |window| {
+        window.view().servers.is_empty()
+    });
 }

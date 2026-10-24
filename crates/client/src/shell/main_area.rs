@@ -1046,13 +1046,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> StatePanel {
         let server_id = server.id;
-        let busy = server.busy
-            || self
-                .state
-                .read(cx)
-                .pending()
-                .cancelling
-                .contains(&server_id);
+        let busy = server.busy || self.state.read(cx).cancels_request(server_id);
         let error: Option<SharedString> = server
             .error
             .as_ref()

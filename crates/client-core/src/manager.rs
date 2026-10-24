@@ -32,7 +32,7 @@ use crate::book::{
 use crate::events::{ConnectionLevel, EventStreams, StreamTarget};
 use crate::flow::access::{
     self, AccessAction, AccessState, ActionKind, Notice, Probe, Settled, after_probe,
-    after_request_status,
+    after_request_status, request_membership,
 };
 use crate::flow::add_server::AddServerFlow;
 use crate::flow::approve_link::ApproveLinkFlow;
@@ -137,7 +137,9 @@ pub(crate) struct Core {
     /// order of two saves.
     #[cfg(test)]
     before_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    selected: Mutex<Option<ServerId>>,
+    #[cfg(test)]
+    after_remove: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    selected: Mutex<Option<EntryKey>>,
     streams: Mutex<Option<Arc<dyn EventStreams>>>,
     changes: watch::Sender<u64>,
 }
@@ -216,6 +218,8 @@ impl Client {
             stream_policy: options.stream,
             #[cfg(test)]
             before_write: Mutex::new(None),
+            #[cfg(test)]
+            after_remove: Mutex::new(None),
             selected: Mutex::new(None),
             streams: Mutex::new(None),
             changes,
@@ -323,6 +327,34 @@ impl Client {
         let Ok(_gate) = server.gate.try_lock() else {
             return Err(RemoveError::Busy);
         };
+        self.remove_locked(&server)
+    }
+
+    /// Removes this saved entry and its key after any running access action or session
+    /// renewal. The entry is selected when this method is called, so a later replacement
+    /// is never removed. Poll this future on a background executor: removal writes files.
+    pub fn remove_server_when_free(
+        &self,
+        server_id: ServerId,
+    ) -> impl Future<Output = Result<(), RemoveError>> + Send + 'static + use<> {
+        let client = self.clone();
+        let server = lock(&self.inner.servers)
+            .iter()
+            .find(|server| server.id == server_id)
+            .cloned()
+            .ok_or(BookError::NotSaved { server_id });
+        async move {
+            let server = server?;
+            let _gate = server.gate.lock().await;
+            client.remove_locked(&server)
+        }
+    }
+
+    fn remove_locked(&self, server: &Arc<Server>) -> Result<(), RemoveError> {
+        let server_id = server.id;
+        if lock(&server.state).retired {
+            return Err(BookError::NotSaved { server_id }.into());
+        }
         let keys = self.inner.core.keys.clone();
         let removed = self.inner.core.book.remove(server.key, || {
             keys.remove(server_id).map_err(RemoveError::from)
@@ -330,11 +362,15 @@ impl Client {
         if matches!(&removed, Err(RemoveError::Book(BookError::Storage(_)))) {
             return removed.map(|_| ());
         }
-        lock(&self.inner.servers).retain(|kept| !Arc::ptr_eq(kept, &server));
+        lock(&self.inner.servers).retain(|kept| !Arc::ptr_eq(kept, server));
         server.retire();
+        #[cfg(test)]
+        if let Some(after_remove) = lock(&self.inner.core.after_remove).clone() {
+            after_remove();
+        }
         {
             let mut selected = lock(&self.inner.core.selected);
-            if *selected == Some(server_id) {
+            if *selected == Some(server.key) {
                 *selected = None;
             }
         }
@@ -385,7 +421,16 @@ impl Client {
     /// The server that the interface shows. It gets every event; the others get the
     /// background events (ADR 0107).
     pub fn select(&self, server_id: Option<ServerId>) {
-        *lock(&self.inner.core.selected) = server_id;
+        {
+            let servers = lock(&self.inner.servers);
+            let entry = server_id.and_then(|id| {
+                servers
+                    .iter()
+                    .find(|server| server.id == id)
+                    .map(|server| server.key)
+            });
+            *lock(&self.inner.core.selected) = entry;
+        }
         for handle in self.servers() {
             handle.server.announce_level();
         }
@@ -393,7 +438,7 @@ impl Client {
     }
 
     pub fn selected(&self) -> Option<ServerId> {
-        *lock(&self.inner.core.selected)
+        lock(&self.inner.core.selected).map(|entry| entry.server_id)
     }
 
     /// Starts the event streams: from now on every saved server has the connection that
@@ -1148,7 +1193,7 @@ impl Server {
         };
         // A call goes on while another server is shown (ADR 0107), so the server of a
         // call keeps a connection in every connection mode.
-        let level = if selected == Some(self.id) {
+        let level = if selected == Some(self.key) {
             ConnectionLevel::Selected
         } else if state.entry.connection_mode == ConnectionMode::Always || state.in_call {
             ConnectionLevel::Background
@@ -1332,19 +1377,13 @@ impl Server {
         let api = self.contact(false).await?;
         let key = self.key_or_new()?;
         let previous = self.membership();
-        self.remember(Membership::JoinRequested {
-            join_request_id: None,
-            name: name.clone(),
-        })?;
+        self.remember(request_membership(&previous, None, &name))?;
         let waiting = |join_request_id| Settled {
             state: AccessState::WaitingForApproval {
                 join_request_id,
                 name: name.clone(),
             },
-            membership: Membership::JoinRequested {
-                join_request_id,
-                name: name.clone(),
-            },
+            membership: request_membership(&previous, join_request_id, &name),
         };
         match api.request_to_join(&key, name.clone()).await {
             Ok(request) => self.settle(waiting(Some(request.id)), None),
@@ -1353,7 +1392,7 @@ impl Server {
                     || error.code() == Some(ErrorCode::JoinRequestPending) =>
             {
                 match api.join_request_status(&key).await {
-                    Ok(status) => match after_request_status(&status, &name) {
+                    Ok(status) => match after_request_status(&status, &name, &previous) {
                         Some(settled) => self.settle(settled, None),
                         None => self.reconcile(&api, before).await,
                     },
@@ -1546,7 +1585,7 @@ impl Server {
         let mut approved = false;
         if let Membership::JoinRequested { name, .. } = &membership {
             match api.join_request_status(&key).await {
-                Ok(status) => match after_request_status(&status, name) {
+                Ok(status) => match after_request_status(&status, name, &membership) {
                     Some(settled) => return self.settle(settled, None),
                     None => approved = true,
                 },
@@ -1558,13 +1597,28 @@ impl Server {
             .probe(api, &key)
             .await
             .map_err(|error| self.failed(error))?;
+        if probe == Probe::Inactive && matches!(membership, Membership::Inactive { .. }) {
+            let name = match before {
+                AccessState::WaitingForApproval { name, .. } => name.as_str(),
+                _ => "",
+            };
+            match api.join_request_status(&key).await {
+                Ok(status) => {
+                    if let Some(settled) = after_request_status(&status, name, &membership) {
+                        return self.settle(settled, None);
+                    }
+                }
+                Err(error) if error.code() == Some(ErrorCode::NotFound) => {}
+                Err(error) => return Err(self.failed(error)),
+            }
+        }
         let unknown_without_a_trace = probe == Probe::UnknownDevice
             && matches!(membership, Membership::None | Membership::Removed)
             && !matches!(before, AccessState::WaitingForLink { .. });
         if unknown_without_a_trace
             && let Ok(status) = api.join_request_status(&key).await
             && status.state == JoinRequestState::Pending
-            && let Some(settled) = after_request_status(&status, "")
+            && let Some(settled) = after_request_status(&status, "", &membership)
         {
             // The server holds a request of this key that the book does not know: the
             // client stopped before it stored the request, or the book was replaced.

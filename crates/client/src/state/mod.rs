@@ -42,7 +42,6 @@ use std::time::Duration;
 
 use futures_channel::oneshot;
 use gpui::{Context, Task};
-use junto_client_core::Owner;
 use junto_client_core::api::ApiError;
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::FlowError;
@@ -60,6 +59,7 @@ use junto_client_core::settings::InterfaceSettings;
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
+use junto_client_core::{EntryKey, Owner};
 use junto_media::audio::{DeviceId, Processing, level};
 use junto_media::calls::{ActiveCall, CallTarget, Calls, MediaOptions, Seat};
 use junto_media::engine::{Levels, MicrophoneState, ShareId, VoiceConfig};
@@ -231,6 +231,8 @@ struct Asked {
 /// What the person asked for and that has not ended yet, or has failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
+    /// Account deletions still awaiting their server answer or local cleanup.
+    pub deleting: HashSet<Owner>,
     /// The recoveries whose acknowledgement is on its way, each with the owner of the
     /// server that it was sent for (ADR 0745): two servers can state the same identifier.
     pub acknowledging: HashSet<(Owner, RecoveryId)>,
@@ -241,8 +243,11 @@ pub struct Pending {
     /// The servers whose removal is on its way. A second removal of one of them is not
     /// started: it would be decided against the server book of a later moment.
     pub removing: HashSet<ServerId>,
-    /// The servers whose waiting request is being given up.
-    pub cancelling: HashSet<ServerId>,
+    removal_entries: HashMap<ServerId, EntryKey>,
+    /// The entries whose waiting request is being given up, by server. Each cancellation
+    /// ends for its own entry, also when a removal of a later entry of the server has
+    /// replaced its removal.
+    cancelling: HashMap<ServerId, EntryKey>,
     /// The name of the profile preset is being written.
     pub saving_name: bool,
     /// Why the last request that started or stopped a recording failed.
@@ -270,6 +275,44 @@ pub struct Refusal {
 }
 
 impl Pending {
+    fn begin_removal(&mut self, entry: EntryKey) -> bool {
+        if self.removal_entries.get(&entry.server_id) == Some(&entry) {
+            return false;
+        }
+        self.removal_entries.insert(entry.server_id, entry);
+        self.removing.insert(entry.server_id);
+        self.remove_failed.remove(&entry.server_id);
+        true
+    }
+
+    fn end_removal(&mut self, entry: EntryKey) -> bool {
+        if self.removal_entries.get(&entry.server_id) != Some(&entry) {
+            return false;
+        }
+        self.removal_entries.remove(&entry.server_id);
+        self.removing.remove(&entry.server_id);
+        true
+    }
+
+    fn begin_cancellation(&mut self, entry: EntryKey) -> bool {
+        if self.cancels(entry) {
+            return false;
+        }
+        self.cancelling.insert(entry.server_id, entry);
+        true
+    }
+
+    fn end_cancellation(&mut self, entry: EntryKey) {
+        if self.cancels(entry) {
+            self.cancelling.remove(&entry.server_id);
+        }
+    }
+
+    /// True while the waiting request of this entry is being given up.
+    pub fn cancels(&self, entry: EntryKey) -> bool {
+        self.cancelling.get(&entry.server_id) == Some(&entry)
+    }
+
     /// True while the acknowledgement of this recovery is on its way for the owner of a
     /// server that the window shows.
     pub fn acknowledges(&self, owner: Option<Owner>, recovery_id: RecoveryId) -> bool {
@@ -328,6 +371,23 @@ mod pending_tests {
         assert_eq!(pending.acknowledge_failure(Some(first)), Some("failed"));
         assert_eq!(pending.acknowledge_failure(Some(second)), None);
         assert_eq!(pending.acknowledge_failure(Some(account)), None);
+    }
+
+    #[test]
+    fn a_cancellation_ends_only_for_its_own_entry() {
+        let first = owner().entry;
+        let second = EntryKey {
+            generation: first.generation + 1,
+            ..first
+        };
+        let mut pending = Pending::default();
+        assert!(pending.begin_cancellation(first));
+        assert!(!pending.begin_cancellation(first));
+        assert!(pending.begin_cancellation(second));
+        pending.end_cancellation(first);
+        assert!(pending.cancels(second) && !pending.cancels(first));
+        pending.end_cancellation(second);
+        assert!(!pending.cancels(second));
     }
 }
 
@@ -1916,6 +1976,13 @@ impl AppState {
         &self.pending
     }
 
+    /// True while the waiting request of the saved entry of this server is being given up.
+    pub fn cancels_request(&self, server_id: ServerId) -> bool {
+        self.client
+            .server(server_id)
+            .is_some_and(|server| self.pending.cancels(server.entry().key()))
+    }
+
     /// The name of the profile preset. Empty until the person has chosen one.
     pub fn preset_name(&self) -> &str {
         &self.known.preset_name
@@ -2286,17 +2353,41 @@ impl AppState {
     /// on a background thread; a failure is told in [`Pending::remove_failed`]. Returns
     /// false, and starts nothing, while a removal of this server runs.
     pub fn remove_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) -> bool {
-        if !self.pending.removing.insert(server_id) {
+        let Some(server) = self.client.server(server_id) else {
+            return false;
+        };
+        let entry = server.entry().key();
+        if !self.pending.begin_removal(entry) {
             return false;
         }
-        let client = self.client.clone();
-        Self::queue_write(
-            cx,
-            move || client.remove_server(server_id),
-            move |this, removed, cx| this.removed(server_id, removed, cx),
-        );
+        let removing = self.client.remove_server_when_free(server_id);
+        cx.spawn(async move |this, cx| {
+            let removed = cx.background_executor().spawn(removing).await;
+            let _ = this.update(cx, |this, cx| this.removed_entry(entry, removed, cx));
+        })
+        .detach();
         cx.notify();
         true
+    }
+
+    fn removed_entry(
+        &mut self,
+        entry: EntryKey,
+        result: Result<(), junto_client_core::manager::RemoveError>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pending.end_removal(entry) {
+            return;
+        }
+        if self
+            .client
+            .server(entry.server_id)
+            .is_some_and(|server| server.entry().key() != entry)
+        {
+            self.changed(cx);
+            return;
+        }
+        self.removed(entry.server_id, result, cx);
     }
 
     fn removed(
@@ -2330,11 +2421,11 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        if self.pending.removing.contains(&server_id) || !self.pending.cancelling.insert(server_id)
-        {
+        let entry = server.entry().key();
+        if self.pending.removing.contains(&server_id) || !self.pending.begin_cancellation(entry) {
             return;
         }
-        self.pending.removing.insert(server_id);
+        self.pending.begin_removal(entry);
         self.pending.remove_failed.remove(&server_id);
         self.waiting.remove(&server_id);
         let client = self.client.clone();
@@ -2350,8 +2441,18 @@ impl AppState {
                 Err(_) => None,
             };
             let _ = this.update(cx, |this, cx| {
-                this.pending.cancelling.remove(&server_id);
-                this.pending.removing.remove(&server_id);
+                this.pending.end_cancellation(entry);
+                if !this.pending.end_removal(entry) {
+                    return;
+                }
+                if this
+                    .client
+                    .server(server_id)
+                    .is_some_and(|server| server.entry().key() != entry)
+                {
+                    this.changed(cx);
+                    return;
+                }
                 match (forgotten, removed) {
                     (_, Some(removed)) => this.removed(server_id, removed, cx),
                     // The state no longer accepts the action: the request was decided

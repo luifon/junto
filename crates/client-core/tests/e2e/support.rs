@@ -778,6 +778,13 @@ impl FaultProxy {
         self.released.send_modify(|releases| *releases += 1);
     }
 
+    /// Passes on held answers while requests and events keep waiting.
+    #[allow(dead_code)]
+    pub fn release_answers(&self) {
+        self.state.lock().unwrap().held_answers.clear();
+        self.released.send_modify(|releases| *releases += 1);
+    }
+
     /// Passes on every request, every answer and the events that wait, and holds no further
     /// one.
     pub fn release(&self) {

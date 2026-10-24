@@ -157,8 +157,9 @@ The client keeps no copy of messages or files on disk. Its local data of a serve
 
 - Leaving a workspace that is not the last: the client drops the workspace from what it holds, as for a removal.
 - Leaving the last workspace: the book keeps the entry and the key, with the membership `inactive`. The window shows that the person left the server, a field for an invite code to return to the same account, and the control that removes the server from the list. Removing it deletes the key; a later join then makes a new account, and the window says so before it removes the entry.
-- Deleting the account: the client removes the entry and the key of the server from the book, because the key no longer belongs to an account.
+- Deleting the account: the client removes the entry and the key of the server from the book, because the key no longer belongs to an account. Removal waits for a running access action or session renewal and holds the same lock until the removal finishes. It belongs to the entry captured before the deletion request, so a later replacement entry and its key stay. A successful deletion completes this local removal even when the person has closed the account page while its answer was on the way.
 - Another device of the same person: the session ends with the reason `inactive` or `deleted`. For `inactive` the book entry gets the membership `inactive`, as above. For `deleted` it gets the membership `deleted`, and the window states that the account was deleted and offers to remove the server from the list. A later failed login with an unknown key does not change `deleted` into the state of a removed account.
+- A request to return keeps the membership `inactive` and its account identifier in the book. The pending request is shown in memory; a restart checks its status with the retained device key. A denial or expiry restores the inactive screen without clearing the membership or the key. A check first probes the account, so a return approved on another device is recognized even when an older request was denied or expired.
 - A login answer `account_inactive` gives the membership `inactive`.
 - The server book has format version 5 for the two new memberships. An older client refuses the file instead of dropping the entries (ADR 0710).
 
@@ -188,3 +189,7 @@ The client keeps no copy of messages or files on disk. Its local data of a serve
 - A deleted account cannot be restored. Its person can join again only as a new account, through an invite or an approval.
 - An owner who wants to leave needs host access, through `assign-owner`.
 - A departed account's audit history, name and content stay in backups as before.
+
+Ordinary removal from the server book also waits for a running access action or session renewal. Selection belongs to an entry generation, so cleanup of a removed entry cannot clear selection of a replacement with the same server identifier. Account deletion keeps its original entry and account through local cleanup; a late answer changes the account page and removal result only for that entry and request. A replacement page and its pending operation are independent of the old deletion.
+
+The cancellation of a waiting request also belongs to the entry generation that it was started for. Its completion ends that cancellation before it checks whether it still owns the removal: when the same server was added again and a removal of the new entry replaced the removal of the cancelled entry, the completion leaves the new removal alone, and the server identifier is not left marked as cancelling. A later entry of the server can then give up its own request, and its access controls are not shown as busy because of an older entry.
