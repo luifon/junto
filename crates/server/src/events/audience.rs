@@ -797,6 +797,14 @@ impl Audience {
                 | Event::ThreadFollowChanged { .. },
                 Self::Account { .. },
             ) => true,
+            // A follow that a reply made by the rule is told while the account sees the
+            // channel of the thread (ADR 0412).
+            (
+                Event::ThreadFollowChanged { .. },
+                Self::AccountSeeing {
+                    channels, accounts, ..
+                },
+            ) => channels.len() == 1 && accounts.is_empty(),
             (
                 Event::ThreadRead { .. }
                 | Event::MessageRead { .. }

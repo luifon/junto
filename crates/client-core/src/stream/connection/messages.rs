@@ -55,6 +55,9 @@ const SEARCH_PAGES: usize = 5;
 /// again without an end, with the longest of these waits.
 const READ_TRIES: u8 = 5;
 const READ_RETRY: Duration = Duration::from_secs(2);
+/// The longest wait before a read is tried again: the doubled wait of the last try, which
+/// also bounds the time that a refusal names in `Retry-After`.
+const LONGEST_READ_WAIT: Duration = Duration::from_secs(2 << READ_TRIES);
 /// The entries of one page of the unread threads, and of one page of the notices.
 pub(super) const LIST_PAGE: u32 = 200;
 pub(super) const NOTICES_PAGE: u32 = 50;
@@ -260,6 +263,50 @@ pub(super) struct Done {
     outcome: Outcome,
 }
 
+/// A list that is read again after every event of a kind. The limit of the server for
+/// reads is shared with the history (ADR 0409), so two reads of the list keep a distance,
+/// and the events during that distance make one read at its end.
+#[derive(Debug, Default, Clone, Copy)]
+struct Spaced {
+    /// The earliest time of the next read.
+    at: Option<Instant>,
+    /// A read waits for that time.
+    wait: bool,
+}
+
+impl Spaced {
+    /// True when the read can be sent now; the next one waits for `interval`. Otherwise
+    /// the read waits for the end of the distance.
+    fn take(&mut self, now: Instant, interval: Duration) -> bool {
+        if self.at.is_some_and(|at| at > now) {
+            self.wait = true;
+            return false;
+        }
+        self.at = Some(now + interval);
+        self.wait = false;
+        true
+    }
+
+    /// No read is sent before `until`.
+    fn hold(&mut self, until: Instant) {
+        self.at = Some(self.at.map_or(until, |at| at.max(until)));
+    }
+
+    /// The time of a read that waits.
+    fn due(self) -> Option<Instant> {
+        self.at.filter(|_| self.wait)
+    }
+
+    /// True when a read waited and its time has come.
+    fn ready(&mut self, now: Instant) -> bool {
+        if self.wait && self.at.is_none_or(|at| at <= now) {
+            self.wait = false;
+            return true;
+        }
+        false
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Work {
     wanted: BTreeMap<PlaceId, Wanted>,
@@ -277,10 +324,10 @@ pub(super) struct Work {
     pins: BTreeMap<ChannelId, usize>,
     /// The readers that wait for the pin list of a channel.
     opening_pins: BTreeMap<ChannelId, Vec<Reply>>,
-    /// The earliest time of the next read of the unread threads.
-    threads_at: Option<Instant>,
-    /// A read of the unread threads waits for that time.
-    threads_wait: bool,
+    /// The reads of the unread threads and of the first page of the notices: every change
+    /// of a thread or of a notice asks for them, and two reads of one keep a distance.
+    threads: Spaced,
+    notices: Spaced,
     /// The continuation that the read of a further page of unread threads was sent with.
     pub(super) continued_threads: Option<String>,
     /// The times at which the mute of a channel ends (ADR 0409).
@@ -345,12 +392,14 @@ impl Work {
             .filter(|sending| sending.request.is_none())
             .filter_map(|sending| sending.search_at);
         let retries = self.retries.iter().map(|(_, _, due)| *due);
-        let threads = self.threads_at.filter(|_| self.threads_wait);
+        let spaced = [self.threads.due(), self.notices.due()]
+            .into_iter()
+            .flatten();
         let mutes = self.mute_ends.iter().map(|(due, _)| *due);
         marks
             .chain(searches)
             .chain(retries)
-            .chain(threads)
+            .chain(spaced)
             .chain(mutes)
             .filter(|at| self.advanced_at.is_none_or(|step| *at > step))
             .min()
@@ -462,16 +511,16 @@ impl Client {
             self.pump_message_reads();
             return;
         }
-        if part == Part::UnreadThreads {
-            // Every change of a thread asks for this list, and the limit of the server
-            // for reads is shared with the history (ADR 0409): two reads keep a distance.
-            let now = Instant::now();
-            if self.messages.threads_at.is_some_and(|at| at > now) {
-                self.messages.threads_wait = true;
-                return;
-            }
-            self.messages.threads_at = Some(now + self.environment.policy.threads_interval);
-            self.messages.threads_wait = false;
+        let interval = self.environment.policy.list_interval;
+        let spaced = match part {
+            Part::UnreadThreads => Some(&mut self.messages.threads),
+            Part::Notices => Some(&mut self.messages.notices),
+            _ => None,
+        };
+        if let Some(spaced) = spaced
+            && !spaced.take(Instant::now(), interval)
+        {
+            return;
         }
         self.start(load);
     }
@@ -786,12 +835,32 @@ impl Client {
                 _ => tries < READ_TRIES,
             };
         if again {
-            let wait = READ_RETRY.saturating_mul(1 << tries.min(READ_TRIES));
-            self.messages.retries.push((
-                part,
-                tries.saturating_add(1).min(READ_TRIES),
-                Instant::now() + wait,
-            ));
+            // A server that limits the reads names the time after which it takes the next
+            // one; an earlier try is refused again. The named time is bounded as the
+            // longest doubled wait: a proxy can name hours.
+            let named = error
+                .retry_after()
+                .unwrap_or_default()
+                .min(LONGEST_READ_WAIT);
+            let wait = READ_RETRY
+                .saturating_mul(1 << tries.min(READ_TRIES))
+                .max(named);
+            let due = Instant::now() + wait;
+            self.messages
+                .retries
+                .push((part, tries.saturating_add(1).min(READ_TRIES), due));
+            // An event during the named time asks for the same list: it waits for the try
+            // at the end of that time.
+            let spaced = match part {
+                Part::UnreadThreads => Some(&mut self.messages.threads),
+                Part::Notices => Some(&mut self.messages.notices),
+                _ => None,
+            };
+            if let Some(spaced) = spaced
+                && !named.is_zero()
+            {
+                spaced.hold(due);
+            }
             if let Part::Recording(recording_id) = part {
                 // The reader of a recording is told of the first failure, and the state
                 // tells it until a read succeeds.
@@ -889,7 +958,8 @@ impl Client {
     pub(super) fn carry_messages(&mut self, before: Option<&ServerModel>) {
         self.messages.queue.clear();
         self.messages.retries.clear();
-        self.messages.threads_wait = false;
+        self.messages.threads.wait = false;
+        self.messages.notices.wait = false;
         self.messages.continued_threads = None;
         let wanted = self.messages.wanted_places();
         let Some(model) = &mut self.model else {
@@ -1217,9 +1287,11 @@ impl Client {
             self.messages.retries.push((part, tries, far));
             self.read(part);
         }
-        if self.messages.threads_wait && self.messages.threads_at.is_none_or(|at| at <= now) {
-            self.messages.threads_wait = false;
+        if self.messages.threads.ready(now) {
             self.read(Part::UnreadThreads);
+        }
+        if self.messages.notices.ready(now) {
+            self.read(Part::Notices);
         }
         let mut ended = Vec::new();
         self.messages.mute_ends.retain(|(due, channel_id)| {

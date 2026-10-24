@@ -611,6 +611,81 @@ impl Window {
         self.settle();
     }
 
+    /// Moves the pointer to the middle of the element with a name that the test builds, as
+    /// a person does before the actions of a message are drawn.
+    #[track_caller]
+    pub fn hover_named(&mut self, name: String) {
+        self.settle();
+        let name = selector(name);
+        let bounds = self
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"));
+        self.holding(|this| {
+            this.cx.simulate_mouse_move(
+                bounds.center(),
+                None::<gpui::MouseButton>,
+                Modifiers::none(),
+            );
+        });
+        self.settle();
+    }
+
+    /// Clicks the field with this name and types the text into it with the keys, one
+    /// character after the other.
+    #[track_caller]
+    pub fn type_into(&mut self, field: &'static str, text: &str) {
+        self.click(field);
+        self.holding(|this| this.cx.simulate_input(text));
+        self.settle();
+    }
+
+    /// Turns the wheel over the list with the name `list` until the element with the name
+    /// `target` is drawn whole inside the list, as a person scrolls to a control.
+    #[track_caller]
+    pub fn wheel_to(&mut self, list: &'static str, target: &'static str) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        self.settle();
+        let area = self
+            .cx
+            .debug_bounds(list)
+            .unwrap_or_else(|| panic!("{list} is not drawn"));
+        self.until(&format!("{target} is in view"), |window| {
+            let inside = window
+                .cx
+                .debug_bounds(target)
+                .is_some_and(|shown| shown.top() >= area.top() && shown.bottom() <= area.bottom());
+            if !inside {
+                window.dispatch(ScrollWheelEvent {
+                    position: area.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+                    ..Default::default()
+                });
+            }
+            inside
+        });
+    }
+
+    /// Drags files from the system over the middle of the element with this name and drops
+    /// them there, with the events that the system gives to a window.
+    #[track_caller]
+    pub fn drop_files(&mut self, selector: &'static str, paths: Vec<std::path::PathBuf>) {
+        self.settle();
+        let position = self
+            .cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is not drawn"))
+            .center();
+        self.dispatch(gpui::FileDropEvent::Entered {
+            position,
+            paths: gpui::ExternalPaths(paths.into_iter().collect()),
+        });
+        self.dispatch(gpui::FileDropEvent::Pending { position });
+        self.dispatch(gpui::FileDropEvent::Submit { position });
+        self.dispatch(gpui::FileDropEvent::Ended);
+        self.settle();
+    }
+
     /// Presses and releases keys, as a keyboard does: `press("down enter")`. A focused
     /// control is activated when Enter or Space is released.
     pub fn press(&mut self, keys: &str) {

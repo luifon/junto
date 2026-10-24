@@ -14,7 +14,7 @@ use junto_authz::{Request, ServerPermission, WorkspacePermission};
 use junto_protocol::{
     error::ErrorCode,
     events::Event,
-    ids::{ChannelId, ConversationId, MessageId},
+    ids::{AccountId, ChannelId, ConversationId, MessageId},
     message::*,
 };
 use serde::Deserialize;
@@ -159,7 +159,7 @@ pub(super) async fn send(
     target: Target,
     body: &SendMessage,
 ) -> ApiResult<Message> {
-    document::validate(&body.document)?;
+    let named = messages::threads::named(&document::validate(&body.document)?);
     if !document::has_content(&body.document) && body.attachments.is_empty() {
         return Err(ApiError::invalid("a message needs text or an attachment"));
     }
@@ -189,6 +189,25 @@ pub(super) async fn send(
                 return Err(ApiError::invalid("a thread reply stays in its thread"));
             }
         }
+        // A reply makes its author, the author of the root and the accounts that it names
+        // follow the thread by the rule (ADR 0409). Each account that follows it only after
+        // the reply is told.
+        let followers = match thread_root {
+            Some(root) => {
+                let root_author: Option<AccountId> =
+                    sqlx::query_scalar("select author_id from messages where id=$1")
+                        .bind(root)
+                        .fetch_one(&mut *connection)
+                        .await?;
+                let mut candidates = vec![access.account_id];
+                candidates.extend(root_author);
+                candidates.extend(named.iter().copied());
+                let before =
+                    messages::threads::following_among(connection, root, &candidates).await?;
+                Some((root, candidates, before))
+            }
+            None => None,
+        };
         let position = place.next(connection).await?;
         let permanent: bool = match place.value {
             MessagePlace::Channel { channel_id, .. } => {
@@ -223,6 +242,17 @@ pub(super) async fn send(
             .await?;
         }
         messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        if let Some((root, candidates, before)) = &followers {
+            messages::threads::tell_new_followers(
+                connection,
+                now,
+                place.value,
+                *root,
+                candidates,
+                before,
+            )
+            .await?;
+        }
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
         messages::changed(connection, now, place.value, id, position as u64, false).await?;
         messages::notifications::create(connection, now, id, None).await?;
@@ -278,7 +308,7 @@ pub async fn edit_message(
     ApiPath(id): ApiPath<MessageId>,
     ApiJson(body): ApiJson<EditMessage>,
 ) -> ApiResult<Json<Message>> {
-    document::validate(&body.document)?;
+    let named = messages::threads::named(&document::validate(&body.document)?);
     let now = app.now();
     let mut counted = false;
     transact!(app, |connection| {
@@ -296,8 +326,24 @@ pub async fn edit_message(
         if message.document.as_ref() == Some(&body.document) {
             return Ok(message);
         }
+        // An account that the edit names follows the thread of a reply by the rule.
+        let before = match message.thread_root {
+            Some(root) => messages::threads::following_among(connection, root, &named).await?,
+            None => Vec::new(),
+        };
         let recipients =
             messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        if let Some(root) = message.thread_root {
+            messages::threads::tell_new_followers(
+                connection,
+                now,
+                place.value,
+                root,
+                &named,
+                &before,
+            )
+            .await?;
+        }
         sqlx::query("update messages set document=$2,edited_at=$3 where id=$1")
             .bind(id)
             .bind(SqlJson(&body.document))

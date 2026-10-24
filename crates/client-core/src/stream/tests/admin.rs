@@ -190,15 +190,15 @@ impl crate::api::Transport for AdminHttp {
             let failure = routes
                 .failures
                 .iter()
-                .position(|(end, _, _)| path.ends_with(*end));
+                .position(|(end, _, _, _)| path.ends_with(*end));
             let Some(position) = failure else {
                 return answer;
             };
-            let (_, status, code) = routes.failures.remove(position);
+            let (_, status, code, wait) = routes.failures.remove(position);
             let body = format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#);
             Ok(HttpResponse {
                 status,
-                retry_after: None,
+                retry_after: wait,
                 body: body.into_bytes().into(),
                 receipt: crate::api::Receipt::NotStated,
             })

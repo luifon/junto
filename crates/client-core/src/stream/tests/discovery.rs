@@ -169,11 +169,11 @@ async fn the_unread_threads_are_read_after_the_notice_of_a_root_and_two_reads_ke
     }
     rig.model_when("the events", |model| model.cursor.position == 49)
         .await;
-    tokio::time::sleep(policy.threads_interval / 2).await;
+    tokio::time::sleep(policy.list_interval / 2).await;
     assert_eq!(room.sent_to(UNREAD), 1);
-    tokio::time::sleep(policy.threads_interval).await;
+    tokio::time::sleep(policy.list_interval).await;
     assert_eq!(room.sent_to(UNREAD), 2);
-    tokio::time::sleep(policy.threads_interval * 4).await;
+    tokio::time::sleep(policy.list_interval * 4).await;
     assert_eq!(room.sent_to(UNREAD), 2);
 }
 
@@ -366,6 +366,162 @@ async fn a_notice_event_reads_the_notices_and_the_messages_that_they_name() {
         .model_when("no notice", |model| model.notices.is_empty())
         .await;
     assert!(model.named.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn notices_at_once_read_the_notices_with_a_distance_and_the_last_one_is_held() {
+    let room = room().await;
+    let rig = &room.rig;
+    let policy = StreamPolicy::default();
+    let notice = |message: &Message| Notification {
+        id: message.id.as_uuid(),
+        message_id: message.id,
+        kind: NotificationKind::Mention,
+        created_at: crate::model::tests::time(),
+        read_at: None,
+    };
+    let first = room.held(9, "@you");
+    room.chat(|chat| chat.notices = vec![notice(&first)]);
+    room.peer
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: first.id,
+            },
+        )
+        .await;
+    rig.model_when("the first notice", |model| model.notices.len() == 1)
+        .await;
+    assert_eq!(rig.http.count("/notifications"), 1);
+
+    // Ten more notices at once: the next read waits for its distance, and is one read
+    // that holds the last notice.
+    let mut held = vec![notice(&first)];
+    for number in 0..10 {
+        let mut mention = room.held(10 + number, "@you");
+        mention.id = MessageId::generate();
+        held.insert(0, notice(&mention));
+        let shown = held.clone();
+        room.chat(|chat| chat.notices = shown);
+        room.peer
+            .event(
+                42 + number,
+                Event::NotificationChanged {
+                    message_id: mention.id,
+                },
+            )
+            .await;
+    }
+    rig.model_when("the events", |model| model.cursor.position == 51)
+        .await;
+    tokio::time::sleep(policy.list_interval / 2).await;
+    assert_eq!(rig.http.count("/notifications"), 1);
+    let model = rig
+        .model_when("every notice", |model| model.notices.len() == 11)
+        .await;
+    assert_eq!(model.notices, held);
+    assert_eq!(rig.http.count("/notifications"), 2);
+    tokio::time::sleep(policy.list_interval * 4).await;
+    assert_eq!(rig.http.count("/notifications"), 2);
+}
+
+/// A notice of a message of the room.
+fn notice_of(message: &Message) -> Notification {
+    Notification {
+        id: message.id.as_uuid(),
+        message_id: message.id,
+        kind: NotificationKind::Mention,
+        created_at: crate::model::tests::time(),
+        read_at: None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_limited_read_of_the_notices_waits_for_the_time_that_the_server_names() {
+    let room = room().await;
+    let rig = &room.rig;
+    let held = room.held(9, "@you");
+    room.chat(|chat| chat.notices = vec![notice_of(&held)]);
+    rig.http.fail("/notifications", 429, "rate_limited");
+    room.peer
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: held.id,
+            },
+        )
+        .await;
+    rig.model_when("the event", |model| model.cursor.position == 41)
+        .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(rig.http.count("/notifications"), 1);
+
+    // A second notice during the named time asks for the list again: the read waits for
+    // the end of that time too. The first wait of a failed read is 2 seconds, and the
+    // distance of two reads of the list is 2 seconds; the server named 30.
+    let mut later = room.held(10, "@you again");
+    later.id = MessageId::generate();
+    room.chat(|chat| chat.notices = vec![notice_of(&later), notice_of(&held)]);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    room.peer
+        .event(
+            42,
+            Event::NotificationChanged {
+                message_id: later.id,
+            },
+        )
+        .await;
+    rig.model_when("the second event", |model| model.cursor.position == 42)
+        .await;
+    tokio::time::sleep(super::LIMITED_WAIT - Duration::from_secs(7)).await;
+    assert_eq!(rig.http.count("/notifications"), 1);
+
+    // At the end of the named time one read takes both notices.
+    let model = rig
+        .model_when("both notices", |model| model.notices.len() == 2)
+        .await;
+    assert_eq!(model.notices, [notice_of(&later), notice_of(&held)]);
+    tokio::time::sleep(StreamPolicy::default().list_interval * 4).await;
+    assert_eq!(rig.http.count("/notifications"), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_named_wait_longer_than_the_longest_retry_is_bounded() {
+    let room = room().await;
+    let rig = &room.rig;
+    let held = room.held(9, "@you");
+    room.chat(|chat| chat.notices = vec![notice_of(&held)]);
+    // A proxy names an hour.
+    let started = tokio::time::Instant::now();
+    rig.http.fail_naming(
+        "/notifications",
+        429,
+        "rate_limited",
+        Some(Duration::from_secs(3600)),
+    );
+    room.peer
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: held.id,
+            },
+        )
+        .await;
+    rig.model_when("the event", |model| model.cursor.position == 41)
+        .await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(rig.http.count("/notifications"), 1);
+    // The read is tried again after the longest doubled wait, 64 seconds.
+    let model = rig
+        .model_when("the notice", |model| model.notices.len() == 1)
+        .await;
+    assert_eq!(model.notices, [notice_of(&held)]);
+    assert_eq!(rig.http.count("/notifications"), 2);
+    assert!(
+        started.elapsed() < Duration::from_secs(70),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test(start_paused = true)]

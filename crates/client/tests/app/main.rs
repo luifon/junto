@@ -48,6 +48,7 @@ mod live;
 mod logo;
 mod logout;
 mod messages;
+mod notice_settings;
 mod notices;
 mod people;
 mod permissions;
@@ -62,7 +63,9 @@ mod roles;
 mod search;
 mod servers;
 mod states;
+mod thread_actions;
 mod threads;
 mod transcripts;
+mod unread;
 
 mod updates;
