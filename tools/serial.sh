@@ -24,6 +24,25 @@ else
     [ -n "$directory" ] || directory=/tmp
     lock="${directory%/}/junto-heavy.lock"
 fi
+# The four worker locks partition CPUs 0-7 on the Linux host; CI reserves CPUs 8-15.
+# An explicit first CPU selects another allocation, including on a smaller host.
+if [ "$(uname -s)" = Linux ] && [ -z "${JUNTO_LINUX_CPU_FIRST:-}" ]; then
+    first=""
+    case "$lock" in
+        /tmp/junto-heavy.lock) first=0 ;;
+        /tmp/junto-heavy-2.lock) first=2 ;;
+        /tmp/junto-heavy-3.lock) first=4 ;;
+        /tmp/junto-heavy-4.lock) first=6 ;;
+    esac
+    if [ -n "$first" ]; then
+        export JUNTO_LINUX_CPU_FIRST=$first
+        case "${JUNTO_LINUX_CPUS:-2}" in
+            ''|*[!0-9]*|0) ;;
+            1) export JUNTO_LINUX_CPUS=1 ;;
+            *) export JUNTO_LINUX_CPUS=2 ;;
+        esac
+    fi
+fi
 if ! "$inherited" && command -v lockf >/dev/null 2>&1; then
     exec lockf -k "$lock" nice -n 10 "$@"
 fi

@@ -267,16 +267,27 @@ linux_tools() {
 # The limits of one job on the Linux host: at most 8 processors and 12 GB (11 GiB) of memory
 # over all of its containers, without swap. tools/linux/run.sh gives its build container the
 # processors and memory below, and PostgreSQL, LiveKit and the control container 4
-# processors and 2.4 GiB together. A host with fewer processors gives fewer.
+# processors and 2.4 GiB together. CI reserves the upper eight processors on a 16-CPU
+# host; the worker locks use CPUs 0-7. A smaller host must serialize workers with CI.
 host_cpus=8
+cpu_first=0
 if [ "$runner" = linux ]; then
-    host_cpus=$(docker info --format '{{.NCPU}}')
+    total_cpus=$(docker info --format '{{.NCPU}}')
+    host_cpus=$total_cpus
     if [ "$host_cpus" -gt 8 ]; then host_cpus=8; fi
+    cpu_first=$((total_cpus - host_cpus))
 fi
+ci_set="$cpu_first-$((cpu_first + host_cpus - 1))"
 build_cpus=$((host_cpus > 2 ? host_cpus - 2 : 1))
 rust_cpus=$((host_cpus > 4 ? host_cpus - 4 : 1))
 postgres_cpus=2.75
 if [ "$host_cpus" -lt 5 ]; then postgres_cpus=0.75; fi
+if [ "$runner" = linux ]; then
+    export JUNTO_LINUX_CPU_FIRST=$cpu_first
+    service_first=$((cpu_first + rust_cpus))
+    if [ "$((service_first + rust_cpus))" -gt "$total_cpus" ]; then service_first=$cpu_first; fi
+    export JUNTO_LINUX_SERVICE_CPU_FIRST=$service_first
+fi
 linux_container() {
     JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
         JUNTO_LINUX_POSTGRES_CPUS=$postgres_cpus JUNTO_LINUX_MEMORY=8g tools/linux-container.sh "$@"
@@ -314,7 +325,7 @@ job() {
             JUNTO_CI_TOOLS=/target/ci-tools linux_container tools/ci/licences.sh ;;
         linux:transcription-worker)
             linux_tools || return 1
-            docker run --rm --name junto-ci-worker --cpus "$host_cpus" --memory 11g --memory-swap 11g \
+            docker run --rm --name junto-ci-worker --cpuset-cpus "$ci_set" --cpus "$host_cpus" --memory 11g --memory-swap 11g \
                 --mount "type=bind,src=$checkout,dst=/src" -w /src \
                 --mount "type=bind,src=$directory/tools/bin,dst=/opt/junto-ci/bin,readonly" \
                 --mount type=volume,src=junto-ci-uv,dst=/cache \
@@ -327,7 +338,7 @@ job() {
             # its ports on 127.0.0.1 of the Docker host; this container shares the host's
             # network to reach them. Together with LiveKit: 8 processors and 11 GiB.
             linux_tools || return 1
-            docker run --rm --name junto-ci-layout --network host --cpus "$build_cpus" \
+            docker run --rm --name junto-ci-layout --network host --cpuset-cpus "$ci_set" --cpus "$build_cpus" \
                 --memory 9g --memory-swap 9g --shm-size 1g \
                 --mount "type=bind,src=$checkout,dst=/src" -w /src \
                 --mount "type=bind,src=$directory/tools/bin,dst=/opt/junto-ci/bin,readonly" \
@@ -338,6 +349,7 @@ job() {
                 -e JUNTO_TEST_LIVEKIT_IMAGE -e JUNTO_TEST_LIVEKIT_CONTAINER=junto-ci-layout-livekit \
                 -e JUNTO_TEST_LIVEKIT_PORT=37880 -e JUNTO_TEST_LIVEKIT_TCP_PORT=37881 \
                 -e JUNTO_TEST_LIVEKIT_UDP_PORT=37882 -e JUNTO_TEST_WEBHOOK_ADDRESS=127.0.0.1:37890 \
+                -e JUNTO_TEST_LIVEKIT_CPUSET="$ci_set" \
                 -e JUNTO_TEST_LIVEKIT_CPUS=$((host_cpus - build_cpus)) -e JUNTO_TEST_LIVEKIT_MEMORY=2g \
                 "$JUNTO_CI_NODE_IMAGE" sh -c 'cd recording-layout && npm ci --ignore-scripts &&
                     npx --no-install playwright install-deps chromium && cd /src &&
