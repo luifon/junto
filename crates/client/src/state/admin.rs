@@ -256,6 +256,19 @@ pub enum Made {
     },
 }
 
+impl Made {
+    /// The kind of the request that makes this. Its place on the page tells it.
+    pub const fn kind(&self) -> AskKind {
+        match self {
+            Self::Invite { .. } => AskKind::CreateInvite,
+            Self::Token { .. } => AskKind::CreateToken,
+            Self::Entered(_) => AskKind::RedeemInvite,
+            Self::Export(_) => AskKind::RequestExport,
+            Self::Recovered { account_id, .. } => AskKind::RecoverAccount(*account_id),
+        }
+    }
+}
+
 /// What the administration holds beside the state of the servers.
 #[derive(Default)]
 pub struct AdminState {
@@ -281,8 +294,9 @@ pub struct AdminState {
     /// number that `asks` gave it. The page tells one state for each kind of request, so a
     /// request does not replace what the page tells about a request of another kind.
     requests: Vec<(u64, Ask)>,
-    /// What the last request made and the person has not put away: a code, a token.
-    pub(crate) made: Option<Made>,
+    /// What the requests of the open page made and the person has not put away: a code, a
+    /// token, a recovery. Each place of the page holds what its newest request made.
+    pub(crate) made: Vec<Made>,
     /// The entries of the audit log that the page has read.
     pub(crate) audit: records::AuditLog,
     /// The files of exports that the person saves, and those that were saved.
@@ -324,7 +338,7 @@ impl AdminState {
     pub(crate) fn show(&mut self, open: AdminOpen) {
         if self.open != Some(open) {
             self.requests.clear();
-            self.made = None;
+            self.made.clear();
             self.session += 1;
             // The list of the recordings belongs to its page. A late answer finds no
             // list that waits for it.
@@ -344,7 +358,7 @@ impl AdminState {
         self.account = None;
         self.session += 1;
         self.requests.clear();
-        self.made = None;
+        self.made.clear();
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
         self.glossary_answered = None;
@@ -430,6 +444,21 @@ impl AdminState {
         }
     }
 
+    /// Holds what a request made. It replaces what an earlier request at the same place
+    /// made; what requests at other places made stays (ADR 0761).
+    pub(crate) fn make(&mut self, made: Made) {
+        let place = made.kind().place();
+        self.made.retain(|held| held.kind().place() != place);
+        self.made.push(made);
+    }
+
+    /// Puts away what the request of this kind made, and what the earlier requests at its
+    /// place made.
+    pub(crate) fn put_away(&mut self, what: AskKind) {
+        let place = what.place();
+        self.made.retain(|made| made.kind().place() != place);
+    }
+
     /// What the page tells about its requests, in the order in which they were made.
     pub(crate) fn asks(&self) -> Vec<Ask> {
         self.requests.iter().map(|(_, ask)| ask.clone()).collect()
@@ -480,18 +509,21 @@ impl AppState {
         cx.notify();
     }
 
-    /// Puts away the recovery that the row of its account tells. A code or a token that the
-    /// last request made stays.
+    /// Puts away the recoveries that the rows of their accounts tell. A code or a token
+    /// that a request made stays.
     pub fn dismiss_admin_recovered(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.admin.made, Some(Made::Recovered { .. })) {
-            self.admin.made = None;
+        let before = self.admin.made.len();
+        self.admin
+            .made
+            .retain(|made| !matches!(made, Made::Recovered { .. }));
+        if self.admin.made.len() != before {
             cx.notify();
         }
     }
 
-    /// Puts away what the last request made. A code and a token are gone with it.
-    pub fn dismiss_admin_made(&mut self, cx: &mut Context<Self>) {
-        self.admin.made = None;
+    /// Puts away what the request of this kind made. A code and a token are gone with it.
+    pub fn dismiss_admin_made(&mut self, what: AskKind, cx: &mut Context<Self>) {
+        self.admin.put_away(what);
         cx.notify();
     }
 
@@ -767,7 +799,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.admin.requests = ask.into_iter().map(|ask| (0, ask)).collect();
-        self.admin.made = made;
+        self.admin.made = made.into_iter().collect();
         self.changed(cx);
     }
 }
@@ -798,12 +830,12 @@ mod tests {
 
         // Another page: the answers of the page before are for nobody, and what that
         // page told and made is put away.
-        admin.made = Some(Made::Entered(Vec::new()));
+        admin.make(Made::Entered(Vec::new()));
         admin.show(server_page(server_id, AdminPage::Tokens));
         assert_eq!(admin.answered(first), Answered::Gone);
         assert_eq!(admin.answered(second), Answered::Gone);
         assert_eq!(admin.asks(), []);
-        assert_eq!(admin.made, None);
+        assert_eq!(admin.made, []);
         let token = admin.begin(AskKind::CreateToken);
         assert_eq!(admin.answered(token), Answered::Current);
 
@@ -827,13 +859,13 @@ mod tests {
         assert_eq!(admin.answered(first), Answered::Earlier);
         assert!(admin.settle(second, None));
         assert_eq!(admin.asks(), []);
-        admin.made = Some(Made::Entered(Vec::new()));
+        admin.make(Made::Entered(Vec::new()));
         // The late answer to the first one takes nothing: its result would replace the
         // result of the second one.
         assert!(!admin.settle(first, None));
         assert!(!admin.settle(first, Some("No.".to_owned())));
         assert_eq!(admin.asks(), []);
-        assert!(admin.made.is_some());
+        assert!(!admin.made.is_empty());
 
         // A refusal of the newest request is told at its control.
         let third = admin.begin(AskKind::CreateToken);
@@ -858,6 +890,38 @@ mod tests {
         // After the page changed, an answer takes nothing.
         admin.show(server_page(server_id, AdminPage::Invites));
         assert!(!admin.settle(fourth, None));
+    }
+
+    /// What a request made replaces only what a request at the same place made: the rows of
+    /// two recovered accounts each tell their recovery, and a new one at a row replaces the
+    /// one before at that row (ADR 0761).
+    #[test]
+    fn what_a_request_made_is_replaced_only_at_its_place() {
+        use junto_client_core::protocol::account::RecoveryNotice;
+        use junto_client_core::protocol::ids::RecoveryId;
+
+        let recovered = |account_id| Made::Recovered {
+            account_id,
+            notice: RecoveryNotice {
+                id: RecoveryId::generate(),
+                device_id: None,
+                performed_by: None,
+                performed_at: time::OffsetDateTime::UNIX_EPOCH,
+            },
+        };
+        let mut admin = AdminState::default();
+        admin.show(server_page(ServerId::generate(), AdminPage::People));
+        let (ana, bruno) = (AccountId::generate(), AccountId::generate());
+        let first = recovered(ana);
+        admin.make(first.clone());
+        let second = recovered(bruno);
+        admin.make(second.clone());
+        assert_eq!(admin.made, [first, second.clone()]);
+        let again = recovered(ana);
+        admin.make(again.clone());
+        assert_eq!(admin.made, [second.clone(), again]);
+        admin.put_away(AskKind::RecoverAccount(ana));
+        assert_eq!(admin.made, [second]);
     }
 
     #[test]
@@ -965,17 +1029,17 @@ mod tests {
 
         admin.show(server_page(server_id, AdminPage::Invites));
         let asked = admin.begin(AskKind::CreateInvite);
-        admin.made = Some(Made::Entered(Vec::new()));
+        admin.make(Made::Entered(Vec::new()));
         // The state of the server arrives after the layer opened.
         assert!(!admin.follow_account(None));
         assert!(!admin.follow_account(Some(first)));
         assert!(!admin.follow_account(Some(first)));
-        assert!(admin.open.is_some() && admin.made.is_some());
+        assert!(admin.open.is_some() && !admin.made.is_empty());
 
         // Another account on the same server: the layer closes with what it held.
         assert!(admin.follow_account(Some(second)));
         assert_eq!(admin.open, None);
-        assert_eq!(admin.made, None);
+        assert_eq!(admin.made, []);
         assert_eq!(admin.asks(), []);
         assert_eq!(admin.answered(asked), Answered::Gone);
 

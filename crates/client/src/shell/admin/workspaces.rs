@@ -340,7 +340,10 @@ impl Shell {
             view.refused(AskKind::RedeemInvite),
             "redeem-refused",
         ));
-        if let Some(Made::Entered(workspace_ids)) = &view.made {
+        if let Some(workspace_ids) = view.made.iter().find_map(|made| match made {
+            Made::Entered(workspace_ids) => Some(workspace_ids),
+            _ => None,
+        }) {
             column = column.child(div().flex_none().mt(u(8.0)).child(
                 Notice::new(text::admin::entered(workspace_ids.len())).selector("redeemed"),
             ));

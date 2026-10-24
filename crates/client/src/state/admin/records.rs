@@ -537,7 +537,7 @@ impl AppState {
             AskKind::CreateToken,
             |api| async move { api.create_access_token(&token).await },
             |this, created, _| {
-                this.admin.made = Some(Made::Token {
+                this.admin.make(Made::Token {
                     access_token_id: created.access_token.id,
                     token: created.token,
                 });
@@ -549,13 +549,13 @@ impl AppState {
     /// The text of the new access token with this identifier, while the person has not
     /// put it away. The caller gives it to the clipboard and keeps no copy.
     pub(crate) fn new_token_text(&self, access_token_id: AccessTokenId) -> Option<String> {
-        match &self.admin.made {
-            Some(Made::Token {
+        self.admin.made.iter().find_map(|made| match made {
+            Made::Token {
                 access_token_id: made,
                 token,
-            }) if *made == access_token_id => Some(token.expose().to_owned()),
+            } if *made == access_token_id => Some(token.expose().to_owned()),
             _ => None,
-        }
+        })
     }
 
     /// Revokes an access token. The server refuses every further request with it.

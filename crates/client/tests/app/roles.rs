@@ -10,6 +10,7 @@ use junto_client::state::admin::view::roles::{
 };
 use junto_client::state::admin::view::{Scope, ServerPage};
 use junto_client::state::admin::{Ask, AskKind, AskState, RolePermission, RoleRef};
+use junto_client::text::admin::FORM_SENT;
 use junto_client_core::ServerHandle;
 use junto_client_core::api::ErrorCategory;
 use junto_client_core::protocol::account::AccountStatus;
@@ -54,6 +55,20 @@ fn role_names(window: &mut Window) -> Vec<String> {
 
 fn role_row(window: &mut Window, role: RoleRef) -> Option<RoleRow> {
     role_rows(window)?.into_iter().find(|row| row.role == role)
+}
+
+/// The reason that the switch of a permission of a role is drawn with, when it takes no
+/// press.
+fn permission_held(
+    window: &mut Window,
+    role: RoleRef,
+    permission: RolePermission,
+) -> Option<String> {
+    let view = window.admin()?;
+    let row = role_row(window, role)?;
+    window
+        .in_shell(|shell, _, _| shell.role_permission_held(&view, &row, permission))
+        .map(|reason| reason.to_string())
 }
 
 /// The client of the server of a window.
@@ -823,4 +838,198 @@ fn the_row_of_a_role_tells_the_refusal_of_its_newest_request(cx: &mut TestAppCon
         refused(AskKind::MoveRole(role)),
     );
     assert!(window.shows("role-refused"));
+}
+
+/// While the new name of a role is on its way, the switches of its permissions send
+/// nothing: the row and its form tell the answer to the name, and no later request at the
+/// row replaces it (ADR 0761).
+#[gpui::test]
+fn the_permissions_of_a_role_wait_for_the_answer_to_its_new_name(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let chiefs = world
+        .run(owner.api().create_workspace_role(
+            workspace_id,
+            &CreateWorkspaceRole {
+                name: "Chiefs".to_owned(),
+                permissions: Vec::new(),
+            },
+        ))
+        .unwrap()
+        .id;
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    window.until("the role is listed", |window| {
+        role_names(window) == ["Chiefs", "everyone"]
+    });
+    click_in_page(&mut window, sel("role-permissions", chiefs));
+    window.until("the permissions of the role", |window| {
+        window.shows("role-permission-manage_messages")
+    });
+    let renamed = format!("/api/v1/workspaces/{workspace_id}/roles/{chiefs}");
+    let changed = format!("{renamed}/permissions");
+
+    let role = RoleRef::Workspace(workspace_id, chiefs);
+    let waits = |window: &mut Window| {
+        window.in_shell(|shell, _, _| shell.admin_form_waits(AskKind::UpdateRole(role)))
+    };
+    let granted = |window: &mut Window| {
+        role_row(window, role)
+            .unwrap()
+            .permissions
+            .iter()
+            .any(|switch| switch.on)
+    };
+
+    click_in_page(&mut window, sel("role-rename", chiefs));
+    proxy.hold_request("PATCH", &format!("/roles/{chiefs}"));
+    send_role_form(&mut window, "Heads");
+    window.until("the new name is on its way", |_| {
+        !proxy.seen(&renamed).is_empty()
+    });
+    assert!(waits(&mut window));
+    let permission = RolePermission::Workspace(WorkspacePermission::ManageMessages);
+    assert_eq!(
+        permission_held(&mut window, role, permission).as_deref(),
+        Some(FORM_SENT)
+    );
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.settle();
+    assert!(waits(&mut window));
+    assert!(window.shows("role-name"));
+    assert_eq!(
+        window
+            .admin()
+            .and_then(|view| view.permission_asked(role, permission)),
+        None,
+        "the press while the name was on its way asked for a permission"
+    );
+    assert!(!granted(&mut window));
+
+    proxy.release();
+    window.until(
+        "the role has its new name and the form is closed",
+        |window| role_names(window) == ["Heads", "everyone"] && !window.shows("role-name"),
+    );
+    assert!(!waits(&mut window));
+    assert!(!granted(&mut window));
+    // The press while the name was on its way sent nothing: after the next press, the
+    // server has seen one change of the permissions.
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.until("the role holds the permission", |window| granted(window));
+    assert_eq!(
+        proxy.seen(&changed).len(),
+        1,
+        "a permission was sent while the new name was on its way"
+    );
+}
+
+/// A Cancel of the rename of a role while its new name is on its way, and the form of
+/// another role opened after it, do not end the wait: the permissions of the role send
+/// nothing until the answer arrives, and the refusal of the name is told in its row
+/// (ADR 0761).
+#[gpui::test]
+fn a_cancelled_rename_of_a_role_keeps_its_permissions_waiting_and_tells_the_refusal(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let create = |name: &str| {
+        let role = CreateWorkspaceRole {
+            name: name.to_owned(),
+            permissions: Vec::new(),
+        };
+        world
+            .run(owner.api().create_workspace_role(workspace_id, &role))
+            .unwrap()
+            .id
+    };
+    let chiefs = create("Chiefs");
+    let leads = create("Leads");
+    let role = RoleRef::Workspace(workspace_id, chiefs);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    window.until("the roles are listed", |window| {
+        role_names(window) == ["Chiefs", "Leads", "everyone"]
+    });
+    click_in_page(&mut window, sel("role-permissions", chiefs));
+    window.until("the permissions of the role", |window| {
+        window.shows("role-permission-manage_messages")
+    });
+    let renamed = format!("/api/v1/workspaces/{workspace_id}/roles/{chiefs}");
+    let changed = format!("{renamed}/permissions");
+    let waits = |window: &mut Window| {
+        window.in_shell(|shell, _, _| shell.admin_form_waits(AskKind::UpdateRole(role)))
+    };
+
+    // Every try of the new name is answered `busy`, so the name is refused.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail(&renamed, std::iter::repeat_n(Fault::Busy, attempts));
+    proxy.hold_request("PATCH", &format!("/roles/{chiefs}"));
+    click_in_page(&mut window, sel("role-rename", chiefs));
+    send_role_form(&mut window, "Heads");
+    window.until("the new name is on its way", |_| {
+        !proxy.seen(&renamed).is_empty()
+    });
+    click_in_page(&mut window, "role-form-cancel");
+    window.until("the form is put away", |window| !window.shows("role-name"));
+    click_in_page(&mut window, sel("role-rename", leads));
+    window.until("the form of the other role", |window| {
+        window.shows("role-name")
+    });
+    assert!(waits(&mut window));
+    let permission = RolePermission::Workspace(WorkspacePermission::ManageMessages);
+    assert_eq!(
+        permission_held(&mut window, role, permission).as_deref(),
+        Some(FORM_SENT)
+    );
+    click_in_page(&mut window, "role-permission-manage_messages");
+    // The move and the deletion of the role send nothing either: each would replace the
+    // state of the new name at the place of the role.
+    click_in_page(&mut window, sel("role-down", chiefs));
+    click_in_page(&mut window, sel("role-delete", chiefs));
+    window.settle();
+    let unchanged = |window: &mut Window| {
+        window.admin().is_some_and(|view| {
+            view.sending(AskKind::UpdateRole(role))
+                && view.permission_asked(role, permission).is_none()
+        })
+    };
+    assert!(unchanged(&mut window));
+    assert!(!window.shows("role-confirm"));
+    assert!(!drag_role(
+        &mut window,
+        sel("role-handle", chiefs),
+        sel("role-row", leads)
+    ));
+    assert!(waits(&mut window));
+    assert!(unchanged(&mut window));
+
+    proxy.release();
+    window.until("the refusal of the new name is told", |window| {
+        window.shows("role-refused")
+            && window.admin().is_some_and(|view| {
+                view.asks.iter().any(|ask| {
+                    ask.what == AskKind::UpdateRole(role)
+                        && matches!(ask.state, AskState::Refused(_))
+                })
+            })
+    });
+    assert!(!waits(&mut window));
+    assert_eq!(proxy.seen(&renamed).len(), attempts);
+    assert!(
+        proxy.seen(&changed).is_empty(),
+        "a permission was sent while the new name was on its way"
+    );
+    assert_eq!(role_names(&mut window), ["Chiefs", "Leads", "everyone"]);
 }

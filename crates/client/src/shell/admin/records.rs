@@ -481,8 +481,9 @@ impl Shell {
                         this.admin.records.space.release();
                         this.admin.list.state.remeasure();
                         this.admin.records.new_token.release();
-                        this.state
-                            .update(cx, |state, cx| state.dismiss_admin_made(cx));
+                        this.state.update(cx, |state, cx| {
+                            state.dismiss_admin_made(AskKind::CreateToken, cx);
+                        });
                     })),
             );
         div()

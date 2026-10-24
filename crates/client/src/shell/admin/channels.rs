@@ -386,12 +386,15 @@ impl Shell {
         cx.notify();
     }
 
-    /// The choice of a category for a channel, in the row of the channel.
+    /// The choice of a category for a channel, in the row of the channel. While the chosen
+    /// category is on its way, no choice is sent again.
+    #[allow(clippy::too_many_arguments)]
     fn render_category_choice(
         &mut self,
         server_id: ServerId,
         channel_id: ChannelId,
         held: Option<CategoryId>,
+        sending: bool,
         categories: &[(CategoryId, String)],
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -408,7 +411,7 @@ impl Shell {
             "category-choice-none".to_owned(),
             Button::new("category-choice-none")
                 .label(text::admin::NO_CATEGORY)
-                .disabled(held.is_none())
+                .disabled(sending || held.is_none())
                 .h(u(28.0))
                 .px(u(10.0))
                 .on_click(Self::category_listener(server_id, channel_id, None, cx)),
@@ -418,7 +421,7 @@ impl Shell {
                 format!("category-choice-{category_id}"),
                 Button::new(("category-choice", index))
                     .label(name.clone())
-                    .disabled(held == Some(*category_id))
+                    .disabled(sending || held == Some(*category_id))
                     .h(u(28.0))
                     .px(u(10.0))
                     .on_click(Self::category_listener(
@@ -1051,6 +1054,35 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Why the controls of the settings of a channel take no press: the channel is
+    /// archived, or the new name or the category of its form is on its way, also after a
+    /// Cancel of the form. A later request would replace the state of the request that the
+    /// form follows (ADR 0761).
+    fn channel_settings_hold(
+        &self,
+        view: &AdminView,
+        settings: &ChannelSettings,
+    ) -> Option<&'static str> {
+        settings
+            .archived
+            .then_some(text::admin::ARCHIVED_NO_CHANGE)
+            .or_else(|| {
+                self.admin_form_awaited(view, AskKind::UpdateChannel(settings.channel_id))
+                    .then_some(text::admin::FORM_SENT)
+            })
+    }
+
+    /// The reason that the controls of the settings of a channel are drawn with, as the
+    /// window draws them now.
+    #[cfg(feature = "test-support")]
+    pub fn channel_settings_held(
+        &self,
+        view: &AdminView,
+        settings: &ChannelSettings,
+    ) -> Option<&'static str> {
+        self.channel_settings_hold(view, settings)
+    }
+
     /// The overview of the settings of one channel.
     pub(crate) fn render_channel_overview(
         &mut self,
@@ -1063,18 +1095,21 @@ impl Shell {
         let theme = theme(cx);
         let server_id = view.server_id;
         let channel_id = settings.channel_id;
-        let held = settings.archived.then_some(text::admin::ARCHIVED_NO_CHANGE);
+        let archived = settings.archived.then_some(text::admin::ARCHIVED_NO_CHANGE);
+        let answering = self.admin_form_awaited(view, AskKind::UpdateChannel(channel_id));
+        let waiting = answering.then_some(text::admin::FORM_SENT);
+        let held = self.channel_settings_hold(view, settings);
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::channel_page_name(ChannelPage::Overview),
             text::admin::OVERVIEW_HELP,
             &theme,
         ));
-        if let Some(held) = held {
+        if let Some(archived) = archived {
             column = column.child(
                 div()
                     .flex_none()
                     .mb(u(8.0))
-                    .child(Notice::new(held).selector("channel-archived-notice")),
+                    .child(Notice::new(archived).selector("channel-archived-notice")),
             );
         }
         // The name.
@@ -1124,6 +1159,7 @@ impl Shell {
                     server_id,
                     channel_id,
                     page.category_id,
+                    answering,
                     &page.categories,
                     &theme,
                     cx,
@@ -1190,7 +1226,7 @@ impl Shell {
                     private,
                     (text::ON, text::OFF),
                 )
-                .held(privacy_held)
+                .held(privacy_held.or(waiting))
                 .selector("channel-private")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {

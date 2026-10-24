@@ -381,6 +381,182 @@ fn a_decoded_image_is_a_square_of_at_most_192_pixels() {
     assert!(decode(b"<svg></svg>", AVATAR_SIDE).is_none());
 }
 
+/// While the administration is open, the cache reads the people of the call first, then the
+/// laid-out rows of its page that the page still lists, and then the people of the view;
+/// with the layer closed, the people of the view take the places of the rows again
+/// (ADR 0783).
+#[test]
+fn the_rows_of_the_open_administration_come_after_the_call_and_before_the_view() {
+    let mut scene = scene();
+    let (call, rows, members) = (accounts(2), accounts(40), accounts(601));
+    let gone = AccountId::generate();
+    let followed = Followed {
+        call: HashMap::from([(
+            scene.server,
+            Wanted {
+                own: None,
+                accounts: call.clone(),
+            },
+        )]),
+        view: HashMap::from([(
+            scene.server,
+            Wanted {
+                own: Some((scene.own, None)),
+                accounts: members.clone(),
+            },
+        )]),
+        admin_rows: rows.iter().copied().chain([gone]).collect(),
+    };
+    let listed: HashSet<AccountId> = rows.iter().copied().collect();
+
+    scene
+        .people
+        .want_all(&followed_people(&followed, Some((scene.server, &listed))));
+    let first: Vec<AccountId> = call.iter().chain(&rows).copied().collect();
+    let expected: Vec<AccountId> = first
+        .iter()
+        .chain(&members)
+        .copied()
+        .take(MOST_PROFILES)
+        .collect();
+    assert_eq!(scene.people.wanted(scene.server), expected);
+    let asks = scene.next(false);
+    assert_eq!(profile_asks(&asks), first[..MOST_REQUESTS]);
+    for ask in &asks {
+        if let Asked::Profile(account_id) = ask.what {
+            let answer = Answer::Read(profile(account_id, "Ana", None));
+            scene.people.profile_answered(ask, answer);
+        }
+    }
+    assert_eq!(scene.read_profiles(|_| None), MOST_PROFILES - MOST_REQUESTS);
+    assert!(scene.people.name(scene.server, gone).is_none());
+
+    scene.people.want_all(&followed_people(&followed, None));
+    let expected: Vec<AccountId> = call
+        .iter()
+        .chain(&members)
+        .copied()
+        .take(MOST_PROFILES)
+        .collect();
+    assert_eq!(scene.people.wanted(scene.server), expected);
+    assert_eq!(
+        scene.read_profiles(|_| None),
+        rows.len(),
+        "the members after the rows are read in the places of the rows"
+    );
+}
+
+/// People who come before shown people in the list take only the places of the profiles
+/// that are no longer shown: a profile that is shown later in the same list keeps its value
+/// and is not read again (ADR 0783).
+#[test]
+fn new_people_before_shown_people_take_only_the_places_of_profiles_no_longer_shown() {
+    let mut scene = scene();
+    let held = accounts(MOST_PROFILES);
+    scene.show(&held);
+    assert_eq!(scene.read_profiles(|_| None), MOST_PROFILES);
+    let new = accounts(40);
+    let still = &held[..MOST_PROFILES - new.len()];
+    let shown: Vec<AccountId> = new.iter().chain(still).copied().collect();
+    scene.show(&shown);
+    let kept = still
+        .iter()
+        .filter(|account_id| scene.people.name(scene.server, **account_id).is_some())
+        .count();
+    assert_eq!(kept, still.len());
+    assert_eq!(scene.read_profiles(|_| None), new.len());
+}
+
+/// As for the profiles: the images of shown people that come later in the list keep their
+/// places when the images of people before them need places.
+#[test]
+fn new_images_before_shown_images_take_only_the_places_of_images_no_longer_shown() {
+    let mut scene = scene();
+    let (old, new) = (accounts(MOST_IMAGES), accounts(10));
+    let all: Vec<AccountId> = old.iter().chain(&new).copied().collect();
+    let number = |account_id: AccountId| {
+        all.iter()
+            .position(|held| *held == account_id)
+            .map(|index| hash(index as u32))
+    };
+    // Every account has a profile; the images of the first 256 accounts are read, and the
+    // others have no place.
+    scene.show(&all);
+    scene.read_profiles(number);
+    loop {
+        let asks = scene.next(true);
+        if asks.is_empty() {
+            break;
+        }
+        for ask in asks {
+            scene.people.picture_answered(&ask, Answer::Read(image()));
+        }
+    }
+    let still = &old[..MOST_IMAGES - new.len()];
+    let shown: Vec<AccountId> = new.iter().chain(still).copied().collect();
+    scene.show(&shown);
+    let faces = scene.people.faces(scene.server);
+    let kept = still
+        .iter()
+        .filter(|account_id| {
+            faces
+                .get(account_id)
+                .is_some_and(|face| face.image.is_some())
+        })
+        .count();
+    assert_eq!(kept, still.len());
+    assert_eq!(scene.people.take_dropped().len(), new.len());
+}
+
+/// The profiles can name more images than the bound of the images: a person who moves to
+/// the front of the list takes the place of the image that is now beyond the bound, while
+/// every person stays in the list (ADR 0783).
+#[test]
+fn a_person_moved_before_256_shown_images_takes_the_place_of_the_last_image() {
+    let mut scene = scene();
+    let (held, moved) = (accounts(MOST_IMAGES), AccountId::generate());
+    let all: Vec<AccountId> = held.iter().copied().chain([moved]).collect();
+    let number = |account_id: AccountId| {
+        all.iter()
+            .position(|shown| *shown == account_id)
+            .map(|index| hash(index as u32))
+    };
+    let answer_pictures = |scene: &mut Scene| {
+        let mut asked = Vec::new();
+        loop {
+            let asks = scene.next(true);
+            if asks.is_empty() {
+                return asked;
+            }
+            for ask in asks {
+                if let Asked::Picture { account_id, .. } = ask.what {
+                    asked.push(account_id);
+                }
+                scene.people.picture_answered(&ask, Answer::Read(image()));
+            }
+        }
+    };
+    scene.show(&all);
+    scene.read_profiles(number);
+    let asked = answer_pictures(&mut scene);
+    assert_eq!(asked.len(), MOST_IMAGES);
+    assert!(!asked.contains(&moved));
+
+    let first: Vec<AccountId> = [moved].into_iter().chain(held.iter().copied()).collect();
+    scene.show(&first);
+    assert_eq!(answer_pictures(&mut scene), [moved]);
+    let faces = scene.people.faces(scene.server);
+    let with_image = |account_id: &AccountId| {
+        faces
+            .get(account_id)
+            .is_some_and(|face| face.image.is_some())
+    };
+    assert!(with_image(&moved));
+    assert!(held[..MOST_IMAGES - 1].iter().all(with_image));
+    assert!(!with_image(&held[MOST_IMAGES - 1]));
+    assert_eq!(scene.people.take_dropped().len(), 1);
+}
+
 #[test]
 fn a_server_holds_at_most_256_images_and_the_one_shown_longest_ago_gives_way() {
     let mut scene = scene();
