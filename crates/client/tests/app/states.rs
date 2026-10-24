@@ -12,7 +12,7 @@ use junto_client_core::flow::access::Notice;
 use junto_client_core::protocol::account::RecoverAccount;
 
 use crate::harness::{Window, World, member, named, open, open_with};
-use crate::support::{Device, FaultProxy, logged_in};
+use crate::support::{Device, FaultProxy, TestServer, logged_in};
 
 #[gpui::test]
 fn an_address_that_is_not_valid_or_does_not_answer_is_refused_in_the_server_book(
@@ -175,7 +175,7 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     assert_eq!(actions.map(|action| window.cx.debug_bounds(action)), shown);
 
     // A banned person can forget the account: the key goes and the server stays.
-    window.click("forget-account");
+    window.click_state_action("forget-account");
     assert!(window.shows("confirm-forget"));
     window.click("confirm");
     window.until("the account is forgotten", |window| {
@@ -301,7 +301,7 @@ fn a_lost_connection_keeps_the_last_state_and_a_stopped_server_is_tried_again(
         window.status() == Some(ServerStatus::Unreachable)
     });
     world.run(server.restart());
-    window.click("check-server");
+    window.click_state_action("check-server");
     window.until_ready();
     assert_eq!(window.channel_names(), channels);
 }
@@ -338,7 +338,7 @@ fn the_settings_keep_the_name_the_scale_and_the_form_of_the_server_book(cx: &mut
             .read_with(&window.cx, |state, _| state.settings().scale_percent),
         150
     );
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(
         window.cx.update(|window, _| window.rem_size()),
         gpui::px(24.0)
@@ -443,7 +443,7 @@ fn a_setting_that_was_not_written_is_told_until_it_is_in_the_file(cx: &mut TestA
     let (directory, mut window) = named(cx, "Luca");
     let file = settings_file(directory.path());
     let failure = |window: &mut Window| {
-        window.cx.run_until_parked();
+        window.run_tasks();
         window.state.read_with(&window.cx, |state, _| {
             state.settings_error().map(str::to_owned)
         })
@@ -574,7 +574,7 @@ fn the_connection_mode_is_written_in_the_order_of_the_changes(cx: &mut TestAppCo
     window.until("the connection mode is written", |window| {
         mode(window) == ConnectionMode::WhenSelected
     });
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(mode(&window), ConnectionMode::WhenSelected);
     window.close();
     let window = open(cx, directory.path());
@@ -738,4 +738,172 @@ fn the_history_of_direct_calls_ends_with_the_account_of_the_device(cx: &mut Test
     window.until("the history of the account is dropped", |window| {
         held(window) == 0
     });
+}
+
+/// Two servers state a recovery with one identifier: the second server copied it (ADR
+/// 0745). Each server shows its notice, and each acknowledgement goes to its own server
+/// only.
+#[gpui::test]
+fn two_servers_with_one_recovery_identifier_take_one_acknowledgement_each(cx: &mut TestAppContext) {
+    use junto_client_core::flow::access::AccessState;
+    use sqlx::ConnectOptions;
+
+    let world = World::new();
+    let acme = world.server("Acme Studio");
+    let harbor = world.server("Harbor");
+    let acme_admin = world.owner(&acme);
+    let harbor_admin = world.owner(&harbor);
+    let (directory, mut window) = member(cx, &world, &acme.address(), &acme_admin, "Luca");
+    let code = harbor_admin.invite(&world, 1);
+    window.find_server(&harbor.address());
+    window.join_with_code(code.expose());
+    window.until("both servers are ready", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view
+                .servers
+                .iter()
+                .all(|server| server.status == ServerStatus::Ready)
+    });
+    let handles = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers());
+    let (on_acme, on_harbor) = (handles[0].clone(), handles[1].clone());
+    let logged = |handle: &junto_client_core::ServerHandle| match handle.access().state {
+        AccessState::LoggedIn {
+            account_id,
+            device_id,
+            ..
+        } => (account_id, device_id),
+        other => panic!("not logged in: {other:?}"),
+    };
+
+    // The owner of Acme gives a new device access to the account there.
+    let (account_id, acme_device) = logged(&on_acme);
+    let _replacement = world.run(async {
+        let device = Device::new();
+        let handle = device.add(&acme.address()).await;
+        handle.connect().await.unwrap();
+        acme_admin
+            .handle
+            .api()
+            .recover_account(
+                account_id,
+                &RecoverAccount {
+                    public_key: handle.device_public_key().unwrap(),
+                    device_name: "Replacement".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        (device, handle)
+    });
+    window.until("the recovery of Acme is told", |_| {
+        matches!(
+            on_acme.access().state,
+            AccessState::LoggedIn { ref recoveries, .. } if recoveries.len() == 1
+        )
+    });
+    let recovery_id = match on_acme.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries[0].id,
+        other => panic!("not logged in: {other:?}"),
+    };
+
+    // Harbor states a recovery with the same identifier for this device.
+    let (harbor_account, harbor_device) = logged(&on_harbor);
+    let harbor_owner = logged_in(&harbor_admin.handle);
+    // The notices of the recovery for this device. Acme holds one for each device of the
+    // account.
+    let notices_on = |server: &TestServer,
+                      device: junto_client_core::protocol::ids::DeviceId|
+     -> i64 {
+        world.run(async {
+            let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+            let mut database = options.connect().await.unwrap();
+            sqlx::query_scalar(
+                "select count(*) from recovery_notices where recovery_id = $1 and device_id = $2",
+            )
+            .bind(recovery_id.as_uuid())
+            .bind(device.as_uuid())
+            .fetch_one(&mut database)
+            .await
+            .unwrap()
+        })
+    };
+    world.run(async {
+        let options: sqlx::postgres::PgConnectOptions = harbor.database_url.parse().unwrap();
+        let mut database = options.connect().await.unwrap();
+        sqlx::query(
+            "insert into recoveries (id, account_id, device_id, performed_by, performed_at)
+             values ($1, $2, null, $3, now())",
+        )
+        .bind(recovery_id.as_uuid())
+        .bind(harbor_account.as_uuid())
+        .bind(harbor_owner.as_uuid())
+        .execute(&mut database)
+        .await
+        .unwrap();
+        sqlx::query("insert into recovery_notices (recovery_id, device_id) values ($1, $2)")
+            .bind(recovery_id.as_uuid())
+            .bind(harbor_device.as_uuid())
+            .execute(&mut database)
+            .await
+            .unwrap();
+    });
+
+    // The next start logs in on both servers: each shows the recovery.
+    drop((on_acme, on_harbor, handles));
+    window.close();
+    let mut window = open(cx, directory.path());
+    window.until("both servers tell the recovery", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view
+                .servers
+                .iter()
+                .all(|server| server.status == ServerStatus::Ready && server.has_recovery)
+    });
+    let recoveries = |window: &mut Window, index: usize| window.view().servers[index].has_recovery;
+
+    // The person states on Acme that the recovery was seen. Harbor keeps its notice, and
+    // its button is no button that sends.
+    window.click("server-0");
+    window.until("the notice of Acme is drawn", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.name == "Acme Studio")
+            && window.shows("recovery-notice")
+    });
+    assert_eq!(notices_on(&acme, acme_device), 1);
+    window.click("recovery-seen");
+    window.until("the notice of Acme is gone", |window| {
+        !recoveries(window, 0)
+    });
+    window.until(
+        "the database of Acme holds no notice of the recovery",
+        |_| notices_on(&acme, acme_device) == 0,
+    );
+    assert!(recoveries(&mut window, 1));
+    assert_eq!(notices_on(&harbor, harbor_device), 1);
+
+    // On Harbor the notice is acknowledged by its own button.
+    window.click("server-1");
+    window.until("the notice of Harbor is drawn", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.name == "Harbor")
+            && window.shows("recovery-notice")
+    });
+    assert_eq!(
+        window.view().selected.unwrap().recoveries[0].id,
+        recovery_id
+    );
+    window.click("recovery-seen");
+    window.until("the notice of Harbor is gone", |window| {
+        !recoveries(window, 1)
+    });
+    assert_eq!(notices_on(&harbor, harbor_device), 0);
+    assert!(!window.shows("recovery-error"));
 }

@@ -1268,6 +1268,8 @@ fn start(
         backoff: Backoff::new(timing.reconnect_first, timing.reconnect_longest),
         rejoining: false,
         renew_open: false,
+        #[cfg(test)]
+        renewals: Vec::new(),
         grant_closed: granted.is_some(),
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
@@ -2033,6 +2035,9 @@ struct Session {
     /// The server stated that the seat ended because no media connection used it: the
     /// next request asks for a place without naming the seat (ADR 0520).
     renew_open: bool,
+    /// The seat that each request for a new token named, in the order of the requests.
+    #[cfg(test)]
+    renewals: Vec<Option<String>>,
     /// The setting was closed for a grant that a read of the server stated, and no read
     /// has stated the end of that statement since (ADR 0521).
     grant_closed: bool,
@@ -3080,6 +3085,13 @@ impl Session {
         }
     }
 
+    /// The seat that the next request for a new token names: the seat of this device,
+    /// unless the server stated that it ended without a media connection, and then none, so
+    /// that a place is asked for (ADR 0520). That statement serves one request.
+    fn renewal_seat(&mut self) -> Option<String> {
+        (!std::mem::take(&mut self.renew_open)).then(|| self.place.identity().to_owned())
+    }
+
     /// Starts what is due now and returns when the next thing is due.
     fn work(&mut self, now: Instant, done: &mpsc::UnboundedSender<Done>) -> Instant {
         let mut wake = far();
@@ -3103,10 +3115,9 @@ impl Session {
                 self.retry = None;
                 self.rejoining = true;
                 self.apply_controls();
-                // The seat is named, unless the server stated that it ended without a
-                // media connection: then a place is asked for.
-                let seat = (!std::mem::take(&mut self.renew_open))
-                    .then(|| self.place.identity().to_owned());
+                let seat = self.renewal_seat();
+                #[cfg(test)]
+                self.renewals.push(seat.clone());
                 drop(self.inner.in_turn(renew(
                     self.inner.clone(),
                     self.server.clone(),

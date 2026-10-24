@@ -195,13 +195,13 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
         })
     };
     let listed = rows(&mut window);
-    window.cx.run_until_parked();
+    window.run_tasks();
     let place = window.cx.debug_bounds("contacts-more");
     assert!(place.is_some());
     window.in_shell(|shell, window, cx| shell.type_contact_part("Carl", window, cx));
     window.until_offered(carl_id);
     assert!(rows(&mut window) < listed);
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(window.cx.debug_bounds("contacts-more"), place);
     window.choose_contact(carl_id);
     window.until(
@@ -267,7 +267,7 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
     // The other administrator writes to him: the conversation is listed with its unread
     // sign, the server and the notices count it, and "New direct message" stays where it
     // is (ADR 0730).
-    window.cx.run_until_parked();
+    window.run_tasks();
     let new_direct = window.cx.debug_bounds("new-direct");
     assert!(new_direct.is_some());
     let with_eve = write_to(&world, &eve, luca_id, "A question from Eve");
@@ -282,7 +282,7 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
             && window.unread_notices() == 1
     });
     assert!(window.shows_named(format!("direct-row:{with_eve}")) && window.shows("notices-count"));
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(window.cx.debug_bounds("new-direct"), new_direct);
 
     // The notice opens beside the shown conversation and leads to the other one, and is
@@ -309,7 +309,7 @@ impl Window {
         &mut self,
         names: &[&'static str],
     ) -> Vec<(&'static str, Option<gpui::Bounds<gpui::Pixels>>)> {
-        self.cx.run_until_parked();
+        self.run_tasks();
         names
             .iter()
             .map(|name| (*name, self.cx.debug_bounds(name)))
@@ -483,10 +483,10 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
     window.until("the notice of the removal", |window| {
         window.shows("moderation-notice")
     });
-    window.cx.run_until_parked();
+    window.run_tasks();
     let removal = window.cx.debug_bounds("moderation-notice");
     assert_eq!(choose_eve(&mut window), of_eve);
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(window.cx.debug_bounds("moderation-notice"), removal);
     window.click("conversation-refusal-close");
     assert!(!window.shows("conversation-refused-notice"));
@@ -502,7 +502,7 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
             .count()
     };
     let before = opens(&proxy);
-    window.cx.run_until_parked();
+    window.run_tasks();
     let place = window.cx.debug_bounds("conversation-refused-notice");
     proxy.hold_request("POST", "/conversations");
     window.click("conversation-retry");
@@ -511,7 +511,7 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
     });
     window.click("conversation-retry");
     window.click("conversation-refusal-close");
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(window.cx.debug_bounds("conversation-refused-notice"), place);
     assert_eq!(opens(&proxy), before + 1);
     proxy.release();
@@ -553,7 +553,7 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
     window.until("the conversation is listed", |window| window.shows(ada_row));
     window.click(ada_row);
     window.until_message("Hello from Ada");
-    window.cx.run_until_parked();
+    window.run_tasks();
     let top = window.cx.debug_bounds("server-lists").unwrap().origin;
 
     // A direct call with Ada whose microphone the system refuses: the strip of the call and
@@ -583,13 +583,11 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
             watched: None,
         },
     );
-    window
-        .cx
-        .simulate_resize(gpui::size(gpui::px(720.0), gpui::px(480.0)));
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(480.0))));
     window.until("the call and the warning are drawn", |window| {
         window.shows("leave-call") && window.shows("sound-warning")
     });
-    window.cx.run_until_parked();
+    window.run_tasks();
     let bounds = |window: &mut Window, name: &'static str| {
         window
             .cx

@@ -951,10 +951,8 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
         shows(window, "Harbor")
     });
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
 
     // Nothing is attached and nothing is uploaded, and the composer says why.
     assert_eq!(
@@ -996,10 +994,8 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
             && window.shows("composer")
     });
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
     assert_eq!(
         window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
@@ -1022,9 +1018,7 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
     // A dialog that is answered while the composer still shows its place attaches.
     window.click("attach-file");
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
     window.until("the upload to the first server is complete", |window| {
         window.view().lists().is_some_and(|lists| {
             lists.draft.len() == 1
@@ -1194,11 +1188,13 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
     let list = window
         .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
         .expect("the list was drawn");
-    window.cx.simulate_mouse_move(
-        point(list.left() - px(20.0), list.top() + px(20.0)),
-        None::<MouseButton>,
-        Modifiers::none(),
-    );
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(
+            point(list.left() - px(20.0), list.top() + px(20.0)),
+            None::<MouseButton>,
+            Modifiers::none(),
+        )
+    });
     window.settle();
     let bars = |window: &mut Window| {
         sent.iter()
@@ -1218,9 +1214,9 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
         .cx
         .debug_bounds(crate::harness::selector(format!("message:{last}")))
         .expect("the newest message is drawn");
-    window
-        .cx
-        .simulate_mouse_move(row.center(), None::<MouseButton>, Modifiers::none());
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(row.center(), None::<MouseButton>, Modifiers::none())
+    });
     window.settle();
     assert_eq!(bars(&mut window), vec![last]);
 
@@ -1473,9 +1469,9 @@ fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut Tes
         .cx
         .debug_bounds(crate::harness::selector(format!("message:{}", wrong.id)))
         .expect("the message is drawn");
-    window
-        .cx
-        .simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none());
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none())
+    });
     window.settle();
     window.click_named(format!("delete:{}", wrong.id));
     assert!(window.shows("confirm-delete-message") && window.shows("confirm-delete-permanent"));
@@ -1860,5 +1856,191 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
             if line.message.system.as_ref().is_some_and(|system| {
                 system.action == "permanent_message_deleted"
             })))
+/// The file dialog is opened for a channel, and the device gets another account on that
+/// server before the dialog is answered: the composer shows the same channel, for another
+/// account. The files are not attached (ADR 0746).
+#[gpui::test]
+fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothing(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::flow::access::AccessState;
+    use junto_client_core::protocol::account::RecoverAccount;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let luca = window.own_account();
+    let device_id = match handle.access().state {
+        AccessState::LoggedIn { device_id, .. } => device_id,
+        other => panic!("the window is not logged in: {other:?}"),
+    };
+    let (_phone, phone) = crate::account::second_device(&world, &server, &handle);
+    let code = admin.invite(&world, 1);
+    let (_bruno_device, bruno) = crate::admin_pages::joined(&world, &server, &code, "Bruno");
+    let bruno = crate::support::logged_in(&bruno);
+    window.until("the composer of the channel is shown", |window| {
+        window.feed().is_some_and(|feed| feed.loaded) && window.shows("composer")
+    });
+    let general = window.selected_channel();
+
+    // The person opens the file dialog for a message in the channel.
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("for Luca.txt");
+    std::fs::write(&path, b"what Luca wrote").unwrap();
+    window.click("attach-file");
+    assert!(window.cx.did_prompt_for_paths());
+
+    // Meanwhile the phone removes this device from the account of Luca, and the owner
+    // recovers the account of Bruno onto its key (ADR 0112). The device logs in again, for
+    // the account of Bruno, and the composer shows the same channel.
+    // The events wait at the proxy, so that the device does not log in again between the
+    // removal and the recovery.
+    let key = handle.device_public_key().unwrap();
+    proxy.hold_events();
+    world.run(async {
+        phone.api().remove_device(device_id).await.unwrap();
+        admin
+            .handle
+            .api()
+            .recover_account(
+                bruno,
+                &RecoverAccount {
+                    public_key: key,
+                    device_name: "Laptop".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+    });
+    proxy.release();
+    window.until_read(
+        "the channel is shown for the account of Bruno",
+        |window| {
+            let view = window.view();
+            (
+                view.person.account_id,
+                view.selected.map(|server| server.status),
+                window.feed().map(|feed| (feed.loaded, feed.place)),
+                window.shows("composer"),
+            )
+        },
+        |(account, _, feed, composer)| {
+            *account == Some(bruno) && *feed == Some((true, PlaceId::Channel(general))) && *composer
+        },
+    );
+    assert_ne!(luca, bruno);
+
+    // The person chooses the file now: nothing is attached and nothing is uploaded, and
+    // the composer says why.
+    let chosen = path.clone();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
+        Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
+    );
+    assert!(window.view().lists().unwrap().draft.is_empty());
+    let uploads = proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.path.starts_with("/api/v1/attachments"))
+        .count();
+    assert_eq!(uploads, 0, "a file was sent for the account of Bruno");
+
+    // A dialog that is opened for the account of Bruno attaches the file.
+    window.click("attach-file");
+    let chosen = path.clone();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.until("the file waits for the message", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.draft.len() == 1)
+    });
+}
+
+/// The file dialog is opened for a channel, and the server is removed from the device and
+/// added again before the dialog is answered. The device is linked to the same account, and
+/// the composer shows the same channel for the same account: only the entry of the server
+/// book is another one. The files are not attached (ADR 0746).
+#[gpui::test]
+fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::flow::access::AccessState;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let luca = window.own_account();
+    let (_phone, phone) = crate::account::second_device(&world, &server, &handle);
+    drop(handle);
+    window.until("the composer of the channel is shown", |window| {
+        window.feed().is_some_and(|feed| feed.loaded) && window.shows("composer")
+    });
+    let general = window.selected_channel();
+
+    // The person opens the file dialog for a message in the channel.
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("for the channel.txt");
+    std::fs::write(&path, b"what Luca wrote").unwrap();
+    window.click("attach-file");
+    assert!(window.cx.did_prompt_for_paths());
+
+    // Meanwhile the person removes the server from this device, adds it again, and the
+    // phone links this device to the account.
+    window.click("server-menu-button");
+    window.click("menu-remove-server");
+    window.click("confirm");
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    window.find_server(&proxy.address());
+    window.click("request-link");
+    window.until("the device waits for its link", |window| {
+        window.shows("link-wait")
+    });
+    let added = window.handle();
+    let AccessState::WaitingForLink {
+        code, public_key, ..
+    } = added.access().state
+    else {
+        panic!("the device does not wait for a link");
+    };
+    world
+        .run(phone.api().approve_device_link(code, public_key))
+        .unwrap();
+    window.click("dialog-close");
+    window.until("the channel is shown for the same account", |window| {
+        window.view().person.account_id == Some(luca)
+            && window
+                .feed()
+                .is_some_and(|feed| feed.loaded && feed.place == PlaceId::Channel(general))
+            && window.shows("composer")
+    });
+
+    // The person chooses the file now: nothing is attached, and the composer says why.
+    let chosen = path.clone();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
+        Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
+    );
+    assert!(window.view().lists().unwrap().draft.is_empty());
+    let uploads = proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.path.starts_with("/api/v1/attachments"))
+        .count();
+    assert_eq!(
+        uploads, 0,
+        "a file was sent for the entry that was added again"
     );
 }

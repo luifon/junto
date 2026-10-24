@@ -1203,7 +1203,7 @@ pub(crate) mod tests {
             error: None,
             stream: StreamStatus::Live,
             model: Some(Arc::new(ServerModel::from_snapshot(
-                crate::state::fixtures::stated(snapshot),
+                crate::state::fixtures::from_roles(snapshot),
             ))),
         }
     }

@@ -877,8 +877,9 @@ mod tests {
         }
 
         fn model(&self, admin: AdminModel) -> ServerModel {
-            let mut model =
-                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
+            let mut model = ServerModel::from_snapshot(crate::state::fixtures::from_roles(
+                self.snapshot.clone(),
+            ));
             model.admin = Arc::new(admin);
             model
         }

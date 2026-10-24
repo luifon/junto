@@ -176,19 +176,15 @@ fn a_logo_dialog_that_is_answered_on_the_page_of_another_server_sends_nothing(
     owner.open_administration();
     open_page(&mut owner, "admin-nav-server", shows_server_page);
     let file = chosen.clone();
-    owner
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![file]));
-    owner.cx.run_until_parked();
+    owner.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![file])));
+    owner.run_tasks();
     assert!(owner.shows("logo-none") && !owner.shows("logo-picture"));
     assert_eq!(logo_requests(&proxy), 0);
 
     // A dialog that is answered on the page that opened it sends the file.
     click_in_page(&mut owner, "logo-choose");
     let file = chosen.clone();
-    owner
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![file]));
+    owner.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![file])));
     owner.until("the page of the second server shows the logo", |window| {
         window.shows("logo-picture")
     });

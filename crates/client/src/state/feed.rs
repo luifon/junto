@@ -1100,7 +1100,7 @@ mod tests {
             departed: HashMap::new(),
         };
         Scene {
-            model: ServerModel::from_snapshot(crate::state::fixtures::stated(snapshot)),
+            model: ServerModel::from_snapshot(crate::state::fixtures::from_roles(snapshot)),
             own,
             ana,
             place: MessagePlace::Channel {

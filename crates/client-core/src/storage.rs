@@ -392,6 +392,12 @@ impl Dir {
     /// through this handle or through another handle of the same directory: the lock is
     /// known by the identity of the directory, not by the path that was used to open it.
     pub(crate) fn lock(&self) -> Result<DirectoryLock, StorageError> {
+        #[cfg(feature = "test-support")]
+        assert!(
+            !LOCKS_REFUSED.get().is_some_and(|refused| refused()),
+            "the lock of the data directory {} was taken on a thread that must not wait for it",
+            self.path.display()
+        );
         let path = self.path.join(LOCK_NAME);
         let held = HELD.with_borrow(|held| held.contains(&self.identity));
         let file = if held {
@@ -415,6 +421,19 @@ impl Dir {
 
 thread_local! {
     static HELD: RefCell<Vec<Identity>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The check that a test of an application gives: true on a thread that must not wait for
+/// the lock of a data directory at that moment.
+#[cfg(feature = "test-support")]
+static LOCKS_REFUSED: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+/// From now on a lock of a data directory panics while `refused` is true. The tests of the
+/// window give a check that is true while the thread of the window runs its own work after
+/// the start (ADR 0730). The check of the first call stays for the whole process.
+#[cfg(feature = "test-support")]
+pub fn refuse_locks_while(refused: fn() -> bool) {
+    let _ = LOCKS_REFUSED.set(refused);
 }
 
 /// The lock of one data directory. It stays with the thread that took it.

@@ -187,6 +187,10 @@ pub(crate) struct Shared {
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
     /// The numbers that this client gives to its waiting messages and to its uploads.
     numbers: std::sync::atomic::AtomicU64,
+    /// The position of the state of each view that the readers were given, in order. The
+    /// tests of the stream client read it: a reader sees only the newest view.
+    #[cfg(test)]
+    pub(crate) shown_positions: Mutex<Vec<Option<u64>>>,
 }
 
 impl Shared {
@@ -196,6 +200,8 @@ impl Shared {
             notices: broadcast::Sender::new(WAITING_NOTICES),
             commands: Mutex::new(None),
             numbers: std::sync::atomic::AtomicU64::new(1),
+            #[cfg(test)]
+            shown_positions: Mutex::default(),
         })
     }
 
@@ -215,6 +221,8 @@ impl Shared {
     }
 
     pub(crate) fn show(&self, view: LiveView) {
+        #[cfg(test)]
+        lock(&self.shown_positions).push(view.model.as_ref().map(|model| model.cursor.position));
         self.view.send_replace(view);
     }
 

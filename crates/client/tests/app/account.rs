@@ -3,7 +3,7 @@
 
 use gpui::TestAppContext;
 use junto_client::state::account::{
-    AccountPage, AccountView, AskKind, DeviceLine, DeviceList, PageView, ProfilePage,
+    AccountPage, AccountView, AskKind, DeviceLine, DeviceList, DevicesPage, PageView, ProfilePage,
 };
 use junto_client::state::view::ServerStatus;
 use junto_client::text;
@@ -14,7 +14,7 @@ use junto_client_core::protocol::account::DeviceOrigin;
 use junto_client_core::protocol::ids::DeviceId;
 
 use crate::harness::{Window, World, member, selector};
-use crate::support::{Device, FaultProxy, TestServer, logged_in};
+use crate::support::{Device, Fault, FaultProxy, TestServer, logged_in};
 
 const ACCOUNT: &str = "/api/v1/account";
 const AVATAR: &str = "/api/v1/account/avatar";
@@ -35,7 +35,7 @@ fn png(width: u32, height: u32, padding: usize) -> Vec<u8> {
 impl Window {
     /// The account layer as the window drew it last. Absent while the layer is closed.
     pub(crate) fn account(&mut self) -> Option<AccountView> {
-        self.cx.run_until_parked();
+        self.run_tasks();
         self.shell.read_with(&self.cx, |shell, _| {
             shell
                 .account_drawn()
@@ -608,10 +608,8 @@ fn an_answer_to_the_name_of_a_device_in_a_narrow_window_moves_no_row_under_it(
             state.set_scale(junto_client::theme::SCALE_MAX, cx);
         });
     });
-    window
-        .cx
-        .simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0)));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0))));
+    window.run_tasks();
     let rows = window.devices();
     let (upper, lower) = (rows[0].id, rows[1].id);
     let (row, below) = (
@@ -646,4 +644,74 @@ fn an_answer_to_the_name_of_a_device_in_a_narrow_window_moves_no_row_under_it(
         !window.shows("device-name-field")
     });
     assert_eq!(window.cx.debug_bounds(below).unwrap(), before);
+}
+
+#[gpui::test]
+fn a_read_of_the_devices_that_failed_is_read_again_with_try_again(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = window.handle();
+    let devices = "/api/v1/account/devices";
+
+    // The first read of the page gets no answer: the page states it, with "Try again".
+    proxy.fail(devices, [Fault::Cut]);
+    window.open_account();
+    window.click("account-nav-devices");
+    window.until("the read of the devices failed", |window| {
+        window.shows("devices-read-failed")
+    });
+    assert!(matches!(
+        window.account().map(|view| view.page),
+        Some(PageView::Devices(DevicesPage {
+            list: DeviceList::Failed(_),
+            ..
+        }))
+    ));
+    let reads = proxy.seen(devices).len();
+    window.click("devices-read-again");
+    window.until("the devices are listed", |window| {
+        window.devices().len() == 1
+    });
+    assert_eq!(proxy.seen(devices).len(), reads + 1);
+    assert!(!window.shows("devices-read-failed"));
+
+    // A second device: the page lists it.
+    let (_phone, phone) = second_device(&world, &server, &handle);
+    window.until("both devices are listed", |window| {
+        window.devices().len() == 2
+    });
+
+    // The phone takes another name, and the read of the page that follows fails: the page
+    // keeps the devices that it listed and states the failure under them.
+    let phone_id = match phone.access().state {
+        AccessState::LoggedIn { device_id, .. } => device_id,
+        other => panic!("the phone is not logged in: {other:?}"),
+    };
+    proxy.fail(devices, [Fault::Cut]);
+    world
+        .run(phone.api().rename_device(phone_id, "Tablet".to_owned()))
+        .unwrap();
+    window.until("the second read failed", |window| {
+        window.shows("devices-read-failed")
+    });
+    assert!(matches!(
+        window.account().map(|view| view.page),
+        Some(PageView::Devices(DevicesPage {
+            list: DeviceList::Listed {
+                failed: Some(_),
+                ..
+            },
+            ..
+        }))
+    ));
+    assert_eq!(window.devices().len(), 2);
+    assert!(window.devices().iter().all(|row| row.name != "Tablet"));
+    window.click("devices-read-again");
+    window.until("the new name is listed", |window| {
+        window.devices().iter().any(|row| row.name == "Tablet")
+            && !window.shows("devices-read-failed")
+    });
 }

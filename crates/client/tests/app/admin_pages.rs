@@ -331,9 +331,7 @@ pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
     let Some(element) = try_reveal(window, selector) else {
         return false;
     };
-    window
-        .cx
-        .simulate_click(element.center(), Modifiers::none());
+    window.simulate(|cx| cx.simulate_click(element.center(), Modifiers::none()));
     window.park();
     true
 }
@@ -354,10 +352,12 @@ pub(crate) fn try_reveal(
                 cx.notify();
             });
         } else {
-            window.cx.simulate_event(ScrollWheelEvent {
-                position: page.center(),
-                delta: ScrollDelta::Pixels(point(px(0.0), -page.size.height * 0.8)),
-                ..Default::default()
+            window.simulate(|cx| {
+                cx.simulate_event(ScrollWheelEvent {
+                    position: page.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.0), -page.size.height * 0.8)),
+                    ..Default::default()
+                })
             });
         }
         return None;
@@ -370,10 +370,12 @@ pub(crate) fn try_reveal(
     } else {
         page.bottom() - element.bottom()
     };
-    window.cx.simulate_event(ScrollWheelEvent {
-        position: page.center(),
-        delta: ScrollDelta::Pixels(point(px(0.0), distance)),
-        ..Default::default()
+    window.simulate(|cx| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: page.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), distance)),
+            ..Default::default()
+        })
     });
     None
 }
@@ -465,10 +467,12 @@ pub(crate) fn reveal_under_form(
                     control.top() - page.top()
                 }
             };
-            window.cx.simulate_event(ScrollWheelEvent {
-                position: page.center(),
-                delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
-                ..Default::default()
+            window.simulate(|cx| {
+                cx.simulate_event(ScrollWheelEvent {
+                    position: page.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
+                    ..Default::default()
+                })
             });
             None
         },
@@ -2898,7 +2902,7 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
     let extent = |window: &mut Window| window.in_shell(|shell, _, _| shell.admin_page_extent());
     let estimated = px(2000.0 * 30.0);
     assert!(extent(&mut window) > estimated, "{:?}", extent(&mut window));
-    window.cx.simulate_resize(gpui::size(px(720.0), px(600.0)));
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(720.0), px(600.0))));
     window.settle();
     assert!(extent(&mut window) > estimated, "{:?}", extent(&mut window));
 

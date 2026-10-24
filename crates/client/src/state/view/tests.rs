@@ -80,6 +80,10 @@ pub(super) struct Scene {
     pub(super) daily: ChannelId,
     pub(super) hidden: ChannelId,
     pub(super) snapshot: Snapshot,
+    /// The test states the permission lists of the workspaces itself. Otherwise each state
+    /// has the lists that the roles and the account give, as a server states them after
+    /// a change of either.
+    pub(super) lists_by_hand: bool,
 }
 
 pub(super) fn scene() -> Scene {
@@ -156,6 +160,7 @@ pub(super) fn scene() -> Scene {
         daily: daily.id,
         hidden: hidden.id,
         snapshot,
+        lists_by_hand: false,
     }
 }
 
@@ -189,7 +194,11 @@ impl Scene {
     }
 
     pub(super) fn model(&self) -> ServerModel {
-        ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()))
+        ServerModel::from_snapshot(if self.lists_by_hand {
+            self.snapshot.clone()
+        } else {
+            crate::state::fixtures::from_roles(self.snapshot.clone())
+        })
     }
 
     fn server(&self) -> ServerSnapshot {
@@ -2208,9 +2217,16 @@ pub(super) mod calls {
                 busy: false,
             }
         );
-        // The role "everyone" allows it. The owner of the server may record without a role.
+        // The role "everyone" allows it. The window follows the list that the server states
+        // and not the roles: while the stated list is empty, a role that allows it changes
+        // nothing.
         scene.studio_mut().roles[0].permissions = vec![WorkspacePermission::RecordCalls];
+        scene.lists_by_hand = true;
+        assert!(scene.studio_mut().permissions.is_empty());
+        assert!(!shown(&scene, &known).may_record);
+        scene.lists_by_hand = false;
         assert!(shown(&scene, &known).may_record);
+        // The owner of the server may record without a role.
         scene.studio_mut().roles[0].permissions.clear();
         scene.snapshot.account.is_owner = true;
         assert!(shown(&scene, &known).may_record);

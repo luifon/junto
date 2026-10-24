@@ -133,23 +133,19 @@ fn send_role_form(window: &mut Window, name: &str) {
 /// whether a drag started.
 fn drag_role(window: &mut Window, from: &'static str, to: &'static str) -> bool {
     let start = crate::admin_pages::reveal_in_page(window, from).center();
-    window
-        .cx
-        .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
-    window.cx.simulate_mouse_move(
-        start + point(px(0.0), px(12.0)),
-        MouseButton::Left,
-        Modifiers::none(),
-    );
+    window.simulate(|cx| cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none()));
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(
+            start + point(px(0.0), px(12.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        )
+    });
     let started = window.cx.update(|_, cx| cx.has_active_drag());
     let end = crate::admin_pages::reveal_in_page(window, to).center();
-    window
-        .cx
-        .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
-    window
-        .cx
-        .simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none()));
+    window.simulate(|cx| cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none()));
+    window.run_tasks();
     started
 }
 
@@ -1032,4 +1028,112 @@ fn a_cancelled_rename_of_a_role_keeps_its_permissions_waiting_and_tells_the_refu
         "a permission was sent while the new name was on its way"
     );
     assert_eq!(role_names(&mut window), ["Chiefs", "Leads", "everyone"]);
+}
+
+/// One permission of a role is given, taken and given again against the real server. The
+/// event of the second change is held back: until the state holds it, the switch shows the
+/// asked state, takes no click and sends nothing, so the third change starts from the state
+/// that the server holds (ADR 0311, ADR 0763, ADR 0791).
+#[gpui::test]
+fn a_permission_given_taken_and_given_again_ends_as_the_last_change(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let role = CreateWorkspaceRole {
+        name: "Helpers".to_owned(),
+        permissions: Vec::new(),
+    };
+    let helpers = world
+        .run(owner.api().create_workspace_role(workspace_id, &role))
+        .unwrap()
+        .id;
+    let stored = || -> Vec<WorkspacePermission> {
+        world
+            .run(owner.api().workspace_roles(workspace_id))
+            .unwrap()
+            .into_iter()
+            .find(|role| role.id == helpers)
+            .unwrap()
+            .permissions
+    };
+    let changes = || {
+        let path = format!("/roles/{helpers}/permissions");
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.path.ends_with(&path))
+            .count()
+    };
+    let permission = WorkspacePermission::ManageMessages;
+    // The state that the switch shows: the asked state while a change waits.
+    let on = |window: &mut Window| -> Option<bool> {
+        let role = RoleRef::Workspace(workspace_id, helpers);
+        let asked = window
+            .admin()?
+            .permission_asked(role, RolePermission::Workspace(permission));
+        let held = role_row(window, role)?
+            .permissions
+            .iter()
+            .find(|switch| switch.permission == RolePermission::Workspace(permission))
+            .map(|switch| switch.on)?;
+        Some(asked.unwrap_or(held))
+    };
+    let settled = |window: &mut Window| {
+        idle(window)
+            && window
+                .admin()
+                .is_some_and(|view| view.changing_roles.is_empty())
+    };
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    click_in_page(&mut window, sel("role-permissions", helpers));
+    window.until("the permissions are shown", |window| {
+        window.shows("role-permission-manage_messages")
+    });
+
+    // A: the permission is given.
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.until("the role holds the permission", |window| {
+        on(window) == Some(true) && settled(window)
+    });
+    assert_eq!(stored(), [permission]);
+    assert_eq!(changes(), 1);
+
+    // B: it is taken, and the event of the change waits at the proxy. The server holds the
+    // change; the switch shows the asked state and is held.
+    proxy.hold_events();
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.until("the server answered the change", |window| {
+        changes() == 2 && idle(window)
+    });
+    assert_eq!(stored(), Vec::<WorkspacePermission>::new());
+    assert_eq!(on(&mut window), Some(false));
+    assert!(
+        window
+            .admin()
+            .is_some_and(|view| !view.changing_roles.is_empty())
+    );
+    // A click on the held switch sends nothing.
+    assert!(try_click(&mut window, "role-permission-manage_messages"));
+    window.settle();
+    assert_eq!(changes(), 2);
+    assert_eq!(stored(), Vec::<WorkspacePermission>::new());
+
+    // The event arrives: the switch stays off and takes clicks again.
+    proxy.release();
+    window.until("the state holds the second change", |window| {
+        on(window) == Some(false) && settled(window)
+    });
+
+    // A again: the permission is given once more, and the role ends with it.
+    click_in_page(&mut window, "role-permission-manage_messages");
+    window.until("the role holds the permission again", |window| {
+        on(window) == Some(true) && settled(window)
+    });
+    assert_eq!(changes(), 3);
+    assert_eq!(stored(), [permission]);
 }

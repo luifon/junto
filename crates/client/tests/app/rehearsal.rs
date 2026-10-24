@@ -914,7 +914,7 @@ fn own_account(window: &mut Window) -> AccountId {
 }
 
 fn invites(window: &mut Window) -> Option<junto_client::state::admin::view::people::InvitesPage> {
-    window.cx.run_until_parked();
+    window.run_tasks();
     let admin = window
         .state
         .read_with(&window.cx, |state, _| state.admin_view())?;

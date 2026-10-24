@@ -488,6 +488,9 @@ pub struct AppState {
     /// The number of the last request of a search. An answer to an earlier request is
     /// not used.
     search_asks: u64,
+    /// How many answers of a search reached the window, also the ones that it did not use.
+    #[cfg(feature = "test-support")]
+    search_answers: u64,
     /// The continuation of the search of the window, for its next page.
     search_next: Option<String>,
     /// The jump to a message that waits until the client core holds the list of its
@@ -743,6 +746,8 @@ impl AppState {
             kept_opened: Vec::new(),
             kept_shown: Vec::new(),
             search_asks: 0,
+            #[cfg(feature = "test-support")]
+            search_answers: 0,
             search_next: None,
             jump: None,
             result_jump: None,

@@ -727,18 +727,18 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
             root.read(cx).view().clone().downcast::<Shell>().unwrap()
         })
         .unwrap();
-    let mut detached = VisualTestContext::from_window(handle, cx);
+    let mut detached = window.window_of(handle);
     for shade in 1..=PICTURES {
         images = give(&mut window, &[&main_shell, &detached_shell], shade);
     }
     let shown = held(&window, &detached_shell);
     #[cfg(not(target_os = "macos"))]
     assert!(
-        in_gpu(&mut detached, &shown) >= 2,
+        in_gpu(&mut detached.cx, &shown) >= 2,
         "the call window did not draw the small pictures of the shares"
     );
     assert_eq!(
-        kept(&mut detached, &images, &shown),
+        kept(&mut detached.cx, &images, &shown),
         0,
         "the call window holds GPU images of {} pictures that it no longer draws",
         images.len()
@@ -765,7 +765,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     assert_eq!(
         (
             in_gpu(&mut window.cx, &images),
-            in_gpu(&mut detached, &images)
+            in_gpu(&mut detached.cx, &images)
         ),
         (0, 0),
         "GPU images of the main window and of the call window after the end of the shares"

@@ -214,11 +214,7 @@ fn rig_with_admin() -> (Rig, Arc<Mutex<AdminRoutes>>) {
     http.routes.lock().unwrap().snapshot = Some(scene.snapshot.clone());
     let admin = Arc::new(Mutex::new(AdminRoutes::default()));
     let (peers, accepted) = mpsc::unbounded_channel();
-    let wire = Arc::new(Wire {
-        peers,
-        refusals: Mutex::default(),
-        opened_at: Mutex::default(),
-    });
+    let wire = Arc::new(Wire::new(peers));
     let environment = Arc::new(Environment {
         transport: Arc::new(AdminHttp {
             http: http.clone(),

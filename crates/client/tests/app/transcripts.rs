@@ -599,7 +599,7 @@ fn reveal_language(window: &mut Window, selector: &'static str) {
     window.until(
         "the language is in the visible part of the list",
         |window| {
-            window.cx.run_until_parked();
+            window.run_tasks();
             let (Some(list), Some(item)) = (
                 window.cx.debug_bounds("record-language-list"),
                 window.cx.debug_bounds(selector),
@@ -610,10 +610,12 @@ fn reveal_language(window: &mut Window, selector: &'static str) {
                 return true;
             }
             let distance = list.center().y - item.center().y;
-            window.cx.simulate_event(ScrollWheelEvent {
-                position: list.center(),
-                delta: ScrollDelta::Pixels(point(px(0.0), distance)),
-                ..Default::default()
+            window.simulate(|cx| {
+                cx.simulate_event(ScrollWheelEvent {
+                    position: list.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.0), distance)),
+                    ..Default::default()
+                })
             });
             false
         },
@@ -1037,7 +1039,7 @@ fn recording_control_fits(
         window
             .state
             .update(&mut window.cx, |state, cx| state.set_scale(scale, cx));
-        call.cx.simulate_resize(gpui::size(px(width), px(640.0)));
+        call.simulate(|cx| cx.simulate_resize(gpui::size(px(width), px(640.0))));
         call.settle();
         let shown = call.cx.update(|window, _| window.viewport_size().width);
         let bounds = |call: &mut Window, selectors: &[&'static str]| {

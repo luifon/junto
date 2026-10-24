@@ -438,6 +438,12 @@ impl Shell {
         self.account.drawn.as_ref()
     }
 
+    /// The scroll position of the page of the account layer, for the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn account_scroll_handle(&self) -> ScrollHandle {
+        self.account.page_scroll.clone()
+    }
+
     /// True while the account layer is open.
     pub fn account_is_open(&self) -> bool {
         matches!(self.layer, Layer::Account)

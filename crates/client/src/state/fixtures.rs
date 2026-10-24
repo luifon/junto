@@ -32,17 +32,26 @@ fn list(
         .collect()
 }
 
-/// A snapshot with the list of each workspace that states none.
-pub fn stated(mut snapshot: Snapshot) -> Snapshot {
+/// A snapshot whose workspaces state the lists that a server gives for their roles and for
+/// the account, as after a change of the roles. Every list is replaced, an empty one as
+/// well, so an empty list is never taken for a missing one. A list that the snapshot holds
+/// already must be the list of the roles: a test that states a list of its own sets it
+/// after this call, or builds its scene with `lists_by_hand`.
+pub fn from_roles(mut snapshot: Snapshot) -> Snapshot {
     let administrator = snapshot.account.is_owner
         || snapshot
             .account
             .server_permissions
             .contains(&ServerPermission::Administrator);
     for workspace in &mut snapshot.workspaces {
-        if workspace.permissions.is_empty() {
-            workspace.permissions = list(administrator, &workspace.roles, &workspace.own_role_ids);
-        }
+        let stated = list(administrator, &workspace.roles, &workspace.own_role_ids);
+        assert!(
+            workspace.permissions.is_empty() || workspace.permissions == stated,
+            "the workspace {} states a list of its own: set it after from_roles or use \
+             lists_by_hand",
+            workspace.workspace.name
+        );
+        workspace.permissions = stated;
     }
     snapshot
 }

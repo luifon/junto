@@ -132,6 +132,19 @@ struct Wire {
     peers: mpsc::UnboundedSender<Peer>,
     refusals: Mutex<VecDeque<OpenError>>,
     opened_at: Mutex<Vec<Instant>>,
+    /// How many frames of the server a connection holds before the client reads them.
+    frames: std::sync::atomic::AtomicUsize,
+}
+
+impl Wire {
+    fn new(peers: mpsc::UnboundedSender<Peer>) -> Self {
+        Self {
+            peers,
+            refusals: Mutex::default(),
+            opened_at: Mutex::default(),
+            frames: std::sync::atomic::AtomicUsize::new(64),
+        }
+    }
 }
 
 impl StreamTransport for Wire {
@@ -140,7 +153,8 @@ impl StreamTransport for Wire {
         if let Some(refusal) = self.refusals.lock().unwrap().pop_front() {
             return Box::pin(async move { Err(refusal) });
         }
-        let (to_client, incoming) = mpsc::channel(64);
+        let frames = self.frames.load(std::sync::atomic::Ordering::Relaxed);
+        let (to_client, incoming) = mpsc::channel(frames);
         let (outgoing, from_client) = mpsc::channel(4);
         let _ = self.peers.send(Peer {
             request,
@@ -396,11 +410,7 @@ fn rig_with(policy: StreamPolicy) -> Rig {
     let http = Arc::new(Http::default());
     http.routes.lock().unwrap().snapshot = Some(scene.snapshot.clone());
     let (peers, accepted) = mpsc::unbounded_channel();
-    let wire = Arc::new(Wire {
-        peers,
-        refusals: Mutex::default(),
-        opened_at: Mutex::default(),
-    });
+    let wire = Arc::new(Wire::new(peers));
     let environment = Arc::new(Environment {
         transport: http.clone(),
         sockets: wire.clone(),
@@ -535,6 +545,39 @@ async fn next_event(notices: &mut Notices) -> (u64, Arc<Event>) {
             other => panic!("no notice: {other:?}"),
         }
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_readers_get_the_state_after_at_most_256_frames_that_waited() {
+    let mut rig = rig();
+    rig.wire
+        .frames
+        .store(1024, std::sync::atomic::Ordering::Relaxed);
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, cursor) = rig.served().await;
+    let base = cursor.position;
+    rig.live.shared.shown_positions.lock().unwrap().clear();
+
+    // 600 events wait at once: the client applies 256, gives the readers the state, and
+    // goes on (ADR 0719). The test puts them into the connection without a wait, so the
+    // client reads none of them before the last one is there.
+    for id in base + 1..=base + 600 {
+        let message = ServerMessage::Event {
+            id,
+            at: time(),
+            event: created(&rig.scene, &format!("channel {id}")),
+        };
+        let text = serde_json::to_string(&message).unwrap();
+        peer.to_client.try_send(Incoming::Text(text)).unwrap();
+    }
+    let model = rig
+        .model_when("every event", |model| model.cursor.position == base + 600)
+        .await;
+    assert!(has_channel(&model, &format!("channel {}", base + 600)));
+    assert_eq!(
+        *rig.live.shared.shown_positions.lock().unwrap(),
+        [Some(base + 256), Some(base + 512), Some(base + 600)]
+    );
 }
 
 #[tokio::test(start_paused = true)]

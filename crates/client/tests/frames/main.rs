@@ -165,7 +165,7 @@ fn main() -> ExitCode {
             })
         });
     }
-    give_frames(&mut native.cx, &mut run, Duration::from_secs(1));
+    give_frames(&mut run, Duration::from_secs(1));
     let after = picture_memory();
     println!(
         "frames: graphics memory {} MiB before the shares and the cameras, {} MiB after them; pixel buffers {} MiB before, {} MiB after",
@@ -223,9 +223,9 @@ impl PictureMemory {
 /// the pictures at the start and at the end of `DRAWING`.
 #[cfg(target_os = "macos")]
 fn measure(cx: &mut gpui::TestAppContext, run: &mut Rehearsal) -> Measured {
-    give_frames(cx, run, Duration::from_secs(1));
+    give_frames(run, Duration::from_secs(1));
     let (drawn, start) = (picture_draws(cx), picture_memory());
-    give_frames(cx, run, DRAWING);
+    give_frames(run, DRAWING);
     Measured {
         pictures: picture_draws(cx) - drawn,
         start,
@@ -235,9 +235,9 @@ fn measure(cx: &mut gpui::TestAppContext, run: &mut Rehearsal) -> Measured {
 
 /// Gives the windows frames of the display for this time (`process::give_frames`).
 #[cfg(target_os = "macos")]
-fn give_frames(cx: &mut gpui::TestAppContext, run: &mut Rehearsal, time: Duration) {
+fn give_frames(run: &mut Rehearsal, time: Duration) {
     process::give_frames(&mut run.a, time);
-    cx.run_until_parked();
+    run.a.run_tasks();
 }
 
 /// The drawings that the pictures of the calls caused, in all windows.

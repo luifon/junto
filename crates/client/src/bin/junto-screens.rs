@@ -28,7 +28,7 @@ use junto_client::shell::call::CallTab;
 use junto_client::shell::share::SoundKind;
 use junto_client::shell::{Open, Shell};
 use junto_client::state::AppState;
-use junto_client::state::fixtures::stated;
+use junto_client::state::fixtures::from_roles;
 use junto_client::state::view::{EntryState, MediaSnapshot, OwnEntry, ServerSnapshot, ShownLevels};
 use junto_client::theme;
 use junto_client_core::api::{
@@ -356,7 +356,7 @@ fn acme_model_of(
         ],
     );
     more(&mut stated_snapshot);
-    let mut model = ServerModel::from_snapshot(stated(stated_snapshot));
+    let mut model = ServerModel::from_snapshot(from_roles(stated_snapshot));
     let studio = Arc::make_mut(&mut model.workspaces[0]);
     let roles: Vec<_> = studio.roles.iter().map(|role| role.id).collect();
     studio.members = Loadable::Loaded(
@@ -422,7 +422,7 @@ fn harbor() -> ServerSnapshot {
         in_progress: None,
         error: None,
         stream: StreamStatus::Live,
-        model: Some(Arc::new(ServerModel::from_snapshot(stated(snapshot(
+        model: Some(Arc::new(ServerModel::from_snapshot(from_roles(snapshot(
             "Luca",
             vec![workspace(13, "Lounge", true)],
         ))))),

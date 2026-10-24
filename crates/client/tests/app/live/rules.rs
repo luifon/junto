@@ -227,7 +227,7 @@ impl Scene {
                 started.elapsed() < PATIENCE,
                 "meeting mode did not start: {error}"
             );
-            self.window.cx.run_until_parked();
+            self.window.run_tasks();
             std::thread::sleep(Duration::from_millis(200));
         }
     }
@@ -1082,25 +1082,27 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
             )))
             .unwrap()
             .center();
-        window
-            .cx
-            .simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::none());
-        window.cx.simulate_mouse_move(
-            from + gpui::point(gpui::px(12.0), gpui::px(0.0)),
-            gpui::MouseButton::Left,
-            gpui::Modifiers::none(),
-        );
+        window.simulate(|cx| {
+            cx.simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::none())
+        });
+        window.simulate(|cx| {
+            cx.simulate_mouse_move(
+                from + gpui::point(gpui::px(12.0), gpui::px(0.0)),
+                gpui::MouseButton::Left,
+                gpui::Modifiers::none(),
+            )
+        });
         assert!(
             window.cx.update(|_, cx| cx.has_active_drag()),
             "the pointer movement starts a person drag"
         );
-        window
-            .cx
-            .simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::none());
-        window
-            .cx
-            .simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::none());
-        window.cx.run_until_parked();
+        window.simulate(|cx| {
+            cx.simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::none())
+        });
+        window.simulate(|cx| {
+            cx.simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::none())
+        });
+        window.run_tasks();
         assert!(
             !window.cx.update(|_, cx| cx.has_active_drag()),
             "the drop consumes the person drag"

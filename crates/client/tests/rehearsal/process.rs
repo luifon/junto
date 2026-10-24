@@ -160,6 +160,6 @@ pub fn give_frames(window: &mut crate::harness::Window, time: Duration) -> Frame
             std::thread::sleep(rest);
         }
     }
-    window.holding(|window| window.cx.run_until_parked());
+    window.holding(|window| window.run_tasks());
     frames
 }

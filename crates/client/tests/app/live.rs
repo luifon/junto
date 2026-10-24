@@ -112,7 +112,7 @@ fn sound_report(world: &World, window: &mut Window, caller: &Caller) -> String {
 fn until_hears(world: &World, window: &mut Window, caller: &Caller, side: Hears, after: &str) {
     let deadline = std::time::Instant::now() + PATIENCE;
     loop {
-        window.cx.run_until_parked();
+        window.run_tasks();
         let level = match side {
             Hears::Window => heard(&window.sound, ADMIN_TONE_HZ),
             Hears::Administrator => heard(&caller.sound, WINDOW_TONE_HZ),
@@ -254,7 +254,7 @@ fn stays(window: &mut Window, what: &str, holds: impl Fn(&junto_media::calls::Ca
         .read_with(&window.cx, |state, _| state.calls().clone());
     let end = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < end {
-        window.cx.run_until_parked();
+        window.run_tasks();
         let view = calls.view();
         assert!(
             holds(&view),
@@ -595,19 +595,21 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
         control: true,
         ..Modifiers::none()
     };
-    window.cx.simulate_modifiers_change(held);
+    window.simulate(|cx| cx.simulate_modifiers_change(held));
     window.until("the key sends the microphone", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
     // The other modifier key is not the key.
-    window.cx.simulate_modifiers_change(Modifiers {
-        alt: true,
-        ..Modifiers::none()
+    window.simulate(|cx| {
+        cx.simulate_modifiers_change(Modifiers {
+            alt: true,
+            ..Modifiers::none()
+        })
     });
     window.until("the release ends it", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS
     });
-    window.cx.simulate_modifiers_change(held);
+    window.simulate(|cx| cx.simulate_modifiers_change(held));
     window.until("the key sends again", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });

@@ -32,6 +32,7 @@ mod call_notices;
 mod calls;
 mod composing;
 mod contacts;
+mod data_directory;
 mod departures;
 mod files;
 mod flows;
