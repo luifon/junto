@@ -422,6 +422,44 @@ impl Person {
         }
     }
 
+    /// What the sender of the media connection of this person states of the encoding of a
+    /// picture of this width: the rate, the bitrate that it aims at, and what limits the
+    /// quality, with the seconds of each limit. The test prints it in every run.
+    async fn encoding(&self, width: u32) -> String {
+        let Ok(stats) = self.calls.statistics().await else {
+            return "no statistics".to_owned();
+        };
+        let sent: Vec<String> = (stats.publisher_stats.iter())
+            .chain(&stats.subscriber_stats)
+            .filter_map(|stat| match stat {
+                RtcStats::OutboundRtp(stat)
+                    if stat.stream.kind == "video" && stat.outbound.frame_width == width =>
+                {
+                    let mut limits: Vec<_> = stat
+                        .outbound
+                        .quality_limitation_durations
+                        .iter()
+                        .map(|(reason, seconds)| format!("{reason} {seconds:.1} s"))
+                        .collect();
+                    limits.sort();
+                    Some(format!(
+                        "{:.1} per second, target {:.0} bit/s, limited by {:?} ({})",
+                        stat.outbound.frames_per_second,
+                        stat.outbound.target_bitrate,
+                        stat.outbound.quality_limitation_reason,
+                        limits.join(", ")
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        if sent.is_empty() {
+            format!("no encoding of {width} pixels")
+        } else {
+            sent.join("; ")
+        }
+    }
+
     /// The pictures of the full size of the watched share of a person that arrive in each of
     /// the next three seconds.
     async fn pictures_in_three_seconds(&self, of: AccountId, size: (u32, u32)) -> Vec<usize> {
@@ -542,11 +580,14 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         .await;
         let picture = cal.until_shown(ShareId::Of(ben_id), GREEN, YELLOW).await;
         assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
+        let at_switch = ben.encoding(800).await;
         let forwarded = cal.until_received_at_full_rate(800, switched).await;
         let seconds = cal.pictures_in_three_seconds(ben_id, (800, 600)).await;
         eprintln!(
             "the full rate arrived {forwarded:?} after the change of the watched share; \
-             pictures of the full size in each of the three seconds after it: {seconds:?}"
+             pictures of the full size in each of the three seconds after it: {seconds:?}; \
+             the encoding of the sender at the change: {at_switch}; at the full rate: {}",
+            ben.encoding(800).await
         );
         if seconds.iter().sum::<usize>() < FULL_RATE_IN_THREE_SECONDS {
             let after = crate::statistics::snapshot(&ben, &cal, share_started).await;

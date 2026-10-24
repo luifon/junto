@@ -1788,6 +1788,112 @@ mod tests {
         }
     }
 
+    /// The call library reads the remote description of a peer connection from a task of
+    /// its runtime, at each candidate of the signal connection, while the signaling thread of
+    /// WebRTC replaces the description at each negotiation. The wrapper copies a description
+    /// on the signaling thread (vendor/README.md): a copy on the reading thread read a
+    /// description that the signaling thread had freed, and the process ended with SIGSEGV.
+    #[test]
+    fn the_descriptions_can_be_read_while_negotiations_replace_them() {
+        use livekit::webrtc::MediaType;
+        use livekit::webrtc::peer_connection::{AnswerOptions, OfferOptions};
+        use livekit::webrtc::peer_connection_factory::PeerConnectionFactory;
+        use livekit::webrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        const NEGOTIATIONS: usize = 300;
+        let factory = PeerConnectionFactory::default();
+        let peer = || {
+            factory
+                .create_peer_connection(Default::default())
+                .unwrap_or_else(|error| panic!("{error:?}"))
+        };
+        let (offerer, answerer) = (peer(), peer());
+        for media in [MediaType::Audio, MediaType::Video] {
+            offerer
+                .add_transceiver_for_media(
+                    media,
+                    RtpTransceiverInit {
+                        direction: RtpTransceiverDirection::SendRecv,
+                        stream_ids: Vec::new(),
+                        send_encodings: Vec::new(),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{error:?}"));
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (offerer, answerer) = (offerer.clone(), answerer.clone());
+                let (stop, reads) = (stop.clone(), reads.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = offerer.current_remote_description();
+                        let _ = answerer.current_remote_description();
+                        let _ = offerer.current_local_description();
+                        reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let copy = |description: &livekit::webrtc::session_description::SessionDescription| {
+            livekit::webrtc::session_description::SessionDescription::parse(
+                &description.to_string(),
+                description.sdp_type(),
+            )
+            .unwrap_or_else(|error| panic!("{error:?}"))
+        };
+        runtime.block_on(async {
+            for round in 0..NEGOTIATIONS {
+                let options = OfferOptions {
+                    ice_restart: round > 0,
+                    ..OfferOptions::default()
+                };
+                let offer = offerer
+                    .create_offer(options)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                let sent = copy(&offer);
+                offerer
+                    .set_local_description(offer)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                answerer
+                    .set_remote_description(sent)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                let answer = answerer
+                    .create_answer(AnswerOptions::default())
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                let sent = copy(&answer);
+                answerer
+                    .set_local_description(answer)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                offerer
+                    .set_remote_description(sent)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+            }
+        });
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().unwrap_or_else(|_| panic!("a reader failed"));
+        }
+        assert!(
+            reads.load(Ordering::Relaxed) > NEGOTIATIONS,
+            "the readers ran {} times",
+            reads.load(Ordering::Relaxed)
+        );
+        assert!(offerer.current_remote_description().is_some());
+    }
+
     #[test]
     fn a_transceiver_outliving_its_native_peer_is_stopped_before_the_observer_is_released() {
         use livekit::webrtc::MediaType;
