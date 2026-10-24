@@ -134,6 +134,8 @@ class Deployment:
         environment = {**os.environ, "JUNTO_ENV_FILE": self.env_file, "COMPOSE_PROJECT_NAME": self.project}
         if front is not None:
             environment["PATH"] = f"{front}{os.pathsep}{environment['PATH']}"
+        # A session of its own: the script and every command that it starts are one process
+        # group, which end_script ends together.
         return subprocess.Popen(
             [str(self.directory / name), *arguments],
             cwd=self.directory,
@@ -142,12 +144,43 @@ class Deployment:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
 
+    @staticmethod
+    def end_script(process: subprocess.Popen[str]) -> None:
+        """Ends a script that start_script started, with every command of its process group,
+        and collects it: the stop signal first, the kill signal after 10 seconds."""
+        for sent, wait in ((signal.SIGTERM, 10.0), (signal.SIGKILL, 10.0)):
+            try:
+                os.killpg(process.pid, sent)
+            except ProcessLookupError:
+                break
+            try:
+                process.communicate(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        # A command of the group that ignores the stop signal is ended with the kill signal.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
     def script(self, name: str, *arguments: str, seconds: float = 900) -> tuple[int, str]:
-        """Runs a script of deploy/ and returns its exit code and its output."""
+        """Runs a script of deploy/ and returns its exit code and its output. A script that
+        runs longer than `seconds`, or a failure of this program while it runs, ends the
+        script and the commands that it started."""
         process = self.start_script(name, *arguments)
-        output, _ = process.communicate(timeout=seconds)
+        try:
+            output, _ = process.communicate(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            self.end_script(process)
+            raise Failed(f"deploy/{name} ran longer than {seconds:.0f} s and was ended") from None
+        except BaseException:
+            self.end_script(process)
+            raise
         return process.returncode, output
 
     def secrets(self) -> list[str]:
@@ -1512,6 +1545,18 @@ def phase_removal_during_transcript(scene: Scene, arguments: argparse.Namespace)
         # gives the request up and does not see the end of the job (ADR 0016).
         wait_for("the process of the hand-over has ended", lambda: deployment.handovers() == 0, 60)
         report.ok("the server ended its hand-over of the job: the request has a cancel file, and the hand-over has ended")
+        # The job writes its transcript into the directory of its run, below the directory of
+        # the recording. That directory is gone before the container continues, so the job
+        # can write nothing there afterwards; a later check shows that it was not made again.
+        try:
+            wait_for("the directory of the removed recording is deleted", lambda: not deployment.recording_files_of(recording_id), 120)
+        except Failed:
+            pass
+        report.check(
+            "the directory of the removed recording is gone before the worker container continues",
+            not deployment.recording_files_of(recording_id),
+            deployment.recording_files_of(recording_id)[:6],
+        )
     finally:
         deployment.run("unpause", "worker")
     wait_for("the loop of the worker ended the job", lambda: deployment.spool().get(job, {}).get("result", "").startswith("taken exit "), 60)
@@ -1556,14 +1601,31 @@ def phase_removal_during_transcript(scene: Scene, arguments: argparse.Namespace)
         300,
     )
     taken = wait_for("the loop of the worker has taken the second job", lambda: taken_job(scene), 120, 0.2)
-    report.check("the hand-over of the second job removed the request that the first removal left", job not in deployment.spool(), deployment.spool())
+    # The hand-over removes the request when it has read the end of the job. A second name of
+    # the result file keeps what the loop wrote there.
+    kept = f"{SPOOL}/kept-by-the-test"
+    deployment.inside("server", f"ln {SPOOL}/{taken[0]}.result {kept}")
     scene.owner.call("DELETE", f"/api/v1/recordings/{second}", expect=204)
     removed = time.time()
+    at_removal = deployment.inside("server", f"tr '\\n' ' ' < {kept}").strip()
+    report.check("the second job still ran when its recording was removed", at_removal == "taken", at_removal)
     try:
-        wait_for("the request of the second job leaves the spool", lambda: taken[0] not in deployment.spool(), 60)
+        wait_for("the request of the second job leaves the spool", lambda: taken[0] not in deployment.spool(), 30)
         report.ok(f"the request of the second job left the spool {time.time() - removed:.1f} s after the removal")
     except Failed:
-        report.fail("the request of the second job left the spool", deployment.spool())
+        report.fail("the request of the second job left the spool within 30 s of the removal", deployment.spool())
+    # The server deletes the audio files at the removal, and the worker then refuses to go on
+    # with the exit code 2, within seconds and before the renewal of the server, every 15
+    # seconds, finds the job gone and ends the run (ADR 0016). A cancellation ends it with the
+    # stop or the kill signal. A job that ran on would end later, or with another code.
+    result = deployment.inside("server", f"tr '\\n' ' ' < {kept}; rm -f {kept}").strip()
+    report.info(f"the end of the second job: {result}")
+    report.check(
+        "the second job ended through its deleted files or the cancellation",
+        result in ("taken exit 2", "taken exit 143", "taken exit 137"),
+        result,
+    )
+    report.check("the hand-over of the second job removed the request that the first removal left", job not in deployment.spool(), deployment.spool())
     try:
         wait_for("no process of the second job is left", lambda: not deployment.job_processes() and deployment.handovers() == 0, 30)
     except Failed:
@@ -1604,6 +1666,7 @@ def backup_while_the_job_ends(scene: Scene, recording_id: str, recorded: dict[st
     program.chmod(0o755)
     destination = work / "backup-while-the-job-ends"
     process = deployment.start_script("backup.sh", deployment.forms[0], str(destination), front=front)
+    ended = False
     try:
         wait_for("the archive step holds the output of tar", held.exists, 300, 0.2)
         report.check("tar runs and waits inside the archive", deployment.processes("server", "^[t]ar --numeric-owner -cf") == 1)
@@ -1617,9 +1680,13 @@ def backup_while_the_job_ends(scene: Scene, recording_id: str, recorded: dict[st
         stored = deployment.inside("server", f"test -f {RECORDINGS}/{recording_id}/transcript.json && echo stored", check=False).strip()
         report.check("the server wrote the transcript file into the directory of the recording while tar waited", stored == "stored")
         report.check("tar still waits inside the archive after the end of the job", deployment.processes("server", "^[t]ar --numeric-owner -cf") == 1)
+        go.touch()
+        output, _ = process.communicate(timeout=900)
+        ended = True
     finally:
         go.touch()
-    output, _ = process.communicate(timeout=900)
+        if not ended:
+            deployment.end_script(process)
     report.check("a backup during which the job of the transcript ends is written", process.returncode == 0, output[-1500:])
     report.check("tar stated that the directory of the recording changed while it read it", f"recordings/{recording_id}: file changed as we read it" in output, output[-1500:])
     report.check("its output holds no secret", not any(value in output for value in secrets))

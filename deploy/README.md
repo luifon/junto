@@ -31,7 +31,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 ```sh
 tools/check-pins.sh                                   # pinned versions agree
 deploy/tests/compose-config.sh                        # every form renders and follows the rules
-python3 -B -m unittest discover -s deploy/tests -p 'test_*.py' # the restore image checks, the reading of the owner code, and the comparison with livekit-common.yaml
+python3 -B -m unittest discover -s deploy/tests -p 'test_*.py' # the restore image checks, the reading of the owner code, the comparison with livekit-common.yaml, and the end of the scripts that the recording driver runs
 docker build -f deploy/images/server/Dockerfile -t junto-server .
 python3 deploy/tests/check_licences.py junto-server   # the licence files of the image list every crate of the server
 deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, with two users
