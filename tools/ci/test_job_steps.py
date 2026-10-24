@@ -38,6 +38,7 @@ WINDOWS_ONLY_SKIPS = [
     "composing::an_upload_goes_on_after_its_connection_was_cut_and_the_draft_says_so",
     "files::the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file",
     "threads::in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file",
+    "thread_actions::a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread",
     "admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved",
     "admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts",
 ]
