@@ -51,6 +51,7 @@ Permissions:
 - A transcript file belongs to the user of the worker. The server reads it and stores its own copy (ADR 0607).
 - The server cannot tell a worker container that is not running from a worker that is busy for less than 60 seconds; after that it gets the code 75.
 - A restart of the worker container during a job costs one of the three runs of that job (ADR 0607).
+- A removal of a recording while its job runs deletes the audio files at once (ADR 0608). The worker then refuses to go on with the exit code 2, within seconds and before the renewal of the server finds the job gone and ends the run; the hand-over reads that end and removes the request. The cancel file ends a job whose files are still there.
 - Requests of a time in which no worker container ran stay in the spool, three small files each, until a loop states their end and a later hand-over removes them.
 - On a host with a GPU the job gets the group of the device nodes through `JUNTO_WORKER_JOB_GROUPS` (`worker-gpu.yaml`). This was not run.
 - A second server process on the same volumes would cancel the job of the first. A deployment runs one server process (ADR 0008).

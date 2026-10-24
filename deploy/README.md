@@ -21,7 +21,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 | `entry/Caddyfile` | The entry on port 443 with three server names. |
 | `images/server/` | The server image: Dockerfile, hand-over of transcription jobs, volume owners. |
 | `images/worker/` | The loop that runs transcription jobs in the worker container. |
-| `images/recorder/` | The start script of the recorder, which saves partial files. |
+| `images/recorder/` | The start script of the recorder, which saves partial files and passes the stop of the container on to the recorder. |
 | `images/link/` | The image of the private link of form 2. |
 | `images/postgres/` | The access rules of PostgreSQL, and the file that creates the role of the server. |
 | `tests/` | Tests that need Docker and no public address. |
@@ -31,19 +31,19 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 ```sh
 tools/check-pins.sh                                   # pinned versions agree
 deploy/tests/compose-config.sh                        # every form renders and follows the rules
-python3 -B -m unittest discover -s deploy/tests -p 'test_*.py' # the restore image checks, the reading of the owner code, and the comparison with livekit-common.yaml
+python3 -B -m unittest discover -s deploy/tests -p 'test_*.py' # the restore image checks, the reading of the owner code, the comparison with livekit-common.yaml, and the end of the scripts that the recording driver runs
 docker build -f deploy/images/server/Dockerfile -t junto-server .
 python3 deploy/tests/check_licences.py junto-server   # the licence files of the image list every crate of the server
 deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, with two users
 deploy/tests/recorder-start.sh junto-server           # the start script of the recorder
 deploy/tests/entry.sh                                 # the entry selects by server name
 deploy/tests/smoke.sh                                 # the local form starts, with the database role of the server
-deploy/tests/backup-restore.sh                        # backup of a running server, refused restores, an interrupted restore
-deploy/tests/upgrade.sh                               # upgrade from an earlier release, the database role, and the way back
+deploy/tests/backup-restore.sh                        # backup of a running server, refused restores, restores ended at three moments
+deploy/tests/upgrade.sh                               # upgrade from an earlier release, the database role, a start stopped during its copy, and the way back
 deploy/tests/one-host.sh                              # the one-host form on one machine
 deploy/tests/two-hosts.sh                             # the two-host form on one machine, as two projects
 (cd spikes/test-participant && cargo build --release)
-deploy/tests/recording.sh                             # a recorded call with the real recorder, and three failures
+deploy/tests/recording.sh                             # a recorded call with the real recorder, its failures, and backups during a recording
 ```
 
 The last five build the images that do not exist yet, give their containers memory limits under 3 GB together, and remove everything at the end. `upgrade.sh` needs the commit of the earlier release in the checkout, and also builds the server image of that release. `one-host.sh` and `two-hosts.sh` need the ports 80, 443, 3478, 5349, 7880, 7881 and 7882 of the machine, because the media server and the entry use the network of the host; run one of them at a time.

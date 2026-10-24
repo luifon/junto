@@ -275,6 +275,7 @@ The recorder loads the layout page of a recording from the server, at `http://se
 - A recording starts only with 13 GiB of free space on the volume of the recordings: 8 GiB for the recording above a reserve of 5 GiB (ADR 0605). A start with less is answered with `storage_low`. The health route states `storage_low` only at 5 GiB or less.
 - The files of a recording are below the volume `recordings`: `<recording>/<segment>.mp4` for the video and `<recording>/<segment>.ogg` for each audio track. A removal of the recording through the API deletes its directory.
 - When the recorder container ends during a recording, its restart rule starts it again, its start script saves the partial audio files, and the server continues the recording in new files. The recording then has the state `partly_failed`, with a video after the loss and, when the recorder had written a piece of the video before the loss, a video before it (ADR 0601).
+- `docker compose -f <form file> stop recorder` during a recording ends the jobs of the recorder and finishes their files. The server asks for new jobs; while no recorder runs, it ends the recording with `recorder_lost` after three failed requests for each track, about two minutes after the stop, and the recording is `partly_failed` with the files from before the stop (ADR 0601).
 - When the recorder stayed stopped until a recording that it had lost was removed, its next start saves the partial audio of that recording to `rescued/<job>/` on the volume of the recordings. No recording uses that directory. The server deletes it at a maintenance pass when its last change is more than 24 hours ago (ADR 0606). A pass runs every minute and examines 50 entries below `rescued/`, and it deletes nothing while a backup holds deletions back.
 
 ## Logs and health
@@ -397,7 +398,7 @@ docker compose -f one-host.yaml exec server junto-server unnamed-files --remove
 
 The server is never updated automatically (ADR 0005). An upgrade is a new checkout of the repository and a new build.
 
-1. Stop the server, so that no recording can start, and check that none runs. The command ends with the code 3 while one does; then start the server again (`docker compose -f one-host.yaml start server`), end the recording and repeat. Do not stop, restart or replace the recorder during a recording: the recording is lost (ADR 0601).
+1. Stop the server, so that no recording can start, and check that none runs. The command ends with the code 3 while one does; then start the server again (`docker compose -f one-host.yaml start server`), end the recording and repeat. Do not stop, restart or replace the recorder during a recording: the recording then ends as `partly_failed`, with the files up to the stop (ADR 0601).
 
    ```sh
    docker compose -f one-host.yaml stop server

@@ -6,13 +6,17 @@
 #   of the files;
 # - restores that are refused, among them a backup of another schema, and one that fails
 #   before anything is replaced;
-# - a restore into a new, empty deployment with other secrets, which is ended by force after
-#   the files were replaced, and its second run;
+# - a restore into a new, empty deployment with other secrets, which is ended by force while
+#   it unpacks the archive and again after the files were replaced, and its third run; the
+#   log of PostgreSQL, with every statement logged, holds no secret;
 # - in the restored deployment: every message, attachment and recording directory that the
 #   database names, nothing of what was deleted before the backup, the role of the server as
 #   the owner, and the list of the directories that the database does not name;
-# - a backup that expired, and a backup that removes the directories without a row and
-#   states the directories that are lost.
+# - a restore that gets the stop signal while it lists those directories;
+# - a restore whose listing fails;
+# - a backup that expired, a backup that gets SIGINT in its process group while the server
+#   removes the directories without a row, and a backup that removes what is left and states
+#   the directories that are lost.
 # Only the database and the server are started. Everything is removed at the end. The test
 # waits three times for the deletion of files by the server and takes about 10 minutes.
 #
@@ -61,6 +65,12 @@ remove() {
         compose ps -a || true
         compose logs --tail 30 server postgres || true
     fi
+    # A failure after the restore that was ended while it unpacked leaves its container, and
+    # the program that holds the input of that container, running.
+    [ ! -f "$work/unpacking" ] || kill "$(cat "$work/unpacking")" 2>/dev/null || true
+    left=$(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter "label=junto.script=restore")
+    # shellcheck disable=SC2086
+    [ -z "$left" ] || docker rm -f $left > /dev/null 2>&1 || true
     compose down -v --timeout 20 > /dev/null 2>&1 || true
     docker image rm "$server_image" "$init_image" > /dev/null 2>&1 || true
     rm -rf "$work"
@@ -117,10 +127,12 @@ secrets_in() {
     echo "$found"
 }
 # A program named "docker" in front of the real one, for the script under test. It runs a
-# step of the test before or after the one call whose arguments hold a text (ADR 0911).
+# step of the test before or after the one call whose arguments hold a text (ADR 0911). A
+# new file takes the place of the program, because a shell reads its script while it runs,
+# and a program of an earlier step can still run.
 real=$(command -v docker)
 in_front() {
-    cat > "$work/bin/docker" <<EOF
+    cat > "$work/bin/docker.next" <<EOF
 #!/bin/sh
 case "\$*" in
     *"$1"*)
@@ -129,7 +141,47 @@ $2
 esac
 exec "$real" "\$@"
 EOF
-    chmod +x "$work/bin/docker"
+    chmod +x "$work/bin/docker.next"
+    mv "$work/bin/docker.next" "$work/bin/docker"
+}
+# Runs deploy/restore.sh or deploy/backup.sh with the program in front of docker, and stores
+# the process identifier of the script, so that a step of the program can end the script.
+# Prints the exit code.
+in_background() {
+    log=$1
+    shift
+    PATH="$work/bin:$PATH" "$@" > "$log" 2>&1 &
+    echo "$!" > "$work/script"
+    code=0
+    wait "$!" || code=$?
+    echo "$code"
+}
+# Runs a script as in_background does, in a process group of its own, as a shell with job
+# control starts a command. A step of the program in front of docker can then send a signal
+# to the group, as Ctrl-C in a terminal does: the script, the program and the docker client
+# get it. A command that a shell without job control starts in the background ignores
+# SIGINT, and a script cannot trap a signal that it ignored at its start, so SIGINT gets its
+# default action again before the script starts.
+in_group() {
+    log=$1
+    shift
+    PATH="$work/bin:$PATH" python3 -B -c 'import os, signal, sys
+os.setpgid(0, 0)
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$@" > "$log" 2>&1 &
+    pid=$!
+    echo "$pid" > "$work/script"
+    code=0
+    wait "$pid" || code=$?
+    echo "$code"
+}
+# The one-off containers of deploy/restore.sh in this project that run.
+restore_containers() {
+    docker ps -q --filter "label=com.docker.compose.project=$project" --filter "label=junto.script=restore" | wc -l | tr -d ' '
+}
+# The number of databases of a name.
+databases() {
+    sql "select count(*) from pg_database where datname = '$1'"
 }
 
 compose up -d --build --wait --wait-timeout 600 postgres server
@@ -287,20 +339,60 @@ check "the new deployment is another server" "$([ -n "$second_id" ] && [ "$secon
 compose exec -T server sh -c 'echo export > /var/lib/junto/exports/of-the-other-server; mkdir /var/lib/junto/spool/of-the-other-server' < /dev/null
 compose run --rm --no-deps -T --entrypoint sh recorder -c 'echo audio > /home/egress/tmp/of-the-other-server' < /dev/null
 
-# The restore is ended by force when the files were replaced and the database has not got
-# its name yet.
+# The restore is ended by force while its container unpacks the archive. The program in
+# front of docker gives that container the first half of the archive, waits until a staged
+# directory is on the disk, and ends the script; the container stays and waits for the rest
+# of the archive, as one does after the end of a script whose input is still open.
 cp "$work/backup/env" "$work/env"
+compose exec -T postgres psql -U junto -d postgres -q -c "alter system set log_statement = 'all'" -c 'select pg_reload_conf()' < /dev/null > /dev/null
+half=$(($(wc -c < "$work/backup/files.tar") / 2))
+in_front " --transform " "        echo \"\$\$\" > '$work/unpacking'
+        rm -f '$work/feed'
+        mkfifo '$work/feed'
+        '$real' \"\$@\" < '$work/feed' > '$work/unpacking.log' 2>&1 &
+        client=\$!
+        exec 3> '$work/feed'
+        head -c $half '$work/backup/files.tar' >&3
+        tries=0
+        until '$real' exec \"\$('$real' ps -q --filter label=com.docker.compose.project=$project --filter label=junto.script=restore)\" sh -c 'ls -A /var/lib/junto/attachments/.restore | grep -q .' < /dev/null > /dev/null 2>&1; do
+            tries=\$((tries + 1))
+            if [ \"\$tries\" -ge 150 ]; then
+                echo 'the container of the restore unpacked nothing in 30 seconds' >&2
+                exit 1
+            fi
+            sleep 0.2
+        done
+        kill -KILL \"\$PPID\"
+        wait \"\$client\"
+        exit 0"
+status=$(in_background "$work/restore-unpacking.log" ./restore.sh local.yaml "$work/backup")
+check "the restore was ended by force while it unpacked" "$status" "137"
+check "a container of that restore still unpacks the archive" "$(restore_containers)" "1"
+check "after it, the database junto is there, beside the staged database" "$(databases junto) $(databases junto_restore)" "1 1"
+compose up -d --wait --wait-timeout 300 postgres server
+check "a server that is started then serves the data from before the restore" "$(server_id)" "$second_id"
+check "and its export is still there" "$(compose exec -T server ls /var/lib/junto/exports < /dev/null)" "of-the-other-server"
+
+# The second run ends that container, and is ended by force when the files were replaced and
+# the database has not got its name yet.
 in_front "find /var/lib/junto/exports" "        '$real' \"\$@\"
         kill -KILL \"\$PPID\"
         exit 1"
-status=0
-PATH="$work/bin:$PATH" ./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || status=$?
-check "the restore was ended by force" "$status" "137"
+status=$(in_background "$work/restore.log" ./restore.sh local.yaml "$work/backup")
+check "the second run ended the container of the first run" \
+    "$(grep -c 'restore: a container of an earlier run of this script still runs. It is ended.' "$work/restore.log") $(restore_containers)" "1 0"
+tries=0
+while kill -0 "$(cat "$work/unpacking")" 2> /dev/null && [ "$tries" -lt 50 ]; do
+    tries=$((tries + 1))
+    sleep 0.2
+done
+check "the client of that container has ended" "$(kill -0 "$(cat "$work/unpacking")" 2> /dev/null && echo runs)" ""
+check "the second run was ended by force" "$status" "137"
 check "the restore that was ended did not finish" "$(grep -c 'restore: done' "$work/restore.log" || true)" "0"
 check "after it, the staged files have taken their places and the exports are deleted" \
     "$(compose run --rm --no-deps -T --entrypoint sh server -c 'ls -A /var/lib/junto/attachments | grep -c restore; ls -A /var/lib/junto/exports | wc -l' < /dev/null 2>/dev/null | tr '\n' ' ')" \
     "0 0 "
-check "after it, no database has the name junto" "$(sql "select count(*) from pg_database where datname = 'junto'")" "0"
+check "after it, no database has the name junto" "$(databases junto)" "0"
 compose up -d postgres server
 tries=0
 until compose logs --no-log-prefix server 2>/dev/null | grep -q 'database "junto" does not exist'; do
@@ -314,14 +406,16 @@ check "a server that is started then does not start, and its log names the datab
     "$(compose logs --no-log-prefix server 2>/dev/null | grep -c -m 1 'database "junto" does not exist')" "1"
 check "that server is not healthy" "$(docker inspect --format '{{.State.Health.Status}}' "$(compose ps -a -q server)" | grep -c '^healthy$' || true)" "0"
 
-# The second run restores everything again.
-./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || { cat "$work/restore.log"; exit 1; }
-check "the second run of the restore ends" "$(grep -c 'restore: done' "$work/restore.log")" "1"
+# The third run restores everything again.
+./restore.sh local.yaml "$work/backup" > "$work/restored.log" 2>&1 || { cat "$work/restored.log"; exit 1; }
+check "the third run of the restore ends" "$(grep -c 'restore: done' "$work/restored.log")" "1"
 for service in server init; do
     check "the second project did not build its own $service image" \
         "$(docker image inspect "$project-$service" > /dev/null 2>&1 && echo built || echo absent)" "absent"
 done
-check "the output of the restore holds no secret" "$(secrets_in "$work/env" "$work/restore.log")" "0"
+for log in restore-unpacking restore restored; do
+    check "the output of the restore ($log.log) holds no secret" "$(secrets_in "$work/env" "$work/$log.log")" "0"
+done
 compose up -d --wait --wait-timeout 300 postgres server
 check "after the restore the server has the identifier of the backup" "$(server_id)" "$first_id"
 storage "after the restore"
@@ -331,9 +425,59 @@ check "the role of the server owns the restored database, and every table, seque
 check "the restore emptied the spool of transcription jobs" "$(compose exec -T server sh -c 'cd /var/lib/junto/spool && ls -A | wc -l' < /dev/null | tr -d ' ')" "0"
 check "the restore emptied the temporary directory of the recorder" \
     "$(compose run --rm --no-deps -T --entrypoint sh recorder -c 'cd /home/egress/tmp && ls -A | wc -l' < /dev/null 2>/dev/null | tr -d ' ')" "0"
-driver_check verify --set "backup_started=$started" --backup "$work/backup" --restore-log "$work/restore.log"
+driver_check verify --set "backup_started=$started" --backup "$work/backup" --restore-log "$work/restored.log"
 check "the restore explains the directories that were changed in the last 24 hours" \
-    "$(grep -c 'restore: a line "skip ... changed_recently" names a directory that was changed in the last 24 hours' "$work/restore.log")" "1"
+    "$(grep -c 'restore: a line "skip ... changed_recently" names a directory that was changed in the last 24 hours' "$work/restored.log")" "1"
+# PostgreSQL wrote every statement of the three runs to its log, among them the statement
+# that gives the role of the server its password (ADR 0022).
+# The container of PostgreSQL was created with this project, so its whole log is read.
+compose logs --no-log-prefix postgres > "$work/postgres.log" 2>&1
+check "the log of PostgreSQL holds the statements of the restores" \
+    "$([ "$(grep -c -i 'statement: create database junto_restore' "$work/postgres.log")" -ge 3 ] && echo logged)" "logged"
+check "the log of PostgreSQL holds no secret" "$(secrets_in "$work/env" "$work/postgres.log")" "0"
+
+# A fourth run gets the stop signal while it lists the directories that no row names, after
+# the rename. It states that the restore is complete and how to list them.
+in_front " unnamed-files" "        kill -TERM \"\$(cat '$work/script')\""
+status=$(in_background "$work/restore.log" ./restore.sh local.yaml "$work/backup")
+check "a restore that gets the stop signal while it lists the directories ends with the code 130" "$status" "130"
+check "it states that the data was replaced and the restore is complete" \
+    "$(grep -c 'restore: the data was replaced, and the restore is complete. The list of the directories that no row names did not end.' "$work/restore.log")" "1"
+check "it did not finish" "$(grep -c 'restore: done' "$work/restore.log" || true)" "0"
+check "the restored database has the name junto, and no staged database is left" "$(databases junto) $(databases junto_restore)" "1 0"
+compose up -d --wait --wait-timeout 300 postgres server
+check "after it, the server has the identifier of the backup" "$(server_id)" "$first_id"
+listed=$(sed -n 's/^restore: list them after the start: //p' "$work/restore.log")
+check "it names the command that lists the directories, with the settings file and the project of the run" "$listed" \
+    "docker compose --env-file '$work/env' -p '$project' -f local.yaml exec server junto-server unnamed-files"
+check "that command lists the directories that the complete run listed" \
+    "$(eval "$listed" < /dev/null | LC_ALL=C sort | tr '\n' ' ')" \
+    "$(grep -E '^(unnamed|skip) ' "$work/restored.log" | LC_ALL=C sort | tr '\n' ' ')"
+
+# A fifth run in which the listing fails, with a settings file whose path holds a space. The
+# restore is complete, and the commands that it prints work when they are copied.
+spaced="$work/the settings/env"
+mkdir "$work/the settings"
+cp "$work/env" "$spaced"
+in_front " unnamed-files" "        echo 'the listing failed' >&2
+        exit 1"
+status=$(in_background "$work/restore.log" env JUNTO_ENV_FILE="$spaced" ./restore.sh local.yaml "$work/backup")
+check "a restore whose listing fails ends" "$status $(grep -c 'restore: done' "$work/restore.log")" "0 1"
+check "it states that it could not list the directories, and that the restore is complete" \
+    "$(grep -c 'restore: the server could not list the directories that no row of the restored database names (junto-server unnamed-files). The restore is complete.' "$work/restore.log")" "1"
+listed=$(sed -n 's/^restore: list them after the start: //p' "$work/restore.log")
+check "it names the command that lists them, with the quoted settings file and the project" "$listed" \
+    "docker compose --env-file '$spaced' -p '$project' -f local.yaml exec server junto-server unnamed-files"
+check "its command to start the deployment names them too" "$(sed -n 's/^restore: done. Start the deployment: //p' "$work/restore.log")" \
+    "docker compose --env-file '$spaced' -p '$project' -f local.yaml up -d"
+started=0
+eval "$(sed -n 's/^restore: done. Start the deployment: //p' "$work/restore.log") --wait --wait-timeout 300 postgres server" > /dev/null 2>&1 || started=$?
+check "that command, copied, starts the deployment" "$started" "0"
+compose up -d --wait --wait-timeout 300 postgres server
+check "after the start with that command, the server has the identifier of the backup" "$(server_id)" "$first_id"
+check "the listing command, copied, lists the directories that the complete run listed" \
+    "$(eval "$listed" < /dev/null | LC_ALL=C sort | tr '\n' ' ')" \
+    "$(grep -E '^(unnamed|skip) ' "$work/restored.log" | LC_ALL=C sort | tr '\n' ' ')"
 
 # A backup that expired while its files were copied is not a backup: the server deleted
 # files again. The test ends the backup in the database after the archive was written.
@@ -351,8 +495,59 @@ check "the backup that expired is stored until the next backup begins" \
 
 # The directories that the restore listed get a last change of two days ago. The next backup
 # removes them before it begins: no row names them, and they are older than 24 hours.
-unnamed=$(sed -n -E 's/^(unnamed|skip) ((attachments|recordings)\/[0-9a-f-]{36})( changed_recently)?$/\2/p' "$work/restore.log")
+unnamed=$(sed -n -E 's/^(unnamed|skip) ((attachments|recordings)\/[0-9a-f-]{36})( changed_recently)?$/\2/p' "$work/restored.log")
 printf '%s\n' "$unnamed" | compose exec -T server sh -c 'cd /var/lib/junto && while IFS= read -r directory; do touch -d "2 days ago" "$directory" || exit 1; done'
+# 40 000 further directories without a row, two days old, so that the removal of the server
+# runs for some seconds.
+generated=$(compose exec -T server sh -c 'cd /var/lib/junto/attachments || exit 1
+names=$(od -An -v -tx1 -N 640000 /dev/urandom | tr -d " \n" | fold -w 32 | sed -E "s/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/")
+printf "%s\n" "$names" | xargs mkdir
+printf "%s\n" "$names" | xargs touch -d "2 days ago"
+printf "attachments/%s\n" $names' < /dev/null)
+check "40 000 old directories without a row were made" "$(printf '%s\n' "$generated" | grep -c .)" "40000"
+unnamed="$unnamed
+$generated"
+on_disk() {
+    printf '%s\n' "$unnamed" | compose exec -T server sh -c 'cd /var/lib/junto && while IFS= read -r directory; do [ ! -e "$directory" ] || echo "$directory"; done'
+}
+removals() {
+    compose exec -T server sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr "\000" " " | grep -c "[u]nnamed-files --remove"' < /dev/null
+}
+
+# A backup that gets SIGINT in its process group, as from Ctrl-C, while the server removes
+# those directories, which is before the backup begins. The docker client of the removal gets
+# the signal too. `docker compose exec` does not pass the signal on, so the command in the
+# server container runs on to its end. The program in front of docker states whether the
+# removal ran when it sent the signal.
+in_front " unnamed-files" "        '$real' \"\$@\" &
+        call=\$!
+        trap : INT
+        found=0
+        tries=0
+        while [ \"\$found\" = 0 ] && kill -0 \"\$call\" 2>/dev/null && [ \"\$tries\" -lt 100 ]; do
+            found=\$('$real' compose --env-file '$work/env' -f local.yaml exec -T server sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr \"\\\\000\" \" \" | grep -c \"[u]nnamed-files --remove\"' < /dev/null 2>/dev/null)
+            tries=\$((tries + 1))
+        done
+        if [ \"\$found\" != 0 ]; then echo active > '$work/removal'; else echo ended > '$work/removal'; fi
+        kill -INT -- -\"\$(cat '$work/script')\"
+        wait \"\$call\"
+        exit \$?"
+status=$(in_group "$work/backup.log" ./backup.sh local.yaml "$work/stopped")
+check "the removal of the server ran when the backup got SIGINT" "$(cat "$work/removal")" "active"
+check "the removal in the server container still ran after the end of the script" "$(removals)" "1"
+check "a backup that gets SIGINT in its process group during the removal ends with the code 130" "$status" "130"
+check "it states that no backup was written" "$(grep -c 'backup: no backup was written.' "$work/backup.log")" "1"
+check "it leaves no directory" "$([ -e "$work/stopped" ] && echo exists)" ""
+check "it began no backup: the backup that expired is still the one stored backup" \
+    "$(compose exec -T postgres psql -U junto -d junto -At -c 'select count(*) from backups' < /dev/null)" "1"
+ends=$(($(date +%s) + 300))
+while [ "$(removals)" != 0 ] && [ "$(date +%s)" -lt "$ends" ]; do
+    sleep 1
+done
+check "the removal in the server container ended within 300 seconds" "$(removals)" "0"
+check "the server runs" "$(compose ps --status running --format '{{.Service}}' server)" "server"
+remaining=$(on_disk)
+check "the removal ran to its end: no old directory without a row is left" "$(printf '%s' "$remaining" | grep -c . || true)" "0"
 # A complete attachment and a finished recording whose directories are not on the disk: the
 # backup is written, names the two directories, and ends with the code 4.
 lost=$(compose exec -T postgres psql -U junto -d junto -At -c "select storage_id from attachments where complete and removed_at is null order by id limit 1" < /dev/null)
@@ -366,10 +561,9 @@ check "that backup names the two directories and no other" "$(LC_ALL=C sort "$wo
 check "that backup has its six files with the right checksums" \
     "$(cd "$work/incomplete" && LC_ALL=C ls -A | tr '\n' ' ' && { sha256sum -c SHA256SUMS 2>/dev/null || shasum -a 256 -c SHA256SUMS; } | grep -c ': OK$')" \
     "SHA256SUMS database.dump env files.tar left-out schema 5"
-check "that backup removed the directories that no row names, and states each" \
-    "$(grep '^removed ' "$work/backup.log" | sed 's/^removed //' | LC_ALL=C sort | tr '\n' ' ')" "$(printf '%s\n' "$unnamed" | LC_ALL=C sort | tr '\n' ' ')"
-check "none of them is on the disk" \
-    "$(printf '%s\n' "$unnamed" | compose exec -T server sh -c 'cd /var/lib/junto && while IFS= read -r directory; do [ ! -e "$directory" ] || echo "$directory"; done' | wc -l | tr -d ' ')" "0"
+check "that backup removed what the stopped backup left, which is nothing, and states each" \
+    "$(grep '^removed ' "$work/backup.log" | sed 's/^removed //' | LC_ALL=C sort | tr '\n' ' ')" "$(printf '%s' "$remaining" | grep . | LC_ALL=C sort | tr '\n' ' ')"
+check "none of the old directories without a row is on the disk" "$(on_disk | wc -l | tr -d ' ')" "0"
 check "the output of that backup holds no secret" "$(secrets_in "$work/env" "$work/backup.log")" "0"
 check "no backup holds deletions back after it" "$(compose exec -T postgres psql -U junto -d junto -At -c 'select count(*) from backups' < /dev/null)" "0"
 

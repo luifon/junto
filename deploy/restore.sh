@@ -36,6 +36,14 @@ fi
 compose() {
     docker compose --env-file "$settings" -f "$form" -f restore-images.yaml "$@"
 }
+# A value as one word of a shell command.
+quoted() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+# The start of the docker compose commands that this script prints, with the settings file and
+# the project of this run, so that a command that an operator copies reaches this deployment.
+operator="docker compose${JUNTO_ENV_FILE:+ --env-file $(quoted "$settings")}${COMPOSE_PROJECT_NAME:+ -p $(quoted "$COMPOSE_PROJECT_NAME")} -f $form"
+listing="$operator exec server junto-server unnamed-files"
 verify() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum -c SHA256SUMS
@@ -114,7 +122,7 @@ for service in init postgres server recorder; do
         echo "restore: required image $required is not available locally. Nothing was changed." >&2
         if [ "$service" = server ] || [ "$service" = init ]; then
             echo "restore: load the saved release image: docker image load --input <release-images.tar>" >&2
-            echo "restore: or build it explicitly in the checkout of the backup release: docker compose --env-file \"$settings\" -f $form build $service" >&2
+            echo "restore: or build it explicitly in the checkout of the backup release: $operator build $service" >&2
         else
             echo "restore: provide it before restoring: docker pull $required" >&2
         fi
@@ -142,7 +150,7 @@ if [ -f "$backup/schema" ]; then
         --security-opt no-new-privileges:true "$image" schema-version < /dev/null) || stated=""
     of_server=$(printf '%s\n' "$stated" | sed -n 's/^schema \([0-9][0-9]*\)$/\1/p')
     if [ -z "$of_server" ]; then
-        echo "restore: the server image $image does not state its schema (junto-server schema-version). Build the image of this checkout: docker compose -f $form build server" >&2
+        echo "restore: the server image $image does not state its schema (junto-server schema-version). Build the image of this checkout: $operator build server" >&2
         exit 1
     fi
     if [ "$of_backup" -gt "$of_server" ]; then
@@ -193,7 +201,8 @@ give_up() {
         exit 0
     fi
     if [ -n "$replaced" ]; then
-        echo "restore: the data was replaced, and the restore is complete. The list of the directories that no row names did not end. Start the deployment: docker compose -f $form up -d" >&2
+        echo "restore: the data was replaced, and the restore is complete. The list of the directories that no row names did not end. Start the deployment: $operator up -d" >&2
+        echo "restore: list them after the start: $listing" >&2
         exit "$code"
     fi
     now=$(echo "select (select count(*) from pg_database where datname = 'junto') || ' ' || (select count(*) from pg_database where datname = 'junto_restore');" | sql 2>/dev/null) || now=unknown
@@ -297,10 +306,11 @@ if unnamed=$(once server unnamed-files < /dev/null); then
     if [ -n "$unnamed" ]; then
         echo "restore: the restored files hold $(printf '%s\n' "$unnamed" | wc -l | tr -d ' ') directories that no row of the restored database names:"
         printf '%s\n' "$unnamed"
-        echo "restore: no route returns them. After the start, the server removes a directory of a line \"unnamed\" with: docker compose -f $form exec server junto-server unnamed-files --remove"
+        echo "restore: no route returns them. After the start, the server removes a directory of a line \"unnamed\" with: $listing --remove"
         echo "restore: a line \"skip ... changed_recently\" names a directory that was changed in the last 24 hours. The server cannot tell it from a directory that it writes, and removes it only after that time. deploy/backup.sh runs the removal at the start of each backup."
     fi
 else
     echo "restore: the server could not list the directories that no row of the restored database names (junto-server unnamed-files). The restore is complete." >&2
+    echo "restore: list them after the start: $listing" >&2
 fi
-echo "restore: done. Start the deployment: docker compose -f $form up -d"
+echo "restore: done. Start the deployment: $operator up -d"

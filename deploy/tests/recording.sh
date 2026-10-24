@@ -2,9 +2,12 @@
 # Records a call through the local form with the real parts (ADR 0020): the server, the media
 # server, the recorder with the built layout page that the server serves, the files on the
 # shared volume, the transcription worker, and the downloads. Three test participants publish
-# generated sound and pictures. Then three failures: everybody leaves the call, the recorder
-# is killed during a recording, and the storage guard refuses a start. recording_driver.py
-# holds the steps and the checks.
+# generated sound and pictures. Then the failures: everybody leaves the call, the recorder is
+# killed during a recording, the server is restarted during a recording, the recorder is
+# stopped during a recording and stays stopped, a recording is removed while its transcript
+# runs, a backup is made while a recording runs and while a transcript runs and each is
+# restored, and the storage guard refuses a start. recording_driver.py holds the steps and
+# the checks.
 #
 #   (cd spikes/test-participant && cargo build --release)
 #   deploy/tests/recording.sh [<project name>]
@@ -18,7 +21,8 @@
 # JUNTO_RECORDING_TEST_SPEECH  `small`, and a directory with generated speech
 #                              (deploy/tests/recording-prepare.sh makes both). With them the
 #                              participants speak and the transcript is checked. Without
-#                              them the worker runs as far as its check of the model files.
+#                              them the worker runs as far as its check of the model files,
+#                              and the removal and the backup during a transcript are not run.
 # JUNTO_RECORDING_TEST_KEEP=1  leaves the deployment running after a failure and prints how
 #                              to remove it.
 # JUNTO_RECORDING_TEST_FILES   a directory that gets the video and one audio file of the
@@ -69,6 +73,9 @@ mkdir "$work/models"
         echo "JUNTO_LIVEKIT_MEMORY=320m"
         echo "JUNTO_RECORDER_MEMORY=1280m"
         echo "JUNTO_WORKER_MEMORY=1408m"
+        # A restore names the images of the server and of init (deploy/restore-images.yaml).
+        echo "JUNTO_SERVER_IMAGE=$project-server"
+        echo "JUNTO_INIT_IMAGE=$project-init"
     } > "$work/env"
 )
 
@@ -86,7 +93,7 @@ compose() {
 driver() {
     # shellcheck disable=SC2046
     python3 -B "$deploy/tests/recording_driver.py" "$1" --project "$project" --env-file "$work/env" \
-        $(with_forms --compose-file) --origin "http://127.0.0.1:$port" --participant "$participant" \
+        $(with_forms --compose-file) --origin "http://127.0.0.1:$port" --participant "$participant" --work "$work" \
         ${speech:+--speech "$speech" --models} \
         ${JUNTO_RECORDING_TEST_FILES:+--keep-files "$JUNTO_RECORDING_TEST_FILES"}
 }
@@ -102,6 +109,7 @@ remove() {
         echo "left running. Settings: $work/env. Remove with:"
         echo "  cd $deploy && docker compose -p $project --env-file $work/env $(with_forms -f)down -v && rm -rf $work"
     elif compose down -v --timeout 20 > /dev/null 2>&1; then
+        docker image rm "$project-server" "$project-init" "$project-worker" > /dev/null 2>&1 || true
         rm -rf "$work"
     else
         echo "FAIL  the deployment could not be removed. Settings: $work/env. Remove with:"

@@ -78,7 +78,7 @@ Recorder:
 
 - Its start script is `deploy/images/recorder/start.sh`. It copies the partial Ogg files of an ended recorder from the temporary directory to `rescued/<job>/` below the recordings (ADR 0602), then runs the start script of the image, which deletes that directory. When a copy fails, it ends without starting the recorder, so that the only copy is not deleted.
 - The temporary directory is a volume. The CPU costs are the values that step 0 measured with (ADR 0602). The log level is `info`.
-- Its stop timeout is 2 minutes.
+- Its stop timeout is 2 minutes. Its start script stays the parent of the recorder and passes the stop signal on (ADR 0601).
 
 Limits and behaviour:
 
