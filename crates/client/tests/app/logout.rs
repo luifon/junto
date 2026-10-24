@@ -63,7 +63,7 @@ fn a_person_logs_out_and_the_device_logs_in_again_only_when_the_person_asks(
     assert_eq!(proxy.seen(LOGIN).len(), logins);
 
     // "Log in" logs in to the same account with the same key.
-    window.click_state_action("log-in");
+    window.click("log-in");
     window.until_ready();
     assert_eq!(window.view().person.account_id, Some(account_id));
     assert!(proxy.seen(LOGIN).len() > logins);

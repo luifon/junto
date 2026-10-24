@@ -53,7 +53,7 @@ impl Window {
         self.cx.update(|_, cx| {
             state.update(cx, |state, cx| state.select_server(server_id, cx));
         });
-        self.cx.run_until_parked();
+        self.run_tasks();
     }
 
     /// True when the window draws the image of the avatar of the account somewhere.

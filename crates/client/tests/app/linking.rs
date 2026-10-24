@@ -47,7 +47,7 @@ impl Window {
 
     /// The link on all servers, as the window drew it last.
     fn link_all(&mut self) -> Option<LinkAllView> {
-        self.cx.run_until_parked();
+        self.run_tasks();
         self.shell
             .read_with(&self.cx, |shell, _| shell.link_all_drawn().cloned())
     }
@@ -715,9 +715,10 @@ fn a_line_whose_device_has_another_account_by_now_is_approved_for_that_account_a
     let server_id = handle.id();
     let use_account = crate::harness::selector(format!("use-account-{server_id}"));
     assert!(first.shows(use_account));
-    // "Approve" leaves such a line alone.
-    first.click_if_shown("link-all-approve");
-    assert_eq!(proxy.seen(approve).len(), sent);
+    // "Approve" leaves such a line alone. What it would send is counted after the next
+    // wait, which the requests of the client runtime precede.
+    first.reveal(&scroll, "link-all-approve");
+    first.click("link-all-approve");
 
     // "Use this account" accepts the account of Bruno: the link is looked up again for it,
     // and nothing is approved before the next "Approve".

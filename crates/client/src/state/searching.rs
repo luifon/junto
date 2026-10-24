@@ -180,6 +180,10 @@ impl AppState {
         cx.spawn(async move |this, cx| {
             let answered = api.search(&query).await;
             let _ = this.update(cx, |this, cx| {
+                #[cfg(feature = "test-support")]
+                {
+                    this.search_answers += 1;
+                }
                 if this.search_asks != number {
                     return;
                 }
@@ -459,6 +463,13 @@ impl AppState {
     #[cfg(feature = "test-support")]
     pub fn result_answers(&self) -> u64 {
         self.result_answers
+    }
+
+    /// How many answers of a search reached the window, also the ones that it did not use
+    /// because a later request was sent. A test waits for an answer with it.
+    #[cfg(feature = "test-support")]
+    pub fn search_answers(&self) -> u64 {
+        self.search_answers
     }
 
     pub fn dismiss_search_failure(&mut self, cx: &mut Context<Self>) {

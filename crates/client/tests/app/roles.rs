@@ -118,23 +118,19 @@ fn send_role_form(window: &mut Window, name: &str) {
 /// whether a drag started.
 fn drag_role(window: &mut Window, from: &'static str, to: &'static str) -> bool {
     let start = crate::admin_pages::reveal_in_page(window, from).center();
-    window
-        .cx
-        .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
-    window.cx.simulate_mouse_move(
-        start + point(px(0.0), px(12.0)),
-        MouseButton::Left,
-        Modifiers::none(),
-    );
+    window.simulate(|cx| cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none()));
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(
+            start + point(px(0.0), px(12.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        )
+    });
     let started = window.cx.update(|_, cx| cx.has_active_drag());
     let end = crate::admin_pages::reveal_in_page(window, to).center();
-    window
-        .cx
-        .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
-    window
-        .cx
-        .simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none()));
+    window.simulate(|cx| cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none()));
+    window.run_tasks();
     started
 }
 

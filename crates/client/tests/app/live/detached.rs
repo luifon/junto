@@ -59,10 +59,10 @@ fn detaching_and_returning_keep_the_call(cx: &mut TestAppContext) {
         .into_iter()
         .find(|handle| *handle != main)
         .unwrap();
-    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
-    detached.run_until_parked();
-    let returning = detached.debug_bounds("return-call").unwrap().center();
-    detached.simulate_click(returning, Modifiers::none());
+    let mut detached = window.window_of(handle);
+    let returning = detached.cx.debug_bounds("return-call").unwrap().center();
+    detached.simulate(|cx| cx.simulate_click(returning, Modifiers::none()));
+    drop(detached);
     window.until("the detached Return button closes its window", |window| {
         !window
             .state
@@ -122,11 +122,11 @@ fn closing_detached_window_returns_and_call_end_closes_it(cx: &mut TestAppContex
         .into_iter()
         .find(|handle| *handle != main)
         .unwrap();
-    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
-    detached.run_until_parked();
-    assert!(detached.debug_bounds("leave-call").is_some());
-    assert!(detached.simulate_close());
-    detached.update(|window, _| window.remove_window());
+    let mut detached = window.window_of(handle);
+    assert!(detached.cx.debug_bounds("leave-call").is_some());
+    assert!(detached.simulate(|cx| cx.simulate_close()));
+    detached.simulate(|cx| cx.update(|window, _| window.remove_window()));
+    drop(detached);
     window.until("closing returns call", |window| {
         !window
             .state
@@ -191,11 +191,11 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
         control: true,
         ..Modifiers::none()
     };
-    window.cx.simulate_modifiers_change(held);
+    window.simulate(|cx| cx.simulate_modifiers_change(held));
     window.until("main key sends", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
-    window.cx.simulate_modifiers_change(Modifiers::none());
+    window.simulate(|cx| cx.simulate_modifiers_change(Modifiers::none()));
     window.until("main key releases", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS
     });
@@ -205,37 +205,40 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
         .into_iter()
         .find(|handle| *handle != main)
         .unwrap();
-    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
-    detached.update(|window, _| window.activate_window());
-    detached.run_until_parked();
-    assert!(detached.debug_bounds("detached-microphone").is_some());
-    detached.simulate_modifiers_change(held);
+    let mut detached = window.window_of(handle);
+    detached.simulate(|cx| cx.update(|window, _| window.activate_window()));
+    detached.run_tasks();
+    assert!(detached.cx.debug_bounds("detached-microphone").is_some());
+    detached.simulate(|cx| cx.simulate_modifiers_change(held));
     window.until("detached key sends", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
-    detached.deactivate_window();
+    detached.simulate(|cx| cx.deactivate_window());
     window.until("blur releases the key", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS
     });
     let identity = window.state.read_with(&window.cx, |state, _| {
         state.calls().view().call.unwrap().identity
     });
-    detached.run_until_parked();
-    let fullscreen = detached.debug_bounds("call-fullscreen").unwrap();
-    detached.simulate_click(fullscreen.center(), Modifiers::none());
-    assert!(detached.update(|window, _| window.is_fullscreen()));
+    detached.run_tasks();
+    let fullscreen = detached.cx.debug_bounds("call-fullscreen").unwrap();
+    detached.simulate(|cx| cx.simulate_click(fullscreen.center(), Modifiers::none()));
+    assert!(detached.cx.update(|window, _| window.is_fullscreen()));
     // The choice "keep on top" is drawn only where the system can keep a window above the
     // others (ADR 0507).
-    if detached.update(|_, cx| junto_client::window_level::offered(cx)) {
-        let top = detached.debug_bounds("call-on-top").unwrap();
-        detached.simulate_click(top.center(), Modifiers::none());
+    if detached
+        .cx
+        .update(|_, cx| junto_client::window_level::offered(cx))
+    {
+        let top = detached.cx.debug_bounds("call-on-top").unwrap();
+        detached.simulate(|cx| cx.simulate_click(top.center(), Modifiers::none()));
         window.until("topmost changes without leaving", |window| {
             window.state.read_with(&window.cx, |state, _| {
                 state.is_call_detached() && state.call_window_settings().keep_on_top
             })
         });
     } else {
-        assert!(detached.debug_bounds("call-on-top").is_none());
+        assert!(detached.cx.debug_bounds("call-on-top").is_none());
     }
     assert_eq!(
         identity,
@@ -278,16 +281,17 @@ fn closing_the_main_window_also_closes_its_detached_call(cx: &mut TestAppContext
             )
         })
         .unwrap();
-    window.cx.update(|window, _| window.remove_window());
-    let mut main = gpui::VisualTestContext::from_window(handle.into(), cx);
-    main.run_until_parked();
-    let detach = main.debug_bounds("detach-call").unwrap().center();
-    main.simulate_click(detach, Modifiers::none());
-    main.run_until_parked();
+    let mut main = window.window_of(handle.into());
+    window.simulate(|cx| cx.update(|window, _| window.remove_window()));
+    drop(window);
+    main.run_tasks();
+    let detach = main.cx.debug_bounds("detach-call").unwrap().center();
+    main.simulate(|cx| cx.simulate_click(detach, Modifiers::none()));
+    main.run_tasks();
     assert_eq!(cx.windows().len(), 2);
-    assert!(main.simulate_close());
-    main.update(|window, _| window.remove_window());
-    cx.run_until_parked();
+    assert!(main.simulate(|cx| cx.simulate_close()));
+    main.simulate(|cx| cx.update(|window, _| window.remove_window()));
+    main.run_tasks();
     assert!(
         cx.windows().is_empty(),
         "no orphaned call window remains after closing the application"
@@ -426,11 +430,11 @@ fn the_detached_call_draws_the_notices_and_the_bars_of_its_call(cx: &mut TestApp
         .into_iter()
         .find(|handle| *handle != main)
         .unwrap();
-    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
+    let mut detached = window.window_of(handle);
     let mut shown = |window: &mut Window, what: &str, selector: &'static str| {
         window.until(what, |window| {
             window.settle();
-            detached.debug_bounds(selector).is_some()
+            detached.cx.debug_bounds(selector).is_some()
         });
     };
     let api = admin.handle.api();
@@ -523,8 +527,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     window.click("detach-call");
     let mut call = window.call_window();
     // A narrow call window: the panel lies over the stage.
-    call.cx
-        .simulate_resize(gpui::size(gpui::px(480.0), gpui::px(640.0)));
+    call.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(480.0), gpui::px(640.0))));
     call.settle();
 
     // The panel starts closed. The buttons of the header open its tabs.

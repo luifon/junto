@@ -35,7 +35,7 @@ fn png(width: u32, height: u32, padding: usize) -> Vec<u8> {
 impl Window {
     /// The account layer as the window drew it last. Absent while the layer is closed.
     pub(crate) fn account(&mut self) -> Option<AccountView> {
-        self.cx.run_until_parked();
+        self.run_tasks();
         self.shell.read_with(&self.cx, |shell, _| {
             shell
                 .account_drawn()
@@ -608,10 +608,8 @@ fn an_answer_to_the_name_of_a_device_in_a_narrow_window_moves_no_row_under_it(
             state.set_scale(junto_client::theme::SCALE_MAX, cx);
         });
     });
-    window
-        .cx
-        .simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0)));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0))));
+    window.run_tasks();
     let rows = window.devices();
     let (upper, lower) = (rows[0].id, rows[1].id);
     let (row, below) = (

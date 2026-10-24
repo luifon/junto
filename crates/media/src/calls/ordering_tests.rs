@@ -215,6 +215,7 @@ fn fixture() -> Fixture {
         backoff: Backoff::new(timing.reconnect_first, timing.reconnect_longest),
         rejoining: true,
         renew_open: false,
+        renewals: Vec::new(),
         grant_closed: false,
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
@@ -2619,9 +2620,20 @@ async fn a_refusal_of_a_renewal_states_how_the_seat_ended() {
         assert!(f.session.renew_open, "{left:?}");
         assert!(f.session.retry.is_some());
         assert_eq!(f.session.fate, Fate::Held);
-        // The next request names no seat, and the one after it names the seat again.
-        assert_eq!(f.session.renewal_seat(), None, "{left:?}");
-        assert_eq!(f.session.renewal_seat().as_deref(), Some("seat"));
+        // The request that is due names no seat. A later request, after a failure of
+        // that one, names the seat again.
+        let (done, _results) = mpsc::unbounded_channel();
+        let due = f.session.retry.unwrap();
+        f.session.work(due, &done);
+        assert!(f.session.rejoining, "{left:?}");
+        f.session.rejoining = false;
+        f.session.retry = Some(due);
+        f.session.work(due, &done);
+        assert_eq!(
+            f.session.renewals,
+            [None, Some("seat".to_owned())],
+            "{left:?}"
+        );
         f.session.engine.close().await;
     }
     // Every other reason ends the call with it, and nothing is asked again.

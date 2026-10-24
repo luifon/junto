@@ -169,6 +169,9 @@ pub struct Window {
     /// the calls of the harness that run its work.
     pub held: Held,
     holding: usize,
+    /// The lock check of ADR 0730 knows the application of the window while the window
+    /// exists.
+    _checked: CheckedApp,
 }
 
 /// The pieces of work of the application on the thread of the windows: the work of one
@@ -278,6 +281,7 @@ fn open_client(
 ) -> Window {
     log_into_test_output();
     junto_client_core::storage::refuse_locks_while(window_thread_works);
+    let _start = Starting::new();
     // The client core answers from threads of its own runtime, at real times. The
     // scheduler of the test accepts that only when it is told so.
     cx.executor().allow_parking();
@@ -313,6 +317,7 @@ fn open_client(
     let shell = built.borrow_mut().take().unwrap();
     let window = Window {
         camera,
+        _checked: CheckedApp::new(cx),
         cx: VisualTestContext::from_window(window.into(), cx),
         shell,
         state,
@@ -346,10 +351,26 @@ impl Window {
     /// Runs `work` as work of the thread of the window: a lock of a data directory that is
     /// taken in it outside a background task fails the test (ADR 0730).
     pub fn as_window<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
-        WINDOW_WORK.with_borrow_mut(|works| works.push(self.cx.executor()));
+        WINDOW_WORK.with_borrow_mut(|works| works.running.push(self.cx.executor()));
         let result = work(self);
-        WINDOW_WORK.with_borrow_mut(|works| works.pop());
+        WINDOW_WORK.with_borrow_mut(|works| works.running.pop());
         result
+    }
+
+    /// Runs `act` on the test context of the window as work of the window: the events and
+    /// actions that it simulates, and the tasks of the application that gpui runs after
+    /// them, are checked as the harness checks its own events (ADR 0730). A test that
+    /// simulates input, dispatches an action or runs the tasks of the application does it
+    /// here or through another method of the harness; a test of the `app` target fails on
+    /// such a call outside it.
+    pub fn simulate<T>(&mut self, act: impl FnOnce(&mut VisualTestContext) -> T) -> T {
+        self.as_window(|window| act(&mut window.cx))
+    }
+
+    /// Runs the waiting tasks of the application until none is left, without a frame of
+    /// the display, as work of the window (ADR 0730).
+    pub fn run_tasks(&mut self) {
+        self.simulate(|cx| cx.run_until_parked());
     }
 
     /// Runs the work of the application until it has none. A wait of a test has a limit:
@@ -467,6 +488,7 @@ impl Window {
     /// tests a second start and not two running applications.
     #[track_caller]
     pub fn close(mut self) {
+        let _close = Starting::new();
         let state = self.state.downgrade();
         self.cx.update(|window, _| window.remove_window());
         let Self {
@@ -674,7 +696,6 @@ impl Window {
     /// camera of this window: both windows hold one state (ADR 0772).
     #[track_caller]
     pub fn call_window(&mut self) -> Window {
-        use gpui::AppContext as _;
         self.settle();
         let main = self.cx.update(|window, _| window.window_handle());
         let handle = self
@@ -683,6 +704,14 @@ impl Window {
             .into_iter()
             .find(|handle| *handle != main)
             .expect("a call window is open");
+        self.window_of(handle)
+    }
+
+    /// Another window of the application, which draws a shell of the same state: the call
+    /// window, or a main window that the test opened itself.
+    #[track_caller]
+    pub fn window_of(&mut self, handle: gpui::AnyWindowHandle) -> Window {
+        use gpui::AppContext as _;
         let shell = self
             .cx
             .update_window(handle, |root, _, cx| {
@@ -692,8 +721,9 @@ impl Window {
             })
             .ok()
             .flatten()
-            .expect("the call window draws a shell");
+            .expect("the window draws a shell");
         let mut window = Window {
+            _checked: CheckedApp::new(&self.cx),
             cx: VisualTestContext::from_window(handle, &self.cx),
             shell,
             state: self.state.clone(),
@@ -795,14 +825,24 @@ impl Window {
         self.click(row);
     }
 
-    /// Clicks an action of the state of the selected server once the actions take clicks.
-    /// While an action of the access flow runs, the state panel draws its actions disabled,
-    /// also when it shows the outcome of that action before the action has ended: the
-    /// client core writes the server book after it shows the new state.
+    /// Clicks an action of the state panel of the selected server once the actions take
+    /// clicks. The panel draws its actions disabled while an action of the access flow runs,
+    /// also when it shows the outcome of that action before the action has ended (the
+    /// client core writes the server book after it shows the new state), and while a
+    /// request of the server is cancelled: the condition of `render_server_state`.
     #[track_caller]
     pub fn click_state_action(&mut self, selector: &'static str) {
         self.until(&format!("{selector} takes clicks"), |window| {
-            window.shows(selector) && window.view().selected.is_some_and(|server| !server.busy)
+            if !window.shows(selector) {
+                return false;
+            }
+            let Some(server) = window.view().selected else {
+                return false;
+            };
+            let cancelling = window.state.read_with(&window.cx, |state, _| {
+                state.pending().cancelling.contains(&server.id)
+            });
+            !server.busy && !cancelling
         });
         self.click(selector);
     }
@@ -852,21 +892,88 @@ pub(crate) fn selector(name: String) -> &'static str {
     Box::leak(name.into_boxed_str())
 }
 
+/// What the lock check of ADR 0730 knows on one thread of a test.
+#[derive(Default)]
+struct WindowWork {
+    /// The executors of the windows whose work the harness runs on this thread now, the
+    /// innermost last.
+    running: Vec<gpui::BackgroundExecutor>,
+    /// The application of each window that exists on this thread after its start, with its
+    /// executor.
+    apps: Vec<(gpui::BackgroundExecutor, std::rc::Weak<gpui::AppCell>)>,
+    /// A start or a close of a window runs now. The check does not apply to it.
+    starting: usize,
+}
+
 thread_local! {
-    /// The executors of the windows whose work runs on this thread now, the innermost last.
-    static WINDOW_WORK: std::cell::RefCell<Vec<gpui::BackgroundExecutor>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static WINDOW_WORK: std::cell::RefCell<WindowWork> = std::cell::RefCell::default();
 }
 
 /// True while a window runs its work on this thread and the task that runs is not one of its
-/// background tasks. The test platform runs the background tasks on the thread of the test
-/// too, and its scheduler states which kind of task runs (ADR 0730).
+/// background tasks (ADR 0730). The work of a window is what the harness runs as such
+/// ([`Window::as_window`]), and every piece of work during which gpui holds the application
+/// of a window: an event, an action, a frame, an update of an entity, and the part of a task
+/// of the application that uses the application. The code of the test itself holds no
+/// application. The test platform runs the background tasks on the thread of the test too,
+/// and its scheduler states which kind of task runs.
 fn window_thread_works() -> bool {
-    WINDOW_WORK.with_borrow(|works| {
-        works
-            .last()
-            .is_some_and(gpui::BackgroundExecutor::is_main_thread)
+    WINDOW_WORK.with_borrow(|work| {
+        if work.starting > 0 {
+            return false;
+        }
+        if let Some(executor) = work.running.last() {
+            return executor.is_main_thread();
+        }
+        work.apps.iter().any(|(executor, app)| {
+            executor.is_main_thread()
+                && app
+                    .upgrade()
+                    .is_some_and(|app| app.try_borrow_mut().is_err())
+        })
     })
+}
+
+/// The entry of the application of one [`Window`] in the lock check, removed when the window
+/// is dropped. A test ends its windows before gpui ends the application, so the end of the
+/// application, which may write the data directory, is not checked.
+struct CheckedApp {
+    app: std::rc::Weak<gpui::AppCell>,
+}
+
+impl CheckedApp {
+    fn new(cx: &TestAppContext) -> Self {
+        let app = std::rc::Rc::downgrade(&cx.app);
+        let executor = cx.executor();
+        WINDOW_WORK.with_borrow_mut(|work| work.apps.push((executor, app.clone())));
+        Self { app }
+    }
+}
+
+impl Drop for CheckedApp {
+    fn drop(&mut self) {
+        WINDOW_WORK.with_borrow_mut(|work| {
+            if let Some(index) = work.apps.iter().position(|(_, app)| app.ptr_eq(&self.app)) {
+                work.apps.remove(index);
+            }
+        });
+    }
+}
+
+/// While it exists, a start or a close of a window runs on this thread: the start opens the
+/// data directory and the close ends the client, which ADR 0730 allows.
+struct Starting;
+
+impl Starting {
+    fn new() -> Self {
+        WINDOW_WORK.with_borrow_mut(|work| work.starting += 1);
+        Self
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        WINDOW_WORK.with_borrow_mut(|work| work.starting -= 1);
+    }
 }
 
 /// The lock of a data directory, held as another program that uses the directory holds it

@@ -96,7 +96,7 @@ fn a_camera_failure_can_open_settings_or_be_dismissed_in_both_windows(cx: &mut T
     window.until("failure shown", |window| window.shows("camera-failed"));
     window.click("camera-settings");
     assert!(window.shows("settings-dialog"));
-    window.cx.simulate_keystrokes("escape");
+    window.simulate(|cx| cx.simulate_keystrokes("escape"));
     window.click("camera-dismiss");
     window.until("failure dismissed", |window| !window.shows("camera-failed"));
     window.click("call-camera");
@@ -110,16 +110,19 @@ fn a_camera_failure_can_open_settings_or_be_dismissed_in_both_windows(cx: &mut T
         .into_iter()
         .find(|handle| *handle != main)
         .unwrap();
-    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
-    detached.run_until_parked();
-    let settings = detached.debug_bounds("camera-settings").unwrap().center();
-    detached.simulate_click(settings, Modifiers::none());
-    detached.run_until_parked();
-    assert!(detached.debug_bounds("settings-dialog").is_some());
-    detached.simulate_keystrokes("escape");
-    detached.run_until_parked();
-    let dismiss = detached.debug_bounds("camera-dismiss").unwrap().center();
-    detached.simulate_click(dismiss, Modifiers::none());
+    let mut detached = window.window_of(handle);
+    let settings = detached
+        .cx
+        .debug_bounds("camera-settings")
+        .unwrap()
+        .center();
+    detached.simulate(|cx| cx.simulate_click(settings, Modifiers::none()));
+    detached.run_tasks();
+    assert!(detached.cx.debug_bounds("settings-dialog").is_some());
+    detached.simulate(|cx| cx.simulate_keystrokes("escape"));
+    detached.run_tasks();
+    let dismiss = detached.cx.debug_bounds("camera-dismiss").unwrap().center();
+    detached.simulate(|cx| cx.simulate_click(dismiss, Modifiers::none()));
     window.until("detached failure dismissed", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state.media_calls().call.unwrap().camera == CameraState::Off

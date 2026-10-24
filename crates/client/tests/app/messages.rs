@@ -951,10 +951,8 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
         shows(window, "Harbor")
     });
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
 
     // Nothing is attached and nothing is uploaded, and the composer says why.
     assert_eq!(
@@ -996,10 +994,8 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
             && window.shows("composer")
     });
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
     assert_eq!(
         window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
@@ -1022,9 +1018,7 @@ fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
     // A dialog that is answered while the composer still shows its place attaches.
     window.click("attach-file");
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
     window.until("the upload to the first server is complete", |window| {
         window.view().lists().is_some_and(|lists| {
             lists.draft.len() == 1
@@ -1194,11 +1188,13 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
     let list = window
         .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
         .expect("the list was drawn");
-    window.cx.simulate_mouse_move(
-        point(list.left() - px(20.0), list.top() + px(20.0)),
-        None::<MouseButton>,
-        Modifiers::none(),
-    );
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(
+            point(list.left() - px(20.0), list.top() + px(20.0)),
+            None::<MouseButton>,
+            Modifiers::none(),
+        )
+    });
     window.settle();
     let bars = |window: &mut Window| {
         sent.iter()
@@ -1218,9 +1214,9 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
         .cx
         .debug_bounds(crate::harness::selector(format!("message:{last}")))
         .expect("the newest message is drawn");
-    window
-        .cx
-        .simulate_mouse_move(row.center(), None::<MouseButton>, Modifiers::none());
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(row.center(), None::<MouseButton>, Modifiers::none())
+    });
     window.settle();
     assert_eq!(bars(&mut window), vec![last]);
 
@@ -1473,9 +1469,9 @@ fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut Tes
         .cx
         .debug_bounds(crate::harness::selector(format!("message:{}", wrong.id)))
         .expect("the message is drawn");
-    window
-        .cx
-        .simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none());
+    window.simulate(|cx| {
+        cx.simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none())
+    });
     window.settle();
     window.click_named(format!("delete:{}", wrong.id));
     assert!(window.shows("confirm-delete-message") && window.shows("confirm-delete-permanent"));
@@ -1640,10 +1636,8 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
     // The person chooses the file now: nothing is attached and nothing is uploaded, and
     // the composer says why.
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
     assert_eq!(
         window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
@@ -1659,9 +1653,7 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
     // A dialog that is opened for the account of Bruno attaches the file.
     window.click("attach-file");
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
     window.until("the file waits for the message", |window| {
         window
             .view()
@@ -1735,10 +1727,8 @@ fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
 
     // The person chooses the file now: nothing is attached, and the composer says why.
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
-    window.cx.run_until_parked();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.run_tasks();
     assert_eq!(
         window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::FILES_OF_ANOTHER_PLACE.to_owned())

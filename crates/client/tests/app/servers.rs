@@ -52,7 +52,7 @@ impl Window {
     fn stays(&mut self, what: &str, time: Duration, mut holds: impl FnMut(&mut Self) -> bool) {
         let end = Instant::now() + time;
         while Instant::now() < end {
-            self.cx.run_until_parked();
+            self.run_tasks();
             assert!(holds(self), "this did not stay: {what}");
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -72,7 +72,7 @@ impl Window {
     /// right side.
     #[track_caller]
     fn above_the_profile_strip(&mut self, line: &'static str) {
-        self.cx.run_until_parked();
+        self.run_tasks();
         let bounds = |window: &mut Self, name: &'static str| {
             window
                 .cx
@@ -699,7 +699,7 @@ fn the_application_without_a_source_of_releases_shows_no_notice_and_asks_nothing
 fn recordings_page(
     window: &mut Window,
 ) -> Option<junto_client::state::admin::view::recordings::RecordingsPage> {
-    window.cx.run_until_parked();
+    window.run_tasks();
     let view = window
         .state
         .read_with(&window.cx, |state, _| state.admin_view())?;

@@ -488,6 +488,9 @@ struct ProxyState {
     /// The answer to a request with this method whose path without its query ends with
     /// this text waits at the proxy, after the server gave it.
     held_answers: Vec<(String, String)>,
+    /// The answer to the request with this index of `seen` waits at the proxy whatever
+    /// `held_answers` names.
+    kept_answer: Option<usize>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
     /// What the server sends on the event stream waits at the proxy.
@@ -611,6 +614,20 @@ impl FaultProxy {
             .push((method.to_owned(), end.to_owned()));
     }
 
+    /// Passes on every answer that waits and holds no further one, except the answer to the
+    /// request with this index of [`FaultProxy::all`], which waits until
+    /// [`FaultProxy::release`]. A test of the window uses it to bring an answer after the
+    /// answers of later requests.
+    #[allow(dead_code)]
+    pub fn release_answers_except(&self, kept: usize) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.held_answers.clear();
+            state.kept_answer = Some(kept);
+        }
+        self.released.send_modify(|releases| *releases += 1);
+    }
+
     /// How many answers of the server wait at the proxy now.
     #[allow(dead_code)]
     pub fn answers_waiting(&self) -> usize {
@@ -650,6 +667,7 @@ impl FaultProxy {
             state.held_ending.clear();
             state.held_requests.clear();
             state.held_answers.clear();
+            state.kept_answer = None;
             state.events_held = false;
         }
         self.released.send_modify(|releases| *releases += 1);
@@ -870,10 +888,11 @@ async fn serve(
         return Ok(());
     }
     let answer_held = |state: &ProxyState| {
-        state
-            .held_answers
-            .iter()
-            .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
+        state.kept_answer == Some(index)
+            || state
+                .held_answers
+                .iter()
+                .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
     if answer_held(&state.lock().unwrap()) {
         state.lock().unwrap().answers_waiting += 1;

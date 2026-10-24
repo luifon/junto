@@ -72,7 +72,7 @@ impl Admin {
 impl Window {
     /// What the notifier of the application was told.
     pub fn kept(&mut self) -> Kept {
-        self.cx.run_until_parked();
+        self.run_tasks();
         self.state
             .read_with(&self.cx, |state, _| state.kept_notifications())
     }
@@ -698,10 +698,10 @@ fn two_marks_asked_for_one_after_the_other_are_both_sent(cx: &mut TestAppContext
 fn a_pressed_notification_brings_the_window_to_the_front(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let mut window = crate::harness::open(cx, directory.path());
-    window.cx.deactivate_window();
+    window.simulate(|cx| cx.deactivate_window());
     assert!(!window.cx.update(|window, _| window.is_window_active()));
     TestAppContext::update(&window.cx, junto_client::notify::bring_to_front);
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert!(window.cx.update(|window, _| window.is_window_active()));
     window.close();
 }

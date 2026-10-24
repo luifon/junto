@@ -236,7 +236,7 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
             state.select_channel(workspace_id, random, cx);
         });
     });
-    window.cx.run_until_parked();
+    window.run_tasks();
     assert_eq!(window.selected_channel(), random);
     assert_eq!(
         answers(&mut window),
@@ -745,6 +745,32 @@ fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
     window.until("the answer of the read waits", |_| {
         proxy.answers_waiting() == 1
     });
+    let reads = |proxy: &FaultProxy| -> Vec<(usize, bool)> {
+        proxy
+            .all()
+            .iter()
+            .enumerate()
+            .filter(|(_, seen)| seen.path.starts_with("/api/v1/search"))
+            .map(|(index, seen)| (index, seen.answer.is_some()))
+            .collect()
+    };
+    let unanswered: Vec<usize> = reads(&proxy)
+        .into_iter()
+        .filter(|(_, answered)| !answered)
+        .map(|(index, _)| index)
+        .collect();
+    let [earlier] = unanswered[..] else {
+        panic!("one read of the search waits: {unanswered:?}");
+    };
+    let arrived = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.search_answers())
+    };
+    // A further result in "random", which the account may still see: only the reads after
+    // the earlier one find it. The window draws only the results of the channels that the
+    // account may see, so the result in "general" alone would not show the earlier answer.
+    admin.send(&world, random, document("quartz in random again"));
 
     // The administrator hides "general" from the role of every member. The results leave
     // the panel at once, and the search is read again.
@@ -785,19 +811,38 @@ fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
             .is_some_and(|panel| panel.messages().is_empty())
     );
 
-    // Both answers arrive. The one of the read before the change is not taken.
-    proxy.release();
-    let searches = |proxy: &FaultProxy| -> Vec<bool> {
-        proxy
-            .all()
+    // The answers of the later reads arrive first, and the panel shows what the account
+    // may see now.
+    proxy.release_answers_except(earlier);
+    window.until("the later reads have their answers", |window| {
+        let reads = reads(&proxy);
+        let answered = reads.iter().filter(|(_, answered)| *answered).count();
+        reads
             .iter()
-            .filter(|seen| seen.path.starts_with("/api/v1/search"))
-            .map(|seen| seen.answer.is_some())
-            .collect()
-    };
-    window.until("every read of the search has its answer", |window| {
-        searches(&proxy).iter().all(|answered| *answered) && window.searched_now()
+            .all(|(index, answered)| *answered || *index == earlier)
+            && arrived(window) == answered as u64
+            && window.searched_now()
     });
     let panel = window.search_panel().unwrap();
-    assert_eq!(texts(&panel), ["quartz in random"]);
+    assert_eq!(
+        texts(&panel),
+        ["quartz in random", "quartz in random again"]
+    );
+
+    // The answer of the read from before the change arrives last, without the further
+    // result. It is not taken.
+    proxy.release();
+    window.until(
+        "the answer of the earlier read reached the window",
+        |window| {
+            let reads = reads(&proxy);
+            reads.iter().all(|(_, answered)| *answered) && arrived(window) == reads.len() as u64
+        },
+    );
+    assert!(window.searched_now());
+    let panel = window.search_panel().unwrap();
+    assert_eq!(
+        texts(&panel),
+        ["quartz in random", "quartz in random again"]
+    );
 }

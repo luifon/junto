@@ -233,7 +233,7 @@ fn a_cancelled_request_leaves_no_server_in_the_server_book(cx: &mut TestAppConte
         window.shows("cancel-request")
             && window.in_shell(|shell, _, _| shell.join_results()) == results + 1
     });
-    window.click_state_action("cancel-request");
+    window.click("cancel-request");
     window.until("the server is removed", |window| {
         window.view().servers.is_empty()
     });
