@@ -2769,7 +2769,7 @@ fn write_audit_entries(
 ) {
     use sqlx::ConnectOptions;
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query(
             "insert into audit_entries (id, occurred_at, action, event)
@@ -2790,7 +2790,7 @@ fn write_audit_entries(
 fn server_entries(world: &World, server: &TestServer) -> usize {
     use sqlx::ConnectOptions;
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         let count: i64 =
             sqlx::query_scalar("select count(*) from audit_entries where workspace_id is null")
@@ -2869,7 +2869,7 @@ fn the_people_page_lays_out_only_the_accounts_in_view(cx: &mut TestAppContext) {
         handle
     });
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query(
             "insert into accounts (id, name, status, created_at)
@@ -2963,7 +2963,7 @@ fn the_people_page_reads_the_profiles_of_the_rows_that_it_lays_out(cx: &mut Test
         logged_in(&handle);
     });
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query(
             "insert into accounts (id, name, status, created_at)

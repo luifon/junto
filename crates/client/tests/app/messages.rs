@@ -1537,7 +1537,7 @@ fn a_message_whose_files_the_retention_removed_says_so(cx: &mut TestAppContext) 
         ))
         .unwrap();
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query("update attachments set retention_at = now() - interval '2 days'")
             .execute(&mut database)

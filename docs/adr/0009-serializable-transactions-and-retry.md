@@ -51,7 +51,11 @@ Broken database connections:
   backend before COMMIT rolls back its transaction, but a lost connection while
   awaiting COMMIT can leave a committed transaction without its answer. The
   transport error alone cannot distinguish these outcomes. The server uses the same
-  conservative response at both stages.
+  conservative response at both stages. A test loses the answer of a COMMIT that
+  PostgreSQL ran: the request gets `unavailable` without `Retry-After`, the change is
+  stored, the event of the change reaches a connected stream, and the next request of the
+  process works (`lost_answers::a_change_whose_commit_answer_is_lost_is_unavailable_and_stays_made`,
+  through the proxy of ADR 0904).
 - The client already treats `unavailable` as a server failure, keeps the session state,
   and returns it to the caller without automatically repeating the request. The caller
   reads current state before deciding whether to repeat an operation. An idempotent

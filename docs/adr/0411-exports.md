@@ -62,3 +62,4 @@ Events:
 - A program that reads the file must read ZIP64. Current versions of the common tools do.
 - The export of a large channel reads its messages twice.
 - An administrator does not see which exports other accounts hold, except through the audit entries of channel exports.
+- Tests: `exports` in the API tests, among them `rule_e16_the_export_of_a_direct_conversation_holds_the_lines_of_its_calls`: the export of a direct conversation holds the lines of its calls as its history shows them, and its page states each line with the account that started the call and the duration.

@@ -1424,6 +1424,72 @@ async fn rule_e15_export_events_reach_the_requester_only() {
     }
 }
 
+/// ADR 0411, ADR 0518: the export of a direct conversation holds the lines of its calls as
+/// its history shows them, and its page states each line with its duration.
+#[tokio::test]
+async fn rule_e16_the_export_of_a_direct_conversation_holds_the_lines_of_its_calls() {
+    let (attachments, exports) = (Scratch::new(), Scratch::new());
+    let server = TestServer::start_for_calls_with(with_directories(&attachments, &exports)).await;
+    use_fake_disks(&server);
+    let scene = crate::calls_support::Scene::on(server).await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    server.enter_direct(ann, ben).await;
+    server.enter_direct(ben, ann).await;
+    server.clock.advance(Duration::seconds(125));
+    server.leave_call(ben).await;
+    server.leave_call(ann).await;
+    let conversations: Vec<Conversation> = server
+        .get(ann, "/api/v1/conversations")
+        .await
+        .ok(StatusCode::OK);
+    let conversation = conversations.into_iter().next().expect("a conversation");
+    let path = format!("/api/v1/conversations/{}/messages", conversation.id);
+    send_with(server, &scene.ben, &path, "after the call", &[]).await;
+    server.clock.advance(Duration::seconds(1));
+    server.enter_direct(ben, ann).await;
+    let lifetime = server.state.config.limits.calls.invitation_lifetime;
+    server.clock.advance(lifetime + Duration::seconds(1));
+    server.check().await;
+    server.leave_call(ben).await;
+    let history: MessagePage = server.get(ann, &path).await.ok(StatusCode::OK);
+    let actions: Vec<Option<&str>> = history
+        .messages
+        .iter()
+        .map(|message| message.system.as_ref().map(|line| line.action.as_str()))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            Some("direct_call_started"),
+            Some("direct_call_ended"),
+            None,
+            Some("direct_call_started"),
+            Some("direct_call_not_answered"),
+        ]
+    );
+
+    let export: Export = server
+        .post(
+            ann,
+            &format!("/api/v1/conversations/{}/exports", conversation.id),
+            &Value::Null,
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    build(server).await;
+    let found = entries(server, ann, export.id).await;
+    assert_eq!(messages_of(&found), history.messages);
+    let page = page_of(&found);
+    for line in [
+        "<p class=\"system\">direct call started by Ann</p>",
+        "<p class=\"system\">direct call ended by Ann, 125 seconds</p>",
+        "<p class=\"system\">direct call started by Ben</p>",
+        "<p class=\"system\">direct call not answered by Ben</p>",
+    ] {
+        assert!(page.contains(line), "{line} is not in {page}");
+    }
+}
+
 #[tokio::test]
 async fn rule_e16_a_participant_exports_a_direct_conversation() {
     let (attachments, exports) = (Scratch::new(), Scratch::new());
@@ -1989,6 +2055,59 @@ async fn rule_e22_a_running_download_ends_when_the_access_ends() {
     server.clock.advance(interval + Duration::seconds(1));
     let (received, whole) = drained(response, first).await;
     assert!(received < length && !whole, "{received} {whole}");
+}
+
+/// ADR 0608: the interval of the download check is also measured on a clock that a change
+/// of the time of the machine does not move. While the clock of the server stands still, a
+/// running download is decided again after the interval: it ends when the access ended.
+#[tokio::test]
+async fn rule_e22_a_download_is_decided_again_while_the_clock_of_the_server_stands_still() {
+    let (attachments, exports) = (Scratch::new(), Scratch::new());
+    let interval = Duration::milliseconds(200);
+    let directories = with_directories(&attachments, &exports);
+    let server = TestServer::start_with(|config| {
+        directories(config);
+        config.limits.recordings.download_check = interval;
+    })
+    .await;
+    let desk = Desk::on(server, attachments, exports).await;
+    let server = &desk.server;
+    send(server, &desk.owner, &desk.channel, "content").await;
+    let export = requested(server, &desk.exporter, desk.channel.id).await;
+    build(server).await;
+    let length: u64 = 256 * 1024 * 1024;
+    let file = desk.exports.0.join(export.id.to_string()).join("1.zip");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_len(length)
+        .unwrap();
+    let client = reqwest::Client::new();
+    let begin = || async {
+        let mut response = client
+            .get(format!("{}/api/v1/exports/{}/file", server.base, export.id))
+            .bearer_auth(&desk.exporter.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let first = response.chunk().await.unwrap().unwrap();
+        (response, first.len() as u64)
+    };
+    let pass = || tokio::time::sleep(interval.unsigned_abs());
+    let before = server.clock.now();
+
+    let (response, first) = begin().await;
+    pass().await;
+    assert_eq!(drained(response, first).await, (length, true));
+
+    let (response, first) = begin().await;
+    desk.permit(false).await;
+    pass().await;
+    let (received, whole) = drained(response, first).await;
+    assert!(received < length && !whole, "{received} {whole}");
+    assert_eq!(server.clock.now(), before);
 }
 
 #[tokio::test]

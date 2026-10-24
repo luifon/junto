@@ -39,13 +39,12 @@ use junto_server::recordings::{Backend, control, process, transcribe};
 use junto_server::state::AppState;
 use junto_server::storage::FakeDisk;
 use serde_json::{Value, json};
-use sqlx::ConnectOptions;
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
+use crate::support::TestDatabase;
 
 /// The stand-in for the transcription worker (ADR 0611). The server runs it as
 /// `<script> run <job> --out <transcript> --audio-root <directory of the recording>`. It
@@ -87,6 +86,18 @@ impl Clock for TestClock {
     fn now(&self) -> OffsetDateTime {
         *self.now.lock().unwrap()
     }
+}
+
+/// Settings of the pools of the server: each pool holds the database of the test. A pool
+/// keeps its settings until its last connection has ended, also a connection that a dropped
+/// task held and that the pool returns on a task of its own; so the database is deleted after
+/// the last connection of the server.
+fn held_by(database: &Arc<TestDatabase>) -> PgPoolOptions {
+    let database = database.clone();
+    PgPoolOptions::new().after_connect(move |_, _| {
+        let _held = &database;
+        Box::pin(async { Ok(()) })
+    })
 }
 
 /// One line that a test lets the transcription worker write. The times count in
@@ -160,13 +171,26 @@ pub struct RecordingServer {
     recorded: Mutex<Vec<RecordingDetail>>,
     runtime: Option<tokio::runtime::Runtime>,
     shutdown: Option<oneshot::Sender<()>>,
+    /// The pools of the state hold the database too (see [`held_by`]): the drop waits until
+    /// the tasks of the runtime have ended, and the database is deleted when the state and its
+    /// connections have ended.
+    database: Arc<TestDatabase>,
 }
+
+/// The longest wait for the tasks of a recording server to end when it is dropped.
+const RUNTIME_END_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Drop for RecordingServer {
     fn drop(&mut self) {
         drop(self.shutdown.take());
         if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_background();
+            // A runtime cannot wait for its tasks from the asynchronous context of a test, so
+            // a thread of its own waits until every task of the server has been dropped.
+            let ended =
+                std::thread::spawn(move || runtime.shutdown_timeout(RUNTIME_END_LIMIT)).join();
+            if ended.is_err() {
+                eprintln!("the runtime of the recording server did not end");
+            }
         }
     }
 }
@@ -229,19 +253,7 @@ impl RecordingServer {
         let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_address = proxy.local_addr().unwrap();
         let started = on_runtime(runtime.handle().clone(), move || async move {
-            let admin_url = std::env::var(DATABASE_URL).unwrap_or_else(|_| {
-                panic!(
-                    "{DATABASE_URL} is not set. Run the tests through tools/with-test-postgres.sh."
-                )
-            });
-            let admin = PgConnectOptions::from_str(&admin_url).unwrap();
-            let database = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
-            let mut connection = admin.connect().await.unwrap();
-            sqlx::query(sqlx::AssertSqlSafe(format!("create database {database}")))
-                .execute(&mut connection)
-                .await
-                .unwrap();
-            drop(connection);
+            let database = Arc::new(TestDatabase::create().await);
 
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -266,8 +278,9 @@ impl RecordingServer {
                 limits: Limits::default(),
             };
             let limits = &config.limits;
-            let connected = Database::connect(
-                admin.database(&database),
+            let connected = Database::connect_with(
+                held_by(&database),
+                PgConnectOptions::from_str(&database.url).unwrap(),
                 8,
                 &limits.database,
                 &limits.stream.pool(),
@@ -287,10 +300,11 @@ impl RecordingServer {
                 &limits.recordings,
             );
             let media_server: Arc<dyn MediaServer> = media.clone();
+            let state_clock: Arc<dyn Clock> = server_clock;
             let prepared = junto_server::prepare_with(
                 connected,
                 config,
-                server_clock,
+                state_clock,
                 Some(media_server),
                 Some(backend),
             )
@@ -315,9 +329,9 @@ impl RecordingServer {
                 stop,
                 tasks,
             ));
-            (address, owner_code, state, media, recorder)
+            (address, owner_code, state, media, recorder, database)
         });
-        let (address, owner_code, state, media, recorder) = started.await;
+        let (address, owner_code, state, media, recorder, database) = started.await;
         Self {
             address,
             proxy: Mutex::new(Some(proxy)),
@@ -333,11 +347,20 @@ impl RecordingServer {
             recorded: Mutex::default(),
             runtime: Some(runtime),
             shutdown: Some(shutdown),
+            database,
         }
     }
 
     pub fn address(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    pub fn database_url(&self) -> &str {
+        &self.database.url
+    }
+
+    pub fn database(&self) -> &TestDatabase {
+        &self.database
     }
 
     /// The listener of the proxy address that the server lists as a public origin, and the
@@ -733,4 +756,74 @@ fn transcript_of(detail: &RecordingDetail, given: &Written<'_>) -> Value {
         "timing": {"total_ms": 1, "audio_ms": 1, "speech_ms": 1, "stages_ms": {},
                    "peak_memory_mb": null},
     })
+}
+
+/// The drop of a recording server returns only after the runtime has dropped every task of
+/// the server. A task holds the state, and the drop of its value waits until the test lets it
+/// end: the drop of the server must not return while that task is being dropped, and the
+/// database is deleted after it, with no session on it.
+#[tokio::test]
+async fn the_drop_of_a_recording_server_waits_until_its_tasks_are_dropped() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Tells when its drop starts, and ends its drop when the test lets it.
+    struct Held {
+        dropping: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        _state: AppState,
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let _ = self.dropping.send(());
+            let _ = self.release.recv_timeout(Duration::from_secs(20));
+        }
+    }
+
+    let server = RecordingServer::start("held").await;
+    let deletion = server.database().deletion();
+    let (dropping, drop_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let held = Held {
+        dropping,
+        release: released,
+        _state: server.state.clone(),
+    };
+    let (running, started) = oneshot::channel();
+    server.runtime.as_ref().unwrap().spawn(async move {
+        let _held = held;
+        let _ = running.send(());
+        std::future::pending::<()>().await;
+    });
+    started.await.unwrap();
+
+    let (returned, drop_returned) = mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(server);
+        let _ = returned.send(());
+    });
+    drop_started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the runtime drops the task of the test");
+    // The drop of the task cannot end before the release, so a drop of the server that
+    // returns in this time has not waited for it.
+    let early = drop_returned.recv_timeout(Duration::from_secs(2));
+    let deleted_early = deletion.lock().unwrap().clone();
+    release.send(()).unwrap();
+    if early.is_err() {
+        drop_returned
+            .recv_timeout(RUNTIME_END_LIMIT)
+            .expect("the drop of the server returns after its tasks have been dropped");
+    }
+    dropper.join().unwrap();
+    assert_eq!(
+        early,
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "the drop of the server returned while a task of its runtime was being dropped"
+    );
+    assert_eq!(deleted_early, None);
+    assert_eq!(
+        *deletion.lock().unwrap(),
+        Some(Ok(crate::support::Deleted::Unused))
+    );
 }

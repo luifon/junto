@@ -181,7 +181,7 @@ fn missed_direct_call_is_shown_in_conversation(cx: &mut TestAppContext) {
     });
     // Move the fixture's deadline into the past; the server's real maintenance resolves it.
     world.run(async {
-        let mut database = sqlx::PgConnection::connect(&server.database_url)
+        let mut database = sqlx::PgConnection::connect(server.database_url())
             .await
             .unwrap();
         sqlx::query("update call_invitations set expires_at = now() - interval '1 second'")
@@ -496,7 +496,7 @@ fn an_outgoing_call_that_the_server_finds_unanswered_first_ends_with_no_answer(
     // Move the deadline of the ring into the past; the maintenance of the server resolves
     // it long before the sixty seconds of this device.
     world.run(async {
-        let mut database = sqlx::PgConnection::connect(&server.database_url)
+        let mut database = sqlx::PgConnection::connect(server.database_url())
             .await
             .unwrap();
         sqlx::query("update call_invitations set expires_at = now() - interval '1 second'")

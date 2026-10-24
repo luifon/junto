@@ -166,16 +166,18 @@ pub async fn serve_with(
     tasks: Tasks,
 ) -> std::io::Result<()> {
     let telemetry = telemetry::Telemetry::start(state.config.otel_endpoint.clone()).await?;
-    let watcher = tokio::spawn(events::watcher::run(state.clone()));
-    let mut running = Vec::new();
+    // A set ends its tasks when it is dropped, so a caller that drops this future before its
+    // end leaves no task running on the state.
+    let mut running = tokio::task::JoinSet::new();
+    running.spawn(events::watcher::run(state.clone()));
     if tasks.calls && state.calls.media().is_some() {
-        running.push(tokio::spawn(calls::admission::run(state.clone())));
-        running.push(tokio::spawn(calls::speaking::run(state.clone())));
-        running.push(tokio::spawn(recordings::control::run(state.clone())));
+        running.spawn(calls::admission::run(state.clone()));
+        running.spawn(calls::speaking::run(state.clone()));
+        running.spawn(recordings::control::run(state.clone()));
     }
     if tasks.calls && state.recordings.backend().is_some() {
-        running.push(tokio::spawn(recordings::process::run(state.clone())));
-        running.push(tokio::spawn(recordings::transcribe::run(state.clone())));
+        running.spawn(recordings::process::run(state.clone()));
+        running.spawn(recordings::transcribe::run(state.clone()));
     }
     let stopping = state.clone();
     let stop = async move {
@@ -193,10 +195,7 @@ pub async fn serve_with(
         .await;
     let limit = state.config.limits.stream.stop_timeout.unsigned_abs();
     state.streams.stop(limit).await;
-    watcher.abort();
-    for task in running {
-        task.abort();
-    }
+    running.abort_all();
     if let Some(telemetry) = telemetry {
         telemetry.shutdown().await;
     }

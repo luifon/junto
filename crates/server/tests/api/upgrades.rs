@@ -221,18 +221,22 @@ async fn name_of(server: &crate::support::TestServer) -> String {
 
 /// Runs statements on the database server, outside the database of a test.
 async fn maintain(statements: &[String]) {
-    use sqlx::{ConnectOptions, Connection};
+    let admin = std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap();
+    maintain_on(admin, statements).await.unwrap();
+}
 
-    let admin: sqlx::postgres::PgConnectOptions =
-        std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap();
-    let mut connection = admin.connect().await.unwrap();
+async fn maintain_on(
+    admin: sqlx::postgres::PgConnectOptions,
+    statements: &[String],
+) -> Result<(), sqlx::Error> {
+    use sqlx::{ConnectOptions, Connection};
+    let mut connection = admin.connect().await?;
     for statement in statements {
         sqlx::query(sqlx::AssertSqlSafe(statement.clone()))
             .execute(&mut connection)
-            .await
-            .unwrap();
+            .await?;
     }
-    connection.close().await.unwrap();
+    connection.close().await
 }
 
 /// The databases whose names start with `prefix`, each with its comment, in the order of
@@ -491,6 +495,159 @@ async fn a_start_removes_the_copy_that_a_stopped_start_did_not_finish() {
     );
 
     delete_databases(&[copy, other_comment, other_number, other_name]).await;
+}
+
+/// ADR 0018: a start that stops at any statement of the copy leaves a state from which the
+/// next start makes one complete copy. The connection of the first start ends at the chosen
+/// statement, before PostgreSQL runs it or after PostgreSQL ran it and before its answer
+/// arrived, as when the process stops there.
+#[tokio::test]
+async fn a_start_after_a_start_that_stopped_at_any_statement_of_the_copy_makes_the_copy() {
+    use crate::postgres_proxy::{Cut, PostgresProxy, Stop};
+    use junto_server::bootstrap::{MigrationCopied, MigrationCopy, copy_before, copy_name};
+
+    let mut server = crate::support::TestServer::start().await;
+    let (options, name) = (options_of(&server), name_of(&server).await);
+    let newest = newest_migration_of(&options).await;
+    server.stop().await;
+    server.state.database.close().await;
+    let later = later_version(&["create table later_first ()"]).await;
+    let copy = copy_name(&name, newest);
+    let making = format!("{name}_making_{newest}");
+    let proxy = PostgresProxy::start(options.clone()).await;
+    // The copy and the comment of each case, removed after it, also after a failure.
+    let left = Left::new(vec![
+        format!("drop database if exists {making} with (force)"),
+        format!("drop database if exists {copy} with (force)"),
+        format!("comment on database {name} is null"),
+    ]);
+
+    let intent = format!("comment on database \"{name}\" is 'junto: the server makes");
+    let of_copy = format!("comment on database \"{making}\"");
+    let statements = [
+        intent.as_str(),
+        "create database",
+        of_copy.as_str(),
+        "alter database",
+        "has not finished",
+    ];
+    for statement in statements {
+        for cut in [Cut::Before, Cut::AfterAnswer] {
+            let struck = proxy.arm(Stop::at(statement, cut));
+            let stopped = copy_before(&proxy.options(), MigrationCopy::Database, &later).await;
+            struck.wait().await;
+            assert!(stopped.is_err(), "{statement} {cut:?}: {stopped:?}");
+
+            let next = copy_before(&options, MigrationCopy::Database, &later).await;
+            let expected = if statement == "has not finished" && cut == Cut::AfterAnswer {
+                MigrationCopied::Unfinished(Some(copy.clone()))
+            } else {
+                MigrationCopied::Made(copy.clone())
+            };
+            assert_eq!(next.unwrap(), expected, "{statement} {cut:?}");
+            assert!(
+                databases_from(format!("{name}_making_")).await.is_empty(),
+                "{statement} {cut:?}"
+            );
+            assert_eq!(
+                commented_from(format!("{name}_before_")).await,
+                [(copy.clone(), comment_of_a_copy(&name))],
+                "{statement} {cut:?}"
+            );
+            assert_eq!(
+                comment_of(&name).await,
+                Some(unfinished_line(&copy)),
+                "{statement} {cut:?}"
+            );
+            let of_copy = options.clone().database(&copy);
+            assert_eq!(newest_migration_of(&of_copy).await, newest);
+
+            maintain(&left.statements).await;
+        }
+    }
+    assert_eq!(proxy.armed(), 0);
+}
+
+/// Statements on the database server that remove what a test left there. They run when the
+/// value is dropped, so a test that fails leaves nothing either. They end within `limit`: a
+/// database server that does not answer or a lock that is not released would otherwise hold
+/// the test, also while it unwinds after a failure.
+struct Left {
+    statements: Vec<String>,
+    admin: sqlx::postgres::PgConnectOptions,
+    limit: std::time::Duration,
+}
+
+impl Left {
+    fn new(statements: Vec<String>) -> Self {
+        Self {
+            statements,
+            admin: std::str::FromStr::from_str(&crate::support::unused_database_url()).unwrap(),
+            limit: std::time::Duration::from_secs(30),
+        }
+    }
+}
+
+impl Drop for Left {
+    fn drop(&mut self) {
+        let statements = std::mem::take(&mut self.statements);
+        let (admin, limit) = (self.admin.clone(), self.limit);
+        // A drop cannot wait for a future on the runtime of its test, so the statements run on
+        // a thread with its own runtime, which ends them at the limit. The wait has a margin
+        // for the start of the thread and its runtime.
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ran = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async {
+                        match tokio::time::timeout(limit, maintain_on(admin, &statements)).await {
+                            Ok(ran) => ran.map_err(|error| error.to_string()),
+                            Err(_) => Err(format!("they did not end within {limit:?}")),
+                        }
+                    })
+                });
+            let _ = done.send(ran);
+        });
+        let ran = ended
+            .recv_timeout(limit + std::time::Duration::from_secs(5))
+            .map_err(|_| format!("they did not end within {limit:?}"))
+            .and_then(|ran| ran);
+        if let Err(problem) = ran {
+            eprintln!("the databases that a test of the copy left were not removed: {problem}");
+        }
+    }
+}
+
+/// The removal of what a test of the copy left ends after its limit when the database server
+/// does not answer, also while the test unwinds after a failure.
+#[test]
+fn the_removal_after_a_failed_copy_test_ends_after_its_limit_when_postgres_does_not_answer() {
+    // The listener accepts connections into its queue and never answers them.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let admin = sqlx::postgres::PgConnectOptions::new()
+        .host("127.0.0.1")
+        .port(silent.local_addr().unwrap().port())
+        .username("postgres");
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _left = Left {
+                statements: vec!["select 1".to_owned()],
+                admin,
+                limit: std::time::Duration::from_millis(200),
+            };
+            panic!("the test fails before its removal");
+        }));
+        let _ = done.send(failed.is_err());
+    });
+    let unwound = ended
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the removal ends after its limit");
+    assert!(unwound, "the failure of the test stays a failure");
+    drop(silent);
 }
 
 /// A database that has the name of the copy and not the comment of a copy is not a copy

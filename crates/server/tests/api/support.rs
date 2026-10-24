@@ -28,11 +28,13 @@ use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions, Connection, PgPool};
 use time::{Duration, OffsetDateTime};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+
+use crate::postgres_proxy::PostgresProxy;
 
 /// Bounded statements prepare large fixtures under the normal database time limits.
 /// The directory of this package in the checkout that runs the test: `cargo test` sets it at
@@ -100,6 +102,11 @@ impl DeviceKey {
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).unwrap();
         Self(SigningKey::from_bytes(&seed))
+    }
+
+    /// The same key, for a second session of the same device.
+    pub fn same(&self) -> Self {
+        Self(self.0.clone())
     }
 
     pub fn public(&self) -> PublicKey {
@@ -203,52 +210,137 @@ pub struct TestServer {
     tasks: Tasks,
     shutdown: Option<oneshot::Sender<()>>,
     served: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
-    /// Declared last: the database is deleted after everything else of the server is
-    /// dropped.
+    /// The database, for a further process on it. The pools of the process hold it too, so
+    /// it is deleted when the last connection of the process has ended (see [`held_by`]).
     kept: Arc<TestDatabase>,
 }
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        // The task of the server ends before the database is deleted.
+        // Ends the tasks of the process; the runtime of the test drops them.
         if let Some(served) = self.served.take() {
             served.abort();
         }
     }
 }
 
-/// The database of a test. It is deleted when the last server process on it is dropped:
-/// the database server holds statistics for every table and index of every database in a
-/// shared memory of fixed size, so the databases of a whole run do not fit.
+/// The database of a test. It is deleted when the last holder drops it: each pool of a server
+/// process holds it ([`held_by`]). The database server holds statistics for
+/// every table and index of every database in a shared memory of fixed size, so the databases
+/// of a whole run do not fit.
 struct TestDatabase {
     admin: PgConnectOptions,
     name: String,
+    /// How the deletion ended, once it has run.
+    deletion: Arc<Mutex<Option<Result<Deleted, String>>>>,
+}
+
+/// How a test database was deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deleted {
+    /// No session used the database.
+    Unused,
+    /// Sessions still used the database, and the deletion ended them.
+    Forced,
+}
+
+impl TestDatabase {
+    /// Creates a database. The value exists from the moment the database exists, so a
+    /// failure of a later step deletes it.
+    async fn create(measured: bool) -> Arc<Self> {
+        let admin = admin_options();
+        let name = format!("junto_test_{}", uuid::Uuid::new_v4().simple());
+        let mut connection = admin.connect().await.unwrap();
+        // The statement statistics of the database server hold a fixed number of entries
+        // for all databases together. Only the database of a test that reads them records.
+        for statement in [
+            "set pg_stat_statements.track = 'none'".to_owned(),
+            format!("create database {name}"),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        let created = Arc::new(Self {
+            admin,
+            name,
+            deletion: Arc::default(),
+        });
+        if !measured {
+            let tracked = format!(
+                "alter database {} set pg_stat_statements.track = 'none'",
+                created.name
+            );
+            sqlx::query(sqlx::AssertSqlSafe(tracked))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        connection.close().await.unwrap();
+        created
+    }
+
+    fn options(&self) -> PgConnectOptions {
+        self.admin.clone().database(&self.name)
+    }
 }
 
 impl Drop for TestDatabase {
     fn drop(&mut self) {
-        if let Err(problem) = delete_database(
+        let deleted = delete_database(
             self.admin.clone(),
             self.name.clone(),
             DATABASE_CLEANUP_LIMIT,
-        ) {
+        );
+        if let Err(problem) = &deleted {
             eprintln!("the test database {} was not deleted: {problem}", self.name);
         }
+        *self.deletion.lock().unwrap() = Some(deleted);
     }
+}
+
+/// A database of a test that no server process uses: for a test that migrates a database
+/// itself. It is deleted when it is dropped.
+pub struct EmptyDatabase {
+    pub options: PgConnectOptions,
+    _kept: Arc<TestDatabase>,
+}
+
+pub async fn empty_database() -> EmptyDatabase {
+    let kept = TestDatabase::create(false).await;
+    EmptyDatabase {
+        options: kept.options(),
+        _kept: kept,
+    }
+}
+
+/// Settings of the pools of a server process on the database of a test: each pool holds the
+/// database. A pool keeps its settings until its last connection has ended, and a connection
+/// that a cancelled task held goes back to its pool on a task of its own that holds the pool.
+/// So the database is deleted after the last connection of every pool on it, also when the
+/// state of a process has already been dropped.
+fn held_by(database: &Arc<TestDatabase>) -> PgPoolOptions {
+    let database = database.clone();
+    PgPoolOptions::new().after_connect(move |_, _| {
+        let _held = &database;
+        Box::pin(async { Ok(()) })
+    })
 }
 
 /// The longest time that the deletion of a test database may take. A database server that
 /// does not answer would otherwise hold the test, its run and the lock of the machine.
 const DATABASE_CLEANUP_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Deletes a test database through a connection of its own, within `limit`. A drop cannot
-/// wait for a future on the runtime of its test, so the work runs on a thread with its own
-/// runtime.
+/// Deletes a test database through a connection of its own, within `limit`. The deletion
+/// waits for sessions that still use the database as PostgreSQL does (5 seconds), then ends
+/// them. A drop cannot wait for a future on the runtime of its test, so the work runs on a
+/// thread with its own runtime.
 fn delete_database(
     admin: PgConnectOptions,
     name: String,
     limit: std::time::Duration,
-) -> Result<(), String> {
+) -> Result<Deleted, String> {
     let (done, ended) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let deleted = tokio::runtime::Builder::new_current_thread()
@@ -259,15 +351,29 @@ fn delete_database(
                 runtime.block_on(async {
                     let deleting = async {
                         let mut connection = admin.connect().await?;
-                        for statement in [
-                            "set pg_stat_statements.track = 'none'".to_owned(),
-                            format!("drop database if exists {name} with (force)"),
-                        ] {
-                            sqlx::query(sqlx::AssertSqlSafe(statement))
-                                .execute(&mut connection)
-                                .await?;
-                        }
-                        connection.close().await
+                        sqlx::query("set pg_stat_statements.track = 'none'")
+                            .execute(&mut connection)
+                            .await?;
+                        let unused = format!("drop database if exists {name}");
+                        let deleted = match sqlx::query(sqlx::AssertSqlSafe(unused))
+                            .execute(&mut connection)
+                            .await
+                        {
+                            Ok(_) => Deleted::Unused,
+                            Err(error)
+                                if error.as_database_error().and_then(|e| e.code()).as_deref()
+                                    == Some("55006") =>
+                            {
+                                let forced = format!("drop database if exists {name} with (force)");
+                                sqlx::query(sqlx::AssertSqlSafe(forced))
+                                    .execute(&mut connection)
+                                    .await?;
+                                Deleted::Forced
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        connection.close().await?;
+                        Ok(deleted)
                     };
                     match tokio::time::timeout(limit, deleting).await {
                         Ok(deleted) => deleted.map_err(|error| error.to_string()),
@@ -306,6 +412,99 @@ fn the_deletion_of_a_test_database_whose_server_does_not_answer_ends_after_its_l
         .expect("the deletion ends after its limit");
     assert!(deleted.is_err(), "{deleted:?}");
     drop(silent);
+}
+
+/// A test server that is dropped ends its tasks, its requests and the connections of its
+/// state before its database is deleted: the deletion finds no session on the database.
+#[tokio::test]
+async fn a_dropped_test_server_ends_its_tasks_and_connections_before_its_database_is_deleted() {
+    let server = TestServer::start_with_tasks(|_| {}).await;
+    // Every task of `serve_with` runs: the three of calls and the two of recordings beside
+    // the event watcher.
+    assert!(server.state.calls.media().is_some());
+    assert!(server.state.recordings.backend().is_some());
+    let owner = server.owner().await;
+    let mut stream = server
+        .subscribed(&owner, junto_protocol::events::Level::Full)
+        .await;
+    let (name, deletion) = (server.kept.name.clone(), server.kept.deletion.clone());
+
+    drop(server);
+    stream.until_closed().await;
+    let limit = std::time::Instant::now() + DATABASE_CLEANUP_LIMIT + DATABASE_CLEANUP_LIMIT;
+    let deleted = loop {
+        if let Some(deleted) = deletion.lock().unwrap().clone() {
+            break deleted;
+        }
+        assert!(
+            std::time::Instant::now() < limit,
+            "the database of a dropped test server was not deleted: a task of the server \
+             still holds its state"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(deleted, Ok(Deleted::Unused));
+    let mut admin = admin_options().connect().await.unwrap();
+    let exists: bool =
+        sqlx::query_scalar("select exists (select 1 from pg_database where datname = $1)")
+            .bind(&name)
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+    assert!(!exists);
+    admin.close().await.unwrap();
+}
+
+/// A task that is cancelled while PostgreSQL runs its statement leaves its connection to a
+/// task of the pool, which waits for the answer before it returns the connection. The last
+/// state of the process is dropped on the runtime of the test before that task runs; the
+/// database is deleted only after the connection has ended, and the deletion finds no session.
+#[tokio::test]
+async fn a_task_cancelled_during_its_statement_ends_its_connection_before_the_database_is_deleted()
+{
+    let server = TestServer::start().await;
+    let (name, deletion) = (server.kept.name.clone(), server.kept.deletion.clone());
+    let state = server.state.clone();
+    let query = tokio::spawn(async move {
+        let mut connection = state.database.pool().acquire().await.unwrap();
+        sqlx::query("select pg_sleep(2)")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+    let mut admin = admin_options().connect().await.unwrap();
+    loop {
+        let sleeping: bool = sqlx::query_scalar(
+            "select exists (select 1 from pg_stat_activity
+             where datname = $1 and wait_event = 'PgSleep')",
+        )
+        .bind(&name)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+        if sleeping {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    drop(server);
+    query.abort();
+    assert!(query.await.unwrap_err().is_cancelled());
+    let limit = std::time::Instant::now() + DATABASE_CLEANUP_LIMIT + DATABASE_CLEANUP_LIMIT;
+    let deleted = loop {
+        if let Some(deleted) = deletion.lock().unwrap().clone() {
+            break deleted;
+        }
+        assert!(
+            std::time::Instant::now() < limit,
+            "the database of a dropped test server was not deleted"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(deleted, Ok(Deleted::Unused));
+    admin.close().await.unwrap();
 }
 
 /// The fake media server of a test server, with the fake recorder that puts its jobs into
@@ -525,38 +724,13 @@ impl TestServer {
     }
 
     async fn start_as(configure: impl FnOnce(&mut Config), setup: Setup) -> Self {
-        let admin = admin_options();
-        let name = format!("junto_test_{}", uuid::Uuid::new_v4().simple());
-        let mut connection = admin.connect().await.unwrap();
-        // The statement statistics of the database server hold a fixed number of entries
-        // for all databases together. Only the database of a test that reads them records.
-        let mut statements = vec![
-            "set pg_stat_statements.track = 'none'".to_owned(),
-            format!("create database {name}"),
-        ];
-        if !setup.measured {
-            statements.push(format!(
-                "alter database {name} set pg_stat_statements.track = 'none'"
-            ));
-        }
-        for statement in statements {
-            sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&mut connection)
-                .await
-                .unwrap();
-        }
-        connection.close().await.unwrap();
-        let kept = Arc::new(TestDatabase {
-            admin: admin.clone(),
-            name: name.clone(),
-        });
-
+        let kept = TestDatabase::create(setup.measured).await;
         let mut config = test_config();
         if matches!(setup.media, Media::Fake(_)) {
             config.recorder = Some(recorder_settings());
         }
         configure(&mut config);
-        Self::on_database(admin.database(&name), config, None, setup, kept).await
+        Self::on_database(kept.options(), config, None, setup, kept).await
     }
 
     /// Starts a second server process on the database of this one.
@@ -590,13 +764,33 @@ impl TestServer {
         Self::on_database(self.database.clone(), config, now, setup, self.kept.clone()).await
     }
 
+    /// Starts a second server process on the database of this one, whose connections to
+    /// PostgreSQL pass through `proxy`.
+    pub async fn through(&self, proxy: &PostgresProxy) -> Self {
+        let setup = Setup {
+            send_buffer: self.send_buffer,
+            media: self.fakes(),
+            tasks: self.tasks,
+            ..Setup::default()
+        };
+        let now = Some(self.clock.now());
+        let (config, kept) = (self.config.clone(), self.kept.clone());
+        Self::on_database(proxy.options(), config, now, setup, kept).await
+    }
+
+    /// The options of the database of this server.
+    pub fn database_options(&self) -> PgConnectOptions {
+        self.database.clone()
+    }
+
     /// Connects to the database of this server as a server process with a changed
     /// configuration does, and starts no process.
     pub async fn database_with(&self, configure: impl FnOnce(&mut Config)) -> Database {
         let mut config = self.config.clone();
         configure(&mut config);
         let limits = &config.limits;
-        Database::connect(
+        Database::connect_with(
+            held_by(&self.kept),
             self.database.clone(),
             4,
             &limits.database,
@@ -643,14 +837,21 @@ impl TestServer {
         } = setup;
         let limits = &config.limits;
         let stream_pool = limits.stream.pool();
-        let connected = Database::connect(database.clone(), 8, &limits.database, &stream_pool)
-            .await
-            .unwrap();
+        let connected = Database::connect_with(
+            held_by(&kept),
+            database.clone(),
+            8,
+            &limits.database,
+            &stream_pool,
+        )
+        .await
+        .unwrap();
         let db = connected.pool().clone();
         let clock = Arc::new(ManualClock::starting_at(
             now.unwrap_or_else(OffsetDateTime::now_utc),
             follows_time,
         ));
+        let server_clock: Arc<dyn Clock> = clock.clone();
         let fakes = match media {
             Media::Configured => None,
             Media::Fake(Some(fakes)) => Some(fakes),
@@ -677,10 +878,10 @@ impl TestServer {
                     let limits = &config.limits.recordings;
                     Backend::new(fakes.recorder.clone(), fakes.disk.clone(), settings, limits)
                 });
-                let (config, clock) = (config.clone(), clock.clone());
+                let (config, clock) = (config.clone(), server_clock.clone());
                 junto_server::prepare_with(connected, config, clock, Some(media), backend).await
             }
-            None => junto_server::prepare(connected, config.clone(), clock.clone()).await,
+            None => junto_server::prepare(connected, config.clone(), server_clock).await,
         }
         .unwrap();
         let (media, recorder, disk, scratch) = match fakes {
