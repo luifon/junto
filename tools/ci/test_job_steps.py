@@ -125,6 +125,26 @@ class JobSteps(unittest.TestCase):
         self.assertIn("python3 packaging/check_windows.py", commands)
         self.assertFalse(any("packaging/check_start.py" in c or "packaging/bundle.py" in c for c in commands))
 
+    def test_windows_checks_the_dialogs_of_the_system_after_the_tests_also_after_a_failure(self):
+        media = "cargo test --locked -p junto-media --lib --test native_exceptions --test windows_capture"
+        for fail_on, expected in [("", 0), ("windows_capture", None), ("dialogs.py check", 1)]:
+            status, commands, output = self.run_job("windows", fail_on=fail_on)
+            if expected is None:
+                self.assertNotEqual(status, 0, output)
+            else:
+                self.assertEqual(status, expected, output)
+            records = [c for c in commands if c.startswith("python3 tools/windows/dialogs.py record ")]
+            checks = [c for c in commands if c.startswith("python3 tools/windows/dialogs.py check ")]
+            self.assertEqual(len(records), 1, commands)
+            self.assertEqual(checks, [records[0].replace(" record ", " check ")], commands)
+            self.assertLess(commands.index(records[0]), commands.index(media))
+            self.assertEqual(commands[-1], checks[0], fail_on)
+
+    def test_macos_does_not_check_the_dialogs_of_windows(self):
+        status, commands, output = self.run_job("macos")
+        self.assertEqual(status, 0, output)
+        self.assertFalse(any("dialogs.py" in c for c in commands))
+
     def test_both_systems_lint_the_device_tests_of_the_media_crate(self):
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)

@@ -6,7 +6,11 @@
 //!
 //! The ordering is private to the call library, so this test compiles the same source file.
 //! The file uses the standard library and Tokio only. The participant that uses it needs a
-//! connected engine to run, so a test here reads its source.
+//! connected engine to run, so a test here reads its source: every mute request goes through
+//! the one `InOrder` of the participant, and the request sent after a resume reads the state
+//! in its turn. The media live test
+//! `sound::mute_requests_that_wait_for_a_resume_reach_the_media_server_in_their_order` checks
+//! with a media server the requests that the participant writes through it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

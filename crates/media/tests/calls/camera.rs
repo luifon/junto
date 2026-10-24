@@ -399,3 +399,155 @@ async fn a_camera_without_a_media_connection_ends_after_its_limit() {
     })
     .await;
 }
+
+/// Waits until the engine tells this of the camera of its device.
+async fn until_camera(
+    engine: &junto_media::engine::Engine,
+    what: &str,
+    holds: impl Fn(&junto_media::engine::CameraCheck) -> bool,
+) -> junto_media::engine::CameraCheck {
+    let started = tokio::time::Instant::now();
+    loop {
+        let check = engine.camera_check().await.unwrap();
+        if holds(&check) {
+            return check;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "after {PATIENCE:?} this did not hold: {what}; the camera is {check:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// The engine publishes the camera only while its controls do not hold it (ADR 0785): a
+/// hold withdraws the track and keeps the capture, and the end of the hold publishes it
+/// again. A publication that the media server completes after a hold is not the publication
+/// of the camera, and the engine withdraws it (`camera_published`, `hold_camera`).
+#[tokio::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn the_engine_publishes_the_camera_only_while_its_controls_do_not_hold_it() {
+    limited(async {
+        use junto_media::engine::{
+            CameraPublication, Controls, Engine, EngineOptions, MediaJoin, Watching,
+        };
+        use std::sync::Arc;
+        let _media = media_server_shared().await;
+        let one = Person::new(440.0);
+        let two = Person::new(880.0);
+        let (room, owner) = Room::new("Camera hold", &one, "One").await;
+        let peer = room.member(&owner, &two, "Two").await;
+        let two_id = ShareId::Of(account(&peer));
+        one.enter(room.target).await;
+        let answer = peer.api().join_channel_call(room.voice).await.unwrap();
+        let held = Controls {
+            camera_held: true,
+            ..Controls::default()
+        };
+        let engine = Engine::start(
+            &tokio::runtime::Handle::current(),
+            EngineOptions {
+                camera: Arc::new(two.camera.clone()),
+                host: Arc::new(two.host.clone()),
+                permission: Arc::new(two.permission.clone()),
+                capture: Arc::new(two.capture.clone()),
+            },
+            MediaJoin {
+                url: answer.media_url,
+                token: answer.token,
+            },
+            crate::scene::plain_voice(),
+            held,
+            Default::default(),
+            Watching::default(),
+        );
+        let mut state = engine.state();
+        tokio::time::timeout(
+            PATIENCE,
+            state.wait_for(|state| state.connection == junto_media::engine::Connection::Connected),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let peer_id = account(&peer);
+        let without_camera = |what: &'static str| {
+            one.until(what, move |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| !call.cameras.contains(&peer_id))
+            })
+        };
+
+        // A camera that starts while it is held captures and is not published.
+        two.camera.set_colours((30, 160, 60), (210, 190, 40));
+        engine.start_camera(None);
+        let check = until_camera(&engine, "the capture of the camera runs", |check| {
+            check.capture
+        })
+        .await;
+        assert_eq!(
+            (check.publication, check.answers, check.tracks),
+            (CameraPublication::None, 0, 0)
+        );
+
+        // The end of the hold publishes it.
+        engine.set_controls(Controls::default());
+        picture(&one, two_id, (30, 160, 60), (210, 190, 40)).await;
+        let check = until_camera(&engine, "the camera is published", |check| {
+            check.publication == CameraPublication::Published
+        })
+        .await;
+        assert_eq!((check.answers, check.tracks), (1, 1));
+
+        // A hold withdraws the track and keeps the capture.
+        engine.set_controls(held);
+        without_camera("the camera of Two is withdrawn").await;
+        let check = until_camera(&engine, "the room holds no camera track", |check| {
+            check.tracks == 0
+        })
+        .await;
+        assert_eq!(check.publication, CameraPublication::None);
+        assert!(check.capture);
+        assert_eq!(two.camera.active(), 1);
+
+        // The hold ends and returns while the task of the engine does not run: the engine
+        // asks for a publication, and the hold comes before the answer of the media server.
+        let (waits, task) = engine.hold();
+        waits.await.unwrap();
+        engine.set_controls(Controls::default());
+        engine.set_controls(held);
+        drop(task);
+        let check = until_camera(&engine, "the answer of the publication is taken", |check| {
+            check.answers == 2
+        })
+        .await;
+        assert_eq!(
+            check.publication,
+            CameraPublication::None,
+            "a publication from before the hold is the publication of the camera"
+        );
+        until_camera(
+            &engine,
+            "the track of that publication is withdrawn",
+            |check| check.tracks == 0,
+        )
+        .await;
+        without_camera("the camera of Two stays withdrawn").await;
+
+        // The next end of the hold publishes the camera with what it captures now.
+        two.camera.set_colours((200, 30, 30), (30, 30, 200));
+        engine.set_controls(Controls::default());
+        picture(&one, two_id, (200, 30, 30), (30, 30, 200)).await;
+        let check = until_camera(&engine, "the camera is published again", |check| {
+            check.publication == CameraPublication::Published
+        })
+        .await;
+        assert_eq!((check.answers, check.tracks), (3, 1));
+        assert_eq!(two.camera.started(), 1);
+
+        engine.close().await;
+        peer.api().leave_call_as(&answer.identity).await.unwrap();
+        one.calls.leave().await;
+    })
+    .await;
+}

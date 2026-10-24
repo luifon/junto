@@ -77,6 +77,13 @@ if [ "$system" = macos ]; then
     exit 0
 fi
 
+# A dialog of the system that a test opens stays on the desktop of the account until a person
+# closes it, and its dimmed background changes the pictures of the capture tests of later runs.
+# The job fails when such a dialog that was not there before the tests runs at its end, also
+# after a failed step (ADR 0915).
+dialogs=$(mktemp)
+python3 tools/windows/dialogs.py record "$dialogs"
+trap 'python3 tools/windows/dialogs.py check "$dialogs" || exit 1; rm -f "$dialogs"' EXIT
 # The unit tests of the media crate, the reading of the sources of the WebRTC wrapper (ADR 0733),
 # and the capture of the screen against the window of a fixture program, which appears on the
 # desktop of the account for a few seconds without taking the focus. No test plays sound

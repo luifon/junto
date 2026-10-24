@@ -813,7 +813,8 @@ impl Shell {
                                 .label(text::DISMISS)
                                 .selector("dismiss-share-notice")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state.update(cx, |state, _| state.stop_share());
+                                    this.state
+                                        .update(cx, |state, cx| state.dismiss_share_notice(cx));
                                 })),
                         ),
                 )

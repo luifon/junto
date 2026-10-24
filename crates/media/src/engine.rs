@@ -54,6 +54,8 @@ pub use share::{
     DEFAULT_VIEW, MainPicture, SMALL_PICTURE, SeenShare, ShareId, ShareInfo, ShareState, watched,
 };
 use share::{OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
+#[cfg(feature = "test-support")]
+pub use statistics::{CameraCheck, CameraPublication, HeldEngine};
 
 /// The frames of the microphone that wait for the media connection: half a second.
 const WAITING_FRAMES: usize = 50;
@@ -163,6 +165,9 @@ pub struct EngineState {
     pub camera: crate::camera::CameraState,
     pub cameras: Vec<AccountId>,
     pub connection: Connection,
+    /// The number of the media connection that `connection` describes. Each connection
+    /// that the engine starts has the next number.
+    pub attempt: u64,
     pub microphone: MicrophoneState,
     /// The microphone permission as the system held it when the engine last read it.
     pub access: MicrophoneAccess,
@@ -258,6 +263,12 @@ enum Command {
     Statistics(statistics::Reply),
     #[cfg(feature = "test-support")]
     SoundCheck(statistics::SoundReply),
+    #[cfg(feature = "test-support")]
+    CameraCheck(statistics::CameraReply),
+    /// Holds the task of the engine: it tells the first value, and waits until the second
+    /// one ends.
+    #[cfg(feature = "test-support")]
+    Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
     Close(oneshot::Sender<()>),
 }
 
@@ -383,6 +394,7 @@ impl Engine {
             camera: crate::camera::CameraState::Off,
             cameras: Vec::new(),
             connection: Connection::Connecting,
+            attempt: 0,
             microphone: MicrophoneState::Closed,
             access,
             published: false,
@@ -436,6 +448,7 @@ impl Engine {
             input_held: false,
             input_used: None,
             camera_wait: (0, false),
+            camera_answers: 0,
             frames,
             source,
             pump,
@@ -695,6 +708,8 @@ struct Actor {
     /// The wait of a camera for a media connection: its number, and whether its time
     /// runs. A connection ends the wait.
     camera_wait: (u64, bool),
+    /// The answers of the media server to publications of the camera that were taken.
+    camera_answers: u64,
     frames: mpsc::Sender<Frame>,
     source: Arc<Mutex<Option<NativeAudioSource>>>,
     pump: JoinHandle<()>,
@@ -879,7 +894,10 @@ impl Actor {
     fn connect(&mut self, join: MediaJoin) {
         self.attempt += 1;
         let attempt = self.attempt;
-        self.change(|state| state.connection = Connection::Connecting);
+        self.change(|state| {
+            state.connection = Connection::Connecting;
+            state.attempt = attempt;
+        });
         let internal = self.internal.clone();
         self.runtime.spawn(async move {
             let connection = Room::connect(&join.url, join.token.expose(), RoomOptions::default());
@@ -975,6 +993,13 @@ impl Actor {
             Command::Statistics(reply) => self.statistics(reply).await,
             #[cfg(feature = "test-support")]
             Command::SoundCheck(reply) => self.sound_check(reply),
+            #[cfg(feature = "test-support")]
+            Command::CameraCheck(reply) => self.camera_check(reply),
+            #[cfg(feature = "test-support")]
+            Command::Hold(held, released) => {
+                let _ = held.send(());
+                let _ = released.await;
+            }
             #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
                 if let Some(room) = &self.room {
@@ -1761,6 +1786,121 @@ mod tests {
             assert!(closed.load(Ordering::SeqCst));
             assert_eq!(Arc::strong_count(&closed), 1, "the observer was retained");
         }
+    }
+
+    /// The call library reads the remote description of a peer connection from a task of
+    /// its runtime, at each candidate of the signal connection, while the signaling thread of
+    /// WebRTC replaces the description at each negotiation. The wrapper copies a description
+    /// on the signaling thread (vendor/README.md): a copy on the reading thread read a
+    /// description that the signaling thread had freed, and the process ended with SIGSEGV.
+    /// Each local description starts the gathering of candidates, which opens sockets on the
+    /// network interfaces; the call library has no setting that gathers none. On Windows the
+    /// first such socket of a new program opens a prompt of the firewall on the desktop, which
+    /// stays until a person closes it (ADR 0915), so the test does not run there.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "opens sockets on the network interfaces: Windows asks at the desktop whether \
+                  the test program may receive from the network (ADR 0915)"
+    )]
+    fn the_descriptions_can_be_read_while_negotiations_replace_them() {
+        use livekit::webrtc::MediaType;
+        use livekit::webrtc::peer_connection::{AnswerOptions, OfferOptions};
+        use livekit::webrtc::peer_connection_factory::PeerConnectionFactory;
+        use livekit::webrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        const NEGOTIATIONS: usize = 300;
+        let factory = PeerConnectionFactory::default();
+        let peer = || {
+            factory
+                .create_peer_connection(Default::default())
+                .unwrap_or_else(|error| panic!("{error:?}"))
+        };
+        let (offerer, answerer) = (peer(), peer());
+        for media in [MediaType::Audio, MediaType::Video] {
+            offerer
+                .add_transceiver_for_media(
+                    media,
+                    RtpTransceiverInit {
+                        direction: RtpTransceiverDirection::SendRecv,
+                        stream_ids: Vec::new(),
+                        send_encodings: Vec::new(),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{error:?}"));
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (offerer, answerer) = (offerer.clone(), answerer.clone());
+                let (stop, reads) = (stop.clone(), reads.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = offerer.current_remote_description();
+                        let _ = answerer.current_remote_description();
+                        let _ = offerer.current_local_description();
+                        reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let copy = |description: &livekit::webrtc::session_description::SessionDescription| {
+            livekit::webrtc::session_description::SessionDescription::parse(
+                &description.to_string(),
+                description.sdp_type(),
+            )
+            .unwrap_or_else(|error| panic!("{error:?}"))
+        };
+        runtime.block_on(async {
+            for round in 0..NEGOTIATIONS {
+                let options = OfferOptions {
+                    ice_restart: round > 0,
+                    ..OfferOptions::default()
+                };
+                let offer = offerer
+                    .create_offer(options)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                let sent = copy(&offer);
+                offerer
+                    .set_local_description(offer)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                answerer
+                    .set_remote_description(sent)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                let answer = answerer
+                    .create_answer(AnswerOptions::default())
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                let sent = copy(&answer);
+                answerer
+                    .set_local_description(answer)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+                offerer
+                    .set_remote_description(sent)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error:?}"));
+            }
+        });
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().unwrap_or_else(|_| panic!("a reader failed"));
+        }
+        assert!(
+            reads.load(Ordering::Relaxed) > NEGOTIATIONS,
+            "the readers ran {} times",
+            reads.load(Ordering::Relaxed)
+        );
+        assert!(offerer.current_remote_description().is_some());
     }
 
     #[test]

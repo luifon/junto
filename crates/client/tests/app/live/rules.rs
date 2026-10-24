@@ -1479,3 +1479,87 @@ fn ending_a_meeting_keeps_the_call_panel_control_in_place(cx: &mut TestAppContex
         before
     );
 }
+
+/// A move that the device of the moved person cannot join: the device tells the server, the
+/// person stays in the call, and the window of the person who moved tells the outcome until
+/// it is put away (ADR 0511).
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_move_that_the_moved_device_cannot_join_is_told_to_the_mover(cx: &mut TestAppContext) {
+    use crate::support::Fault;
+    let mut scene = make_scene(cx, Proxied::Recipient);
+    let (voice, ada) = (scene.voice, scene.ada);
+    let calls = scene.caller.calls.clone();
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.join_in_the_window();
+    scene.window.until("Ada is shown in the call", |window| {
+        window.shows_named(format!("occupant:{ada}"))
+    });
+    let other = scene
+        .window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.id != voice)
+        .unwrap();
+    scene.allow_everyone(&[WorkspacePermission::MoveMembers]);
+    scene.window.until("the person may move people", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.allowed.move_members)
+    });
+
+    // Every attempt of the device of Ada to join the destination is answered `busy`.
+    let proxy = scene.proxy.as_ref().unwrap();
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail_ending("/join", std::iter::repeat_n(Fault::Busy, attempts));
+    let failures = |proxy: &crate::support::FaultProxy| {
+        proxy
+            .all()
+            .into_iter()
+            .filter(|seen| seen.method == "POST" && seen.path.ends_with("/failure"))
+            .count()
+    };
+    assert_eq!(failures(proxy), 0);
+
+    // Luca moves Ada with the menu of her row.
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("menu-move");
+    scene.window.click_named(format!("move-to:{}", other.id));
+    scene
+        .window
+        .until("the outcome of the move is told", |window| {
+            window.shows("call-told")
+        });
+    let told = scene.window.state.read_with(&scene.window.cx, |state, _| {
+        state.pending().call_told.clone()
+    });
+    assert_eq!(
+        told.as_deref(),
+        Some("The device could not join the destination. The person remains in the original call.")
+    );
+    let proxy = scene.proxy.as_ref().unwrap();
+    assert_eq!(
+        failures(proxy),
+        1,
+        "the device of Ada told the failure once"
+    );
+    // Ada stays in the call of the room, and the window shows her there.
+    let view = calls.view();
+    let call = view.call.unwrap();
+    assert_eq!(call.target.place, scene.target.place);
+    assert_eq!(call.phase, Phase::Connected);
+    assert!(!matches!(view.outcome, Some(Outcome::Moved { .. })));
+    assert!(
+        occupants(&mut scene.window)
+            .iter()
+            .any(|occupant| occupant.account_id == ada)
+    );
+
+    // The notice stays until Luca puts it away.
+    scene.window.click("dismiss-call-told");
+    assert!(!scene.window.shows("call-told"));
+    assert!(scene.window.state.read_with(&scene.window.cx, |state, _| {
+        state.pending().call_told.is_none()
+    }));
+}

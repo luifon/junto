@@ -16,6 +16,7 @@ use junto_client_core::flow::link_all::LONGEST_TEXT;
 use junto_client_core::protocol::error::ErrorCode;
 
 use crate::harness::{Window, World, member, named};
+use crate::support::{Fault, FaultProxy};
 
 impl Window {
     /// What the selected server shows while this device waits for its link.
@@ -214,6 +215,102 @@ fn a_second_device_is_linked_on_one_server_through_both_windows(
     // "Done" returns to the entry of a code.
     first.click("link-done");
     assert!(first.shows("link-code-field") && !first.shows("link-approved"));
+}
+
+/// The page of the devices reads its list again at "Try again", and an approval whose
+/// answer did not arrive is checked again at "Check again" (ADR 0782).
+#[gpui::test]
+fn a_device_list_that_was_not_read_and_an_approval_without_an_answer_are_read_again(
+    cx: &mut TestAppContext,
+    new_cx: &mut TestAppContext,
+) {
+    const DEVICES: &str = "/api/v1/account/devices";
+    const APPROVE: &str = "/api/v1/account/device-links/approve";
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    // The device of the window reaches the server through a proxy.
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut first) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let handle = first.handle();
+    // A request that gets `busy` at each of its attempts fails.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    let unread = || std::iter::repeat_n(Fault::Busy, attempts);
+
+    // The first read of the list fails: the page states it with "Try again".
+    proxy.fail(DEVICES, unread());
+    first.open_account();
+    first.click("account-nav-devices");
+    first.until("the failure of the read is shown", |first| {
+        first.shows("devices-read-failed")
+    });
+    assert!(first.devices().is_empty());
+    assert!(first.shows("devices-read-again"));
+    let reads = proxy.seen(DEVICES).len();
+    first.click("devices-read-again");
+    first.until("the list is read", |first| first.devices().len() == 1);
+    assert!(proxy.seen(DEVICES).len() > reads);
+    assert!(!first.shows("devices-read-failed"));
+
+    // A new device of the account asks for a link, and the first device looks up its code.
+    let (_new_directory, mut new) = named(new_cx, "Luca");
+    new.find_server(&server.address());
+    new.click("request-link");
+    new.until("the dialog shows the link code", |new| {
+        new.drawn_code().is_some()
+    });
+    let code = new.drawn_code().unwrap();
+    let key = new.link_wait().unwrap().fingerprint;
+    first.in_shell(|shell, window, cx| shell.type_link_code(&code, window, cx));
+    first.click("link-look-up");
+    first.until("the key of the new device is shown", |first| {
+        first.shows("link-confirm")
+    });
+
+    // The server takes the approval, and its answer is lost. The list of the devices,
+    // which would tell whether the key was added, is not read either. The events of the
+    // server wait, so that only the approval reads the list.
+    proxy.hold_events();
+    proxy.fail(APPROVE, [Fault::LoseAnswer]);
+    proxy.fail(DEVICES, unread());
+    first.click("link-approve");
+    first.until("the outcome is not known", |first| {
+        first.shows("link-unknown")
+    });
+    let Some(LinkView::OutcomeUnknown {
+        device_name,
+        fingerprint,
+        checking: false,
+        ..
+    }) = first.link()
+    else {
+        panic!("the page states that the outcome is not known");
+    };
+    assert_eq!(device_name, text::device_name());
+    assert_eq!(fingerprint, key);
+    assert!(first.shows("link-fingerprint") && first.shows("link-check"));
+    assert!(!first.shows("link-approved"));
+    assert_eq!(world.run(handle.api().devices()).unwrap().len(), 2);
+    proxy.release_events();
+
+    // "Check again" reads the list: the key is there, and the device is linked.
+    first.click("link-check");
+    first.until(
+        "the first device tells that the device is linked",
+        |first| first.shows("link-approved"),
+    );
+    assert_eq!(
+        first.link(),
+        Some(LinkView::Approved {
+            device_name: text::device_name()
+        })
+    );
+    first.until("the list holds the new device", |first| {
+        first.devices().len() == 2
+    });
+    assert_eq!(proxy.seen(APPROVE).len(), 1, "the approval was sent once");
+    new.until_ready();
+    assert_eq!(new.view().person.account_id, first.view().person.account_id);
 }
 
 #[gpui::test]

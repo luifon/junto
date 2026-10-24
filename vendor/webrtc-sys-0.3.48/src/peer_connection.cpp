@@ -16,7 +16,7 @@
  * Modified: this file differs from the published webrtc-sys 0.3.48. The destructor of
  * PeerConnection closes the native peer connection before it releases its members.
  * Its errors are thrown as livekit_ffi::Exception (livekit/exception.h), which owns
- * its message.
+ * its message. The session descriptions are read and copied on the signaling thread.
  */
 
 #include "livekit/peer_connection.h"
@@ -290,56 +290,66 @@ rust::Vec<RtpTransceiverPtr> PeerConnection::get_transceivers() const {
   return vec;
 }
 
-std::unique_ptr<SessionDescription> PeerConnection::current_local_description()
-    const {
-  auto local_description = peer_connection_->current_local_description();
-  if (local_description)
-    return std::make_unique<SessionDescription>(local_description->Clone());
-
+// Modified: added.
+// The peer connection replaces and frees its session descriptions on the signaling thread.
+// Its proxy reads a description there and returns the pointer; a copy on the calling
+// thread can then read a description that the signaling thread has freed. The read and the
+// copy run together on the signaling thread.
+template <typename Read>
+std::unique_ptr<SessionDescription> copy_on_signaling_thread(webrtc::Thread* signaling,
+                                                             Read read) {
+  auto copy = signaling->BlockingCall(
+      [&]() -> std::unique_ptr<webrtc::SessionDescriptionInterface> {
+        const webrtc::SessionDescriptionInterface* description = read();
+        if (description)
+          return description->Clone();
+        return nullptr;
+      });
+  if (copy)
+    return std::make_unique<SessionDescription>(std::move(copy));
   return nullptr;
 }
 
-std::unique_ptr<SessionDescription> PeerConnection::current_remote_description()
-    const {
-  auto remote_description = peer_connection_->current_remote_description();
-  if (remote_description)
-    return std::make_unique<SessionDescription>(remote_description->Clone());
-
-  return nullptr;
+std::unique_ptr<SessionDescription> PeerConnection::current_local_description() const {
+  // Modified: read and copied on the signaling thread.
+  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
+    return peer_connection_->current_local_description();
+  });
 }
 
-std::unique_ptr<SessionDescription> PeerConnection::pending_local_description()
-    const {
-  auto local_description = peer_connection_->pending_local_description();
-  if (local_description)
-    return std::make_unique<SessionDescription>(local_description->Clone());
-
-  return nullptr;
+std::unique_ptr<SessionDescription> PeerConnection::current_remote_description() const {
+  // Modified: read and copied on the signaling thread.
+  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
+    return peer_connection_->current_remote_description();
+  });
 }
 
-std::unique_ptr<SessionDescription> PeerConnection::pending_remote_description()
-    const {
-  auto remote_description = peer_connection_->pending_remote_description();
-  if (remote_description)
-    return std::make_unique<SessionDescription>(remote_description->Clone());
+std::unique_ptr<SessionDescription> PeerConnection::pending_local_description() const {
+  // Modified: read and copied on the signaling thread.
+  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
+    return peer_connection_->pending_local_description();
+  });
+}
 
-  return nullptr;
+std::unique_ptr<SessionDescription> PeerConnection::pending_remote_description() const {
+  // Modified: read and copied on the signaling thread.
+  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
+    return peer_connection_->pending_remote_description();
+  });
 }
 
 std::unique_ptr<SessionDescription> PeerConnection::local_description() const {
-  auto local_description = peer_connection_->local_description();
-  if (local_description)
-    return std::make_unique<SessionDescription>(local_description->Clone());
-
-  return nullptr;
+  // Modified: read and copied on the signaling thread.
+  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
+    return peer_connection_->local_description();
+  });
 }
 
 std::unique_ptr<SessionDescription> PeerConnection::remote_description() const {
-  auto remote_description = peer_connection_->remote_description();
-  if (remote_description)
-    return std::make_unique<SessionDescription>(remote_description->Clone());
-
-  return nullptr;
+  // Modified: read and copied on the signaling thread.
+  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
+    return peer_connection_->remote_description();
+  });
 }
 
 PeerConnectionState PeerConnection::connection_state() const {

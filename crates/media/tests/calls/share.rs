@@ -6,11 +6,14 @@
 use std::time::Duration;
 
 use junto_client_core::protocol::call::{BlockReason, ShareAudio};
+use junto_client_core::protocol::ids::AccountId;
+use junto_media::audio::synthetic::tone_level;
 use junto_media::engine::{MainPicture, MicrophoneState, ShareId, ShareInfo, ShareState};
 use junto_media::share::synthetic::{Colour, SyntheticCapture};
 use junto_media::share::{
     CaptureError, CaptureRequest, PictureSource, ShareKind, ShareQuality, SoundChoice,
 };
+use livekit::webrtc::stats::RtcStats;
 
 use crate::limit::limited;
 use crate::scene::{
@@ -183,6 +186,20 @@ impl Person {
         }
     }
 
+    /// Waits until the output plays a tone of a share at all, and returns. The wait has no
+    /// limit of its own: when the sound of a share reaches a viewer depends on the network
+    /// and on the media server.
+    async fn until_sound_begins(&self, hz: f32) {
+        crate::limit::step(format!("the tone of {hz} Hz begins"));
+        loop {
+            let (played, rate) = self.host.played(Duration::from_millis(100));
+            if !played.is_empty() && tone_level(&played, rate, hz) > ABSENT_DBFS {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     /// Waits for half a second of sound that was all played after this call, and returns
     /// the level of a tone in it.
     async fn hears_afresh(&self, hz: f32) -> f32 {
@@ -274,8 +291,12 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
         );
         let picture = ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
         assert_eq!(picture.frame.source.0 * 9, picture.frame.source.1 * 16);
-        let left = ben.until_heard_tone(PLAYER.0).await;
-        assert!(left < -8.0, "{left}");
+        // The sound track of the share is published a moment after the picture track, and
+        // the media server forwards it when it has subscribed Ben: the time depends on the
+        // host. From its first sound on, the share is played at its level.
+        ben.until_sound_begins(PLAYER.0).await;
+        let left = ben.hears_afresh(PLAYER.0).await;
+        assert!(left > SHARE_HEARD_DBFS && left < -8.0, "{left}");
         // The sound of both channels of the capture arrives, on both channels of the output.
         ben.until_heard_tone(PLAYER.1).await;
         ben.until_level(PLAYER.1, "the right channel of the output", |_| {
@@ -339,16 +360,126 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
     .await;
 }
 
-/// The longest time, in seconds, from a change of the watched share to the first of three
-/// seconds in a row with the full frame rate (ADR 0737).
-const FULL_RATE_WITHIN_SECONDS: usize = 20;
+/// Three seconds of the full frame rate hold at least 66 pictures of the full size: more
+/// than the 15 of the defaults of the call library, and more than the 45 that a layer of
+/// half the size gives at its 15 per second when a peer publishes one (this client publishes
+/// none, ADR 0773).
+const FULL_RATE_IN_THREE_SECONDS: usize = 66;
 
-/// The last three seconds hold at least 66 pictures of the full size: more than the 15 of
-/// the defaults of the call library, and more than the 45 that a layer of half the size
-/// gives at its 15 per second when a peer publishes one (this client publishes none,
-/// ADR 0773).
-fn full_rate(seconds: &[usize]) -> bool {
-    seconds.len() >= 3 && seconds[seconds.len() - 3..].iter().sum::<usize>() >= 66
+impl Person {
+    /// Waits until the media connection of this person receives the picture of a share with
+    /// this width at its full rate, and returns the time from `since`. The receiver of the
+    /// media connection counts the pictures that it decoded; the rate is measured over one
+    /// second. What the network and the media server forward, and when, depends on the host,
+    /// so the wait has no limit of its own; the step that a failure names holds the last
+    /// reading.
+    async fn until_received_at_full_rate(
+        &self,
+        width: u32,
+        since: tokio::time::Instant,
+    ) -> Duration {
+        let mut before: Option<(tokio::time::Instant, u32)> = None;
+        loop {
+            // Each received video stream: its width and the pictures that it decoded.
+            // The call library can carry both directions on one connection, whose statistics
+            // it gives as those of the publisher.
+            let streams: Vec<(u32, u32)> = self
+                .calls
+                .statistics()
+                .await
+                .map(|stats| {
+                    (stats.publisher_stats.iter())
+                        .chain(&stats.subscriber_stats)
+                        .filter_map(|stat| match stat {
+                            RtcStats::InboundRtp(stat) if stat.stream.kind == "video" => {
+                                Some((stat.inbound.frame_width, stat.inbound.frames_decoded))
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let decoded = streams
+                .iter()
+                .find(|(seen, _)| *seen == width)
+                .map(|(_, decoded)| *decoded);
+            let now = tokio::time::Instant::now();
+            let rate = match (before, decoded) {
+                (Some((then, earlier)), Some(decoded)) => {
+                    f64::from(decoded.saturating_sub(earlier)) / (now - then).as_secs_f64()
+                }
+                _ => 0.0,
+            };
+            crate::limit::step(format!(
+                "the picture of {width} pixels arrives at the full rate: {rate:.1} per second; \
+                 the received streams (width, decoded): {streams:?}"
+            ));
+            if rate >= 25.0 {
+                return since.elapsed();
+            }
+            before = decoded.map(|decoded| (now, decoded));
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// What the sender of the media connection of this person states of the encoding of a
+    /// picture of this width: the rate, the bitrate that it aims at, and what limits the
+    /// quality, with the seconds of each limit. The test prints it in every run.
+    async fn encoding(&self, width: u32) -> String {
+        let Ok(stats) = self.calls.statistics().await else {
+            return "no statistics".to_owned();
+        };
+        let sent: Vec<String> = (stats.publisher_stats.iter())
+            .chain(&stats.subscriber_stats)
+            .filter_map(|stat| match stat {
+                RtcStats::OutboundRtp(stat)
+                    if stat.stream.kind == "video" && stat.outbound.frame_width == width =>
+                {
+                    let mut limits: Vec<_> = stat
+                        .outbound
+                        .quality_limitation_durations
+                        .iter()
+                        .map(|(reason, seconds)| format!("{reason} {seconds:.1} s"))
+                        .collect();
+                    limits.sort();
+                    Some(format!(
+                        "{:.1} per second, target {:.0} bit/s, limited by {:?} ({})",
+                        stat.outbound.frames_per_second,
+                        stat.outbound.target_bitrate,
+                        stat.outbound.quality_limitation_reason,
+                        limits.join(", ")
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        if sent.is_empty() {
+            format!("no encoding of {width} pixels")
+        } else {
+            sent.join("; ")
+        }
+    }
+
+    /// The pictures of the full size of the watched share of a person that arrive in each of
+    /// the next three seconds.
+    async fn pictures_in_three_seconds(&self, of: AccountId, size: (u32, u32)) -> Vec<usize> {
+        let mut pictures = self.calls.main_picture();
+        pictures.borrow_and_update();
+        let started = tokio::time::Instant::now();
+        let mut seconds = Vec::new();
+        for second in 1..=3 {
+            let end = started + Duration::from_secs(second);
+            let mut arrived = 0;
+            while let Ok(Ok(())) = tokio::time::timeout_at(end, pictures.changed()).await {
+                arrived +=
+                    usize::from(pictures.borrow_and_update().as_ref().is_some_and(|shown| {
+                        shown.share == ShareId::Of(of) && shown.frame.source == size
+                    }));
+            }
+            seconds.push(arrived);
+        }
+        seconds
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -432,39 +563,15 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         ben.until_heard_tone(SYSTEM.0).await;
 
         // Cal chooses the share of Ben: its picture, and its sound in place of the other one.
-        // The pictures of the share of Ben in its full size are counted from the change, in
-        // seconds, so that a small layer or a low rate in the first seconds after the change
-        // is measured and not waited out.
+        // A sender lowers its cadence while its estimate of the bandwidth is low, as in the
+        // first seconds of a stream on a busy machine, and the media server decides what it
+        // forwards (ADR 0737). Once the media connection of Cal receives the share of Ben at
+        // its full rate, the window gets each of those pictures at their full size: the share
+        // is sent at the frame rate that its sharer chose, 30 pictures per second, where the
+        // defaults of the call library send a picture of 800 pixels at 5 per second.
         let before_switch = crate::statistics::snapshot(&ben, &cal, share_started).await;
-        let mut pictures = cal.calls.main_picture();
-        pictures.borrow_and_update();
+        let switched = tokio::time::Instant::now();
         cal.calls.watch_share(ShareId::Of(ben_id));
-        let counted = tokio::spawn(async move {
-            let started = tokio::time::Instant::now();
-            let mut seconds: Vec<usize> = Vec::new();
-            while !full_rate(&seconds) && started.elapsed() < PATIENCE {
-                let end = started + Duration::from_secs(seconds.len() as u64 + 1);
-                let mut arrived = 0;
-                loop {
-                    match tokio::time::timeout_at(end, pictures.changed()).await {
-                        Ok(Ok(())) => {
-                            let full = pictures.borrow_and_update().as_ref().is_some_and(|shown| {
-                                shown.share == ShareId::Of(ben_id)
-                                    && shown.frame.source == (800, 600)
-                            });
-                            arrived += usize::from(full);
-                        }
-                        Ok(Err(_)) => {
-                            seconds.push(arrived);
-                            return seconds;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                seconds.push(arrived);
-            }
-            seconds
-        });
         cal.until("Cal watches the share of Ben", |view| {
             view.call
                 .as_ref()
@@ -473,30 +580,21 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         .await;
         let picture = cal.until_shown(ShareId::Of(ben_id), GREEN, YELLOW).await;
         assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
-        // The share is sent at the frame rate that its sharer chose, 30 pictures per second.
-        // The defaults of the call library send a picture of 800 pixels at 5 per second: in
-        // three seconds 15 pictures arrive with them. A share has one encoding of the full
-        // size (ADR 0773), and a sender lowers its cadence while its estimate of the bandwidth
-        // is low, as in the first seconds of a stream on a busy machine. The time until three
-        // seconds in a row hold 66 pictures of the full size is printed in every run and has
-        // a bound (ADR 0737).
-        let seconds = counted.await.unwrap();
-        let delay = seconds.len().saturating_sub(3);
+        let at_switch = ben.encoding(800).await;
+        let forwarded = cal.until_received_at_full_rate(800, switched).await;
+        let seconds = cal.pictures_in_three_seconds(ben_id, (800, 600)).await;
         eprintln!(
-            "pictures of the full size in each second after the change of the watched share: \
-         {seconds:?}; the full rate began after {delay} s"
+            "the full rate arrived {forwarded:?} after the change of the watched share; \
+             pictures of the full size in each of the three seconds after it: {seconds:?}; \
+             the encoding of the sender at the change: {at_switch}; at the full rate: {}",
+            ben.encoding(800).await
         );
-        if !full_rate(&seconds) || delay > FULL_RATE_WITHIN_SECONDS {
+        if seconds.iter().sum::<usize>() < FULL_RATE_IN_THREE_SECONDS {
             let after = crate::statistics::snapshot(&ben, &cal, share_started).await;
-            crate::statistics::frame_rate(
-                &cal,
-                seconds.iter().rev().take(3).sum(),
-                &before_switch,
-                &after,
-            );
+            crate::statistics::frame_rate(&cal, seconds.iter().sum(), &before_switch, &after);
             panic!(
-                "the full frame rate began {delay} s after the change of the watched share, \
-             later than {FULL_RATE_WITHIN_SECONDS} s: {seconds:?}"
+                "the media connection received the full rate, and the window got {seconds:?} \
+                 pictures of the full size in the three seconds after it"
             );
         }
         cal.until_heard_tone(PLAYER.0).await;

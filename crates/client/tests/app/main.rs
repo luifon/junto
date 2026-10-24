@@ -28,6 +28,7 @@ mod support;
 mod account;
 mod admin;
 mod admin_pages;
+mod call_notices;
 mod calls;
 mod composing;
 mod contacts;
