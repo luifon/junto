@@ -236,8 +236,10 @@ pub struct Pending {
     /// started: it would be decided against the server book of a later moment.
     pub removing: HashSet<ServerId>,
     removal_entries: HashMap<ServerId, EntryKey>,
-    /// The servers whose waiting request is being given up.
-    pub cancelling: HashSet<ServerId>,
+    /// The entries whose waiting request is being given up, by server. Each cancellation
+    /// ends for its own entry, also when a removal of a later entry of the server has
+    /// replaced its removal.
+    cancelling: HashMap<ServerId, EntryKey>,
     /// The name of the profile preset is being written.
     pub saving_name: bool,
     /// Why the last request that started or stopped a recording failed.
@@ -282,6 +284,25 @@ impl Pending {
         self.removal_entries.remove(&entry.server_id);
         self.removing.remove(&entry.server_id);
         true
+    }
+
+    fn begin_cancellation(&mut self, entry: EntryKey) -> bool {
+        if self.cancels(entry) {
+            return false;
+        }
+        self.cancelling.insert(entry.server_id, entry);
+        true
+    }
+
+    fn end_cancellation(&mut self, entry: EntryKey) {
+        if self.cancels(entry) {
+            self.cancelling.remove(&entry.server_id);
+        }
+    }
+
+    /// True while the waiting request of this entry is being given up.
+    pub fn cancels(&self, entry: EntryKey) -> bool {
+        self.cancelling.get(&entry.server_id) == Some(&entry)
     }
 
     /// True while the acknowledgement of this recovery is on its way for the owner of a
@@ -342,6 +363,23 @@ mod pending_tests {
         assert_eq!(pending.acknowledge_failure(Some(first)), Some("failed"));
         assert_eq!(pending.acknowledge_failure(Some(second)), None);
         assert_eq!(pending.acknowledge_failure(Some(account)), None);
+    }
+
+    #[test]
+    fn a_cancellation_ends_only_for_its_own_entry() {
+        let first = owner().entry;
+        let second = EntryKey {
+            generation: first.generation + 1,
+            ..first
+        };
+        let mut pending = Pending::default();
+        assert!(pending.begin_cancellation(first));
+        assert!(!pending.begin_cancellation(first));
+        assert!(pending.begin_cancellation(second));
+        pending.end_cancellation(first);
+        assert!(pending.cancels(second) && !pending.cancels(first));
+        pending.end_cancellation(second);
+        assert!(!pending.cancels(second));
     }
 }
 
@@ -1911,6 +1949,13 @@ impl AppState {
         &self.pending
     }
 
+    /// True while the waiting request of the saved entry of this server is being given up.
+    pub fn cancels_request(&self, server_id: ServerId) -> bool {
+        self.client
+            .server(server_id)
+            .is_some_and(|server| self.pending.cancels(server.entry().key()))
+    }
+
     /// The name of the profile preset. Empty until the person has chosen one.
     pub fn preset_name(&self) -> &str {
         &self.known.preset_name
@@ -2348,11 +2393,10 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        if self.pending.removing.contains(&server_id) || !self.pending.cancelling.insert(server_id)
-        {
+        let entry = server.entry().key();
+        if self.pending.removing.contains(&server_id) || !self.pending.begin_cancellation(entry) {
             return;
         }
-        let entry = server.entry().key();
         self.pending.begin_removal(entry);
         self.pending.remove_failed.remove(&server_id);
         self.waiting.remove(&server_id);
@@ -2369,10 +2413,10 @@ impl AppState {
                 Err(_) => None,
             };
             let _ = this.update(cx, |this, cx| {
+                this.pending.end_cancellation(entry);
                 if !this.pending.end_removal(entry) {
                     return;
                 }
-                this.pending.cancelling.remove(&server_id);
                 if this
                     .client
                     .server(server_id)

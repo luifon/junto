@@ -2,6 +2,8 @@
 //! the real server (ADR 0121). The other members keep the messages of the person, with
 //! the name marked.
 
+use std::time::{Duration, Instant};
+
 use gpui::TestAppContext;
 use junto_client::state::account::{AccountPage, PageView};
 use junto_client::state::feed::plain_text;
@@ -11,7 +13,7 @@ use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::account::{AccountStatus, Departure};
 use junto_client_core::protocol::message::SendMessage;
 
-use crate::harness::{Window, World, member};
+use crate::harness::{PATIENCE, Window, World, member, named};
 
 impl Window {
     /// The workspaces that the server book lists for the selected server.
@@ -39,6 +41,22 @@ impl Window {
             })
             .map(|row| row.author)
             .collect()
+    }
+
+    /// Runs the tasks of the application one at a time, and checks `holds` before each
+    /// task. A test acts between two tasks that one settle of the window would run
+    /// together.
+    fn step_until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
+        let deadline = Instant::now() + PATIENCE;
+        while !holds(self) {
+            if !self.holding(|window| window.cx.executor().tick()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "after {PATIENCE:?} this did not hold: {what}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 }
 
@@ -369,4 +387,67 @@ fn a_late_deletion_answer_preserves_the_replacement_account_page(cx: &mut TestAp
     assert_eq!(replacement.owner(), Some(owner));
     assert_eq!(replacement.device_public_key().unwrap(), key);
     assert_eq!(client.selected(), Some(replacement.id()));
+}
+
+#[gpui::test]
+fn a_cancellation_that_ends_after_a_replacement_removal_frees_the_server(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let _admin = world.owner(&server);
+    let (_directory, mut window) = named(cx, "Luca");
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the request waits", |window| {
+        window.shows("cancel-request")
+            && matches!(
+                window.status(),
+                Some(ServerStatus::WaitingForApproval { .. })
+            )
+    });
+    let client = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().clone());
+    let original = window.handle();
+    let server_id = original.id();
+    let entry = original.entry().key();
+
+    // The cancellation removes the original entry on the background executor. Its
+    // completion on the window thread has not run yet when the same server is added again
+    // and the person removes that replacement.
+    window.press_as_drawn("cancel-request");
+    window.step_until("the cancellation removed the original entry", |_| {
+        client.server(server_id).is_none()
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().removing.contains(&server_id) && state.pending().cancels(entry)
+    }));
+    let replacement = world.run(crate::support::add(&client, &server.address()));
+    assert_ne!(replacement.entry().key(), entry);
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.remove_server(server_id, cx)
+    }));
+    window.until("both removals have completed", |window| {
+        window.view().servers.is_empty()
+            && window
+                .state
+                .read_with(&window.cx, |state, _| state.pending().removing.is_empty())
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        !state.pending().cancels(entry) && state.pending().remove_failed.is_empty()
+    }));
+
+    // A later request to the same server can be given up.
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the later request waits", |window| {
+        window.shows("cancel-request")
+            && matches!(
+                window.status(),
+                Some(ServerStatus::WaitingForApproval { .. })
+            )
+    });
+    window.click("cancel-request");
+    window.until("the later entry is removed", |window| {
+        window.view().servers.is_empty()
+    });
 }

@@ -400,7 +400,7 @@ impl Shell {
                     .filter(|selected| selected.id == *server_id)
                     .and_then(|selected| selected.error.as_ref())
                     .map(text::flow_error);
-                cancelling = pending.cancelling.contains(server_id);
+                cancelling = self.state.read(cx).cancels_request(*server_id);
                 if error.is_none() && running.is_none() && !cancelling {
                     error = pending.remove_failed.get(server_id).cloned().or(flow_error);
                 }
