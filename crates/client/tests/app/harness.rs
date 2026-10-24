@@ -795,6 +795,18 @@ impl Window {
         self.click(row);
     }
 
+    /// Clicks an action of the state of the selected server once the actions take clicks.
+    /// While an action of the access flow runs, the state panel draws its actions disabled,
+    /// also when it shows the outcome of that action before the action has ended: the
+    /// client core writes the server book after it shows the new state.
+    #[track_caller]
+    pub fn click_state_action(&mut self, selector: &'static str) {
+        self.until(&format!("{selector} takes clicks"), |window| {
+            window.shows(selector) && window.view().selected.is_some_and(|server| !server.busy)
+        });
+        self.click(selector);
+    }
+
     /// True when the row of the member with this name is drawn in the members panel.
     pub fn shows_member(&mut self, name: &str) -> bool {
         let view = self.view();

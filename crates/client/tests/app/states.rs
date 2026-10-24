@@ -175,7 +175,7 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     assert_eq!(actions.map(|action| window.cx.debug_bounds(action)), shown);
 
     // A banned person can forget the account: the key goes and the server stays.
-    window.click("forget-account");
+    window.click_state_action("forget-account");
     assert!(window.shows("confirm-forget"));
     window.click("confirm");
     window.until("the account is forgotten", |window| {
@@ -301,7 +301,7 @@ fn a_lost_connection_keeps_the_last_state_and_a_stopped_server_is_tried_again(
         window.status() == Some(ServerStatus::Unreachable)
     });
     world.run(server.restart());
-    window.click("check-server");
+    window.click_state_action("check-server");
     window.until_ready();
     assert_eq!(window.channel_names(), channels);
 }
