@@ -23,6 +23,7 @@ The renderings:
 
 - The crate `junto-icon` (`crates/icon`) renders the source with resvg in the version that gpui uses, without the features that read fonts and raster pictures. It makes a PNG picture of one size, the macOS icon file, the Windows icon file and a compiled Windows resource file (`.res`). Its program `junto-icon` writes one of these into a new file.
 - No raster is committed. The packaging scripts take the program of the same build: `packaging/bundle.py` as its fourth argument, `packaging/linux.py` with `--icon-tool`; the release scripts build it with the client. The build scripts of the client and of the client core have the crate as a build dependency.
+- The renderer is the feature `render` of the crate, on by default; the program `junto-icon` needs it. The build dependencies turn it on only where their build script uses a rendering: the client on Windows and Linux, the client core on Windows. Without the feature every rendering fails with an error that names the feature, so a build script never writes an empty icon. Cargo selects a build dependency of a `[target]` section by the system that runs the build, not by the target of the build. Every build of a package runs on its own system (ADR 0750, ADR 0753), so the two are the same; a build for Windows or Linux on another system stops in the build script with that error.
 - The standalone macOS signing and update checks build `junto-icon` before assembling a bundle, so they work after a clean build directory and rebuild after a change of the SVG source.
 - The pictures of 16 pixels are reductions of the drawing of 1024 pixels. There is no simplified drawing for small sizes.
 
@@ -55,5 +56,5 @@ Checks:
 ## Consequences
 
 - A change of the design is a change of `packaging/icon/junto.svg`; every package gets the new renderings at its next build, and the tests of the crate state the colours and the areas of the drawing.
-- Every build of the client and of the client core compiles resvg for their build scripts, also on macOS and Linux, where the script of the client core uses nothing of it.
+- A build of the client compiles resvg for its build script on Windows and Linux, and a build of the client core on Windows only. A build on macOS compiles it only for gpui and for the program `junto-icon`, not for a build script.
 - The icon is the project's own work, under the licence of the repository (Apache-2.0).

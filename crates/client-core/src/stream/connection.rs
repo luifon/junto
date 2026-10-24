@@ -17,7 +17,8 @@ use junto_protocol::call::OwnCallView;
 use junto_protocol::discovery::NotificationPage;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{
-    ClientMessage, CloseCode, Cursor, EndReason, Event, Level, Received, ServerMessage, decode,
+    ClientMessage, CloseCode, Cursor, EndReason, Event, Level, ReadEvent, Received, ServerMessage,
+    decode,
 };
 use junto_protocol::ids::WorkspaceId;
 use junto_protocol::message::{AttachmentLimits, Message, MessageState, ThreadPage, UnreadThreads};
@@ -778,7 +779,7 @@ impl Client {
         };
         match decode(&text) {
             Ok(Received::Message(message)) => self.message(message, text.len()),
-            Ok(Received::UnknownEvent { id }) => self.move_cursor(id),
+            Ok(Received::Change { position, events }) => self.change(position, events),
             Ok(Received::UnknownMessage) => {}
             Err(error) => {
                 // A new connection with the same cursor would get the same frame again.
@@ -844,11 +845,16 @@ impl Client {
                     self.covered = Level::Background;
                 }
             }
-            ServerMessage::Event { id, at, event } => {
-                if !matches!(link.subscription, Subscription::Live { .. }) {
-                    return;
-                }
-                self.event(id, at, Arc::new(event), bytes);
+            ServerMessage::Change { position, events } => {
+                // A `change` is read by `decode` as `Received::Change`; this is the same
+                // message built in another way.
+                self.change(
+                    position,
+                    events
+                        .into_iter()
+                        .map(|event| ReadEvent::Known { event, bytes })
+                        .collect(),
+                );
             }
             ServerMessage::Checkpoint { cursor } => {
                 if !matches!(link.subscription, Subscription::Live { .. }) {
@@ -890,6 +896,31 @@ impl Client {
             model.cursor.position = position;
             self.model_changed = true;
         }
+    }
+
+    /// Applies the events of one change in their order, then moves the cursor to `position`,
+    /// the position after the change that the cursors of the server name. A change arrives
+    /// whole in one message (ADR 0011).
+    fn change(&mut self, position: u64, events: Vec<ReadEvent>) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        if !link.greeted {
+            self.lost(StreamFault::Unreadable);
+            return;
+        }
+        if !matches!(link.subscription, Subscription::Live { .. }) {
+            return;
+        }
+        for read in events {
+            match read {
+                ReadEvent::Known { event, bytes } => {
+                    self.event(event.id, event.at, Arc::new(event.event), bytes);
+                }
+                ReadEvent::Unknown { id } => self.move_cursor(id),
+            }
+        }
+        self.move_cursor(position);
     }
 
     fn event(&mut self, id: u64, at: time::OffsetDateTime, event: Arc<Event>, bytes: usize) {

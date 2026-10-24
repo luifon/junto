@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use junto_protocol::error::ErrorCode;
-use junto_protocol::events::{Cursor, Event, Level, ResyncReason, ServerMessage};
+use junto_protocol::events::{Cursor, Event, Level, ResyncReason, ServerMessage, StreamEvent};
 use junto_protocol::ids::{StreamEpoch, WorkspaceId};
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
@@ -64,7 +64,7 @@ async fn a_connection_starts_with_hello_and_delivers_after_a_subscription() {
 
     let head = server.log().await.last().unwrap().0;
     let cursor = stream.subscribe(Level::Full, None).await;
-    assert_eq!(cursor, stream.cursor(u64::try_from(head).unwrap()));
+    assert_eq!(cursor, stream.change_cursor(head));
     assert_eq!(server.snapshot(&owner).await.cursor, cursor);
 
     server.category(&owner, workspace.id, "first", 1).await;
@@ -76,11 +76,13 @@ async fn a_connection_starts_with_hello_and_delivers_after_a_subscription() {
     assert!(cursor.position < first_id && first_id < second_id);
 
     let frame: Value = serde_json::from_str(stream.raw.last().unwrap()).unwrap();
-    assert_eq!(frame["type"], "event");
-    assert_eq!(frame["id"], second_id);
-    assert_eq!(frame["event"]["type"], "category_created");
-    assert_eq!(frame["event"]["category"]["name"], "second");
-    assert!(frame["at"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(frame["type"], "change");
+    let events = frame["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["id"], second_id);
+    assert_eq!(events[0]["event"]["type"], "category_created");
+    assert_eq!(events[0]["event"]["category"]["name"], "second");
+    assert!(events[0]["at"].as_str().unwrap().ends_with('Z'));
 }
 
 /// Sends a request again while the server answers `busy` (ADR 0009).
@@ -139,7 +141,7 @@ async fn a_client_sees_every_event_of_concurrent_writers_in_the_order_of_the_pos
          where kind = 'category_created' and position > $1
          order by position",
     )
-    .bind(i64::try_from(start.position).unwrap())
+    .bind(junto_server::events::log::change_of(start.position))
     .fetch_all(&server.db)
     .await
     .unwrap();
@@ -155,7 +157,7 @@ async fn a_client_sees_every_event_of_concurrent_writers_in_the_order_of_the_pos
             assert!(id > last_id, "{id} came after {last_id}");
             last_id = id;
             if let Some(name) = category_name(&event) {
-                received.push((i64::try_from(id).unwrap(), name));
+                received.push((junto_server::events::log::change_of(id), name));
             }
         }
         assert_eq!(received, stored);
@@ -302,6 +304,211 @@ async fn the_database_assigns_positions_at_the_commit_and_refuses_changes_of_eve
     }
 }
 
+#[tokio::test]
+async fn the_events_of_one_change_share_its_position_in_the_order_of_the_change() {
+    let server = TestServer::start().await;
+    let insert = "insert into events (id, recorded_at, class, kind, audience, payload)
+         values ($1, now(), 'general', 'workspace_updated',
+                 '{\"to\":\"workspace\"}', '{\"type\":\"workspace_updated\"}')";
+    let ids = [
+        uuid::Uuid::now_v7(),
+        uuid::Uuid::now_v7(),
+        uuid::Uuid::now_v7(),
+    ];
+    let mut transaction = server.db.begin().await.unwrap();
+    // Written in another order than the order of their identifiers.
+    for id in [ids[2], ids[0], ids[1]] {
+        sqlx::query(insert)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+    }
+    transaction.commit().await.unwrap();
+    let later = uuid::Uuid::now_v7();
+    sqlx::query(insert)
+        .bind(later)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let rows: Vec<(uuid::Uuid, i64, i32)> = sqlx::query_as(
+        "select id, position, ordinal from events where id = any($1) order by position, ordinal",
+    )
+    .bind([ids[0], ids[1], ids[2], later])
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    let change = rows[0].1;
+    assert_eq!(
+        rows,
+        [
+            (ids[2], change, 0),
+            (ids[0], change, 1),
+            (ids[1], change, 2),
+            (later, rows[3].1, 0)
+        ]
+    );
+    assert!(rows[3].1 > change);
+    assert!(
+        sqlx::query("update events set ordinal = ordinal + 1")
+            .execute(&server.db)
+            .await
+            .is_err()
+    );
+}
+
+/// Records one change with `count` events for `owner`, each with a name of `name_bytes`.
+async fn change_of_own_events(
+    server: &TestServer,
+    owner: &Member,
+    count: usize,
+    name_bytes: usize,
+) {
+    let mut transaction = server.db.begin().await.unwrap();
+    for index in 0..count {
+        let event = Event::DeviceRenamed {
+            device_id: owner.device_id,
+            name: format!("{index:0>name_bytes$}"),
+        };
+        junto_server::events::tell_account(
+            &mut transaction,
+            server.clock.now(),
+            owner.account_id,
+            &event,
+        )
+        .await
+        .unwrap();
+    }
+    transaction.commit().await.unwrap();
+}
+
+/// The next message that is not a checkpoint.
+async fn after_checkpoints(stream: &mut crate::stream_support::Stream) -> Frame {
+    loop {
+        match stream.next().await {
+            Frame::Message(ServerMessage::Checkpoint { .. }) => {}
+            other => return other,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_change_with_more_events_than_a_batch_arrives_whole_in_one_message() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let mut stream = server.subscribed(&owner, Level::Full).await;
+    change_of_own_events(&server, &owner, 100, 8).await;
+    let Frame::Message(ServerMessage::Change { position, events }) =
+        after_checkpoints(&mut stream).await
+    else {
+        panic!("the change did not arrive");
+    };
+    assert_eq!(events.len(), 100);
+    let first = events[0].id;
+    assert_eq!(first & 0xffff, 0);
+    assert_eq!(position, first | 0xffff);
+    for (index, event) in (0u64..).zip(&events) {
+        assert_eq!(event.id, first + index);
+        assert!(
+            matches!(&event.event, Event::DeviceRenamed { name, .. } if *name == format!("{index:0>8}"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let mut stream = server.subscribed(&owner, Level::Full).await;
+    let mut transaction = server.db.begin().await.unwrap();
+    let event = Event::DeviceRenamed {
+        device_id: owner.device_id,
+        name: "many".to_owned(),
+    };
+    junto_server::events::tell_account(
+        &mut transaction,
+        server.clock.now(),
+        owner.account_id,
+        &event,
+    )
+    .await
+    .unwrap();
+    // More events for one connection than the 2^16 indexes of a change, each small.
+    sqlx::query(
+        "insert into events (id, recorded_at, class, kind, audience, audience_account_id,
+                             revalidates_account_id, payload)
+         select gen_random_uuid(), e.recorded_at, e.class, e.kind, e.audience,
+                e.audience_account_id, e.revalidates_account_id, e.payload
+         from events e cross join generate_series(1, 70000)
+         where e.position is null",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    assert_eq!(
+        after_checkpoints(&mut stream).await,
+        Frame::Message(ServerMessage::Resync {
+            reason: ResyncReason::SkippedEvent
+        })
+    );
+}
+
+/// A client that applied a change has its cursor at the position that the receipt of the
+/// change names (ADR 0214), so a wait for the receipt ends with the change.
+#[tokio::test]
+async fn the_receipt_of_a_change_is_the_position_after_its_message() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let mut stream = server.subscribed(&owner, Level::Full).await;
+    let reply = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/categories", workspace.id),
+            &json!({ "name": "receipt", "position": 0 }),
+        )
+        .await;
+    let receipt: Cursor =
+        serde_json::from_str(reply.header("junto-event-cursor").unwrap()).unwrap();
+    reply.ok::<Category>(StatusCode::CREATED);
+    let Frame::Message(ServerMessage::Change { position, events }) =
+        after_checkpoints(&mut stream).await
+    else {
+        panic!("the change did not arrive");
+    };
+    assert_eq!(events.len(), 1);
+    assert!(events[0].id < position);
+    assert_eq!(receipt, stream.cursor(position));
+}
+
+#[tokio::test]
+async fn a_change_larger_than_a_client_reads_leads_to_a_snapshot() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let mut stream = server.subscribed(&owner, Level::Full).await;
+    change_of_own_events(&server, &owner, 30, 10_000).await;
+    assert_eq!(
+        after_checkpoints(&mut stream).await,
+        Frame::Message(ServerMessage::Resync {
+            reason: ResyncReason::SkippedEvent
+        })
+    );
+    let snapshot = server.snapshot(&owner).await;
+    let mut again = server.stream(&owner).await;
+    again.subscribe(Level::Full, Some(snapshot.cursor)).await;
+    server
+        .category(
+            &owner,
+            server.default_workspace(&owner).await.id,
+            "after",
+            0,
+        )
+        .await;
+    let (_, event) = again.event().await;
+    assert_eq!(category_name(&event).as_deref(), Some("after"));
+}
+
 async fn categories(
     server: &TestServer,
     owner: &Member,
@@ -394,11 +601,16 @@ async fn beyond_the_replay_bound_the_client_is_told_to_load_a_snapshot() {
         })
         .await;
     let mut answer = reconnected.next().await;
-    if let Frame::Message(ServerMessage::Event {
-        event: Event::CategoryCreated { category },
-        ..
-    }) = &answer
-    {
+    if let Frame::Message(ServerMessage::Change { events, .. }) = &answer {
+        let [
+            StreamEvent {
+                event: Event::CategoryCreated { category },
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("the change of the category: {events:?}");
+        };
         assert_eq!(category.id, last.id);
         answer = reconnected.next().await;
     }
@@ -510,7 +722,7 @@ async fn the_log_keeps_a_bounded_number_of_positions_and_older_cursors_need_a_sn
             reason: ResyncReason::TooFarBehind
         })
     );
-    let at_floor = stream.cursor(u64::try_from(floor).unwrap());
+    let at_floor = stream.change_cursor(floor);
     stream.subscribe(Level::Full, Some(at_floor)).await;
     server.state.streams.release();
     assert_eq!(
@@ -529,8 +741,8 @@ async fn the_log_keeps_a_bounded_number_of_positions_and_older_cursors_need_a_sn
         })
     );
     assert_eq!(
-        server.snapshot(&owner).await.cursor.position,
-        u64::try_from(head).unwrap()
+        server.snapshot(&owner).await.cursor,
+        stream.change_cursor(head)
     );
 
     maintenance::run_once(&server.state).await.unwrap();

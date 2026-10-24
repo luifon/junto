@@ -865,6 +865,52 @@ async fn the_unread_count_reads_missed_calls_by_an_index() {
     }
 }
 
+/// The log is trimmed to a number of changes, so the trimmed boundary that a caller can probe
+/// with cursors is the same whether its ring was silent or not (ADR 0207, ADR 0515).
+#[tokio::test]
+async fn the_trimmed_boundary_does_not_show_a_muted_ring() {
+    let mut boundaries = Vec::new();
+    for muted in [false, true] {
+        let scene = Scene::on(
+            TestServer::start_for_calls_with(|config| config.limits.stream.events_kept = 16).await,
+        )
+        .await;
+        let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+        if muted {
+            mute(server, ben, ann).await;
+        }
+        let before =
+            junto_server::events::log::change_of(server.snapshot(ann).await.cursor.position);
+        let join = ring(server, ann, ben).await.ok::<CallJoin>(StatusCode::OK);
+        server.connect(join);
+        server.check().await;
+        server.leave_call(ann).await;
+        // Each rename moves the kept part of the log by one, so the boundary passes over the
+        // ring and its end one step at a time.
+        let mut seen = Vec::new();
+        for rename in 0..20 {
+            server
+                .patch(
+                    ann,
+                    &format!("/api/v1/account/devices/{}", ann.device_id),
+                    &json!({ "name": format!("device {rename}") }),
+                )
+                .await
+                .ok::<serde_json::Value>(StatusCode::OK);
+            junto_server::events::log::trim(&server.state)
+                .await
+                .unwrap();
+            let trimmed: i64 = sqlx::query_scalar("select trimmed_through from event_stream")
+                .fetch_one(&server.db)
+                .await
+                .unwrap();
+            seen.push(trimmed.max(before) - before);
+        }
+        boundaries.push(seen);
+    }
+    assert_eq!(boundaries[0], boundaries[1]);
+}
+
 #[tokio::test]
 async fn muted_and_unanswered_calls_consume_the_same_positions() {
     let mut counts = Vec::new();

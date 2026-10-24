@@ -19,7 +19,7 @@ Messages of the server:
 
 - `hello`: the first message of a connection. It carries the version of the server, the API versions it supports, the epoch of the log (ADR 0010), the heartbeat interval and the idle time (ADR 0116).
 - `subscribed`: the answer to a `subscribe` that the server serves, with the level and the cursor from which events follow.
-- `event`: one event, as `{"type": "event", "id": <position>, "at": <time>, "event": {"type": <event type>, ...}}`.
+- `change`: the events of one change that the connection may receive, in the order of the change, as `{"type": "change", "position": <position after the change>, "events": [{"id": <position>, "at": <time>, "event": {"type": <event type>, ...}}, ...]}` (ADR 0011). The client moves its cursor to `position` after it has applied the events. The positions are those of ADR 0010. Before the first release of the API it replaced the message `event`, which carried one event, so that a change reaches a client whole.
 - `checkpoint`: a cursor up to which the connection has received everything that it may receive (ADR 0207).
 - `resync`: the instruction to load a snapshot, with the reason. It answers a `subscribe` that the server does not serve, and it ends a subscription that the server cannot continue (ADR 0207).
 - `ended`: the last message of a connection whose session no longer counts, with the reason, and with the recovery when a recovery was the reason (ADR 0208).
@@ -33,9 +33,9 @@ Version rule:
 - The stream belongs to the API version of its path, `/api/v1/events`.
 - Within one API version the server adds and does not change. It can add a message type, an event type, and a field of an existing message or event.
 - A field that exists keeps its name, its type, its meaning and, for a field with a fixed set of values, its set of values.
-- A reader ignores a field that it does not know. It skips a message whose `type` it does not know. For an event whose type it does not know, it moves its cursor to the `id` of the event and applies nothing.
+- A reader ignores a field that it does not know. It skips a message whose `type` it does not know. For an event of a `change` whose type it does not know, it moves its cursor to the `id` of the event and applies nothing, and it applies the other events of the change.
 - A change that removes or changes a field, a value or a type needs a new API version (ADR 0201).
-- The crate `junto-protocol` holds the types of every message and event and one function that reads a frame by these rules.
+- The crate `junto-protocol` holds the types of every message and event and one function that reads a frame by these rules. It reads each event of a `change` on its own, so an event of an unknown type does not stop the reading of the others, and it states the length of each event in the frame.
 
 Schema:
 

@@ -5564,31 +5564,29 @@
             "type": "object"
           },
           {
+            "description": "The events of one change that the connection may receive, in the order in which the\nchange recorded them (ADR 0011). A change is never split between messages: the client\napplies all of them and then moves its cursor to `position`, the position after the\nchange, which every cursor of the server for this change states (ADR 0010).",
             "properties": {
-              "at": {
-                "format": "date-time",
-                "type": "string"
+              "events": {
+                "items": {
+                  "$ref": "#/components/schemas/StreamEvent"
+                },
+                "type": "array"
               },
-              "event": {
-                "$ref": "#/components/schemas/Event"
-              },
-              "id": {
-                "description": "The position of the event. It grows from one event to the next; an event with an\n`id` at or below the last one that the client has applied is a repeat.",
+              "position": {
                 "format": "int64",
                 "minimum": 0,
                 "type": "integer"
               },
               "type": {
                 "enum": [
-                  "event"
+                  "change"
                 ],
                 "type": "string"
               }
             },
             "required": [
-              "id",
-              "at",
-              "event",
+              "position",
+              "events",
               "type"
             ],
             "type": "object"
@@ -5746,6 +5744,30 @@
         "description": "Identifies one history of event positions. It changes when positions start again.",
         "format": "uuid",
         "type": "string"
+      },
+      "StreamEvent": {
+        "description": "One event of a `change`.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event": {
+            "$ref": "#/components/schemas/Event"
+          },
+          "id": {
+            "description": "The position of the event. It grows from one event to the next; an event with an `id`\nat or below the last one that the client has applied is a repeat. Two positions tell\nnothing about the events between them that the connection did not receive (ADR 0010).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "event"
+        ],
+        "type": "object"
       },
       "TokenAction": {
         "description": "One group of routes that an access token can reach. A token states its actions when it is\ncreated, and a request with it is refused on a route of another action.\n\nA server can add actions within one API version. An action that this build does not know\nis read as [`TokenAction::Unknown`], which is never written.",

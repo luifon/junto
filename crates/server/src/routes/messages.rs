@@ -224,18 +224,8 @@ pub(super) async fn send(
         }
         messages::mentions(connection, &access, &place, id, &body.document, now).await?;
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
-        let message_event = uuid::Uuid::now_v7();
-        messages::changed_at(
-            connection,
-            now,
-            place.value,
-            id,
-            position as u64,
-            false,
-            message_event,
-        )
-        .await?;
-        messages::notifications::create(connection, now, id, None, message_event).await?;
+        messages::changed(connection, now, place.value, id, position as u64, false).await?;
+        messages::notifications::create(connection, now, id, None).await?;
         if let Some(root) = thread_root {
             messages::threads::advance(connection, now, &access, root, position).await?;
             let (_, root_message) = messages::get(connection, &access, root, Purpose::Read).await?;
@@ -314,19 +304,8 @@ pub async fn edit_message(
             .bind(now)
             .execute(&mut *connection)
             .await?;
-        let message_event = uuid::Uuid::now_v7();
-        messages::changed_at(
-            connection,
-            now,
-            place.value,
-            id,
-            message.position,
-            false,
-            message_event,
-        )
-        .await?;
-        messages::notifications::create(connection, now, id, Some(&recipients), message_event)
-            .await?;
+        messages::changed(connection, now, place.value, id, message.position, false).await?;
+        messages::notifications::create(connection, now, id, Some(&recipients)).await?;
         Ok(messages::get(connection, &access, id, Purpose::Read)
             .await?
             .1)

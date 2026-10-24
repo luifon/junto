@@ -94,7 +94,13 @@ fn access_ended_frame(stream: &Stream) -> Value {
         .rev()
         .find(|frame| frame.contains("call_access_ended"))
         .expect("a frame with call_access_ended");
-    serde_json::from_str::<Value>(frame).unwrap()["event"].clone()
+    serde_json::from_str::<Value>(frame).unwrap()["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["event"].clone())
+        .find(|event| event["type"] == "call_access_ended")
+        .unwrap()
 }
 
 /// Finding B1: two accounts have a direct call only while they share a workspace or one of

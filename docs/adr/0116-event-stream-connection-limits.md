@@ -36,9 +36,9 @@ Client messages:
 
 Slow clients:
 
-- A connection has no queue of events in memory. It holds one batch that it read from the log, of at most 64 events and 256 KiB plus one event (ADR 0011), the control messages that it has not sent yet, and a write buffer of at most 1 MiB.
+- A connection has no queue of events in memory. It holds one batch that it read from the log, of at most 64 events and 256 KiB plus one event, and the rest of its last change up to the 256 KiB of the largest message (ADR 0011), the control messages that it has not sent yet, and a write buffer of at most 1 MiB.
 - The client must take each message within 10 seconds. The time starts when the socket holds the message and no earlier message waits, and it is one fixed moment: an interruption of the write, a check of the session and a new attempt do not move it. After it the server closes the connection with the code 4003 as far as the client still reads, and drops it.
-- The cursor of the client is the position of the last event that it applied, so the disconnection loses nothing. The client connects again and subscribes with that cursor (ADR 0207).
+- The cursor of the client is the position after the last change that it applied, and a change arrives in one message, so the disconnection loses nothing. The client connects again and subscribes with that cursor (ADR 0207).
 
 Control messages:
 

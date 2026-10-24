@@ -22,27 +22,6 @@ pub async fn changed(
     position: u64,
     deleted: bool,
 ) -> ApiResult<()> {
-    changed_at(
-        connection,
-        now,
-        place,
-        message_id,
-        position,
-        deleted,
-        Uuid::now_v7(),
-    )
-    .await
-}
-
-pub async fn changed_at(
-    connection: &mut PgConnection,
-    now: OffsetDateTime,
-    place: MessagePlace,
-    message_id: MessageId,
-    position: u64,
-    deleted: bool,
-    event_id: Uuid,
-) -> ApiResult<()> {
     let event = Event::MessageChanged {
         place,
         message_id,
@@ -65,10 +44,9 @@ pub async fn changed_at(
         },
     ) = (call_id, place)
     {
-        events::log::record_at_id(
+        events::log::record(
             connection,
             now,
-            event_id,
             &events::audience::Audience::SystemMessage {
                 workspace_id,
                 channel_id,
@@ -81,7 +59,7 @@ pub async fn changed_at(
     } else {
         let audience = events::audience::Audience::fixed_by(&event)
             .ok_or_else(|| ApiError::internal(&"a message event needs its audience"))?;
-        events::log::record_at_id(connection, now, event_id, &audience, &event).await?;
+        events::log::record(connection, now, &audience, &event).await?;
     }
     Ok(())
 }

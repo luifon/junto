@@ -78,7 +78,7 @@ async fn delivery_batch_statement_bound() {
         tx.commit().await.unwrap();
         let subscription = Subscription {
             level: Level::Full,
-            position: start.position as i64,
+            position: junto_server::events::log::change_of(start.position),
             epoch: start.epoch,
         };
         let who = crate::stream_review::opened(&reader);
@@ -112,7 +112,13 @@ async fn delivery_batch_statement_bound() {
                 panic!("expected events")
             };
             assert!(!skipped);
-            assert_eq!(deliveries.len(), 100);
+            assert_eq!(
+                deliveries
+                    .iter()
+                    .map(|delivery| delivery.events)
+                    .sum::<usize>(),
+                100
+            );
         }
         let counts = crate::messages_queries::since(
             crate::messages_queries::statements(&mut observer, role).await,
@@ -144,68 +150,4 @@ async fn delivery_batch_statement_bound() {
         );
     }
     server.require_no_statement_eviction(evictions).await;
-}
-
-#[tokio::test]
-async fn suppressed_events_do_not_wake_or_fill_delivery_batches() {
-    use crate::plan_support::{analyze, explained, index_names, visited_rows};
-    let server = TestServer::start().await;
-    let owner = server.owner().await;
-    let start = server.snapshot(&owner).await.cursor;
-    let app = junto_server::state::AppState::new(
-        server.database_with(|_| {}).await,
-        server.state.config.clone(),
-        server.state.clock.clone(),
-        server.state.server_id,
-        None,
-        None,
-    );
-    let registration = app.streams.open(owner.account_id, owner.device_id).unwrap();
-    registration.link().set_level(Some(Level::Full));
-    sqlx::query("insert into events(id,recorded_at,class,kind,audience,payload) select gen_random_uuid(),$1,'call_invite','call_invitation_resolved','{\"to\":\"suppressed\"}'::jsonb,jsonb_build_object('type','call_invitation_resolved','invitation_id',gen_random_uuid(),'outcome','expired') from generate_series(1,5000)")
-        .bind(server.clock.now()).execute(&server.db).await.unwrap();
-    let head = server.snapshot(&owner).await.cursor;
-    assert_eq!(
-        junto_server::events::watcher::advance(&app, Some(start.position as i64))
-            .await
-            .unwrap(),
-        head.position as i64
-    );
-    let woke = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        registration.link().news(),
-    )
-    .await
-    .is_ok();
-    let subscription = Subscription {
-        level: Level::Full,
-        position: start.position as i64,
-        epoch: start.epoch,
-    };
-    let batch = next_batch(&app, &crate::stream_review::opened(&owner), subscription, 5)
-        .await
-        .unwrap();
-    let Batch::Events {
-        deliveries,
-        more,
-        position,
-        ..
-    } = batch
-    else {
-        panic!("unexpected {batch:?}")
-    };
-    assert_eq!(
-        (woke, more, position, deliveries.len()),
-        (false, false, head.position as i64, 0)
-    );
-    analyze(&server.db, &["events"]).await;
-    let plan: serde_json::Value=sqlx::query_scalar(explained("select position from events where position>$1 and audience->>'to' is distinct from 'suppressed' order by position limit 5"))
-        .bind(start.position as i64).fetch_one(&server.db).await.unwrap();
-    assert!(
-        index_names(&plan)
-            .iter()
-            .any(|name| name == "events_deliverable"),
-        "{plan}"
-    );
-    assert!(visited_rows(&plan[0]["Plan"]) < 10, "{plan}");
 }

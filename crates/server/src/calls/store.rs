@@ -1114,15 +1114,6 @@ pub async fn tell_invitation(
         outcome,
     };
     let at = [invitation.place];
-    if waiting.silent {
-        events::log::record(
-            connection,
-            now,
-            &events::audience::Audience::Suppressed,
-            &resolved,
-        )
-        .await?;
-    }
     for account_id in waiting.told() {
         events::tell_account_at(&mut *connection, now, account_id, &at, &resolved).await?;
     }

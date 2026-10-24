@@ -125,9 +125,18 @@ async fn the_background_level_receives_control_events_only() {
             "device_renamed",
         ]
     );
-    let shared: Vec<&(u64, Event)> = in_full
-        .iter()
-        .filter(|event| in_background.contains(event))
+    // The index of an event in its change counts the events that the connection receives,
+    // so the same event is compared by its change (ADR 0010).
+    let by_change = |events: &[(u64, Event)]| -> Vec<(i64, Event)> {
+        events
+            .iter()
+            .map(|(id, event)| (junto_server::events::log::change_of(*id), event.clone()))
+            .collect()
+    };
+    let background_events = by_change(&in_background);
+    let shared: Vec<(i64, Event)> = by_change(&in_full)
+        .into_iter()
+        .filter(|event| background_events.contains(event))
         .collect();
     assert_eq!(shared.len(), 2);
 }

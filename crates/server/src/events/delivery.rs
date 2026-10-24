@@ -6,7 +6,10 @@ use std::collections::{HashMap, HashSet};
 
 use junto_protocol::account::{AccountStatus, RecoveryNotice};
 use junto_protocol::error::ErrorCode;
-use junto_protocol::events::{Cursor, EndReason, Event, Level, ResyncReason, ServerMessage};
+use junto_protocol::events::{
+    Cursor, EndReason, Event, LARGEST_SERVER_MESSAGE_BYTES, Level, ResyncReason, ServerMessage,
+    StreamEvent,
+};
 use junto_protocol::ids::{
     AccountId, CallId, ChannelId, DeviceId, RecoveryId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
 };
@@ -23,7 +26,7 @@ use crate::events::audience::{
     Audience, CallStanding, ChannelStanding, Class, Recipient, WorkspaceStanding, receives,
 };
 use crate::events::hub::CallKey;
-use crate::events::log::{self, STORED_AUDIENCE_BYTES, STORED_PAYLOAD_BYTES};
+use crate::events::log::{self, STORED_AUDIENCE_BYTES, STORED_PAYLOAD_BYTES, stream_position};
 use crate::extract::Bearer;
 use crate::read;
 use crate::state::AppState;
@@ -46,7 +49,7 @@ pub struct Opened {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Subscription {
     pub level: Level,
-    /// The connection has been served every event up to this position.
+    /// The connection has been served every change up to this position.
     pub position: i64,
     /// The epoch of the cursor that the subscription started from (ADR 0010).
     pub epoch: StreamEpoch,
@@ -68,10 +71,12 @@ impl Ended {
     }
 }
 
+/// The `change` message of one change, written as its text, with the number of its events.
 #[derive(Debug)]
 pub struct Delivery {
     pub position: i64,
-    pub message: ServerMessage,
+    pub text: String,
+    pub events: usize,
 }
 
 #[derive(Debug)]
@@ -87,8 +92,9 @@ pub enum Batch {
         /// Taken before the transaction of the batch read anything. Every decision of the
         /// batch is at most as old as this.
         read_at: Instant,
-        /// The event at `position` is one that the account may receive and that the server
-        /// cannot send. The client is told to resynchronise.
+        /// The change at `position` holds an event that the account may receive and that the
+        /// server cannot send, or its message is larger than a client reads. The client is
+        /// told to resynchronise.
         skipped: bool,
     },
     Resync(ResyncReason),
@@ -112,8 +118,15 @@ struct Candidate {
     event: Option<Event>,
 }
 
+/// An event that the connection may receive, of the change at `position`.
+struct Receivable {
+    position: i64,
+    at: OffsetDateTime,
+    event: Event,
+}
+
 enum Decision {
-    Deliver(Box<Delivery>),
+    Deliver(Box<Receivable>),
     Hidden,
     /// The account may receive the event, or the server cannot tell, and the event cannot be
     /// sent.
@@ -247,7 +260,6 @@ fn selected_classes(level: Level, in_call: Option<CallKey>) -> Vec<&'static str>
 fn addressed_query(before: &'static str, after: &'static str) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(format!(
         "{before}
-         and audience->>'to' is distinct from 'suppressed'
          and (audience->>'to' is distinct from 'notification' or exists (
              select 1 from notification_receivers nr where nr.event_id=events.id and nr.account_id=$2))
          and (audience_account_id is null or audience_account_id=$2)
@@ -324,24 +336,52 @@ fn decide(
         return Ok(Decision::Hidden);
     }
     match (candidate.class, candidate.event) {
-        (Some(_), Some(event)) => Ok(Decision::Deliver(Box::new(Delivery {
+        (Some(_), Some(event)) => Ok(Decision::Deliver(Box::new(Receivable {
             position: candidate.position,
-            message: ServerMessage::Event {
-                id: u64::try_from(candidate.position)
-                    .map_err(|error| ApiError::internal(&error))?,
-                at: candidate.recorded_at,
-                event,
-            },
+            at: candidate.recorded_at,
+            event,
         }))),
         _ => Ok(Decision::Unsendable),
     }
+}
+
+/// The `change` message of the events of one change that a connection receives, with the
+/// index of each among them as the low part of its position (ADR 0010). `None` when the
+/// message is larger than a client reads.
+fn change_message(position: i64, events: Vec<Receivable>) -> ApiResult<Option<Delivery>> {
+    if u64::try_from(events.len()).unwrap_or(u64::MAX) > log::END_OF_CHANGE {
+        return Ok(None);
+    }
+    let events = (0u64..)
+        .zip(events)
+        .map(|(index, receivable)| {
+            Ok(StreamEvent {
+                id: stream_position(position, index)?,
+                at: receivable.at,
+                event: receivable.event,
+            })
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
+    let count = events.len();
+    let text = serde_json::to_string(&ServerMessage::Change {
+        position: stream_position(position, log::END_OF_CHANGE)?,
+        events,
+    })
+    .map_err(|error| ApiError::internal(&error))?;
+    Ok(
+        (text.len() <= LARGEST_SERVER_MESSAGE_BYTES).then_some(Delivery {
+            position,
+            text,
+            events: count,
+        }),
+    )
 }
 
 fn parsed<T: serde::de::DeserializeOwned>(stored: Option<Json<serde_json::Value>>) -> Option<T> {
     serde_json::from_value(stored?.0).ok()
 }
 
-type CountedRow = (i64, String, Option<Json<serde_json::Value>>);
+type CountedRow = (i64, i32, String, Option<Json<serde_json::Value>>);
 
 /// Decides where a subscription starts, or that the client must load a snapshot (ADR 0207).
 /// The decision counts the events after the cursor that the account may receive at the
@@ -364,38 +404,42 @@ pub async fn subscribe(
         let Some(cursor) = cursor else {
             return Ok(Start::Subscribed(log.cursor(log.head)?));
         };
-        let mut after = match i64::try_from(cursor.position) {
-            Ok(position) if cursor.epoch == log.epoch && position <= log.head => position,
-            _ => return Ok(Start::Resync(ResyncReason::UnknownCursor)),
-        };
-        if after < log.trimmed_through {
+        let change = log::change_of(cursor.position);
+        if cursor.epoch != log.epoch || change > log.head {
+            return Ok(Start::Resync(ResyncReason::UnknownCursor));
+        }
+        if change < log.trimmed_through {
             return Ok(Start::Resync(ResyncReason::TooFarBehind));
         }
+        // The rows after the whole change at the cursor, read in pages by position and
+        // ordinal.
+        let mut after = (change, i32::MAX);
         let mut waiting = 0;
         loop {
             let rows: Vec<CountedRow> = sqlx::query_as(addressed_query(
-                "select position, class,
+                "select position, ordinal, class,
                         case when octet_length(audience::text) <= $5 then audience end
                  from events
-                 where position > $1",
-                "order by position
+                 where (position, ordinal) > ($1, $6)",
+                "order by position, ordinal
                  limit $4",
             ))
-            .bind(after)
+            .bind(after.0)
             .bind(access.account_id)
             .bind(&classes)
             .bind(COUNTED_PER_READ)
             .bind(STORED_AUDIENCE_BYTES)
+            .bind(after.1)
             .fetch_all(&mut *connection)
             .await?;
             let Some(last) = rows.last() else {
                 break;
             };
-            after = last.0;
+            after = (last.0, last.1);
             let full = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= COUNTED_PER_READ;
             let candidates: Vec<Candidate> = rows
                 .into_iter()
-                .map(|(position, class, audience)| Candidate {
+                .map(|(position, _, class, audience)| Candidate {
                     position,
                     recorded_at: OffsetDateTime::UNIX_EPOCH,
                     class: Class::from_stored(&class),
@@ -421,81 +465,123 @@ pub async fn subscribe(
     })
 }
 
+/// Position, ordinal, time, class, audience, payload, and whether the row is within the
+/// limits of its read.
 type EventRow = (
     i64,
+    i32,
     OffsetDateTime,
     String,
     Option<Json<serde_json::Value>>,
     Option<Json<serde_json::Value>>,
-    i64,
+    bool,
 );
 
-/// The last event in this committed transaction that the account may receive at full level.
-/// The caller supplies one read transaction so access, the epoch and all batches agree.
+fn read_candidate(row: EventRow) -> Candidate {
+    let (position, _, recorded_at, class, audience, payload, _) = row;
+    Candidate {
+        position,
+        recorded_at,
+        class: Class::from_stored(&class),
+        audience: parsed(audience),
+        event: parsed(payload),
+    }
+}
+
+/// The rows of the change at `$1` after the ordinal `$4` that are addressed to the
+/// connection, with the parts that are not above their largest sizes, at most `$7`.
+const PAGE_OF_CHANGE: (&str, &str) = (
+    "select position, ordinal, recorded_at, class,
+            case when octet_length(audience::text) <= $5 then audience end,
+            case when octet_length(audience::text) <= $5 and octet_length(payload::text) <= $6
+                 then payload end,
+            true
+     from events where position = $1 and ordinal > $4",
+    "order by ordinal limit $7",
+);
+
+/// The rows of the change at `$1` that are addressed to the connection, in their order, while
+/// the stored parts that they hold reach at most `$4` bytes, and then the first row beyond,
+/// without its parts. The bytes count each part up to its largest size.
+const CHANGE_WITHIN: (&str, &str) = (
+    "select position, ordinal, recorded_at, class,
+            case when within and audience_bytes <= $5 then audience end,
+            case when within and audience_bytes <= $5 and payload_bytes <= $6 then payload end,
+            within
+     from (
+         select *, bytes_through <= $4 as within
+         from (
+             select *, sum(own_bytes) over (order by ordinal) as bytes_through
+             from (
+                 select position, ordinal, recorded_at, class, audience, payload,
+                        octet_length(audience::text) as audience_bytes,
+                        octet_length(payload::text) as payload_bytes,
+                        least(octet_length(audience::text), $5)
+                            + least(octet_length(payload::text), $6) as own_bytes
+                 from events
+                 where position = $1",
+    "order by ordinal
+             ) as addressed
+         ) as summed
+     ) as marked
+     where bytes_through - own_bytes <= $4
+     order by ordinal",
+);
+
+/// Whether the caller may receive at full level an event of its committed change at
+/// `change`: the cursor after that change, or `None`. The caller supplies one read
+/// transaction so access, the epoch and all reads agree.
 pub(crate) async fn last_receivable(
     connection: &mut PgConnection,
     account: AccountId,
-    first: i64,
-    last: i64,
+    change: i64,
     now: OffsetDateTime,
 ) -> ApiResult<Option<Cursor>> {
     let Some(access) = Access::of_account(connection, account).await? else {
         return Ok(None);
     };
     let log = log::state(connection).await?;
-    if first <= log.trimmed_through {
+    if change <= log.trimmed_through {
         return Err(ApiError::internal(
             &"request events were trimmed before its receipt was read",
         ));
     }
     let classes = selected_classes(Level::Full, None);
-    let mut through = last;
+    let mut after = -1;
     loop {
-        let rows: Vec<EventRow> = sqlx::query_as(addressed_query(
-"select position, recorded_at, class,
-                    case when octet_length(audience::text) <= $5 then audience end,
-                    case when octet_length(audience::text) <= $5 and octet_length(payload::text) <= $6 then payload end,
-                    0::bigint
-             from events where position >= $1 and position <= $4",
-"order by position desc limit 64",
-)).bind(first).bind(account).bind(&classes).bind(through)
-            .bind(STORED_AUDIENCE_BYTES).bind(STORED_PAYLOAD_BYTES)
-            .fetch_all(&mut *connection).await?;
-        let Some(oldest) = rows.last() else {
+        let rows: Vec<EventRow> =
+            sqlx::query_as(addressed_query(PAGE_OF_CHANGE.0, PAGE_OF_CHANGE.1))
+                .bind(change)
+                .bind(account)
+                .bind(&classes)
+                .bind(after)
+                .bind(STORED_AUDIENCE_BYTES)
+                .bind(STORED_PAYLOAD_BYTES)
+                .bind(64i64)
+                .fetch_all(&mut *connection)
+                .await?;
+        let Some(last) = rows.last() else {
             return Ok(None);
         };
-        through = oldest.0 - 1;
-        let candidates: Vec<Candidate> = rows
-            .into_iter()
-            .map(
-                |(position, recorded_at, class, audience, payload, _)| Candidate {
-                    position,
-                    recorded_at,
-                    class: Class::from_stored(&class),
-                    audience: parsed(audience),
-                    event: parsed(payload),
-                },
-            )
-            .collect();
+        after = last.1;
+        let candidates: Vec<Candidate> = rows.into_iter().map(read_candidate).collect();
         let standing = Standing::load(connection, &access, &candidates, now).await?;
         for candidate in candidates {
             match decide(&access, &standing, Level::Full, None, candidate)? {
-                Decision::Deliver(delivery) => return Ok(Some(log.cursor(delivery.position)?)),
+                Decision::Deliver(_) => return Ok(Some(log.cursor(change)?)),
                 Decision::Hidden => {}
                 Decision::Unsendable => {
                     return Err(ApiError::internal(&"a request event cannot be delivered"));
                 }
             }
         }
-        if through < first {
-            return Ok(None);
-        }
     }
 }
 
-/// Reads the next events after the position of a subscription and keeps the ones that the
+/// Reads the next changes after the position of a subscription and keeps the events that the
 /// account may receive now. A batch has at most `most` rows and a budget of bytes, and a part
-/// of a row above its largest size is not loaded.
+/// of a row above its largest size is not loaded. A batch ends at the end of a change: it
+/// also holds the rows of its last change that pass these limits (ADR 0011).
 pub async fn next_batch(
     app: &AppState,
     who: &Opened,
@@ -520,27 +606,39 @@ pub async fn next_batch(
         if subscription.position < log.trimmed_through {
             return Ok(Batch::Resync(ResyncReason::TooFarBehind));
         }
-        let rows: Vec<EventRow> = sqlx::query_as(addressed_query(
-            "select position, recorded_at, class,
-                    case when audience_bytes <= $6 then audience end,
-                    case when audience_bytes <= $6 and payload_bytes <= $7 then payload end,
-                    total
+        // The rows within the limits, and after them the first row beyond them, without its
+        // parts: it tells whether the log holds more and whether the last change goes on.
+        let mut rows: Vec<EventRow> = sqlx::query_as(addressed_query(
+            "select position, ordinal, recorded_at, class,
+                    case when within and audience_bytes <= $6 then audience end,
+                    case when within and audience_bytes <= $6 and payload_bytes <= $7
+                         then payload end,
+                    within
              from (
-                 select *, count(*) over () as total,
-                        sum(least(audience_bytes, $6) + least(payload_bytes, $7))
-                            over (order by position) as bytes_through
+                 select *, bytes_before < $5 and number <= $4 as within
                  from (
-                     select position, recorded_at, class, audience, payload,
-                            octet_length(audience::text) as audience_bytes,
-                            octet_length(payload::text) as payload_bytes
-                     from events
-                     where position > $1",
-            "order by position
-                     limit $4
-                 ) as addressed
-             ) as sized
-             where bytes_through - least(audience_bytes, $6) - least(payload_bytes, $7) < $5
-             order by position",
+                     select *, bytes_through - own_bytes as bytes_before,
+                            lag(bytes_through - own_bytes)
+                                over (order by position, ordinal) as previous_before
+                     from (
+                         select *, row_number() over (order by position, ordinal) as number,
+                                sum(own_bytes) over (order by position, ordinal) as bytes_through
+                         from (
+                             select position, ordinal, recorded_at, class, audience, payload,
+                                    octet_length(audience::text) as audience_bytes,
+                                    octet_length(payload::text) as payload_bytes,
+                                    least(octet_length(audience::text), $6)
+                                        + least(octet_length(payload::text), $7) as own_bytes
+                             from events
+                             where position > $1",
+            "order by position, ordinal
+                             limit $4 + 1
+                         ) as addressed
+                     ) as counted
+                 ) as sized
+             ) as marked
+             where bytes_before < $5 or coalesce(previous_before, 0) < $5
+             order by position, ordinal",
         ))
         .bind(subscription.position)
         .bind(access.account_id)
@@ -551,42 +649,83 @@ pub async fn next_batch(
         .bind(STORED_PAYLOAD_BYTES)
         .fetch_all(&mut *connection)
         .await?;
-        let read = i64::try_from(rows.len()).unwrap_or(i64::MAX);
-        let addressed = rows.first().map_or(0, |row| row.5);
-        let mut more = addressed >= size || read < addressed;
+        let beyond = rows.pop_if(|row| !row.6);
+        let mut more = beyond.is_some();
+        // The last change, which the limits cut, is read again whole, up to the size of the
+        // largest message. A change whose rows pass it is not read further and is skipped.
+        let mut oversized = None;
+        if let (Some(beyond), Some(&(change, ..))) = (&beyond, rows.last())
+            && beyond.0 == change
+        {
+            rows.retain(|row| row.0 != change);
+            let mut whole: Vec<EventRow> =
+                sqlx::query_as(addressed_query(CHANGE_WITHIN.0, CHANGE_WITHIN.1))
+                    .bind(change)
+                    .bind(access.account_id)
+                    .bind(&classes)
+                    .bind(i64::try_from(LARGEST_SERVER_MESSAGE_BYTES).unwrap_or(i64::MAX))
+                    .bind(STORED_AUDIENCE_BYTES)
+                    .bind(STORED_PAYLOAD_BYTES)
+                    .fetch_all(&mut *connection)
+                    .await?;
+            if whole.pop_if(|row| !row.6).is_some() {
+                tracing::error!(position = change, "a change is larger than a client reads");
+                oversized = Some(change);
+            } else {
+                rows.extend(whole);
+            }
+        }
         let mut position = match rows.last() {
             Some(last) if more => last.0,
             _ => log.head.max(subscription.position),
         };
-        let candidates: Vec<Candidate> = rows
-            .into_iter()
-            .map(
-                |(position, recorded_at, class, audience, payload, _)| Candidate {
-                    position,
-                    recorded_at,
-                    class: Class::from_stored(&class),
-                    audience: parsed(audience),
-                    event: parsed(payload),
-                },
-            )
-            .collect();
+        let candidates: Vec<Candidate> = rows.into_iter().map(read_candidate).collect();
         let standing = Standing::load(connection, &access, &candidates, app.now()).await?;
 
         let mut deliveries = Vec::new();
-        let mut skipped = false;
+        let mut change: Vec<Receivable> = Vec::new();
+        let mut skipped = None;
         for candidate in candidates {
             let at = candidate.position;
+            if change.first().is_some_and(|first| first.position != at) {
+                let ended = change.first().map_or(at, |first| first.position);
+                match change_message(ended, std::mem::take(&mut change))? {
+                    Some(delivery) => deliveries.push(delivery),
+                    None => {
+                        tracing::error!(position = ended, "a change is larger than a client reads");
+                        skipped = Some(ended);
+                        break;
+                    }
+                }
+            }
             match decide(&access, &standing, subscription.level, in_call, candidate)? {
-                Decision::Deliver(delivery) => deliveries.push(*delivery),
+                Decision::Deliver(receivable) => change.push(*receivable),
                 Decision::Hidden => {}
                 Decision::Unsendable => {
                     tracing::error!(position = at, "an event of the log cannot be sent");
-                    position = at;
-                    more = false;
-                    skipped = true;
+                    skipped = Some(at);
                     break;
                 }
             }
+        }
+        if skipped.is_none()
+            && let Some(first) = change.first()
+        {
+            let ended = first.position;
+            match change_message(ended, change)? {
+                Some(delivery) => deliveries.push(delivery),
+                None => {
+                    tracing::error!(position = ended, "a change is larger than a client reads");
+                    skipped = Some(ended);
+                }
+            }
+        }
+        if skipped.is_none() {
+            skipped = oversized;
+        }
+        if let Some(at) = skipped {
+            position = at;
+            more = false;
         }
         Ok(Batch::Events {
             deliveries,
@@ -594,7 +733,7 @@ pub async fn next_batch(
             more,
             cursor: log.cursor(position)?,
             read_at,
-            skipped,
+            skipped: skipped.is_some(),
         })
     })
 }

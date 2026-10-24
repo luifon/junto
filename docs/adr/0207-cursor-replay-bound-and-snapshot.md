@@ -14,7 +14,7 @@ Cursor:
 
 - A cursor is the epoch of the log and a position (ADR 0010). It means: the holder has the effect of every event up to this position that it may receive.
 - The device keeps its cursor. The server stores no cursor per device.
-- A client moves its cursor to the `id` of each event that it applied, and to the cursor of each `checkpoint`.
+- A client moves its cursor to the `id` of each event that it applied, to the `position` of each `change` after its events (ADR 0011), and to the cursor of each `checkpoint`.
 
 Subscription:
 
@@ -37,14 +37,14 @@ What `resync` means:
 What positions tell a recipient:
 
 - Positions are the same for every recipient (ADR 0010). A recipient learns the positions of the events that it receives, of the cursors of `subscribed` and `checkpoint`, and of a snapshot.
-- From them it can tell how many positions the server used in a span of time. That number contains the events that it did not receive and the positions of transactions that failed.
-- It cannot tell which of those positions are events, of which type or class they are, whom they are for, or which workspace or channel they concern.
+- From them it can tell how many positions the server used in a span of time. That number contains the changes that it did not receive and the positions of transactions that failed.
+- It cannot tell which of those positions are changes, how many events a change recorded, of which type or class they are, whom they are for, or which workspace or channel they concern (ADR 0010, ADR 0011).
 - A `checkpoint` is sent only when the connection has read the log to its end, and then carries the newest position. It is the same for both levels.
 - The answers `unknown_cursor` and `too_far_behind` tell nothing more: the first depends on the epoch and the newest position, the second on the number of positions that the log keeps and on the events that the account may receive.
 
 Log:
 
-- The log keeps the newest 5,000 retention units, each holding one event or one message/notice pair. The maintenance task (ADR 0009) removes older events once per minute, in batches, and stores the position up to which it removed them in the same transaction.
+- The log keeps the newest 5,000 changes, whatever number of events each of them recorded (ADR 0010). The maintenance task (ADR 0009) stores the position of the newest change that it removes, and then removes the events up to it once per minute, in batches.
 - A connection that is subscribed and whose position falls below the kept part gets `resync`.
 
 Snapshot:
@@ -71,10 +71,10 @@ Change of level:
 - A snapshot followed by the events after its cursor gives the state of the server. A test takes snapshots during concurrent changes and compares the result with a later snapshot.
 - A replay sends at most 1000 events plus the events that arrive during it.
 - A client that was disconnected for longer than the log keeps, or during more than 1000 events, loads a snapshot.
-- A server that records more than 5,000 retention units within one minute keeps more than that bound until the next run of the maintenance task.
+- A server that records more than 5,000 changes within one minute keeps more than that bound until the next run of the maintenance task.
 - The count of the replay bound reads the kept part of the log after the cursor and decides each event, 500 at a time. The cost of a `subscribe` grows with the length of that part.
 - A reconnect loads a snapshot only because of events that the account would have received. An account cannot push another account over the bound of 1000 events with events that the other account may not see.
-- The bound of the kept log counts retention units, whoever they are for. A connection whose cursor predates the stored trim boundary loads a snapshot. Every route that records an event for a request of one account has a limit of requests, so one account uses a bounded number of positions per minute: message changes (ADR 0408), the changes of the own profile and of the names of the own devices (ADR 0119), and the requests of calls (ADR 0509).
+- The bound of the kept log counts changes, whoever their events are for. A recipient that finds the trimmed boundary with cursors therefore learns the number of changes after it, not the number of events of a change that went to other accounts: a ring of a muted conversation, which records no event for the muted account, moves the boundary as an ordinary ring does. A connection whose cursor predates the stored trim boundary loads a snapshot. Every route that records an event for a request of one account has a limit of requests, so one account uses a bounded number of positions per minute: message changes (ADR 0408), the changes of the own profile and of the names of the own devices (ADR 0119), and the requests of calls (ADR 0509).
 - After a restore of an older backup the epoch changes (ADR 0010), every cursor is unknown, and every client loads a snapshot.
 
-The retention bound counts units: a single event, or a message event immediately followed by its notification event. A pair has a unique stored parent link and is removed together. The default 5,000 units therefore retain the same number of ordinary messages as before notifications reserved positions in every mode, with at most 10,000 physical rows after maintenance. Other events still consume one unit each. Replay limits count the rows eligible for the connection, excluding suppressed events and notices addressed to others before applying the bound; final authorization remains at delivery. Global positions and the trimmed cursor boundary keep their existing meaning.
+A message and its notice are one change, so the default 5,000 changes retain 5,000 ordinary messages whether or not they have notices. The number of rows is the sum of the events of the kept changes: a message with a notice has two, and a change of a call or of a moderation can have more; the request limits of the routes bound how fast one account adds changes. Replay limits count the rows eligible for the connection, excluding notices addressed to others before applying the bound; final authorization remains at delivery. The trimmed cursor boundary is the position of a change, and every row of that change is removed with it.

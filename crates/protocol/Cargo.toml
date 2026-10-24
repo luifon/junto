@@ -15,7 +15,8 @@ openapi = ["dep:utoipa", "junto-authz/utoipa"]
 junto-authz = { workspace = true, features = ["serde"] }
 base64 = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# Each event of a `change` message is read from its own text (ADR 0206).
+serde_json = { workspace = true, features = ["raw_value"] }
 sqlx = { workspace = true, optional = true }
 thiserror = { workspace = true }
 time = { workspace = true }

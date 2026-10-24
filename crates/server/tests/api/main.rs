@@ -16,6 +16,7 @@ mod calls_review3;
 mod calls_rooms;
 mod calls_state;
 mod calls_support;
+mod change_positions;
 mod concurrency;
 mod contacts;
 mod deletions;

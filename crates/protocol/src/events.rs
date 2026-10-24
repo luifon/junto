@@ -42,6 +42,11 @@ use crate::recording::Recording;
 use crate::roles::{ServerRole, WorkspaceRole};
 use crate::structure::{Category, Channel, Workspace, WorkspaceMember};
 
+/// The largest message of the server that a client reads: the size of a whole batch of events
+/// on the server (ADR 0116). The server sends no larger `change`; it tells the connection to
+/// load a snapshot instead (ADR 0011).
+pub const LARGEST_SERVER_MESSAGE_BYTES: usize = 256 * 1024;
+
 /// The path of the event stream. A device opens it with its session token in the
 /// `Authorization` header of the upgrade request.
 pub const STREAM_PATH: &str = "/api/v1/events";
@@ -132,13 +137,13 @@ pub enum ServerMessage {
     },
     /// The answer to a `subscribe`. Events after `cursor` follow.
     Subscribed { level: Level, cursor: Cursor },
-    Event {
-        /// The position of the event. It grows from one event to the next; an event with an
-        /// `id` at or below the last one that the client has applied is a repeat.
-        id: u64,
-        #[serde(with = "time::serde::rfc3339")]
-        at: OffsetDateTime,
-        event: Event,
+    /// The events of one change that the connection may receive, in the order in which the
+    /// change recorded them (ADR 0011). A change is never split between messages: the client
+    /// applies all of them and then moves its cursor to `position`, the position after the
+    /// change, which every cursor of the server for this change states (ADR 0010).
+    Change {
+        position: u64,
+        events: Vec<StreamEvent>,
     },
     /// The connection has received every event up to `cursor` that it may receive.
     Checkpoint { cursor: Cursor },
@@ -158,11 +163,24 @@ pub enum ServerMessage {
     },
 }
 
+/// One event of a `change`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StreamEvent {
+    /// The position of the event. It grows from one event to the next; an event with an `id`
+    /// at or below the last one that the client has applied is a repeat. Two positions tell
+    /// nothing about the events between them that the connection did not receive (ADR 0010).
+    pub id: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    pub event: Event,
+}
+
 impl ServerMessage {
     pub const NAMES: &'static [&'static str] = &[
         "hello",
         "subscribed",
-        "event",
+        "change",
         "checkpoint",
         "resync",
         "ended",
@@ -867,14 +885,37 @@ impl Event {
     reason = "The ordinary message stays inline; boxing it would allocate for every decoded frame and change the reader API."
 )]
 pub enum Received {
+    /// Every message except `change`.
     Message(ServerMessage),
-    /// An event of a type that this version does not know. The client moves its cursor to
-    /// `id` and applies nothing.
-    UnknownEvent {
-        id: u64,
+    /// The events of one `change`, in their order, and the position after the change.
+    Change {
+        position: u64,
+        events: Vec<ReadEvent>,
     },
     /// A message of a type that this version does not know. The client skips it.
     UnknownMessage,
+}
+
+/// One event of a `change` as a client of this API version reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Each event of a change is read once and applied; boxing it would allocate for every event."
+)]
+pub enum ReadEvent {
+    /// `bytes` is the length of the event in the text of the message.
+    Known { event: StreamEvent, bytes: usize },
+    /// An event of a type that this version does not know. The client moves its cursor to
+    /// `id` and applies nothing.
+    Unknown { id: u64 },
+}
+
+/// The events of a `change` message as text, so that each is read on its own.
+#[derive(Deserialize)]
+struct ChangeText<'a> {
+    position: u64,
+    #[serde(borrow)]
+    events: Vec<&'a serde_json::value::RawValue>,
 }
 
 /// Reads one text frame of the server. A type that this version does not know is not an
@@ -888,16 +929,30 @@ pub fn decode(text: &str) -> Result<Received, serde_json::Error> {
     if !ServerMessage::NAMES.contains(&message_type.as_str()) {
         return Ok(Received::UnknownMessage);
     }
-    if message_type == "event" {
-        let event_type = value.get("event").and_then(named);
-        let id = value.get("id").and_then(serde_json::Value::as_u64);
-        if let (Some(event_type), Some(id)) = (event_type, id)
-            && !Event::NAMES.contains(&event_type.as_str())
-        {
-            return Ok(Received::UnknownEvent { id });
-        }
+    if message_type != "change" {
+        return serde_json::from_value(value).map(Received::Message);
     }
-    serde_json::from_value(value).map(Received::Message)
+    let change: ChangeText = serde_json::from_str(text)?;
+    let position = change.position;
+    change
+        .events
+        .into_iter()
+        .map(|raw| {
+            let item: serde_json::Value = serde_json::from_str(raw.get())?;
+            let event_type = item.get("event").and_then(named);
+            let id = item.get("id").and_then(serde_json::Value::as_u64);
+            if let (Some(event_type), Some(id)) = (event_type, id)
+                && !Event::NAMES.contains(&event_type.as_str())
+            {
+                return Ok(ReadEvent::Unknown { id });
+            }
+            Ok(ReadEvent::Known {
+                event: serde_json::from_value(item)?,
+                bytes: raw.get().len(),
+            })
+        })
+        .collect::<Result<_, _>>()
+        .map(|events| Received::Change { position, events })
 }
 
 #[cfg(test)]
@@ -1479,10 +1534,13 @@ mod tests {
                 level: Level::Background,
                 cursor,
             },
-            ServerMessage::Event {
-                id: 42,
-                at: time(),
-                event: samples().remove(0),
+            ServerMessage::Change {
+                position: 43,
+                events: vec![StreamEvent {
+                    id: 42,
+                    at: time(),
+                    event: samples().remove(0),
+                }],
             },
             ServerMessage::Checkpoint { cursor },
             ServerMessage::Resync {
@@ -1498,7 +1556,20 @@ mod tests {
             let text = serde_json::to_string(&message).unwrap();
             let json: serde_json::Value = serde_json::from_str(&text).unwrap();
             names.push(json["type"].as_str().unwrap().to_owned());
-            assert_eq!(decode(&text).unwrap(), Received::Message(message));
+            let read = match &message {
+                ServerMessage::Change { position, events } => Received::Change {
+                    position: *position,
+                    events: events
+                        .iter()
+                        .map(|event| ReadEvent::Known {
+                            event: event.clone(),
+                            bytes: serde_json::to_string(event).unwrap().len(),
+                        })
+                        .collect(),
+                },
+                _ => Received::Message(message),
+            };
+            assert_eq!(decode(&text).unwrap(), read);
         }
         assert_eq!(names, ServerMessage::NAMES);
     }
@@ -1519,24 +1590,39 @@ mod tests {
 
     #[test]
     fn unknown_types_are_skipped_and_unknown_fields_are_ignored() {
-        let unknown_event = r#"{"type":"event","id":9,"at":"2030-01-01T00:00:00Z",
-            "event":{"type":"message_created","text":"hello"}}"#;
+        let known = r#"{"id":10,"at":"2030-01-01T00:00:00Z","new":1,
+            "event":{"type":"device_removed","new":true,
+                     "device_id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"}}"#;
+        let change = format!(
+            r#"{{"type":"change","new":1,"position":20,"events":[
+                {{"id":9,"at":"2030-01-01T00:00:00Z",
+                  "event":{{"type":"message_created","text":"hello"}}}},
+                {known}]}}"#
+        );
+        let Received::Change { position, events } = decode(&change).unwrap() else {
+            panic!("a change is read as a change");
+        };
+        assert_eq!(position, 20);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], ReadEvent::Unknown { id: 9 });
+        assert!(matches!(
+            &events[1],
+            ReadEvent::Known { event, bytes } if event.id == 10 && *bytes == known.len()
+        ));
         assert_eq!(
-            decode(unknown_event).unwrap(),
-            Received::UnknownEvent { id: 9 }
+            decode(r#"{"type":"change","position":5,"events":[]}"#).unwrap(),
+            Received::Change {
+                position: 5,
+                events: Vec::new()
+            }
         );
         assert_eq!(
             decode(r#"{"type":"notice","text":"hello"}"#).unwrap(),
             Received::UnknownMessage
         );
-        let with_new_field = r#"{"type":"event","id":9,"at":"2030-01-01T00:00:00Z","new":1,
-            "event":{"type":"device_removed","new":true,
-                     "device_id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"}}"#;
-        assert!(matches!(
-            decode(with_new_field).unwrap(),
-            Received::Message(ServerMessage::Event { id: 9, .. })
-        ));
-        assert!(decode(r#"{"type":"event","id":9}"#).is_err());
+        assert!(decode(r#"{"type":"change","position":9,"events":[{"id":9}]}"#).is_err());
+        assert!(decode(r#"{"type":"change","position":9}"#).is_err());
+        assert!(decode(r#"{"type":"change","events":[]}"#).is_err());
         assert!(decode("[]").is_err());
     }
 

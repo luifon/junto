@@ -489,10 +489,13 @@ async fn a_ban_records_one_event_for_all_the_invites_that_it_cancels() {
         ["account_status_changed", "invites_of_creator_revoked"]
     );
     let received = server.traffic(&owner, &mut stream).await;
+    // The two events of the ban are one change, the frame before the marker of the traffic.
     let frame: Value = serde_json::from_str(&stream.raw[stream.raw.len() - 2]).unwrap();
     assert_eq!(received.len(), 2);
-    assert_eq!(frame["event"]["created_by"], guest.account_id.to_string());
-    assert_eq!(frame["event"]["revocation"], "creator_banned");
+    let revoked = &frame["events"][1]["event"];
+    assert_eq!(revoked["type"], "invites_of_creator_revoked");
+    assert_eq!(revoked["created_by"], guest.account_id.to_string());
+    assert_eq!(revoked["revocation"], "creator_banned");
 }
 
 #[tokio::test]
@@ -543,7 +546,7 @@ async fn a_batch_has_a_budget_of_bytes() {
 
     let subscription = Subscription {
         level: Level::Full,
-        position: i64::try_from(start.position).unwrap(),
+        position: junto_server::events::log::change_of(start.position),
         epoch: start.epoch,
     };
     let batch = delivery::next_batch(&server.state, &opened(&owner), subscription, 64)
@@ -555,10 +558,7 @@ async fn a_batch_has_a_budget_of_bytes() {
     else {
         panic!("{batch:?}");
     };
-    let bytes: usize = deliveries
-        .iter()
-        .map(|delivery| serde_json::to_string(&delivery.message).unwrap().len())
-        .sum();
+    let bytes: usize = deliveries.iter().map(|delivery| delivery.text.len()).sum();
     assert!(more);
     assert!(!deliveries.is_empty());
     assert!(bytes <= 256 * 1024 + 16 * 1024, "{bytes}");
@@ -807,7 +807,7 @@ async fn a_control_message_survives_a_check_of_the_session() {
     server.category(&owner, workspace.id, "Projects", 0).await;
     let event = text_within(&mut client, Duration::from_secs(2)).await;
     assert!(
-        matches!(event, Some(ServerMessage::Event { .. })),
+        matches!(event, Some(ServerMessage::Change { .. })),
         "{event:?}"
     );
 

@@ -317,9 +317,12 @@ async fn review2_messages_do_not_wake_an_unrelated_background_connection() {
                 )
                 .await
                 .ok::<junto_protocol::message::Message>(StatusCode::CREATED);
-            junto_server::events::watcher::advance(&app, Some(before.position as i64))
-                .await
-                .unwrap();
+            junto_server::events::watcher::advance(
+                &app,
+                Some(junto_server::events::log::change_of(before.position)),
+            )
+            .await
+            .unwrap();
             wakes += usize::from(registration.link().news().now_or_never().is_some());
             recipient_wakes += usize::from(recipient.link().news().now_or_never().is_some());
         }
@@ -476,7 +479,6 @@ async fn review2_read_boundaries_cover_missed_calls_mentions_and_older_marks() {
         line.id,
         conversation.id.as_uuid(),
         reader.account_id,
-        None,
     )
     .await
     .unwrap();
@@ -522,19 +524,28 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
         .await;
         let message = crate::messages_support::send(&server, &owner, &channel, "template").await;
         let initial = server.snapshot(&owner).await.cursor;
-        // Populate the shipped retention bound with consecutive message/notice pairs.
-        // jsonb_populate_record lets this regression also run before the pairing column exists.
-        let primary:Value=sqlx::query_scalar("select to_jsonb(e)-'id'-'position' from events e where kind='message_changed' and payload->>'message_id'=$1 order by position desc limit 1").bind(message.id.to_string()).fetch_one(&server.db).await.unwrap();
-        let notice:Value=sqlx::query_scalar("select to_jsonb(e)-'id'-'position' from events e where kind='notification_changed' and payload->>'message_id'=$1 order by position desc limit 1").bind(message.id.to_string()).fetch_one(&server.db).await.unwrap();
+        // Populate the shipped retention bound with changes of a message and its notice, as
+        // a message writes them. A message whose notice has no recipient, in the muted case,
+        // records no notice.
+        let primary:Value=sqlx::query_scalar("select to_jsonb(e)-'id'-'position'-'ordinal' from events e where kind='message_changed' and payload->>'message_id'=$1 order by position desc limit 1").bind(message.id.to_string()).fetch_one(&server.db).await.unwrap();
+        let notice:Option<Value>=sqlx::query_scalar("select to_jsonb(e)-'id'-'position'-'ordinal' from events e where kind='notification_changed' and payload->>'message_id'=$1 order by position desc limit 1").bind(message.id.to_string()).fetch_optional(&server.db).await.unwrap();
         let kept = server.state.config.limits.stream.events_kept;
-        let insert = "with pairs as materialized (select n, gen_random_uuid() as first, gen_random_uuid() as second from generate_series(1,$1) n) insert into events select (jsonb_populate_record(null::events,case when slot=0 then $2 else $3 end || jsonb_build_object('id',case when slot=0 then first else second end,'retention_parent',case when slot=1 then first else null end))).* from pairs cross join generate_series(0,1) slot order by n,slot";
-        sqlx::query(insert)
-            .bind(kept as i32)
-            .bind(&primary)
-            .bind(&notice)
-            .execute(&server.db)
-            .await
-            .unwrap();
+        let insert = "with pair as materialized (select gen_random_uuid() as first, gen_random_uuid() as second) insert into events select (jsonb_populate_record(null::events,case when slot=0 then $1 else $2 end || jsonb_build_object('id',case when slot=0 then first else second end))).* from pair cross join generate_series(0,$3) slot order by slot";
+        let pairs = |count: u32| {
+            let (primary, notice, server) = (&primary, &notice, &server);
+            async move {
+                for _ in 0..count {
+                    sqlx::query(insert)
+                        .bind(primary)
+                        .bind(notice)
+                        .bind(i32::from(notice.is_some()))
+                        .execute(&server.db)
+                        .await
+                        .unwrap();
+                }
+            }
+        };
+        pairs(kept).await;
         log::trim(&server.state).await.unwrap();
         let messages: i64 =
             sqlx::query_scalar("select count(*) from events where kind='message_changed'")
@@ -546,60 +557,49 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-        assert_eq!(rows, 2 * kept as i64);
+        assert_eq!(rows, (1 + i64::from(notice.is_some())) * kept as i64);
+        assert_eq!(notice.is_none(), muted);
         let positions: Vec<i64> =
-            sqlx::query_scalar("select position from events order by position")
+            sqlx::query_scalar("select distinct position from events order by position")
                 .fetch_all(&server.db)
                 .await
                 .unwrap();
+        assert_eq!(positions.len(), kept as usize);
         let head = server.snapshot(&owner).await.cursor;
         let who = crate::stream_review::opened(&owner);
         let most = server.state.config.limits.stream.replay_most_events as usize;
-        let middle = positions[positions.len() - 2 * most - 2];
-        let mut from_either_position = Vec::new();
-        for at in [middle, middle + 1] {
-            let cursor = Cursor {
+        let middle = positions[positions.len() - most - 1];
+        let at_change = |change: i64| Cursor {
+            epoch: head.epoch,
+            position: log::stream_position(change, log::END_OF_CHANGE).unwrap(),
+        };
+        let cursor = at_change(middle);
+        assert!(matches!(
+            delivery::subscribe(&server.state, &who, Level::Full, Some(cursor))
+                .await
+                .unwrap(),
+            Start::Subscribed(_)
+        ));
+        let batch = delivery::next_batch(
+            &server.state,
+            &who,
+            Subscription {
                 epoch: head.epoch,
-                position: at as u64,
-            };
-            assert!(matches!(
-                delivery::subscribe(&server.state, &who, Level::Full, Some(cursor))
-                    .await
-                    .unwrap(),
-                Start::Subscribed(_)
-            ));
-            let batch = delivery::next_batch(
-                &server.state,
-                &who,
-                Subscription {
-                    epoch: head.epoch,
-                    position: at,
-                    level: Level::Full,
-                },
-                100,
-            )
-            .await
-            .unwrap();
-            let Batch::Events { deliveries, .. } = batch else {
-                panic!("{batch:?}")
-            };
-            assert_eq!(
-                deliveries.len(),
-                server.state.config.limits.stream.batch.min(100) as usize
-            );
-            from_either_position.push(
-                deliveries
-                    .into_iter()
-                    .map(|delivery| {
-                        (
-                            delivery.position,
-                            serde_json::to_value(delivery.message).unwrap(),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            );
-        }
-        assert_eq!(from_either_position[0], from_either_position[1]);
+                position: middle,
+                level: Level::Full,
+            },
+            100,
+        )
+        .await
+        .unwrap();
+        let Batch::Events { deliveries, .. } = batch else {
+            panic!("{batch:?}")
+        };
+        assert_eq!(
+            deliveries.len(),
+            server.state.config.limits.stream.batch.min(100) as usize
+        );
+        assert!(deliveries.iter().all(|delivery| delivery.events == 1));
         assert!(matches!(
             delivery::subscribe(&server.state, &who, Level::Background, Some(initial))
                 .await
@@ -607,35 +607,22 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
             Start::Subscribed(_)
         ));
         let oldest = positions[0];
-        sqlx::query(insert)
-            .bind(1)
-            .bind(&primary)
-            .bind(&notice)
-            .execute(&server.db)
+        pairs(1).await;
+        log::trim(&server.state).await.unwrap();
+        let old: i64 = sqlx::query_scalar("select count(*) from events where position = $1")
+            .bind(oldest)
+            .fetch_one(&server.db)
             .await
             .unwrap();
-        log::trim(&server.state).await.unwrap();
-        let old: i64 =
-            sqlx::query_scalar("select count(*) from events where position between $1 and $1+1")
-                .bind(oldest)
-                .fetch_one(&server.db)
-                .await
-                .unwrap();
         assert_eq!(old, 0);
-        let old_cursor = Cursor {
-            epoch: head.epoch,
-            position: oldest as u64,
-        };
+        let old_cursor = at_change(oldest - 1);
         assert!(matches!(
             delivery::subscribe(&server.state, &who, Level::Background, Some(old_cursor))
                 .await
                 .unwrap(),
             Start::Resync(_)
         ));
-        let boundary = Cursor {
-            epoch: head.epoch,
-            position: (oldest + 1) as u64,
-        };
+        let boundary = at_change(oldest);
         assert!(matches!(
             delivery::subscribe(&server.state, &who, Level::Background, Some(boundary))
                 .await
@@ -1071,7 +1058,10 @@ async fn review2_a_connection_opened_during_a_watcher_read_gets_its_notice() {
                 .unwrap(),
         );
     }
-    let pending = junto_server::events::watcher::advance(&app, Some(before.position as i64));
+    let pending = junto_server::events::watcher::advance(
+        &app,
+        Some(junto_server::events::log::change_of(before.position)),
+    );
     tokio::pin!(pending);
     assert!(pending.as_mut().now_or_never().is_none());
     let registration = app

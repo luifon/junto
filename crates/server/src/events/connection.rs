@@ -422,7 +422,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 message: ServerMessage::Subscribed { level, cursor },
                 starts: Some(Subscription {
                     level,
-                    position: i64::try_from(cursor.position).unwrap_or(i64::MAX),
+                    position: crate::events::log::change_of(cursor.position),
                     epoch: cursor.epoch,
                 }),
             },
@@ -490,7 +490,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 };
             }
             written = true;
-            let put = self.put(text(&delivery.message)?).await?;
+            let put = self
+                .put(Message::Text(Utf8Bytes::from(delivery.text)))
+                .await?;
             if matches!(put, Put::Interrupted) {
                 return Ok(Step::Interrupted);
             }

@@ -72,10 +72,13 @@ impl Peer {
     }
 
     async fn event(&self, id: u64, event: Event) {
-        self.send(&ServerMessage::Event {
-            id,
-            at: time(),
-            event,
+        self.send(&ServerMessage::Change {
+            position: id,
+            events: vec![junto_protocol::events::StreamEvent {
+                id,
+                at: time(),
+                event,
+            }],
         })
         .await;
     }
@@ -565,21 +568,35 @@ async fn the_client_loads_the_state_subscribes_with_its_cursor_and_applies_event
     assert_eq!((id, event.name()), (41, "channel_created"));
 
     // A repeat is not applied and not told again. An event and a message of a kind that
-    // this version does not know are skipped; the event moves the cursor.
+    // this version does not know are skipped; the event moves the cursor, and the other
+    // events of its change are applied.
     peer.event(41, created(&rig.scene, "repeat")).await;
     peer.event(40, created(&rig.scene, "older")).await;
-    let unknown_event = r#"{"type":"event","id":43,"at":"2030-01-01T00:00:00Z",
-        "event":{"type":"message_created","text":"hello"}}"#;
-    for text in [r#"{"type":"notice","text":"hello"}"#, unknown_event] {
+    let known = serde_json::to_string(&junto_protocol::events::StreamEvent {
+        id: 42,
+        at: time(),
+        event: created(&rig.scene, "mixed"),
+    })
+    .unwrap();
+    let with_unknown = format!(
+        r#"{{"type":"change","position":44,"events":[{known},{{"id":43,"at":"2030-01-01T00:00:00Z",
+        "event":{{"type":"message_created","text":"hello"}}}}]}}"#
+    );
+    for text in [r#"{"type":"notice","text":"hello"}"#, with_unknown.as_str()] {
         peer.to_client
             .send(Incoming::Text(text.to_owned()))
             .await
             .unwrap();
     }
     let model = rig
-        .model_when("the cursor", |model| model.cursor.position == 43)
+        .model_when("the cursor after the change", |model| {
+            model.cursor.position == 44
+        })
         .await;
     assert!(!has_channel(&model, "repeat") && !has_channel(&model, "older"));
+    assert!(has_channel(&model, "mixed"));
+    let (id, _) = next_event(&mut notices).await;
+    assert_eq!(id, 42);
     peer.send(&ServerMessage::Checkpoint {
         cursor: Cursor {
             epoch: rig.epoch(),
@@ -1329,8 +1346,8 @@ async fn a_message_that_cannot_be_read_ends_the_connection_and_the_state_is_load
     let (mut peer, _, _) = rig.served().await;
     rig.set_snapshot(90, |_| {});
     // An event of a known type without its fields.
-    let broken = r#"{"type":"event","id":41,"at":"2030-01-01T00:00:00Z",
-        "event":{"type":"channel_created"}}"#;
+    let broken = r#"{"type":"change","position":41,"events":[{"id":41,"at":"2030-01-01T00:00:00Z",
+        "event":{"type":"channel_created"}}]}"#;
     peer.to_client
         .send(Incoming::Text(broken.to_owned()))
         .await

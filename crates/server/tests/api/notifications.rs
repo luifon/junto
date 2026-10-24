@@ -1102,7 +1102,7 @@ async fn round2_delivery_authorizes_only_received_notices() {
             .unwrap();
     let subscription = Subscription {
         level: Level::Background,
-        position: start.position as i64,
+        position: junto_server::events::log::change_of(start.position),
         epoch: start.epoch,
     };
     next_batch(
@@ -1159,7 +1159,7 @@ async fn round2_snapshot_and_delivery_queries_are_batched() {
             .unwrap();
     let subscription = Subscription {
         level: Level::Full,
-        position: start.position as i64,
+        position: junto_server::events::log::change_of(start.position),
         epoch: start.epoch,
     };
     next_batch(

@@ -277,7 +277,7 @@ pub async fn begin_on_connection(
         })
         .await?;
     if matches!(mode, Mode::ReadWrite) && crate::receipts::requested() {
-        sqlx::query("select set_config('junto.event_first', '', false), set_config('junto.event_cursor', '', false)")
+        sqlx::query("select set_config('junto.event_cursor', '', false)")
             .execute(&mut *transaction)
             .await?;
     }

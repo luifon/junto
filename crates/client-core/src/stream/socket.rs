@@ -20,9 +20,8 @@ use crate::api::transport::{client_builder, failure, read};
 use crate::api::{HttpResponse, TransportError, TransportErrorKind};
 use crate::secret::SecretToken;
 
-/// The largest message of a server that the client reads: the size of a whole batch of
-/// events on the server (ADR 0116). An event of this API version is far smaller.
-pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+/// The largest message of a server that the client reads (ADR 0116).
+pub const MAX_MESSAGE_BYTES: usize = junto_protocol::events::LARGEST_SERVER_MESSAGE_BYTES;
 
 /// How many frames wait between the connection and the stream client. A full queue stops
 /// the reading of the connection.

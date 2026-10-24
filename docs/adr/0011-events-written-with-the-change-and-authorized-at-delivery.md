@@ -14,7 +14,7 @@ The log:
 
 - A change writes its events into the table `events` in its own transaction, next to its audit entry (ADR 0305). An event exists when its change committed, and only then.
 - The table is the only store of events. Replays read it, and live delivery reads it. The server keeps no queue of events in memory.
-- An event row holds its position (ADR 0010), its time, its class (ADR 0208), its type, its payload as the client receives it, and its audience.
+- An event row holds the position of its change and its ordinal in the change (ADR 0010), its time, its class (ADR 0208), its type, its payload as the client receives it, and its audience.
 - The audience states as data who may receive the event: one account, the accounts with a server permission, the holders of a server role, the members of a workspace, the holders of a workspace role, the accounts with a permission in a channel, or the accounts that could see a deleted channel.
 - One function records events. It refuses an audience that does not fit the type of the event.
 - The function refuses a payload above 12 KiB and an audience above 48 KiB of JSON, and the change fails with it. The database refuses a payload above 16 KiB and an audience above 64 KiB of stored JSON text. The ceilings of ADR 0306 keep every event of the server below these sizes.
@@ -23,13 +23,16 @@ The log:
 Delivery:
 
 - Each connection reads the log after its own position, in batches of at most 64 events. A replay and live delivery are the same read.
+- A batch ends at the end of a change. One more row, read without its audience and payload, tells whether the log holds more and whether the limit of rows or the budget of bytes cut the last change. Only then the batch reads that change again whole, while its rows that are addressed to the connection hold at most 256 KiB of stored parts, the size of the largest message. A change with more is not read further: the connection gets `resync` with the reason `skipped_event`, and its position moves past the change. Such a change can hold few events that the connection receives among many that it does not; it costs that connection a snapshot.
+- The events of one change that a connection may receive are one `change` message, in the order of the change (ADR 0206). The client applies all of them before its cursor passes the change, so a connection that ends during a write leaves no cursor inside a change.
+- A `change` message whose text is larger than 256 KiB, the largest message that a client reads, is not sent. The connection gets `resync` with the reason `skipped_event`, and its position moves past the change.
 - One batch is one read-only serializable transaction (ADR 0009). It checks the session as every request does (ADR 0109), reads the events, and reads the memberships, roles and overrides of the account in the workspaces and channels that the batch names. From these it builds the same input for the permission function as the REST routes build.
 - For each event the permission function of ADR 0301 decides whether the account may receive it now. The roles at the time when the event was recorded are not used.
 - The transaction runs immediately before the messages are written to the socket. The decisions of a batch are valid for 1 second, counted from before the transaction reads anything, which is before its snapshot. An event of the batch that is not handed to the socket within that time is not sent; the next read decides it again. A batch whose read alone took longer is discarded whole; the connection reads again after 1 second and asks for half as many events. After a delivery the size doubles again, up to 64.
 - The rows of one batch have a budget of 256 KiB. The read stops at the row that passes the budget.
 - A part of a row that is above its largest size is not loaded.
 - An event about a deleted channel reaches nobody. The event of the deletion is decided with the overrides that the channel had when it was deleted, which the event keeps, and with the current roles of the recipient.
-- An event row that the server cannot send, because a part is too large or this version cannot read it, is logged. A connection whose account may receive it, or for which the server cannot tell, gets `resync` with the reason `skipped_event`, and its position moves past the row. The client loads a snapshot, so the row cannot stop a connection for good. For other accounts the row is passed over.
+- An event row that the server cannot send, because a part is too large or this version cannot read it, is logged. A connection whose account may receive it, or for which the server cannot tell, gets `resync` with the reason `skipped_event`, and its position moves past the change of the row; the other events of that change are not sent either. The client loads a snapshot, so the row cannot stop a connection for good. For other accounts the row is passed over.
 
 At least once:
 
@@ -38,7 +41,7 @@ At least once:
 
 Wake-ups:
 
-- One task of the process, the watcher, reads the new rows of the log after every committed writing transaction of the process, and once per second.
+- One task of the process, the watcher, reads the new rows of the log after every committed writing transaction of the process, and once per second. It reads them in pages by position and ordinal, so a page can end inside a change.
 - An event that is addressed to one account wakes the connections of that account. Another event wakes the connections whose level receives its class (ADR 0107).
 - A wake-up decides nothing about access. Every connection also reads the log at each heartbeat (ADR 0116), so a missed wake-up delays an event and does not lose it.
 
@@ -80,6 +83,7 @@ Tests:
 - A change and its events commit together or not at all.
 - A permission that is removed hides every event that the account has not been sent. An event whose decision is less than 1 second old can still be written, and a message that the socket has taken is completed.
 - A database that needs more than 1 second for the read of the smallest batch delivers no events. The connections close after 5 attempts and the clients connect again.
+- A batch holds at most its 64 rows and 256 KiB plus one row, or the rows of one change up to 256 KiB of stored parts and one row more without parts.
 - The event stream needs 7 database connections next to the 16 of the requests.
 - A permission that is granted shows the events about the channel that still wait in the log for that connection. A client can therefore receive an event about a channel before the notice that its permissions changed (ADR 0208).
 - A subscription with an older cursor is decided by the current permissions as well. An account can read the kept part of the log (ADR 0207) for the objects that it may see now, their earlier names and their former members included.
@@ -89,14 +93,8 @@ Tests:
 - A client that does not move its cursor receives events again after each reconnect.
 - The server keeps no state per device for the stream. A device that reconnects after any time gives its cursor and gets a replay or the instruction to load a snapshot (ADR 0207).
 
-Known limit: the positions between two events of one transaction that a caller receives
-reveal exactly how many intervening events it did not receive, even on a busy server. A
-caller can also bracket its request with visible changes to estimate the positions before
-its first or after its last received event. Depending on the writer, this can disclose
-whether another account has any direct conversation (not its number of peers), workspace
-memberships outside the caller's view, private call cleanup, or how many private exports a
-message or recording deletion invalidates. Ending an account's exports on ban or removal
-writes no event and reveals no export count that way. A rule for the number and order of
-writes within a transaction remains open for a later server unit; it must cover conditional
-contact notices, export invalidation and call cleanup. Filtering the event payloads and
-limiting response receipts to caller-visible events do not remove this older channel.
+What positions tell about a change:
+
+- Positions count changes, not events (ADR 0010). Two events of one change that a recipient receives have positions that differ by the number of events between them that the recipient receives, which is zero. A recipient that makes a visible change before and after a change of another account counts one change in between, whatever number of events that change recorded.
+- A writer therefore needs no rule for the number or the order of the events of a change. A notice that a muted or quiet account does not get, the invitation of a silent ring, the removal of the exports of other accounts, the notices to the peers of an account and the end of calls change the events of a change and not the positions that a recipient reads. The rows that only kept positions, with the audience `suppressed`, are not written any more, and the migration removed them.
+- Known limit: a change that records no event takes no position. A recipient that brackets a change of another account on a server without other activity learns whether that change recorded at least one event. Each change named above records at least one event in every case: the message, the deletion, the ban or removal, or the event of the call. A writer that adds a change whose every event can be absent for a reason that a recipient may not learn records one event in every case.

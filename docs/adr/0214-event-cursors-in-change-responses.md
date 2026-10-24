@@ -18,11 +18,12 @@ credential, including join and login, and a request with an access token receive
 Only credentials that may open the server event stream qualify. A successful GET that
 commits a writing transaction can have the header too; ordinary reads and errors do not.
 
-The value is a JSON cursor `{"epoch":"...","position":123}` using ADR 0010. Its position
-is the last event committed by the request that the caller itself may receive, decided by
-the same function as event delivery. Both a transaction without events and a transaction
-whose events all go to others yield `null`. They cannot be distinguished through the header.
-A later eventless or hidden-only transaction does not erase an earlier visible receipt.
+The value is a JSON cursor `{"epoch":"...","position":123}` using ADR 0010. It names the end
+of the last change committed by the request of which the caller itself may receive an event,
+decided by the same function as event delivery. Both a transaction without events and a
+transaction whose events all go to others yield `null`. They cannot be distinguished through
+the header. A later eventless or hidden-only transaction does not erase an earlier visible
+receipt.
 
 An absent header means **no position stated**, not that the request wrote nothing or failed.
 Receipt lookup is best effort after the change commits. Any failure of that lookup, including
@@ -31,14 +32,14 @@ without the header. It never becomes a busy or timeout response and never repeat
 transaction. If one lookup fails in a request with several commits, the whole request omits
 the header; an earlier or later cursor cannot establish the missing boundary.
 
-The deferred position trigger records the first and last positions of the transaction in
-connection settings. It does not read the epoch table. Each writing attempt clears both
-settings. After a successful commit, the request retains that connection and reads its
-range. Failed attempts and rollbacks contribute nothing. Unverified requests skip this
-read, and an empty range needs no epoch or delivery read.
+The deferred position trigger records the position of the change in a connection setting. It
+does not read the epoch table. Each writing attempt clears the setting. After a successful
+commit, the request retains that connection and reads it. Failed attempts and rollbacks
+contribute nothing. Unverified requests skip this read, and a transaction without events
+needs no epoch or delivery read.
 
-A nonempty range is decided in a fresh read-only transaction. It loads the account's current
-access and the current epoch, reads only events within the assigned range in bounded
+A change is decided in a fresh read-only transaction. It loads the account's current
+access and the current epoch, reads only the events of the change in bounded
 batches, and uses the delivery decision at full level, independent of any connection's
 subscription level. The same decision checks audiences, current roles and memberships,
 notification visibility and quiet time. Subscription replay, delivery and receipt selection
@@ -65,11 +66,11 @@ the state of its observation.
 ## Consequences
 
 Response bodies and empty 204 responses are unchanged. Old readers ignore the header.
-A writing HTTP transaction resets two settings. An authenticated request reads the range
-after commit and, when nonempty, pays for the same access decisions as delivery. If that read
+A writing HTTP transaction resets one setting. An authenticated request reads it after
+commit and, for a change with events, pays for the same access decisions as delivery. If that read
 fails, the server logs the failure and omits the header while preserving success.
 
 The header exposes no event position beyond what the caller's own full stream can deliver.
-It adds no boundary for trailing hidden events. The older ability to infer hidden counts
-from gaps between visible events or from adjacent requests remains a known limit of
-ADR 0011; a rule for event counts and ordering within a transaction belongs to a later unit.
+It adds no boundary for trailing hidden events. The positions of the stream count changes,
+not events (ADR 0010), so neither the header nor the gaps between the events of one change
+tell how many events of the change went to other accounts (ADR 0011).
