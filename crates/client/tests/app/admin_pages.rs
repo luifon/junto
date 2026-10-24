@@ -3068,7 +3068,7 @@ fn the_people_page_reads_its_rows_before_the_members_of_the_shown_workspace(
     let proxy = world.run(crate::support::FaultProxy::start(&server));
     proxy.hold_request("GET", "/profile");
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query(
             "insert into accounts (id, name, status, created_at)

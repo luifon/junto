@@ -818,7 +818,7 @@ fn two_servers_with_one_recovery_identifier_take_one_acknowledgement_each(cx: &m
                       device: junto_client_core::protocol::ids::DeviceId|
      -> i64 {
         world.run(async {
-            let options: sqlx::postgres::PgConnectOptions = server.database_url.parse().unwrap();
+            let options: sqlx::postgres::PgConnectOptions = server.database_url().parse().unwrap();
             let mut database = options.connect().await.unwrap();
             sqlx::query_scalar(
                 "select count(*) from recovery_notices where recovery_id = $1 and device_id = $2",
@@ -831,7 +831,7 @@ fn two_servers_with_one_recovery_identifier_take_one_acknowledgement_each(cx: &m
         })
     };
     world.run(async {
-        let options: sqlx::postgres::PgConnectOptions = harbor.database_url.parse().unwrap();
+        let options: sqlx::postgres::PgConnectOptions = harbor.database_url().parse().unwrap();
         let mut database = options.connect().await.unwrap();
         sqlx::query(
             "insert into recoveries (id, account_id, device_id, performed_by, performed_at)
