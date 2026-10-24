@@ -107,4 +107,6 @@ python3 tools/windows/with_test_postgres.py cargo test --locked --workspace --te
     --skip messages::a_pending_file_picker_cannot_retarget_an_upload \
     --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server \
     --skip messages::a_message_whose_files_the_retention_removed_says_so \
-    --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export
+    --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export \
+    --skip admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved \
+    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts

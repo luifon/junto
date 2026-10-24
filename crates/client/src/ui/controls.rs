@@ -76,7 +76,7 @@ impl RenderOnce for Toggle {
         div()
             .id(self.id)
             .role(Role::Switch)
-            .aria_label(self.label)
+            .aria_label(self.label.clone())
             .aria_selected(self.on)
             .when_some(self.selector, |toggle, selector| {
                 toggle.debug_selector(|| selector.to_owned())
@@ -130,7 +130,10 @@ impl RenderOnce for Toggle {
                     .w(u(22.0))
                     .typeface(theme.types.small_strong, &theme)
                     .ink(colors.ink_2)
-                    .child(if self.on { self.words.0 } else { self.words.1 }),
+                    .child(super::paint_text(
+                        if self.on { self.words.0 } else { self.words.1 },
+                        Some(self.label),
+                    )),
             )
     }
 }

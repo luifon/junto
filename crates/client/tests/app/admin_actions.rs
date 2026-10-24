@@ -43,6 +43,7 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
             panic!("not a server role")
         };
         assert!(window.shows(sel("role-row", id)));
+        assert_drawn_label(&mut window, name);
         let stored = world.run(owner.api().server_roles()).unwrap();
         assert!(
             stored
@@ -59,6 +60,8 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
         idle(window)
             && roles(window).is_some_and(|rows| rows.iter().any(|row| row.name == "Operators"))
     });
+    reveal_in_page(&mut window, sel("role-row", helpers));
+    assert_drawn_label(&mut window, "Operators");
     assert!(
         world
             .run(owner.api().server_roles())
@@ -82,6 +85,8 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
                     })
                 })
         });
+        reveal_in_page(&mut window, "role-permission-create_invites");
+        assert_drawn_selection(&mut window, "Create invites for the role Operators", on);
         let stored = world.run(owner.api().server_roles()).unwrap();
         assert_eq!(
             stored
@@ -110,6 +115,20 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
                             .collect::<Vec<_>>()
                 })
         });
+        reveal_in_page(&mut window, sel("role-row", expected[0]));
+        reveal_in_page(&mut window, sel("role-row", expected[1]));
+        let first = window
+            .cx
+            .debug_bounds(sel("role-row", expected[0]))
+            .unwrap();
+        let second = window
+            .cx
+            .debug_bounds(sel("role-row", expected[1]))
+            .unwrap();
+        assert!(
+            first.bottom() <= second.top(),
+            "roles are drawn in the requested order"
+        );
         let mut stored = world.run(owner.api().server_roles()).unwrap();
         stored.sort_by_key(|row| std::cmp::Reverse(row.position));
         assert_eq!(
@@ -137,6 +156,11 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
                         })
                     })
         });
+        reveal_in_page(
+            &mut window,
+            sel(&format!("account-role-{account_id}"), helpers),
+        );
+        assert_drawn_selection(&mut window, "The role Operators for Mira", given);
         let stored = world.run(owner.api().accounts()).unwrap();
         assert_eq!(
             stored
@@ -165,6 +189,8 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
         roles(window)
             .is_some_and(|rows| rows.iter().all(|row| row.role != RoleRef::Server(helpers)))
     });
+    reveal_in_page(&mut window, sel("role-row", readers));
+    assert!(!window.shows(sel("role-row", helpers)));
     assert!(
         world
             .run(owner.api().server_roles())
@@ -193,6 +219,8 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
             permission_line(row, WorkspacePermission::ManageMessages).current == Choice::Allow
         })
     });
+    reveal_in_page(&mut window, "override-manage_messages-allow");
+    assert_drawn_label(&mut window, "Manage messages: Allow, chosen");
     let stored = world.run(owner.api().channel_overrides(channel)).unwrap();
     assert!(
         stored.iter().any(|rule| rule.role_id == row.id
@@ -207,6 +235,11 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
     window.until("the whole override is gone", |window| {
         everyone_role(window).is_some_and(|row| !row.has_override)
     });
+    reveal_in_page(&mut window, "override-manage_messages-default");
+    assert_drawn_label(&mut window, "Manage messages: Default, chosen");
+    reveal_in_page(&mut window, "override-lock_room-default");
+    assert_drawn_label(&mut window, "Lock room: Default, chosen");
+    assert!(!window.shows(sel("override-clear", row.id)));
     assert!(
         world
             .run(owner.api().channel_overrides(channel))
@@ -225,11 +258,11 @@ fn archive_and_retention_settings_are_saved_and_can_be_set_to_never(cx: &mut Tes
     open_page(&mut window, "admin-nav-archive", |window| {
         server_page!(window, Archive).is_some()
     });
-    for (index, control) in [
-        "days-archive-period",
-        "days-file-retention",
-        "days-recording-retention",
-        "days-direct-retention",
+    for (index, (control, title)) in [
+        ("days-archive-period", "Archive period"),
+        ("days-file-retention", "Files of messages"),
+        ("days-recording-retention", "Recordings"),
+        ("days-direct-retention", "Files of direct messages"),
     ]
     .into_iter()
     .enumerate()
@@ -262,6 +295,13 @@ fn archive_and_retention_settings_are_saved_and_can_be_set_to_never(cx: &mut Tes
                 };
                 idle(window) && value == Some(days) && !window.shows("days-field")
             });
+            reveal_in_page(&mut window, control);
+            assert_drawn_setting(
+                &mut window,
+                control,
+                title,
+                if days.is_some() { "14 days" } else { "Never" },
+            );
             let api = owner.api();
             let stored = match index {
                 0 => world.run(api.archive_period(workspace)).unwrap().days,
@@ -297,6 +337,19 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
     });
     reveal_in_page(&mut window, "invite-code-copy");
     assert!(window.shows("invite-code") && window.shows("invite-code-copy"));
+    window
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string(
+            "previous clipboard value".to_owned(),
+        ));
+    click_in_page(&mut window, "invite-code-copy");
+    let copied = window
+        .cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert_eq!(copied, made.code.expose());
+    assert_drawn_label(&mut window, "Copied");
     let stored = world.run(owner.api().invites()).unwrap();
     assert_eq!(
         stored
@@ -306,7 +359,7 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
             .workspace_ids,
         [second.id]
     );
-    let (_device, member) = joined(&world, &server, &made.code, "Mira");
+    let (_device, member) = joined(&world, &server, &InviteCode::new(copied), "Mira");
     let workspaces = world.run(member.api().workspaces()).unwrap();
     assert_eq!(
         workspaces
@@ -328,6 +381,9 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
     window.until("the invite is shown as revoked", |window| {
         invite_line(window, unused.invite_id).is_some_and(|row| row.state == InviteState::Revoked)
     });
+    reveal_in_page(&mut window, sel("invite-row", unused.invite_id));
+    assert_drawn_label(&mut window, "Revoked");
+    assert!(!window.shows(sel("invite-revoke", unused.invite_id)));
     let stored = world.run(owner.api().invites()).unwrap();
     assert!(
         stored

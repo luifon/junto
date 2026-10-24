@@ -92,7 +92,7 @@ impl RenderOnce for Chip {
             .when_some(self.icon, |chip, shown| {
                 chip.child(icon(shown, 12.0, theme.colors.ink_2))
             })
-            .child(self.text)
+            .child(super::paint_text(self.text, None))
     }
 }
 

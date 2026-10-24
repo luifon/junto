@@ -252,6 +252,28 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
             text: "The recorded plan.".to_owned(),
         }],
     ));
+    let page = world
+        .run(
+            owner
+                .api()
+                .messages(PlaceId::Channel(channel.id), &Default::default()),
+        )
+        .unwrap();
+    assert!(!page.has_more);
+    let thread = world
+        .run(owner.api().thread(root.id, &Default::default()))
+        .unwrap();
+    assert!(!thread.replies.has_more);
+    let mut expected = page.messages;
+    expected.extend(thread.replies.messages);
+    expected.sort_by_key(|message| message.id);
+    let expected_root = expected
+        .iter()
+        .find(|message| message.id == root.id)
+        .unwrap();
+    assert_eq!(expected_root.attachments[0].id, attachment);
+    assert_eq!(expected_root.reactions[0].emoji, "👍");
+    assert!(expected.iter().any(|message| message.system.is_some()));
     let _downloads = downloads(&mut window);
     open_channel_settings(&mut window, "Daily", channel.id);
     click_in_page(&mut window, "channel-nav-archive");
@@ -275,14 +297,16 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
     let entries = saved_export(&mut window, id);
     let manifest: ExportManifest =
         serde_json::from_slice(content(&entries, "export.json")).unwrap();
-    let messages: Vec<Message> =
+    let mut messages: Vec<Message> =
         serde_json::from_slice(content(&entries, "messages.json")).unwrap();
     assert_eq!(manifest.export_id, id);
     assert_eq!(
         manifest.place,
         world.run(owner.api().export(id)).unwrap().place
     );
-    assert_eq!(manifest.messages, messages.len() as u64);
+    assert_eq!(manifest.messages, expected.len() as u64);
+    messages.sort_by_key(|message| message.id);
+    assert_eq!(messages, expected);
     assert_eq!((manifest.attachments, manifest.recordings), (1, 1));
     assert_eq!(manifest.requested_by, logged_in(&owner));
     let exported_root = messages.iter().find(|row| row.id == root.id).unwrap();
@@ -416,6 +440,8 @@ fn the_recordings_page_shows_rows_loads_older_and_refreshes_after_an_event(
         stored.iter().map(|row| row.id).collect::<Vec<_>>()
     );
     reveal_in_page(&mut window, sel("recording-row", stored[50].id));
+    reveal_in_page(&mut window, sel("recording-row", stored[0].id));
+    assert!(window.shows(sel("recording-row", stored[0].id)));
     world
         .run(owner.api().remove_recording(stored[0].id))
         .unwrap();
@@ -430,6 +456,8 @@ fn the_recordings_page_shows_rows_loads_older_and_refreshes_after_an_event(
                 && page.rows.iter().all(|row| row.id != stored[0].id)
         })
     });
+    reveal_in_page(&mut window, sel("recording-row", stored[1].id));
+    assert!(!window.shows(sel("recording-row", stored[0].id)));
     assert_eq!(
         world
             .run(owner.api().recordings(workspace, None, Some(100)))

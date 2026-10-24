@@ -22,13 +22,18 @@ Automated tests:
 - Administration window tests perform role changes, overrides, retention settings,
   workspace redemption and selection, invite grants and revocation, request approvals,
   and token revocation through drawn controls. They check the visible result and the
-  state read through the server API. The export tests read the saved ZIP contents,
-  including thread replies, attachments, recording files and transcripts. The archive
-  warning runs server maintenance with the test clock, and the recordings page reads
+  state read through the server API. A scoped test recorder observes the text and control
+  labels at paint time, delegates text layout and paint to gpui, and keeps no records
+  outside its scope. Tests check role names, switch words, selected-choice labels and
+  retention values from those paints; role order and removed rows use drawn element
+  bounds. The export tests compare the complete saved messages with the channel
+  and thread messages read independently through the API, and check attachments,
+  recording files and transcripts. The archive warning runs server maintenance with the test clock, and the recordings page reads
   enough stored rows to exercise its older-page control and event refresh.
-- The gpui test platform has no clipboard implementation. The invite-code and token
-  tests check the valid value, the drawn Copy control and its removal when the value is
-  put away; copying the value to the system clipboard remains a native-system check.
+- The gpui test platform has an in-memory clipboard. The invite-code and token tests
+  seed it with another value, click Copy, compare the copied text, use that text against
+  the server, and check the copied confirmation and Done. Integration with the system
+  clipboard remains a native-system check.
 
 Tests on real systems:
 
