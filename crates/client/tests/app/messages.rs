@@ -1567,8 +1567,9 @@ impl Window {
             .cx
             .debug_bounds(crate::harness::selector(format!("message:{message_id}")))
             .expect("the message is drawn");
-        self.cx
-            .simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none());
+        self.simulate(|cx| {
+            cx.simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none())
+        });
         self.settle();
     }
 

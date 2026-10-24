@@ -945,9 +945,7 @@ fn in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file(
     assert!(window.shows("compose-state"));
     window.click("attach-file");
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
     window.until("the file is uploaded", |window| {
         window.view().lists().is_some_and(|lists| {
             lists.draft.len() == 1
@@ -1067,7 +1065,7 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
     // The words are put in, and the mention is typed key by key, so that the picker
     // opens through the input of the text area.
     type_text(&mut window, "Review please, ");
-    window.cx.simulate_input("@Edi");
+    window.simulate(|cx| cx.simulate_input("@Edi"));
     candidate(&mut window, "Editors");
     window.press("enter");
     let role_node = Inline::Role { role_id: editors };
@@ -1087,7 +1085,7 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
 
     // Everyone: chosen in the picker, sent.
     type_text(&mut window, "Meeting at noon, ");
-    window.cx.simulate_input("@every");
+    window.simulate(|cx| cx.simulate_input("@every"));
     candidate(&mut window, text::EVERYONE);
     window.press("enter");
     let to_all = sent_with(&mut window, &Inline::Everyone);

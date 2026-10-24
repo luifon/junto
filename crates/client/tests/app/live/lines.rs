@@ -176,7 +176,7 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
             started.elapsed() < PATIENCE,
             "meeting mode did not start: {error}"
         );
-        window.cx.run_until_parked();
+        window.run_tasks();
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     world.run(api.end_meeting(voice)).unwrap();

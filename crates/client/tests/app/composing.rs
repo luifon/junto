@@ -121,7 +121,7 @@ fn the_formatting_bar_marks_the_selected_text_of_the_message(cx: &mut TestAppCon
     window.format(code, "format-code-block");
     assert_eq!(window.composer_text(), format!("```\n{code}\n```"));
     window.press("up end");
-    window.cx.simulate_input("rust");
+    window.simulate(|cx| cx.simulate_input("rust"));
     assert_eq!(window.composer_text(), format!("```rust\n{code}\n```"));
     let (id, drawn) = window.send_composer();
     let expected = Document {
@@ -143,7 +143,7 @@ fn the_formatting_bar_marks_the_selected_text_of_the_message(cx: &mut TestAppCon
     window.format("the guide", "format-link");
     assert_eq!(window.composer_text(), "[the guide](https://)");
     window.press("end left");
-    window.cx.simulate_input("example.com/guide");
+    window.simulate(|cx| cx.simulate_input("example.com/guide"));
     assert_eq!(
         window.composer_text(),
         "[the guide](https://example.com/guide)"
@@ -243,9 +243,7 @@ fn a_file_taken_away_before_the_send_is_not_in_the_message(cx: &mut TestAppConte
     window.click("attach-file");
     assert!(window.cx.did_prompt_for_paths());
     let chosen = paths.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(chosen));
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(chosen)));
     window.until("both files are uploaded", |window| {
         let draft = window.draft();
         draft.len() == 2
@@ -326,9 +324,7 @@ fn an_upload_goes_on_after_its_connection_was_cut_and_the_draft_says_so(cx: &mut
     proxy.hold_ending("/upload");
     window.click("attach-file");
     let chosen = path.clone();
-    window
-        .cx
-        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
     window.until("the draft shows the interruption", |window| {
         let draft = window.draft();
         draft.len() == 1
