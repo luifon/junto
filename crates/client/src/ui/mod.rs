@@ -14,6 +14,7 @@ mod marks;
 mod menu;
 mod mosaic;
 mod notice;
+mod paint_text;
 mod panel;
 mod pattern;
 mod picture;
@@ -38,6 +39,9 @@ pub use marks::{Badge, Chip, Flag, FlagKind, RecordingMark, StatusLine, unread_d
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;
+pub(crate) use paint_text::paint_text;
+#[cfg(feature = "test-support")]
+pub use paint_text::{PaintedText, TextPaintRecord, record_painted_text, take_painted_text};
 pub use panel::{Notice, NoticeKind, SectionLabel, SideHeader, StatePanel, WaitBox};
 pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;

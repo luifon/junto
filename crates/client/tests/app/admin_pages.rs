@@ -65,6 +65,58 @@ macro_rules! server_page {
     };
 }
 
+#[path = "admin_actions.rs"]
+mod actions;
+
+#[path = "admin_exports.rs"]
+mod exports_actions;
+
+fn drawn_text(window: &mut Window) -> Vec<junto_client::ui::PaintedText> {
+    let _record = junto_client::ui::record_painted_text();
+    window.cx.update(|window, _| window.refresh());
+    window.settle();
+    junto_client::ui::take_painted_text()
+}
+
+fn assert_drawn_label(window: &mut Window, label: &str) {
+    let text = drawn_text(window);
+    assert!(
+        text.iter()
+            .any(|text| text.text == label || text.label.as_deref() == Some(label)),
+        "missing painted label {label}: {text:?}"
+    );
+}
+
+fn assert_drawn_selection(window: &mut Window, label: &str, selected: bool) {
+    let text = drawn_text(window);
+    let control = text
+        .iter()
+        .find(|text| text.label.as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("missing painted control {label}: {text:?}"));
+    assert_eq!(
+        control.text.as_ref(),
+        if selected { "On" } else { "Off" },
+        "{label}"
+    );
+}
+
+fn assert_drawn_setting(window: &mut Window, control: &'static str, title: &str, value: &str) {
+    let text = drawn_text(window);
+    let control = window.cx.debug_bounds(control).unwrap();
+    assert!(
+        text.iter().filter(|text| text.text == title).any(|title| {
+            text.iter().any(|text| {
+                text.text == value
+                    && text.bounds.left() == title.bounds.left()
+                    && text.bounds.top() >= title.bounds.bottom()
+                    && title.bounds.top() <= control.center().y
+                    && text.bounds.bottom() >= control.center().y
+            })
+        }),
+        "{title} should show {value}: {text:?}"
+    );
+}
+
 /// The name of the element of one row. gpui finds a drawn element by a name that lives as
 /// long as the program, and a test builds few names.
 pub(crate) fn sel(prefix: &str, of: impl std::fmt::Display) -> &'static str {
@@ -1340,6 +1392,21 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
         "the secret has the prefix of an access token"
     );
     assert!(!window.shows("token-form"));
+    reveal_in_page(&mut window, "token-secret-copy");
+    assert!(window.shows("token-secret-copy"));
+    window
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string(
+            "previous clipboard value".to_owned(),
+        ));
+    click_in_page(&mut window, "token-secret-copy");
+    let copied = window
+        .cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert_eq!(copied, secret);
+    assert_drawn_label(&mut window, "Copied");
 
     // The state holds the token. While the secret is shown, the list does not draw it
     // (ADR 0730).
@@ -1355,7 +1422,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     assert!(lasts(row.created, row.expires, 7));
 
     // A request with the token works on a route of its action, and on no other route.
-    let with_token = with_access_token(&world, &server, &secret);
+    let with_token = with_access_token(&world, &server, &copied);
     let log = world
         .run(with_token.server_audit_log(&AuditFilterQuery::default()))
         .unwrap();
@@ -1367,6 +1434,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     click_in_page(&mut window, "token-secret-done");
     assert!(window.shows(token_row));
     assert!(!window.shows("token-secret") && !window.shows("token-made"));
+    assert!(!window.shows("token-secret-copy"));
     assert!(server_page!(window, Tokens).is_some_and(|page| page.made.is_none()));
     assert!(window.admin().is_some_and(|view| view.made.is_empty()));
 

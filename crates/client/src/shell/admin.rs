@@ -245,7 +245,7 @@ pub(crate) fn line_text(
                 .typeface(theme.types.control_strong, theme)
                 .ink(theme.colors.ink)
                 .truncate()
-                .child(name.into()),
+                .child(crate::ui::paint_text(name.into(), None)),
         )
         .when_some(detail, |column, detail| {
             column.child(
@@ -253,7 +253,7 @@ pub(crate) fn line_text(
                     .typeface(theme.types.small, theme)
                     .ink(theme.colors.ink_2)
                     .truncate()
-                    .child(detail),
+                    .child(crate::ui::paint_text(detail, None)),
             )
         })
 }

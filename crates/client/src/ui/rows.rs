@@ -116,6 +116,7 @@ impl RenderOnce for WorkspaceRow {
         div()
             .id(self.id)
             .role(Role::ListItem)
+            .debug_selector(move || format!("workspace-row-{}", self.seed))
             .aria_label(label)
             .aria_selected(self.selected)
             .when_some(self.selector, |row, selector| {

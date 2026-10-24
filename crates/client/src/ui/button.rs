@@ -405,7 +405,7 @@ impl RenderOnce for Button {
 
         let ring = focus_ring(look.ring, metrics.focus_ring);
         frame
-            .when_some(label, |frame, label| frame.aria_label(label))
+            .when_some(label.clone(), |frame, label| frame.aria_label(label))
             .when_some(self.selector, |frame, selector| {
                 frame.debug_selector(|| selector.to_owned())
             })
@@ -428,7 +428,9 @@ impl RenderOnce for Button {
                 let colour = self.icon_colour.filter(|_| !disabled).unwrap_or(look.icon);
                 frame.child(icon(shown, icon_size, colour))
             })
-            .when_some(self.label, |frame, label| frame.child(label))
+            .when_some(self.label, |frame, text| {
+                frame.child(super::paint_text(text, label))
+            })
             .when_some(self.tag, |frame, (word, on)| {
                 let colors = theme.colors;
                 let (ground, edge, ink) = if on {
