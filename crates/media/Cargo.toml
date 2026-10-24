@@ -14,6 +14,11 @@ required-features = ["test-support"]
 
 # The capture of Windows against a window of a separate program (ADR 0706).
 [[test]]
+name = "close"
+path = "tests/close/main.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "windows_capture"
 path = "tests/windows_capture/main.rs"
 required-features = ["test-support"]

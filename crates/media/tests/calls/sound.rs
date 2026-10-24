@@ -8,7 +8,7 @@ use livekit_protocol::{MuteTrackRequest, signal_request};
 
 use crate::limit::limited;
 use crate::scene::{
-    ABSENT_DBFS, PATIENCE, Person, Room, account, media_server_alone, media_server_shared,
+    ABSENT_DBFS, PATIENCE, Person, Room, account, docker, media_server_alone, media_server_shared,
     model_when, plain_voice, until,
 };
 use crate::signal_proxy::SignalProxy;
@@ -743,20 +743,6 @@ async fn a_test_that_ends_while_the_media_server_is_paused_gives_it_back_running
         until("the media server answers", crate::scene::livekit_answers).await;
     })
     .await;
-}
-
-async fn docker(arguments: &[&str]) {
-    // A test that a limit cancels while the command runs ends the command too.
-    let docker = tokio::process::Command::new("docker")
-        .args(arguments)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let _adopted = docker.id().map(crate::limit::adopt);
-    let done = docker.wait_with_output().await.unwrap();
-    assert!(done.status.success(), "{done:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

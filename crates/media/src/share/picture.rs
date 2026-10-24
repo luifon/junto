@@ -71,9 +71,18 @@ impl PictureFrame {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The pictures that [`planes`] copied or converted into new planes on this thread.
+    static NEW_PLANES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The picture of a buffer in planes of brightness and colour, whatever form the buffer
-/// has: the decoder of a system gives its own form.
+/// has: the decoder of a system gives its own form. Each call makes new planes of the whole
+/// picture.
 pub(crate) fn planes(buffer: &dyn VideoBuffer) -> Option<I420Buffer> {
+    #[cfg(test)]
+    NEW_PLANES.with(|made| made.set(made.get() + 1));
     if let Some(buffer) = buffer.as_i420() {
         return Some(buffer.to_i420());
     }
@@ -193,6 +202,20 @@ mod tests {
         assert_eq!(fit((1920, 1080), (176, 110)), (176, 99));
         assert_eq!(fit((10_000, 1), (100, 100)), (100, 1));
         assert_eq!(fit((0, 0), (0, 0)), (1, 1));
+    }
+
+    /// Planes that are drawn smaller are scaled from where they are, without new planes of
+    /// the whole picture first (ADR 0774).
+    #[test]
+    fn held_planes_drawn_smaller_are_not_copied_first() {
+        let source = I420Buffer::new(64, 36);
+        let made = || NEW_PLANES.with(std::cell::Cell::get);
+        let before = made();
+        let picture = video::VideoPicture::new(&source, false, (32, 18)).unwrap();
+        let drawn = picture.picture().unwrap();
+        assert_eq!((drawn.width, drawn.height), (32, 18));
+        assert!(planes_at(&source, (32, 18)).is_some());
+        assert_eq!(made() - before, 0, "new planes of the whole picture");
     }
 
     /// Planes that are drawn smaller are scaled where they are, with the filter of the call
