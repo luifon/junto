@@ -36,17 +36,17 @@ exit "${FAKE_SCP_STATUS:-0}"
 # FAKE_FINISH_DURING_CHECK: the run writes its record and "finished" while -Ended runs, and
 # its process then ends.
 POWERSHELL = r'''#!/bin/sh
+if [ "${FAKE_REQUIRE_START_SCRIPT:-}" = 1 ]; then
+    case " $* " in
+        *" -File check-run.ps1 "*) test -f check-run.ps1 || exit 2 ;;
+        *) test -f start-run.ps1 || exit 2 ;;
+    esac
+fi
 case " $* " in
     *" -Forget "*)
         if [ ! -f finished ] && [ "${FAKE_ENDED:-1}" != 0 ]; then exit 1; fi
         exit "${FAKE_FORGET:-0}" ;;
     *" -Ended "*)
-        if [ "${FAKE_REQUIRE_START_SCRIPT:-}" = 1 ]; then
-            case " $* " in
-                *" -File check-run.ps1 "*) test -f check-run.ps1 || exit 2 ;;
-                *) test -f start-run.ps1 || exit 2 ;;
-            esac
-        fi
         if [ -n "${FAKE_FINISH_DURING_CHECK:-}" ]; then
             printf '%s\trust-windows\tstart\tend\t0\tlogs/rust-windows.log\t61\n' "$(cat commit)" >>record.tsv
             rm -f current
@@ -168,6 +168,10 @@ class WindowsRunner(unittest.TestCase):
         refused = self.ci("forget", run, FAKE_ENDED="1", FAKE_REQUIRE_START_SCRIPT="1")
         self.assertNotEqual(refused.returncode, 0)
         self.assertTrue(here.exists())
+        inspector = here / "check-run.ps1"
+        self.assertTrue(inspector.is_file(), "the current inspector was not copied")
+        self.assertEqual(inspector.read_bytes(), (ROOT / "tools/windows/start-run.ps1").read_bytes())
+        inspector.unlink()
         forgotten = self.ci("forget", run, FAKE_ENDED="0", FAKE_REQUIRE_START_SCRIPT="1")
         self.assertEqual(forgotten.returncode, 0, forgotten.stdout + forgotten.stderr)
         self.assertFalse(here.exists())
