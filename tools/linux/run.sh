@@ -58,21 +58,14 @@ if docker network inspect "$network" >/dev/null 2>&1; then
     echo "network $network already exists; inspect and remove the interrupted run before retrying" >&2
     exit 1
 fi
-# JUNTO_LINUX_BUILDER=limited builds the image with the builder of Docker without BuildKit:
-# it runs each step in a container with the processor and memory limits of the build
-# container below, and it keeps no BuildKit cache; its cache is the layers of the image. The
-# label names the image of this prefix, so that an image that a new build replaces is
-# removed without touching other images.
-if [ "${JUNTO_LINUX_BUILDER:-}" = limited ]; then
-    build_memory=$memory
-    DOCKER_BUILDKIT=0 docker build --force-rm --label "junto-linux-image=$prefix" \
-        --cpuset-cpus "$build_set" --memory "$build_memory" --memory-swap "$build_memory" \
-        --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" \
-        -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
-    docker image prune -f --filter "label=junto-linux-image=$prefix" >/dev/null
-else
-    docker build --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
-fi
+# The classic builder enforces the same processor and memory bounds as the command
+# container. BuildKit ignores these docker build flags. Its cache is the image layers;
+# the prefix label restricts cleanup to replaced images of this runner.
+DOCKER_BUILDKIT=0 docker build --force-rm --label "junto-linux-image=$prefix" \
+    --cpuset-cpus "$build_set" --memory "$memory" --memory-swap "$memory" \
+    --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" \
+    -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
+docker image prune -f --filter "label=junto-linux-image=$prefix" >/dev/null
 docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null
 docker network create "$network" >/dev/null

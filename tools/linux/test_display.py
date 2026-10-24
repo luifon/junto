@@ -7,6 +7,7 @@ import signal
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 DISPLAY = Path(__file__).with_name("display.sh")
 
@@ -16,8 +17,11 @@ def display(*arguments, environment=None):
         command = [DISPLAY, "x11", *arguments]
         process = subprocess.Popen(command, env=environment, stdout=stdout, stderr=stderr,
                                    start_new_session=True)
+        failure = None
         try:
-            status = process.wait(timeout=45)
+            status = process.wait(timeout=90)
+        except subprocess.TimeoutExpired as error:
+            failure = error
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -26,7 +30,38 @@ def display(*arguments, environment=None):
             process.wait()
         stdout.seek(0)
         stderr.seek(0)
-        return subprocess.CompletedProcess(command, status, stdout.read(), stderr.read())
+        output, diagnostics = stdout.read(), stderr.read()
+        if failure is not None:
+            failure.output, failure.stderr = output, diagnostics
+            failure.add_note(f"stdout:\n{output}\nstderr:\n{diagnostics}")
+            raise failure
+        return subprocess.CompletedProcess(command, status, output, diagnostics)
+
+
+class DisplayWatchdog(unittest.TestCase):
+    def test_both_readiness_stages_fit_the_watchdog(self):
+        process = mock.Mock(pid=12345)
+        def wait(timeout=None):
+            if timeout is not None and timeout < 90:
+                raise subprocess.TimeoutExpired("display", timeout)
+            return 0
+        process.wait.side_effect = wait
+        with mock.patch.object(subprocess, "Popen", return_value=process), mock.patch.object(os, "killpg"):
+            self.assertEqual(display("true").returncode, 0)
+
+    def test_timeout_reports_the_captured_diagnostics(self):
+        process = mock.Mock(pid=12345)
+        process.wait.side_effect = [subprocess.TimeoutExpired("display", 90), 0]
+        def start(*args, **kwargs):
+            kwargs["stdout"].write("display probe output")
+            kwargs["stderr"].write("window manager diagnostic")
+            return process
+        with mock.patch.object(subprocess, "Popen", side_effect=start), mock.patch.object(os, "killpg"):
+            with self.assertRaises(subprocess.TimeoutExpired) as failure:
+                display("true")
+        self.assertEqual(failure.exception.output, "display probe output")
+        self.assertEqual(failure.exception.stderr, "window manager diagnostic")
+        self.assertIn("window manager diagnostic", "\n".join(failure.exception.__notes__))
 
 
 @unittest.skipUnless(shutil.which("Xvfb") and shutil.which("openbox"), "needs the Linux build image")

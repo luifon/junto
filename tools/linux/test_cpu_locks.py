@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check the CPU allocation passed through each Linux worker lock."""
 import os
+import select
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,7 +15,7 @@ class WorkerCpuSets(unittest.TestCase):
     def allocation(self, lock, first=None, processors="4", system="Linux"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name, body in {"uname": f"echo {system}", "flock": 'shift; exec "$@"',
+            for name, body in {"uname": f"echo {system}", "getconf": "echo 16", "flock": 'shift; exec "$@"',
                                "lockf": 'shift; shift; exec "$@"'}.items():
                 program = root / name
                 program.write_text(f"#!/bin/sh\n{body}\n")
@@ -40,6 +42,47 @@ class WorkerCpuSets(unittest.TestCase):
     def test_other_locks_and_systems_keep_the_callers_budget(self):
         self.assertEqual(self.allocation("/tmp/junto-run.lock"), "unset 4")
         self.assertEqual(self.allocation("/tmp/junto-heavy.lock", system="Darwin"), "unset 4")
+
+
+class SmallHostGate(unittest.TestCase):
+    def test_ci_and_worker_locks_share_the_machine_gate(self):
+        for processors in (8, 12):
+            with self.subTest(processors=processors), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                serial = root / "serial.sh"
+                gate = root / "machine.lock"
+                serial.write_text(SERIAL.read_text().replace("/tmp/junto-heavy-machine.lock", str(gate)))
+                serial.chmod(0o644)
+                (root / "windows").mkdir()
+                shutil.copy(SERIAL.parent / "windows/lock.py", root / "windows/lock.py")
+                getconf = root / "getconf"
+                getconf.write_text(f"#!/bin/sh\necho {processors}\n")
+                getconf.chmod(0o755)
+                environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                                   JUNTO_HEAVY_LOCK=str(root / "run.lock"))
+                environment.pop("JUNTO_MACHINE_GATE_HELD", None)
+                command = ["sh", serial, "--inherited", "env", f"JUNTO_HEAVY_LOCK={root / 'ci-heavy.lock'}",
+                           "sh", serial, "sh", "-c", "echo ready; read release"]
+                ci = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                worker = None
+                try:
+                    self.assertTrue(select.select([ci.stdout], [], [], 10)[0], "CI did not enter")
+                    self.assertEqual(ci.stdout.readline(), "ready\n")
+                    locked = subprocess.run(["flock", "-n", gate, "true"], check=False)
+                    self.assertEqual(locked.returncode, 1, "CI did not hold the shared machine gate")
+                    worker = subprocess.Popen(["sh", serial, "echo", "worker"],
+                        env=dict(environment, JUNTO_HEAVY_LOCK=str(root / "worker.lock")),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    self.assertFalse(select.select([worker.stdout], [], [], 0.2)[0], "worker overlapped CI")
+                    ci.communicate("release\n", timeout=10)
+                    self.assertEqual(worker.communicate(timeout=10)[0], "worker\n")
+                    self.assertEqual(worker.returncode, 0)
+                finally:
+                    if ci.poll() is None:
+                        ci.communicate("release\n", timeout=10)
+                    if worker is not None and worker.poll() is None:
+                        worker.communicate(timeout=10)
 
 
 if __name__ == "__main__":

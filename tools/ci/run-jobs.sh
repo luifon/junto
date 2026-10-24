@@ -268,7 +268,7 @@ linux_tools() {
 # over all of its containers, without swap. tools/linux/run.sh gives its build container the
 # processors and memory below, and PostgreSQL, LiveKit and the control container 4
 # processors and 2.4 GiB together. CI reserves the upper eight processors on a 16-CPU
-# host; the worker locks use CPUs 0-7. A smaller host must serialize workers with CI.
+# host; the worker locks use CPUs 0-7. The shared machine gate serializes workers with CI on smaller hosts.
 host_cpus=8
 cpu_first=0
 if [ "$runner" = linux ]; then
