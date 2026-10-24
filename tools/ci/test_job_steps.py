@@ -33,6 +33,8 @@ WINDOWS_ONLY_SKIPS = [
     "messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server",
     "messages::a_message_whose_files_the_retention_removed_says_so",
     "admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export",
+    "admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved",
+    "admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts",
 ]
 DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python3 tools/windows/with_test_postgres.py"}
 
