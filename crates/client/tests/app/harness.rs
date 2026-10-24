@@ -920,9 +920,9 @@ impl Window {
             let Some(server) = window.view().selected else {
                 return false;
             };
-            let cancelling = window.state.read_with(&window.cx, |state, _| {
-                state.pending().cancels_on(server.id)
-            });
+            let cancelling = window
+                .state
+                .read_with(&window.cx, |state, _| state.pending().cancels_on(server.id));
             !server.busy && !cancelling
         });
         self.click(selector);
