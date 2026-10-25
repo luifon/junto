@@ -435,9 +435,8 @@ mod tests {
     fn a_relative_data_directory_is_taken_from_the_current_directory() {
         let chosen = data_dir(Some(PathBuf::from("first"))).unwrap();
         assert!(chosen.is_absolute() && chosen.ends_with("first"));
-        assert_eq!(
-            data_dir(Some(PathBuf::from("/tmp/first"))).unwrap(),
-            PathBuf::from("/tmp/first")
-        );
+        // An absolute path of the system: `/tmp/first` has no drive on Windows.
+        let absolute = std::env::temp_dir().join("first");
+        assert_eq!(data_dir(Some(absolute.clone())).unwrap(), absolute);
     }
 }
