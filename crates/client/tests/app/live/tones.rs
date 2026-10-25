@@ -53,7 +53,7 @@ fn the_person_in_the_call_hears_a_tone_for_each_event_and_none_for_the_people_pr
             && occupants(window).len() == 2
     });
     world.run(async { tokio::time::sleep(Duration::from_millis(500)).await });
-    window.cx.run_until_parked();
+    window.settle();
     assert!(window.tones.opened_outputs().is_empty());
 
     window.click("microphone");
