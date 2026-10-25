@@ -414,9 +414,18 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     let ada = admin.handle.account().unwrap();
     let own = window.view().person.account_id.unwrap();
     let tile = |window: &mut Window, account| window.shows_named(format!("call-tile:{account}"));
+    let says = |window: &mut Window, sentence: &str| {
+        window.shows_named(format!("people-hidden-text:{sentence}"))
+    };
+    let avatar =
+        |window: &mut Window, account| window.shows_named(format!("hidden-avatar:{account}"));
     // The tile of the window, without Ada's, with the statement of the hidden person.
     let only_own = |window: &mut Window| {
-        tile(window, own) && !tile(window, ada) && window.shows("people-hidden")
+        tile(window, own)
+            && !tile(window, ada)
+            && says(window, "1 person without video is hidden.")
+            && avatar(window, ada)
+            && !avatar(window, own)
     };
     let drawn = |window: &mut Window| {
         window
@@ -431,7 +440,11 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     window.click("call-tab-settings");
     window.click("hide-without-video");
     window.until("both tiles are hidden", |window| {
-        !tile(window, ada) && !tile(window, own) && window.shows("people-hidden")
+        !tile(window, ada)
+            && !tile(window, own)
+            && says(window, "2 people without video are hidden.")
+            && avatar(window, ada)
+            && avatar(window, own)
     });
 
     // The camera of the window starts: its tile returns.
@@ -453,10 +466,21 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
         only_own(window)
     });
 
-    // The focus.
+    // The focus: the own camera is drawn large, and Ada stays out.
+    let width = |window: &mut Window| {
+        window.settle();
+        window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("call-tile:{own}")))
+            .map(|bounds| f32::from(bounds.size.width))
+    };
+    let grid = width(&mut window);
     window.click("camera-focus");
-    window.until("the focus leaves Ada out", |window| only_own(window));
+    window.until("the focus leaves Ada out", |window| {
+        width(window) > grid && only_own(window)
+    });
     window.click("camera-focus");
+    window.until("the grid returns", |window| width(window) == grid);
 
     // A share of Ada: the strip under the picture.
     caller.calls.start_share(CaptureRequest {

@@ -112,14 +112,28 @@ System messages:
   converted by the migration. Recording start and stop use their notes only, avoiding
   duplicate lines from their audit entries.
 - The lines `channel_updated`, `channel_override_set` and `channel_call_settings_updated`
-  state only that a person changed settings of the channel. Such a line is not written when
-  the latest line or message of the main list of the channel is the same action by the same
-  person, written less than 5 minutes before; the line that stands keeps its time. The audit
-  log keeps every change. The check runs under the lock of the place, so two changes at the
-  same time write one line. Reason: each step of the user limit of a room is one request, and
-  a person who stepped from 2 to 5 and back wrote ten equal lines. A message, another line or
-  a change by another person in between, or a change 5 minutes or more after the line, has a
-  line of its own. Test: `messages_system::repeated_changes_of_the_settings_by_one_person_write_one_line`.
+  state only that a person changed settings of the channel, and are public. Such a line is
+  not written when the latest public line or message of the main list of the channel is the
+  same action by the same person, written less than 5 minutes before; the line that stands
+  keeps its time. A line of a call that hides who is inside does not count: the people
+  outside would otherwise read two equal lines one after the other. So the people inside such
+  a call read the standing line, then the lines of the call, and no line for a change of the
+  same person within the 5 minutes. The audit log keeps every change. Reason: each step of
+  the user limit of a room is one request, so a person who stepped from 2 to 5 and back
+  wrote six equal lines. A message, another public line or a change by another person in
+  between, a change in another channel, or a change 5 minutes or more after the line, has a
+  line of its own.
+- Two changes at the same time write one line. The transactions are serializable, and the
+  one that loses runs again (ADR 0009) and then finds the line of the other. The settings
+  and rename routes also update the row of the channel before the line, so the second change
+  waits there first. The check itself locks the row of the place before it reads the latest
+  line, and does not create that row; so the rule also holds for a writer without an earlier
+  row lock and at READ COMMITTED.
+- Tests in `messages_system`: `repeated_changes_of_the_settings_by_one_person_write_one_line`,
+  `two_changes_of_the_settings_at_the_same_time_write_one_line` (two requests, the first
+  held before its commit), `the_lock_of_the_place_keeps_one_line_at_read_committed` (fails
+  without the lock), `the_changes_of_one_person_join_per_action_and_per_channel`,
+  `a_hidden_call_line_between_two_changes_does_not_repeat_the_line`.
 - Each system line fixes its audience when written. A public line stays public. A line
   of a call that hides who is inside is visible only to the accounts inside at that
   instant (ADR 0517: the admission check has seen their seats), including after the call

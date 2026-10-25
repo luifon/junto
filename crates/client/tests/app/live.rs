@@ -811,12 +811,16 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     // starts brings its tile back.
     let own_tile = format!("call-tile:{}", window.view().person.account_id.unwrap());
     window.until("the people without video are hidden", |window| {
-        window.shows("people-hidden") && !window.shows_named(own_tile.clone())
+        window.shows_named("people-hidden-text:2 people without video are hidden.".to_owned())
+            && !window.shows_named(own_tile.clone())
     });
     window.click("call-camera");
     window.until(
         "the people without video are hidden beside the camera",
-        |window| window.shows("people-hidden") && window.shows_named(own_tile.clone()),
+        |window| {
+            window.shows_named("people-hidden-text:1 person without video is hidden.".to_owned())
+                && window.shows_named(own_tile.clone())
+        },
     );
     window.until("the settings are stored", |_| {
         std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {

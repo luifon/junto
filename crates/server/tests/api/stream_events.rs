@@ -364,10 +364,18 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
         .put(&owner, &path, &deny)
         .await
         .ok::<Value>(StatusCode::OK);
+    // Each change has its own system line (ADR 0408).
+    server
+        .clock
+        .advance(junto_server::messages::JOINED_LINES_WITHIN);
     server
         .put(&owner, &path, &deny)
         .await
         .ok::<Value>(StatusCode::OK);
+    // Each change has its own system line (ADR 0408).
+    server
+        .clock
+        .advance(junto_server::messages::JOINED_LINES_WITHIN);
     server
         .put(&owner, &path, &json!({}))
         .await
@@ -402,15 +410,16 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
             deleted: false,
         })
         .collect();
-    // The three changes by one person in a short time have one system line (ADR 0408).
-    assert_eq!(changes.len(), 1);
+    assert_eq!(changes.len(), 3);
     assert_eq!(
         events(server.traffic(&owner, &mut stream).await),
         [
             changes[0].clone(),
             set(vec![WorkspacePermission::ManageMessages]),
             notice.clone(),
+            changes[1].clone(),
             set(vec![WorkspacePermission::ManageMessages]),
+            changes[2].clone(),
             set(vec![]),
             notice,
         ]

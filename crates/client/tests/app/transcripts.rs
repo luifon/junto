@@ -1179,3 +1179,42 @@ fn the_recording_control_of_the_call_window_fits_beside_its_buttons_in_every_sta
     recording_control_fits("failed", &mut window, &mut call, &mut panels);
     world.run(server.leave(&[(&luca, seat)]));
 }
+
+/// A transcript line longer than the panel is wide wraps inside the panel, at every width of
+/// the window.
+#[gpui::test]
+fn a_long_transcript_line_wraps_inside_the_panel(cx: &mut TestAppContext) {
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let said = "We go through the plans of the quarter, the review of the studio, the order of \
+                the new microphones and the dates of the next three recordings with the team.";
+    let short = spoken(ada, None, 130, "Yes.");
+    world.run(server.transcribe(recording_id, &[spoken(ada, None, 100, said), short]));
+    open_panel(&mut window, recording_id, 2);
+    for width in [720.0, 1000.0, 1600.0] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(px(width), px(640.0))));
+        window.settle();
+        let panel = window.cx.debug_bounds("transcript-panel").unwrap();
+        let line = window.cx.debug_bounds("transcript-line:0").unwrap();
+        assert!(
+            line.left() >= panel.left() && line.right() <= panel.right(),
+            "at a width of {width}, the line {line:?} passes the edge of the panel {panel:?}"
+        );
+        // The long text takes more rows than the short one.
+        let one_row = window.cx.debug_bounds("transcript-line:1").unwrap();
+        assert!(
+            line.size.height > one_row.size.height,
+            "at a width of {width}, the line {line:?} is not higher than {one_row:?}"
+        );
+    }
+}

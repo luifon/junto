@@ -98,7 +98,7 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
 }
 
 /// A system line longer than the message list is wide wraps inside the list, at every width
-/// of the window.
+/// of the window. The day separator spans the list.
 #[gpui::test]
 fn a_long_system_line_wraps_inside_the_message_list(cx: &mut TestAppContext) {
     let world = World::new();
@@ -151,6 +151,13 @@ fn a_long_system_line_wraps_inside_the_message_list(cx: &mut TestAppContext) {
             "at a width of {width}, the line {drawn:?} passes the edge of the list {list:?}"
         );
         heights.push(drawn.size.height);
+        // The day separator spans the list: its rules fill the width beside the date.
+        let day = window.cx.debug_bounds("day-separator").unwrap();
+        assert_eq!(
+            (day.left(), day.size.width),
+            (list.left(), list.size.width),
+            "at a width of {width}"
+        );
     }
     assert!(
         heights[0] > heights[2],

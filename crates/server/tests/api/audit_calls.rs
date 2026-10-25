@@ -662,6 +662,16 @@ async fn turning_the_setting_off_during_a_call_shows_nothing_of_that_call() {
     let scene = &studio.scene;
     let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
     let voice = scene.voice.id;
+    // A message after the line that hid who is inside: the change below has a public line of
+    // its own, written while the hidden call runs (ADR 0408).
+    server
+        .post(
+            owner,
+            &format!("/api/v1/channels/{voice}/messages"),
+            &crate::messages_support::text("The next call is hidden."),
+        )
+        .await
+        .ok::<Value>(StatusCode::CREATED);
     let started = studio.record().await;
     let before = server.snapshot(owner).await.cursor;
     let mut to_owner = server.full_stream(owner).await;
