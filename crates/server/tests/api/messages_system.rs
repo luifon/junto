@@ -724,3 +724,129 @@ async fn the_permanent_messages_setting_has_its_own_line_and_audit_entry() {
         .collect();
     assert_eq!(lines, expected);
 }
+
+/// The system lines and messages of a channel in their order: the action of each line, or
+/// "message", with its actor or author.
+async fn line_actions(
+    server: &TestServer,
+    member: &crate::support::Member,
+    channel: &junto_protocol::structure::Channel,
+) -> Vec<(String, Option<junto_protocol::ids::AccountId>)> {
+    let page: MessagePage = server
+        .get(member, &format!("/api/v1/channels/{}/messages", channel.id))
+        .await
+        .ok(StatusCode::OK);
+    page.messages
+        .iter()
+        .map(|message| match &message.system {
+            Some(line) => (line.action.clone(), line.actor_id),
+            None => ("message".to_owned(), message.author_id),
+        })
+        .collect()
+}
+
+async fn set_user_limit(
+    server: &TestServer,
+    member: &crate::support::Member,
+    channel: &junto_protocol::structure::Channel,
+    limit: u32,
+) {
+    server
+        .patch(
+            member,
+            &format!("/api/v1/channels/{}/call/settings", channel.id),
+            &serde_json::json!({ "user_limit": limit }),
+        )
+        .await
+        .ok::<serde_json::Value>(StatusCode::OK);
+}
+
+/// One person who changes the settings of a room several times in a short time, as with the
+/// steps of the user limit, gets one line; the audit log keeps every change.
+#[tokio::test]
+async fn repeated_changes_of_the_settings_by_one_person_write_one_line() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let other = server.join(&owner, "Other").await;
+    let voice = channel(&server, &owner, "voice").await;
+    let settings = |actor: &crate::support::Member| {
+        (
+            "channel_call_settings_updated".to_owned(),
+            Some(actor.account_id),
+        )
+    };
+    let created = ("channel_created".to_owned(), Some(owner.account_id));
+    let message = ("message".to_owned(), Some(owner.account_id));
+
+    for limit in [3, 4, 5, 4, 3] {
+        set_user_limit(&server, &owner, &voice, limit).await;
+        server.clock.advance(Duration::seconds(15));
+    }
+    assert_eq!(
+        line_actions(&server, &owner, &voice).await,
+        [created.clone(), settings(&owner)]
+    );
+    let log: junto_protocol::audit::AuditPage = server
+        .get(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/audit-log?target_id={}",
+                voice.workspace_id, voice.id
+            ),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let changes = log
+        .entries
+        .iter()
+        .filter(|entry| entry.event.action() == "channel_call_settings_updated")
+        .count();
+    assert_eq!(changes, 5);
+
+    // A message after the line: the next change has a line of its own.
+    send(&server, &owner, &voice, "the limit is three").await;
+    set_user_limit(&server, &owner, &voice, 2).await;
+    assert_eq!(
+        line_actions(&server, &owner, &voice).await,
+        [
+            created.clone(),
+            settings(&owner),
+            message.clone(),
+            settings(&owner)
+        ]
+    );
+
+    // A change later than the time of joining after the latest line has a line of its own.
+    server
+        .clock
+        .advance(junto_server::messages::JOINED_LINES_WITHIN + Duration::seconds(1));
+    set_user_limit(&server, &owner, &voice, 3).await;
+    // The line of another person comes between: the next change has a line of its own.
+    let mut transaction = server.db.begin().await.unwrap();
+    junto_server::audit::record(
+        &mut transaction,
+        server.clock.now(),
+        Some(other.account_id),
+        junto_server::audit::About::Channel(voice.workspace_id, voice.id),
+        &AuditEvent::ChannelCallSettingsUpdated {
+            user_limit: Some(4),
+            hides_occupants: false,
+        },
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    set_user_limit(&server, &owner, &voice, 5).await;
+    assert_eq!(
+        line_actions(&server, &owner, &voice).await,
+        [
+            created,
+            settings(&owner),
+            message,
+            settings(&owner),
+            settings(&owner),
+            settings(&other),
+            settings(&owner)
+        ]
+    );
+}

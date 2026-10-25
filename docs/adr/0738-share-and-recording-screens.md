@@ -24,7 +24,7 @@ The stage with a share:
 - With two or more shares a bar lists them as cards with a small picture, the name ("Carla's screen", "Bruno's window") and "Watching" or "Watch". A press on a card watches that share. The line then reads "You watch …" with what the person hears, and "The sound follows the share you watch."
 - The line tells when the sound of the own share is closed by a microphone block, and when the viewer turned the sound of the share off.
 - The picture is drawn inside the stage with its proportions. Until the first picture has arrived the stage says so.
-- Under the picture, a strip shows the people as tiles using the call layout constants. With "Hide people without video" on, the strip shows no person without a camera and states how many it hides. The setting is off at first, because this version has no camera and it would hide every person.
+- Under the picture, a strip shows the people as tiles using the call layout constants. "Hide people without video" applies to it as to the stage without a share (ADR 0735).
 - Without a share the stage shows the people as large tiles (ADR 0735).
 
 Settings tab of the call:

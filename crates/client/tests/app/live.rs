@@ -807,13 +807,16 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.click("share-resolution-0");
     window.click("share-frame-rate-0");
     window.click("hide-without-video");
-    // With no cameras, hiding keeps the avatar grid usable. Once a camera starts,
-    // only people without a picture move into the hidden summary.
-    assert!(!window.shows("people-hidden"));
+    // Nobody has a camera: the strip leaves out both people and says so. A camera that
+    // starts brings its tile back.
+    let own_tile = format!("call-tile:{}", window.view().person.account_id.unwrap());
+    window.until("the people without video are hidden", |window| {
+        window.shows("people-hidden") && !window.shows_named(own_tile.clone())
+    });
     window.click("call-camera");
     window.until(
         "the people without video are hidden beside the camera",
-        |window| window.shows("people-hidden"),
+        |window| window.shows("people-hidden") && window.shows_named(own_tile.clone()),
     );
     window.until("the settings are stored", |_| {
         std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {

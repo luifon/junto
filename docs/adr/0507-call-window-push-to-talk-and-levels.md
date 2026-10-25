@@ -19,7 +19,7 @@ Call window:
 
 - The call can be detached into its own operating-system window. That window keeps the controls of the voice channel.
 - The call window can be made full screen.
-- People without video can be hidden in the call window. They remain in the member list.
+- People without video can be hidden in the call window (ADR 0735). They remain in the member list.
 - Keeping the call window above other windows ("keep on top") depends on the system:
   - macOS: gpui sets the window level only when a window is created, and has no call that changes it later. The client switches "keep on top" by creating the call window again with the other window kind, or by a call to the window of the operating system through the raw window handle.
   - Linux on X11: the floating window kind of gpui keeps the call window above the main window only, and a window of another program covers it. The window manager keeps the window above other programs after the standard request for the window state "above", which gpui does not send. The client reads the identifier of the X11 window from the raw window handle and sends that request on a display connection of its own, because gpui does not give its connection. The request can be sent at any time; it changes the stack and leaves the focus where it is.

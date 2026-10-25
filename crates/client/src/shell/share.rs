@@ -1477,14 +1477,17 @@ impl Shell {
 
         // The setting affects only the tiles; the member list stays complete.
         let people = panel.people.as_slice();
-        let hidden = panel.hide_without_video
-            && people
-                .iter()
-                .any(|person| self.camera_image(person).is_some());
+        let ids: Vec<_> = people.iter().map(|person| person.account_id).collect();
+        let hidden_ids = super::camera::hidden_people(
+            &ids,
+            &self.people_with_video(people, cx),
+            panel.hide_without_video,
+        );
+        let hidden = !hidden_ids.is_empty();
         let tiles: Vec<AnyElement> = {
             people
                 .iter()
-                .filter(|occupant| !hidden || self.camera_image(occupant).is_some())
+                .filter(|occupant| !hidden_ids.contains(&occupant.account_id))
                 .enumerate()
                 .map(|(index, occupant)| {
                     let (marks, label) = tile_marks(occupant);
@@ -1514,56 +1517,10 @@ impl Shell {
                 })
                 .collect()
         };
-        let ids: Vec<_> = people.iter().map(|person| person.account_id).collect();
-        let cameras: Vec<_> = people
-            .iter()
-            .filter(|person| self.camera_image(person).is_some())
-            .map(|person| person.account_id)
-            .collect();
-        let hidden_ids = super::camera::hidden_people(&ids, &cameras, hidden);
-        let hidden_count = hidden_ids.len();
-        let hidden_note = (hidden_count > 0).then(|| {
-            let (strong, rest) = text::people_hidden(hidden_count);
-            let line = format!("{strong}{rest}");
-            let avatars = people
-                .iter()
-                .filter(|person| hidden_ids.contains(&person.account_id))
-                .take(3)
-                .map(|occupant| {
-                    super::people::avatar(&faces, occupant.account_id, 20.0).radius(2.0)
-                });
-            div()
-                .id("people-hidden")
-                .role(Role::Status)
-                .aria_label(line.clone())
-                .debug_selector(|| "people-hidden".to_owned())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(9.0))
-                .ml_auto()
-                .mb(u(22.0))
-                .typeface(theme.types.small, theme)
-                .text_size(u(13.0))
-                .line_height(u(18.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .ink(colors.bone_2)
-                .when(self.detached, |note| {
-                    note.flex_col().items_start().w_full().ml(u(0.0)).mb(u(0.0))
-                })
-                .child(div().flex().gap(u(3.0)).children(avatars))
-                .child(
-                    div()
-                        .child(StyledText::new(line).with_highlights([(
-                            0..strong.len(),
-                            gpui::HighlightStyle {
-                                font_weight: Some(gpui::FontWeight::BOLD),
-                                color: Some(Hsla::from(colors.bone)),
-                                ..gpui::HighlightStyle::default()
-                            },
-                        )]))
-                        .child(text::LISTED_IN_MEMBERS),
-                )
+        let hidden_note = self.hidden_note(people, &hidden_ids, theme).map(|note| {
+            note.ml_auto().mb(u(22.0)).when(self.detached, |note| {
+                note.flex_col().items_start().w_full().ml(u(0.0)).mb(u(0.0))
+            })
         });
         let strip = div()
             .id("call-people")

@@ -111,6 +111,15 @@ System messages:
   messages in the same transaction. Existing call notes and channel audit entries are
   converted by the migration. Recording start and stop use their notes only, avoiding
   duplicate lines from their audit entries.
+- The lines `channel_updated`, `channel_override_set` and `channel_call_settings_updated`
+  state only that a person changed settings of the channel. Such a line is not written when
+  the latest line or message of the main list of the channel is the same action by the same
+  person, written less than 5 minutes before; the line that stands keeps its time. The audit
+  log keeps every change. The check runs under the lock of the place, so two changes at the
+  same time write one line. Reason: each step of the user limit of a room is one request, and
+  a person who stepped from 2 to 5 and back wrote ten equal lines. A message, another line or
+  a change by another person in between, or a change 5 minutes or more after the line, has a
+  line of its own. Test: `messages_system::repeated_changes_of_the_settings_by_one_person_write_one_line`.
 - Each system line fixes its audience when written. A public line stays public. A line
   of a call that hides who is inside is visible only to the accounts inside at that
   instant (ADR 0517: the admission check has seen their seats), including after the call
