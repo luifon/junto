@@ -92,6 +92,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSStatusBarButton",
     "NSStatusItem",
     "NSView",
+    "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
@@ -99,6 +100,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSGeometry",
     "NSObject",
     "NSString",
+    "objc2-core-foundation",
 ] }
 
 [dev-dependencies]
