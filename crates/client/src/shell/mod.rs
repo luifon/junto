@@ -19,6 +19,7 @@ mod join;
 pub mod linking;
 mod main_area;
 mod notices;
+mod panic_notice;
 mod people;
 mod person_drag;
 mod pictures;
@@ -500,6 +501,10 @@ impl Shell {
                 }
             }),
             cx.observe_in(&state, window, |this, state, window, cx| {
+                #[cfg(feature = "test-support")]
+                crate::panics::test_support::reached(
+                    crate::panics::test_support::Handler::StateObserver,
+                );
                 // A share that is being chosen belongs to one call, in both windows.
                 this.drop_stale_share_picker(window, cx);
                 // The call window shows the place of the call, with its chat (ADR 0772).
@@ -1137,6 +1142,7 @@ impl Render for Shell {
         #[cfg(feature = "test-support")]
         {
             self.draws += 1;
+            crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
         if self.detached {
@@ -1220,6 +1226,7 @@ impl Render for Shell {
                 shell.child(self.render_title_strip(text::APP_NAME.into(), window, cx))
             })
             .child(body)
+            .children(self.render_panic_notice(cx))
             .when(frame, |shell| {
                 shell.children(title_bar::resize_bands(window, cx))
             })
@@ -1250,7 +1257,13 @@ impl Shell {
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.presses_over()))
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| this.presses_over()),
+                cx.listener(|this, _, _, _| {
+                    #[cfg(feature = "test-support")]
+                    crate::panics::test_support::reached(
+                        crate::panics::test_support::Handler::PressEnd,
+                    );
+                    this.presses_over();
+                }),
             )
             // Escape closes the details of a recording and the list of the members who
             // can be invited. Neither is a layer of the window.

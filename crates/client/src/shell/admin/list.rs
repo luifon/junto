@@ -1212,6 +1212,8 @@ mod tests {
     }
 
     fn open(cx: &mut TestAppContext, lines: Vec<Line>) -> (Entity<Host>, &mut VisualTestContext) {
+        // A panic in a handler stops in gpui (ADR 0757); `settle` fails the test on one.
+        crate::panics::install();
         cx.update(|cx| {
             gpui_base::init(cx);
             crate::theme::install(crate::theme::Theme::stone(), cx);
@@ -1245,10 +1247,22 @@ mod tests {
     /// Runs the application until it has no work, with the frames that it asks for. The
     /// test platform has no display, so a frame that a window asks for is given here.
     fn settle(cx: &mut VisualTestContext) {
+        assert_eq!(
+            crate::panics::panics_on_this_thread(),
+            0,
+            "a handler panicked: {:?}",
+            crate::panics::messages_on_this_thread()
+        );
         for _ in 0..50 {
             cx.run_until_parked();
             if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
                 cx.run_until_parked();
+                assert_eq!(
+                    crate::panics::panics_on_this_thread(),
+                    0,
+                    "a handler panicked: {:?}",
+                    crate::panics::messages_on_this_thread()
+                );
                 return;
             }
         }

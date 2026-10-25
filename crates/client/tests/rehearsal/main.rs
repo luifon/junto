@@ -196,6 +196,15 @@ fn main() -> ExitCode {
     }
     std::fs::write(work.join("steps.txt"), report.join("\n") + "\n").unwrap();
     drop(native);
+    // A panic in a handler or a task stops in gpui and no longer reaches a stage (ADR 0757).
+    let panics = junto_client::panics::panics_in_this_process();
+    if panics > 0 {
+        println!(
+            "rehearsal: {panics} panics happened in the process: {:?}",
+            junto_client::panics::messages_on_this_thread()
+        );
+        failed = true;
+    }
     if failed {
         ExitCode::FAILURE
     } else {

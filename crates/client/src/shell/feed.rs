@@ -801,6 +801,8 @@ impl Shell {
     /// so this does not call the list (ADR 0740); [`Self::feed_moved`] acts on the new
     /// place after the layout.
     pub(crate) fn feed_scrolled(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        #[cfg(feature = "test-support")]
+        crate::panics::test_support::reached(crate::panics::test_support::Handler::FeedScroll);
         // The rows moved under a pointer that did not move; gpui tells a row that the
         // pointer is over it at the next move of the pointer.
         if self

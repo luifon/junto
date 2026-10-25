@@ -127,71 +127,78 @@ fn capture(
             let registry = Rc::downgrade(&registry);
             let life = life.clone();
             move |stream, _, _, state| {
-                if let pw::stream::StreamState::Error(message) = state {
-                    life.fail(error(message));
-                }
-                let id = stream.node_id();
-                if id != pw::constants::ID_ANY
-                    && let Some(registry) = registry.upgrade()
-                {
-                    registry.set_capture(id);
-                }
+                super::connection::in_callback("PipeWire audio state_changed", || {
+                    if let pw::stream::StreamState::Error(message) = state {
+                        life.fail(error(message));
+                    }
+                    let id = stream.node_id();
+                    if id != pw::constants::ID_ANY
+                        && let Some(registry) = registry.upgrade()
+                    {
+                        registry.set_capture(id);
+                    }
+                })
             }
         })
         .param_changed({
             let life = life.clone();
             move |_, _, id, param| {
-                if id != spa::param::ParamType::Format.as_raw() {
-                    return;
-                }
-                let Some(param) = param else {
-                    return;
-                };
-                let mut info = spa::param::audio::AudioInfoRaw::new();
-                if info.parse(param).is_err()
-                    || info.rate() != 48_000
-                    || info.channels() != 9
-                    || info.format() != spa::param::audio::AudioFormat::F32LE
-                    || info.position()[..9] != POSITIONS
-                {
-                    life.fail(error(
-                        "PipeWire selected an unsupported shared-sound format",
-                    ));
-                }
+                super::connection::in_callback("PipeWire audio param_changed", || {
+                    if id != spa::param::ParamType::Format.as_raw() {
+                        return;
+                    }
+                    let Some(param) = param else {
+                        return;
+                    };
+                    let mut info = spa::param::audio::AudioInfoRaw::new();
+                    if info.parse(param).is_err()
+                        || info.rate() != 48_000
+                        || info.channels() != 9
+                        || info.format() != spa::param::audio::AudioFormat::F32LE
+                        || info.position()[..9] != POSITIONS
+                    {
+                        life.fail(error(
+                            "PipeWire selected an unsupported shared-sound format",
+                        ));
+                    }
+                })
             }
         })
         .process({
             let malformed = malformed.clone();
             move |stream, _| {
-                let Some(mut buffer) = stream.dequeue_buffer() else {
-                    return;
-                };
-                let Some(data) = buffer.datas_mut().first_mut() else {
-                    return;
-                };
-                let offset = data.chunk().offset() as usize;
-                let size = data.chunk().size() as usize;
-                let stride = data.chunk().stride();
-                let Some(bytes) = data.data() else {
-                    malformed.store(true, Ordering::Relaxed);
-                    return;
-                };
-                let Some(end) = offset.checked_add(size).filter(|end| *end <= bytes.len()) else {
-                    malformed.store(true, Ordering::Relaxed);
-                    return;
-                };
-                if !size.is_multiple_of(36) || (stride != 0 && stride != 36) {
-                    malformed.store(true, Ordering::Relaxed);
-                    return;
-                }
-                for frame in bytes[offset..end].as_chunks::<36>().0 {
-                    let mut channels = [0.0; 9];
-                    for (sample, bytes) in channels.iter_mut().zip(frame.as_chunks::<4>().0) {
-                        *sample = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                super::connection::in_callback("PipeWire audio process", || {
+                    let Some(mut buffer) = stream.dequeue_buffer() else {
+                        return;
+                    };
+                    let Some(data) = buffer.datas_mut().first_mut() else {
+                        return;
+                    };
+                    let offset = data.chunk().offset() as usize;
+                    let size = data.chunk().size() as usize;
+                    let stride = data.chunk().stride();
+                    let Some(bytes) = data.data() else {
+                        malformed.store(true, Ordering::Relaxed);
+                        return;
+                    };
+                    let Some(end) = offset.checked_add(size).filter(|end| *end <= bytes.len())
+                    else {
+                        malformed.store(true, Ordering::Relaxed);
+                        return;
+                    };
+                    if !size.is_multiple_of(36) || (stride != 0 && stride != 36) {
+                        malformed.store(true, Ordering::Relaxed);
+                        return;
                     }
-                    // The producer never waits for the sender or allocates in the audio callback.
-                    let _ = samples.push(stereo(channels));
-                }
+                    for frame in bytes[offset..end].as_chunks::<36>().0 {
+                        let mut channels = [0.0; 9];
+                        for (sample, bytes) in channels.iter_mut().zip(frame.as_chunks::<4>().0) {
+                            *sample = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                        }
+                        // The producer never waits for the sender or allocates in the audio callback.
+                        let _ = samples.push(stereo(channels));
+                    }
+                })
             }
         })
         .register()

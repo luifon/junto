@@ -125,24 +125,28 @@ fn capture(
         .global({
             let target = target.clone();
             move |global| {
-                if global.type_ == pw::types::ObjectType::Node
-                    && let Some(serial) = source.serial
-                    && global
-                        .props
-                        .and_then(|p| p.get("object.serial"))
-                        .and_then(|v| v.parse::<u64>().ok())
-                        == Some(serial)
-                {
-                    target.set(Some(global.id));
-                }
+                super::connection::in_callback("PipeWire video global", || {
+                    if global.type_ == pw::types::ObjectType::Node
+                        && let Some(serial) = source.serial
+                        && global
+                            .props
+                            .and_then(|p| p.get("object.serial"))
+                            .and_then(|v| v.parse::<u64>().ok())
+                            == Some(serial)
+                    {
+                        target.set(Some(global.id));
+                    }
+                })
             }
         })
         .global_remove({
             let life = life.clone();
             move |id| {
-                if target.get() == Some(id) {
-                    life.fail(CaptureError::SourceGone);
-                }
+                super::connection::in_callback("PipeWire video global_remove", || {
+                    if target.get() == Some(id) {
+                        life.fail(CaptureError::SourceGone);
+                    }
+                })
             }
         })
         .register();
@@ -164,118 +168,128 @@ fn capture(
         .state_changed({
             let life = life.clone();
             move |_, data, _, state| {
-                if let pw::stream::StreamState::Error(message) = state {
-                    let failure = error(message);
-                    if let Some(ready) = data.ready.take() {
-                        let _ = ready.send(Err(failure.clone()));
-                    }
-                    life.fail(failure);
-                }
-            }
-        })
-        .param_changed({
-            let life = life.clone();
-            move |stream, data, id, param| {
-                if id != spa::param::ParamType::Format.as_raw() {
-                    return;
-                }
-                let Some(param) = param else {
-                    return;
-                };
-                let mut info = spa::param::video::VideoInfoRaw::default();
-                let result = (|| {
-                    info.parse(param).map_err(error)?;
-                    let format = match info.format() {
-                        spa::param::video::VideoFormat::BGRA => Format::Bgra,
-                        spa::param::video::VideoFormat::BGRx => Format::Bgrx,
-                        spa::param::video::VideoFormat::RGBA => Format::Rgba,
-                        spa::param::video::VideoFormat::RGBx => Format::Rgbx,
-                        _ => return Err(error("the portal selected an unsupported video format")),
-                    };
-                    data.format = Some(((info.size().width, info.size().height), format));
-                    let values = parameters()?;
-                    let mut params: Vec<_> = values
-                        .iter()
-                        .map(|bytes| {
-                            spa::pod::Pod::from_bytes(bytes)
-                                .ok_or_else(|| error("invalid video buffer parameters"))
-                        })
-                        .collect::<Result<_, _>>()?;
-                    stream.update_params(&mut params).map_err(error)
-                })();
-                if let Err(failure) = result {
-                    life.fail(failure);
-                }
-            }
-        })
-        .process({
-            let life = life.clone();
-            move |stream, data| {
-                let Some(mut buffer) = stream.dequeue_buffer() else {
-                    return;
-                };
-                if life.stopped() {
-                    return;
-                }
-                let header = buffer
-                    .find_meta::<spa::buffer::meta::MetaHeader>()
-                    .map(|header| header.flags());
-                if buffer.datas_mut().first().is_some_and(|plane| {
-                    unusable(header, plane.chunk().flags(), plane.chunk().size())
-                }) {
-                    return;
-                }
-                let Some((dimensions, format)) = data.format else {
-                    return;
-                };
-                let crop = buffer
-                    .find_meta::<spa::buffer::meta::MetaVideoCrop>()
-                    .and_then(|crop| {
-                        let crop = crop.meta_region();
-                        crop.is_valid().then(|| Crop {
-                            x: crop.position().x,
-                            y: crop.position().y,
-                            width: crop.size().width,
-                            height: crop.size().height,
-                        })
-                    });
-                let result = (|| {
-                    let plane = buffer
-                        .datas_mut()
-                        .first_mut()
-                        .ok_or_else(|| error("the portal delivered no pixel plane"))?;
-                    if plane.type_() != spa::buffer::DataType::MemPtr
-                        && plane.type_() != spa::buffer::DataType::MemFd
-                    {
-                        return Err(error("the portal did not supply shared-memory pixels"));
-                    }
-                    let offset = plane.chunk().offset() as usize;
-                    let length = plane.chunk().size() as usize;
-                    let stride = plane.chunk().stride();
-                    let bytes = plane
-                        .data()
-                        .ok_or_else(|| error("the portal supplied an unmapped pixel buffer"))?;
-                    let end = offset
-                        .checked_add(length)
-                        .filter(|end| *end <= bytes.len())
-                        .ok_or_else(|| error("the portal supplied invalid pixel boundaries"))?;
-                    Frame::copy(&bytes[offset..end], dimensions, stride, crop, format)
-                })();
-                match result {
-                    Ok(frame) => {
-                        let size = quality.resolution.fit(frame.width, frame.height);
-                        pictures.put(frame);
-                        if let Some(ready) = data.ready.take() {
-                            let _ = ready.send(Ok(size));
-                        }
-                    }
-                    Err(failure) => {
+                super::connection::in_callback("PipeWire video state_changed", || {
+                    if let pw::stream::StreamState::Error(message) = state {
+                        let failure = error(message);
                         if let Some(ready) = data.ready.take() {
                             let _ = ready.send(Err(failure.clone()));
                         }
                         life.fail(failure);
                     }
-                }
+                })
+            }
+        })
+        .param_changed({
+            let life = life.clone();
+            move |stream, data, id, param| {
+                super::connection::in_callback("PipeWire video param_changed", || {
+                    if id != spa::param::ParamType::Format.as_raw() {
+                        return;
+                    }
+                    let Some(param) = param else {
+                        return;
+                    };
+                    let mut info = spa::param::video::VideoInfoRaw::default();
+                    let result = (|| {
+                        info.parse(param).map_err(error)?;
+                        let format = match info.format() {
+                            spa::param::video::VideoFormat::BGRA => Format::Bgra,
+                            spa::param::video::VideoFormat::BGRx => Format::Bgrx,
+                            spa::param::video::VideoFormat::RGBA => Format::Rgba,
+                            spa::param::video::VideoFormat::RGBx => Format::Rgbx,
+                            _ => {
+                                return Err(error(
+                                    "the portal selected an unsupported video format",
+                                ));
+                            }
+                        };
+                        data.format = Some(((info.size().width, info.size().height), format));
+                        let values = parameters()?;
+                        let mut params: Vec<_> = values
+                            .iter()
+                            .map(|bytes| {
+                                spa::pod::Pod::from_bytes(bytes)
+                                    .ok_or_else(|| error("invalid video buffer parameters"))
+                            })
+                            .collect::<Result<_, _>>()?;
+                        stream.update_params(&mut params).map_err(error)
+                    })();
+                    if let Err(failure) = result {
+                        life.fail(failure);
+                    }
+                })
+            }
+        })
+        .process({
+            let life = life.clone();
+            move |stream, data| {
+                super::connection::in_callback("PipeWire video process", || {
+                    let Some(mut buffer) = stream.dequeue_buffer() else {
+                        return;
+                    };
+                    if life.stopped() {
+                        return;
+                    }
+                    let header = buffer
+                        .find_meta::<spa::buffer::meta::MetaHeader>()
+                        .map(|header| header.flags());
+                    if buffer.datas_mut().first().is_some_and(|plane| {
+                        unusable(header, plane.chunk().flags(), plane.chunk().size())
+                    }) {
+                        return;
+                    }
+                    let Some((dimensions, format)) = data.format else {
+                        return;
+                    };
+                    let crop = buffer
+                        .find_meta::<spa::buffer::meta::MetaVideoCrop>()
+                        .and_then(|crop| {
+                            let crop = crop.meta_region();
+                            crop.is_valid().then(|| Crop {
+                                x: crop.position().x,
+                                y: crop.position().y,
+                                width: crop.size().width,
+                                height: crop.size().height,
+                            })
+                        });
+                    let result = (|| {
+                        let plane = buffer
+                            .datas_mut()
+                            .first_mut()
+                            .ok_or_else(|| error("the portal delivered no pixel plane"))?;
+                        if plane.type_() != spa::buffer::DataType::MemPtr
+                            && plane.type_() != spa::buffer::DataType::MemFd
+                        {
+                            return Err(error("the portal did not supply shared-memory pixels"));
+                        }
+                        let offset = plane.chunk().offset() as usize;
+                        let length = plane.chunk().size() as usize;
+                        let stride = plane.chunk().stride();
+                        let bytes = plane
+                            .data()
+                            .ok_or_else(|| error("the portal supplied an unmapped pixel buffer"))?;
+                        let end = offset
+                            .checked_add(length)
+                            .filter(|end| *end <= bytes.len())
+                            .ok_or_else(|| error("the portal supplied invalid pixel boundaries"))?;
+                        Frame::copy(&bytes[offset..end], dimensions, stride, crop, format)
+                    })();
+                    match result {
+                        Ok(frame) => {
+                            let size = quality.resolution.fit(frame.width, frame.height);
+                            pictures.put(frame);
+                            if let Some(ready) = data.ready.take() {
+                                let _ = ready.send(Ok(size));
+                            }
+                        }
+                        Err(failure) => {
+                            if let Some(ready) = data.ready.take() {
+                                let _ = ready.send(Err(failure.clone()));
+                            }
+                            life.fail(failure);
+                        }
+                    }
+                })
             }
         })
         .register()

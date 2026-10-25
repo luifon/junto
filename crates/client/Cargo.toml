@@ -61,6 +61,15 @@ path = "tests/endurance/main.rs"
 harness = false
 required-features = ["test-support"]
 
+# A panic in code that the platform of the system calls, on the run loop of the system: the
+# application continues, saves the report and states it (ADR 0757). It does nothing unless
+# `JUNTO_TEST_NATIVE_PANICS` is 1.
+[[test]]
+name = "native_panics"
+path = "tests/native_panics/main.rs"
+harness = false
+required-features = ["test-support"]
+
 # One native window in each mode of the use, one process per mode, against the budgets of
 # memory, processor and threads of ADR 0914. It does nothing without its own variable and
 # the variables of the media server of the tests, and it measures the release profile
@@ -94,6 +103,11 @@ gpui-base = "=0.7.1"
 # The result of a write on a background thread returns to the interface thread through
 # its one-time channel. gpui uses the same crate.
 futures-channel = "0.3"
+# The reports of the panic hook reach the window through a channel of `futures-channel`.
+futures-util = { workspace = true }
+# The addresses of the frames of a panic report with the base of their module (ADR 0757).
+# gpui uses the same crate.
+backtrace = "0.3"
 # The picture of a share is given to gpui as an image of this crate, in the version that
 # gpui uses.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -130,7 +144,6 @@ tokio = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 # The desktop notification service, driven on its own worker (ADR 0752).
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
-futures-util = { workspace = true }
 # The Vulkan adapters of the machine, read before the first window with the graphics
 # library of gpui in its version (ADR 0705).
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
@@ -176,3 +189,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # The window tests read the retain count of the pixel buffers of the pictures of a call.
 core-foundation = "0.10"
+# The native panic test posts a press to the application through AppKit.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSEnumerator", "NSGeometry"] }

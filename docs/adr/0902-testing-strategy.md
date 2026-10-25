@@ -80,6 +80,11 @@ Tests on real systems:
   `footprint` while the windows draw the pictures of the call, and after the shares and
   the cameras end (ADR 0774).
 
+- The test target `native_panics` runs the client on the run loop of the system, without
+  the test runner and without a server, as the binary does. A task of the thread of the
+  windows panics, and on macOS the end of a press that AppKit delivers panics; the client
+  must continue, write each report and state it (ADR 0757). The macOS CI job runs it.
+
 - On macOS the test target `endurance` runs a long use in the same way: windows A and B
   and a third person without a window in a call, A and B sharing, all three with a
   camera, the call of A in its separate window. The main window of A reads a channel of

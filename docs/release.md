@@ -49,8 +49,11 @@ wrapper takes that lock itself.
 - On x86-64 Linux, `packaging/release_linux.sh` prepares the tarball, AppImage and their
   package directories. Use `junto-release publish` for both package kinds, as described
   in [the Linux commands](../packaging/README.md#linux).
-- On x86-64 Windows, build and assemble with `packaging/windows.py`, then use
-  `junto-release publish` for the directory package. Follow
+- On x86-64 Windows, build with line tables and assemble with `packaging/windows.py`, then
+  use `junto-release publish` for the directory package. The output also holds
+  `Junto-<version>-windows-x86_64.pdb`, the symbols of the program, which the package does
+  not carry. Publish it as a file of the release with the ZIP, in the checksums: a panic
+  report of a Windows client is resolved with it (ADR 0757). Follow
   [the Windows commands](../packaging/README.md#windows).
 
 Use a new output directory for each publication command. Keep the release tool built

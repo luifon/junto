@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, RECT, TRUE};
+use windows::Win32::Foundation::{CloseHandle, FALSE, FILETIME, HWND, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
@@ -192,11 +192,19 @@ fn process_of(window: HWND) -> u32 {
 }
 
 unsafe extern "system" fn collect(window: HWND, list: LPARAM) -> BOOL {
-    // SAFETY: `list` is the vector that the caller of the enumeration passed, and the
-    // enumeration calls this function on the caller's thread during that call.
-    let list = unsafe { &mut *(list.0 as *mut Vec<HWND>) };
-    list.push(window);
-    TRUE
+    // A panic cannot unwind into the enumeration of the system; after one the enumeration
+    // ends (ADR 0757).
+    crate::callback::stop_panic(
+        "window enumeration",
+        || FALSE,
+        || {
+            // SAFETY: `list` is the vector that the caller of the enumeration passed, and the
+            // enumeration calls this function on the caller's thread during that call.
+            let list = unsafe { &mut *(list.0 as *mut Vec<HWND>) };
+            list.push(window);
+            TRUE
+        },
+    )
 }
 
 /// The process of the inner window of a frame of the store: the application that draws
@@ -313,11 +321,19 @@ unsafe extern "system" fn collect_monitor(
     _: *mut RECT,
     list: LPARAM,
 ) -> BOOL {
-    // SAFETY: `list` is the vector that the caller of the enumeration passed, and the
-    // enumeration calls this function on the caller's thread during that call.
-    let list = unsafe { &mut *(list.0 as *mut Vec<HMONITOR>) };
-    list.push(monitor);
-    TRUE
+    // A panic cannot unwind into the enumeration of the system; after one the enumeration
+    // ends (ADR 0757).
+    crate::callback::stop_panic(
+        "monitor enumeration",
+        || FALSE,
+        || {
+            // SAFETY: `list` is the vector that the caller of the enumeration passed, and the
+            // enumeration calls this function on the caller's thread during that call.
+            let list = unsafe { &mut *(list.0 as *mut Vec<HMONITOR>) };
+            list.push(monitor);
+            TRUE
+        },
+    )
 }
 
 /// The screens with their size in pixels, named by the number of their device.

@@ -31,11 +31,18 @@ pub(super) fn state() -> MicrophoneAccess {
 fn ask(answered: oneshot::Sender<bool>) -> bool {
     let answered = Mutex::new(Some(answered));
     let handler = RcBlock::new(move |granted: Bool| {
-        if let Ok(mut answered) = answered.lock()
-            && let Some(answered) = answered.take()
-        {
-            let _ = answered.send(granted.as_bool());
-        }
+        // A panic cannot unwind into the system that calls the block (ADR 0757).
+        crate::callback::stop_panic(
+            "microphone access answer",
+            || (),
+            || {
+                if let Ok(mut answered) = answered.lock()
+                    && let Some(answered) = answered.take()
+                {
+                    let _ = answered.send(granted.as_bool());
+                }
+            },
+        )
     });
     // SAFETY: the constant is a static string of the framework. The system copies the
     // block and calls it once on a queue of its own; the block owns what it uses.

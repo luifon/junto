@@ -79,11 +79,11 @@ target/release/junto-release publish linux appimage x86_64 target/linux-release/
 On a Windows machine with the Rust toolchain of `rust-toolchain.toml` and the MSVC build tools, with `JUNTO_UPDATE_SOURCE` set:
 
 ```sh
-cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover
 python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory>
 ```
 
-The output directory holds the ZIP and the source directory `package-directory`. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
+The output directory holds the ZIP, the source directory `package-directory`, and `Junto-<version>-windows-x86_64.pdb`, the symbols of `junto.exe` with the line tables of every crate. The package does not carry them; publish the file with the release (ADR 0755, ADR 0757). `windows.py` refuses a build without symbols. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish windows directory x86_64 <output>/package-directory \

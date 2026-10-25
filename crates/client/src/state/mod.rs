@@ -602,9 +602,26 @@ pub struct AppState {
     /// The time that the view is derived for in place of the time of the system.
     #[cfg(feature = "test-support")]
     clock_fixture: Option<time::OffsetDateTime>,
+    /// The panics of this data directory since the start, until the person closes the
+    /// notice (ADR 0757).
+    panic_notice: Option<PanicNotice>,
     _changes: Task<()>,
     _retry: Task<()>,
     _media: [Task<()>; 3],
+    _panics: Task<()>,
+}
+
+/// How long the task of the panic reports waits after a panic in its own update.
+const PAUSE_AFTER_A_PANIC_IN_THE_NOTICE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The notice of the panics that the panic hook recorded for the data directory of the
+/// window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanicNotice {
+    /// The panics since the notice was last closed.
+    pub count: usize,
+    /// The latest of them.
+    pub latest: crate::panics::Report,
 }
 
 impl Drop for AppState {
@@ -708,6 +725,33 @@ impl AppState {
             while changes.changed().await {
                 if this.update(cx, |this, cx| this.changed(cx)).is_err() {
                     break;
+                }
+            }
+        });
+        let mut reports = crate::panics::watch(client.data_dir().root());
+        let panics = cx.spawn(async move |this, cx| {
+            use futures_util::StreamExt as _;
+            while let Some(report) = reports.next().await {
+                // The reports that wait are taken into the same update.
+                let mut batch = vec![report];
+                while let Ok(report) = reports.try_recv() {
+                    batch.push(report);
+                }
+                // A panic in this update, such as one in a draw or an observer that the notice
+                // starts, is recorded by the hook and ends this update only. The task then waits
+                // before it takes the next reports, so that an update that panics at each run
+                // returns to the event loop between two runs (ADR 0757).
+                let updated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.update(cx, |this, cx| this.panics_recorded(batch, cx))
+                }));
+                match updated {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        cx.background_executor()
+                            .timer(PAUSE_AFTER_A_PANIC_IN_THE_NOTICE)
+                            .await;
+                    }
                 }
             }
         });
@@ -843,9 +887,11 @@ impl AppState {
             fixture: None,
             #[cfg(feature = "test-support")]
             clock_fixture: None,
+            panic_notice: None,
             _changes: follow,
             _retry: retry,
             _media: [follow_calls, follow_levels, clock],
+            _panics: panics,
         };
         if state.voice_failed.is_some() {
             // The microphone was closed for settings that were not read: the person
@@ -855,6 +901,39 @@ impl AppState {
         state.load_preset_picture(cx);
         state.changed(cx);
         state
+    }
+
+    fn panics_recorded(&mut self, reports: Vec<crate::panics::Report>, cx: &mut Context<Self>) {
+        for report in reports {
+            // The 1st, 10th, 100th, ... panic of each location, so that a panic that repeats
+            // does not fill the log (ADR 0757).
+            if crate::panics::is_a_power_of_ten(report.occurrence) {
+                tracing::error!(
+                    report = ?report.file,
+                    location = %report.location,
+                    occurrence = report.occurrence,
+                    "a panic was recorded: {}",
+                    report.message
+                );
+            }
+            let count = self.panic_notice.as_ref().map_or(0, |notice| notice.count) + 1;
+            self.panic_notice = Some(PanicNotice {
+                count,
+                latest: report,
+            });
+        }
+        cx.notify();
+    }
+
+    /// The notice of the panics since the start or since the person closed it.
+    pub fn panic_notice(&self) -> Option<&PanicNotice> {
+        self.panic_notice.as_ref()
+    }
+
+    pub fn close_panic_notice(&mut self, cx: &mut Context<Self>) {
+        if self.panic_notice.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn is_call_detached(&self) -> bool {

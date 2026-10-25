@@ -3,6 +3,7 @@
 //! crate has no interface; the desktop client draws what [`calls::Calls`] tells.
 
 pub mod audio;
+mod callback;
 pub mod calls;
 pub mod camera;
 #[cfg(target_os = "macos")]

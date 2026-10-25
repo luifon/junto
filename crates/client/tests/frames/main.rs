@@ -182,6 +182,15 @@ fn main() -> ExitCode {
     }
     drop(run);
     drop(native);
+    // A panic in a handler or a task stops in gpui and no longer ends the program
+    // (ADR 0757).
+    let panics = junto_client::panics::panics_in_this_process();
+    if panics > 0 {
+        failures.push(format!(
+            "{panics} panics happened in the process: {:?}",
+            junto_client::panics::messages_on_this_thread()
+        ));
+    }
     if failures.is_empty() {
         println!("frames: passed");
         ExitCode::SUCCESS

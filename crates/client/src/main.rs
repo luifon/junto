@@ -9,10 +9,12 @@ use std::process::ExitCode;
 
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
+use junto_client::logs::LogFile;
 use junto_client_core::paths::{DATA_DIR_VARIABLE, data_dir_of_this_user};
 use junto_client_core::{Client, ClientOptions};
 
-/// The level of the log on standard error: `error`, `warn`, `info`, `debug` or `trace`.
+/// The level of the log on standard error and in the log file: `error`, `warn`, `info`,
+/// `debug` or `trace`.
 const LOG_LEVEL_VARIABLE: &str = "JUNTO_LOG_LEVEL";
 
 const USAGE: &str = "\
@@ -32,9 +34,10 @@ options:
   --version                print the version
   --help                   print this text
 
-The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn).
-On Windows the log of a running window is kept only when standard error is redirected,
-for example: junto.exe 2> junto.log";
+The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn)
+and in the file logs/junto.log of the data directory (default: info). A panic is written
+to a report file in the directory panics of the data directory. On Windows standard error
+of a running window is kept only when it is redirected, for example: junto.exe 2> err.txt";
 
 struct Arguments {
     data_dir: Option<PathBuf>,
@@ -142,7 +145,79 @@ fn update_from(source: &str) -> ExitCode {
     }
 }
 
+/// The log on standard error and, once [`LogFile::open`] is called, in the log file of the
+/// data directory (ADR 0757). Without `JUNTO_LOG_LEVEL` the file takes `info` of the crates
+/// of Junto and `warn` of the other crates, such as the call library and gpui.
+fn start_log() -> LogFile {
+    use tracing_subscriber::filter::{LevelFilter, Targets};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::{Layer as _, fmt};
+    let chosen = std::env::var(LOG_LEVEL_VARIABLE)
+        .ok()
+        .and_then(|level| level.parse::<tracing::Level>().ok());
+    let log_file = LogFile::new();
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(LevelFilter::from_level(
+                    chosen.unwrap_or(tracing::Level::WARN),
+                )),
+        )
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(log_file.clone())
+                .with_filter(match chosen {
+                    Some(level) => Targets::new().with_default(level),
+                    None => Targets::new()
+                        .with_default(LevelFilter::WARN)
+                        .with_target("junto", LevelFilter::INFO),
+                }),
+        )
+        .init();
+    log_file
+}
+
+/// The file of a directory of the account that states why the last start
+/// failed before it had a data directory (ADR 0757).
+const START_FAILURE_FILE: &str = "junto-start-failure.txt";
+
+/// Writes why the start failed to [`START_FAILURE_FILE`], replacing an earlier one.
+// The start writes it before any window (ADR 0730).
+#[allow(clippy::disallowed_methods)]
+fn write_start_failure(problem: &str) {
+    // The temporary directory of the account on macOS and Windows; on Linux `/tmp` is shared
+    // by every account, so the runtime directory of the account, or its cache directory.
+    #[cfg(target_os = "linux")]
+    let directory = dirs::runtime_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(std::env::temp_dir);
+    #[cfg(not(target_os = "linux"))]
+    let directory = std::env::temp_dir();
+    let path = directory.join(START_FAILURE_FILE);
+    let time = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let text = format!(
+        "{time} {}: junto cannot start: {problem}\n",
+        junto_client_core::releases::build_label()
+    );
+    // A new file, which follows no link that is at its name.
+    let _ = std::fs::remove_file(&path);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()));
+    if let Err(error) = written {
+        eprintln!("{} cannot be written: {error}", path.display());
+    }
+}
+
 fn main() -> ExitCode {
+    junto_client::panics::install();
     let parsed = parse(
         std::env::args().skip(1),
         junto_client_core::releases::TEST_CONFIGURATION,
@@ -177,14 +252,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let level = std::env::var(LOG_LEVEL_VARIABLE)
-        .ok()
-        .and_then(|level| level.parse::<tracing::Level>().ok())
-        .unwrap_or(tracing::Level::WARN);
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(level)
-        .init();
+    let log_file = start_log();
     #[cfg(target_os = "linux")]
     junto_client::renderer::choose_before_the_first_window();
     let client = data_dir(arguments.data_dir).and_then(|directory| {
@@ -201,12 +269,21 @@ fn main() -> ExitCode {
         Ok(client) => client,
         Err(problem) => {
             // The files of the data directory are not changed by a start that fails
-            // (ADR 0710). The person reads why and decides.
+            // (ADR 0710). The person reads why and decides; the file of the temporary
+            // directory keeps the reason also without a console (ADR 0757).
             junto_client_core::console::attach_to_parent();
             eprintln!("junto cannot start: {problem}");
+            tracing::error!("junto cannot start: {problem}");
+            write_start_failure(&problem);
             return ExitCode::FAILURE;
         }
     };
+    // The client made the data directory. The log of the directory is written by one
+    // instance only: the one that holds `logs/lock` (ADR 0757).
+    junto_client::panics::record_into(client.data_dir().root());
+    if let Err(error) = log_file.open(client.data_dir().root()) {
+        tracing::warn!(%error, "the log file was not opened");
+    }
     let start = arguments.start;
     let check_startup = arguments.check_startup;
     let started = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -217,6 +294,8 @@ fn main() -> ExitCode {
             if let Err(error) = app::init(cx) {
                 junto_client_core::console::attach_to_parent();
                 eprintln!("junto cannot start: {error:#}");
+                tracing::error!("junto cannot start: {error:#}");
+                log_file.written();
                 cx.quit();
                 return;
             }
@@ -239,6 +318,8 @@ fn main() -> ExitCode {
                 Err(error) => {
                     junto_client_core::console::attach_to_parent();
                     eprintln!("junto cannot open its window: {error:#}");
+                    tracing::error!("junto cannot open its window: {error:#}");
+                    log_file.written();
                     cx.quit();
                 }
             }

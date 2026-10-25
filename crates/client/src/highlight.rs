@@ -186,36 +186,38 @@ fn marked(code: &str, rules: &'static str) -> Option<Vec<(Range<usize>, Token)>>
         return None;
     }
     // A fault of the library costs the colours of one block and not the window.
-    let found = std::panic::catch_unwind(|| {
-        let mut highlighter = synoptic::from_extension(rules, 1)?;
-        highlighter.run(&lines);
-        let mut marks = Vec::new();
-        let mut start = 0;
-        for (number, line) in lines.iter().enumerate() {
-            let mut at = start;
-            for part in highlighter.line(number, line) {
-                let (text, name) = match &part {
-                    TokOpt::Some(text, name) => (text, Some(name.as_str())),
-                    TokOpt::None(text) => (text, None),
-                };
-                let end = at + text.len();
-                // The library must give the text back as it was written.
-                if code.get(at..end) != Some(text.as_str()) {
+    let found = crate::panics::handled_by_the_caller(|| {
+        std::panic::catch_unwind(|| {
+            let mut highlighter = synoptic::from_extension(rules, 1)?;
+            highlighter.run(&lines);
+            let mut marks = Vec::new();
+            let mut start = 0;
+            for (number, line) in lines.iter().enumerate() {
+                let mut at = start;
+                for part in highlighter.line(number, line) {
+                    let (text, name) = match &part {
+                        TokOpt::Some(text, name) => (text, Some(name.as_str())),
+                        TokOpt::None(text) => (text, None),
+                    };
+                    let end = at + text.len();
+                    // The library must give the text back as it was written.
+                    if code.get(at..end) != Some(text.as_str()) {
+                        return None;
+                    }
+                    if let Some(token) = name.and_then(token)
+                        && end > at
+                    {
+                        marks.push((at..end, token));
+                    }
+                    at = end;
+                }
+                if at != start + line.len() {
                     return None;
                 }
-                if let Some(token) = name.and_then(token)
-                    && end > at
-                {
-                    marks.push((at..end, token));
-                }
-                at = end;
+                start += line.len() + 1;
             }
-            if at != start + line.len() {
-                return None;
-            }
-            start += line.len() + 1;
-        }
-        Some(marks)
+            Some(marks)
+        })
     });
     found.ok().flatten()
 }

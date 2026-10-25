@@ -2842,11 +2842,22 @@ fn run(out: &Path) -> Result<(), String> {
 }
 
 fn main() -> std::process::ExitCode {
+    junto_client::panics::install();
     let Some(out) = std::env::args().nth(1) else {
         eprintln!("usage: junto-screens <directory for the PNG files>");
         return std::process::ExitCode::from(2);
     };
     match run(Path::new(&out)) {
+        // A panic in a render stops in gpui and no longer ends the program; a picture of
+        // an earlier frame is then no picture of the screen (ADR 0757).
+        Ok(()) if junto_client::panics::panics_in_this_process() > 0 => {
+            eprintln!(
+                "junto-screens: {} panics happened: {:?}",
+                junto_client::panics::panics_in_this_process(),
+                junto_client::panics::messages_on_this_thread()
+            );
+            std::process::ExitCode::FAILURE
+        }
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(problem) => {
             eprintln!("junto-screens: {problem}");

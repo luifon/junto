@@ -65,8 +65,15 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
         &self,
         _: Ref<IActivateAudioInterfaceAsyncOperation>,
     ) -> windows::core::Result<()> {
-        let _ = self.0.try_send(());
-        Ok(())
+        // A panic cannot unwind into the system that calls the handler (ADR 0757).
+        crate::callback::stop_panic(
+            "sound activation",
+            || Ok(()),
+            || {
+                let _ = self.0.try_send(());
+                Ok(())
+            },
+        )
     }
 }
 

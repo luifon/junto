@@ -174,32 +174,46 @@ impl IMFSourceReaderCallback_Impl for Callback_Impl {
         timestamp: i64,
         sample: Ref<IMFSample>,
     ) -> ::windows::core::Result<()> {
-        let _ = self.0.send(Read {
-            status,
-            flags,
-            timestamp,
-            sample: sample.as_ref().cloned(),
-        });
-        Ok(())
+        // A panic cannot unwind into Media Foundation (ADR 0757).
+        crate::callback::stop_panic(
+            "camera sample",
+            || Ok(()),
+            || {
+                let _ = self.0.send(Read {
+                    status,
+                    flags,
+                    timestamp,
+                    sample: sample.as_ref().cloned(),
+                });
+                Ok(())
+            },
+        )
     }
     fn OnFlush(&self, _: u32) -> ::windows::core::Result<()> {
         Ok(())
     }
     fn OnEvent(&self, _: u32, event: Ref<IMFMediaEvent>) -> ::windows::core::Result<()> {
-        if let Some(event) = event.as_ref() {
-            // SAFETY: the callback owns a valid event for this invocation.
-            if let Ok(status) = unsafe { event.GetStatus() }
-                && status.is_err()
-            {
-                let _ = self.0.send(Read {
-                    status,
-                    flags: 0,
-                    timestamp: 0,
-                    sample: None,
-                });
-            }
-        }
-        Ok(())
+        // A panic cannot unwind into Media Foundation (ADR 0757).
+        crate::callback::stop_panic(
+            "camera event",
+            || Ok(()),
+            || {
+                if let Some(event) = event.as_ref() {
+                    // SAFETY: the callback owns a valid event for this invocation.
+                    if let Ok(status) = unsafe { event.GetStatus() }
+                        && status.is_err()
+                    {
+                        let _ = self.0.send(Read {
+                            status,
+                            flags: 0,
+                            timestamp: 0,
+                            sample: None,
+                        });
+                    }
+                }
+                Ok(())
+            },
+        )
     }
 }
 

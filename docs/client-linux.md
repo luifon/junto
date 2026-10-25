@@ -34,6 +34,10 @@ The server book and the device keys are in `~/.local/share/junto` (or `$XDG_DATA
 
 A configured build checks for a new version at start and periodically. Click Update on its notice or Install update in Settings, Version. Junto verifies the signed release information, its date and the download, then replaces the directory or the AppImage file in one step. The AppImage keeps its file name. The update keeps the replaced version as an archive in a hidden directory beside the directory or the AppImage, named after it: `.junto.junto-update` for the directory `junto`, `.<file name>.junto-update` for an AppImage. The directory that holds them must stay writable. The first update also downloads the installed version from the release source for that purpose; when the source does not have it, the update is still installed and Version states that no previous version is kept. Quit and reopen Junto afterwards.
 
+## Log and error reports
+
+Junto writes its log to `logs/junto.log` in its data directory (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `panics/` in the same directory, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. When a second instance of Junto runs on the same data directory, only the first writes the log. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`$TMPDIR` or `/tmp`) (ADR 0757).
+
 ## Recovery
 
 If the new version cannot start, quit every instance of Junto and run the recovery program kept beside the application, with the absolute path of the directory or of the AppImage file:

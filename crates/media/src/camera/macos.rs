@@ -53,11 +53,18 @@ impl CameraCapture for SystemCamera {
             {
                 let tx = Mutex::new(Some(tx));
                 let handler = RcBlock::new(move |_: Bool| {
-                    if let Ok(mut tx) = tx.lock()
-                        && let Some(tx) = tx.take()
-                    {
-                        let _ = tx.send(());
-                    }
+                    // A panic cannot unwind into the system that calls the block (ADR 0757).
+                    crate::callback::stop_panic(
+                        "camera access answer",
+                        || (),
+                        || {
+                            if let Ok(mut tx) = tx.lock()
+                                && let Some(tx) = tx.take()
+                            {
+                                let _ = tx.send(());
+                            }
+                        },
+                    )
                 });
                 // SAFETY: the framework copies the block, which owns its sender.
                 unsafe {
@@ -186,23 +193,36 @@ define_class!(
     unsafe impl AVCaptureVideoDataOutputSampleBufferDelegate for Output {
         #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
         fn frame(&self, _: &AVCaptureOutput, sample: &CMSampleBuffer, _: &AVCaptureConnection) {
-            // SAFETY: sample is valid during the callback; the retained image reference
-            // is transferred to the video buffer, as required by the call library.
-            unsafe {
-                let Some(image) = sample.image_buffer() else {
-                    return;
-                };
-                use core_foundation::base::TCFType;
-                let image = core_video::pixel_buffer::CVPixelBuffer::wrap_under_get_rule(
-                    (&*image as *const _ as *mut std::ffi::c_void).cast(),
-                );
-                if let Some(buffer) = super::color::convert(&image) {
-                    self.ivars().sink.picture(buffer);
-                } else {
-                    // A pixel format other than the one that the output settings request.
-                    self.ivars().sink.ended(CameraError::Unsupported);
-                }
-            }
+            // A panic cannot unwind into AVFoundation; after one the camera ends (ADR 0757).
+            crate::callback::stop_panic(
+                "camera picture",
+                || {
+                    self.ivars()
+                        .sink
+                        .ended(CameraError::Failed("the camera callback panicked".into()))
+                },
+                || {
+                    // SAFETY: sample is valid during the callback; the retained image
+                    // reference is transferred to the video buffer, as required by the call
+                    // library.
+                    unsafe {
+                        let Some(image) = sample.image_buffer() else {
+                            return;
+                        };
+                        use core_foundation::base::TCFType;
+                        let image = core_video::pixel_buffer::CVPixelBuffer::wrap_under_get_rule(
+                            (&*image as *const _ as *mut std::ffi::c_void).cast(),
+                        );
+                        if let Some(buffer) = super::color::convert(&image) {
+                            self.ivars().sink.picture(buffer);
+                        } else {
+                            // A pixel format other than the one that the output settings
+                            // request.
+                            self.ivars().sink.ended(CameraError::Unsupported);
+                        }
+                    }
+                },
+            )
         }
     }
 );

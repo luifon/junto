@@ -2670,8 +2670,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7f0bc3ebba070f8981b3f8e905a12f47d27794a30d029e59cdb9edf7a4b3360"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2956,8 +2954,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4acd73345bc3c09f1b98c1b21eb4459ad8336f89bb2edcef619e11c5a08456e"
 dependencies = [
  "async-task",
  "backtrace",
@@ -3824,6 +3820,7 @@ dependencies = [
 name = "junto-client"
 version = "0.1.0"
 dependencies = [
+ "backtrace",
  "chrono",
  "chrono-tz",
  "core-foundation 0.10.1",
@@ -3844,6 +3841,8 @@ dependencies = [
  "junto-icon",
  "junto-media",
  "junto-server",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
  "serde",

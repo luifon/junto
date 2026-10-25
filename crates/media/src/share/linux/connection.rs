@@ -35,6 +35,7 @@ fn ends_the_capture(id: u32, result: i32) -> bool {
 
 impl Connection {
     pub fn new(fd: Option<OwnedFd>, life: Arc<Life>) -> Result<Self, CaptureError> {
+        PANICKED.with(|panicked| panicked.set(false));
         if !crate::audio::linux::initialise() {
             return Err(error("PipeWire is not available"));
         }
@@ -53,16 +54,18 @@ impl Connection {
         let errors = core
             .add_listener_local()
             .error(move |id, _, result, message| {
-                if ends_the_capture(id, result) {
-                    life.fail(error(message));
-                } else {
-                    tracing::debug!(
-                        id,
-                        result,
-                        message,
-                        "the PipeWire daemon reported an error that does not end the capture"
-                    );
-                }
+                super::connection::in_callback("PipeWire connection error", || {
+                    if ends_the_capture(id, result) {
+                        life.fail(error(message));
+                    } else {
+                        tracing::debug!(
+                            id,
+                            result,
+                            message,
+                            "the PipeWire daemon reported an error that does not end the capture"
+                        );
+                    }
+                })
             })
             .register();
         Ok(Self {
@@ -85,15 +88,22 @@ impl Connection {
             let mainloop = self.mainloop.downgrade();
             let life = life.clone();
             move |_| {
-                if !life.stopped() && !done() {
-                    if timeout.is_none_or(|limit| started.elapsed() < limit) {
-                        return;
-                    }
-                    life.fail(error("PipeWire did not finish preparing the capture"));
-                }
-                if let Some(mainloop) = mainloop.upgrade() {
-                    mainloop.quit();
-                }
+                crate::callback::stop_panic(
+                    "PipeWire timer",
+                    || (),
+                    || {
+                        end_after_a_panic(&life);
+                        if !life.stopped() && !done() {
+                            if timeout.is_none_or(|limit| started.elapsed() < limit) {
+                                return;
+                            }
+                            life.fail(error("PipeWire did not finish preparing the capture"));
+                        }
+                        if let Some(mainloop) = mainloop.upgrade() {
+                            mainloop.quit();
+                        }
+                    },
+                )
             }
         });
         timer
@@ -116,9 +126,11 @@ impl Connection {
             .done({
                 let done = done.clone();
                 move |id, received| {
-                    if id == pw::core::PW_ID_CORE && received == sequence {
-                        done.set(true);
-                    }
+                    super::connection::in_callback("PipeWire connection done", || {
+                        if id == pw::core::PW_ID_CORE && received == sequence {
+                            done.set(true);
+                        }
+                    })
                 }
             })
             .register();
@@ -143,5 +155,53 @@ mod tests {
         assert!(!ends_the_capture(57, lost));
         assert!(!ends_the_capture(pw::core::PW_ID_CORE, 0));
         assert!(!ends_the_capture(pw::core::PW_ID_CORE, i32::MIN));
+    }
+}
+
+thread_local! {
+    /// A callback that PipeWire called on this thread of a share panicked.
+    static PANICKED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs the body of a callback that PipeWire calls on the thread of a share. A panic cannot
+/// unwind into PipeWire; after one, the callbacks of the share on this thread do nothing
+/// more, and the timer of [`Connection::drive`] ends the share with a stated reason
+/// (ADR 0757).
+pub(super) fn in_callback(site: &'static str, body: impl FnOnce()) {
+    if PANICKED.with(Cell::get) {
+        return;
+    }
+    crate::callback::stop_panic(site, || PANICKED.with(|panicked| panicked.set(true)), body);
+}
+
+/// Ends the share when a callback of its thread panicked.
+fn end_after_a_panic(life: &Life) {
+    if PANICKED.with(Cell::get) {
+        life.fail(error("a PipeWire callback of the share panicked"));
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_a_callback_ends_the_share_and_the_later_callbacks_do_nothing() {
+        std::thread::spawn(|| {
+            let life = Life::default();
+            in_callback("test", || panic!("a panic of the share test"));
+            let mut ran = false;
+            in_callback("test", || ran = true);
+            assert!(!ran);
+            end_after_a_panic(&life);
+            assert!(life.stopped());
+            assert!(
+                matches!(life.result(), Err(CaptureError::Failed(reason)) if reason.contains("panicked")),
+                "{:?}",
+                life.result()
+            );
+        })
+        .join()
+        .unwrap();
     }
 }
