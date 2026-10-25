@@ -2,14 +2,16 @@
 //! drawn in a list that measures a row when it is shown and keeps its position while
 //! rows are added before and after it.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
     AnyElement, AppContext as _, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListScrollEvent,
-    ListState, MouseButton, ObjectFit, ParentElement, RenderImage, Role, SharedString,
+    InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListState,
+    MouseButton, ObjectFit, ParentElement, RenderImage, Role, SharedString,
     StatefulInteractiveElement, StrikethroughStyle, Styled, StyledImage, StyledText,
     UnderlineStyle, Window, canvas, div, img, list, prelude::FluentBuilder, px,
 };
@@ -62,6 +64,73 @@ pub(crate) struct FeedList {
     pub(crate) drawn: bool,
     /// The message that the list went to last, from a notice or a search result.
     target: Option<(MessageId, u64)>,
+    /// What the window last did after a layout of the list (see [`Shell::feed_moved`]).
+    handled: Rc<Cell<Option<Shown>>>,
+    /// Counts the changes of the rows and the jumps, so that the work after a layout does
+    /// not act on a list that changed after that layout.
+    changes: u64,
+}
+
+/// The rows of a list in view after a layout, and its follow state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Shown {
+    /// The first row in view; the number of rows when the list stands at its end and rows
+    /// lie above the view.
+    start: usize,
+    /// The row after the last row in view.
+    end: usize,
+    count: usize,
+    following: bool,
+    /// The last row is drawn whole in the view.
+    reaches_end: bool,
+    active: bool,
+}
+
+impl Shown {
+    /// Reads the list after its layout. gpui keeps no position of the first row while a
+    /// list aligned to its end stands at its end, so the first row is known there only when
+    /// all rows fit.
+    fn of(list: &ListState, active: bool) -> Self {
+        let count = list.item_count();
+        let following = list.is_following_tail();
+        let top = list.logical_scroll_top().item_ix;
+        if top >= count {
+            let start = if list.max_offset_for_scrollbar().y <= px(0.0) {
+                0
+            } else {
+                count
+            };
+            return Self {
+                start,
+                end: count,
+                count,
+                following,
+                reaches_end: true,
+                active,
+            };
+        }
+        let bottom = list.viewport_bounds().bottom();
+        let mut end = top;
+        while end < count
+            && list
+                .bounds_for_item(end)
+                .is_some_and(|row| row.top() < bottom)
+        {
+            end += 1;
+        }
+        let reaches_end = end == count
+            && list
+                .bounds_for_item(count - 1)
+                .is_some_and(|row| row.bottom() <= bottom + px(1.0));
+        Self {
+            start: top,
+            end,
+            count,
+            following,
+            reaches_end,
+            active,
+        }
+    }
 }
 
 impl FeedList {
@@ -78,11 +147,16 @@ impl FeedList {
             rows: Arc::default(),
             drawn: false,
             target: None,
+            handled: Rc::default(),
+            changes: 0,
         }
     }
 
     /// Goes to the message that the person asked for, once the rows hold it. The list
-    /// then stays there and does not follow new messages.
+    /// then stays there and does not follow new messages until the person brings it to its
+    /// end ([`Shell::feed_moved`]). gpui's own return to the end is not used here: right after
+    /// the jump the rows above the message are not measured, and gpui would take the list
+    /// as at its end.
     fn show_target(&mut self, jump: Option<(MessageId, u64)>) {
         let Some((message_id, _)) = jump else {
             self.target = None;
@@ -100,6 +174,8 @@ impl FeedList {
             return;
         };
         self.target = jump;
+        self.changes += 1;
+        self.handled.set(None);
         self.list.set_follow_mode(FollowMode::Normal);
         self.list.scroll_to(ListOffset {
             item_ix: index.saturating_sub(1),
@@ -116,6 +192,8 @@ impl FeedList {
         let first = key != self.key || (self.rows.is_empty() && !rows.is_empty());
         if first {
             self.key = key;
+            self.changes += 1;
+            self.handled.set(None);
             self.list.reset(rows.len());
             self.list.set_follow_mode(FollowMode::Tail);
             // A place with unread messages opens at the line before the first of them.
@@ -147,6 +225,8 @@ impl FeedList {
             .count();
         let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
         if prefix != old_end || prefix != new_end {
+            self.changes += 1;
+            self.handled.set(None);
             self.list.splice(prefix..old_end, new_end - prefix);
         }
         self.rows = rows;
@@ -617,6 +697,11 @@ impl Shell {
         if !window.is_window_active() || !self.list(pane).drawn || !at_end {
             return;
         }
+        // A jump to a message is on its way: the rows that the list shows before the jump
+        // are not read.
+        if feed.target.is_some() && self.list(pane).target != feed.target {
+            return;
+        }
         if let Some(position) = feed.end_position.filter(|_| feed.unread > 0) {
             let (server_id, place) = (feed.server_id, feed.place);
             self.state
@@ -624,27 +709,59 @@ impl Shell {
         }
     }
 
-    /// A list was scrolled: the next page is read near an end, and the client core is told
-    /// where the list stands. The list calls this while it holds its state, so this reads
-    /// only the event and does not call the list (ADR 0740). The list takes up the end
-    /// again in its next layout, and the read position follows from that layout.
-    pub(crate) fn feed_scrolled(
+    /// A list was scrolled with the wheel. The list calls this while it holds its state,
+    /// so this does not call the list (ADR 0740); [`Self::feed_moved`] acts on the new
+    /// place after the layout.
+    pub(crate) fn feed_scrolled(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        // The rows moved under a pointer that did not move; gpui tells a row that the
+        // pointer is over it at the next move of the pointer.
+        if self
+            .hovered_message
+            .is_some_and(|(hovered, _)| hovered == pane)
+        {
+            self.hovered_message = None;
+            cx.notify();
+        }
+    }
+
+    /// A layout of a list showed other rows, or changed its follow state, or the window
+    /// became active or inactive: the next page is read near an end, the client core is
+    /// told where the list stands, and the read position follows the end. This runs after
+    /// the layout for every input: the wheel, the scroll bar, a jump and new rows. When the
+    /// layout took up the end after the render read the follow state, the shell is drawn
+    /// again, so the button to the end follows the layout. A list that a jump left reaches
+    /// its end here and follows new messages again.
+    fn feed_moved(
         &mut self,
         pane: Pane,
-        event: &ListScrollEvent,
+        shown: Shown,
+        (rendered_at_end, changes): (bool, u64),
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The list changed after the layout; the layout of the change acts.
+        if self.list(pane).changes != changes {
+            return;
+        }
+        let mut following = shown.following;
+        if !following && shown.reaches_end {
+            self.list(pane).list.set_follow_mode(FollowMode::Tail);
+            following = true;
+        }
+        if following != rendered_at_end {
+            cx.notify();
+        }
         let Some(feed) = self.pane_feed(pane).cloned() else {
             return;
         };
         let (server_id, place) = (feed.server_id, feed.place);
-        let at_end = event.is_following_tail && !feed.more_after;
+        let at_end = following && !feed.more_after;
         let first_position = feed
             .rows
-            .get(event.visible_range.start..)
+            .get(shown.start..)
             .and_then(|rows| rows.iter().find_map(FeedRow::position));
-        let near_start = event.visible_range.start <= PAGE_MARGIN;
-        let near_end = event.visible_range.end + PAGE_MARGIN >= event.count;
+        let near_start = shown.start <= PAGE_MARGIN;
+        let near_end = shown.end + PAGE_MARGIN >= shown.count;
         self.state.update(cx, |state, cx| {
             if near_start && feed.more_before && !feed.reading.older {
                 state.read_older(server_id, place);
@@ -658,15 +775,7 @@ impl Shell {
                 state.follow_shown_recordings(cx);
             }
         });
-        // The rows moved under a pointer that did not move; gpui tells a row that the
-        // pointer is over it at the next move of the pointer.
-        if self
-            .hovered_message
-            .is_some_and(|(hovered, _)| hovered == pane)
-        {
-            self.hovered_message = None;
-        }
-        cx.notify();
+        self.feed_seen(pane, Some(&feed), following, window, cx);
     }
 
     /// Moves the list of a pane to one of its rows. The tool that measures the time of a
@@ -759,25 +868,13 @@ impl Shell {
         pane: Pane,
         shown: &PaneShown<'_>,
         mut notices: Vec<AnyElement>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let compact = shown.compact;
         self.list_mut(pane).drawn = true;
-        // The list can reach its end without a scroll of the person: all of it fits, or a
-        // new message arrived at the end. What is shown in an active window is seen.
-        let seen = shown.feed.is_some_and(|feed| {
-            feed.unread > 0 && feed.end_position.is_some() && self.list(pane).at_end()
-        });
-        if seen && window.is_window_active() {
-            cx.defer_in(window, move |this, window, cx| {
-                let feed = this.pane_feed(pane).cloned();
-                let at_end = this.list(pane).at_end();
-                this.feed_seen(pane, feed.as_ref(), at_end, window, cx);
-            });
-        }
         let body: AnyElement = match shown.feed {
             None => self.feed_state(
                 pane,
@@ -1010,8 +1107,10 @@ impl Shell {
             );
         let rendered_at_end = self.list(pane).at_end();
         let away = !rendered_at_end || feed.more_after;
-        let shell = cx.entity_id();
+        let shell = cx.entity().downgrade();
         let laid_out = state.clone();
+        let handled = Rc::clone(&self.list(pane).handled);
+        let changes = self.list(pane).changes;
         div()
             .relative()
             .flex()
@@ -1030,15 +1129,26 @@ impl Shell {
                     .size_full()
                     .child(list(state.clone(), render).size_full()),
             )
-            // Drawn after the list: its layout takes up the end again after a scroll to
-            // it, or leaves the end, after this render read it. The shell is drawn again,
-            // so the button to the end and the read position follow the layout (ADR 0740).
+            // Drawn after the list, so it reads the list after its layout (ADR 0740).
             .child(
                 canvas(
                     move |_, window, cx| {
-                        if laid_out.is_following_tail() != rendered_at_end {
-                            window.defer(cx, move |_, cx| cx.notify(shell));
+                        let shown = Shown::of(&laid_out, window.is_window_active());
+                        if handled.get() == Some(shown) {
+                            return;
                         }
+                        handled.set(Some(shown));
+                        window.defer(cx, move |window, cx| {
+                            let _ = shell.update(cx, |this, cx| {
+                                this.feed_moved(
+                                    pane,
+                                    shown,
+                                    (rendered_at_end, changes),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        });
                     },
                     |_, (), _, _| {},
                 )

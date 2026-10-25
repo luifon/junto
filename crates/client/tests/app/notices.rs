@@ -614,7 +614,7 @@ fn a_second_press_on_a_notice_goes_to_its_message_again(cx: &mut TestAppContext)
         window.selected_channel() == random
     });
     let first = admin.mention(&world, general, "far above, ", own);
-    for number in 0..30 {
+    for number in 0..60 {
         admin.send(&world, general, document(&format!("filler {number}")));
     }
     window.until("the notice is counted", |window| {
@@ -651,6 +651,58 @@ fn a_second_press_on_a_notice_goes_to_its_message_again(cx: &mut TestAppContext)
     window.until("the end of the list", |window| at_end(window));
     window.click_named(format!("notice:{}", first.id.as_uuid()));
     window.until("the message of the notice is shown again", at_message);
+}
+
+/// After a jump to the message of a notice the list stays at the message, and follows the end
+/// again when the person brings it there with the wheel: the messages after the message are
+/// read and the button to the end goes away (ADR 0740).
+#[gpui::test]
+fn after_a_jump_to_a_notice_the_wheel_to_the_end_reads_the_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    let first = admin.mention(&world, general, "far above, ", own);
+    for number in 0..60 {
+        admin.send(&world, general, document(&format!("filler {number}")));
+    }
+    window.until("the notice is counted", |window| {
+        window.unread_notices() == 1
+    });
+    window.open_notices();
+    window.until("the notice is listed", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.len() == 1 && panel.rows.iter().all(|row| row.jump.is_some())
+        })
+    });
+    window.cx.update(|window, _| window.activate_window());
+    window.settle();
+
+    window.click_named(format!("notice:{}", first.id.as_uuid()));
+    window.until("the message of the notice is shown", |window| {
+        window.selected_channel() == general
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == first.id && row.target)
+    });
+    assert!(!window.pane_at_end(Pane::Main));
+    assert!(window.feed().is_some_and(|feed| feed.unread > 0));
+
+    window.until("the wheel brings the list to its end", |window| {
+        if !window.pane_at_end(Pane::Main) {
+            window.wheel_over(Pane::Main, -300.0);
+        }
+        window.pane_at_end(Pane::Main)
+    });
+    window.until("the channel is read", |window| {
+        window.feed().is_some_and(|feed| feed.unread == 0)
+    });
+    assert!(!window.shows("go-to-end"));
 }
 
 #[gpui::test]

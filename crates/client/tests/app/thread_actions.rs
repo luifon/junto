@@ -100,6 +100,15 @@ impl Window {
         self.press("enter");
     }
 
+    /// The number of replies that the row of a message in the channel shows.
+    fn replies_shown(&mut self, message_id: MessageId) -> u64 {
+        self.messages()
+            .into_iter()
+            .find(|row| row.message.id == message_id)
+            .and_then(|row| row.thread)
+            .map_or(0, |mark| mark.replies)
+    }
+
     /// Takes one action of the bar of a message: the pointer goes to the message, and the
     /// action is clicked.
     fn act_on(&mut self, message_id: MessageId, action: &str) {
@@ -255,6 +264,12 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
     let world = World::new();
     let (_server, admin, _directory, mut window, _, root_id) = with_root(cx, &world);
     admin.reply(&world, root_id, document("One per speaker."));
+    // The reply changes the row of its root. The pointer acts on the row as it is drawn
+    // with the reply, as a person sees it; a row that changes between the press and the
+    // release takes no click (see the test after this one).
+    window.until("the reply is shown on its root", |window| {
+        window.replies_shown(root_id) == 1
+    });
     window.open_thread_by_pointer(root_id);
     admin.allow_everyone(&world, &[WorkspacePermission::ManageChannel]);
     window.until("the permission to fork", |window| {
@@ -314,6 +329,52 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
             .is_some_and(|feed| feed.place == PlaceId::Channel(fork.id))
             && window.texts() == ["Tracks or mixdown?", "One per speaker."]
     });
+}
+
+/// A reply that is drawn while the pointer is pressed on the thread button of its root moves
+/// the button: the release lands outside it, and the thread does not open. The test of the
+/// fork above failed so on macOS when the reply event arrived between its press and its
+/// release; this test makes that order on every system.
+#[gpui::test]
+fn a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _, root_id) = with_root(cx, &world);
+    window.hover_named(format!("message:{root_id}"));
+    let button = selector(format!("thread:{root_id}"));
+    let pressed = window
+        .cx
+        .debug_bounds(button)
+        .expect("the bar of the root is drawn");
+    window.dispatch(MouseDownEvent {
+        position: pressed.center(),
+        button: MouseButton::Left,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    admin.reply(&world, root_id, document("One per speaker."));
+    window.until("the reply is shown on its root", |window| {
+        window.replies_shown(root_id) == 1
+    });
+    let moved = window.cx.debug_bounds(button);
+    window.dispatch(MouseUpEvent {
+        position: pressed.center(),
+        button: MouseButton::Left,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    });
+    window.settle();
+    assert_ne!(moved, Some(pressed), "the thread button stayed in place");
+    assert!(
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.thread.is_none()),
+        "the thread opened from a press and a release on two places"
+    );
 }
 
 #[gpui::test]

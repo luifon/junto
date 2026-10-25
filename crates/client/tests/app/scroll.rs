@@ -1,17 +1,22 @@
-//! The wheel of the pointer over each kind of list of messages in the active window
-//! (ADR 0740): the list moves, and the read position follows the end of the list after
-//! the scroll. The list calls the window while it holds its own state, so the window may
-//! not read that state there; a test window that is not active never reached that read.
+//! The wheel and the scroll bar over each kind of list of messages in the active window
+//! (ADR 0740): the list moves, the next page is read, the client core is told where the list
+//! stands, and the read position follows the end of the list after the scroll. The list
+//! calls the window while it holds its own state, so the window may not read that state
+//! there; a test window that is not active never reached that read.
 
-use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
+    ScrollWheelEvent, TestAppContext, point, px,
+};
 use junto_client::shell::Pane;
 use junto_client::state::feed::Feed;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::message::SendMessage;
+use junto_client_core::protocol::structure::ChannelKind;
 
 use crate::calls::{connected_call, show_call, voice_channel};
 use crate::harness::{Window, World, member};
-use crate::messages::document;
+use crate::messages::{core_anchor, document};
 
 /// The messages in a list: more than the window shows at once.
 const LINES: usize = 40;
@@ -29,13 +34,13 @@ impl Window {
         self.pane_feed(pane).map(|feed| feed.unread)
     }
 
-    fn pane_at_end(&mut self, pane: Pane) -> bool {
+    pub(crate) fn pane_at_end(&mut self, pane: Pane) -> bool {
         self.in_shell(|shell, _, _| shell.feed_is_at_end(pane))
     }
 
     /// One turn of the wheel over the middle of the list of `pane` by `distance` pixels.
     /// A positive distance moves the list toward its start.
-    fn wheel_over(&mut self, pane: Pane, distance: f32) {
+    pub(crate) fn wheel_over(&mut self, pane: Pane, distance: f32) {
         let list = self
             .in_shell(|shell, _, _| shell.feed_bounds(pane))
             .expect("the list was drawn");
@@ -46,6 +51,50 @@ impl Window {
         });
         self.settle();
     }
+
+    /// Presses the thumb of the scroll bar of the list of `pane` at the end of the list,
+    /// moves the pointer with the button held to above the list, and releases it.
+    fn drag_scroll_bar_to_top(&mut self, pane: Pane) {
+        let list = self
+            .in_shell(|shell, _, _| shell.feed_bounds(pane))
+            .expect("the list was drawn");
+        let x = list.right() - px(5.0);
+        let from = point(x, list.bottom() - px(6.0));
+        let modifiers = Modifiers::none();
+        self.dispatch(MouseMoveEvent {
+            position: from,
+            pressed_button: None,
+            modifiers,
+        });
+        self.dispatch(MouseDownEvent {
+            position: from,
+            button: MouseButton::Left,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        });
+        let mut position = from;
+        for _ in 0..10 {
+            position.y -= (list.size.height + px(40.0)) / 10.0;
+            self.dispatch(MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers,
+            });
+        }
+        self.dispatch(MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers,
+            click_count: 1,
+        });
+        self.settle();
+    }
+
+    fn told_anchor(&mut self, place: PlaceId) -> Option<Option<u64>> {
+        let server_id = self.view().selected.unwrap().id;
+        core_anchor(self, server_id, place)
+    }
 }
 
 /// The person reads a list to its end in the active window, scrolls away from the end with
@@ -55,6 +104,7 @@ impl Window {
 fn scroll_away_and_back(
     window: &mut Window,
     pane: Pane,
+    place: PlaceId,
     send: &dyn Fn(&str),
     stored: &dyn Fn() -> u64,
 ) {
@@ -87,11 +137,17 @@ fn scroll_away_and_back(
     window.until("the later messages are read", |window| {
         window.pane_unread(pane) == Some(0) && stored() == 0
     });
+    // The client core follows the end, so a reload reads the latest messages.
+    window.until(
+        "the client core is told that the list stands at its end",
+        |window| window.told_anchor(place) == Some(None),
+    );
 
     // A few pixels away from the end and back (gpui takes a list within one pixel of its end
     // as at the end). The list takes up the end again only in its layout after the scroll,
-    // and the position told to the client core does not change, so only that layout can draw
-    // the window without the button to the end.
+    // so only the work after that layout can draw the window without the button to the end.
+    // In the chat of a call the call view also draws the window again by itself, so there
+    // this step passes without that work too.
     let go_to_end = match pane {
         Pane::Main => "go-to-end",
         Pane::Thread => "thread-go-to-end",
@@ -123,6 +179,7 @@ fn the_wheel_over_a_channel_in_the_active_window_moves_the_read_position(cx: &mu
     scroll_away_and_back(
         &mut window,
         Pane::Main,
+        PlaceId::Channel(general),
         &|text| {
             admin.send(&world, general, document(text));
         },
@@ -179,7 +236,7 @@ fn the_wheel_over_a_direct_conversation_in_the_active_window_moves_the_read_posi
     }
     window.until_message(&format!("Line {}", LINES - 1));
     let own = window.handle();
-    scroll_away_and_back(&mut window, Pane::Main, &send, &|| {
+    scroll_away_and_back(&mut window, Pane::Main, direct, &send, &|| {
         world.run(own.api().message_state(direct)).unwrap().unread
     });
 }
@@ -219,6 +276,10 @@ fn the_wheel_over_a_thread_in_the_active_window_moves_the_read_position(cx: &mut
     scroll_away_and_back(
         &mut window,
         Pane::Thread,
+        PlaceId::Thread {
+            channel_id: general,
+            root_id,
+        },
         &|text| {
             admin.reply(&world, root_id, document(text));
         },
@@ -253,6 +314,7 @@ fn the_wheel_over_the_chat_of_a_call_in_the_active_window_moves_the_read_positio
     scroll_away_and_back(
         &mut window,
         Pane::Main,
+        PlaceId::Channel(daily),
         &|text| {
             admin.send(&world, daily, document(text));
         },
@@ -263,4 +325,51 @@ fn the_wheel_over_the_chat_of_a_call_in_the_active_window_moves_the_read_positio
                 .unread
         },
     );
+}
+
+/// The scroll bar moves the list without the wheel: after the drag the next page is read and
+/// the client core is told where the list stands, as after a scroll with the wheel.
+#[gpui::test]
+fn a_drag_of_the_scroll_bar_to_the_top_reads_the_older_page_and_tells_the_position(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let general = world
+        .run(admin.handle.api().snapshot())
+        .unwrap()
+        .snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.channels)
+        .find(|channel| channel.kind == ChannelKind::Text)
+        .unwrap()
+        .id;
+    // Written before the person joins, so the channel opens with its latest page.
+    for number in 0..90 {
+        admin.send(&world, general, document(&format!("Line {number}")));
+    }
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    assert_eq!(window.selected_channel(), general);
+    let place = PlaceId::Channel(general);
+    window.until_message("Line 89");
+    window.settle();
+    let first_page = window.texts();
+    assert!(
+        window.feed().unwrap().more_before,
+        "the first page holds the whole history"
+    );
+    window.until("the client core follows the end", |window| {
+        window.told_anchor(place) == Some(None)
+    });
+
+    window.drag_scroll_bar_to_top(Pane::Main);
+    assert!(!window.pane_at_end(Pane::Main));
+    window.until("the older page is read", |window| {
+        window.texts().len() > first_page.len()
+    });
+    window.until("the client core is told where the list stands", |window| {
+        matches!(window.told_anchor(place), Some(Some(_)))
+    });
 }
