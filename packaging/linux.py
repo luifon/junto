@@ -271,7 +271,8 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, i
         raise ValueError("a release version has three decimal numbers")
     architecture = machine_architecture()
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0")) if epoch is None else epoch
-    output.mkdir(parents=False, exist_ok=False)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.mkdir(exist_ok=False)
     try:
         directory = output / "package-directory/junto"
         tree(directory, client, recover, version, architecture, licence_texts(version, architecture, build), icon_tool)

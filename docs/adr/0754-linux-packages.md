@@ -28,7 +28,7 @@ Libraries (the rule of ADR 0705, as names):
 
 - Bundled: `libxkbcommon.so.0`, `libxkbcommon-x11.so.0` and `libxcb-xkb.so.1`. A host without an X11 keyboard library often lacks them.
 - From the host: the C library and its loader, `libm`, `libgcc_s`; `libxcb.so.1` with `libXau`, `libXdmcp`, `libbsd` and `libmd`; `libpipewire-0.3` and `libasound`. The Mesa and Vulkan drivers of the host load `libxcb-dri3`, `libxcb-present` and other extensions that are linked against the host's `libxcb`; an older bundled `libxcb` loaded first through the search path could lack symbols that they need. The list of excluded libraries of the AppImage project names `libxcb.so.1` for this reason. Both sound libraries load their plugins and configuration from the host, so a bundled copy would not match them.
-- `packaging/linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it. It reads the libraries of the client with `ldd` and stops when one is in neither list, so that a new dependency gets a decision.
+- `packaging/linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it. It reads the libraries of the client with `ldd` and stops when one is in neither list, so that a new dependency gets a decision. Its output is a new directory; it makes the missing parent directories of that directory, because `packaging/release_linux.sh target/linux-release` (`packaging/README.md`) runs in a new clone, which has no `target/`.
 
 Updates:
 

@@ -25,6 +25,25 @@ LDD = """\tlinux-vdso.so.1 (0x0000ffff9ba6c000)
 
 
 class LinuxPackageTests(unittest.TestCase):
+    # packaging/README.md names target/linux-release, and a new clone has no target directory.
+    def test_the_output_directory_is_made_in_a_checkout_without_a_target_directory(self):
+        class Reached(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as checkout:
+            output = pathlib.Path(checkout) / "target/linux-release"
+
+            def tree(directory, *_):
+                self.assertTrue(output.is_dir())
+                raise Reached
+
+            with mock.patch.object(linux, "tree", side_effect=tree), \
+                    mock.patch.object(linux, "licence_texts", return_value={}), \
+                    mock.patch.object(linux, "machine_architecture", return_value="x86_64"):
+                with self.assertRaises(Reached):
+                    linux.assemble("junto", "junto-recover", "1.2.3", output, icon_tool="junto-icon", build=checkout)
+            self.assertFalse(output.exists(), "a failed assembly removes its output directory")
+
     def test_libraries_are_bundled_or_taken_from_the_host_by_name(self):
         found = linux.parse_ldd(LDD)
         self.assertEqual(linux.classify(found), {"libxkbcommon.so.0": "/lib/x86_64-linux-gnu/libxkbcommon.so.0"})
