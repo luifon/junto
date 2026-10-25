@@ -433,16 +433,7 @@ async fn a_join_request_waits_for_an_approval_that_names_the_workspaces() {
         .map(String::as_str)
         .collect();
     shown.sort();
-    assert_eq!(
-        shown,
-        [
-            "accounts_with_name",
-            "created_at",
-            "expires_at",
-            "id",
-            "name"
-        ]
-    );
+    assert_eq!(shown, ["created_at", "expires_at", "id", "name"]);
 
     let approved: JoinRequestStatus = server
         .post(
@@ -1185,18 +1176,25 @@ async fn an_approval_and_a_withdrawal_at_the_same_time_make_at_most_one_account(
 }
 
 #[tokio::test]
-async fn a_request_states_how_many_accounts_have_its_name() {
+async fn only_the_approvers_learn_how_many_accounts_have_the_name_of_a_request() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     server.join(&owner, "Linus").await;
-    let request: JoinRequest = request_to_join_reply(&server, &DeviceKey::generate(), " linus ")
+    let key = DeviceKey::generate();
+
+    // The requester has no account: neither answer tells which account names exist.
+    for answered in [StatusCode::CREATED, StatusCode::OK] {
+        let answer: Value = request_to_join_reply(&server, &key, " linus ")
+            .await
+            .ok(answered);
+        assert!(answer.get("accounts_with_name").is_none(), "{answer}");
+    }
+    let answer: Value = status(&server, &key).await.ok(StatusCode::OK);
+    assert!(answer.get("accounts_with_name").is_none(), "{answer}");
+
+    request_to_join_reply(&server, &DeviceKey::generate(), "Marta")
         .await
-        .ok(StatusCode::CREATED);
-    assert_eq!(request.accounts_with_name, 1);
-    let other: JoinRequest = request_to_join_reply(&server, &DeviceKey::generate(), "Marta")
-        .await
-        .ok(StatusCode::CREATED);
-    assert_eq!(other.accounts_with_name, 0);
+        .ok::<JoinRequest>(StatusCode::CREATED);
     let listed: Vec<JoinRequest> = server
         .get(&owner, "/api/v1/join-requests")
         .await

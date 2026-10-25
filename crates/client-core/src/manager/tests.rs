@@ -690,7 +690,7 @@ async fn a_removal_during_an_approval_keeps_the_server_and_the_key_of_the_new_ac
     server.decide_request(key, true);
     assert!(matches!(
         device.client.remove_server_when_free(handle.id()).await,
-        Err(RemoveError::Approved)
+        Err(RemoveError::HasAccount)
     ));
     assert_eq!(device.client.servers().len(), 1);
     assert!(device.client.data_dir().key_file(handle.id()).exists());

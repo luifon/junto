@@ -614,8 +614,6 @@ pub async fn request_to_join(
         let returning =
             super::departures::returning_account(connection, &proven.public_key).await?;
         let returning_account_id = returning.map(|(account_id, _)| account_id);
-        let accounts_with_name =
-            count_accounts_named(connection, &request.name, returning_account_id).await?;
         sqlx::query(
             "update join_requests set state = 'expired'
              where public_key = $1 and state = 'pending' and expires_at <= $2",
@@ -633,21 +631,18 @@ pub async fn request_to_join(
             .fetch_optional(&mut *connection)
             .await?;
         if let Some((id, name, created_at, expires_at)) = waiting {
-            let accounts_with_name =
-                count_accounts_named(connection, &name, returning_account_id).await?;
             let first = JoinRequest {
                 id,
                 name,
                 created_at,
                 expires_at,
                 returning_account_id,
-                accounts_with_name,
+                accounts_with_name: 0,
             };
             return Ok((StatusCode::OK, first));
         }
         let request = JoinRequest {
             returning_account_id,
-            accounts_with_name,
             ..request.clone()
         };
         let pending: i64 = sqlx::query_scalar(
@@ -676,8 +671,15 @@ pub async fn request_to_join(
         .execute(&mut *connection)
         .await
         .map_err(ApiError::concurrent)?;
+        // The count of accounts with the name goes to the approvers only: the requester holds
+        // no account, and the answer must not tell which account names exist (ADR 0111).
+        let accounts_with_name =
+            count_accounts_named(connection, &request.name, returning_account_id).await?;
         let created = Event::JoinRequestCreated {
-            join_request: request.clone(),
+            join_request: JoinRequest {
+                accounts_with_name,
+                ..request.clone()
+            },
         };
         events::publish(connection, now, &created).await?;
         Ok((StatusCode::CREATED, request))

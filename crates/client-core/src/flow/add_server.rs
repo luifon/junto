@@ -166,6 +166,17 @@ impl AddServerFlow {
                     key_address,
                 },
             ) => {
+                // A server that another program saved meanwhile keeps its key and its request.
+                let saved = core.book.entry(preview.server_id).map_err(FlowError::from);
+                match saved {
+                    Ok(Some(saved)) => {
+                        return Outcome::failed(FlowError::AlreadySaved {
+                            server_id: saved.server_id,
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Outcome::failed(error),
+                }
                 if let Err(error) = self.withdraw_with_stored_key(&preview, &key_address).await {
                     return Outcome::failed(error);
                 }

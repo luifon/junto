@@ -548,10 +548,12 @@ pub enum RemoveError {
     Key(#[from] KeyStoreError),
     #[error("the client has stopped")]
     Stopped,
-    /// The join request was approved while the server was removed. The device logged in
-    /// to the new account, and the server and its key stay.
-    #[error("the join request was approved; the server stays")]
-    Approved,
+    /// The server answered that the key of this device has an account: the join request
+    /// was approved while the server was removed, or the account of a stale inactive state
+    /// is active or banned now. The device checked its state, and the server and its key
+    /// stay.
+    #[error("the server answered that the key has an account; the server stays")]
+    HasAccount,
 }
 
 /// True when a join request of the key of this device can wait on the server: the state
@@ -1494,7 +1496,7 @@ impl Server {
             Err(error) if error.code() == Some(ErrorCode::KeyAlreadyRegistered) => {
                 let _ = self.reconcile(&api, &before).await;
                 let _ = self.save();
-                Err(RemoveError::Approved)
+                Err(RemoveError::HasAccount)
             }
             Err(_) => Ok(KeyAfterRemoval::Kept),
         }

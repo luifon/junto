@@ -101,8 +101,10 @@ pub struct JoinRequest {
     /// The number of other active, inactive or banned accounts whose name is the name of
     /// the request, apart from case and surrounding spaces, when the server gave the
     /// request. The returning account is not counted. A person with a second device key
-    /// asks with the name of the account that the first key made (ADR 0761).
-    #[serde(default)]
+    /// asks with the name of the account that the first key made (ADR 0761). Only the list
+    /// and the events for approvers carry it; the answer to the requester leaves it out
+    /// (ADR 0111).
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub accounts_with_name: u32,
 }
 
@@ -145,4 +147,8 @@ pub struct ApproveJoinRequest {
     /// Empty: the default workspace.
     #[serde(default)]
     pub workspace_ids: Vec<WorkspaceId>,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
