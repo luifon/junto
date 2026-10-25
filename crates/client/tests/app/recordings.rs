@@ -729,10 +729,16 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
     // Ada and Luca are in a call of "Daily", and Ada records it. The events of the
     // recording make the open page read its list again, without a click.
     let first = world.run(server.record(voice, &[&admin.handle, &luca]));
+    // Each event of the recording reads the list again, at most once in a second: the row
+    // can be ready while the read of a later event is on its way. The page is loaded when
+    // the last read has ended.
     window.until("the page lists the finished recording", |window| {
         window.cx.executor().advance_clock(Duration::from_secs(1));
-        recordings_page(window)
-            .is_some_and(|page| page.rows.len() == 1 && page.rows[0].state == RecordingState::Ready)
+        recordings_page(window).is_some_and(|page| {
+            page.state == RecordingsRead::Loaded
+                && page.rows.len() == 1
+                && page.rows[0].state == RecordingState::Ready
+        })
     });
     let page = recordings_page(&mut window).unwrap();
     assert_eq!(page.state, RecordingsRead::Loaded);
