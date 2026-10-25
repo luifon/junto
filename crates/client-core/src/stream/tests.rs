@@ -29,7 +29,7 @@ use crate::api::{HttpRequest, HttpResponse, TransportError, TransportErrorKind, 
 use crate::live::{LiveServer, LiveView, LoadError, Notice, Notices, StreamFault, StreamStatus};
 use crate::model::tests::{Scene, channel, member, participant, scene, time};
 use crate::model::{Loadable, ServerModel};
-use crate::version::SupportedVersions;
+use crate::version::{ServerVersion, SupportedVersions};
 
 mod admin;
 mod discovery;
@@ -61,8 +61,12 @@ impl Peer {
     }
 
     async fn hello(&self, epoch: StreamEpoch) {
+        self.hello_as(epoch, "0.1.0").await;
+    }
+
+    async fn hello_as(&self, epoch: StreamEpoch, server_version: &str) {
         self.send(&ServerMessage::Hello {
-            server_version: "0.1.0".to_owned(),
+            server_version: server_version.to_owned(),
             api_versions: vec![1],
             epoch,
             heartbeat_seconds: 25,
@@ -717,6 +721,59 @@ async fn a_lost_connection_is_continued_from_the_cursor_without_a_snapshot() {
         .await;
     assert!(has_channel(&model, "next") && !has_channel(&model, "repeat"));
     assert_eq!(rig.http.count("/snapshot"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_view_states_the_version_of_the_last_hello_until_the_state_is_forgotten() {
+    let mut rig = rig();
+    assert_eq!(rig.live.view().server_version, None);
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    let first = ServerVersion::parse("0.1.0");
+    assert!(first.is_some());
+    assert_eq!(rig.live.view().server_version, first);
+
+    // A lost connection keeps the version that the server stated last.
+    peer.close(4003).await;
+    let view = rig
+        .when("interrupted", |view| view.status != StreamStatus::Live)
+        .await;
+    assert_eq!(view.server_version, first);
+
+    // A text that is no semantic version states no version.
+    let mut peer = rig.peer().await;
+    peer.hello_as(rig.epoch(), "a version").await;
+    rig.when("no version", |view| view.server_version.is_none())
+        .await;
+    peer.serve().await;
+    rig.when("live", |view| view.status == StreamStatus::Live)
+        .await;
+
+    // After an upgrade the server states another version. The view states it before the
+    // subscription is served again.
+    peer.close(4003).await;
+    let mut peer = rig.peer().await;
+    let upgraded = ServerVersion::parse("0.2.0-test.1");
+    assert!(upgraded.is_some());
+    peer.hello_as(rig.epoch(), "0.2.0-test.1").await;
+    let view = rig
+        .when("the version of the upgraded server", |view| {
+            view.server_version == upgraded
+        })
+        .await;
+    assert_ne!(view.status, StreamStatus::Live);
+    peer.serve().await;
+    let view = rig
+        .when("live", |view| view.status == StreamStatus::Live)
+        .await;
+    assert_eq!(view.server_version, upgraded);
+
+    // The level `off` forgets the state, and the version with it.
+    rig.off();
+    let view = rig
+        .when("off", |view| view.status == StreamStatus::Off)
+        .await;
+    assert_eq!(view.server_version, None);
 }
 
 #[tokio::test(start_paused = true)]

@@ -377,6 +377,7 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
 
     // The settings lead to both roles. The first device shows its offer.
     first.in_shell(|shell, window, cx| shell.open(Open::Settings, window, cx));
+    first.click("settings-section-devices");
     assert!(first.shows("settings-link-first") && first.shows("settings-link-new"));
     let scroll = first.in_shell(|shell, _, _| shell.settings_scroll_handle());
     first.reveal(&scroll, "settings-link-first");
@@ -403,6 +404,7 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
     // The new device: a first start, the settings, the other role.
     let (_new_directory, mut new) = named(new_cx, "Luca");
     new.in_shell(|shell, window, cx| shell.open(Open::Settings, window, cx));
+    new.click("settings-section-devices");
     let scroll = new.in_shell(|shell, _, _| shell.settings_scroll_handle());
     new.reveal(&scroll, "settings-link-new");
     new.click("settings-link-new");
@@ -557,6 +559,7 @@ fn device_of(window: &mut Window) -> DeviceId {
 /// Returns the text of the offer.
 fn offer_to_the_new_device(first: &mut Window, new: &mut Window) -> String {
     first.in_shell(|shell, window, cx| shell.open(Open::Settings, window, cx));
+    first.click("settings-section-devices");
     let scroll = first.in_shell(|shell, _, _| shell.settings_scroll_handle());
     first.reveal(&scroll, "settings-link-first");
     first.click("settings-link-first");
@@ -565,6 +568,7 @@ fn offer_to_the_new_device(first: &mut Window, new: &mut Window) -> String {
     };
     let offer = shown.offer.unwrap();
     new.in_shell(|shell, window, cx| shell.open(Open::Settings, window, cx));
+    new.click("settings-section-devices");
     let scroll = new.in_shell(|shell, _, _| shell.settings_scroll_handle());
     new.reveal(&scroll, "settings-link-new");
     new.click("settings-link-new");

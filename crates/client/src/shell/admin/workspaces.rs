@@ -323,7 +323,7 @@ impl Shell {
                 .child(
                     div().flex().flex_none().child(
                         Button::new("redeem-open")
-                            .icon(crate::assets::Icon::Key)
+                            .icon(crate::assets::Icon::Ticket)
                             .label(text::admin::ENTER_CODE)
                             .selector("redeem-open")
                             .h(u(30.0))

@@ -97,7 +97,7 @@ impl Shell {
             // account and ends on another after an answer chooses nobody.
             let choice = ChannelRow::new(
                 ("contact", account_id.as_uuid().as_u128() as u64),
-                Icon::People,
+                Icon::Person,
                 row.name.clone(),
             )
             .avatar(account_id.as_uuid().as_u128())

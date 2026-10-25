@@ -146,6 +146,7 @@ fn own(window: &mut Window) -> Option<Occupant> {
 /// the three parts off in the settings of the application.
 fn turn_processing_off(window: &mut Window) {
     window.click("app-settings");
+    window.click("settings-section-voice");
     for part in ["echo-cancellation", "noise-suppression", "automatic-gain"] {
         window.click(part);
     }
@@ -574,6 +575,7 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
 
     // Push-to-talk with the Control key, chosen in the settings.
     window.click("app-settings");
+    window.click("settings-section-voice");
     window.click("input-mode-1");
     window.until("the key is offered", |window| window.shows("talk-key-1"));
     window.click("talk-key-1");

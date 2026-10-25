@@ -41,7 +41,7 @@ pub(crate) fn place_icon(place: &Whereabouts) -> Icon {
             ..
         } => Icon::Speaker,
         Whereabouts::Channel { .. } | Whereabouts::Unknown => Icon::Hash,
-        Whereabouts::Direct { .. } => Icon::People,
+        Whereabouts::Direct { .. } => Icon::Person,
     }
 }
 
@@ -139,7 +139,7 @@ impl Excerpt {
                             .min_w_0()
                             .truncate()
                             .font_weight(FontWeight::BOLD)
-                            .ink(colors.cypress)
+                            .ink(colors.cypress_ink)
                             .child(self.place),
                     )
                     .child(div().flex_none().child(self.day))
@@ -149,7 +149,7 @@ impl Excerpt {
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::BOLD)
-                                .ink(colors.cypress)
+                                .ink(colors.cypress_ink)
                                 .child(action),
                         )
                     }),
@@ -374,7 +374,7 @@ impl Shell {
                 .border_color(Hsla::from(colors.rule))
                 .child(
                     Button::new("mark-all-read")
-                        .icon(Icon::Check)
+                        .icon(Icon::CheckDouble)
                         .label(if panel.marking {
                             text::MARKING_ALL_READ
                         } else {
@@ -1385,6 +1385,7 @@ impl Shell {
         }
         rows.push(
             crate::ui::notice_slot("quiet-notice-slot")
+                .at_end()
                 .children(notices)
                 .into_any_element(),
         );

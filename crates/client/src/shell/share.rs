@@ -948,7 +948,7 @@ impl Shell {
                 row(
                     ("share-portal-window", 0),
                     "share-portal-window".into(),
-                    Icon::Detach,
+                    Icon::AppWindow,
                     text::SHARE_DESKTOP_WINDOW.into(),
                     text::SHARE_DESKTOP_HELP.into(),
                     picture == Some(source),
@@ -988,7 +988,7 @@ impl Shell {
                 row(
                     ("share-window", index),
                     format!("share-window:{}", shared.id),
-                    Icon::Detach,
+                    Icon::AppWindow,
                     title,
                     detail.into(),
                     picture == Some(source),
@@ -1038,7 +1038,7 @@ impl Shell {
                             } else {
                                 format!("share-application:{}", shared.id.process_id)
                             },
-                            Icon::Speaker,
+                            Icon::AppWindow,
                             shared.name.clone().into(),
                             if shared.id.process_id == 0 {
                                 "".into()

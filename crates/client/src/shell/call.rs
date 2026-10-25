@@ -970,7 +970,7 @@ impl Shell {
             PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
                 account_id: direct.other,
                 name: panel.place_name().to_owned().into(),
-                state: Some((Icon::Retry, text::CALLING.into())),
+                state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
             }],
             PanelPlace::Direct(_) => Vec::new(),
         };
@@ -1434,7 +1434,7 @@ impl Shell {
         let leave = |cx: &mut Context<Self>| {
             Button::new("leave-call")
                 .kind(ButtonKind::CallLeave)
-                .icon(Icon::Leave)
+                .icon(Icon::PhoneOff)
                 .label(text::LEAVE)
                 .tooltip(text::LEAVE_CALL)
                 .accessible_label(text::LEAVE_CALL)
@@ -1563,12 +1563,12 @@ impl Shell {
                     .accessible_label(text::SHARE_SCREEN),
                 (true, OwnShare::Starting) => Button::new("call-share")
                     .kind(ButtonKind::CallOn)
-                    .icon(Icon::Screen)
+                    .icon(Icon::ScreenOff)
                     .tooltip(text::SHARE_STARTING)
                     .accessible_label(text::SHARE_STARTING),
                 (true, OwnShare::Running) => Button::new("call-share")
                     .kind(ButtonKind::CallOn)
-                    .icon(Icon::Screen)
+                    .icon(Icon::ScreenOff)
                     .tooltip(text::SHARE_RUNS)
                     .accessible_label(text::SHARE_RUNS),
             }
@@ -1597,7 +1597,11 @@ impl Shell {
                         } else {
                             ButtonKind::Call
                         })
-                        .icon(Icon::Camera)
+                        .icon(if camera_on {
+                            Icon::Camera
+                        } else {
+                            Icon::CameraOff
+                        })
                         .tooltip(text::CAMERA)
                         .accessible_label(text::CAMERA)
                         .selector("call-camera")
@@ -1616,7 +1620,7 @@ impl Shell {
                         } else {
                             ButtonKind::Call
                         })
-                        .icon(Icon::People)
+                        .icon(Icon::LayoutGrid)
                         .selector("camera-focus")
                         .tooltip(if self.camera_focus {
                             "Show camera grid"

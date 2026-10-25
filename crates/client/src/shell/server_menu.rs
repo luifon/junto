@@ -4,7 +4,8 @@
 use std::ops::Not as _;
 
 use gpui::{
-    Context, Hsla, IntoElement, ParentElement, Styled, Window, div, prelude::FluentBuilder,
+    Context, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
+    prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::ServerId;
 
@@ -14,8 +15,8 @@ use crate::state::view::{ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Menu, MenuItem, Mosaic, MosaicKind, StyleExt, dialog_footer,
-    menu_separator,
+    Button, ButtonKind, Dialog, Menu, MenuItem, Mosaic, MosaicKind, StyleExt, dialog_footer, icon,
+    menu_separator, paint_text,
 };
 
 impl Shell {
@@ -95,7 +96,44 @@ impl Shell {
                             .ink(colors.ink_2)
                             .truncate()
                             .child(server.address.clone()),
-                    ),
+                    )
+                    // The version that the server states, and a newer release of the server
+                    // (ADR 0780): lines of text, not items of the menu.
+                    .when_some(server.release.clone(), |column, release| {
+                        column
+                            .child(
+                                div()
+                                    .debug_selector(|| "server-version".to_owned())
+                                    .mt(u(2.0))
+                                    .typeface(theme.types.small, &theme)
+                                    .line_height(u(16.0))
+                                    .ink(colors.ink_2)
+                                    .truncate()
+                                    .child(paint_text(
+                                        text::book::server_version(&release.version).into(),
+                                        None,
+                                    )),
+                            )
+                            .when_some(release.newer, |column, newer| {
+                                column.child(
+                                    div()
+                                        .debug_selector(|| "server-release-available".to_owned())
+                                        .flex()
+                                        .items_center()
+                                        .gap(u(5.0))
+                                        .typeface(theme.types.small_strong, &theme)
+                                        .line_height(u(16.0))
+                                        .ink(colors.cypress_ink)
+                                        .child(icon(Icon::Download, 12.0, colors.cypress_ink))
+                                        .child(div().flex_1().min_w_0().truncate().child(
+                                            paint_text(
+                                                text::book::server_release_available(newer).into(),
+                                                None,
+                                            ),
+                                        )),
+                                )
+                            })
+                    }),
             );
         // The notification settings of the server and of the shown workspace, for a
         // server that shows its lists.
@@ -148,6 +186,7 @@ impl Shell {
                     .child(header)
                     .child(
                         MenuItem::new("keep-connected", text::KEEP_CONNECTED)
+                            .icon(Icon::Plug)
                             .detail(text::KEEP_CONNECTED_HELP)
                             .trailing(if keep { text::ON } else { text::OFF })
                             .selector("keep-connected")
@@ -179,7 +218,7 @@ impl Shell {
                     .when(has_content, |menu| {
                         menu.child(
                             MenuItem::new("your-account", text::account::OPEN_ACCOUNT)
-                                .icon(Icon::People)
+                                .icon(Icon::Account)
                                 .detail(text::account::OPEN_ACCOUNT_HELP)
                                 .selector("menu-account")
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -198,7 +237,7 @@ impl Shell {
                         |menu, workspace_id| {
                             menu.child(
                                 MenuItem::new("leave-workspace", text::account::LEAVE_WORKSPACE)
-                                    .icon(Icon::Trash)
+                                    .icon(Icon::Leave)
                                     .detail(text::account::LEAVE_WORKSPACE_HELP)
                                     .selector("menu-leave-workspace")
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -212,6 +251,7 @@ impl Shell {
                     // open moves no item under the pointer (ADR 0730).
                     .child(
                         MenuItem::new("log-out", text::LOG_OUT)
+                            .icon(Icon::Leave)
                             .detail(if can_log_out {
                                 text::LOG_OUT_HELP
                             } else {
@@ -236,6 +276,7 @@ impl Shell {
                                 cx.notify();
                             })),
                     )
+                    .child(self.render_move_error(view, cx))
                     .child(div().h(u(4.0))),
             )
             .into_any_element()

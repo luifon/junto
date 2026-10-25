@@ -91,7 +91,6 @@ Client:
 - Moderation by report
 - Opt-in compliance access to direct messages
 - Stored voice profiles that name recurring speakers automatically
-- A dark theme
 - System-wide push-to-talk
 - A dock or tray badge
 - A browser client

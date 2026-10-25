@@ -259,8 +259,8 @@ fn look(kind: ButtonKind, disabled: bool, theme: &Theme) -> Look {
         (ButtonKind::Green, false) => Look {
             background: c.travertine_hi,
             border: Some(c.rule),
-            text: c.cypress,
-            icon: c.cypress,
+            text: c.cypress_ink,
+            icon: c.cypress_ink,
             ledge: Some(c.rule),
             hover: c.travertine,
             pressed: c.limestone_lo,

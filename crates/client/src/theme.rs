@@ -1,6 +1,6 @@
-//! The one theme of the first version: every colour, font, type size, radius and fixed
-//! measure of the interface (ADR 0703, ADR 0731). A second theme is a second value of
-//! [`Theme`]; no drawing code names a colour or a font by itself.
+//! The themes: every colour, font, type size, radius and fixed measure of the interface
+//! (ADR 0703, ADR 0731). The light theme is [`Theme::stone`] and the dark theme is
+//! [`Theme::broadcast`]; no drawing code names a colour or a font by itself.
 //!
 //! A measure is given in the pixels of the design at 100 % and becomes rems through [`u`],
 //! so it follows the interface scale. A border is one device-independent pixel at every
@@ -8,7 +8,10 @@
 
 use std::rc::Rc;
 
-use gpui::{App, FontWeight, Global, Hsla, Pixels, Rems, Rgba, SharedString, px, rems};
+use gpui::{
+    App, FontWeight, Global, Hsla, Pixels, Rems, Rgba, SharedString, WindowAppearance, px, rems,
+};
+use junto_client_core::settings::ThemeChoice;
 
 /// The size of one rem at an interface scale of 100 %, in pixels.
 pub const REM_AT_100: f32 = 16.0;
@@ -114,7 +117,10 @@ pub struct Colors {
     pub row_hover: Rgba,
     /// Text and icons on terracotta.
     pub on_terracotta: Rgba,
+    /// Green as a ground, under call text.
     pub cypress: Rgba,
+    /// Green as text and as an icon on the surfaces.
+    pub cypress_ink: Rgba,
     pub cypress_wash: Rgba,
     pub cypress_wash_rule: Rgba,
     pub olive: Rgba,
@@ -366,6 +372,7 @@ impl Theme {
                 row_hover: hex_alpha(0x2A221B, 0.04),
                 on_terracotta: hex(0xFFF4E4),
                 cypress: hex(0x2F4B3C),
+                cypress_ink: hex(0x2F4B3C),
                 cypress_wash: hex(0xD2DAC2),
                 cypress_wash_rule: hex(0xB5C2A2),
                 olive: hex(0x5E6A2C),
@@ -454,6 +461,98 @@ impl Theme {
         }
     }
 
+    /// The dark theme: the colours of design 2 on the layout, fonts and measures of the
+    /// light theme.
+    pub fn broadcast() -> Self {
+        let mut theme = Self::stone();
+        theme.colors = Colors {
+            travertine: hex(0x191C1F),
+            travertine_hi: hex(0x252A2E),
+            plaster: hex(0x1F2327),
+            limestone: hex(0x1F2327),
+            limestone_lo: hex(0x2D3338),
+            limestone_hover: hex(0x252A2E),
+            rule: hex(0x3A4148),
+            rule_soft: hex(0x2D3338),
+            ink: hex(0xECEAE4),
+            ink_2: hex(0xB9BCBB),
+            ink_3: hex(0x969DA2),
+            basalt: hex(0x111315),
+            basalt_2: hex(0x191C1F),
+            basalt_3: hex(0x252A2E),
+            basalt_rule: hex(0x2D3338),
+            basalt_deep: hex(0x0D0F11),
+            basalt_tag_rule: hex(0x3A4148),
+            basalt_edge: hex(0x08090A),
+            basalt_float_rule: hex(0x3A4148),
+            bone: hex(0xECEAE4),
+            bone_2: hex(0xB9BCBB),
+            bone_3: hex(0x8E969B),
+            bone_hi: hex(0xF7F6F2),
+            bone_label: hex(0xB9BCBB),
+            terracotta: hex(0x6FD3E8),
+            terracotta_deep: hex(0x6FD3E8),
+            terracotta_wash: hex(0x1B3F48),
+            terracotta_wash_rule: hex(0x2C6573),
+            code_wash: hex(0x0D0F11),
+            mention_wash: hex_alpha(0x6FD3E8, 0.10),
+            target_wash: hex_alpha(0xE0B85A, 0.18),
+            row_hover: hex_alpha(0xFFFFFF, 0.04),
+            on_terracotta: hex(0x0D0F11),
+            cypress: hex(0x1E6B40),
+            cypress_ink: hex(0x3DDC7A),
+            cypress_wash: hex(0x143D25),
+            cypress_wash_rule: hex(0x1F6B3F),
+            olive: hex(0x2FB563),
+            olive_bright: hex(0x3DDC7A),
+            bronze: hex(0xA3ABB0),
+            ochre: hex(0xE0B85A),
+            cinnabar: hex(0xFF3B30),
+            cinnabar_wash: hex(0x4A1714),
+            cinnabar_wash_rule: hex(0x7A2A24),
+            cinnabar_ink: hex(0xFF9A90),
+            meter_off: hex(0x2D3338),
+            toggle_off: hex(0x4A535A),
+            stage: hex(0x0D0F11),
+            plate: hex(0x08090A),
+            tile_edge: hex(0x08090A),
+            plate_warning: hex(0xFF8A7A),
+            call_button: hex(0x252A2E),
+            call_button_rule: hex(0x3A4148),
+            call_text: hex(0xECEAE4),
+            call_text_hi: hex(0xF7F6F2),
+            call_on: hex(0x3DDC7A),
+            call_on_text: hex(0x0D0F11),
+            call_disabled_rule: hex(0x2D3338),
+            call_disabled_text: hex(0x6A7278),
+            cinnabar_deep: hex(0xB3261E),
+            on_cinnabar: hex(0x0D0F11),
+            scrim: hex_alpha(0x000000, 0.6),
+            scrim_soft: hex_alpha(0x000000, 0.5),
+            shadow: hex_alpha(0x000000, 0.5),
+            shadow_deep: hex_alpha(0x000000, 0.6),
+            ..theme.colors
+        };
+        theme
+    }
+
+    /// The theme of a choice, with the appearance of the system for [`ThemeChoice::System`].
+    pub fn chosen(choice: ThemeChoice, system: WindowAppearance) -> Self {
+        let dark = match choice {
+            ThemeChoice::Light => false,
+            ThemeChoice::Dark => true,
+            ThemeChoice::System => matches!(
+                system,
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            ),
+        };
+        if dark {
+            Self::broadcast()
+        } else {
+            Self::stone()
+        }
+    }
+
     pub fn family(&self, family: Family) -> SharedString {
         match family {
             Family::Sans => self.fonts.sans.clone(),
@@ -470,6 +569,20 @@ impl Global for ActiveTheme {}
 /// Makes `theme` the theme of the application.
 pub fn install(theme: Theme, cx: &mut App) {
     cx.set_global(ActiveTheme(Rc::new(theme)));
+}
+
+/// Makes the theme of `choice` the theme of the application and draws the windows again
+/// when it changes.
+pub fn apply(choice: ThemeChoice, cx: &mut App) {
+    let wanted = Theme::chosen(choice, cx.window_appearance());
+    if cx
+        .try_global::<ActiveTheme>()
+        .is_some_and(|active| *active.0 == wanted)
+    {
+        return;
+    }
+    install(wanted, cx);
+    cx.refresh_windows();
 }
 
 /// The theme of the application.
@@ -535,6 +648,94 @@ mod tests {
         }
         assert!(types.body.size >= 14.0 && types.notice.size >= 14.0);
         assert!(types.title.size >= 18.0 && types.panel_title.size >= 18.0);
+    }
+
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let luminance = |colour: Rgba| {
+            let part = |value: f32| {
+                if value <= 0.03928 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * part(colour.r) + 0.7152 * part(colour.g) + 0.0722 * part(colour.b)
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Text has a contrast of at least 4.5 to 1 with its ground in both themes (WCAG AA).
+    #[test]
+    fn the_text_of_both_themes_has_a_contrast_of_at_least_4_5_to_1() {
+        for theme in [Theme::stone(), Theme::broadcast()] {
+            let c = theme.colors;
+            let pairs = [
+                ("ink on travertine", c.ink, c.travertine),
+                ("ink_2 on travertine", c.ink_2, c.travertine),
+                ("ink_3 on travertine", c.ink_3, c.travertine),
+                ("ink_2 on plaster", c.ink_2, c.plaster),
+                ("ink_3 on limestone", c.ink_3, c.limestone),
+                ("ink on limestone_lo", c.ink, c.limestone_lo),
+                ("ink_2 on travertine_hi", c.ink_2, c.travertine_hi),
+                ("ink on terracotta_wash", c.ink, c.terracotta_wash),
+                ("ink on cypress_wash", c.ink, c.cypress_wash),
+                ("ink on code_wash", c.ink, c.code_wash),
+                ("bronze on travertine", c.bronze, c.travertine),
+                ("bronze on limestone", c.bronze, c.limestone),
+                (
+                    "terracotta_deep on travertine",
+                    c.terracotta_deep,
+                    c.travertine,
+                ),
+                ("bone on basalt", c.bone, c.basalt),
+                ("bone_2 on basalt", c.bone_2, c.basalt),
+                ("bone_3 on basalt", c.bone_3, c.basalt),
+                ("bone_label on basalt", c.bone_label, c.basalt),
+                ("on_terracotta on terracotta", c.on_terracotta, c.terracotta),
+                (
+                    "cinnabar_ink on cinnabar_wash",
+                    c.cinnabar_ink,
+                    c.cinnabar_wash,
+                ),
+                ("call_text on call_button", c.call_text, c.call_button),
+                ("call_text on cypress", c.call_text, c.cypress),
+                ("cypress_ink on travertine", c.cypress_ink, c.travertine),
+                ("cypress_ink on plaster", c.cypress_ink, c.plaster),
+                (
+                    "cypress_ink on travertine_hi",
+                    c.cypress_ink,
+                    c.travertine_hi,
+                ),
+                ("call_on_text on call_on", c.call_on_text, c.call_on),
+                ("on_cinnabar on cinnabar", c.on_cinnabar, c.cinnabar),
+            ];
+            for (name, text, ground) in pairs {
+                let ratio = contrast(text, ground);
+                assert!(ratio >= 4.5, "{name}: {ratio:.2}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_system_choice_follows_the_appearance_of_the_system() {
+        assert_eq!(
+            Theme::chosen(ThemeChoice::System, WindowAppearance::Dark),
+            Theme::broadcast()
+        );
+        assert_eq!(
+            Theme::chosen(ThemeChoice::System, WindowAppearance::Light),
+            Theme::stone()
+        );
+        assert_eq!(
+            Theme::chosen(ThemeChoice::Dark, WindowAppearance::Light),
+            Theme::broadcast()
+        );
+        assert_eq!(
+            Theme::chosen(ThemeChoice::Light, WindowAppearance::VibrantDark),
+            Theme::stone()
+        );
+        assert_ne!(Theme::stone().colors, Theme::broadcast().colors);
     }
 
     #[test]

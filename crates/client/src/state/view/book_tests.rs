@@ -231,6 +231,47 @@ fn the_view_names_a_newer_build_while_the_check_says_available() {
 }
 
 #[test]
+fn the_selected_server_states_its_version_and_a_newer_release_of_the_source() {
+    let scene = scene();
+    let mut server = server(
+        "Acme Studio",
+        Some(scene.model()),
+        logged_in(scene.own, Vec::new()),
+    );
+    let release = |server: &ServerSnapshot, updates: UpdatesKnown| {
+        let known = Known {
+            updates,
+            ..Known::default()
+        };
+        derive(std::slice::from_ref(server), &Selection::default(), &known)
+            .selected
+            .and_then(|selected| selected.release)
+    };
+    assert_eq!(release(&server, UpdatesKnown::default()), None);
+
+    let stated = ServerVersion::parse("0.3.0").unwrap();
+    server.server_version = Some(stated.clone());
+    let shown = |newer: Option<Version>| {
+        Some(ServerRelease {
+            version: stated.clone(),
+            newer,
+        })
+    };
+    // Without a source only the version is known.
+    assert_eq!(release(&server, UpdatesKnown::default()), shown(None));
+    let newest = |version: Version| UpdatesKnown {
+        has_source: true,
+        state: UpdateState::Current,
+        newest: Some(version),
+        ..UpdatesKnown::default()
+    };
+    let same = Version::new(0, 3, 0);
+    assert_eq!(release(&server, newest(same)), shown(None));
+    let newer = Version::new(0, 3, 1);
+    assert_eq!(release(&server, newest(newer)), shown(Some(newer)));
+}
+
+#[test]
 fn unread_summary_saturates_hostile_counts() {
     let scene = scene();
     let place = |channel_id| MessagePlace::Channel {

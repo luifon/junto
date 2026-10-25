@@ -331,6 +331,7 @@ fn the_settings_keep_the_name_the_scale_and_the_form_of_the_server_book(cx: &mut
     assert_eq!(window.view().person.name, "Luca R.");
 
     // The scale changes the size of one rem at once.
+    window.click("settings-section-interface");
     window.click("scale-4");
     assert_eq!(
         window
@@ -458,6 +459,7 @@ fn a_setting_that_was_not_written_is_told_until_it_is_in_the_file(cx: &mut TestA
         .update(|_, cx| state.update(cx, |state, cx| state.set_scale(150, cx)));
     assert!(failure(&mut window).is_some());
     window.click("app-settings");
+    window.click("settings-section-interface");
     assert!(window.shows("settings-error"));
     window.click("dialog-close");
 

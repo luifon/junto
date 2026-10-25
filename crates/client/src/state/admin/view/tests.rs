@@ -207,6 +207,7 @@ impl Scene {
             error: None,
             stream: StreamStatus::Live,
             model: Some(Arc::new(self.model())),
+            server_version: None,
         }
     }
 

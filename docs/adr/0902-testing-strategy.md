@@ -29,7 +29,9 @@ Automated tests:
   bounds. The export tests compare the complete saved messages with the channel
   and thread messages read independently through the API, and check attachments,
   recording files and transcripts. The archive warning runs server maintenance with the test clock, and the recordings page reads
-  enough stored rows to exercise its older-page control and event refresh.
+  enough stored rows to exercise its older-page control and event refresh. A window
+  test saves a file and the transcript from a row of the recordings page and compares
+  the file with the file of the server.
 - The gpui test platform has an in-memory clipboard. The invite-code and token tests
   seed it with another value, click Copy, compare the copied text, use that text against
   the server, and check the copied confirmation and Done. Integration with the system

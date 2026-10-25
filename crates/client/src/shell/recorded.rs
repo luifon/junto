@@ -132,7 +132,7 @@ impl TranscriptList {
 }
 
 /// The file of a recording as its menu and its row name it.
-fn file_title(file: &FileRow) -> String {
+pub(super) fn file_title(file: &FileRow) -> String {
     match (file.kind, &file.person) {
         (FileKind::Video, _) => text::RECORDING_VIDEO.to_owned(),
         (FileKind::Microphone, person) => text::recording_microphone(person.as_deref()),
@@ -216,7 +216,7 @@ impl Shell {
     }
 
     /// The state of the download of one file, as words and a control.
-    fn recorded_download(
+    pub(super) fn recorded_download(
         &mut self,
         card: &RecordingCard,
         file: RecordedFile,
@@ -265,7 +265,7 @@ impl Shell {
                 .into_any_element(),
             DownloadStage::Saved(path) => {
                 let path = path.clone();
-                row.child(small(text::DOWNLOAD_SAVED.into(), colors.cypress))
+                row.child(small(text::DOWNLOAD_SAVED.into(), colors.cypress_ink))
                     .child(
                         div()
                             .flex_none()
@@ -278,7 +278,7 @@ impl Shell {
                             .child(
                                 Button::new(("show-recorded", index))
                                     .kind(ButtonKind::Ghost)
-                                    .icon(Icon::Open)
+                                    .icon(Icon::FolderOpen)
                                     .tooltip(text::SHOW_IN_FOLDER)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.state.update(cx, |state, cx| {
@@ -351,7 +351,7 @@ impl Shell {
             let (held, stem) = (card.clone(), detail.text_stem.clone());
             items.push(
                 MenuItem::new("recorded-text", text::RECORDING_TRANSCRIPT_TEXT)
-                    .icon(Icon::List)
+                    .icon(Icon::Document)
                     .selector("recorded-text")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.save_recorded(&held, RecordedFile::Text, stem.clone(), false, cx);
@@ -486,7 +486,7 @@ impl Shell {
             .font_weight(FontWeight::MEDIUM)
             .text_size(u(12.5))
             .line_height(u(22.0))
-            .ink(colors.cypress)
+            .ink(colors.cypress_ink)
             .child(SharedString::from(row.time.clone()));
         let frame = div()
             .id(("transcript-line", line as usize))
@@ -622,7 +622,7 @@ impl Shell {
                         .debug_selector(move || format!("show-transcript:{recording_id}"))
                         .flex_none()
                         .font_weight(FontWeight::BOLD)
-                        .ink(colors.cypress)
+                        .ink(colors.cypress_ink)
                         .cursor_pointer()
                         .focusable()
                         .tab_stop(true)
@@ -1004,7 +1004,7 @@ impl Shell {
             actions.push(
                 Button::new(("open-recording", index))
                     .icon(Icon::Open)
-                    .icon_colour(colors.cypress)
+                    .icon_colour(colors.cypress_ink)
                     .label(text::OPEN)
                     .tooltip(text::OPEN_RECORDING)
                     .selector("open-recording")
@@ -1050,7 +1050,7 @@ impl Shell {
                     .child(
                         Button::new(("download-recording", index))
                             .icon(Icon::Download)
-                            .icon_colour(colors.cypress)
+                            .icon_colour(colors.cypress_ink)
                             .label(text::DOWNLOAD)
                             .tooltip(text::RECORDING_FILES)
                             .selector("download-recording")
@@ -1254,7 +1254,7 @@ impl Shell {
         body
     }
 
-    fn download_row(
+    pub(super) fn download_row(
         title: String,
         control: AnyElement,
         position: usize,
@@ -1569,7 +1569,7 @@ impl Shell {
         let recording_id = panel.recording_id;
         let header = SideHeader::new(text::TRANSCRIPT)
             .title_bar()
-            .icon(Icon::List)
+            .icon(Icon::Document)
             .note(panel.channel.clone())
             .trailing(
                 Button::new("close-transcript")

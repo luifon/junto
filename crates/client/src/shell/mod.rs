@@ -50,6 +50,7 @@ use junto_client_core::voice::{InputMode, TalkKey};
 
 use call::{CallTab, DeviceKind, VolumeControl};
 pub use search::FilterKind;
+pub use settings::SettingsSection;
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;
@@ -281,6 +282,8 @@ pub struct Shell {
     pub(crate) name: Entity<InputState>,
     pub(crate) name_error: Option<String>,
     pub(crate) name_saved: bool,
+    /// The section of the settings that is shown.
+    pub(crate) settings_section: settings::SettingsSection,
     pub(crate) code: Entity<InputState>,
     /// The number of join dialogs that this window has opened.
     pub(crate) joins_opened: u64,
@@ -478,6 +481,11 @@ impl Shell {
                     cx.notify();
                 },
             ),
+            // The theme "System" follows the appearance of the system (ADR 0731).
+            cx.observe_window_appearance(window, |this, _, cx| {
+                let choice = this.state.read(cx).settings().theme;
+                crate::theme::apply(choice, cx);
+            }),
             // A key that is held when the window loses the focus is not seen when it is
             // released: push-to-talk ends with the focus (ADR 0507).
             cx.observe_window_activation(window, |this, window, cx| {
@@ -646,6 +654,7 @@ impl Shell {
             name,
             name_error: None,
             name_saved: false,
+            settings_section: settings::SettingsSection::default(),
             code,
             joins_opened: 0,
             join_results: 0,

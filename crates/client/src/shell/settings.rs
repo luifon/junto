@@ -1,17 +1,104 @@
 //! The first start, where the person chooses a name, and the settings of the application:
-//! the name of the profile preset and the interface scale (ADR 0703, ADR 0717).
+//! a list of sections and one section at a time (ADR 0703, ADR 0717).
 
-use gpui::{Context, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use gpui::{
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
+    Window, div,
+};
 
+use junto_client_core::settings::ThemeChoice;
 use junto_client_core::voice::{InputMode, TalkKey};
 
+use super::account::Surface;
 use super::{Layer, Shell};
+use crate::assets::Icon;
 use crate::state::ProcessingPart;
 use crate::text;
 use crate::theme::{self, Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Field, Notice, Segmented, StyleExt, Toggle, dialog_footer,
+    Button, ButtonKind, ChannelRow, Dialog, Field, Notice, Segmented, StyleExt, Toggle,
+    dialog_footer,
 };
+
+/// The themes that the setting offers, in its order.
+const THEMES: [ThemeChoice; 3] = [ThemeChoice::Light, ThemeChoice::Dark, ThemeChoice::System];
+
+/// The sections of the settings, in the order of their list. One is shown at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsSection {
+    #[default]
+    Profile,
+    Picture,
+    Interface,
+    Voice,
+    Quiet,
+    Notifications,
+    Devices,
+    About,
+}
+
+impl SettingsSection {
+    pub const ALL: [Self; 8] = [
+        Self::Profile,
+        Self::Picture,
+        Self::Interface,
+        Self::Voice,
+        Self::Quiet,
+        Self::Notifications,
+        Self::Devices,
+        Self::About,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Profile => text::PROFILE,
+            Self::Picture => text::PICTURE,
+            Self::Interface => text::INTERFACE,
+            Self::Voice => text::VOICE,
+            Self::Quiet => text::QUIET,
+            Self::Notifications => text::NOTIFICATIONS,
+            Self::Devices => text::account::DEVICES_SECTION,
+            Self::About => text::ABOUT,
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Profile => Icon::Person,
+            Self::Picture => Icon::Picture,
+            Self::Interface => Icon::AppWindow,
+            Self::Voice => Icon::Microphone,
+            Self::Quiet => Icon::Clock,
+            Self::Notifications => Icon::Bell,
+            Self::Devices => Icon::Devices,
+            Self::About => Icon::Document,
+        }
+    }
+
+    /// The name of the row of the section in the list, for a test.
+    pub fn selector(self) -> &'static str {
+        match self {
+            Self::Profile => "settings-section-profile",
+            Self::Picture => "settings-section-picture",
+            Self::Interface => "settings-section-interface",
+            Self::Voice => "settings-section-voice",
+            Self::Quiet => "settings-section-quiet",
+            Self::Notifications => "settings-section-notifications",
+            Self::Devices => "settings-section-devices",
+            Self::About => "settings-section-about",
+        }
+    }
+}
+
+fn row_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .flex_none()
+        .w(u(84.0))
+        .typeface(theme.types.control, theme)
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .ink(theme.colors.ink)
+        .child(label)
+}
 
 fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
@@ -37,6 +124,7 @@ impl Shell {
         self.name_error = None;
         self.name_saved = false;
         self.show_quiet_times(window, cx);
+        self.settings_section = SettingsSection::Profile;
         self.open_layer(Layer::Settings, window, cx);
     }
 
@@ -113,141 +201,274 @@ impl Shell {
                 .into_any_element()]))
     }
 
+    /// Shows one section of the settings. The page starts at its top.
+    pub fn open_settings_section(
+        &mut self,
+        section: SettingsSection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_section != section {
+            self.settings_section = section;
+            self.settings_scroll().set_offset(gpui::Point::default());
+        }
+        cx.notify();
+    }
+
+    pub fn settings_section(&self) -> SettingsSection {
+        self.settings_section
+    }
+
     pub(crate) fn render_settings(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
-        let (scale, settings_error, data_dir) = {
-            let state = self.state.read(cx);
-            (
-                state.settings().scale_percent,
-                state.settings_error().map(str::to_owned),
-                state.client().data_dir().root().display().to_string(),
-            )
+        let section = self.settings_section;
+        let mut nav = div().flex().flex_col().pt(u(6.0)).pb(u(10.0));
+        for each in SettingsSection::ALL {
+            let name = each.name();
+            nav = nav.child(
+                ChannelRow::new(each.selector(), each.icon(), name)
+                    .selected(each == section)
+                    .selector(each.selector())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_settings_section(each, window, cx);
+                    })),
+            );
+        }
+        let parts: Vec<AnyElement> = match section {
+            SettingsSection::Profile => self.render_profile_section(&theme, cx),
+            SettingsSection::Picture => {
+                let mut parts = vec![group_label(text::PICTURE, &theme).into_any_element()];
+                parts.extend(self.render_preset_picture(&theme, cx));
+                parts
+            }
+            SettingsSection::Interface => self.render_interface_section(&theme, cx),
+            SettingsSection::Voice => {
+                let mut parts = vec![group_label(text::VOICE, &theme).into_any_element()];
+                parts.extend(self.render_voice_settings(&theme, cx));
+                parts
+            }
+            SettingsSection::Quiet => {
+                let quiet = self
+                    .view
+                    .as_ref()
+                    .map(|view| view.quiet.clone())
+                    .unwrap_or_default();
+                let mut parts = vec![group_label(text::QUIET, &theme).into_any_element()];
+                parts.extend(self.render_quiet_settings(&quiet, &theme, cx));
+                parts
+            }
+            SettingsSection::Notifications => self.render_notifications_section(&theme, cx),
+            SettingsSection::Devices => self.render_devices_settings(&theme, cx),
+            SettingsSection::About => self.render_about_section(&theme, window, cx),
         };
-        let selected = theme::SCALES.iter().position(|option| *option == scale);
-        let quiet = self
-            .view
-            .as_ref()
-            .map(|view| view.quiet.clone())
-            .unwrap_or_default();
-        Dialog::new(text::SETTINGS, self.layer_focus())
-            .scroll(self.settings_scroll())
-            .selector("settings-dialog")
-            .on_close(Self::handler(cx, |this, window, cx| {
-                this.close_layer(window, cx);
-            }))
-            .child(group_label(text::PROFILE, &theme))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(8.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Field::new(&self.name, text::NAME_FIELD).selector("name-field")),
-                    )
-                    .child(
-                        Button::new("save-name")
-                            .label(if self.name_saved {
-                                text::SAVED
-                            } else {
-                                text::SAVE
-                            })
-                            .disabled(self.name_saved)
-                            .selector("save-name")
-                            .h(u(32.0))
-                            .px(u(12.0))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_name(window, cx);
-                            })),
-                    ),
-            )
-            .child(help(text::PROFILE_NAME_HELP, &theme))
-            .child(
-                crate::ui::notice_slot("name-error-slot").children(
+        let page = div()
+            .flex()
+            .flex_col()
+            .debug_selector(move || format!("settings-page-{}", section.selector()))
+            .children(parts)
+            .into_any_element();
+        let surface = Surface {
+            id: "settings-dialog",
+            title: text::SETTINGS,
+            icon: Icon::Gear,
+            note: SharedString::default(),
+            close_selector: "dialog-close",
+            nav: Some((
+                nav.into_any_element(),
+                text::SETTINGS_SECTIONS,
+                self.book.settings_nav_scroll.clone(),
+            )),
+            page,
+            page_scroll: self.settings_scroll().clone(),
+        };
+        self.render_surface(surface, window, cx)
+    }
+
+    /// The name of the profile preset.
+    fn render_profile_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            group_label(text::PROFILE, theme).into_any_element(),
+            div()
+                .flex()
+                .items_center()
+                .gap(u(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Field::new(&self.name, text::NAME_FIELD).selector("name-field")),
+                )
+                .child(
+                    Button::new("save-name")
+                        .label(if self.name_saved {
+                            text::SAVED
+                        } else {
+                            text::SAVE
+                        })
+                        .disabled(self.name_saved)
+                        .selector("save-name")
+                        .h(u(32.0))
+                        .px(u(12.0))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.submit_name(window, cx);
+                        })),
+                )
+                .into_any_element(),
+            help(text::PROFILE_NAME_HELP, theme).into_any_element(),
+            crate::ui::notice_slot("name-error-slot")
+                .at_end()
+                .children(
                     self.name_error
                         .clone()
                         .map(|error| Notice::error(error).selector("name-error")),
-                ),
+                )
+                .into_any_element(),
+        ]
+    }
+
+    /// The interface scale and the theme.
+    fn render_interface_section(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let (scale, chosen, settings_error) = {
+            let state = self.state.read(cx);
+            (
+                state.settings().scale_percent,
+                state.settings().theme,
+                state.settings_error().map(str::to_owned),
             )
-            .children(self.render_preset_picture(&theme, cx))
-            .child(
-                div()
-                    .mt(u(16.0))
-                    .child(group_label(text::INTERFACE, &theme)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(10.0))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(u(84.0))
-                            .typeface(theme.types.control, &theme)
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .ink(theme.colors.ink)
-                            .child(text::SCALE),
+        };
+        let selected = theme::SCALES.iter().position(|option| *option == scale);
+        vec![
+            group_label(text::INTERFACE, theme).into_any_element(),
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .child(row_label(text::SCALE, theme))
+                .child(
+                    Segmented::new(
+                        "scale",
+                        text::SCALE,
+                        theme::SCALES
+                            .iter()
+                            .map(|option| SharedString::from(text::scale_percent(*option))),
                     )
-                    .child(
-                        Segmented::new(
-                            "scale",
-                            text::SCALE,
-                            theme::SCALES
-                                .iter()
-                                .map(|option| SharedString::from(text::scale_percent(*option))),
-                        )
-                        .selected(selected)
-                        .selector("scale")
-                        .on_select({
-                            let select = cx.listener(|this, index: &usize, _, cx| {
-                                if let Some(scale) = theme::SCALES.get(*index).copied() {
-                                    this.state
-                                        .update(cx, |state, cx| state.set_scale(scale, cx));
-                                }
-                            });
-                            move |index, window, cx| select(&index, window, cx)
-                        }),
-                    ),
-            )
-            .child(help(text::SCALE_HELP, &theme))
-            .child(crate::ui::notice_slot("settings-error-slot").children(
-                settings_error.map(|error| Notice::error(error).selector("settings-error")),
-            ))
-            .child(div().mt(u(16.0)).child(group_label(text::VOICE, &theme)))
-            .children(self.render_voice_settings(&theme, cx))
-            .child(
-                crate::ui::notice_slot("notifications-unavailable-slot").children(
-                    self.state
-                        .read(cx)
-                        .notifications_unavailable()
-                        .map(|reason| Notice::new(reason).selector("notifications-unavailable")),
-                ),
-            )
-            .child(div().mt(u(16.0)).child(group_label(text::QUIET, &theme)))
-            .children(self.render_quiet_settings(&quiet, &theme, cx))
-            .children(self.render_devices_settings(&theme, cx))
-            .child(
-                div()
-                    .mt(u(16.0))
-                    .child(group_label(text::DATA_DIRECTORY, &theme)),
-            )
-            .child(
-                div()
-                    .typeface(theme.types.mono_small, &theme)
-                    .text_size(u(12.5))
-                    .line_height(u(17.0))
-                    .ink(theme.colors.ink)
-                    .child(data_dir),
-            )
-            .child(help(text::DATA_DIRECTORY_HELP, &theme))
-            .children(self.render_version_settings(&theme, window, cx))
+                    .selected(selected)
+                    .selector("scale")
+                    .on_select({
+                        let select = cx.listener(|this, index: &usize, _, cx| {
+                            if let Some(scale) = theme::SCALES.get(*index).copied() {
+                                this.state
+                                    .update(cx, |state, cx| state.set_scale(scale, cx));
+                            }
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                )
+                .into_any_element(),
+            help(text::SCALE_HELP, theme).into_any_element(),
+            div()
+                .mt(u(12.0))
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .child(row_label(text::THEME, theme))
+                .child(
+                    Segmented::new(
+                        "theme",
+                        text::THEME,
+                        THEMES.map(|choice| SharedString::from(text::theme_choice(choice))),
+                    )
+                    .selected(THEMES.iter().position(|choice| *choice == chosen))
+                    .selector("theme")
+                    .on_select({
+                        let select = cx.listener(|this, index: &usize, _, cx| {
+                            if let Some(choice) = THEMES.get(*index).copied() {
+                                this.state
+                                    .update(cx, |state, cx| state.set_theme(choice, cx));
+                            }
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                )
+                .into_any_element(),
+            help(text::THEME_HELP, theme).into_any_element(),
+            crate::ui::notice_slot("settings-error-slot")
+                .at_end()
+                .children(
+                    settings_error.map(|error| Notice::error(error).selector("settings-error")),
+                )
+                .into_any_element(),
+        ]
+    }
+
+    /// Whether the system shows the notifications of Junto. What a server notifies is
+    /// chosen in the menu of that server.
+    fn render_notifications_section(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let unavailable = self.state.read(cx).notifications_unavailable();
+        vec![
+            group_label(text::NOTIFICATIONS, theme).into_any_element(),
+            div()
+                .typeface(theme.types.control, theme)
+                .ink(theme.colors.ink)
+                .debug_selector(|| "notifications-state".to_owned())
+                .child(if unavailable.is_some() {
+                    text::NOTIFICATIONS_OFF_BY_SYSTEM
+                } else {
+                    text::NOTIFICATIONS_SHOWN
+                })
+                .into_any_element(),
+            help(text::NOTIFICATIONS_HELP, theme).into_any_element(),
+            crate::ui::notice_slot("notifications-unavailable-slot")
+                .at_end()
+                .children(unavailable.map(|reason| {
+                    div()
+                        .mt(u(8.0))
+                        .child(Notice::new(reason).selector("notifications-unavailable"))
+                }))
+                .into_any_element(),
+        ]
+    }
+
+    /// The data directory, the version of this build and its updates.
+    fn render_about_section(
+        &mut self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let data_dir = self
+            .state
+            .read(cx)
+            .client()
+            .data_dir()
+            .root()
+            .display()
+            .to_string();
+        let mut parts = vec![
+            group_label(text::DATA_DIRECTORY, theme).into_any_element(),
+            div()
+                .typeface(theme.types.mono_small, theme)
+                .text_size(u(12.5))
+                .line_height(u(17.0))
+                .ink(theme.colors.ink)
+                .child(data_dir)
+                .into_any_element(),
+            help(text::DATA_DIRECTORY_HELP, theme).into_any_element(),
+        ];
+        parts.extend(self.render_version_settings(theme, window, cx));
+        parts
     }
 
     /// The sound settings that hold for every call: when the microphone is sent, and the
@@ -392,6 +613,7 @@ impl Shell {
         }
         rows.push(
             crate::ui::notice_slot("voice-settings-error-slot")
+                .at_end()
                 .children(error.map(|error| Notice::error(error).selector("voice-settings-error")))
                 .into_any_element(),
         );

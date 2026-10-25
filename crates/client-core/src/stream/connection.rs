@@ -39,6 +39,7 @@ use crate::api::{
 use crate::events::{ConnectionLevel, StreamTarget};
 use crate::live::{Command, LiveView, LoadError, Notice, Shared, StreamFault, StreamStatus};
 use crate::model::{Follow, LinesRead, Loadable, Part, ServerModel};
+use crate::version::ServerVersion;
 
 const MINUTE: Duration = Duration::from_secs(60);
 /// How many frames that wait are applied before the readers get the new state.
@@ -270,6 +271,10 @@ struct Client {
     fault: Option<StreamFault>,
     shown: Option<(StreamStatus, Option<Level>)>,
     model_changed: bool,
+    /// The release version of the last `hello`. It stays while the connection is lost,
+    /// and is forgotten with the state.
+    server_version: Option<ServerVersion>,
+    version_changed: bool,
     in_call: bool,
     /// The notices of the changes that the readers do not have yet. A reader gets a
     /// notice after the state that holds its change.
@@ -331,6 +336,8 @@ pub(crate) async fn run(
         fault: None,
         shown: None,
         model_changed: false,
+        server_version: None,
+        version_changed: false,
         in_call: false,
         untold: Vec::new(),
         applied_bytes: 0,
@@ -495,6 +502,14 @@ impl Client {
         self.installed_at = None;
         self.quick_reloads = 0;
         self.reload_backoff.reset();
+        self.set_server_version(None);
+    }
+
+    fn set_server_version(&mut self, version: Option<ServerVersion>) {
+        if self.server_version != version {
+            self.server_version = version;
+            self.version_changed = true;
+        }
     }
 
     fn disconnect(&mut self) {
@@ -797,6 +812,7 @@ impl Client {
         };
         if !link.greeted {
             let ServerMessage::Hello {
+                server_version,
                 epoch,
                 heartbeat_seconds,
                 ..
@@ -809,6 +825,7 @@ impl Client {
             link.silence = Duration::from_secs(u64::from(heartbeat_seconds)).saturating_mul(2)
                 + self.environment.policy.silence_grace;
             link.deadline = Instant::now() + link.silence;
+            self.set_server_version(ServerVersion::parse(&server_version));
             if self
                 .model
                 .as_ref()
@@ -1521,7 +1538,7 @@ impl Client {
                 _ => (StreamStatus::Connecting, None),
             }
         };
-        if self.model_changed || self.shown != Some((status, level)) {
+        if self.model_changed || self.version_changed || self.shown != Some((status, level)) {
             let model = match (&self.model, self.model_changed) {
                 (Some(model), true) => Some(Arc::new(model.clone())),
                 (Some(_), false) => self.shared.model(),
@@ -1531,9 +1548,11 @@ impl Client {
                 status,
                 level,
                 model,
+                server_version: self.server_version.clone(),
             });
             self.shown = Some((status, level));
             self.model_changed = false;
+            self.version_changed = false;
         }
         if let Some(cursor) = self.refreshed.take() {
             for waiting in self.refresh_waiters.drain(..) {

@@ -495,7 +495,7 @@ impl Shell {
             .flex_none()
             .text_size(u(12.5))
             .font_weight(FontWeight::NORMAL)
-            .ink(colors.cypress)
+            .ink(colors.cypress_ink)
             .cursor_pointer()
             .focusable()
             .tab_stop(true)

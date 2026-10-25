@@ -249,6 +249,7 @@ impl Shell {
         // An archived channel takes no change, and one change is on its way at a time.
         let held = follow.busy || follow.read_only;
         let change = Button::new("thread-follow")
+            .icon(if following { Icon::BellOff } else { Icon::Bell })
             .label(text::followed::action(following))
             .disabled(held)
             .when(follow.read_only, |button| {

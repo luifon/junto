@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use crate::api::{ApiError, TransportErrorKind};
 use crate::flow::machine::lock;
 use crate::model::{AdminPart, PendingFile, PendingMessage, PlaceId, Reach, ServerModel};
+use crate::version::ServerVersion;
 
 mod admin;
 
@@ -70,6 +71,10 @@ pub struct LiveView {
     pub level: Option<Level>,
     /// Absent until the first snapshot has arrived, and while the status is `Off`.
     pub model: Option<Arc<ServerModel>>,
+    /// The release version that the server stated in the `hello` of the last connection
+    /// (ADR 0780). Absent until a `hello` arrives, after a `hello` without a semantic
+    /// version, and while the status is `Off`.
+    pub server_version: Option<ServerVersion>,
 }
 
 /// One step of the event stream, for a reader that shows each change by itself. The state
@@ -248,7 +253,7 @@ pub struct LiveServer {
 }
 
 impl LiveServer {
-    /// The status and the state now. The call copies two words and a pointer.
+    /// The status and the state now. The call copies two words and two pointers.
     pub fn view(&self) -> LiveView {
         self.shared.view.borrow().clone()
     }
@@ -526,6 +531,7 @@ impl LiveServer {
             status,
             level: None,
             model: model.map(Arc::new),
+            server_version: None,
         });
     }
 

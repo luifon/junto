@@ -12,6 +12,7 @@ pub struct NoticeSlot {
     id: ElementId,
     children: Vec<AnyElement>,
     style: StyleRefinement,
+    at_end: bool,
 }
 
 pub fn notice_slot(id: impl Into<ElementId>) -> NoticeSlot {
@@ -19,6 +20,17 @@ pub fn notice_slot(id: impl Into<ElementId>) -> NoticeSlot {
         id: id.into(),
         children: Vec::new(),
         style: StyleRefinement::default(),
+        at_end: false,
+    }
+}
+
+impl NoticeSlot {
+    /// The slot follows every control of a region whose top does not move, such as a
+    /// section of the settings: it takes the height of its notices and no more, because a
+    /// notice that arrives there moves no control (ADR 0730).
+    pub fn at_end(mut self) -> Self {
+        self.at_end = true;
+        self
     }
 }
 
@@ -36,6 +48,16 @@ impl Styled for NoticeSlot {
 
 impl RenderOnce for NoticeSlot {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.at_end {
+            let mut frame = div()
+                .id(self.id)
+                .flex()
+                .flex_col()
+                .flex_none()
+                .children(self.children);
+            frame.style().refine(&self.style);
+            return frame;
+        }
         let scroll = window.with_element_namespace(self.id.clone(), |window| {
             window
                 .use_keyed_state("notice-scroll", cx, |_, _| ScrollHandle::new())

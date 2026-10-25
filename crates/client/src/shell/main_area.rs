@@ -245,7 +245,7 @@ impl Shell {
         let conversation = view.lists().and_then(|lists| lists.conversation.as_ref());
         let title: Option<(Icon, SharedString)> = match (conversation, channel) {
             (Some(conversation), _) => Some((
-                Icon::People,
+                Icon::Person,
                 conversation
                     .name
                     .clone()
@@ -326,10 +326,11 @@ impl Shell {
                                 .flex_none()
                                 .map(|state| {
                                     if direct.joined {
-                                        state.child(crate::ui::Chip::new(label).icon(Icon::Phones))
+                                        state.child(crate::ui::Chip::new(label).icon(Icon::Phone))
                                     } else {
                                         state.child(
-                                            Flag::new(FlagKind::Warning, label).icon(Icon::Phones),
+                                            Flag::new(FlagKind::Warning, label)
+                                                .icon(Icon::PhoneOutgoing),
                                         )
                                     }
                                 })
@@ -351,7 +352,7 @@ impl Shell {
                     div()
                         .flex_none()
                         .debug_selector(|| "archived-mark".to_owned())
-                        .child(crate::ui::Chip::new(text::admin::ARCHIVED_MARK).icon(Icon::Lock))
+                        .child(crate::ui::Chip::new(text::admin::ARCHIVED_MARK).icon(Icon::Archive))
                         .into_any_element(),
                 );
             }
@@ -400,7 +401,7 @@ impl Shell {
             .when(call.is_none() && unread, |header| {
                 header.child(
                     Button::new("mark-as-read")
-                        .icon(Icon::Check)
+                        .icon(Icon::CheckDouble)
                         .label(text::MARK_AS_READ)
                         .tooltip(text::MARK_AS_READ_HELP)
                         .selector("mark-as-read")

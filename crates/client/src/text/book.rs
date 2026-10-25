@@ -1,6 +1,8 @@
-//! The text of the order of the server book and of the update notice (ADR 0780).
+//! The text of the order of the server book, of the update notice and of the version of a
+//! server (ADR 0780).
 
 use junto_client_core::updates::Version;
+use junto_client_core::version::ServerVersion;
 
 use crate::state::book::{CheckShown, Step};
 
@@ -41,6 +43,17 @@ pub const DETAILS: &str = "Details";
 /// version is three numbers, so it holds no text of the source of releases.
 pub fn update_available(version: Version) -> String {
     format!("Junto {version} is available.")
+}
+
+// The version of a server, under its name in the menu of the server.
+/// The version is a semantic version of at most 64 bytes, so the server cannot put other
+/// text into the line.
+pub fn server_version(version: &ServerVersion) -> String {
+    format!("Server version {version}")
+}
+
+pub fn server_release_available(version: Version) -> String {
+    format!("Version {version} is available")
 }
 
 // The section "Version" of the settings.

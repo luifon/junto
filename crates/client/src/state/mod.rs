@@ -55,7 +55,7 @@ use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecordingId,
     RecoveryId, ServerId, WorkspaceId,
 };
-use junto_client_core::settings::InterfaceSettings;
+use junto_client_core::settings::{InterfaceSettings, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
@@ -127,6 +127,7 @@ pub fn finish_writes(cx: &mut gpui::App) {
 enum Setting {
     Scale,
     ServerBook,
+    Theme,
 }
 
 /// A part of the processing of the microphone (ADR 0701).
@@ -647,6 +648,7 @@ impl AppState {
                 InterfaceSettings::default()
             }
         };
+        theme::apply(settings.theme, cx);
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {
@@ -2037,7 +2039,7 @@ impl AppState {
     }
 
     pub fn settings_error(&self) -> Option<&str> {
-        [Setting::Scale, Setting::ServerBook]
+        [Setting::Scale, Setting::ServerBook, Setting::Theme]
             .iter()
             .find_map(|setting| self.settings_failed.get(setting))
             .map(String::as_str)
@@ -2732,6 +2734,13 @@ impl AppState {
         self.write_setting(Setting::Scale, cx);
     }
 
+    /// Sets the theme, draws the windows in it and stores it.
+    pub fn set_theme(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
+        self.settings.theme = choice;
+        theme::apply(choice, cx);
+        self.write_setting(Setting::Theme, cx);
+    }
+
     pub fn set_server_book_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         self.settings.server_book_collapsed = collapsed;
         self.write_setting(Setting::ServerBook, cx);
@@ -2758,6 +2767,7 @@ impl AppState {
                             Setting::ServerBook => {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }
+                            Setting::Theme => stored.theme = wanted.theme,
                         }
                     }
                 })

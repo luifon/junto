@@ -10,6 +10,7 @@ use junto_client_core::book::BookError;
 use junto_client_core::flow::FlowError;
 use junto_client_core::protocol::ids::ServerId;
 use junto_client_core::updates::{UpdateCheck, UpdateState, Version};
+use junto_client_core::version::ServerVersion;
 
 use super::AppState;
 use crate::text;
@@ -23,6 +24,9 @@ pub struct UpdatesKnown {
     /// False when no source of releases is configured: nothing is ever asked.
     pub has_source: bool,
     pub state: UpdateState,
+    /// The version of the newest release that the source of releases names, also when it is
+    /// not newer than this build.
+    pub newest: Option<Version>,
     /// A check that the person asked for is on its way.
     pub checking: bool,
 }
@@ -33,6 +37,7 @@ impl Default for UpdatesKnown {
             build: Version::THIS_BUILD,
             has_source: false,
             state: UpdateState::NotChecked,
+            newest: None,
             checking: false,
         }
     }
@@ -59,6 +64,14 @@ pub fn available(known: &UpdatesKnown) -> Option<Available> {
         | UpdateState::Expired
         | UpdateState::UntrustedKeys => None,
     }
+}
+
+/// The version of the newest release when it comes after the version that a server states.
+/// The server and the client of one release have one version, so the newest release of the
+/// client is the newest release of the server (ADR 0780). Nothing without a source.
+pub fn newer_server_release(known: &UpdatesKnown, server: &ServerVersion) -> Option<Version> {
+    let newest = known.newest?;
+    server.is_older_than(newest).then_some(newest)
 }
 
 /// Where the update check stands, as the settings state it.
@@ -149,6 +162,7 @@ impl BookState {
             build: updates.build(),
             has_source: updates.has_source(),
             state: updates.state(),
+            newest: updates.newest(),
             checking: self.checking,
         }
     }
@@ -283,12 +297,37 @@ mod tests {
             build: BUILD,
             has_source: true,
             state,
+            newest: None,
             checking: false,
         }
     }
 
     fn release(version: Version, page: Option<&str>) -> UpdateState {
         UpdateState::Available(Release::new(version, page))
+    }
+
+    #[test]
+    fn a_newer_release_of_a_server_is_the_newest_release_after_its_version() {
+        let server = |text: &str| ServerVersion::parse(text).unwrap();
+        let without = UpdatesKnown {
+            has_source: false,
+            ..known(UpdateState::NotChecked)
+        };
+        assert_eq!(newer_server_release(&without, &server("0.1.0")), None);
+        let current = UpdatesKnown {
+            newest: Some(BUILD),
+            ..known(UpdateState::Current)
+        };
+        for (stated, newer) in [
+            ("0.3.0", Some(BUILD)),
+            ("0.3.1-test.2", Some(BUILD)),
+            ("0.3.1", None),
+            ("0.3.1+build.4", None),
+            ("0.3.2", None),
+        ] {
+            let found = newer_server_release(&current, &server(stated));
+            assert_eq!(found, newer, "{stated}");
+        }
     }
 
     #[test]

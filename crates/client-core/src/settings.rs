@@ -1,5 +1,5 @@
 //! The settings of the interface that belong to one installation and to no server: the
-//! interface scale and the form of the server book (ADR 0703, ADR 0710).
+//! interface scale, the theme and the form of the server book (ADR 0703, ADR 0710).
 
 use serde::{Deserialize, Serialize};
 
@@ -20,12 +20,24 @@ const SETTINGS: Versioned = Versioned {
     limit: 64 * 1024,
 };
 
+/// The theme that the person chose. `System` follows the light or dark appearance of the
+/// system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    #[default]
+    Light,
+    Dark,
+    System,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterfaceSettings {
     /// The interface scale in percent, from 90 to 150.
     pub scale_percent: u32,
     /// The server book shows icons only.
     pub server_book_collapsed: bool,
+    pub theme: ThemeChoice,
 }
 
 impl Default for InterfaceSettings {
@@ -33,6 +45,7 @@ impl Default for InterfaceSettings {
         Self {
             scale_percent: 100,
             server_book_collapsed: false,
+            theme: ThemeChoice::default(),
         }
     }
 }
@@ -43,6 +56,8 @@ struct SettingsFile {
     scale_percent: u32,
     #[serde(default)]
     server_book_collapsed: bool,
+    #[serde(default)]
+    theme: ThemeChoice,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +81,7 @@ impl SettingsStore {
                 .scale_percent
                 .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
             server_book_collapsed: file.server_book_collapsed,
+            theme: file.theme,
         })
     }
 
@@ -110,6 +126,7 @@ impl SettingsStore {
                     .scale_percent
                     .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
                 server_book_collapsed: settings.server_book_collapsed,
+                theme: settings.theme,
             },
         )
     }
@@ -137,6 +154,7 @@ mod tests {
         let chosen = InterfaceSettings {
             scale_percent: 125,
             server_book_collapsed: true,
+            theme: ThemeChoice::Dark,
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
@@ -150,7 +168,7 @@ mod tests {
         store
             .save(InterfaceSettings {
                 scale_percent: 400,
-                server_book_collapsed: false,
+                ..InterfaceSettings::default()
             })
             .unwrap();
         assert_eq!(store.load().unwrap().scale_percent, SCALE_MAX_PERCENT);
@@ -162,6 +180,8 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded.scale_percent, SCALE_MIN_PERCENT);
         assert!(!loaded.server_book_collapsed);
+        // A file of a client without themes has the light theme.
+        assert_eq!(loaded.theme, ThemeChoice::Light);
     }
 
     #[test]
@@ -225,6 +245,7 @@ mod tests {
         let both = InterfaceSettings {
             scale_percent: 125,
             server_book_collapsed: true,
+            theme: ThemeChoice::Light,
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

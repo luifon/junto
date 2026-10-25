@@ -31,7 +31,8 @@ use junto_client_core::protocol::recording::{
 };
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::{DownloadProgress, UploadProgress};
-use junto_client_core::version::Incompatibility;
+use junto_client_core::updates::Version;
+use junto_client_core::version::{Incompatibility, ServerVersion};
 use junto_client_core::voice::{ShareResolution, VOLUME_DEFAULT_PERCENT, VoiceSettings};
 use junto_client_core::{Reach, ServerHandle};
 use junto_media::audio::{DeviceInfo, Devices};
@@ -64,6 +65,8 @@ pub struct ServerSnapshot {
     pub error: Option<FlowError>,
     pub stream: StreamStatus,
     pub model: Option<Arc<ServerModel>>,
+    /// The release version that the server stated on its event stream (ADR 0780).
+    pub server_version: Option<ServerVersion>,
 }
 
 impl ServerSnapshot {
@@ -83,6 +86,7 @@ impl ServerSnapshot {
             error: access.error,
             stream: live.status,
             model: live.model,
+            server_version: live.server_version,
         }
     }
 }
@@ -1371,7 +1375,19 @@ pub struct SelectedServer {
     pub moderation: Vec<super::moderation::ModerationLine>,
     /// Why the server book did not take that a notice was put away.
     pub moderation_failed: Option<String>,
+    /// The version that the server states, for the menu of the server. Absent while the
+    /// server has stated none.
+    pub release: Option<ServerRelease>,
     pub content: Content,
+}
+
+/// The release version that a server states, and the newer release of the server that the
+/// source of releases names (ADR 0780).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRelease {
+    pub version: ServerVersion,
+    /// The newest release, when it comes after `version`. Absent without a source.
+    pub newer: Option<Version>,
 }
 
 /// The person as the profile strip shows them.
@@ -3628,6 +3644,10 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                 .as_ref()
                 .filter(|(of, _)| *of == server.id)
                 .map(|(_, reason)| reason.clone()),
+            release: server.server_version.as_ref().map(|version| ServerRelease {
+                version: version.clone(),
+                newer: super::book::newer_server_release(&known.updates, version),
+            }),
             content,
         }
     });

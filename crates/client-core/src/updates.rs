@@ -228,7 +228,9 @@ struct Shared {
     ended: AtomicU64,
     /// The task that checks every [`CHECK_INTERVAL`].
     periodic: Mutex<Option<AbortHandle>>,
-    /// Called after each change of the state.
+    /// The version of the newest release in the last answer that the client trusts.
+    newest: Mutex<Option<Version>>,
+    /// Called after each change of the state and of the newest version.
     told: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -239,6 +241,17 @@ impl Shared {
 
     /// Takes the answer of one check into the state.
     fn record(&self, answer: Result<Release, UpdateError>) -> UpdateState {
+        let newest = match &answer {
+            Ok(release) => Some(Some(release.version)),
+            Err(UpdateError::Expired | UpdateError::UntrustedKeys) => Some(None),
+            Err(UpdateError::Unreachable | UpdateError::Invalid) => None,
+        };
+        let newest_changed = newest.is_some_and(|newest| {
+            let mut held = lock(&self.newest);
+            let changed = *held != newest;
+            *held = newest;
+            changed
+        });
         let found = match answer {
             Ok(release) if release.version > self.build => Some(UpdateState::Available(release)),
             Ok(_) => Some(UpdateState::Current),
@@ -265,7 +278,7 @@ impl Shared {
             changed
         });
         self.ended.fetch_add(1, Ordering::AcqRel);
-        if changed {
+        if changed || newest_changed {
             (self.told)();
         }
         self.state()
@@ -301,6 +314,7 @@ impl UpdateCheck {
                 asking: Arc::new(tokio::sync::Mutex::new(())),
                 ended: AtomicU64::new(0),
                 periodic: Mutex::new(None),
+                newest: Mutex::new(None),
                 told: Box::new(told),
             }),
         }
@@ -318,6 +332,15 @@ impl UpdateCheck {
 
     pub fn state(&self) -> UpdateState {
         self.shared.state()
+    }
+
+    /// The version of the newest release that the source named in the last answer that
+    /// the client trusts, also when it is not newer than this build. The server and the
+    /// client of one release have one version (ADR 0780). An answer that has expired or
+    /// that no trusted key signed leaves none; a check that fails otherwise keeps the
+    /// version of the check before it. Without a source it is always absent.
+    pub fn newest(&self) -> Option<Version> {
+        *lock(&self.shared.newest)
     }
 
     /// A value that gives the state after each change.
@@ -719,6 +742,45 @@ mod tests {
             assert_eq!(check.state(), available);
         }
         assert_eq!(source.checks(), 8);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_newest_version_follows_each_trusted_answer_and_is_told() {
+        let source = FakeSource::new(Ok(release("0.3.0")));
+        let runtime = Runtime::current_or_new().unwrap();
+        let told = Arc::new(AtomicUsize::new(0));
+        let counted = told.clone();
+        let check = UpdateCheck::with_notice(BUILD, Some(source.clone()), runtime, move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(check.newest(), None);
+        assert_eq!(check.check().await, UpdateState::Current);
+        assert_eq!(check.newest(), Some(Version::new(0, 3, 0)));
+        assert_eq!(told.load(Ordering::SeqCst), 1);
+        // Another release that is not newer than the build leaves the state, and its
+        // version is told.
+        source.set(Ok(release("0.3.1")));
+        assert_eq!(check.check().await, UpdateState::Current);
+        assert_eq!(check.newest(), Some(BUILD));
+        assert_eq!(told.load(Ordering::SeqCst), 2);
+        assert_eq!(check.check().await, UpdateState::Current);
+        assert_eq!(told.load(Ordering::SeqCst), 2);
+
+        source.set(Ok(release("0.4.0")));
+        check.check().await;
+        assert_eq!(check.newest(), Some(Version::new(0, 4, 0)));
+        for error in [UpdateError::Unreachable, UpdateError::Invalid] {
+            source.set(Err(error));
+            check.check().await;
+            assert_eq!(check.newest(), Some(Version::new(0, 4, 0)), "{error}");
+        }
+        for error in [UpdateError::Expired, UpdateError::UntrustedKeys] {
+            source.set(Ok(release("0.4.0")));
+            check.check().await;
+            source.set(Err(error));
+            check.check().await;
+            assert_eq!(check.newest(), None, "{error}");
+        }
     }
 
     /// A source whose answer waits until the test lets it go.

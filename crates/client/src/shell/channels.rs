@@ -602,7 +602,7 @@ impl Shell {
                 .clone()
                 .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
                 .into();
-            let row = ChannelRow::new(("direct", index), Icon::People, name)
+            let row = ChannelRow::new(("direct", index), Icon::Person, name)
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .picture(faces.image(direct.account_id))
                 .selected(direct.selected)

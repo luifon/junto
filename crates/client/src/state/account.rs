@@ -1265,6 +1265,7 @@ pub(crate) mod tests {
             model: Some(Arc::new(ServerModel::from_snapshot(
                 crate::state::fixtures::from_roles(snapshot),
             ))),
+            server_version: None,
         }
     }
 
