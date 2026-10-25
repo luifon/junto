@@ -923,7 +923,15 @@ fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestApp
     let caller = admin.caller(&world);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     voice_channel(&world, &admin, &mut window, ROOM);
+    // The Voice section of the settings opens the microphone for its level (ADR 0733), and
+    // closes it with the settings.
     turn_processing_off(&mut window);
+    window.until("the microphone of the settings is closed", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().input_test_runs())
+    });
+    let opened_before = window.sound.opened_inputs().len();
     let target = CallTarget {
         server_id: admin.handle.id(),
         place: CallPlace::Channel {
@@ -948,7 +956,7 @@ fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestApp
         microphone(window) == Some(MicrophoneState::NoPermission)
             && window.shows("warning-retry-microphone")
     });
-    assert!(window.sound.opened_inputs().is_empty());
+    assert_eq!(window.sound.opened_inputs().len(), opened_before);
     // The person allows the microphone in the settings of the system, and tries again.
     window.permission.set(MicrophoneAccess::Allowed);
     window.click("warning-retry-microphone");
