@@ -2,7 +2,8 @@
 //! the server in the panel of the call and in the call window, without a media server.
 
 use gpui::TestAppContext;
-use junto_client_core::protocol::call::CallPlace;
+use junto_client_core::protocol::call::{CallInvitation, CallPlace};
+use junto_client_core::protocol::ids::{CallId, CallInvitationId};
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
 use junto_media::engine::{MicrophoneState, OutputState, ShareState};
 use junto_media::share::CaptureError;
@@ -98,10 +99,14 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     let (general, own) = (window.selected_channel(), window.own_account());
     voice_channel(&world, &admin, &mut window, "Daily");
+    // The notices that are open beside the text channel close when the main area shows
+    // the call: its panel shows the chat.
+    window.open_notices();
     window.click_channel("Daily");
     let call = call_with_share(&mut window, "Daily", ShareState::Off);
     give_calls(&mut window, call);
     assert!(window.shows("call-panel") && window.shows("call-chat"));
+    assert!(!window.shows("notices-panel") && window.notices().is_none());
 
     // A mention in another channel is counted at the row of the notices.
     admin.mention(&world, general, "look at this, ", own);
@@ -142,7 +147,9 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
 }
 
 /// The call window counts and lists the notices of the server of its call, whatever the
-/// main window shows (ADR 0742, ADR 0772).
+/// main window shows, also a notice of an archived channel and the newer ones after it. A
+/// press on a row shows the message in the main window, brings it to the front and marks
+/// the notice as read (ADR 0742, ADR 0772).
 #[gpui::test]
 fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     let world = World::new();
@@ -150,6 +157,7 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     let (general, own) = (window.selected_channel(), window.own_account());
+    let random = admin.text_channel(&world, &mut window, "random");
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
     let call = call_with_share(&mut window, "Daily", ShareState::Off);
@@ -158,18 +166,55 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     let mut detached = window.call_window();
     assert!(detached.shows("open-call-notices") && !detached.shows("open-call-notices-count"));
 
-    admin.mention(&world, general, "look at this, ", own);
-    detached.until("the notice is counted in the call window", |window| {
-        window.shows("open-call-notices-count")
+    admin.mention(&world, general, "first, ", own);
+    admin.mention(&world, random, "in the old channel, ", own);
+    let last = admin.mention(&world, general, "last, ", own);
+    detached.until("the notices are counted in the call window", |window| {
+        window.shows("open-call-notices-count") && window.unread_notices() == 3
     });
+    // The channel of the second notice is archived: it leaves the channel list, and the
+    // state knows it from the archived list of its workspace only.
+    world
+        .run(admin.handle.api().archive_channel(random))
+        .unwrap();
+    window.until("the archived channel leaves the list", |window| {
+        !window.channel_names().contains(&"random".to_owned())
+    });
+
+    // The call window lists the three notices, while the main window shows the place of
+    // the call and has no list open.
     detached.click("open-call-notices");
     detached.until("the notices are listed in the call window", |window| {
         window.shows("notices-panel")
             && window
                 .notices()
-                .is_some_and(|panel| !panel.reading && panel.rows.len() == 1)
+                .is_some_and(|panel| !panel.reading && panel.rows.len() == 3)
     });
+    let panel = detached.notices().unwrap();
+    let texts: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["last, @Luca", "in the old channel, @Luca", "first, @Luca"]
+    );
     assert!(!window.shows("notices-panel"));
+
+    // A press on the newest row: the main window shows the message in its channel, comes
+    // to the front, and the notice is read.
+    detached.click_named(format!("notice:{}", panel.rows[0].id));
+    window.until("the main window shows the message", |window| {
+        window.selected_channel() == general
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == last.id && row.target)
+    });
+    assert!(window.cx.update(|window, _| window.is_window_active()));
+    detached.until("the notice is read", |window| {
+        window
+            .notices()
+            .is_some_and(|panel| panel.rows.first().is_some_and(|row| row.read))
+    });
+
     // A tab of the panel shows its pane again.
     detached.click("call-tab-chat");
     assert!(!detached.shows("notices-panel") && detached.shows("call-chat"));
@@ -227,4 +272,136 @@ fn the_call_window_shows_the_place_of_the_call_to_the_rules_of_a_system_notifica
         .map(|alert| alert.body.clone())
         .collect();
     assert_eq!(bodies, ["and here, @Luca"]);
+}
+
+/// The bounds of an element that the window draws now.
+fn bounds_of(window: &mut Window, selector: &'static str) -> gpui::Bounds<gpui::Pixels> {
+    window.settle();
+    window
+        .cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is not drawn"))
+}
+
+/// The cards of the invitations (ADR 0739): at most three, the newest first, with a line
+/// that shows the others; at the top of the main area over the stage of the call, inside
+/// the window; drawn and answered over an open dialog; and a press that began before a card
+/// appeared does not answer it.
+#[gpui::test]
+fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let daily = window.selected_channel();
+    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let target = call.target;
+    give_calls(&mut window, call);
+    let (own, ada) = (window.own_account(), admin.handle.account().unwrap());
+    let start = time::OffsetDateTime::now_utc();
+    let invitation = |minute: i64| CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        place: CallPlace::Channel {
+            workspace_id: match target.place {
+                CallPlace::Channel { workspace_id, .. } => workspace_id,
+                CallPlace::Direct { .. } => unreachable!("a voice channel"),
+            },
+            channel_id: daily,
+        },
+        account_id: own,
+        invited_by: ada,
+        created_at: start + time::Duration::minutes(minute),
+        expires_at: start + time::Duration::hours(1),
+    };
+    let show = |window: &mut Window, invitations: Vec<CallInvitation>| {
+        let state = window.state.clone();
+        state.update(&mut window.cx, |state, cx| {
+            state.show_invitations_fixture(target.server_id, invitations, cx);
+        });
+        window.settle();
+    };
+    let five: Vec<CallInvitation> = (1..=5).map(invitation).collect();
+    show(&mut window, five.clone());
+
+    // The three newest are drawn, and a line states the two others.
+    let one = bounds_of(&mut window, "call-invitation");
+    let all = bounds_of(&mut window, "invitation-cards");
+    assert!(all.size.height < one.size.height * 4.0, "{all:?} {one:?}");
+    for (index, held) in five.iter().enumerate() {
+        assert_eq!(
+            window.shows_named(format!("invitation-card:{}", held.id)),
+            index >= 2,
+            "card {index}"
+        );
+    }
+    assert!(window.shows("invitation-more"));
+
+    // The cards lie over the main area and over the stage of the call, under the header
+    // that lies above the stage, inside the window, also in a window of the least width.
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0))));
+    let card = bounds_of(&mut window, "call-invitation");
+    let column = bounds_of(&mut window, "channel-column");
+    let stage = bounds_of(&mut window, "call-stage");
+    let size = window.cx.update(|window, _| window.viewport_size());
+    assert!(card.left() >= column.right(), "{card:?} {column:?}");
+    assert!(card.right() <= size.width && card.bottom() <= size.height);
+    assert!(card.top() >= stage.top() && card.bottom() <= stage.bottom());
+
+    // The line shows the others; in a small window the list stays inside the window.
+    window.click("invitation-more");
+    for held in &five {
+        assert!(window.shows_named(format!("invitation-card:{}", held.id)));
+    }
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(480.0))));
+    let list = bounds_of(&mut window, "invitation-list");
+    assert!(list.bottom() <= gpui::px(480.0), "{list:?}");
+
+    // Over an open dialog the card is drawn, and its button is pressed without closing the
+    // dialog.
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1440.0), gpui::px(900.0))));
+    window.click("app-settings");
+    assert!(window.shows("settings-dialog") && window.shows("call-invitation"));
+    window.click("invitation-decline");
+    assert!(window.shows("settings-dialog"));
+    window.press("escape");
+    assert!(!window.shows("settings-dialog"));
+
+    // A press that began on another control and ends on a card that appeared meanwhile
+    // answers nothing, and the control under it gets no click either.
+    show(&mut window, Vec::new());
+    assert!(!window.shows("invitation-cards"));
+    let row = bounds_of(&mut window, "notices-row").center();
+    let (down, _) = press_events(row);
+    window.dispatch(down);
+    show(&mut window, vec![invitation(6)]);
+    let join = bounds_of(&mut window, "invitation-join").center();
+    let (_, up) = press_events(join);
+    window.dispatch(up);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().view());
+    assert!(calls.joining.is_none());
+    assert!(window.shows("call-invitation") && window.notices().is_none());
+}
+
+fn press_events(position: gpui::Point<gpui::Pixels>) -> (gpui::MouseDownEvent, gpui::MouseUpEvent) {
+    let modifiers = gpui::Modifiers::none();
+    (
+        gpui::MouseDownEvent {
+            position,
+            modifiers,
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        },
+        gpui::MouseUpEvent {
+            position,
+            modifiers,
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+        },
+    )
 }

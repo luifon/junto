@@ -566,7 +566,8 @@ impl AppState {
     /// archived list of its workspace and the permissions of the account in the channel
     /// (ADR 0310); for the open notices and the open search, the archived list of each
     /// workspace that a notice or a result names with a channel that is in no channel
-    /// list.
+    /// list. The notices that the call window shows are those of the server of its call,
+    /// whatever the main window shows (ADR 0742).
     pub(super) fn archived_readers(
         &self,
         view: &super::view::ShellView,
@@ -578,6 +579,22 @@ impl AppState {
                 wanted.push(key);
             }
         };
+        let call_notices = self
+            .media_calls()
+            .call
+            .as_ref()
+            .map(|call| call.target.server_id)
+            .filter(|_| self.call_window.is_some() && self.call_window_notices);
+        if let Some(call_server) = call_notices
+            && let Some(model) = snapshots
+                .iter()
+                .find(|server| server.id == call_server)
+                .and_then(|server| view::shown(server))
+        {
+            for workspace_id in super::notices::archived_lists_of_notices(model) {
+                want((call_server, AdminPart::Archived(workspace_id)));
+            }
+        }
         let Some(server_id) = self.shown.server else {
             return wanted;
         };

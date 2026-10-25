@@ -17,23 +17,41 @@ use junto_client_core::protocol::call::CallPlace;
 /// The width of the card of an invitation, in pixels of the design.
 const CARD_WIDTH: f32 = 380.0;
 
+/// How many cards of invitations are drawn before the line that shows the others.
+pub const MOST_CARDS: usize = 3;
+
 impl Shell {
-    /// The cards of the invitations that wait for the person, on every server, placed at
-    /// the top centre of the window under its first line at `top` pixels of the design.
-    /// Absent while no invitation waits.
+    /// The cards of the invitations that wait for the person, on every server, the newest
+    /// first, at the top of the window at `top` pixels of the design, centred over the part
+    /// of the window that starts at `left`. At most [`MOST_CARDS`] are drawn; a line under
+    /// them states how many more wait and shows them. The cards stay inside the window and
+    /// scroll when they do not fit. Absent while no invitation waits.
     pub(crate) fn render_invitation_cards(
         &mut self,
         view: &ShellView,
         top: f32,
+        left: f32,
+        window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if view.invitations.len() <= MOST_CARDS {
+            self.invitations_open = false;
+        }
         if view.invitations.is_empty() {
             return None;
         }
         let several_servers = view.servers.len() > 1;
-        let cards: Vec<AnyElement> = view
-            .invitations
-            .iter()
+        let mut newest: Vec<&Invited> = view.invitations.iter().collect();
+        newest.sort_by_key(|one| std::cmp::Reverse(one.created_at));
+        let more = newest.len().saturating_sub(MOST_CARDS);
+        let drawn = if self.invitations_open {
+            newest.len()
+        } else {
+            newest.len().min(MOST_CARDS)
+        };
+        let mut cards: Vec<AnyElement> = newest
+            .into_iter()
+            .take(drawn)
             .enumerate()
             .map(|(index, invited)| {
                 let server = if several_servers {
@@ -47,20 +65,56 @@ impl Shell {
                 self.render_invitation_card(invited, server, index, cx)
             })
             .collect();
+        if more > 0 {
+            let open = self.invitations_open;
+            cards.push(
+                div()
+                    .flex()
+                    .justify_center()
+                    .occlude()
+                    .child(
+                        Button::new("invitation-more")
+                            .label(if open {
+                                text::FEWER_INVITATIONS.to_owned()
+                            } else {
+                                text::more_invitations(more)
+                            })
+                            .selector("invitation-more")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.invitations_open = !open;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let height = (super::logical_height(window) - top - 12.0).max(0.0);
         // The frame takes no pointer event: only the cards cover what lies under them.
         Some(
             div()
                 .absolute()
                 .top(u(top))
-                .left_0()
+                .left(u(left))
                 .right_0()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(u(8.0))
                 .px(u(12.0))
                 .debug_selector(|| "invitation-cards".to_owned())
-                .children(cards)
+                .child(
+                    div()
+                        .id("invitation-list")
+                        .debug_selector(|| "invitation-list".to_owned())
+                        .flex()
+                        .flex_col()
+                        .gap(u(8.0))
+                        .w(u(CARD_WIDTH))
+                        .max_w_full()
+                        .max_h(u(height))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.invitations_scroll)
+                        .children(cards),
+                )
                 .into_any_element(),
         )
     }
@@ -126,7 +180,7 @@ impl Shell {
             this.state
                 .update(cx, |state, cx| state.decline_invitation(&declined, cx));
         }));
-        div()
+        let card = div()
             .id(("invitation-card", index))
             .role(Role::AlertDialog)
             .aria_label(label)
@@ -136,8 +190,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(u(10.0))
-            .w(u(CARD_WIDTH))
-            .max_w_full()
+            .flex_none()
             .p(u(12.0))
             .rounded(u(theme.metrics.radius))
             .bg(Hsla::from(colors.travertine_hi))
@@ -190,7 +243,12 @@ impl Shell {
                     .child(decline)
                     .child(accept),
             )
-            .when(direct, |card| card.border_color(Hsla::from(colors.cypress)))
+            .when(direct, |card| card.border_color(Hsla::from(colors.cypress)));
+        let invitation_id = invited.id;
+        div()
+            .flex_none()
+            .debug_selector(move || format!("invitation-card:{invitation_id}"))
+            .child(card)
             .into_any_element()
     }
 }

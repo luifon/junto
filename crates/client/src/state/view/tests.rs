@@ -2838,6 +2838,7 @@ pub(super) mod calls {
                 target: target(&server, &scene, daily),
                 by: Some("Ana".to_owned()),
                 channel: Some("Daily".to_owned()),
+                created_at: incoming.created_at,
             }]
         );
         assert!(view.entry_prompts.is_empty());

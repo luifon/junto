@@ -868,7 +868,8 @@ pub struct Alerts {
     pub show: Vec<(Alert, AlertTarget)>,
     pub dismiss: Vec<String>,
     /// The invitations into a voice channel that were not seen before, whatever their
-    /// system notification. A direct-message call rings with its tone (ADR 0515).
+    /// system notification, outside the quiet times of the account. A direct-message call
+    /// rings with its tone (ADR 0515).
     pub arrived: Vec<CallInvitationId>,
 }
 
@@ -1054,7 +1055,9 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
             break;
         }
         seen.invitations.push(invitation.id);
-        if matches!(invitation.place, CallPlace::Channel { .. }) {
+        // No sound during "do not disturb" or the daily quiet time, as for the ring of a
+        // direct-message call (ADR 0515).
+        if matches!(invitation.place, CallPlace::Channel { .. }) && !quiet {
             alerts.arrived.push(invitation.id);
         }
         if quiet || scene.active || seen.recent.len() >= MOST_ALERTS {

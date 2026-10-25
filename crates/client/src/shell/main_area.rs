@@ -340,7 +340,7 @@ impl Shell {
                 }
             }
             if narrow {
-                after.extend(self.render_call_panel_buttons(view, cx));
+                after.extend(self.render_call_panel_buttons(cx));
             }
         } else {
             if permanent {

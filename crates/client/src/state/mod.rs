@@ -579,6 +579,8 @@ pub struct AppState {
     call_window_active: bool,
     /// The panel of the call window shows the notices of the server of the call.
     call_window_notices: bool,
+    /// The main area showed the view of the call of this device at the last change.
+    call_shown: bool,
     /// What was seen of the notices and the invitations of each server.
     seen: HashMap<ServerId, notices::Seen>,
     /// The number of the last read of the message of a search result. The answer of an
@@ -827,6 +829,7 @@ impl AppState {
             window_active: false,
             call_window_active: false,
             call_window_notices: false,
+            call_shown: false,
             seen: HashMap::new(),
             result_asks: 0,
             result_answers: 0,
@@ -2083,6 +2086,35 @@ impl AppState {
         self.changed(cx);
     }
 
+    /// Draws the servers of the client as they are now, with these invitations added to the
+    /// state of one server, in place of the servers of the client core. A window test uses
+    /// it for invitations that a server without a media server cannot make.
+    #[cfg(feature = "test-support")]
+    pub fn show_invitations_fixture(
+        &mut self,
+        server_id: ServerId,
+        invitations: Vec<junto_client_core::protocol::call::CallInvitation>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut servers: Vec<ServerSnapshot> = self
+            .client
+            .servers()
+            .iter()
+            .map(ServerSnapshot::of)
+            .collect();
+        for server in &mut servers {
+            if server.id == server_id
+                && let Some(model) = &mut server.model
+            {
+                std::sync::Arc::make_mut(model)
+                    .invitations
+                    .extend(invitations.iter().cloned());
+            }
+        }
+        self.fixture = Some(servers);
+        self.changed(cx);
+    }
+
     /// Runs after every change of the client core and of an event stream: starts and ends
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
@@ -2216,6 +2248,14 @@ impl AppState {
         {
             self.known.conversation_refused = None;
         }
+        // The notices that were open beside a place close when the main area changes to
+        // the view of the call of this device, so that its panel shows the chat; in the
+        // view of a call the row of the notices opens them again (ADR 0742).
+        let call_shown = view.lists().is_some_and(|lists| lists.call.is_some());
+        if call_shown && !self.call_shown {
+            self.selection.notices = None;
+        }
+        self.call_shown = call_shown;
         // The notices belong to a server: they close when another server is shown. They
         // stay under a thread and under the pinned messages.
         if self.selection.notices.is_some() && self.selection.notices != shown.server {
