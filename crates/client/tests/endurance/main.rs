@@ -285,7 +285,7 @@ fn main() -> ExitCode {
         state.calls().camera_pictures().borrow().len()
     });
 
-    let failures = judge(&samples, frames, held, &use_of, still_drawn);
+    let mut failures = judge(&samples, frames, held, &use_of, still_drawn);
     let warming_held = warming_held.unwrap_or_default();
     println!(
         "endurance: while warming {} frames, the longest {:?}; {} pieces of work, the longest {:?}, {} longer than {:?}",
