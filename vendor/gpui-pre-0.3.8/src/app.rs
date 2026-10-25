@@ -296,6 +296,7 @@ impl Application {
         self.0
             .borrow()
             .platform
+            // Modified: the callback stops a panic of its body.
             .on_open_urls(crate::unwind::callback("open addresses", callback));
         self
     }
@@ -311,6 +312,7 @@ impl Application {
         self.0
             .borrow_mut()
             .platform
+            // Modified: the callback stops a panic of its body.
             .on_reopen(crate::unwind::callback0("reopen", move || {
                 if let Some(app) = this.upgrade() {
                     callback(&mut app.borrow_mut());
@@ -1259,8 +1261,7 @@ impl App {
     pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
         self.start_update();
         // Modified: a panic ends this update.
-        let result =
-            crate::unwind::restore_on_panic(self, update, |cx| cx.pending_updates -= 1);
+        let result = crate::unwind::restore_on_panic(self, update, |cx| cx.pending_updates -= 1);
         self.finish_update();
         result
     }

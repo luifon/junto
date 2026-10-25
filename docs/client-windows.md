@@ -13,7 +13,7 @@ The server book and the device keys are in `%LOCALAPPDATA%\Junto` (ADR 0710).
 
 ## Log and error reports
 
-Junto writes its log to `%LOCALAPPDATA%\Junto\logs\junto.log` (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `%LOCALAPPDATA%\Junto\panics`, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log, `info` by default (ADR 0757).
+Junto writes its log to `%LOCALAPPDATA%\Junto\logs\junto.log` (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `%LOCALAPPDATA%\Junto\panics`, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. When a second instance of Junto runs on the same data directory, only the first writes the log. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`%TEMP%`) (ADR 0757).
 
 ## Updates
 

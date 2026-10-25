@@ -1961,19 +1961,23 @@ impl PlatformInputHandler {
     }
 
     pub fn selected_text_range(&mut self, ignore_disabled_input: bool) -> Option<UTF16Selection> {
+        // Modified: a panic of the handler becomes an error.
         update_through_the_platform(&mut self.cx, |window, cx| {
-                self.handler
-                    .selected_text_range(ignore_disabled_input, window, cx)
-            })
-            .ok()
-            .flatten()
+            self.handler
+                .selected_text_range(ignore_disabled_input, window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn marked_text_range(&mut self) -> Option<Range<usize>> {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.marked_text_range(window, cx))
-            .ok()
-            .flatten()
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.marked_text_range(window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     #[cfg_attr(
@@ -1985,20 +1989,22 @@ impl PlatformInputHandler {
         range_utf16: Range<usize>,
         adjusted: &mut Option<Range<usize>>,
     ) -> Option<String> {
+        // Modified: a panic of the handler becomes an error.
         update_through_the_platform(&mut self.cx, |window, cx| {
-                self.handler
-                    .text_for_range(range_utf16, adjusted, window, cx)
-            })
-            .ok()
-            .flatten()
+            self.handler
+                .text_for_range(range_utf16, adjusted, window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     pub fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
+        // Modified: a panic of the handler becomes an error.
         update_through_the_platform(&mut self.cx, |window, cx| {
-                self.handler
-                    .replace_text_in_range(replacement_range, text, window, cx);
-            })
-            .ok();
+            self.handler
+                .replace_text_in_range(replacement_range, text, window, cx);
+        })
+        .ok();
     }
 
     pub fn replace_and_mark_text_in_range(
@@ -2007,33 +2013,43 @@ impl PlatformInputHandler {
         new_text: &str,
         new_selected_range: Option<Range<usize>>,
     ) {
+        // Modified: a panic of the handler becomes an error.
         update_through_the_platform(&mut self.cx, |window, cx| {
-                self.handler.replace_and_mark_text_in_range(
-                    range_utf16,
-                    new_text,
-                    new_selected_range,
-                    window,
-                    cx,
-                )
-            })
-            .ok();
+            self.handler.replace_and_mark_text_in_range(
+                range_utf16,
+                new_text,
+                new_selected_range,
+                window,
+                cx,
+            )
+        })
+        .ok();
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn unmark_text(&mut self) {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.unmark_text(window, cx))
-            .ok();
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.unmark_text(window, cx)
+        })
+        .ok();
     }
 
     pub fn paste(&mut self, item: ClipboardItem) {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.paste(item, window, cx))
-            .ok();
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.paste(item, window, cx)
+        })
+        .ok();
     }
 
     pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
-            .ok()
-            .flatten()
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.bounds_for_range(range_utf16, window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     #[allow(dead_code)]
@@ -2098,32 +2114,42 @@ impl PlatformInputHandler {
 
     #[allow(unused)]
     pub fn character_index_for_point(&mut self, point: Point<Pixels>) -> Option<usize> {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.character_index_for_point(point, window, cx))
-            .ok()
-            .flatten()
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.character_index_for_point(point, window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     /// See [`InputHandler::set_selected_text_range`].
     pub fn set_selected_text_range(&mut self, range_utf16: Range<usize>) {
+        // Modified: a panic of the handler becomes an error.
         update_through_the_platform(&mut self.cx, |window, cx| {
-                self.handler
-                    .set_selected_text_range(range_utf16, window, cx)
-            })
-            .ok();
+            self.handler
+                .set_selected_text_range(range_utf16, window, cx)
+        })
+        .ok();
     }
 
     /// See [`InputHandler::element_bounds`].
     pub fn element_bounds(&mut self) -> Option<Bounds<Pixels>> {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.element_bounds(window, cx))
-            .ok()
-            .flatten()
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.element_bounds(window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     /// See [`InputHandler::text_length_utf16`].
     pub fn text_length_utf16(&mut self) -> Option<usize> {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.text_length_utf16(window, cx))
-            .ok()
-            .flatten()
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.text_length_utf16(window, cx)
+        })
+        .ok()
+        .flatten()
     }
 
     #[allow(dead_code)]
@@ -2133,8 +2159,11 @@ impl PlatformInputHandler {
 
     #[allow(dead_code)]
     pub fn query_accepts_text_input(&mut self) -> bool {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.accepts_text_input(window, cx))
-            .unwrap_or(true)
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.accepts_text_input(window, cx)
+        })
+        .unwrap_or(true)
     }
 
     /// See [`InputHandler::prefers_ime_for_printable_keys`].
@@ -2143,12 +2172,13 @@ impl PlatformInputHandler {
     /// returns `false` regardless of the handler's preference, because the next printable key may
     /// complete a binding whose prefix already bypassed the IME.
     pub fn query_prefers_ime_for_printable_keys(&mut self) -> bool {
+        // Modified: a panic of the handler becomes an error.
         update_through_the_platform(&mut self.cx, |window, cx| {
-                // The next printable key may complete a chord whose prefix bypassed the IME.
-                !window.has_pending_keystrokes()
-                    && self.handler.prefers_ime_for_printable_keys(window, cx)
-            })
-            .unwrap_or(false)
+            // The next printable key may complete a chord whose prefix bypassed the IME.
+            !window.has_pending_keystrokes()
+                && self.handler.prefers_ime_for_printable_keys(window, cx)
+        })
+        .unwrap_or(false)
     }
 
     /// See [`InputHandler::text_input_configuration`].
@@ -2162,9 +2192,12 @@ impl PlatformInputHandler {
 
     /// See [`InputHandler::text_input_editable_range`].
     pub fn text_input_editable_range(&mut self) -> Option<Range<usize>> {
-        update_through_the_platform(&mut self.cx, |window, cx| self.handler.text_input_editable_range(window, cx))
-            .ok()
-            .flatten()
+        // Modified: a panic of the handler becomes an error.
+        update_through_the_platform(&mut self.cx, |window, cx| {
+            self.handler.text_input_editable_range(window, cx)
+        })
+        .ok()
+        .flatten()
     }
 }
 

@@ -217,39 +217,68 @@ define_class!(
             if self.ivars().ended.load(Ordering::Relaxed) {
                 return;
             }
-            if kind == SCStreamOutputType::Screen {
-                self.picture(sample);
-            } else if kind == SCStreamOutputType::Audio {
-                self.sound(sample);
-            }
+            // A panic cannot unwind into ScreenCaptureKit; after one the share ends
+            // (ADR 0757).
+            crate::callback::stop_panic(
+                "share sample",
+                || self.end_after_a_panic(),
+                || {
+                    if kind == SCStreamOutputType::Screen {
+                        self.picture(sample);
+                    } else if kind == SCStreamOutputType::Audio {
+                        self.sound(sample);
+                    }
+                },
+            );
         }
     }
 
     unsafe impl SCStreamDelegate for Output {
         #[unsafe(method(stream:didStopWithError:))]
         fn stream_did_stop_with_error(&self, _stream: &SCStream, error: &NSError) {
-            let reason = match error.code() {
-                USER_STOPPED => CaptureError::SourceGone,
-                USER_DECLINED => CaptureError::NotAllowed,
-                _ => CaptureError::Failed(error.localizedDescription().to_string()),
-            };
-            if !self.ivars().ended.swap(true, Ordering::Relaxed) {
-                self.ivars().sink.ended(reason);
-            }
+            crate::callback::stop_panic(
+                "share stop",
+                || self.end_after_a_panic(),
+                || {
+                    let reason = match error.code() {
+                        USER_STOPPED => CaptureError::SourceGone,
+                        USER_DECLINED => CaptureError::NotAllowed,
+                        _ => CaptureError::Failed(error.localizedDescription().to_string()),
+                    };
+                    if !self.ivars().ended.swap(true, Ordering::Relaxed) {
+                        self.ivars().sink.ended(reason);
+                    }
+                },
+            );
         }
 
         // The system tells this when every window of the stream was closed (macOS 15.2
         // and later). The stream itself goes on; the share of a window does not.
         #[unsafe(method(streamDidBecomeInactive:))]
         fn stream_did_become_inactive(&self, _stream: &SCStream) {
-            if self.ivars().one_window && !self.ivars().ended.swap(true, Ordering::Relaxed) {
-                self.ivars().sink.ended(CaptureError::SourceGone);
-            }
+            crate::callback::stop_panic(
+                "share inactive",
+                || self.end_after_a_panic(),
+                || {
+                    if self.ivars().one_window && !self.ivars().ended.swap(true, Ordering::Relaxed)
+                    {
+                        self.ivars().sink.ended(CaptureError::SourceGone);
+                    }
+                },
+            );
         }
     }
 );
 
 impl Output {
+    fn end_after_a_panic(&self) {
+        if !self.ivars().ended.swap(true, Ordering::Relaxed) {
+            self.ivars()
+                .sink
+                .ended(CaptureError::Failed("the share callback panicked".into()));
+        }
+    }
+
     fn new(sink: Arc<dyn CaptureSink>, ended: Arc<AtomicBool>, one_window: bool) -> Retained<Self> {
         let this = Self::alloc().set_ivars(OutputIvars {
             sink,
@@ -424,26 +453,35 @@ impl Stream {
         let started = Mutex::new(Some(started));
         let stream = Shared(self.stream.clone());
         let handler = RcBlock::new(move |error: *mut NSError| {
-            // SAFETY: the system passes a valid error or null.
-            let outcome = match unsafe { error.as_ref() } {
-                None => Ok(()),
-                Some(error) if error.code() == USER_DECLINED => Err(CaptureError::NotAllowed),
-                Some(error) => Err(CaptureError::Failed(
-                    error.localizedDescription().to_string(),
-                )),
-            };
-            let waited_for = started
-                .lock()
-                .ok()
-                .and_then(|mut started| started.take())
-                .is_some_and(|started| started.send(outcome).is_ok());
-            if !waited_for {
-                // Nobody waits for this start any more: the share was stopped while the
-                // system prepared the stream. A stop that was asked for before the start
-                // had completed may not have ended it, so it is asked for again.
-                // SAFETY: the stream is a valid object that this block keeps alive.
-                unsafe { stream.0.stopCaptureWithCompletionHandler(None) };
-            }
+            // A panic cannot unwind into the system that calls the block (ADR 0757).
+            crate::callback::stop_panic(
+                "share completion",
+                || (),
+                || {
+                    // SAFETY: the system passes a valid error or null.
+                    let outcome = match unsafe { error.as_ref() } {
+                        None => Ok(()),
+                        Some(error) if error.code() == USER_DECLINED => {
+                            Err(CaptureError::NotAllowed)
+                        }
+                        Some(error) => Err(CaptureError::Failed(
+                            error.localizedDescription().to_string(),
+                        )),
+                    };
+                    let waited_for = started
+                        .lock()
+                        .ok()
+                        .and_then(|mut started| started.take())
+                        .is_some_and(|started| started.send(outcome).is_ok());
+                    if !waited_for {
+                        // Nobody waits for this start any more: the share was stopped while the
+                        // system prepared the stream. A stop that was asked for before the start
+                        // had completed may not have ended it, so it is asked for again.
+                        // SAFETY: the stream is a valid object that this block keeps alive.
+                        unsafe { stream.0.stopCaptureWithCompletionHandler(None) };
+                    }
+                },
+            )
         });
         // SAFETY: the system copies the block and calls it once on a queue of its own;
         // the block owns what it uses.
@@ -502,24 +540,31 @@ fn content() -> oneshot::Receiver<Result<Content, CaptureError>> {
     let listed = Mutex::new(Some(listed));
     let handler = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
-            // SAFETY: the system passes a valid content or null, and a valid error or null.
-            let outcome = unsafe {
-                match (Retained::retain(content), error.as_ref()) {
-                    (Some(content), _) => Ok(Content { content }),
-                    (None, Some(error)) if error.code() == USER_DECLINED => {
-                        Err(CaptureError::NotAllowed)
+            // A panic cannot unwind into the system that calls the block (ADR 0757).
+            crate::callback::stop_panic(
+                "share completion",
+                || (),
+                || {
+                    // SAFETY: the system passes a valid content or null, and a valid error or null.
+                    let outcome = unsafe {
+                        match (Retained::retain(content), error.as_ref()) {
+                            (Some(content), _) => Ok(Content { content }),
+                            (None, Some(error)) if error.code() == USER_DECLINED => {
+                                Err(CaptureError::NotAllowed)
+                            }
+                            (None, Some(error)) => Err(CaptureError::Failed(
+                                error.localizedDescription().to_string(),
+                            )),
+                            (None, None) => Err(CaptureError::Failed("no content".to_owned())),
+                        }
+                    };
+                    if let Ok(mut listed) = listed.lock()
+                        && let Some(listed) = listed.take()
+                    {
+                        let _ = listed.send(outcome);
                     }
-                    (None, Some(error)) => Err(CaptureError::Failed(
-                        error.localizedDescription().to_string(),
-                    )),
-                    (None, None) => Err(CaptureError::Failed("no content".to_owned())),
-                }
-            };
-            if let Ok(mut listed) = listed.lock()
-                && let Some(listed) = listed.take()
-            {
-                let _ = listed.send(outcome);
-            }
+                },
+            )
         },
     );
     // SAFETY: the system copies the block and calls it once on a queue of its own; the

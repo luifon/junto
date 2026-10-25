@@ -53,16 +53,18 @@ impl Connection {
         let errors = core
             .add_listener_local()
             .error(move |id, _, result, message| {
-                if ends_the_capture(id, result) {
-                    life.fail(error(message));
-                } else {
-                    tracing::debug!(
-                        id,
-                        result,
-                        message,
-                        "the PipeWire daemon reported an error that does not end the capture"
-                    );
-                }
+                crate::callback::stop_panic("PipeWire connection error", || (), || {
+                    if ends_the_capture(id, result) {
+                        life.fail(error(message));
+                    } else {
+                        tracing::debug!(
+                            id,
+                            result,
+                            message,
+                            "the PipeWire daemon reported an error that does not end the capture"
+                        );
+                    }
+                })
             })
             .register();
         Ok(Self {
@@ -85,15 +87,21 @@ impl Connection {
             let mainloop = self.mainloop.downgrade();
             let life = life.clone();
             move |_| {
-                if !life.stopped() && !done() {
-                    if timeout.is_none_or(|limit| started.elapsed() < limit) {
-                        return;
-                    }
-                    life.fail(error("PipeWire did not finish preparing the capture"));
-                }
-                if let Some(mainloop) = mainloop.upgrade() {
-                    mainloop.quit();
-                }
+                crate::callback::stop_panic(
+                    "PipeWire timer",
+                    || (),
+                    || {
+                        if !life.stopped() && !done() {
+                            if timeout.is_none_or(|limit| started.elapsed() < limit) {
+                                return;
+                            }
+                            life.fail(error("PipeWire did not finish preparing the capture"));
+                        }
+                        if let Some(mainloop) = mainloop.upgrade() {
+                            mainloop.quit();
+                        }
+                    },
+                )
             }
         });
         timer
@@ -116,9 +124,15 @@ impl Connection {
             .done({
                 let done = done.clone();
                 move |id, received| {
-                    if id == pw::core::PW_ID_CORE && received == sequence {
-                        done.set(true);
-                    }
+                    crate::callback::stop_panic(
+                        "PipeWire connection done",
+                        || (),
+                        || {
+                            if id == pw::core::PW_ID_CORE && received == sequence {
+                                done.set(true);
+                            }
+                        },
+                    )
                 }
             })
             .register();

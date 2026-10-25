@@ -53,6 +53,19 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual({entry.date_time for entry in archive.infolist()}, {(2023, 11, 14, 22, 13, 20)})
             self.assertEqual(sorted(path.name for path in (output / "package-directory").iterdir()), ["Junto"])
 
+    def test_the_symbols_of_the_program_are_in_the_folder_when_the_build_wrote_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            client, recover = root / "junto.exe", root / "junto-recover.exe"
+            client.write_bytes(b"MZ client")
+            recover.write_bytes(b"MZ recover")
+            (root / "junto.pdb").write_bytes(b"symbols")
+            output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000,
+                                      build=fixtures.build_directory(root / "build", TRIPLE))
+            with zipfile.ZipFile(output / "Junto-1.2.3-windows-x86_64.zip") as archive:
+                self.assertEqual(archive.read("Junto/junto.pdb"), b"symbols")
+            self.assertEqual((output / "package-directory/Junto/junto.pdb").read_bytes(), b"symbols")
+
     def test_a_file_that_is_not_a_windows_program_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

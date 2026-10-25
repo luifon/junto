@@ -7,6 +7,7 @@
 //! elsewhere ends its thread or the process as before, after the report is written.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::panic::PanicHookInfo;
@@ -20,18 +21,22 @@ use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 pub const REPORTS_DIRECTORY: &str = "panics";
 /// The reports that a data directory keeps; a new report removes the oldest beyond it.
 pub const KEPT_REPORTS: usize = 20;
-/// The reports that one process writes. Later panics are counted and not written, so that a
-/// panic that repeats does not fill the disk or hold the processor.
+/// The reports that one process writes into one data directory. A later panic is counted
+/// and shown without a file, and so is a panic at a location that has a report already, so
+/// that a panic that repeats does not fill the disk or hold the processor with backtraces.
 pub const WRITTEN_PER_PROCESS: usize = 10;
 
 /// One panic that the hook saw, as the window of its data directory shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
-    /// The report file. Absent when the report could not be written, or when this process
-    /// has written [`WRITTEN_PER_PROCESS`] reports.
+    /// The report file. Absent when the report could not be written, when this process has
+    /// written [`WRITTEN_PER_PROCESS`] reports into the data directory, or when it has a
+    /// report of the same location already.
     pub file: Option<PathBuf>,
     pub message: String,
     pub location: String,
+    /// The panics at this location in this process and data directory, this one included.
+    pub occurrence: usize,
 }
 
 struct Listener {
@@ -41,8 +46,18 @@ struct Listener {
 
 static PROCESS_DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static LISTENERS: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
-static WRITTEN: AtomicUsize = AtomicUsize::new(0);
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+static PANICS_IN_THE_PROCESS: AtomicUsize = AtomicUsize::new(0);
+
+/// What the hook has seen in each data directory: the reports written and the panics at
+/// each location.
+#[derive(Default)]
+struct Seen {
+    written: usize,
+    locations: HashMap<String, usize>,
+}
+
+static SEEN: Mutex<Option<HashMap<PathBuf, Seen>>> = Mutex::new(None);
 
 /// The latest messages of the panics of a thread that [`messages_on_this_thread`] gives.
 const KEPT_MESSAGES: usize = 8;
@@ -65,6 +80,7 @@ pub fn install() {
                 .try_with(|depth| depth.get() > 0)
                 .unwrap_or(false);
             if !handled {
+                PANICS_IN_THE_PROCESS.fetch_add(1, Ordering::Relaxed);
                 let _ = PANICS_ON_THIS_THREAD.try_with(|count| count.set(count.get() + 1));
                 let _ = MESSAGES.try_with(|messages| {
                     if let Ok(mut messages) = messages.try_borrow_mut() {
@@ -111,6 +127,12 @@ pub fn panics_on_this_thread() -> usize {
     PANICS_ON_THIS_THREAD.with(std::cell::Cell::get)
 }
 
+/// The count of the panics on every thread of the process since the hook was set, except
+/// those that [`handled_by_the_caller`] stops. A native test requires it to be unchanged.
+pub fn panics_in_this_process() -> usize {
+    PANICS_IN_THE_PROCESS.load(Ordering::Relaxed)
+}
+
 /// The messages of the latest panics on this thread, at most eight.
 pub fn messages_on_this_thread() -> Vec<String> {
     MESSAGES.with_borrow(Clone::clone)
@@ -129,6 +151,14 @@ pub fn handled_by_the_caller<R>(body: impl FnOnce() -> R) -> R {
     HANDLED_BY_THE_CALLER.with(|depth| depth.set(depth.get() + 1));
     let _depth = Depth;
     body()
+}
+
+/// True for 1, 10, 100 and so on.
+pub fn is_a_power_of_ten(mut count: usize) -> bool {
+    while count >= 10 && count.is_multiple_of(10) {
+        count /= 10;
+    }
+    count == 1
 }
 
 fn message_of(info: &PanicHookInfo<'_>) -> String {
@@ -161,7 +191,20 @@ fn record(info: &PanicHookInfo<'_>) {
         .location()
         .map(|location| location.to_string())
         .unwrap_or_default();
-    let file = if WRITTEN.fetch_add(1, Ordering::Relaxed) < WRITTEN_PER_PROCESS {
+    let (occurrence, write) = {
+        let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+        let seen = seen
+            .get_or_insert_with(HashMap::new)
+            .entry(data_dir.clone())
+            .or_default();
+        let occurrence = seen.locations.entry(location.clone()).or_insert(0);
+        *occurrence += 1;
+        let occurrence = *occurrence;
+        let write = occurrence == 1 && seen.written < WRITTEN_PER_PROCESS;
+        seen.written += usize::from(write);
+        (occurrence, write)
+    };
+    let file = if write {
         write_report(&data_dir, &message, &location).ok()
     } else {
         None
@@ -170,6 +213,7 @@ fn record(info: &PanicHookInfo<'_>) {
         file,
         message,
         location,
+        occurrence,
     };
     let listeners = LISTENERS.lock().unwrap_or_else(PoisonError::into_inner);
     for listener in listeners
@@ -185,7 +229,13 @@ fn record(info: &PanicHookInfo<'_>) {
 #[allow(clippy::disallowed_methods)]
 fn write_report(data_dir: &Path, message: &str, location: &str) -> std::io::Result<PathBuf> {
     let directory = reports_directory(data_dir);
-    std::fs::create_dir_all(&directory)?;
+    // Only the directory of the reports is made: the client makes the data directory itself,
+    // private to the account, and a report does not make it first.
+    match std::fs::create_dir(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
     let now = time::OffsetDateTime::now_utc();
     let stamp = format!(
         "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
@@ -197,7 +247,7 @@ fn write_report(data_dir: &Path, message: &str, location: &str) -> std::io::Resu
         now.second()
     );
     let name = format!(
-        "panic-{stamp}-{}-{}.txt",
+        "panic-{stamp}-{:010}-{:06}.txt",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
@@ -231,13 +281,35 @@ fn write_report(data_dir: &Path, message: &str, location: &str) -> std::io::Resu
     let _ = writeln!(text, "location: {location}");
     let _ = writeln!(text, "message: {message}");
     let _ = writeln!(text);
-    let _ = writeln!(text, "backtrace:");
-    let _ = writeln!(text, "{}", std::backtrace::Backtrace::force_capture());
+    // The header is on the disk before the backtrace is resolved, which can take long or
+    // fail.
     let mut file = std::fs::File::create_new(&path)?;
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
+    let backtrace = format!("backtrace:\n{}\n", backtrace());
+    file.write_all(backtrace.as_bytes())?;
+    file.sync_all()?;
     remove_old_reports(&directory);
     Ok(path)
+}
+
+/// The backtrace with the names of its functions, then the address of each frame with the
+/// base address of its module, from which a report of a build without the symbols can be
+/// resolved with the symbols of the release (ADR 0757).
+fn backtrace() -> String {
+    let mut text = std::backtrace::Backtrace::force_capture().to_string();
+    text.push_str("\nframes (address, base of its module, offset):\n");
+    backtrace::trace(|frame| {
+        let address = frame.ip() as usize;
+        let base = frame.module_base_address().map_or(0, |base| base as usize);
+        let _ = writeln!(
+            text,
+            "  {address:#x} {base:#x} +{:#x}",
+            address.wrapping_sub(base)
+        );
+        true
+    });
+    text
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -253,6 +325,67 @@ fn remove_old_reports(directory: &Path) {
     let excess = names.len().saturating_sub(KEPT_REPORTS);
     for name in names.iter().take(excess) {
         let _ = std::fs::remove_file(directory.join(name));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    #[inline(never)]
+    fn a_function_whose_name_the_report_shows() {
+        panic!("a panic of the report test");
+    }
+
+    /// Also a check of a release build (`cargo test --release`): the backtrace of a report
+    /// names the functions, which needs the symbols of the program (ADR 0757).
+    #[test]
+    fn a_report_names_the_functions_of_its_backtrace() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let _reports = watch(data_dir.path());
+        assert!(std::panic::catch_unwind(a_function_whose_name_the_report_shows).is_err());
+        let reports: Vec<_> = std::fs::read_dir(reports_directory(data_dir.path()))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        let text = std::fs::read_to_string(&reports[0]).unwrap();
+        assert!(
+            text.contains("message: a panic of the report test"),
+            "{text}"
+        );
+        assert!(
+            text.contains("a_function_whose_name_the_report_shows"),
+            "the backtrace names no function:\n{text}"
+        );
+        assert!(text.contains("frames (address, base of its module, offset):"));
+    }
+
+    #[test]
+    fn a_report_does_not_make_the_data_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        let data_dir = parent.path().join("not made");
+        let _reports = watch(&data_dir);
+        assert!(std::panic::catch_unwind(|| panic!("a panic before the data directory")).is_err());
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn a_location_has_one_report_in_a_process() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut reports = watch(data_dir.path());
+        for _ in 0..3 {
+            assert!(std::panic::catch_unwind(|| panic!("a panic that repeats")).is_err());
+        }
+        let files = std::fs::read_dir(reports_directory(data_dir.path()))
+            .unwrap()
+            .count();
+        assert_eq!(files, 1);
+        let occurrences: Vec<usize> = std::iter::from_fn(|| reports.try_recv().ok())
+            .map(|report| report.occurrence)
+            .collect();
+        assert_eq!(occurrences, [1, 2, 3]);
     }
 }
 
@@ -272,16 +405,28 @@ pub mod test_support {
         FeedScroll,
         /// The listener of the end of a press of the left button anywhere in the shell.
         PressEnd,
+        /// The render of the shell, inside a draw of the window.
+        Render,
     }
 
     thread_local! {
-        static NEXT: Cell<Option<Handler>> = const { Cell::new(None) };
+        /// The handler that panics, and whether it panics at every run.
+        static NEXT: Cell<Option<(Handler, bool)>> = const { Cell::new(None) };
         static PRESS_ENDS: Cell<usize> = const { Cell::new(0) };
     }
 
     /// The next run of `handler` on this thread panics.
     pub fn panic_in_the_next(handler: Handler) {
-        NEXT.with(|next| next.set(Some(handler)));
+        NEXT.with(|next| next.set(Some((handler, false))));
+    }
+
+    /// Every run of `handler` on this thread panics until [`stop_panicking`].
+    pub fn panic_in_every(handler: Handler) {
+        NEXT.with(|next| next.set(Some((handler, true))));
+    }
+
+    pub fn stop_panicking() {
+        NEXT.with(|next| next.set(None));
     }
 
     /// How often the handler of the end of a press ran on this thread.
@@ -293,8 +438,12 @@ pub mod test_support {
         if handler == Handler::PressEnd {
             PRESS_ENDS.with(|count| count.set(count.get() + 1));
         }
-        if NEXT.with(|next| next.get()) == Some(handler) {
-            NEXT.with(|next| next.set(None));
+        if let Some((armed, every)) = NEXT.with(Cell::get)
+            && armed == handler
+        {
+            if !every {
+                NEXT.with(|next| next.set(None));
+            }
             panic!("{MESSAGE}");
         }
     }

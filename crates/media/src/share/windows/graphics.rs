@@ -326,9 +326,17 @@ impl Session {
             .Closed(&TypedEventHandler::new({
                 let life = life.clone();
                 move |_, _| {
-                    // The window was closed, or the screen was removed.
-                    life.fail(CaptureError::SourceGone);
-                    Ok(())
+                    // A panic cannot unwind into the system that calls the handler
+                    // (ADR 0757).
+                    crate::callback::stop_panic(
+                        "share closed",
+                        || Ok(()),
+                        || {
+                            // The window was closed, or the screen was removed.
+                            life.fail(CaptureError::SourceGone);
+                            Ok(())
+                        },
+                    )
                 }
             }))
             .map_err(failed)?;
@@ -346,18 +354,34 @@ impl Session {
         let arrived = pool
             .FrameArrived(&TypedEventHandler::new(
                 move |pool: windows::core::Ref<'_, Direct3D11CaptureFramePool>, _| {
-                    let mut arrival = arrival.lock().unwrap_or_else(PoisonError::into_inner);
-                    if arrival.life.stopped() {
-                        return Ok(());
-                    }
-                    if let Err(failure) = pool
-                        .ok()
-                        .map_err(failed)
-                        .and_then(|pool| arrival.take(pool))
-                    {
-                        arrival.life.fail(failure);
-                    }
-                    Ok(())
+                    // A panic cannot unwind into the system that calls the handler; after
+                    // one the share ends (ADR 0757).
+                    crate::callback::stop_panic(
+                        "share picture",
+                        || {
+                            arrival
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .life
+                                .fail(CaptureError::Failed("the share callback panicked".into()));
+                            Ok(())
+                        },
+                        || {
+                            let mut arrival =
+                                arrival.lock().unwrap_or_else(PoisonError::into_inner);
+                            if arrival.life.stopped() {
+                                return Ok(());
+                            }
+                            if let Err(failure) = pool
+                                .ok()
+                                .map_err(failed)
+                                .and_then(|pool| arrival.take(pool))
+                            {
+                                arrival.life.fail(failure);
+                            }
+                            Ok(())
+                        },
+                    )
                 },
             ))
             .map_err(failed)?;

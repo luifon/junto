@@ -98,6 +98,9 @@ gpui-base = "=0.7.1"
 futures-channel = "0.3"
 # The reports of the panic hook reach the window through a channel of `futures-channel`.
 futures-util = { workspace = true }
+# The addresses of the frames of a panic report with the base of their module (ADR 0757).
+# gpui uses the same crate.
+backtrace = "0.3"
 # The picture of a share is given to gpui as an image of this crate, in the version that
 # gpui uses.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

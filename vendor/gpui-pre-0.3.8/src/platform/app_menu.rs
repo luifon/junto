@@ -344,6 +344,7 @@ pub(crate) fn init_app_menus(platform: &dyn Platform, cx: &App) {
     platform.on_validate_app_menu_command(Box::new({
         let cx = cx.to_async();
         move |action| {
+            // Modified: the callback stops a panic of its body.
             crate::unwind::catch(
                 "menu command",
                 || false,
@@ -360,6 +361,7 @@ pub(crate) fn init_app_menus(platform: &dyn Platform, cx: &App) {
     platform.on_app_menu_action(Box::new({
         let cx = cx.to_async();
         move |action| {
+            // Modified: the callback stops a panic of its body.
             crate::unwind::catch(
                 "menu action",
                 || (),

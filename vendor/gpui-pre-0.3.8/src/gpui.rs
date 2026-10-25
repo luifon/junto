@@ -379,7 +379,8 @@ where
     {
         let mut global = self.borrow_mut().lease_global::<G>();
         // Modified: the global returns to the application when the update panics.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut global, self)));
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut global, self)));
         self.borrow_mut().end_global_lease(global);
         result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
     }

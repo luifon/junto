@@ -110,7 +110,7 @@ async fn stages(
     data_dir: &Path,
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
-    let at_start = panics::panics_on_this_thread();
+    let at_start = panics::panics_in_this_process();
     let notices = |cx: &mut AsyncApp| {
         state.read_with(&*cx, |state, _| {
             state.panic_notice().map(|notice| notice.count)
@@ -151,7 +151,7 @@ async fn stages(
 
     wait_for_a_frame(window, cx).await?;
     let expected = if cfg!(target_os = "macos") { 2 } else { 1 };
-    let panics = panics::panics_on_this_thread() - at_start;
+    let panics = panics::panics_in_this_process() - at_start;
     if panics != expected {
         return Err(format!(
             "{panics} panics happened, {expected} were expected"

@@ -721,10 +721,13 @@ impl AppState {
         let panics = cx.spawn(async move |this, cx| {
             use futures_util::StreamExt as _;
             while let Some(report) = reports.next().await {
-                if this
-                    .update(cx, |this, cx| this.panic_recorded(report, cx))
-                    .is_err()
-                {
+                // A panic in this update, such as one in a draw that the notice starts, is
+                // recorded by the hook and ends this update only, not the task that takes
+                // the later reports (ADR 0757).
+                let updated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.update(cx, |this, cx| this.panic_recorded(report, cx))
+                }));
+                if matches!(updated, Ok(Err(_))) {
                     break;
                 }
             }
@@ -874,12 +877,17 @@ impl AppState {
     }
 
     fn panic_recorded(&mut self, report: crate::panics::Report, cx: &mut Context<Self>) {
-        tracing::error!(
-            report = ?report.file,
-            location = %report.location,
-            "a panic was recorded: {}",
-            report.message
-        );
+        // The 1st, 10th, 100th, ... panic of each location, so that a panic that repeats does
+        // not fill the log (ADR 0757).
+        if crate::panics::is_a_power_of_ten(report.occurrence) {
+            tracing::error!(
+                report = ?report.file,
+                location = %report.location,
+                occurrence = report.occurrence,
+                "a panic was recorded: {}",
+                report.message
+            );
+        }
         let count = self.panic_notice.as_ref().map_or(0, |notice| notice.count) + 1;
         self.panic_notice = Some(PanicNotice {
             count,

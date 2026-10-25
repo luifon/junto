@@ -352,6 +352,10 @@ thread_local! {
     static CURRENT_ELEMENT_ARENA: Cell<Option<*const RefCell<Arena>>> = const { Cell::new(None) };
 }
 
+// Modified: added. The draws in a row that may panic before a window waits for a press of
+// the person (`Window::draw`).
+const FAILED_DRAWS_BEFORE_A_PAUSE: usize = 3;
+
 /// Whether a window draw is currently in progress on this thread.
 ///
 /// This holds exactly while an `ElementArenaScope` is active: nested scopes
@@ -1200,6 +1204,8 @@ pub struct Window {
     last_text_input_configuration: Option<TextInputConfiguration>,
     focused_text_input_active: bool,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
+    // Modified: the draws that panicked in a row (`Window::draw`).
+    failed_draws: usize,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
     next_hitbox_id: HitboxId,
@@ -1711,6 +1717,7 @@ impl Window {
                 });
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_request_frame(crate::unwind::callback("request frame", {
             let mut cx = cx.to_async();
             let invalidator = invalidator.clone();
@@ -1719,6 +1726,7 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             let mut deferred_force_render = false;
+            // Modified: the type is named for the wrapper of the callback.
             move |request_frame_options: crate::RequestFrameOptions| {
                 #[cfg(feature = "profiler")]
                 let (_foreground_turn, window_id) = {
@@ -1886,6 +1894,7 @@ impl Window {
             }
         }));
         invalidator.set_platform_waker(platform_window.frame_waker());
+        // Modified: the callback stops a panic of its body.
         platform_window.on_visual_viewport_changed(crate::unwind::callback0("visual viewport", {
             let mut cx = cx.to_async();
             move || {
@@ -1894,6 +1903,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_insets_changed(crate::unwind::callback("insets", {
             let mut cx = cx.to_async();
             move |_| {
@@ -1902,6 +1912,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_resize(crate::unwind::callback2("resize", {
             let mut cx = cx.to_async();
             move |_, _| {
@@ -1910,6 +1921,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_moved(crate::unwind::callback0("move", {
             let mut cx = cx.to_async();
             move || {
@@ -1918,6 +1930,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_appearance_changed(crate::unwind::callback0("appearance", {
             let cx = cx.to_async();
             let foreground_executor = cx.foreground_executor().clone();
@@ -1934,6 +1947,7 @@ impl Window {
                     .detach();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_button_layout_changed(crate::unwind::callback0("button layout", {
             let mut cx = cx.to_async();
             move || {
@@ -1942,6 +1956,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_active_status_change(crate::unwind::callback("activation", {
             let mut cx = cx.to_async();
             move |active| {
@@ -1963,6 +1978,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_visibility_change(crate::unwind::callback("visibility", {
             let mut cx = cx.to_async();
             move |_| {
@@ -1973,6 +1989,7 @@ impl Window {
                     .log_err();
             }
         }));
+        // Modified: the callback stops a panic of its body.
         platform_window.on_hover_status_change(crate::unwind::callback("hover", {
             let mut cx = cx.to_async();
             move |active| {
@@ -1986,6 +2003,7 @@ impl Window {
         }));
         platform_window.on_input({
             let mut cx = cx.to_async();
+            // Modified: the callback stops a panic of its body.
             crate::unwind::callback_with("input", DispatchEventResult::default, move |event| {
                 handle
                     .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
@@ -1995,22 +2013,28 @@ impl Window {
         });
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
-            crate::unwind::callback0_with("window control", || None, move || {
-                handle
-                    .update(&mut cx, |_, window, _cx| {
-                        for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
-                            if window.mouse_hit_test.ids.contains(&hitbox.id) {
-                                return Some(*area);
+            // Modified: the callback stops a panic of its body.
+            crate::unwind::callback0_with(
+                "window control",
+                || None,
+                move || {
+                    handle
+                        .update(&mut cx, |_, window, _cx| {
+                            for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
+                                if window.mouse_hit_test.ids.contains(&hitbox.id) {
+                                    return Some(*area);
+                                }
                             }
-                        }
-                        None
-                    })
-                    .log_err()
-                    .unwrap_or(None)
-            })
+                            None
+                        })
+                        .log_err()
+                        .unwrap_or(None)
+                },
+            )
         });
         platform_window.on_move_tab_to_new_window({
             let mut cx = cx.to_async();
+            // Modified: the callback stops a panic of its body.
             crate::unwind::callback0("move tab", move || {
                 handle
                     .update(&mut cx, |_, _window, cx| {
@@ -2021,6 +2045,7 @@ impl Window {
         });
         platform_window.on_merge_all_windows({
             let mut cx = cx.to_async();
+            // Modified: the callback stops a panic of its body.
             crate::unwind::callback0("merge windows", move || {
                 handle
                     .update(&mut cx, |_, _window, cx| {
@@ -2031,6 +2056,7 @@ impl Window {
         });
         platform_window.on_select_next_tab({
             let mut cx = cx.to_async();
+            // Modified: the callback stops a panic of its body.
             crate::unwind::callback0("next tab", move || {
                 handle
                     .update(&mut cx, |_, _window, cx| {
@@ -2041,6 +2067,7 @@ impl Window {
         });
         platform_window.on_select_previous_tab({
             let mut cx = cx.to_async();
+            // Modified: the callback stops a panic of its body.
             crate::unwind::callback0("previous tab", move || {
                 handle
                     .update(&mut cx, |_, _window, cx| {
@@ -2051,6 +2078,7 @@ impl Window {
         });
         platform_window.on_toggle_tab_bar({
             let mut cx = cx.to_async();
+            // Modified: the callback stops a panic of its body.
             crate::unwind::callback0("tab bar", move || {
                 handle
                     .update(&mut cx, |_, window, cx| {
@@ -2140,6 +2168,7 @@ impl Window {
             prompt: None,
             client_inset: None,
             image_cache_stack: Vec::new(),
+            failed_draws: 0,
             captured_hitbox: None,
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
@@ -3308,26 +3337,58 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
-        // Modified: a panic in a draw leaves the window ready for the next draw.
-        crate::unwind::restore_on_panic(
+        // Modified: a panic in a draw leaves the window ready for the next draw. After
+        // `FAILED_DRAWS_BEFORE_A_PAUSE` failed draws in a row the window draws nothing until
+        // the person presses a key or a button (`dispatch_event`).
+        if self.failed_draws >= FAILED_DRAWS_BEFORE_A_PAUSE {
+            self.invalidator.set_dirty(false);
+            return ArenaClearNeeded::new(&cx.element_arena);
+        }
+        let drawn = crate::unwind::restore_on_panic(
             self,
             |window| window.draw_frame(cx),
             Window::reset_after_a_panic_in_a_draw,
-        )
+        );
+        self.failed_draws = 0;
+        drawn
     }
 
     // Modified: added. The frame that was drawn stays on the screen and keeps its hitboxes.
     // The element states that the failed draw had moved to the next frame return to it. A
     // listener or a handler that the failed draw had moved out of it is lost until the next
-    // draw, which renders every view again instead of reusing a view of the failed one.
-    // The next draw starts at the next change of the window, so that a view that panics
-    // at each render does not make a draw at each frame of the display.
+    // draw, which renders every view again instead of reusing a view of the failed one. The
+    // stacks that the elements push and pop during a draw are emptied, and the input handler
+    // returns to the platform window. The next draw starts at the next change of the window.
     fn reset_after_a_panic_in_a_draw(&mut self) {
+        self.failed_draws += 1;
         for (key, state) in self.next_frame.element_states.drain() {
-            self.rendered_frame.element_states.entry(key).or_insert(state);
+            self.rendered_frame
+                .element_states
+                .entry(key)
+                .or_insert(state);
         }
         self.next_frame.clear();
         self.rendered_entity_stack.clear();
+        self.element_id_stack.clear();
+        self.text_style_stack.clear();
+        self.content_mask_stack.clear();
+        self.element_offset_stack.clear();
+        self.rem_size_override_stack.clear();
+        self.image_cache_stack.clear();
+        self.element_opacity = 1.0;
+        self.tooltip_bounds = None;
+        self.requested_autoscroll = None;
+        if let Some(input_handler) = self.platform_window.take_input_handler() {
+            self.platform_window.set_input_handler(input_handler);
+        } else if let Some(input_handler) = self
+            .rendered_frame
+            .input_handlers
+            .iter_mut()
+            .rev()
+            .find_map(|handler| handler.take())
+        {
+            self.platform_window.set_input_handler(input_handler);
+        }
         if let Some(layout_engine) = self.layout_engine.as_mut() {
             layout_engine.clear();
         } else {
@@ -3629,21 +3690,30 @@ impl Window {
         let mut active_drag_element = None;
         let mut tooltip_element = None;
         if let Some(prompt) = self.prompt.take() {
-            let mut element = prompt.view.any_view().into_any_element();
-            let prompt_layout_id = element.request_layout(self, cx);
-            self.layout_engine
-                .as_mut()
-                .unwrap()
-                .stretch_auto_size_to_fill(prompt_layout_id, root_size, scale_factor);
-            element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
-            prompt_element = Some(element);
+            // Modified: the prompt and the drag return when their prepaint panics.
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut element = prompt.view.any_view().into_any_element();
+                let prompt_layout_id = element.request_layout(self, cx);
+                self.layout_engine
+                    .as_mut()
+                    .unwrap()
+                    .stretch_auto_size_to_fill(prompt_layout_id, root_size, scale_factor);
+                element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
+                element
+            }));
             self.prompt = Some(prompt);
+            prompt_element =
+                Some(unwound.unwrap_or_else(|payload| std::panic::resume_unwind(payload)));
         } else if let Some(active_drag) = cx.active_drag.take() {
-            let mut element = active_drag.view.clone().into_any_element();
-            let offset = self.mouse_position() - active_drag.cursor_offset;
-            element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
-            active_drag_element = Some(element);
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut element = active_drag.view.clone().into_any_element();
+                let offset = self.mouse_position() - active_drag.cursor_offset;
+                element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
+                element
+            }));
             cx.active_drag = Some(active_drag);
+            active_drag_element =
+                Some(unwound.unwrap_or_else(|payload| std::panic::resume_unwind(payload)));
         } else {
             tooltip_element = self.prepaint_tooltip(cx);
         }
@@ -5494,6 +5564,17 @@ impl Window {
     /// Dispatch a mouse, keyboard, or touch event on the window.
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
+        // Modified: a press of the person allows one more draw of a window whose draws
+        // panicked (`Window::draw`).
+        if self.failed_draws >= FAILED_DRAWS_BEFORE_A_PAUSE
+            && matches!(
+                event,
+                PlatformInput::MouseDown(_) | PlatformInput::KeyDown(_)
+            )
+        {
+            self.failed_draws = FAILED_DRAWS_BEFORE_A_PAUSE - 1;
+            self.refresh();
+        }
         #[cfg(feature = "profiler")]
         self.window_profiler.begin_input(event.kind_name());
         let update_count_before = self.invalidator.update_count();
@@ -6414,16 +6495,19 @@ impl Window {
             .global_action_listeners
             .remove(&action.as_any().type_id())
         {
-            for listener in &global_listeners {
-                #[cfg(feature = "profiler")]
-                self.window_profiler.begin_action_handler(action, cx);
-                listener(action.as_any(), DispatchPhase::Capture, cx);
-                #[cfg(feature = "profiler")]
-                self.window_profiler.end_action_handler();
-                if !cx.propagate_event {
-                    break;
+            // Modified: the listeners are put back when one of them panics.
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for listener in &global_listeners {
+                    #[cfg(feature = "profiler")]
+                    self.window_profiler.begin_action_handler(action, cx);
+                    listener(action.as_any(), DispatchPhase::Capture, cx);
+                    #[cfg(feature = "profiler")]
+                    self.window_profiler.end_action_handler();
+                    if !cx.propagate_event {
+                        break;
+                    }
                 }
-            }
+            }));
 
             global_listeners.extend(
                 cx.global_action_listeners
@@ -6433,6 +6517,9 @@ impl Window {
 
             cx.global_action_listeners
                 .insert(action.as_any().type_id(), global_listeners);
+            if let Err(payload) = unwound {
+                std::panic::resume_unwind(payload);
+            }
         }
 
         if !cx.propagate_event {
@@ -6491,18 +6578,21 @@ impl Window {
             .global_action_listeners
             .remove(&action.as_any().type_id())
         {
-            for listener in global_listeners.iter().rev() {
-                cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
+            // Modified: the listeners are put back when one of them panics.
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                for listener in global_listeners.iter().rev() {
+                    cx.propagate_event = false; // Actions stop propagation by default during the bubble phase
 
-                #[cfg(feature = "profiler")]
-                self.window_profiler.begin_action_handler(action, cx);
-                listener(action.as_any(), DispatchPhase::Bubble, cx);
-                #[cfg(feature = "profiler")]
-                self.window_profiler.end_action_handler();
-                if !cx.propagate_event {
-                    break;
+                    #[cfg(feature = "profiler")]
+                    self.window_profiler.begin_action_handler(action, cx);
+                    listener(action.as_any(), DispatchPhase::Bubble, cx);
+                    #[cfg(feature = "profiler")]
+                    self.window_profiler.end_action_handler();
+                    if !cx.propagate_event {
+                        break;
+                    }
                 }
-            }
+            }));
 
             global_listeners.extend(
                 cx.global_action_listeners
@@ -6512,6 +6602,9 @@ impl Window {
 
             cx.global_action_listeners
                 .insert(action.as_any().type_id(), global_listeners);
+            if let Err(payload) = unwound {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 
@@ -6789,9 +6882,12 @@ impl Window {
         let mut cx = self.to_async(cx);
         // Modified: a panic of the callback closes the window, as a failed update does.
         self.platform_window
-            .on_should_close(crate::unwind::callback0_with("should close", || true, move || {
-                cx.update(|window, cx| f(window, cx)).unwrap_or(true)
-            }))
+            // Modified: the callback stops a panic of its body.
+            .on_should_close(crate::unwind::callback0_with(
+                "should close",
+                || true,
+                move || cx.update(|window, cx| f(window, cx)).unwrap_or(true),
+            ))
     }
 
     /// Register an action listener on this node for the next frame. The type of action

@@ -1188,3 +1188,63 @@ pub fn member(
     window.until_ready();
     (directory, window)
 }
+
+/// The press of a [`Pad`]: what the test runs when the pad is pressed.
+pub type Press = std::rc::Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
+
+/// A view of a test that uses gpui alone: a square that runs [`Press`] when the left button
+/// is pressed on it. The tests of the state that gpui puts back after a panic use it
+/// (ADR 0757).
+pub struct Pad {
+    press: Press,
+}
+
+impl gpui::Render for Pad {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        gpui::div()
+            .size_full()
+            .child(gpui::div().id("pad").size(gpui::px(200.0)).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| (this.press.clone())(window, cx)),
+            ))
+    }
+}
+
+/// Opens a window of a [`Pad`] and runs its work until it rests.
+pub fn pad(cx: &mut TestAppContext, press: Press) -> VisualTestContext {
+    junto_client::panics::install();
+    let window = cx.add_window(move |_, _| Pad { press });
+    let cx = VisualTestContext::from_window(window.into(), cx);
+    cx.run_until_parked();
+    cx
+}
+
+/// Presses and releases the left button on the pad, through the input callback of the test
+/// window, as a platform gives the events.
+pub fn press_pad(cx: &mut VisualTestContext) {
+    use gpui::{MouseButton, MouseDownEvent, MouseUpEvent, point, px};
+    let position = point(px(20.0), px(20.0));
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position,
+        click_count: 1,
+        ..Default::default()
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position,
+        click_count: 1,
+        ..Default::default()
+    });
+}
+
+/// A press that dispatches `action` from the window, which has no listener of its own: the
+/// action reaches the global listeners.
+pub fn dispatch_from_the_window(action: Box<dyn gpui::Action>) -> Press {
+    std::rc::Rc::new(move |window, cx| window.dispatch_action(action.boxed_clone(), cx))
+}

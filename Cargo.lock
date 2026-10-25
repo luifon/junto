@@ -3820,6 +3820,7 @@ dependencies = [
 name = "junto-client"
 version = "0.1.0"
 dependencies = [
+ "backtrace",
  "chrono",
  "chrono-tz",
  "core-foundation 0.10.1",

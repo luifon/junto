@@ -37,6 +37,7 @@ mod departures;
 mod files;
 mod flows;
 mod glossary;
+mod gpui_panics;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]

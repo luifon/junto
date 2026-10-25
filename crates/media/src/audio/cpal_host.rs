@@ -104,14 +104,30 @@ fn passes(error: &cpal::Error, output: bool) -> bool {
     }
 }
 
-fn report(mut failed: Failed, output: bool) -> impl FnMut(cpal::Error) + Send + 'static {
+fn report(failed: Shared, output: bool) -> impl FnMut(cpal::Error) + Send + 'static {
     move |error| {
         if passes(&error, output) {
             tracing::debug!(%error, "a sound stream had a fault that passes");
         } else {
-            failed(error_of(error));
+            tell(&failed, error_of(error));
         }
     }
+}
+
+/// The failure callback of a stream, which its error callback and its data callback share.
+type Shared = std::sync::Arc<std::sync::Mutex<Failed>>;
+
+fn tell(failed: &Shared, error: AudioError) {
+    (failed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner))(error);
+}
+
+/// The data callback of a stream runs on a thread of the system (a CoreAudio callback on
+/// macOS). After a panic in it, the stream delivers nothing more and is reported as failed
+/// (ADR 0757).
+fn panicked() -> AudioError {
+    AudioError::Failed("the sound callback panicked".into())
 }
 
 /// The format that a stream of a device is opened with: the default of the device, or
@@ -157,12 +173,28 @@ where
         channels: config.channels,
     };
     let mut converted: Vec<f32> = Vec::new();
+    let failed: Shared = std::sync::Arc::new(std::sync::Mutex::new(failed));
+    let told = failed.clone();
+    let mut broken = false;
     device.build_input_stream(
         config,
         move |samples: &[T], _: &cpal::InputCallbackInfo| {
-            converted.clear();
-            converted.extend(samples.iter().map(|sample| f32::from_sample(*sample)));
-            deliver(&converted, format);
+            if broken {
+                return;
+            }
+            broken = crate::callback::stop_panic(
+                "microphone",
+                || true,
+                || {
+                    converted.clear();
+                    converted.extend(samples.iter().map(|sample| f32::from_sample(*sample)));
+                    deliver(&converted, format);
+                    false
+                },
+            );
+            if broken {
+                tell(&told, panicked());
+            }
         },
         report(failed, false),
         Some(OPEN_TIMEOUT),
@@ -183,12 +215,31 @@ where
         channels: config.channels,
     };
     let mut filled: Vec<f32> = Vec::new();
+    let failed: Shared = std::sync::Arc::new(std::sync::Mutex::new(failed));
+    let told = failed.clone();
+    let mut broken = false;
     device.build_output_stream(
         config,
         move |samples: &mut [T], _: &cpal::OutputCallbackInfo| {
-            filled.clear();
-            filled.resize(samples.len(), 0.0);
-            fill(&mut filled, format);
+            if !broken {
+                broken = crate::callback::stop_panic(
+                    "sound output",
+                    || true,
+                    || {
+                        filled.clear();
+                        filled.resize(samples.len(), 0.0);
+                        fill(&mut filled, format);
+                        false
+                    },
+                );
+                if broken {
+                    tell(&told, panicked());
+                }
+            }
+            if broken {
+                filled.clear();
+                filled.resize(samples.len(), 0.0);
+            }
             for (sample, value) in samples.iter_mut().zip(&filled) {
                 *sample = T::from_sample(*value);
             }

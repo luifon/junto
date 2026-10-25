@@ -10,7 +10,7 @@ A configured build checks at startup and periodically. Click Update on its notic
 
 Version states when no source is configured or when verification or the date of the update information prevents an update. Unrecognized signing keys do not produce a download link or installation action. A build marked "test configuration" is not a product release.
 
-Junto writes its log to `logs/junto.log` in `~/Library/Application Support/Junto` (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `panics/` in the same directory, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log, `info` by default (ADR 0757).
+Junto writes its log to `logs/junto.log` in `~/Library/Application Support/Junto` (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `panics/` in the same directory, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. When a second instance of Junto runs on the same data directory, only the first writes the log. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`$TMPDIR`) (ADR 0757).
 
 If the new application cannot start, recover it as follows:
 

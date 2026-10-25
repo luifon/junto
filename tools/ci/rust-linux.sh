@@ -28,6 +28,11 @@ step "The client holds the camera code and not the test camera device"
 tools/linux-container.sh sh -c 'llvm-nm-22 /target/debug/junto >/tmp/symbols && grep -q junto_camera_open /tmp/symbols && ! grep -q junto_fake_ /tmp/symbols'
 step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
+# A panic in a task of the window thread, on the event loop of X11 and of Wayland: the client
+# continues, writes the report and states it (ADR 0757).
+step "Panics in the callbacks of the platform"
+tools/linux-container.sh tools/linux/display.sh x11 sh -c 'JUNTO_TEST_NATIVE_PANICS=1 cargo test --locked -p junto-client --test native_panics'
+tools/linux-container.sh tools/linux/display.sh wayland sh -c 'JUNTO_TEST_NATIVE_PANICS=1 cargo test --locked -p junto-client --test native_panics'
 # The camera unit tests with the counts that the device checks read (ADR 0913); they open no
 # device.
 step "Camera unit tests of the device checks"

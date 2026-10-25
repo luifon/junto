@@ -7,6 +7,10 @@
 //! thread of the window does not wait for the file system (ADR 0730). When the thread of the
 //! log is behind by [`QUEUED_LINES`] lines, a new line is dropped and counted, and the file
 //! states the count.
+//!
+//! One process writes the log of a data directory: it holds the lock of `logs/lock` while it
+//! runs. Another instance on the same directory writes no log file. The lines given before
+//! the file is opened, at most [`EARLY_LINES`], are written first when it opens.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -27,6 +31,10 @@ pub const FILE_LIMIT: u64 = 4 * 1024 * 1024;
 pub const KEPT_FILES: u32 = 2;
 /// The lines that wait for the thread of the log at most.
 pub const QUEUED_LINES: usize = 4096;
+/// The lines given before the file is opened that are kept for it.
+pub const EARLY_LINES: usize = 256;
+/// The lock of the log of a data directory, inside its directory of the log.
+pub const LOCK_FILE: &str = "lock";
 
 enum Message {
     Line(Vec<u8>),
@@ -37,8 +45,23 @@ enum Message {
 /// its data directory, and holds its lock, only after the log has started.
 #[derive(Clone, Default)]
 pub struct LogFile {
-    sender: Arc<Mutex<Option<SyncSender<Message>>>>,
+    sender: Arc<Mutex<Writer>>,
     dropped: Arc<AtomicUsize>,
+    thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+}
+
+enum Writer {
+    /// Before [`LogFile::open`]: the first lines.
+    Early(Vec<Vec<u8>>),
+    Open(SyncSender<Message>),
+    /// No file: another instance holds the log, or the file could not be opened.
+    None,
+}
+
+impl Default for Writer {
+    fn default() -> Self {
+        Self::Early(Vec::new())
+    }
 }
 
 impl LogFile {
@@ -55,34 +78,43 @@ impl LogFile {
     // The start of the application opens the file, before the window (ADR 0730).
     #[allow(clippy::disallowed_methods)]
     fn open_with_limit(&self, data_dir: &Path, limit: u64) -> io::Result<PathBuf> {
-        let directory = data_dir.join(LOGS_DIRECTORY);
-        std::fs::create_dir_all(&directory)?;
-        let path = directory.join(LOG_FILE);
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let size = file.metadata()?.len();
-        let open = Open {
-            path: path.clone(),
-            file,
-            size,
-            limit,
+        let opened = open_file(data_dir, limit);
+        let mut writer = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
+        let (open, lock) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                *writer = Writer::None;
+                return Err(error);
+            }
         };
+        let path = open.path.clone();
         let (sender, receiver) = sync_channel(QUEUED_LINES);
+        if let Writer::Early(lines) = std::mem::replace(&mut *writer, Writer::None) {
+            for line in lines {
+                let _ = sender.try_send(Message::Line(line));
+            }
+        }
         let dropped = self.dropped.clone();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("junto-log".to_owned())
-            .spawn(move || write_lines(open, &receiver, &dropped))?;
-        *self.sender.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
+            .spawn(move || {
+                // The lock lasts as long as the thread of the log, which is the life of the
+                // process for the log of the application.
+                let _lock = lock;
+                write_lines(open, &receiver, &dropped);
+            })?;
+        *writer = Writer::Open(sender);
+        *self.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
         Ok(path)
     }
 
     /// Waits until the thread of the log has written the lines given before.
     pub fn written(&self) {
         let (done, wait) = std::sync::mpsc::channel();
-        let sender = self
-            .sender
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let sender = match &*self.sender.lock().unwrap_or_else(PoisonError::into_inner) {
+            Writer::Open(sender) => Some(sender.clone()),
+            _ => None,
+        };
         if let Some(sender) = sender
             && sender.send(Message::Written(done)).is_ok()
         {
@@ -90,15 +122,73 @@ impl LogFile {
         }
     }
 
-    fn give(&self, line: Vec<u8>) {
-        let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(sender) = sender.as_ref() else {
-            return;
-        };
-        if let Err(TrySendError::Full(_)) = sender.try_send(Message::Line(line)) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+    /// Ends the thread of the log after the lines given before, and releases the lock.
+    #[cfg(test)]
+    fn close(&self) {
+        *self.sender.lock().unwrap_or_else(PoisonError::into_inner) = Writer::None;
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
         }
     }
+
+    fn give(&self, line: Vec<u8>) {
+        let mut writer = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *writer {
+            Writer::Early(lines) => {
+                if lines.len() < EARLY_LINES {
+                    lines.push(line);
+                }
+            }
+            Writer::Open(sender) => {
+                if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
+                    sender.try_send(Message::Line(line))
+                {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Writer::None => {}
+        }
+    }
+}
+
+/// Takes the lock of the log of the data directory and opens the file.
+// The start of the application opens the file, before the window (ADR 0730).
+#[allow(clippy::disallowed_methods)]
+fn open_file(data_dir: &Path, limit: u64) -> io::Result<(Open, File)> {
+    let directory = data_dir.join(LOGS_DIRECTORY);
+    std::fs::create_dir_all(&directory)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(directory.join(LOCK_FILE))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(io::Error::other(
+                "another instance of Junto writes the log of this data directory",
+            ));
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(error),
+    }
+    let path = directory.join(LOG_FILE);
+    let file = OpenOptions::new().create(true).append(true).open(&path)?;
+    let size = file.metadata()?.len();
+    Ok((
+        Open {
+            path,
+            file,
+            size,
+            limit,
+            rotate_at: limit,
+        },
+        lock,
+    ))
 }
 
 fn write_lines(mut open: Open, receiver: &Receiver<Message>, dropped: &AtomicUsize) {
@@ -110,8 +200,11 @@ fn write_lines(mut open: Open, receiver: &Receiver<Message>, dropped: &AtomicUsi
                     let note = format!("{lost} lines of the log were dropped here\n");
                     let _ = open.write(note.as_bytes());
                 }
-                // A line that cannot be written is lost; the application continues.
-                let _ = open.write(&line);
+                // A line that cannot be written is lost and counted; the application
+                // continues.
+                if open.write(&line).is_err() {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                }
             }
             Message::Written(done) => {
                 let _ = done.send(());
@@ -125,14 +218,21 @@ struct Open {
     file: File,
     size: u64,
     limit: u64,
+    /// The size at which the next rotation is tried: one limit after the last failed one.
+    rotate_at: u64,
 }
 
 // These run on the thread of the log only.
 #[allow(clippy::disallowed_methods)]
 impl Open {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if self.size > 0 && self.size + bytes.len() as u64 > self.limit {
-            self.rotate()?;
+        if self.size > 0 && self.size + bytes.len() as u64 > self.rotate_at {
+            // A rotation that fails, for example while another program holds an earlier file
+            // open, is tried again after a further limit; the line goes into the current file.
+            self.rotate_at = match self.rotate() {
+                Ok(()) => self.limit,
+                Err(_) => self.size + self.limit,
+            };
         }
         self.file.write_all(bytes)?;
         self.size += bytes.len() as u64;
@@ -210,15 +310,51 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_written_before_the_file_is_opened() {
+    fn the_lines_before_the_file_opens_are_written_first_with_a_bound() {
         let data_dir = tempfile::tempdir().unwrap();
         let log = LogFile::new();
-        write_line(&log, "before\n");
+        for number in 0..EARLY_LINES + 10 {
+            write_line(&log, &format!("before {number}\n"));
+        }
         let path = log.open(data_dir.path()).unwrap();
         write_line(&log, "after\n");
         log.written();
         assert_eq!(path, data_dir.path().join("logs").join("junto.log"));
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+        let text = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), EARLY_LINES + 1);
+        assert_eq!(lines[0], "before 0");
+        assert_eq!(
+            lines[EARLY_LINES - 1],
+            format!("before {}", EARLY_LINES - 1)
+        );
+        assert_eq!(lines[EARLY_LINES], "after");
+    }
+
+    #[test]
+    fn a_second_log_of_the_same_data_directory_writes_no_file() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let first = LogFile::new();
+        let path = first.open_with_limit(data_dir.path(), 16).unwrap();
+        let second = LogFile::new();
+        assert!(second.open_with_limit(data_dir.path(), 16).is_err());
+        for number in 0..20 {
+            write_line(&first, &format!("first {number:02}\n"));
+            write_line(&second, &format!("second {number:02}\n"));
+        }
+        first.written();
+        let directory = path.parent().unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["junto.log", "junto.log.1", "junto.log.2", "lock"]);
+        for name in &names[..3] {
+            let text = std::fs::read_to_string(directory.join(name)).unwrap();
+            assert!(!text.contains("second"), "{name}: {text}");
+            assert!(text.len() <= 16, "{name}: {text}");
+        }
     }
 
     #[test]
@@ -236,7 +372,7 @@ mod tests {
         assert_eq!(read(&numbered(&path, 2)), "line 4\n");
         assert!(!numbered(&path, 3).exists());
         let names = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
-        assert_eq!(names, 3);
+        assert_eq!(names, 4, "three files of the log and the lock");
     }
 
     #[test]
@@ -246,6 +382,7 @@ mod tests {
         let path = first.open_with_limit(data_dir.path(), 16).unwrap();
         write_line(&first, "first start\n");
         first.written();
+        first.close();
         let second = LogFile::new();
         second.open_with_limit(data_dir.path(), 16).unwrap();
         write_line(&second, "second\n");

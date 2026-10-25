@@ -98,6 +98,11 @@ cargo test --locked -p junto-media --lib --test native_exceptions --test windows
 # program runs, and rolled back by its recovery program (ADR 0755).
 step "Windows package"
 python3 packaging/check_windows.py
+# A panic in a task of the window thread, run by the window procedure: the client continues,
+# writes the report and states it (ADR 0757). Its window appears without taking the focus for
+# a few seconds and closes with the test.
+step "Panics in the callbacks of the platform"
+JUNTO_TEST_NATIVE_PANICS=1 cargo test --locked --workspace --test native_panics
 # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0912). This
 # step has no database, so a test here that needs one fails. --workspace, as in the build
 # step, so that Cargo builds nothing again.

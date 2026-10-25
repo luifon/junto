@@ -1,6 +1,10 @@
 # The prebuilt WebRTC library of the LiveKit SDK uses the static C runtime of Windows, and
 # MSVC links no program from objects of both runtimes. Every crate of a Windows build then
 # uses the static runtime (ADR 0753).
+#
+# A Windows build also has the line tables of every crate: the backtrace of a panic report
+# resolves its frames through the PDB of the program, which otherwise holds only the public
+# symbols and names the wrong functions (ADR 0757). The package carries the PDB (ADR 0755).
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "debuginfo=line-tables-only"]
 rustdocflags = ["-C", "target-feature=+crt-static"]

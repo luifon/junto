@@ -35,6 +35,10 @@ def assemble(client, recover, version, output, architecture="x86_64", epoch=None
         folder = output / "package-directory/Junto"
         (folder / "licences").mkdir(parents=True)
         shutil.copyfile(client, folder / "junto.exe")
+        # The symbols of the program, from which a panic report names its functions (ADR 0757).
+        symbols = client.with_suffix(".pdb")
+        if symbols.is_file():
+            shutil.copyfile(symbols, folder / "junto.pdb")
         shutil.copyfile(recover, folder / "junto-recover.exe")
         (folder / "junto-package.json").write_text(description(version, architecture), newline="\n")
         for name, text in licences.package_files(version, licences.target("windows", architecture), build).items():

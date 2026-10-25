@@ -1119,6 +1119,7 @@ impl Render for Shell {
         #[cfg(feature = "test-support")]
         {
             self.draws += 1;
+            crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
         if self.detached {

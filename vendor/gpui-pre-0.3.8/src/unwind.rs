@@ -19,10 +19,33 @@ pub(crate) fn catch<R>(
     match panic::catch_unwind(AssertUnwindSafe(body)) {
         Ok(value) => value,
         Err(_) => {
-            log::error!("a panic in the {site} callback was stopped; the application continues");
+            let count = STOPPED.with_borrow_mut(|stopped| {
+                let count = stopped.entry(site).or_insert(0);
+                *count += 1;
+                *count
+            });
+            // The 1st, 10th, 100th, ... panic of each site, so that a panic that repeats does
+            // not fill the log.
+            if is_a_power_of_ten(count) {
+                log::error!(
+                    "panic {count} in the {site} callback was stopped; the application continues"
+                );
+            }
             fallback()
         }
     }
+}
+
+thread_local! {
+    static STOPPED: std::cell::RefCell<std::collections::HashMap<&'static str, usize>> =
+        std::cell::RefCell::default();
+}
+
+fn is_a_power_of_ten(mut count: usize) -> bool {
+    while count >= 10 && count.is_multiple_of(10) {
+        count /= 10;
+    }
+    count == 1
 }
 
 /// Runs `body` with `state`. When it panics, `restore` runs with `state` and the panic
@@ -42,7 +65,10 @@ pub(crate) fn restore_on_panic<S: ?Sized, R>(
 }
 
 /// A callback of the platform without a result, whose body runs through `catch`.
-pub(crate) fn callback<A>(site: &'static str, mut body: impl FnMut(A) + 'static) -> Box<dyn FnMut(A)> {
+pub(crate) fn callback<A>(
+    site: &'static str,
+    mut body: impl FnMut(A) + 'static,
+) -> Box<dyn FnMut(A)> {
     Box::new(move |argument| catch(site, || (), || body(argument)))
 }
 
@@ -78,6 +104,9 @@ pub(crate) fn callback2<A, B>(
 }
 
 /// A callback of the platform that runs once.
-pub(crate) fn callback_once(site: &'static str, body: impl FnOnce() + 'static) -> Box<dyn FnOnce()> {
+pub(crate) fn callback_once(
+    site: &'static str,
+    body: impl FnOnce() + 'static,
+) -> Box<dyn FnOnce()> {
     Box::new(move || catch(site, || (), body))
 }

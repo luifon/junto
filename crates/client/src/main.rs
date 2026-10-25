@@ -141,9 +141,10 @@ fn update_from(source: &str) -> ExitCode {
 }
 
 /// The log on standard error and, once [`LogFile::open`] is called, in the log file of the
-/// data directory (ADR 0757).
+/// data directory (ADR 0757). Without `JUNTO_LOG_LEVEL` the file takes `info` of the crates
+/// of Junto and `warn` of the other crates, such as the call library and gpui.
 fn start_log() -> LogFile {
-    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::filter::{LevelFilter, Targets};
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::{Layer as _, fmt};
@@ -163,12 +164,36 @@ fn start_log() -> LogFile {
             fmt::layer()
                 .with_ansi(false)
                 .with_writer(log_file.clone())
-                .with_filter(LevelFilter::from_level(
-                    chosen.unwrap_or(tracing::Level::INFO),
-                )),
+                .with_filter(match chosen {
+                    Some(level) => Targets::new().with_default(level),
+                    None => Targets::new()
+                        .with_default(LevelFilter::WARN)
+                        .with_target("junto", LevelFilter::INFO),
+                }),
         )
         .init();
     log_file
+}
+
+/// The file of the temporary directory of the account that states why the last start
+/// failed before it had a data directory (ADR 0757).
+const START_FAILURE_FILE: &str = "junto-start-failure.txt";
+
+/// Writes why the start failed to [`START_FAILURE_FILE`], replacing an earlier one.
+// The start writes it before any window (ADR 0730).
+#[allow(clippy::disallowed_methods)]
+fn write_start_failure(problem: &str) {
+    let path = std::env::temp_dir().join(START_FAILURE_FILE);
+    let time = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let text = format!(
+        "{time} {}: junto cannot start: {problem}\n",
+        junto_client_core::releases::build_label()
+    );
+    if let Err(error) = std::fs::write(&path, text) {
+        eprintln!("{} cannot be written: {error}", path.display());
+    }
 }
 
 fn main() -> ExitCode {
@@ -206,7 +231,6 @@ fn main() -> ExitCode {
     #[cfg(target_os = "linux")]
     junto_client::renderer::choose_before_the_first_window();
     let client = data_dir(arguments.data_dir).and_then(|directory| {
-        junto_client::panics::record_into(&directory);
         let mut options = ClientOptions::new(directory);
         options.update_source = junto_client_core::releases::HttpSource::compiled()
             .map_err(|error| error.to_string())?
@@ -220,13 +244,16 @@ fn main() -> ExitCode {
         Ok(client) => client,
         Err(problem) => {
             // The files of the data directory are not changed by a start that fails
-            // (ADR 0710). The person reads why and decides.
+            // (ADR 0710). The person reads why and decides; a program without a console
+            // (Windows) has the file of the temporary directory (ADR 0757).
             eprintln!("junto cannot start: {problem}");
+            tracing::error!("junto cannot start: {problem}");
+            write_start_failure(&problem);
             return ExitCode::FAILURE;
         }
     };
-    // The client holds the lock of the data directory now, so no other instance writes
-    // the same log file.
+    // The client made the data directory. The log of the directory is written by one
+    // instance only: the one that holds `logs/lock` (ADR 0757).
     junto_client::panics::record_into(client.data_dir().root());
     if let Err(error) = log_file.open(client.data_dir().root()) {
         tracing::warn!(%error, "the log file was not opened");
@@ -240,6 +267,7 @@ fn main() -> ExitCode {
         .run(move |cx| {
             if let Err(error) = app::init(cx) {
                 eprintln!("junto cannot start: {error:#}");
+                tracing::error!("junto cannot start: {error:#}");
                 cx.quit();
                 return;
             }
@@ -261,6 +289,7 @@ fn main() -> ExitCode {
                 Ok(_) => reached.set(true),
                 Err(error) => {
                     eprintln!("junto cannot open its window: {error:#}");
+                    tracing::error!("junto cannot open its window: {error:#}");
                     cx.quit();
                 }
             }
