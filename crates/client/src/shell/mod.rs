@@ -401,14 +401,14 @@ impl Shell {
         let quiet_zone_search = Field::state(text::QUIET_ZONE_SEARCH, window, cx);
         let feed = feed::FeedList::new(Pane::Main);
         feed.list
-            .set_scroll_handler(cx.listener(|this, event, window, cx| {
-                this.feed_scrolled(Pane::Main, event, window, cx);
+            .set_scroll_handler(cx.listener(|this, event, _, cx| {
+                this.feed_scrolled(Pane::Main, event, cx);
             }));
         let thread_feed = feed::FeedList::new(Pane::Thread);
         thread_feed
             .list
-            .set_scroll_handler(cx.listener(|this, event, window, cx| {
-                this.feed_scrolled(Pane::Thread, event, window, cx);
+            .set_scroll_handler(cx.listener(|this, event, _, cx| {
+                this.feed_scrolled(Pane::Thread, event, cx);
             }));
         let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
         let (transcript_edit, transcript_subscription) =

@@ -11,7 +11,7 @@ use gpui::{
     InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListScrollEvent,
     ListState, MouseButton, ObjectFit, ParentElement, RenderImage, Role, SharedString,
     StatefulInteractiveElement, StrikethroughStyle, Styled, StyledImage, StyledText,
-    UnderlineStyle, Window, div, img, list, prelude::FluentBuilder, px,
+    UnderlineStyle, Window, canvas, div, img, list, prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
@@ -594,24 +594,27 @@ impl Shell {
         }
         self.composer_follows(view, window, cx);
         self.keep_pictures_of_present_owners(cx);
-        self.feed_seen(Pane::Main, main, window, cx);
-        self.feed_seen(Pane::Thread, thread, window, cx);
+        let at_end = self.feed.at_end();
+        self.feed_seen(Pane::Main, main, at_end, window, cx);
+        let at_end = self.thread_feed.at_end();
+        self.feed_seen(Pane::Thread, thread, at_end, window, cx);
     }
 
     /// The person sees the end of a list in an active window: the read position moves
-    /// there (ADR 0740).
+    /// there (ADR 0740). `at_end` is the follow state of the list, which the caller reads:
+    /// a listener that the list calls during its own work cannot read it (ADR 0740).
     fn feed_seen(
         &mut self,
         pane: Pane,
         feed: Option<&Feed>,
+        at_end: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(feed) = feed else {
             return;
         };
-        let list = self.list(pane);
-        if !window.is_window_active() || !list.drawn || !list.at_end() {
+        if !window.is_window_active() || !self.list(pane).drawn || !at_end {
             return;
         }
         if let Some(position) = feed.end_position.filter(|_| feed.unread > 0) {
@@ -621,13 +624,14 @@ impl Shell {
         }
     }
 
-    /// A list was scrolled: the next page is read near an end, the client core is told
-    /// where the list stands, and the read position follows the end.
+    /// A list was scrolled: the next page is read near an end, and the client core is told
+    /// where the list stands. The list calls this while it holds its state, so this reads
+    /// only the event and does not call the list (ADR 0740). The list takes up the end
+    /// again in its next layout, and the read position follows from that layout.
     pub(crate) fn feed_scrolled(
         &mut self,
         pane: Pane,
         event: &ListScrollEvent,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(feed) = self.pane_feed(pane).cloned() else {
@@ -654,7 +658,6 @@ impl Shell {
                 state.follow_shown_recordings(cx);
             }
         });
-        self.feed_seen(pane, Some(&feed), window, cx);
         // The rows moved under a pointer that did not move; gpui tells a row that the
         // pointer is over it at the next move of the pointer.
         if self
@@ -698,7 +701,8 @@ impl Shell {
                 .update(cx, |state, _| state.read_latest(server_id, place));
         }
         self.list(pane).list.set_follow_mode(FollowMode::Tail);
-        self.feed_seen(pane, Some(&feed), window, cx);
+        let at_end = self.list(pane).at_end();
+        self.feed_seen(pane, Some(&feed), at_end, window, cx);
         cx.notify();
     }
 
@@ -770,7 +774,8 @@ impl Shell {
         if seen && window.is_window_active() {
             cx.defer_in(window, move |this, window, cx| {
                 let feed = this.pane_feed(pane).cloned();
-                this.feed_seen(pane, feed.as_ref(), window, cx);
+                let at_end = this.list(pane).at_end();
+                this.feed_seen(pane, feed.as_ref(), at_end, window, cx);
             });
         }
         let body: AnyElement = match shown.feed {
@@ -1003,7 +1008,10 @@ impl Shell {
                     None => div().into_any_element(),
                 },
             );
-        let away = !self.list(pane).at_end() || feed.more_after;
+        let rendered_at_end = self.list(pane).at_end();
+        let away = !rendered_at_end || feed.more_after;
+        let shell = cx.entity_id();
+        let laid_out = state.clone();
         div()
             .relative()
             .flex()
@@ -1021,6 +1029,21 @@ impl Shell {
                     .debug_selector(move || pane.id("message-list").to_owned())
                     .size_full()
                     .child(list(state.clone(), render).size_full()),
+            )
+            // Drawn after the list: its layout takes up the end again after a scroll to
+            // it, or leaves the end, after this render read it. The shell is drawn again,
+            // so the button to the end and the read position follow the layout (ADR 0740).
+            .child(
+                canvas(
+                    move |_, window, cx| {
+                        if laid_out.is_following_tail() != rendered_at_end {
+                            window.defer(cx, move |_, cx| cx.notify(shell));
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_0(),
             )
             .child(
                 div().absolute().inset_0().child(

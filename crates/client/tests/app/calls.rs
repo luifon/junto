@@ -294,7 +294,7 @@ fn each_unsuccessful_move_outcome_is_shown_and_dismissible(cx: &mut gpui::TestAp
 
 /// A connected call of this device in the voice channel with this name, as the media
 /// engine states it, without a media server.
-fn connected_call(window: &mut Window, channel: &str) -> junto_media::calls::ActiveCall {
+pub(crate) fn connected_call(window: &mut Window, channel: &str) -> junto_media::calls::ActiveCall {
     use junto_media::calls::{ActiveCall, Phase};
     use junto_media::engine::{MicrophoneState, OutputState, ShareState};
 

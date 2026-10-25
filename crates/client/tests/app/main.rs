@@ -62,6 +62,7 @@ mod recovery;
 mod rehearsal;
 mod remaining;
 mod roles;
+mod scroll;
 mod search;
 mod servers;
 mod states;
