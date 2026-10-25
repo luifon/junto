@@ -56,7 +56,7 @@ impl SystemTray for NotificationAreaTray {
             .into_iter()
             .map(|entry| Entry {
                 label: entry.label.to_owned(),
-                code: entry.action.code(),
+                code: entry.code,
                 enabled: entry.enabled,
                 separated: entry.separated,
             })

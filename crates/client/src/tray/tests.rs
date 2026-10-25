@@ -32,6 +32,13 @@ fn call() -> ActiveCall {
     }
 }
 
+fn call_at(identity: &str) -> ActiveCall {
+    ActiveCall {
+        identity: identity.to_owned(),
+        ..call()
+    }
+}
+
 fn calls(call: Option<ActiveCall>, muted: bool, deafened: bool) -> CallsView {
     CallsView {
         call,
@@ -50,7 +57,7 @@ fn outside_a_call_the_icon_is_plain_and_the_menu_opens_and_quits() {
     // A setting of the microphone and the sound holds outside a call too; the icon shows
     // only the call.
     let state = derive(&calls(None, true, true));
-    assert_eq!(state, TrayState { call: None });
+    assert_eq!(state.call, None);
     assert_eq!(state.picture(), Picture::Plain);
     assert_eq!(state.tooltip(), text::NOT_IN_A_CALL);
     assert_eq!(labels(&state), [text::OPEN_JUNTO, text::QUIT]);
@@ -175,4 +182,38 @@ fn the_build_rendered_each_picture() {
         assert_ne!(corners[0], corners[1]);
         assert_ne!(corners[1], corners[2]);
     }
+}
+
+/// A menu that was drawn before a change of the call names entries of an earlier generation:
+/// a press on it is refused, so "Mute" does not become "Unmute" and an entry of one call does
+/// not act on another (ADR 0788).
+#[test]
+fn a_press_on_a_menu_of_an_earlier_state_is_refused() {
+    let mut first = derive(&calls(Some(call_at("first")), false, false));
+    first.generation = 4;
+    let mute = first
+        .menu()
+        .into_iter()
+        .find(|entry| entry.label == text::MUTE_MICROPHONE)
+        .unwrap();
+    assert_eq!(
+        first.action(mute.code),
+        Some(TrayAction::Microphone(MicrophoneAction::Close))
+    );
+
+    // The microphone was closed meanwhile: the old "Mute" does not open it.
+    let mut muted = derive(&calls(Some(call_at("first")), true, false));
+    muted.generation = 5;
+    assert_eq!(muted.action(mute.code), None);
+
+    // The person was moved to another call: the old "Unmute" does not open its microphone.
+    let unmute = muted
+        .menu()
+        .into_iter()
+        .find(|entry| entry.label == text::UNMUTE_MICROPHONE)
+        .unwrap();
+    let mut moved = derive(&calls(Some(call_at("second")), true, false));
+    moved.generation = 6;
+    assert_eq!(moved.action(unmute.code), None);
+    assert!(moved.menu().iter().all(|entry| entry.code != unmute.code));
 }

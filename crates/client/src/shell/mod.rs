@@ -533,8 +533,11 @@ impl Shell {
                 this.feed_changed(&view, window, cx);
                 cx.notify();
             }),
+            // Only the main window shows the administration.
             cx.subscribe_in(&state, window, |this, _, event: &OpenAdmin, window, cx| {
-                this.open_admin(event.0, window, cx);
+                if !this.detached {
+                    this.open_admin(event.0, window, cx);
+                }
             }),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {

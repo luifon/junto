@@ -137,6 +137,7 @@ fn in_call(muted: bool, seat: &Seat) -> TrayState {
             deafened: false,
             seat: seat.clone(),
         }),
+        generation: u32::from(muted),
     }
 }
 
@@ -298,17 +299,17 @@ async fn the_item_registers_shows_the_call_and_takes_presses_of_its_menu() {
     assert_eq!(
         labels(&menu).await,
         [
-            (1, "Unmute microphone".to_owned()),
-            (2, "Turn sound off".to_owned()),
-            (3, "Leave the call".to_owned()),
-            (4, "Open Junto".to_owned()),
-            (5, "Quit".to_owned()),
+            (9, "Unmute microphone".to_owned()),
+            (10, "Turn sound off".to_owned()),
+            (11, "Leave the call".to_owned()),
+            (12, "Open Junto".to_owned()),
+            (13, "Quit".to_owned()),
         ]
     );
 
     // A press on an entry is the action of that entry, with the seat of the call.
     let _: () = menu
-        .call("Event", &(1_i32, "clicked", Value::from(0_i32), 0_u32))
+        .call("Event", &(9_i32, "clicked", Value::from(0_i32), 0_u32))
         .await
         .unwrap();
     assert_eq!(
@@ -317,7 +318,7 @@ async fn the_item_registers_shows_the_call_and_takes_presses_of_its_menu() {
     );
     // An event other than a press, and an identifier of no entry, do nothing.
     let _: () = menu
-        .call("Event", &(3_i32, "hovered", Value::from(0_i32), 0_u32))
+        .call("Event", &(11_i32, "hovered", Value::from(0_i32), 0_u32))
         .await
         .unwrap();
     let unknown: Vec<i32> = menu
@@ -325,12 +326,14 @@ async fn the_item_registers_shows_the_call_and_takes_presses_of_its_menu() {
             "EventGroup",
             &(vec![
                 (99_i32, "clicked", Value::from(0_i32), 0_u32),
+                (11_i32, "clicked", Value::from(0_i32), 0_u32),
+                // An entry of the menu before the change: refused (ADR 0788).
                 (3_i32, "clicked", Value::from(0_i32), 0_u32),
             ],),
         )
         .await
         .unwrap();
-    assert_eq!(unknown, [99]);
+    assert_eq!(unknown, [99, 3]);
     assert_eq!(pressed(&mut presses_seen).await, TrayAction::Leave);
     // The primary press on the icon opens the application.
     let _: () = item.call("Activate", &(0_i32, 0_i32)).await.unwrap();

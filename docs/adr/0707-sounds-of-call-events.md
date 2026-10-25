@@ -39,7 +39,7 @@ Who hears them:
 
 Setting:
 
-- One switch, "Call sounds" in the Voice section of the settings, turns every sound of this record off. It is stored in `voice.json` as `call_sounds`, on by default; a file of version 3 is read with the sounds on (ADR 0710). It does not change the tone of an incoming call.
+- One switch, "Call sounds" in the Voice section of the settings, turns every sound of this record off. Turning it off also drops the tones that wait in the player and silences the one that plays (a generation of the player that each request carries; test `audio::sounds::tests::a_cancel_drops_the_waiting_sounds_and_silences_the_one_that_opens`). It is stored in `voice.json` as `call_sounds`, on by default; a file of version 3 is read with the sounds on (ADR 0710). It does not change the tone of an incoming call.
 
 Player:
 

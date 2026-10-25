@@ -32,10 +32,16 @@ impl AppState {
         };
         #[cfg(not(feature = "test-support"))]
         let calls = &self.known.media.calls;
-        let shown = derive(calls);
-        if self.tray_shown.as_ref() != Some(&shown) {
-            self.tray.set(&shown);
-            self.tray_shown = Some(shown);
+        let mut shown = derive(calls);
+        if self.tray_shown.as_ref().map(|told| &told.call) == Some(&shown.call) {
+            return;
         }
+        // A new menu: a press on a menu of an earlier generation is refused (ADR 0788).
+        shown.generation = self
+            .tray_shown
+            .as_ref()
+            .map_or(0, |told| told.generation.wrapping_add(1));
+        self.tray.set(&shown);
+        self.tray_shown = Some(shown);
     }
 }

@@ -7,6 +7,7 @@
 
 use super::{AudioHost, DeviceId, Format};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::time::Duration;
 
@@ -132,18 +133,24 @@ pub fn render(sound: Sound, sample_rate: u32) -> Vec<f32> {
     samples
 }
 
-type Request = (Sound, Option<DeviceId>);
+/// A sound, its device, and the generation of the player when it was asked for.
+type Request = (Sound, Option<DeviceId>, u64);
 
 pub struct SoundPlayer {
     thread: Option<Sender<Request>>,
+    /// Raised by [`SoundPlayer::cancel`]: a request of an earlier generation is not played,
+    /// and a sound that plays goes silent.
+    generation: Arc<AtomicU64>,
 }
 
 impl SoundPlayer {
     pub fn new(host: Arc<dyn AudioHost>) -> Self {
         let (requests, received) = channel();
+        let generation = Arc::new(AtomicU64::new(0));
+        let current = generation.clone();
         let thread = std::thread::Builder::new()
             .name("junto-sounds".to_owned())
-            .spawn(move || play_requests(host.as_ref(), &received));
+            .spawn(move || play_requests(host.as_ref(), &received, &current));
         let thread = match thread {
             Ok(_) => Some(requests),
             Err(error) => {
@@ -151,38 +158,53 @@ impl SoundPlayer {
                 None
             }
         };
-        Self { thread }
+        Self { thread, generation }
     }
 
     /// Plays a sound once on a device, or on the default device of the system. It returns
     /// at once; the sound follows the sounds that were asked for before it.
     pub fn play(&self, sound: Sound, device: Option<&DeviceId>) {
         if let Some(thread) = &self.thread {
-            let _ = thread.send((sound, device.cloned()));
+            let generation = self.generation.load(Ordering::Acquire);
+            let _ = thread.send((sound, device.cloned(), generation));
         }
+    }
+
+    /// Drops the sounds that wait and silences the one that plays: the person turned the
+    /// sounds off.
+    pub fn cancel(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
 }
 
 /// The thread of the player. It ends when the player is dropped.
-fn play_requests(host: &dyn AudioHost, requests: &Receiver<Request>) {
+fn play_requests(host: &dyn AudioHost, requests: &Receiver<Request>, current: &Arc<AtomicU64>) {
     while let Ok(first) = requests.recv() {
         let mut waiting = vec![first];
         while let Ok(next) = requests.try_recv() {
-            if !waiting.iter().any(|(sound, _)| *sound == next.0) {
+            if !waiting.iter().any(|(sound, _, _)| *sound == next.0) {
                 waiting.push(next);
             }
         }
-        for (sound, device) in waiting.into_iter().take(MOST_WAITING) {
-            play_once(host, sound, device.as_ref());
+        for (sound, device, generation) in waiting.into_iter().take(MOST_WAITING) {
+            if generation == current.load(Ordering::Acquire) {
+                play_once(host, sound, device.as_ref(), current.clone(), generation);
+            }
         }
     }
 }
 
-fn play_once(host: &dyn AudioHost, sound: Sound, device: Option<&DeviceId>) {
+fn play_once(
+    host: &dyn AudioHost,
+    sound: Sound,
+    device: Option<&DeviceId>,
+    current: Arc<AtomicU64>,
+    generation: u64,
+) {
     let (finished, ended) = sync_channel(1);
     match host.open_output(
         device,
-        Box::new(fill(sound, finished)),
+        Box::new(fill(sound, finished, current, generation)),
         Box::new(|error| tracing::debug!(%error, "a call sound stopped")),
     ) {
         Ok(stream) => {
@@ -195,11 +217,21 @@ fn play_once(host: &dyn AudioHost, sound: Sound, device: Option<&DeviceId>) {
 
 /// The samples of the device: the sound, then silence. It tells when the sound and the
 /// tail after it have been given to the device.
-fn fill(sound: Sound, finished: SyncSender<()>) -> impl FnMut(&mut [f32], Format) + Send + 'static {
+fn fill(
+    sound: Sound,
+    finished: SyncSender<()>,
+    current: Arc<AtomicU64>,
+    generation: u64,
+) -> impl FnMut(&mut [f32], Format) + Send + 'static {
     let end = sound.length().as_secs_f64() + TAIL;
     let mut elapsed = 0.0_f64;
     let mut told = false;
     move |samples, format| {
+        // A cancelled sound gives silence and ends at once.
+        if current.load(Ordering::Acquire) != generation {
+            samples.fill(0.0);
+            elapsed = end;
+        }
         let step = 1.0 / f64::from(format.sample_rate.max(1));
         for frame in samples.chunks_mut(usize::from(format.channels.max(1))) {
             frame.fill(sample_at(sound.parts(), elapsed).unwrap_or(0.0));
@@ -331,6 +363,35 @@ mod tests {
         close
             .recv_timeout(PATIENCE)
             .expect("the output closed after the sound");
+    }
+
+    #[test]
+    fn a_cancel_drops_the_waiting_sounds_and_silences_the_one_that_opens() {
+        let host = SyntheticHost::with_tone(700.0);
+        let (release, held) = channel();
+        let (closed, close) = channel();
+        let player = SoundPlayer::new(Arc::new(TestOutput {
+            host: host.clone(),
+            release: Some(Mutex::new(held)),
+            closed,
+        }));
+        // The first sound waits for its device, the second waits behind it.
+        player.play(Sound::PersonJoined, None);
+        std::thread::sleep(Duration::from_millis(100));
+        player.play(Sound::PersonLeft, None);
+        player.cancel();
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        close
+            .recv_timeout(PATIENCE)
+            .expect("the output of the first sound closed");
+        assert!(
+            close.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the waiting sound was played"
+        );
+        let (samples, _) = host.played_since_clear();
+        assert!(peak(&samples) < SILENT, "a cancelled sound was heard");
+        assert_eq!(host.opened_outputs().len(), 1);
     }
 
     #[test]

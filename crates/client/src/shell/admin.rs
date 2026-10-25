@@ -913,22 +913,13 @@ impl Shell {
                     label: text::admin::waiting(page, waiting).into(),
                 });
                 column = column.child(
-                    div()
-                        .flex_none()
-                        .child(
-                            ChannelRow::new(name, text::admin::page_icon(page), name)
-                                .selected(page == selected)
-                                .selector(text::admin::page_selector(page))
-                                .unread(sign)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_server_admin(page, window, cx);
-                                })),
-                        )
-                        .when(waiting > 0, |row| {
-                            row.child(div().absolute().size_0().debug_selector(move || {
-                                format!("{}-count", text::admin::page_selector(page))
-                            }))
-                        }),
+                    ChannelRow::new(name, text::admin::page_icon(page), name)
+                        .selected(page == selected)
+                        .selector(text::admin::page_selector(page))
+                        .unread(sign)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_server_admin(page, window, cx);
+                        })),
                 );
             }
         }

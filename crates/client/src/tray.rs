@@ -28,6 +28,10 @@ use crate::text::tray as text;
 pub struct TrayState {
     /// The call of this device. Absent outside a call.
     pub call: Option<CallMarks>,
+    /// The number of the menu: it changes with each change of the call or its marks. The
+    /// code of an entry holds it, so a press on a menu that was drawn before a change is
+    /// refused (ADR 0788).
+    pub generation: u32,
 }
 
 /// The state of the call of this device that the icon and the menu show.
@@ -77,10 +81,7 @@ pub enum TrayAction {
 }
 
 impl TrayAction {
-    /// The number of the kind of the action, the same in every menu. A system can draw a menu
-    /// before a change of the state and report the press after it: the press does what the
-    /// entry of the same kind does in the menu of the new state, and nothing when that menu
-    /// has no enabled entry of the kind.
+    /// The number of the kind of the action, the same in every menu.
     pub fn code(&self) -> u32 {
         match self {
             TrayAction::Microphone(_) => 1,
@@ -95,6 +96,9 @@ impl TrayAction {
 /// One entry of the menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuEntry {
+    /// The identifier of the entry in the menu of one generation: the generation and the kind
+    /// of the action (`entry_code`).
+    pub code: u32,
     pub label: &'static str,
     pub action: TrayAction,
     /// The entry can be pressed.
@@ -112,7 +116,14 @@ pub fn derive(calls: &CallsView) -> TrayState {
             deafened: calls.deafened,
             seat: call.seat(),
         }),
+        generation: 0,
     }
+}
+
+/// The code of an entry: the generation of its menu and the kind of its action. The codes stay
+/// below 2^31, the identifiers of a D-Bus menu.
+pub fn entry_code(generation: u32, kind: u32) -> u32 {
+    ((generation & 0x00FF_FFFF) << 3) | (kind & 0x7)
 }
 
 impl TrayState {
@@ -140,6 +151,7 @@ impl TrayState {
         let mut entries = Vec::new();
         if let Some(call) = &self.call {
             entries.push(MenuEntry {
+                code: 0,
                 label: if call.muted {
                     text::UNMUTE_MICROPHONE
                 } else {
@@ -155,6 +167,7 @@ impl TrayState {
                 separated: false,
             });
             entries.push(MenuEntry {
+                code: 0,
                 label: if call.deafened {
                     text::TURN_SOUND_ON
                 } else {
@@ -165,6 +178,7 @@ impl TrayState {
                 separated: false,
             });
             entries.push(MenuEntry {
+                code: 0,
                 label: text::LEAVE_THE_CALL,
                 action: TrayAction::Leave,
                 enabled: true,
@@ -172,25 +186,33 @@ impl TrayState {
             });
         }
         entries.push(MenuEntry {
+            code: 0,
             label: text::OPEN_JUNTO,
             action: TrayAction::Open,
             enabled: true,
             separated: self.call.is_some(),
         });
         entries.push(MenuEntry {
+            code: 0,
             label: text::QUIT,
             action: TrayAction::Quit,
             enabled: true,
             separated: false,
         });
+        for entry in &mut entries {
+            entry.code = entry_code(self.generation, entry.action.code());
+        }
         entries
     }
 
-    /// The action of the enabled entry with this code (`TrayAction::code`).
+    /// The action of the enabled entry with this code (`MenuEntry::code`). A code of a menu of
+    /// another generation names no entry: the press of a menu that was drawn before a change
+    /// of the call does nothing, so it acts neither on another call nor in the other direction
+    /// (ADR 0788).
     pub fn action(&self, code: u32) -> Option<TrayAction> {
         self.menu()
             .into_iter()
-            .find(|entry| entry.enabled && entry.action.code() == code)
+            .find(|entry| entry.enabled && entry.code == code)
             .map(|entry| entry.action)
     }
 }
