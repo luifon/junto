@@ -27,6 +27,7 @@ pub mod book;
 pub mod followed;
 pub mod people;
 pub mod transcripts;
+pub mod tray;
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";

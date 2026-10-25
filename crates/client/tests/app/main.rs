@@ -69,6 +69,7 @@ mod states;
 mod thread_actions;
 mod threads;
 mod transcripts;
+mod tray;
 mod unread;
 mod window_frame;
 

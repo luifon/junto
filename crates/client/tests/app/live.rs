@@ -44,6 +44,7 @@ mod native_share;
 mod rules;
 mod sound_help;
 mod tones;
+mod tray;
 #[cfg(target_os = "windows")]
 mod windows_share;
 
