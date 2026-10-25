@@ -21,6 +21,7 @@ pub mod state;
 pub mod taskbar;
 pub mod text;
 pub mod theme;
+pub mod tray;
 pub mod ui;
 pub mod window_icon;
 pub mod window_level;

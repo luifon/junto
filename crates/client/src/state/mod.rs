@@ -30,6 +30,7 @@ pub mod search;
 mod searching;
 mod threads;
 pub mod transcript_work;
+mod tray;
 mod update_install;
 pub mod view;
 
@@ -573,6 +574,12 @@ pub struct AppState {
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
     kept: crate::notify::KeptNotifier,
+    /// The tray icon (ADR 0757).
+    tray: std::rc::Rc<dyn crate::tray::SystemTray>,
+    /// The tray of a start without the tray icon of the system.
+    kept_tray: crate::tray::KeptTray,
+    /// The state that the tray was told last.
+    tray_shown: Option<crate::tray::TrayState>,
     /// The main window is the active window of the system.
     window_active: bool,
     /// The call window is the active window of the system.
@@ -743,6 +750,7 @@ impl AppState {
             ..Known::default()
         };
         let kept = crate::notify::KeptNotifier::default();
+        let kept_tray = crate::tray::KeptTray::default();
         let call_window_settings =
             junto_client_core::call_window::CallWindowStore::new(client.data_dir().clone())
                 .load()
@@ -828,6 +836,9 @@ impl AppState {
             moderation_asks: 0,
             notifier: std::rc::Rc::new(kept.clone()),
             kept,
+            tray: std::rc::Rc::new(kept_tray.clone()),
+            kept_tray,
+            tray_shown: None,
             window_active: false,
             call_window_active: false,
             call_window_notices: false,
@@ -2290,6 +2301,7 @@ impl AppState {
         self.follow_jump(shown);
         self.follow_result_jump(shown);
         self.tell_alerts(&snapshots, shown, call_window, cx);
+        self.follow_tray();
         self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();

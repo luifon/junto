@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             junto_icon::png(junto_icon::WINDOW)?,
         )?;
     }
+    tray_pictures(&target, &output)?;
     // The WebRTC library holds Objective-C categories that the linker drops on macOS unless
     // it is told to keep them. A binary without them stops at its start.
     if target == "macos" {
@@ -57,5 +58,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if target == "linux" {
         println!("cargo:rustc-link-arg-bin=junto=-Wl,--disable-new-dtags,-rpath,$ORIGIN/lib");
     }
+    Ok(())
+}
+
+/// The pictures of the tray icon (ADR 0757), one for each call state: on macOS a PNG picture
+/// for the menu bar, elsewhere straight RGBA pixels in each size of `junto_icon::TRAY`. The
+/// file `tray-pictures.rs` lists them as `(mark, side, bytes)`, with the mark `plain` outside
+/// a call.
+#[allow(clippy::disallowed_methods)]
+fn tray_pictures(target: &str, output: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let marks = std::iter::once(None).chain(junto_icon::Mark::ALL.map(Some));
+    let mut list = String::from("&[\n");
+    for mark in marks {
+        let name = mark.map_or("plain", junto_icon::Mark::name);
+        let pictures: Vec<(u32, Vec<u8>)> = if target == "macos" {
+            let side = junto_icon::MENU_BAR;
+            vec![(side, junto_icon::tray_png(mark, side)?)]
+        } else {
+            junto_icon::TRAY
+                .iter()
+                .map(|&side| junto_icon::tray(mark, side).map(|picture| (side, picture.rgba)))
+                .collect::<Result<_, _>>()?
+        };
+        for (side, bytes) in pictures {
+            let file = output.join(format!("tray-{name}-{side}"));
+            std::fs::write(&file, bytes)?;
+            list.push_str(&format!(
+                "    ({name:?}, {side}, include_bytes!({:?}) as &[u8]),\n",
+                file.display().to_string()
+            ));
+        }
+    }
+    list.push_str("]\n");
+    std::fs::write(output.join("tray-pictures.rs"), list)?;
     Ok(())
 }

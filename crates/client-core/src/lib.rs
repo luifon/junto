@@ -2,7 +2,7 @@
 //! the client of the server API, the join and login flows, and the manager that holds
 //! several servers at once. A user interface and the command-line tool both build on it.
 
-#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(not(any(windows, target_os = "macos")), forbid(unsafe_code))]
 
 pub mod address;
 pub mod api;
@@ -15,7 +15,11 @@ pub mod keys;
 pub mod link;
 pub mod live;
 pub mod manager;
+#[cfg(target_os = "macos")]
+pub mod menu_bar;
 pub mod model;
+#[cfg(windows)]
+pub mod notification_area;
 pub mod paths;
 pub mod profile;
 pub mod release_configuration;

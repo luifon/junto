@@ -57,19 +57,23 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
     })
     .detach();
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
-    cx.on_action(|_: &Quit, cx| {
-        // The windows close without a request to close them. The action runs inside the update
-        // of the focused window, which cannot be updated again there; the deferred work runs
-        // when no window is updated.
-        cx.defer(|cx| {
-            #[cfg(windows)]
-            for window in cx.windows() {
-                let _ = window.update(cx, |_, window, _| crate::taskbar::forget(window));
-            }
-            cx.quit()
-        })
-    });
+    cx.on_action(|_: &Quit, cx| quit(cx));
     Ok(())
+}
+
+/// Ends the application, as the `Quit` action and the entry of the tray menu do. The call is
+/// left before the end (`state_with_media`).
+pub fn quit(cx: &mut App) {
+    // The windows close without a request to close them. The action runs inside the update
+    // of the focused window, which cannot be updated again there; the deferred work runs
+    // when no window is updated.
+    cx.defer(|cx| {
+        #[cfg(windows)]
+        for window in cx.windows() {
+            let _ = window.update(cx, |_, window, _| crate::taskbar::forget(window));
+        }
+        cx.quit()
+    })
 }
 
 /// The state of the application over an opened client, with the sound devices of the
@@ -90,9 +94,18 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
             state.update(cx, |state, cx| state.alert_pressed(tag, cx));
         }
     });
-    state.update(cx, |state, _| {
+    // The tray icon of the system, and the presses on its menu (ADR 0757). Only this start
+    // shows it: a test and the screen tool keep what it would show.
+    let held = state.downgrade();
+    let tray = crate::tray::platform(cx, move |action, cx| {
+        if let Some(state) = held.upgrade() {
+            crate::tray::press(&state, &action, cx);
+        }
+    });
+    state.update(cx, |state, cx| {
         state.set_notifier(notifier);
         state.set_uses_system_applications(true);
+        state.set_tray(tray, cx);
     });
     state
 }

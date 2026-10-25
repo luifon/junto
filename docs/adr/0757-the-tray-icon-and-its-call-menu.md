@@ -1,0 +1,40 @@
+# 0757. The tray icon and its call menu
+
+## Status
+
+Accepted. Unit tests cover the derivation of the state, the pictures, the tooltip and the menu. A window test drives the kept tray through a call without a media server; a test of the window live tier presses the menu entries in a real call. On Linux, tests with a private session bus cover the registration with a watcher, a watcher that starts later, the properties of the item, the layout of the menu and the presses. On Windows, unit tests cover the icon from the pixels and the one icon per thread. The macOS status item is compiled and run only by the macOS CI job. The icon and the menu on a real desktop are checked by a person (see the list below).
+
+## Context
+
+A person in a call often has the window of Junto behind other windows. Other chat applications show the state of the call in the area of the system for status icons and offer the call actions in a menu there. Each system has its own interface for that area: the status bar of AppKit on macOS, `Shell_NotifyIconW` on Windows, and on Linux the StatusNotifierItem specification over D-Bus, which a desktop supports only when a program owns `org.kde.StatusNotifierWatcher` on the session bus. gpui provides none of them.
+
+## Decision
+
+- The crate `junto-client` has a module `tray`. The state of the application derives a `TrayState` from the calls as it has taken them, at each change, and tells it to a `SystemTray` only when it differs from the state that was told last. `TrayState` holds no call, or the call with three marks: the person closed the microphone, a moderator or meeting mode holds the microphone closed, the person turned the sound off; and the seat of the call (ADR 0788).
+- The icon has four pictures: the application icon outside a call; with a green disc in a call; with a red disc and a crossed microphone when the microphone is closed by the person or held by the server; with a red disc and crossed headphones when the sound is off, which takes precedence. The tooltip names the state: "Junto", "Junto: in a call", "Junto: in a call, microphone muted", "Junto: in a call, sound off".
+- The pictures are not committed. The marks are SVG files in `packaging/icon/marks/`. The crate `junto-icon` renders the body of the application icon without the margin and the shadow of the macOS icon grid, so that it fills the small picture, and draws the mark over it. The build script of the client renders each picture: on macOS a PNG picture of 36 pixels, shown at 18 points; on Windows and Linux straight RGBA pixels at 16, 20, 22, 24, 32 and 48 pixels. The build of the client on macOS therefore compiles the renderer too (ADR 0756).
+- The menu, in a call: "Mute microphone" or "Unmute microphone", "Turn sound off" or "Turn sound on", "Leave the call"; then, after a separator, "Open Junto" and "Quit". Outside a call only the last two. The text of each entry follows the state. "Unmute microphone" is disabled while the server holds the microphone closed, as the button of the window is.
+- An entry does what the control of the window does: `use_microphone` with the action of the menu, which opens the microphone only at the seat that the menu showed; `set_sound_off`; `leave_call`; "Open Junto" brings the main window to the front as a press on a notification does; "Quit" runs the same function as the `Quit` action, and the application leaves the call before it ends. A primary press on the icon on Windows and Linux opens Junto; on macOS a press on the item opens the menu, as status items there do.
+- Each kind of entry has a fixed code (microphone 1, sound 2, leave 3, open 4, quit 5). A system can draw a menu and report its press after the state changed: the press does what the enabled entry of the same kind does in the menu of the new state, and nothing when that menu has no such entry. The code of each system reports only the code of the pressed entry.
+- The presses arrive on the thread of the system code and reach the thread of the windows through a channel, where `tray::press` calls the state of the application.
+- macOS: an `NSStatusItem` of the system status bar, with an `NSMenu` whose entries call the method `pressed:` of a target object; the code is the tag of the entry. The class of that object is defined with `define_class!`, which needs unsafe code; it is in the module `menu_bar` of `junto-client-core`, the one module of that crate that allows unsafe code on macOS.
+- Windows: `Shell_NotifyIconW` with version 4 of the icon messages and a hidden top-level window of the thread of the windows, in the module `notification_area` of `junto-client-core`, which allows unsafe code. The message loop of gpui gives the messages of that window to its procedure. A secondary press or the menu key shows a popup menu at the point that the shell gives; the window becomes the foreground window first, so that the menu closes at a press outside it. The window is top-level, not a window for messages only, so that it receives the message `TaskbarCreated` of a new shell, after which the icon is added again. The picture is the smallest rendering at least as large as the small icon size of the system. One icon exists per thread. The application takes the icon away when it quits, and it is not added again after that: the shell keeps the icon of an ended process until the pointer passes over it.
+- Linux: a StatusNotifierItem at `/StatusNotifierItem` with the bus name `org.kde.StatusNotifierItem-<process>-1`, and a `com.canonical.dbusmenu` menu at `/MenuBar`, served with zbus on a worker of its own, as the desktop notifications are (ADR 0752). The pictures are given as `IconPixmap` in every rendered size; the item emits `NewIcon` and `NewToolTip`, and the menu `LayoutUpdated` with a new revision, at each change. The identifier of a menu entry is its code. The item registers with the watcher when it starts and again with each new owner of the watcher name, so a desktop that starts its watcher later, or starts it again, shows the icon. Without a watcher there is no icon: the worker logs this once for each connection and nothing fails. A lost connection to the session bus is logged once, and the worker connects again after 5 seconds with the state of now.
+- Only the start of the binary (`app::state`) installs the tray of the system. Every other start, such as a test and the screen tool `junto-screens`, gets a `KeptTray`, which shows nothing and keeps each state that it was told. Its test hook presses the enabled entry of the shown menu with a given label, through the same `tray::press` as the system trays.
+
+## Consequences
+
+- A desktop on Linux without a StatusNotifierWatcher, such as GNOME without an extension for these icons, shows no tray icon. The application works without it.
+- The macOS picture is coloured, not a template picture, because the state is shown by colour; the menu bar does not adapt it to a dark or light bar.
+- At 16 pixels the glyph of a red mark is small; the colour and the tooltip carry the state.
+- A person checks on each system at the live test:
+  - The icon is visible in the menu bar of macOS, the notification area of Windows (possibly in the overflow area) and the status area of a Linux desktop with a watcher (KDE Plasma, or GNOME with an extension for these icons).
+  - The picture and the tooltip change when the person joins a call, mutes, turns the sound off, turns it on, unmutes and leaves.
+  - Each entry works: "Mute microphone" and "Unmute microphone", "Turn sound off" and "Turn sound on", "Leave the call", "Open Junto" with the main window minimized and behind other windows, and "Quit" during a call (the other people see the person leave).
+  - On Windows and Linux a primary press on the icon opens Junto; on Windows the menu closes at a press outside it, and the icon comes back after Explorer is restarted.
+  - The icon goes when the application ends.
+
+## References
+
+- [StatusNotifierItem specification](https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/).
+- [`Shell_NotifyIconW`](https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw).
