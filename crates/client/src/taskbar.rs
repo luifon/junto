@@ -33,6 +33,7 @@ pub fn identify(window: &Window) {
     if let Err(error) = junto_client_core::taskbar::set(handle, &relaunch) {
         tracing::warn!(%error, "the taskbar properties were not set");
     }
+    junto_client_core::taskbar::mark_pins_of_this_program(junto_client_core::app_identity::APP_ID);
 }
 
 /// Takes the properties of [`identify`] away, before the window is destroyed.

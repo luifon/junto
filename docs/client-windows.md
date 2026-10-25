@@ -6,7 +6,7 @@ Junto runs on Windows 11 on x86-64 (ADR 0705). Obtain `Junto-<version>-windows-x
 
 1. Open the ZIP and extract the folder `Junto` into a folder of your account, for example `%LOCALAPPDATA%\Programs`. The folder that holds `Junto` must stay writable for updates.
 2. Start `Junto\junto.exe`. Junto opens no console window; started from a terminal, it returns to the prompt at once.
-3. To start Junto from the taskbar, right-click its taskbar button while it runs and choose "Pin to taskbar". Junto names its own identity for the taskbar (ADR 0755), so a pin made from `junto.exe` in Explorer, also one made for an earlier version, opens Junto as a second taskbar button: unpin it and pin the running Junto instead. The pin starts `junto.exe` without arguments, so with the default data directory, also when the running Junto was started with `--data-dir`.
+3. To start Junto from the taskbar, right-click its taskbar button while it runs and choose "Pin to taskbar". Junto names its own identity for the taskbar (ADR 0755), and at each start it gives that identity to a pin made from `junto.exe` in Explorer, also one made for an earlier version, so that the pin and the running Junto are one taskbar button. If such a pin still opens Junto as a second taskbar button, unpin it and pin the running Junto instead. The pin starts `junto.exe` without arguments, so with the default data directory, also when the running Junto was started with `--data-dir`.
 
 The log of a running Junto is kept only when standard error is redirected, for example `junto.exe 2> "%TEMP%\junto.log"` in `cmd.exe`.
 
