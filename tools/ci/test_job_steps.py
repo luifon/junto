@@ -93,6 +93,14 @@ class JobSteps(unittest.TestCase):
                         commands.index(f"{DATABASE['macos']} --fetch"))
         self.assertLess(commands.index(f"{DATABASE['macos']} --fetch"), commands.index(with_database[0]))
 
+    def test_both_systems_measure_the_emoji_of_their_fonts(self):
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            self.assertIn("cargo test --locked --workspace --test emoji_fonts", commands, system)
+            status, _, _ = self.run_job(system, fail_on="--test emoji_fonts")
+            self.assertNotEqual(status, 0, system)
+
     def test_macos_starts_the_bundle_of_the_build_until_its_first_frame(self):
         status, commands, output = self.run_job("macos")
         self.assertEqual(status, 0, output)

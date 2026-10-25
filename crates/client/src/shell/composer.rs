@@ -245,7 +245,7 @@ fn candidates(
 
 /// The emoji that the picker offers: one group, or what a search finds in all groups. An
 /// emoji with a skin tone is not listed by itself, and an emoji that the fonts of the
-/// system do not draw whole is not offered (ADR 0757).
+/// system do not draw whole is not offered (ADR 0758).
 fn emoji_shown(group: usize, find: &str, drawings: &Drawings) -> Vec<&'static emojis::Emoji> {
     let offered = |emoji: &&'static emojis::Emoji| drawings.drawing(emoji) != Drawing::Broken;
     let find = find.trim().to_lowercase();
@@ -268,7 +268,7 @@ fn emoji_shown(group: usize, find: &str, drawings: &Drawings) -> Vec<&'static em
 }
 
 /// The groups of the picker that have an emoji that it offers, with their place in the
-/// table. Windows has no picture of a flag, so it has no group of flags.
+/// table.
 fn groups_offered(drawings: &Drawings) -> Vec<(usize, emojis::Group)> {
     emojis::Group::iter()
         .enumerate()
@@ -1199,6 +1199,7 @@ impl Shell {
                     .icon(icon)
                     .tooltip(name)
                     .selector(selector)
+                    .selected(on)
                     .when(on, |button| button.bg(Hsla::from(colors.limestone_lo)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.composer.emoji_group = index;
@@ -1259,9 +1260,26 @@ impl Shell {
             )
             .child(
                 div()
+                    .mt(u(6.0))
+                    .typeface(theme.types.small, &theme)
+                    .ink(colors.ink_2)
+                    .debug_selector(|| "emoji-group-name".to_owned())
+                    .child(crate::ui::paint_text(
+                        if searching {
+                            text::EMOJI_FOUND
+                        } else {
+                            open.and_then(|index| emojis::Group::iter().nth(index))
+                                .map_or("", |group| group_tab(group).0)
+                        }
+                        .into(),
+                        None,
+                    )),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_col()
-                    .mt(u(8.0))
+                    .mt(u(4.0))
                     .h(u(260.0))
                     .child(if shown.is_empty() {
                         div()
@@ -1453,6 +1471,7 @@ impl Shell {
             });
 
         // The state above the box: a reply or an edit, with the control that ends it.
+        let drawings = Drawings::of(cx);
         let banner = match (self.pen(pane).editing.is_some(), self.pen(pane).reply_to) {
             (true, _) => Some((Icon::Edit, SharedString::from(text::EDITING_MESSAGE), None)),
             (false, Some(message_id)) => {
@@ -1468,7 +1487,11 @@ impl Shell {
                 let excerpt = quoted
                     .as_ref()
                     .and_then(|message| message.document.as_ref())
-                    .map(|document| plain_text(document, &names, 80));
+                    .map(|document| {
+                        drawings
+                            .shown(&plain_text(document, &names, 80))
+                            .into_owned()
+                    });
                 Some((Icon::Reply, text::replying_to(&author).into(), excerpt))
             }
             (false, None) => None,
@@ -2025,7 +2048,7 @@ mod tests {
 
     #[test]
     fn the_emoji_of_the_picker_are_ones_that_the_server_takes() {
-        let drawings = crate::emoji::without_fonts();
+        let drawings = crate::emoji::Drawings::default();
         for (index, _) in groups_offered(&drawings) {
             let shown = emoji_shown(index, "", &drawings);
             assert!(!shown.is_empty());
@@ -2041,50 +2064,44 @@ mod tests {
         assert!(emoji_shown(0, "no such emoji name", &drawings).is_empty());
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn every_emoji_of_the_picker_is_drawn_whole_by_the_fonts_of_the_system() {
-        let drawings = crate::emoji::of_the_platform();
-        let platform = gpui_platform::current_platform(true).text_system();
-        let system = Arc::new(gpui::TextSystem::new(platform));
-        system.add_fonts(crate::assets::fonts()).unwrap();
-        let text = gpui::WindowTextSystem::new(system);
-        let font = gpui::font(crate::theme::Theme::stone().fonts.sans);
-        let measure = |sequence: &str| {
-            let run = gpui::TextRun {
-                len: sequence.len(),
-                font: font.clone(),
-                color: gpui::black(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let layout = text.layout_line(sequence, gpui::px(20.0), &[run], None);
-            let glyphs = layout.runs.iter().flat_map(|run| &run.glyphs).count();
-            let missing = layout
-                .runs
-                .iter()
-                .flat_map(|run| &run.glyphs)
-                .any(|glyph| glyph.id.0 == 0);
-            (missing, glyphs, f32::from(layout.width))
-        };
-        let reference = measure("\u{1f600}").2;
-        let mut broken = Vec::new();
-        for (index, _) in emojis::Group::iter().enumerate() {
-            for emoji in emoji_shown(index, "", &drawings) {
-                let (missing, glyphs, width) = measure(emoji.as_str());
-                if missing || (glyphs > 1 && width >= reference * 1.5) {
-                    broken.push(format!("{} ({})", emoji.as_str(), emoji.name()));
-                }
-            }
-        }
-        assert!(
-            broken.is_empty(),
-            "{} emoji of the picker are not drawn whole: {}",
-            broken.len(),
-            broken.join(", ")
-        );
-        // A system with an emoji font offers its faces.
-        assert!(!emoji_shown(0, "", &drawings).is_empty());
+    fn the_picker_offers_the_table_without_the_emoji_that_are_not_drawn() {
+        // Every flag is broken, and so is the first face; the others are drawn.
+        let mut table: HashMap<&'static str, Drawing> = crate::emoji::table()
+            .map(|emoji| {
+                let broken = emoji.group() == emojis::Group::Flags || emoji.as_str() == "\u{1f600}";
+                (
+                    emoji.as_str(),
+                    if broken {
+                        Drawing::Broken
+                    } else {
+                        Drawing::Colour
+                    },
+                )
+            })
+            .collect();
+        table.insert("\u{1f603}", Drawing::Text);
+        let drawings = Drawings::given(table);
+        let groups: Vec<emojis::Group> = groups_offered(&drawings)
+            .into_iter()
+            .map(|(_, group)| group)
+            .collect();
+        assert!(!groups.contains(&emojis::Group::Flags));
+        assert_eq!(groups.len(), 8);
+        let expected: Vec<&str> = emojis::Group::SmileysAndEmotion
+            .emojis()
+            .filter(|emoji| drawings.drawing(emoji) != Drawing::Broken)
+            .take(MOST_EMOJI)
+            .map(|emoji| emoji.as_str())
+            .collect();
+        let shown: Vec<&str> = emoji_shown(0, "", &drawings)
+            .into_iter()
+            .map(|emoji| emoji.as_str())
+            .collect();
+        assert_eq!(shown, expected);
+        assert!(!shown.contains(&"\u{1f600}"));
+        // A sign of a font without colour is drawn whole, so it is offered.
+        assert!(shown.contains(&"\u{1f603}"));
+        assert!(emoji_shown(0, "brazil", &drawings).is_empty());
     }
 }

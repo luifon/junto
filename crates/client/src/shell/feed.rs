@@ -291,9 +291,9 @@ impl Rich {
             let start = rich.text.len();
             match node {
                 Inline::Text { text, marks } => {
-                    rich.text.push_str(&drawings.shown(text));
-                    if !marks.is_empty() {
-                        let mut style = HighlightStyle::default();
+                    let stand_ins = rich.push_shown(text, drawings);
+                    let mut style = HighlightStyle::default();
+                    if !marks.is_empty() || !stand_ins.is_empty() {
                         for mark in marks {
                             match mark {
                                 Mark::Bold => style.font_weight = Some(FontWeight::BOLD),
@@ -306,24 +306,23 @@ impl Rich {
                                 }
                             }
                         }
-                        rich.highlights.push((start..rich.text.len(), style));
+                        let end = rich.text.len();
+                        rich.style(start..end, style, &stand_ins, theme);
                     }
                 }
                 Inline::Code { text } => {
                     // A thin space at each end stands for the padding of the design.
                     rich.text.push('\u{2009}');
-                    rich.text.push_str(text);
+                    let stand_ins = rich.push_shown(text, drawings);
                     rich.text.push('\u{2009}');
                     let range = start..rich.text.len();
-                    rich.highlights.push((
-                        range.clone(),
-                        HighlightStyle {
-                            color: Some(colors.terracotta_deep.into()),
-                            background_color: Some(colors.code_wash.into()),
-                            font_weight: Some(FontWeight::MEDIUM),
-                            ..HighlightStyle::default()
-                        },
-                    ));
+                    let style = HighlightStyle {
+                        color: Some(colors.terracotta_deep.into()),
+                        background_color: Some(colors.code_wash.into()),
+                        font_weight: Some(FontWeight::MEDIUM),
+                        ..HighlightStyle::default()
+                    };
+                    rich.style(range.clone(), style, &stand_ins, theme);
                     rich.families.push((range, theme.fonts.mono.clone()));
                 }
                 // The document came from a server, and a server is not trusted with what
@@ -331,23 +330,23 @@ impl Rich {
                 // take as a link is drawn as text, and a link opens in the form of ADR 0740.
                 Inline::Link { text, url } => {
                     let Some(link) = Link::parse(url) else {
-                        rich.text.push_str(text);
+                        let stand_ins = rich.push_shown(text, drawings);
+                        let end = rich.text.len();
+                        rich.style(start..end, HighlightStyle::default(), &stand_ins, theme);
                         continue;
                     };
-                    rich.text.push_str(text);
+                    let stand_ins = rich.push_shown(text, drawings);
                     let range = start..rich.text.len();
-                    rich.highlights.push((
-                        range.clone(),
-                        HighlightStyle {
-                            color: Some(colors.cypress.into()),
-                            underline: Some(UnderlineStyle {
-                                thickness: px(1.0),
-                                color: None,
-                                wavy: false,
-                            }),
-                            ..HighlightStyle::default()
-                        },
-                    ));
+                    let style = HighlightStyle {
+                        color: Some(colors.cypress.into()),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.0),
+                            color: None,
+                            wavy: false,
+                        }),
+                        ..HighlightStyle::default()
+                    };
+                    rich.style(range.clone(), style, &stand_ins, theme);
                     rich.links.push((range, link));
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
@@ -387,6 +386,45 @@ impl Rich {
             }
         }
         rich
+    }
+
+    /// Adds `text` as the window shows it (ADR 0758). Returns the ranges of the stand-ins
+    /// of the emoji that the fonts do not draw.
+    fn push_shown(&mut self, text: &str, drawings: &Drawings) -> Vec<Range<usize>> {
+        let start = self.text.len();
+        let shown = drawings.shown(text);
+        let stand_ins = shown
+            .stand_ins()
+            .map(|range| start + range.start..start + range.end)
+            .collect();
+        self.text.push_str(&shown.text);
+        stand_ins
+    }
+
+    /// Gives `range` the style `style`, and each stand-in inside it the colour of secondary
+    /// text as well. The ranges of the highlights stay in order and do not overlap.
+    fn style(
+        &mut self,
+        range: Range<usize>,
+        style: HighlightStyle,
+        stand_ins: &[Range<usize>],
+        theme: &Theme,
+    ) {
+        let mut at = range.start;
+        for stand_in in stand_ins {
+            if at < stand_in.start {
+                self.highlights.push((at..stand_in.start, style));
+            }
+            let muted = HighlightStyle {
+                color: Some(theme.colors.ink_3.into()),
+                ..style
+            };
+            self.highlights.push((stand_in.clone(), muted));
+            at = stand_in.end;
+        }
+        if at < range.end {
+            self.highlights.push((at..range.end, style));
+        }
     }
 
     /// The element of the text. `id` is the name of the element among the texts of its
@@ -1394,6 +1432,7 @@ impl Shell {
         let chips = message.reactions.iter().enumerate().map(|(index, held)| {
             let Reaction { emoji, count, own } = held.clone();
             let shown = SharedString::from(drawings.shown(&emoji).into_owned());
+            let stand_in = shown.as_ref() != emoji.as_str();
             let label: SharedString = text::reaction_label(&shown, count, own).into();
             let sent = emoji.clone();
             let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
@@ -1435,7 +1474,11 @@ impl Shell {
                             });
                         }))
                 })
-                .child(shown)
+                .child(
+                    div()
+                        .when(stand_in, |sign| sign.ink(colors.ink_3))
+                        .child(crate::ui::paint_text(shown, None)),
+                )
                 .child(
                     div()
                         .text_size(u(12.5))
@@ -2894,7 +2937,7 @@ mod tests {
             link("mailto:a@example.com"),
             link("https://user:secret@example.com"),
         ];
-        let rich = Rich::of(&content, &names, &theme, &crate::emoji::without_fonts());
+        let rich = Rich::of(&content, &names, &theme, &Drawings::default());
         assert_eq!(rich.text, "here".repeat(6));
         let opened: Vec<&str> = rich
             .links
@@ -2918,7 +2961,7 @@ mod tests {
             link(r#"mailto:a@example.com?body=x" --attach "C:\Users\a b\secret.txt"#),
             link(r#"https://example.com/a b"c?q="x y"#),
         ];
-        let rich = Rich::of(&content, &names, &theme, &crate::emoji::without_fonts());
+        let rich = Rich::of(&content, &names, &theme, &Drawings::default());
         let opened: Vec<&str> = rich
             .links
             .iter()
@@ -2931,5 +2974,56 @@ mod tests {
                 "https://example.com/a%20b%22c?q=%22x%20y"
             ]
         );
+    }
+
+    #[test]
+    fn a_message_shows_the_stand_in_of_an_emoji_in_its_text_its_links_and_its_code() {
+        let theme = Theme::stone();
+        let names = Names::default();
+        let brazil = "\u{1f1e7}\u{1f1f7}";
+        let drawings = Drawings::given([(brazil, crate::emoji::Drawing::Broken)].into());
+        let content = [
+            Inline::Text {
+                text: format!("Hello {brazil} and"),
+                marks: vec![Mark::Bold],
+            },
+            Inline::Link {
+                text: format!(" {brazil}"),
+                url: "https://example.com/a".to_owned(),
+            },
+            Inline::Code {
+                text: brazil.to_owned(),
+            },
+        ];
+        let rich = Rich::of(&content, &names, &theme, &drawings);
+        assert_eq!(
+            rich.text,
+            "Hello :brazil: and :brazil:\u{2009}:brazil:\u{2009}"
+        );
+        // The highlights are in order and do not overlap, as gpui requires, and every
+        // stand-in has the colour of secondary text.
+        let mut end = 0;
+        for (range, _) in &rich.highlights {
+            assert!(
+                range.start >= end && range.end > range.start,
+                "{:?}",
+                rich.highlights
+            );
+            end = range.end;
+        }
+        let muted: Vec<&str> = rich
+            .highlights
+            .iter()
+            .filter(|(_, style)| style.color == Some(theme.colors.ink_3.into()))
+            .map(|(range, _)| &rich.text[range.clone()])
+            .collect();
+        assert_eq!(muted, [":brazil:", ":brazil:", ":brazil:"]);
+        let bold: Vec<&str> = rich
+            .highlights
+            .iter()
+            .filter(|(_, style)| style.font_weight == Some(FontWeight::BOLD))
+            .map(|(range, _)| &rich.text[range.clone()])
+            .collect();
+        assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
     }
 }

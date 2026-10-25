@@ -2076,7 +2076,7 @@ const EMOJI_GROUPS: [&str; 9] = [
 ];
 
 /// The tabs of the emoji picker are in the picker, and neither the tabs nor the names of
-/// the groups cover each other, in a large window and in the smallest window (ADR 0757).
+/// the groups cover each other, in a large window and in the smallest window (ADR 0758).
 #[gpui::test]
 fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext) {
     let world = World::new();
@@ -2139,4 +2139,72 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
         window.press("escape");
         assert!(!window.shows("emoji-picker"));
     }
+}
+
+fn drawn_text(window: &mut Window) -> Vec<junto_client::ui::PaintedText> {
+    let _record = junto_client::ui::record_painted_text();
+    window.cx.update(|window, _| window.refresh());
+    window.settle();
+    junto_client::ui::take_painted_text()
+}
+
+/// A received emoji that the fonts do not draw is shown by its short code in a reaction,
+/// which keeps its count and sends the emoji itself; the picker names its open group
+/// (ADR 0758). The text system of the tests draws a flag as two pictures.
+#[gpui::test]
+fn an_emoji_that_the_fonts_do_not_draw_is_shown_by_its_short_code(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel_id = window.selected_channel();
+    let brazil = "\u{1f1e7}\u{1f1f7}";
+    let message = admin.send(&world, channel_id, document(&format!("From {brazil}")));
+    world
+        .run(admin.handle.api().add_reaction(message.id, brazil))
+        .unwrap();
+    let reactions = |window: &mut Window| {
+        window
+            .messages()
+            .into_iter()
+            .find(|row| row.message.id == message.id)
+            .map(|row| row.message.reactions.clone())
+            .unwrap_or_default()
+    };
+    window.until("the reaction is read", |window| {
+        reactions(window).len() == 1
+    });
+    window.until("the reaction shows the short code", |window| {
+        drawn_text(window)
+            .iter()
+            .any(|text| text.text == ":brazil:")
+    });
+    assert!(
+        !drawn_text(&mut window)
+            .iter()
+            .any(|text| text.text.contains(brazil))
+    );
+    window.click_named(format!("reaction:{}:0", message.id));
+    window.until(
+        "the own reaction is added with the emoji itself",
+        |window| {
+            let held = reactions(window);
+            held.len() == 1 && held[0].emoji == brazil && held[0].own && held[0].count == 2
+        },
+    );
+
+    window.in_shell(|shell, window, cx| {
+        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_group(8, cx);
+    });
+    assert!(window.shows("emoji-group-flags"));
+    assert!(
+        drawn_text(&mut window)
+            .iter()
+            .any(|text| text.text == "Flags")
+    );
+    window.press("escape");
 }

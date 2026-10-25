@@ -617,7 +617,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
     // The picker in the smallest window, the group of flags, and emoji that the colour
-    // font of the system may not draw: in a message and in its reactions (ADR 0757).
+    // font of the system may not draw: in a message and in its reactions (ADR 0758).
     studio.draw(
         Screen::new(
             "messages-emoji-picker-smallest",
@@ -641,7 +641,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let newer = made.message(
         "Ana",
         95,
-        "Long week \u{1fae9} \u{1f642}\u{200d}\u{2194}\u{fe0f}, with a flag \u{1f1e7}\u{1f1f7}          and a newer face \u{1faea}.",
+        "Long week \u{1fae9} \u{1f642}\u{200d}\u{2194}\u{fe0f}, with a flag \u{1f1e7}\u{1f1f7} and a newer face \u{1faea}.",
     );
     newer.reactions = vec![
         reaction("\u{1fae9}", 2, false),

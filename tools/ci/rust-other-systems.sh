@@ -50,6 +50,11 @@ step "Packaging unit tests"
 python3 -m unittest discover -s packaging -p "test_*.py"
 step "Test service wrapper failure paths"
 python3 tools/test_test_services.py
+# The emoji as the text system of the system draws them, with the facts of each system
+# that the rule of the client must give (ADR 0758). It needs no database, and runs on the
+# main thread, which the text system of macOS needs.
+step "Emoji of the fonts of the system"
+cargo test --locked --workspace --test emoji_fonts
 if [ "$system" = macos ]; then
     step "macOS signing and installation checks"
     temporary=$(mktemp -d)
