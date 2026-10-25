@@ -297,11 +297,16 @@ async fn repeats_latest(
     if !JOINED_ACTIONS.contains(&system.action.as_str()) {
         return Ok(false);
     }
-    place.ensure(connection).await?;
-    sqlx::query("select 1 from message_places where id=$1 for update")
-        .bind(place.id)
-        .execute(&mut *connection)
-        .await?;
+    // A place without its row has no line to repeat. The row is not created here: an insert
+    // would wait for a concurrent writer of the place before the lock below does.
+    let locked: Option<i32> =
+        sqlx::query_scalar("select 1 from message_places where id=$1 for update")
+            .bind(place.id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if locked.is_none() {
+        return Ok(false);
+    }
     Ok(sqlx::query_scalar(
         "select coalesce((select system->>'action'=$2 and (system->>'actor_id')::uuid=$3
              and created_at>$4

@@ -131,7 +131,7 @@ impl super::Shell {
         let colors = theme.colors;
         let faces = self.shown_faces();
         let (strong, rest) = crate::text::people_hidden(hidden.len());
-        let line = format!("{strong}{rest}");
+        let line = gpui::SharedString::from(format!("{strong}{rest}"));
         let avatars = people
             .iter()
             .filter(|person| hidden.contains(&person.account_id))
@@ -142,7 +142,7 @@ impl super::Shell {
                     .debug_selector(move || format!("hidden-avatar:{account_id}"))
                     .child(super::people::avatar(&faces, account_id, 20.0).radius(2.0))
             });
-        let selector = format!("people-hidden-text:{line}");
+        let selected = line.clone();
         Some(
             div()
                 .id("people-hidden")
@@ -161,7 +161,7 @@ impl super::Shell {
                 .child(div().flex().gap(u(3.0)).children(avatars))
                 .child(
                     div()
-                        .debug_selector(move || selector.clone())
+                        .debug_selector(move || format!("people-hidden-text:{selected}"))
                         .child(StyledText::new(line).with_highlights([(
                             0..strong.len(),
                             gpui::HighlightStyle {

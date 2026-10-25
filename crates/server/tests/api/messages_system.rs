@@ -892,6 +892,53 @@ async fn two_changes_of_the_settings_at_the_same_time_write_one_line() {
     assert_eq!(entries, 2);
 }
 
+/// The lock of the place keeps one line also at READ COMMITTED, where no transaction runs
+/// again: the second change waits for the lock, and its next statement reads the line of the
+/// first. Without the lock the second reads no line, waits only to take the next position,
+/// and writes a second line (ADR 0408).
+#[tokio::test]
+async fn the_lock_of_the_place_keeps_one_line_at_read_committed() {
+    use sqlx::Connection;
+    const BEGIN: &str = "begin isolation level read committed";
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let voice = channel(&server, &owner, "voice").await;
+    let about = junto_server::audit::About::Channel(voice.workspace_id, voice.id);
+    let change = |limit: u32| AuditEvent::ChannelCallSettingsUpdated {
+        user_limit: Some(limit),
+        hides_occupants: false,
+    };
+    let (now, actor) = (server.clock.now(), owner.account_id);
+    let mut held = server.db.acquire().await.unwrap();
+    let mut first = held.begin_with(BEGIN).await.unwrap();
+    junto_server::audit::record(&mut first, now, Some(actor), about, &change(3))
+        .await
+        .unwrap();
+    let pool = server.db.clone();
+    let later = change(4);
+    let second = tokio::spawn(async move {
+        let mut connection = pool.acquire().await.unwrap();
+        let mut second = connection.begin_with(BEGIN).await.unwrap();
+        junto_server::audit::record(&mut second, now, Some(actor), about, &later)
+            .await
+            .unwrap();
+        second.commit().await.unwrap();
+    });
+    server.until_blocked().await;
+    first.commit().await.unwrap();
+    second.await.unwrap();
+    assert_eq!(
+        line_actions(&server, &owner, &voice).await,
+        [
+            ("channel_created".to_owned(), Some(owner.account_id)),
+            (
+                "channel_call_settings_updated".to_owned(),
+                Some(owner.account_id)
+            )
+        ]
+    );
+}
+
 /// Each of the three actions joins its own repeats, and only in its own channel.
 #[tokio::test]
 async fn the_changes_of_one_person_join_per_action_and_per_channel() {
