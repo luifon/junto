@@ -1241,6 +1241,7 @@ impl Shell {
         let colors = theme.colors;
         let faces = self.shown_faces();
         let header = SideHeader::new(text::MEMBERS)
+            .title_bar()
             .icon(Icon::People)
             .note(
                 workspace

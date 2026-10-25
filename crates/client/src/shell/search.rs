@@ -467,6 +467,7 @@ impl Shell {
             _ => text::results_for(found, panel.more, &panel.text).into(),
         };
         let header = SideHeader::new(text::SEARCH)
+            .title_bar()
             .icon(Icon::Search)
             .note(note)
             .trailing(

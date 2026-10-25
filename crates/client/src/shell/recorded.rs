@@ -1568,6 +1568,7 @@ impl Shell {
         let colors = theme.colors;
         let recording_id = panel.recording_id;
         let header = SideHeader::new(text::TRANSCRIPT)
+            .title_bar()
             .icon(Icon::List)
             .note(panel.channel.clone())
             .trailing(

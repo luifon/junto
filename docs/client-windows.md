@@ -5,7 +5,10 @@ Junto runs on Windows 11 on x86-64 (ADR 0705). Obtain `Junto-<version>-windows-x
 ## Install
 
 1. Open the ZIP and extract the folder `Junto` into a folder of your account, for example `%LOCALAPPDATA%\Programs`. The folder that holds `Junto` must stay writable for updates.
-2. Start `Junto\junto.exe`. To start it from the Start menu or the taskbar, pin it there. Junto opens no console window; started from a terminal, it returns to the prompt at once.
+2. Start `Junto\junto.exe`. Junto opens no console window; started from a terminal, it returns to the prompt at once.
+3. To start Junto from the taskbar, right-click its taskbar button while it runs and choose "Pin to taskbar". Junto names its own identity for the taskbar (ADR 0755), so a pin made from `junto.exe` in Explorer, also one made for an earlier version, opens Junto as a second taskbar button: unpin it and pin the running Junto instead.
+
+The log of a running Junto is kept only when standard error is redirected, for example `junto.exe 2> "%TEMP%\junto.log"` in `cmd.exe`.
 
 The project does not buy a code-signing certificate (`docs/scope.md`). At the first start of a downloaded copy, Microsoft Defender SmartScreen states that it protected your computer from an unrecognized app. Choose "More info" and "Run anyway" only for a copy from your verified source. With Smart App Control on, Windows does not run Junto (ADR 0704).
 

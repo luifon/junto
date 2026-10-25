@@ -14,6 +14,13 @@ use junto_client::shell::title_bar::{
 
 use crate::harness::{Window, World, member, named};
 
+fn drawn() -> DrawnFrameInTests {
+    DrawnFrameInTests {
+        drawn: true,
+        ..DrawnFrameInTests::default()
+    }
+}
+
 fn record_requests(cx: &mut TestAppContext) -> TitleBarRequests {
     let requests = TitleBarRequests::default();
     let installed = requests.clone();
@@ -111,7 +118,7 @@ fn the_main_window_on_windows_draws_a_strip_with_its_buttons(cx: &mut TestAppCon
 
 #[gpui::test]
 fn a_drawn_frame_puts_the_strip_with_the_window_buttons_above_the_columns(cx: &mut TestAppContext) {
-    cx.update(|cx| cx.set_global(DrawnFrameInTests(true)));
+    cx.update(|cx| cx.set_global(drawn()));
     let (_directory, mut window) = named(cx, "Luca");
     assert_strip(&mut window);
     // A dialog covers the columns and leaves the strip and its buttons free.
@@ -122,7 +129,7 @@ fn a_drawn_frame_puts_the_strip_with_the_window_buttons_above_the_columns(cx: &m
 
 #[gpui::test]
 fn without_a_drawn_frame_the_columns_reach_the_top(cx: &mut TestAppContext) {
-    cx.update(|cx| cx.set_global(DrawnFrameInTests(false)));
+    cx.update(|cx| cx.set_global(DrawnFrameInTests::default()));
     let (_directory, mut window) = named(cx, "Luca");
     assert!(!window.shows("title-strip") && !window.shows("window-close"));
     assert_eq!(bounds(&mut window, "channel-column").top(), px(0.0));
@@ -133,7 +140,7 @@ fn without_a_drawn_frame_the_columns_reach_the_top(cx: &mut TestAppContext) {
 #[cfg(not(windows))]
 #[gpui::test]
 fn the_strip_of_a_drawn_frame_minimizes_zooms_moves_and_closes_the_window(cx: &mut TestAppContext) {
-    cx.update(|cx| cx.set_global(DrawnFrameInTests(true)));
+    cx.update(|cx| cx.set_global(drawn()));
     let requests = record_requests(cx);
     let (_directory, mut window) = named(cx, "Luca");
     window.click("window-minimize");
@@ -189,4 +196,144 @@ fn the_headers_act_as_the_title_bar_where_no_control_is(cx: &mut TestAppContext)
     window.press("escape");
     double_press(&mut window, menu);
     assert_eq!(taken(&requests), []);
+}
+
+/// The strip stays usable under an open dialog: the dialog covers the columns, not the strip.
+#[cfg(not(windows))]
+#[gpui::test]
+fn the_strip_works_while_a_dialog_is_open(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(drawn()));
+    let requests = record_requests(cx);
+    let (_directory, mut window) = named(cx, "Luca");
+    window.click("app-settings");
+    assert!(window.shows("scale-4"));
+    window.click("window-minimize");
+    assert_eq!(taken(&requests), [TitleBarRequest::Minimize]);
+    let title = bounds(&mut window, "title-strip-drag").center();
+    drag(&mut window, title, title + point(px(40.0), px(0.0)));
+    assert_eq!(taken(&requests), [TitleBarRequest::Move]);
+    assert!(
+        window.shows("scale-4"),
+        "a press on the strip closed the dialog"
+    );
+}
+
+/// A press in each band inside an edge resizes the window from that edge; an edge that the
+/// compositor tiled has no band, and the right press on the strip opens the window menu.
+#[cfg(not(windows))]
+#[gpui::test]
+fn the_bands_of_a_drawn_frame_resize_the_window_except_at_a_tiled_edge(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(DrawnFrameInTests {
+            tiling: gpui::Tiling {
+                left: true,
+                ..gpui::Tiling::default()
+            },
+            ..drawn()
+        })
+    });
+    let requests = record_requests(cx);
+    let (_directory, mut window) = named(cx, "Luca");
+    for (selector, edge) in [
+        ("resize-Top", gpui::ResizeEdge::Top),
+        ("resize-Bottom", gpui::ResizeEdge::Bottom),
+        ("resize-Right", gpui::ResizeEdge::Right),
+        ("resize-TopRight", gpui::ResizeEdge::TopRight),
+        ("resize-BottomRight", gpui::ResizeEdge::BottomRight),
+    ] {
+        let band = bounds(&mut window, selector);
+        press(&mut window, band.center(), 1);
+        assert_eq!(
+            taken(&requests),
+            [TitleBarRequest::Resize(edge)],
+            "{selector}"
+        );
+    }
+    for selector in ["resize-Left", "resize-TopLeft", "resize-BottomLeft"] {
+        assert!(
+            !window.shows(selector),
+            "{selector} is drawn at a tiled edge"
+        );
+    }
+    let title = bounds(&mut window, "title-strip-drag").center();
+    window.press_at(title, MouseButton::Right);
+    assert_eq!(taken(&requests), [TitleBarRequest::WindowMenu]);
+}
+
+#[cfg(not(windows))]
+#[gpui::test]
+fn a_maximized_window_has_no_resize_bands(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(DrawnFrameInTests {
+            maximized: true,
+            ..drawn()
+        })
+    });
+    let (_directory, mut window) = named(cx, "Luca");
+    assert!(window.shows("title-strip"));
+    for selector in ["resize-Top", "resize-Left", "resize-BottomRight"] {
+        assert!(
+            !window.shows(selector),
+            "{selector} is drawn in a maximized window"
+        );
+    }
+}
+
+/// In the main window on macOS a dialog header is no title bar, and a band at the top over an
+/// open layer moves the window and takes its double press without closing the layer.
+#[gpui::test]
+fn over_a_layer_the_top_band_is_the_title_bar_and_a_dialog_header_is_not(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(DrawnFrameInTests::default()));
+    let requests = record_requests(cx);
+    let (_directory, mut window) = named(cx, "Luca");
+    window
+        .cx
+        .update(|window, cx| content_reaches_title_bar(window, cx));
+    window.click("app-settings");
+    assert!(window.shows("scale-4"));
+    let band = bounds(&mut window, "title-band");
+    assert_eq!(band.top(), px(0.0));
+    let dialog = bounds(&mut window, "settings-dialog");
+    assert!(
+        dialog.top() >= band.bottom(),
+        "the dialog lies under the band"
+    );
+    let header = dialog.origin + point(px(30.0), px(20.0));
+    double_press(&mut window, header);
+    drag(&mut window, header, header + point(px(30.0), px(0.0)));
+    assert_eq!(taken(&requests), []);
+    let middle = band.center();
+    double_press(&mut window, middle);
+    assert_eq!(taken(&requests), [TitleBarRequest::DoublePress]);
+    drag(&mut window, middle, middle + point(px(30.0), px(0.0)));
+    assert_eq!(taken(&requests), [TitleBarRequest::Move]);
+    assert!(
+        window.shows("scale-4"),
+        "a press on the band closed the dialog"
+    );
+}
+
+/// A press that closes a menu and whose release the window never gets, as a press on the title
+/// bar of Windows that moves the window, does not keep the next press on the menu button from
+/// opening the menu.
+#[gpui::test]
+fn a_press_without_a_release_does_not_keep_a_menu_closed(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Menus");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.click("server-menu-button");
+    assert!(window.shows("server-menu"));
+    let width = window.cx.update(|window, _| window.viewport_size().width);
+    let outside = point(width - px(40.0), px(300.0));
+    window.dispatch(MouseDownEvent {
+        button: MouseButton::Left,
+        position: outside,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    assert!(!window.shows("server-menu"));
+    window.click("server-menu-button");
+    assert!(window.shows("server-menu"), "the menu did not open again");
 }

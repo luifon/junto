@@ -877,6 +877,7 @@ impl Shell {
             .items_center()
             .justify_center()
             .p(u(16.0))
+            .pt(u(crate::shell::title_bar::cover_top(window, cx)))
             .bg(Hsla::from(colors.scrim))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| by_cover(window, cx))
             .child(panel)

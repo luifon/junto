@@ -41,10 +41,16 @@ struct TitlePress(bool);
 
 impl Global for TitlePress {}
 
-/// The strip in a test, whatever the system: `true` draws it, with the buttons of Windows on
-/// Windows and with those of Linux on the other systems.
+/// The frame in a test, whatever the system: `drawn` draws the strip, with the buttons of
+/// Windows on Windows and with those of Linux on the other systems; on the other systems also
+/// the resize bands, for the edges that `tiling` leaves free and unless `maximized`.
 #[cfg(feature = "test-support")]
-pub struct DrawnFrameInTests(pub bool);
+#[derive(Clone, Copy, Default)]
+pub struct DrawnFrameInTests {
+    pub drawn: bool,
+    pub tiling: Tiling,
+    pub maximized: bool,
+}
 
 #[cfg(feature = "test-support")]
 impl Global for DrawnFrameInTests {}
@@ -59,6 +65,10 @@ pub enum TitleBarRequest {
     Minimize,
     /// Maximize or restore.
     Zoom,
+    /// Resize the window from this edge with the pointer.
+    Resize(ResizeEdge),
+    /// The window menu of the compositor at the pointer.
+    WindowMenu,
 }
 
 /// The requests of the title bars in a test: the test window of gpui carries out none of
@@ -82,6 +92,8 @@ fn request(kind: TitleBarRequest, window: &mut Window, cx: &mut App) {
         TitleBarRequest::DoublePress => window.titlebar_double_click(),
         TitleBarRequest::Minimize => window.minimize_window(),
         TitleBarRequest::Zoom => window.zoom_window(),
+        TitleBarRequest::Resize(edge) => window.start_window_resize(edge),
+        TitleBarRequest::WindowMenu => window.show_window_menu(window.mouse_position()),
     }
 }
 
@@ -93,13 +105,50 @@ pub fn content_reaches_title_bar(window: &Window, cx: &mut App) {
         .insert(window.window_handle().window_id());
 }
 
+/// Whether the content of this window reaches its title bar.
+pub(crate) fn reaches_title_bar(window: &Window, cx: &App) -> bool {
+    cx.try_global::<ContentTitleWindows>()
+        .is_some_and(|windows| windows.0.contains(&window.window_handle().window_id()))
+}
+
+/// The space above the panel of a layer, in design pixels: in a window whose content reaches
+/// its title bar the panel starts under the band of [`layer_band`].
+pub(crate) fn cover_top(window: &Window, cx: &App) -> f32 {
+    const MARGIN: f32 = 16.0;
+    if reaches_title_bar(window, cx) {
+        MARGIN.max(super::window_controls_height(cx))
+    } else {
+        MARGIN
+    }
+}
+
+/// A band at the top of a window whose content reaches its title bar, over an open layer: the
+/// layer covers the headers, and the band keeps the move of the window and its double press. A
+/// press there does not close the layer.
+pub(crate) fn layer_band(window: &Window, cx: &App) -> Option<AnyElement> {
+    reaches_title_bar(window, cx).then(|| {
+        header_zone(
+            div()
+                .id("title-band")
+                .debug_selector(|| "title-band".to_owned())
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(crate::theme::u(super::window_controls_height(cx)))
+                .occlude(),
+        )
+        .into_any_element()
+    })
+}
+
 /// Whether the application draws the frame of this window: the strip with the window buttons
 /// and, on Linux, the bands that resize it. `hides_system_title`: the window asked the system
 /// for no title bar (the main window).
 pub(crate) fn draws_frame(window: &Window, hides_system_title: bool, cx: &App) -> bool {
     #[cfg(feature = "test-support")]
-    if let Some(drawn) = cx.try_global::<DrawnFrameInTests>() {
-        return drawn.0;
+    if let Some(frame) = cx.try_global::<DrawnFrameInTests>() {
+        return frame.drawn;
     }
     let _ = cx;
     if cfg!(windows) {
@@ -114,10 +163,7 @@ pub(crate) fn draws_frame(window: &Window, hides_system_title: bool, cx: &App) -
 /// control takes its press first: gpui gives the press to the focusable element under the
 /// pointer and marks it as handled, so a press on a button or a field stays theirs.
 pub(crate) fn header_zone<E: InteractiveElement>(element: E) -> E {
-    moves_window(element, TitleBarRequest::DoublePress, |window, cx| {
-        cx.try_global::<ContentTitleWindows>()
-            .is_some_and(|windows| windows.0.contains(&window.window_handle().window_id()))
-    })
+    moves_window(element, TitleBarRequest::DoublePress, reaches_title_bar)
 }
 
 fn moves_window<E: InteractiveElement>(
@@ -245,8 +291,8 @@ impl Shell {
                     area.window_control_area(WindowControlArea::Drag)
                 } else {
                     moves_window(area, TitleBarRequest::Zoom, |_, _| true)
-                        .on_mouse_down(MouseButton::Right, |event, window, _| {
-                            window.show_window_menu(event.position)
+                        .on_mouse_down(MouseButton::Right, |_, window, cx| {
+                            request(TitleBarRequest::WindowMenu, window, cx)
                         })
                 }
             });
@@ -351,14 +397,15 @@ impl Shell {
 /// The bands inside the edges of a window whose frame the application draws on Linux: a press
 /// there resizes the window from that edge or corner. An edge that the compositor tiled has
 /// none, and a maximized window has none.
-pub(crate) fn resize_bands(window: &Window) -> Vec<AnyElement> {
-    if !cfg!(target_os = "linux") || window.is_maximized() {
+pub(crate) fn resize_bands(window: &Window, cx: &App) -> Vec<AnyElement> {
+    // Windows resizes the window from the borders of its frame.
+    if cfg!(windows) {
         return Vec::new();
     }
-    let tiling = match window.window_decorations() {
-        Decorations::Client { tiling } => tiling,
-        Decorations::Server => return Vec::new(),
-    };
+    let (tiling, maximized) = edges(window, cx);
+    if maximized {
+        return Vec::new();
+    }
     let band = px(RESIZE_BAND);
     let corner = px(RESIZE_BAND * 3.0);
     let mut bands = Vec::new();
@@ -376,11 +423,12 @@ pub(crate) fn resize_bands(window: &Window) -> Vec<AnyElement> {
             bands.push(
                 place(div().absolute(), band, corner)
                     .id(SharedString::from(format!("resize-{edge:?}")))
+                    .debug_selector(move || format!("resize-{edge:?}"))
                     .occlude()
                     .cursor(cursor)
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         cx.stop_propagation();
-                        window.start_window_resize(edge);
+                        request(TitleBarRequest::Resize(edge), window, cx);
                     })
                     .into_any_element(),
             );
@@ -410,6 +458,19 @@ pub(crate) fn resize_bands(window: &Window) -> Vec<AnyElement> {
         d.bottom_0().right_0().size(corner)
     });
     bands
+}
+
+/// The tiled edges of a window whose frame the application draws, and whether it is maximized.
+fn edges(window: &Window, cx: &App) -> (Tiling, bool) {
+    #[cfg(feature = "test-support")]
+    if let Some(frame) = cx.try_global::<DrawnFrameInTests>() {
+        return (frame.tiling, frame.maximized);
+    }
+    let _ = cx;
+    match window.window_decorations() {
+        Decorations::Client { tiling } => (tiling, window.is_maximized()),
+        Decorations::Server => (Tiling::tiled(), true),
+    }
 }
 
 fn free(edge: ResizeEdge, tiling: Tiling) -> bool {

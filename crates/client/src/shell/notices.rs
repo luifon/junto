@@ -292,6 +292,7 @@ impl Shell {
         let theme = theme(cx);
         let colors = theme.colors;
         let header = SideHeader::new(text::NOTIFICATIONS)
+            .title_bar()
             .icon(Icon::Bell)
             .note(if panel.unread > 0 {
                 text::unread_notices(panel.unread)

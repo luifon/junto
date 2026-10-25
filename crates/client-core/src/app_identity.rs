@@ -19,7 +19,6 @@ pub use self::windows::{Registration, register, unregister};
 mod windows {
     use std::path::Path;
 
-    const IDENTIFIERS: &str = r"Software\Classes\AppUserModelId";
     /// `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`.
     const NOT_FOUND: i32 = 0x8007_0002_u32 as i32;
 
@@ -31,45 +30,65 @@ mod windows {
         pub picture: &'a Path,
     }
 
-    fn key_path(identifier: &str) -> String {
-        format!(r"{IDENTIFIERS}\{identifier}")
+    /// Where the keys of the identifiers are. A test uses a volatile key of its own below
+    /// `Software\Classes`: a volatile key that it created at the place of the real parent would
+    /// refuse every key that is not volatile below it until the logoff of the account.
+    pub(super) struct Place<'a> {
+        pub base: &'a str,
+        pub volatile: bool,
     }
 
-    fn error(error: windows_registry::Result<()>) -> std::io::Result<()> {
-        error.map_err(|error| std::io::Error::other(error.message()))
+    const ACCOUNT: Place<'static> = Place {
+        base: r"Software\Classes\AppUserModelId",
+        volatile: false,
+    };
+
+    fn error(error: impl std::fmt::Display) -> std::io::Error {
+        std::io::Error::other(error.to_string())
     }
 
     /// Writes the picture when the file differs from it, then the key of the identifier.
     pub fn register(registration: &Registration<'_>, picture: &[u8]) -> std::io::Result<()> {
-        if std::fs::read(registration.picture).ok().as_deref() != Some(picture) {
-            std::fs::write(registration.picture, picture)?;
-        }
-        let key = windows_registry::CURRENT_USER
-            .create(key_path(registration.identifier))
-            .map_err(|error| std::io::Error::other(error.message()))?;
-        write(&key, registration)
+        register_at(&ACCOUNT, registration, picture)
     }
 
-    pub(super) fn write(
-        key: &windows_registry::Key,
+    pub(super) fn register_at(
+        place: &Place<'_>,
         registration: &Registration<'_>,
+        picture: &[u8],
     ) -> std::io::Result<()> {
-        let picture = registration.picture.to_str().ok_or_else(|| {
+        let path = registration.picture.to_str().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "the path of the picture is not Unicode",
             )
         })?;
-        error(key.set_string("DisplayName", registration.name))?;
-        error(key.set_string("IconUri", picture))
+        if std::fs::read(registration.picture).ok().as_deref() != Some(picture) {
+            std::fs::write(registration.picture, picture)?;
+        }
+        let mut options = windows_registry::CURRENT_USER.options();
+        options.read().write().create();
+        if place.volatile {
+            options.volatile();
+        }
+        let key = options
+            .open(format!(r"{}\{}", place.base, registration.identifier))
+            .map_err(error)?;
+        key.set_string("DisplayName", registration.name)
+            .map_err(error)?;
+        key.set_string("IconUri", path).map_err(error)
     }
 
     /// Removes the key of the identifier. Returns whether it existed.
     pub fn unregister(identifier: &str) -> std::io::Result<bool> {
-        match windows_registry::CURRENT_USER.remove_tree(key_path(identifier)) {
+        unregister_at(&ACCOUNT, identifier)
+    }
+
+    pub(super) fn unregister_at(place: &Place<'_>, identifier: &str) -> std::io::Result<bool> {
+        match windows_registry::CURRENT_USER.remove_tree(format!(r"{}\{identifier}", place.base)) {
             Ok(()) => Ok(true),
             Err(error) if error.code().0 == NOT_FOUND => Ok(false),
-            Err(error) => Err(std::io::Error::other(error.message())),
+            Err(other) => Err(error(other)),
         }
     }
 
@@ -77,49 +96,67 @@ mod windows {
     mod tests {
         use super::*;
 
+        fn modified(path: &Path) -> std::time::SystemTime {
+            std::fs::metadata(path).unwrap().modified().unwrap()
+        }
+
         #[test]
         fn the_key_names_the_application_and_its_picture_and_is_removed() {
-            let directory = tempfile::tempdir().unwrap();
-            let picture = directory
-                .path()
-                .join(crate::app_identity::NOTIFICATION_PICTURE);
+            let account_parent = || windows_registry::CURRENT_USER.open(ACCOUNT.base).is_ok();
+            let parent_before = account_parent();
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let identifier = format!("chat.junto.Test.{}.{nanos}", std::process::id());
-            // A volatile key, which Windows also removes at the logoff of the account, so a
-            // killed test leaves none behind (ADR 0915).
-            let key = windows_registry::CURRENT_USER
-                .options()
-                .read()
-                .write()
-                .create()
-                .volatile()
-                .open(key_path(&identifier))
-                .unwrap();
+            let base = format!(
+                r"Software\Classes\junto-test-aumid-{}-{nanos}",
+                std::process::id()
+            );
+            // Volatile: Windows also removes the keys of a killed test at the logoff of the
+            // account (ADR 0915).
+            let place = Place {
+                base: &base,
+                volatile: true,
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let picture = directory
+                .path()
+                .join(crate::app_identity::NOTIFICATION_PICTURE);
             let registration = Registration {
-                identifier: &identifier,
+                identifier: "chat.junto.Test",
                 name: "Junto",
                 picture: &picture,
             };
-            write(&key, &registration).unwrap();
-            let read = windows_registry::CURRENT_USER
-                .open(key_path(&identifier))
+            // A missing picture is written.
+            register_at(&place, &registration, b"first").unwrap();
+            assert_eq!(std::fs::read(&picture).unwrap(), b"first");
+            let key = windows_registry::CURRENT_USER
+                .open(format!(r"{base}\chat.junto.Test"))
                 .unwrap();
-            assert_eq!(read.get_string("DisplayName").unwrap(), "Junto");
+            assert_eq!(key.get_string("DisplayName").unwrap(), "Junto");
             assert_eq!(
-                read.get_string("IconUri").unwrap(),
+                key.get_string("IconUri").unwrap(),
                 picture.to_str().unwrap()
             );
-            drop((key, read));
-            assert!(unregister(&identifier).unwrap());
-            assert!(!unregister(&identifier).unwrap());
-            assert!(
-                windows_registry::CURRENT_USER
-                    .open(key_path(&identifier))
-                    .is_err()
-            );
+            drop(key);
+            // An equal picture is not written again; another one is.
+            let earlier = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+            std::fs::File::options()
+                .write(true)
+                .open(&picture)
+                .unwrap()
+                .set_modified(earlier)
+                .unwrap();
+            register_at(&place, &registration, b"first").unwrap();
+            assert_eq!(modified(&picture), earlier);
+            register_at(&place, &registration, b"second").unwrap();
+            assert_eq!(std::fs::read(&picture).unwrap(), b"second");
+            assert!(unregister_at(&place, "chat.junto.Test").unwrap());
+            assert!(!unregister_at(&place, "chat.junto.Test").unwrap());
+            windows_registry::CURRENT_USER.remove_tree(&base).unwrap();
+            assert!(windows_registry::CURRENT_USER.open(&base).is_err());
+            // The test creates no key at the place of the identifiers of the account.
+            assert_eq!(account_parent(), parent_before);
         }
     }
 }

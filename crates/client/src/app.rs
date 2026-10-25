@@ -57,7 +57,14 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
     })
     .detach();
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| {
+        // The windows close without a request to close them.
+        #[cfg(windows)]
+        for window in cx.windows() {
+            let _ = window.update(cx, |_, window, _| crate::taskbar::forget(window));
+        }
+        cx.quit()
+    });
     Ok(())
 }
 
@@ -145,9 +152,15 @@ pub fn open_main_window(
             window.set_rem_size(theme::rem_size(scale));
             #[cfg(target_os = "macos")]
             crate::shell::title_bar::content_reaches_title_bar(window, cx);
+            #[cfg(windows)]
+            crate::taskbar::identify(window);
             let held = state.clone();
-            window.on_window_should_close(cx, move |_, cx| {
+            window.on_window_should_close(cx, move |window, cx| {
                 held.update(cx, |state, cx| state.return_call(cx));
+                #[cfg(windows)]
+                crate::taskbar::forget(window);
+                #[cfg(not(windows))]
+                let _ = window;
                 true
             });
             let shell = cx.new(|cx| Shell::new(state, window, cx));

@@ -3891,6 +3891,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "windows 0.62.2",
  "windows-registry",
  "windows-sys 0.61.2",
  "zeroize",

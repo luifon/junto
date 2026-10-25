@@ -32,7 +32,9 @@ options:
   --version                print the version
   --help                   print this text
 
-The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn).";
+The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn).
+On Windows the log of a running window is kept only when standard error is redirected,
+for example: junto.exe 2> junto.log";
 
 struct Arguments {
     data_dir: Option<PathBuf>,
@@ -213,6 +215,7 @@ fn main() -> ExitCode {
         .with_assets(Assets)
         .run(move |cx| {
             if let Err(error) = app::init(cx) {
+                junto_client_core::console::attach_to_parent();
                 eprintln!("junto cannot start: {error:#}");
                 cx.quit();
                 return;
@@ -234,6 +237,7 @@ fn main() -> ExitCode {
                 }
                 Ok(_) => reached.set(true),
                 Err(error) => {
+                    junto_client_core::console::attach_to_parent();
                     eprintln!("junto cannot open its window: {error:#}");
                     cx.quit();
                 }

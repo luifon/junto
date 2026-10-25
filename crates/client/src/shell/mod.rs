@@ -1180,6 +1180,7 @@ impl Render for Shell {
             .child(self.render_main(&view, narrow, window, cx))
             .when(!matches!(self.layer, Layer::None), |body| {
                 body.child(self.render_layer(&view, window, cx))
+                    .children(title_bar::layer_band(window, cx))
             });
         div()
             .id("shell")
@@ -1203,7 +1204,7 @@ impl Render for Shell {
             })
             .child(body)
             .when(frame, |shell| {
-                shell.children(title_bar::resize_bands(window))
+                shell.children(title_bar::resize_bands(window, cx))
             })
             .into_any_element()
     }
@@ -1216,19 +1217,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> E {
         element
-            // After every click: a press that closed the menu of the server is over.
+            // After every click: a press that closed the menu of the server is over. A press
+            // ends without a release in the window when the system took it, for example a
+            // press on the title bar of Windows that moves the window; the next press ends it
+            // too, before a menu closes at that press.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.presses_over()))
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    this.server_menu_closed_by_press = false;
-                    this.device_menu_closed_by_press = false;
-                    this.recording_details_closed_by_press = false;
-                    this.invite_closed_by_press = false;
-                    this.filter_closed_by_press = false;
-                    this.recording_files_closed_by_press = false;
-                    this.recording_parts_closed_by_press = false;
-                    this.record_language_closed_by_press = false;
-                }),
+                cx.listener(|this, _, _, _| this.presses_over()),
             )
             // Escape closes the details of a recording and the list of the members who
             // can be invited. Neither is a layer of the window.
@@ -1247,6 +1243,17 @@ impl Shell {
                 cx.stop_propagation();
                 cx.notify();
             }))
+    }
+
+    fn presses_over(&mut self) {
+        self.server_menu_closed_by_press = false;
+        self.device_menu_closed_by_press = false;
+        self.recording_details_closed_by_press = false;
+        self.invite_closed_by_press = false;
+        self.filter_closed_by_press = false;
+        self.recording_files_closed_by_press = false;
+        self.recording_parts_closed_by_press = false;
+        self.record_language_closed_by_press = false;
     }
 
     fn drop_stale_layer(&mut self, view: &ShellView, window: &mut Window, cx: &mut Context<Self>) {

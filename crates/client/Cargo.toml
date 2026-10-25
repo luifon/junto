@@ -129,6 +129,10 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 raw-window-handle = "0.6"
 x11rb = "0.13"
 
+[target.'cfg(windows)'.dependencies]
+# The handle of the main window, for its taskbar properties (ADR 0755). gpui uses the same crate.
+raw-window-handle = "0.6"
+
 [build-dependencies]
 # The icon of the program on Windows and of its windows on X11 (ADR 0756). The build for
 # macOS renders nothing, so only the builds for Windows and Linux compile the renderer.

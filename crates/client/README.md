@@ -258,7 +258,7 @@ JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -
 | `--no-activate` | Open the window without bringing it to the front. |
 | `--check-startup` | Exit successfully after the first completed window frame; also disables activation. |
 
-The variable `JUNTO_LOG_LEVEL` sets the level of the log on standard error (`warn` by default).
+The variable `JUNTO_LOG_LEVEL` sets the level of the log on standard error (`warn` by default). On Windows `junto.exe` is a program of the Windows subsystem: the log of a running window is kept only when standard error is redirected (`junto.exe 2> junto.log`), and a command that only writes text (`--help`, `--version`, an error before the window) writes it into the console of the terminal that started it (ADR 0755).
 
 ## Tests
 

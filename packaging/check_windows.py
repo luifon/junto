@@ -160,7 +160,8 @@ class Check:
         picture = data / "notification-icon.png"
         expect(values.get("DisplayName", (None,))[0] == "Junto", f"the identity names {values}")
         expect(pathlib.Path(values.get("IconUri", ("",))[0]) == picture, f"the identity names {values}")
-        expect(picture.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", "the picture of the notifications is no PNG file")
+        expect(icons.png(picture.read_bytes()) == icons.png(icons.rendering(TARGET / "junto-icon.exe", 256)),
+               "the picture of the notifications is not the rendering of the icon at 256 pixels")
         result = ran([self.installed / "junto-recover.exe", "unregister"])
         expect(result.returncode == 0 and "removed" in result.stdout, "the recovery program did not unregister",
                result)

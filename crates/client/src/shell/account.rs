@@ -144,6 +144,7 @@ impl Shell {
     pub(crate) fn render_surface(
         &mut self,
         surface: Surface,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -226,6 +227,7 @@ impl Shell {
             .items_center()
             .justify_center()
             .p(u(16.0))
+            .pt(u(crate::shell::title_bar::cover_top(window, cx)))
             .bg(Hsla::from(colors.scrim))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| by_cover(window, cx))
             .child(panel)
@@ -480,7 +482,7 @@ impl Shell {
             page,
             page_scroll: self.account.page_scroll.clone(),
         };
-        self.render_surface(surface, cx)
+        self.render_surface(surface, window, cx)
     }
 
     fn render_account_nav(

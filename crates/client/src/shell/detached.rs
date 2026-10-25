@@ -448,7 +448,7 @@ impl Shell {
             .flex_col()
             .child(self.render_title_strip(view.call_title().into(), window, cx))
             .child(body.flex_1().min_h_0())
-            .children(super::title_bar::resize_bands(window))
+            .children(super::title_bar::resize_bands(window, cx))
             .into_any_element()
     }
 }
