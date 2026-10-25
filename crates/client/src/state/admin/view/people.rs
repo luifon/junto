@@ -1,7 +1,11 @@
 //! The pages of the people of a server (ADR 0761): every account, the members of the
 //! shown workspace, the invites and the join requests that wait.
 
-use junto_client_core::model::{Collection, Loadable, ServerModel, WorkspaceModel, outranks};
+use std::collections::HashMap;
+
+use junto_client_core::model::{
+    Collection, Loadable, ServerModel, WorkspaceModel, comparable_name, outranks,
+};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{AccountStatus, AccountSummary, RecoverAccount};
 use junto_client_core::protocol::ids::{
@@ -453,6 +457,10 @@ pub struct RequestLine {
     /// In the time zone of the person.
     pub created: OffsetDateTime,
     pub expires: OffsetDateTime,
+    /// An account or another waiting request has the same name, apart from case and
+    /// surrounding spaces. Each device key makes its own request, so one person with two
+    /// keys has two requests, and approving both makes two accounts (ADR 0111, ADR 0761).
+    pub same_name: bool,
 }
 
 /// The join requests that wait.
@@ -754,13 +762,24 @@ pub fn invites(
 pub fn requests(model: &ServerModel, known: &Known) -> RequestsPage {
     RequestsPage {
         requests: Listed::of(&model.admin.join_requests, |requests| {
+            let names: Vec<String> = requests
+                .iter()
+                .map(|request| comparable_name(&request.name))
+                .collect();
+            let mut waiting: HashMap<&str, usize> = HashMap::new();
+            for name in &names {
+                *waiting.entry(name.as_str()).or_default() += 1;
+            }
             requests
                 .iter()
-                .map(|request| RequestLine {
+                .zip(&names)
+                .map(|(request, name)| RequestLine {
                     id: request.id,
                     name: request.name.clone(),
                     created: known.zone.local(request.created_at),
                     expires: known.zone.local(request.expires_at),
+                    same_name: request.accounts_with_name > 0
+                        || waiting.get(name.as_str()).is_some_and(|count| *count > 1),
                 })
                 .collect()
         }),
@@ -1885,6 +1904,7 @@ mod tests {
             created_at,
             expires_at: created_at + Duration::days(7),
             returning_account_id: None,
+            accounts_with_name: 0,
         };
         let (first, second) = (
             request("Nina", time()),
@@ -1912,6 +1932,55 @@ mod tests {
         assert_eq!(rows[0].created.hour(), 5);
         assert_eq!(rows[0].expires, time() + Duration::days(7));
         assert_eq!(rows[0].expires.offset(), offset);
+        assert!(rows.iter().all(|row| !row.same_name));
+    }
+
+    #[test]
+    fn a_request_with_the_name_of_an_account_is_marked() {
+        let scene = scene();
+        let model = scene.model(AdminModel {
+            join_requests: Collection::Loaded(vec![JoinRequest {
+                id: JoinRequestId::generate(),
+                name: "Nina".to_owned(),
+                created_at: time(),
+                expires_at: time() + Duration::days(7),
+                returning_account_id: None,
+                accounts_with_name: 1,
+            }]),
+            ..AdminModel::default()
+        });
+        let page = requests(&model, &Known::default());
+        assert!(page.requests.loaded().unwrap()[0].same_name);
+    }
+
+    #[test]
+    fn requests_with_the_same_name_are_marked() {
+        let scene = scene();
+        let request = |name: &str| JoinRequest {
+            id: JoinRequestId::generate(),
+            name: name.to_owned(),
+            created_at: time(),
+            expires_at: time() + Duration::days(7),
+            returning_account_id: None,
+            accounts_with_name: 0,
+        };
+        let model = scene.model(AdminModel {
+            join_requests: Collection::Loaded(vec![
+                request("Nina"),
+                request("Otto"),
+                request(" nina "),
+            ]),
+            ..AdminModel::default()
+        });
+        let page = requests(&model, &Known::default());
+        let marked: Vec<bool> = page
+            .requests
+            .loaded()
+            .unwrap()
+            .iter()
+            .map(|row| row.same_name)
+            .collect();
+        assert_eq!(marked, [true, false, true]);
     }
 
     #[test]

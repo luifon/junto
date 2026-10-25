@@ -741,6 +741,7 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             the_workspaces(workspace_ids, names)
         ),
         AuditEvent::JoinRequestDenied { .. } => "a join request was denied.".to_owned(),
+        AuditEvent::JoinRequestWithdrawn { .. } => "a join request was withdrawn.".to_owned(),
         AuditEvent::AccountRemoved { account_id, .. } => {
             format!("{} was removed from the server.", account(*account_id))
         }

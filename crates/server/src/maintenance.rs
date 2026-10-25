@@ -49,7 +49,7 @@ const RINGS_THAT_NO_LIMIT_COUNTS: &str = "delete from direct_call_rings where id
 
 const PAST_THE_HISTORY_PERIOD: &str = "delete from join_requests where id in (
          select id from join_requests
-         where state in ('denied', 'expired') and expires_at <= $1 limit $2)
+         where state in ('denied', 'expired', 'withdrawn') and expires_at <= $1 limit $2)
      returning 1";
 
 const ENDED_SESSIONS_PAST_THEIR_LIFETIME: &str = "delete from ended_sessions

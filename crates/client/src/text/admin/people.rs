@@ -323,6 +323,8 @@ pub const APPROVAL_WORKSPACES: &str = "Workspaces of an approval";
 pub const APPROVAL_GRANTS_HELP: &str = "An approved person becomes a member of these workspaces.";
 pub const WAITING: &str = "Requests that wait";
 pub const NO_REQUESTS: &str = "No join request waits.";
+pub const SAME_NAME: &str = "An account or another waiting request has this name. It can be the same \
+     person on a second device or after a new installation: an approval makes a second account.";
 pub const APPROVE: &str = "Approve";
 pub const DENY: &str = "Deny";
 

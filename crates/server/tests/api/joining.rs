@@ -33,6 +33,29 @@ async fn status(server: &TestServer, key: &DeviceKey) -> Reply {
         .await
 }
 
+async fn withdraw(server: &TestServer, key: &DeviceKey) -> Reply {
+    let proof = server
+        .proof(key, ChallengeOperation::WithdrawJoinRequest)
+        .await;
+    server
+        .open(
+            "/api/v1/join-requests/withdrawal",
+            &json!({ "proof": proof }),
+        )
+        .await
+}
+
+async fn requests_of(server: &TestServer, key: &DeviceKey) -> Vec<(String, Option<String>)> {
+    sqlx::query_as(
+        "select state, decided_by::text from join_requests where public_key = $1
+         order by created_at, id",
+    )
+    .bind(key.public().as_bytes().as_slice())
+    .fetch_all(&server.db)
+    .await
+    .unwrap()
+}
+
 async fn create_workspace(server: &TestServer, creator: &Member, name: &str) -> Workspace {
     server
         .post(creator, "/api/v1/workspaces", &json!({ "name": name }))
@@ -382,9 +405,10 @@ async fn a_join_request_waits_for_an_approval_that_names_the_workspaces() {
         .ok(StatusCode::CREATED);
     assert_eq!(request.name, "Newcomer");
     assert_eq!(request.expires_at - server.clock.now(), Duration::days(7));
-    request_to_join_reply(&server, &key, "Newcomer")
+    let again: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
         .await
-        .error(ErrorCode::JoinRequestPending);
+        .ok(StatusCode::OK);
+    assert_eq!(again, request);
 
     let waiting: JoinRequestStatus = status(&server, &key).await.ok(StatusCode::OK);
     assert_eq!(waiting.state, JoinRequestState::Pending);
@@ -771,6 +795,484 @@ async fn two_simultaneous_redemptions_of_a_one_use_code_admit_one_account() {
             .await
             .unwrap();
     assert_eq!(members, 2);
+}
+
+#[tokio::test]
+async fn a_second_request_of_one_key_returns_the_first_one() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let key = DeviceKey::generate();
+    let first: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .ok(StatusCode::CREATED);
+    server.clock.advance(Duration::minutes(5));
+    let second: JoinRequest = request_to_join_reply(&server, &key, "Other name")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(second, first);
+    assert_eq!(requests_of(&server, &key).await.len(), 1);
+    let listed: Vec<JoinRequest> = server
+        .get(&owner, "/api/v1/join-requests")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(listed, std::slice::from_ref(&first));
+
+    // The one request makes one account, and the key cannot ask again.
+    let approved: JoinRequestStatus = server
+        .post(
+            &owner,
+            &format!("/api/v1/join-requests/{}/approval", first.id),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .error(ErrorCode::KeyAlreadyRegistered);
+    let accounts: i64 = sqlx::query_scalar("select count(*) from accounts where name = 'Newcomer'")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(accounts, 1);
+    assert_eq!(
+        server.login(&key).await.account_id,
+        approved.account_id.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn simultaneous_requests_of_one_key_make_one_request() {
+    let server = TestServer::start().await;
+    // Three rounds and the last send stay under the limit of join attempts per address.
+    for _ in 0..3 {
+        let key = DeviceKey::generate();
+        let ask = || {
+            let (server, key) = (&server, &key);
+            async move { request_to_join_reply(server, key, "Newcomer").await }
+        };
+        let replies = tokio::join!(ask(), ask(), ask(), ask());
+        let mut created = Vec::new();
+        for reply in [replies.0, replies.1, replies.2, replies.3] {
+            match reply.status {
+                StatusCode::CREATED | StatusCode::OK => {
+                    created.push(reply.ok::<JoinRequest>(reply.status).id);
+                }
+                // Two sends of one challenge: the second finds it used.
+                _ => reply.error(ErrorCode::ChallengeInvalid),
+            }
+        }
+        assert!(!created.is_empty());
+        assert!(created.iter().all(|id| *id == created[0]), "{created:?}");
+        assert_eq!(requests_of(&server, &key).await.len(), 1);
+    }
+
+    // One proof sent twice at the same time makes one request.
+    let key = DeviceKey::generate();
+    let proof = server.proof(&key, ChallengeOperation::RequestToJoin).await;
+    let send = || {
+        let (server, proof) = (&server, proof.clone());
+        async move {
+            server
+                .open(
+                    "/api/v1/join-requests",
+                    &json!({ "proof": proof, "name": "Newcomer" }),
+                )
+                .await
+        }
+    };
+    let (first, second) = tokio::join!(send(), send());
+    let (won, lost) = if first.status == StatusCode::CREATED {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    won.ok::<JoinRequest>(StatusCode::CREATED);
+    lost.error(ErrorCode::ChallengeInvalid);
+    assert_eq!(requests_of(&server, &key).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_withdrawn_request_cannot_be_approved_and_the_key_can_ask_again() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let key = DeviceKey::generate();
+
+    // A key without a request gets the same answer as one with a request.
+    withdraw(&server, &key).await.empty(StatusCode::NO_CONTENT);
+    let first: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .ok(StatusCode::CREATED);
+    withdraw(&server, &key).await.empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        requests_of(&server, &key).await,
+        [("withdrawn".to_owned(), None)]
+    );
+    status(&server, &key).await.error(ErrorCode::NotFound);
+    let listed: Vec<JoinRequest> = server
+        .get(&owner, "/api/v1/join-requests")
+        .await
+        .ok(StatusCode::OK);
+    assert!(listed.is_empty());
+    for decision in ["approval", "denial"] {
+        server
+            .post(
+                &owner,
+                &format!("/api/v1/join-requests/{}/{decision}", first.id),
+                &json!({}),
+            )
+            .await
+            .error(ErrorCode::Conflict);
+    }
+    let log: AuditPage = server
+        .get(&owner, "/api/v1/audit-log")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        log.entries[0].event,
+        AuditEvent::JoinRequestWithdrawn {
+            join_request_id: first.id
+        }
+    );
+    assert_eq!(log.entries[0].actor_id, None);
+
+    // The key asks again: a new request, the only one that waits.
+    let second: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .ok(StatusCode::CREATED);
+    assert_ne!(second.id, first.id);
+    let result: JoinRequestStatus = status(&server, &key).await.ok(StatusCode::OK);
+    assert_eq!(result.id, second.id);
+
+    // A denial stays the result after a later withdrawal of another request.
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/join-requests/{}/denial", second.id),
+            &json!({}),
+        )
+        .await
+        .ok::<JoinRequestStatus>(StatusCode::OK);
+    let third: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .ok(StatusCode::CREATED);
+    withdraw(&server, &key).await.empty(StatusCode::NO_CONTENT);
+    let result: JoinRequestStatus = status(&server, &key).await.ok(StatusCode::OK);
+    assert_eq!(
+        (result.id, result.state),
+        (second.id, JoinRequestState::Denied)
+    );
+    assert_ne!(third.id, second.id);
+
+    // A key of an account cannot withdraw: its request was approved.
+    let fourth: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/join-requests/{}/approval", fourth.id),
+            &json!({}),
+        )
+        .await
+        .ok::<JoinRequestStatus>(StatusCode::OK);
+    withdraw(&server, &key)
+        .await
+        .error(ErrorCode::KeyAlreadyRegistered);
+    let mut states: Vec<String> = requests_of(&server, &key)
+        .await
+        .into_iter()
+        .map(|(state, _)| state)
+        .collect();
+    states.sort();
+    assert_eq!(states, ["approved", "denied", "withdrawn", "withdrawn"]);
+}
+
+#[tokio::test]
+async fn a_key_that_joins_with_a_code_ends_its_waiting_request() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let key = DeviceKey::generate();
+    let request: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+        .await
+        .ok(StatusCode::CREATED);
+    let created = server.invite(&owner, json!({})).await;
+    let proof = server.proof(&key, ChallengeOperation::Join).await;
+    server
+        .open(
+            "/api/v1/join",
+            &json!({ "proof": proof, "invite_code": created.code.expose(), "name": "Newcomer" }),
+        )
+        .await
+        .ok::<SessionCreated>(StatusCode::CREATED);
+    assert_eq!(
+        requests_of(&server, &key).await,
+        [("withdrawn".to_owned(), None)]
+    );
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/join-requests/{}/approval", request.id),
+            &json!({}),
+        )
+        .await
+        .error(ErrorCode::Conflict);
+    let listed: Vec<JoinRequest> = server
+        .get(&owner, "/api/v1/join-requests")
+        .await
+        .ok(StatusCode::OK);
+    assert!(listed.is_empty());
+    let accounts: i64 = sqlx::query_scalar("select count(*) from accounts where name = 'Newcomer'")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(accounts, 1);
+}
+
+#[tokio::test]
+async fn an_inactive_account_that_returns_with_a_code_ends_its_waiting_request() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let default = server.default_workspace(&owner).await;
+    let guest = server.join(&owner, "Guest").await;
+    server
+        .post(
+            &guest,
+            &format!("/api/v1/workspaces/{}/departure", default.id),
+            &Value::Null,
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let request: JoinRequest = request_to_join_reply(&server, &guest.key, "Guest")
+        .await
+        .ok(StatusCode::CREATED);
+    assert_eq!(request.returning_account_id, Some(guest.account_id));
+    assert_eq!(request.accounts_with_name, 0);
+
+    let created = server.invite(&owner, json!({})).await;
+    let proof = server.proof(&guest.key, ChallengeOperation::Join).await;
+    let session: SessionCreated = server
+        .open(
+            "/api/v1/join",
+            &json!({ "proof": proof, "invite_code": created.code.expose(), "name": "Guest" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    assert_eq!(session.account_id, guest.account_id);
+    assert_eq!(
+        requests_of(&server, &guest.key).await,
+        [("withdrawn".to_owned(), None)]
+    );
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/join-requests/{}/approval", request.id),
+            &json!({}),
+        )
+        .await
+        .error(ErrorCode::Conflict);
+    let accounts: i64 = sqlx::query_scalar("select count(*) from accounts where name = 'Guest'")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(accounts, 1);
+}
+
+#[tokio::test]
+async fn a_key_that_becomes_a_linked_device_ends_its_waiting_request() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let key = DeviceKey::generate();
+    let request: JoinRequest = request_to_join_reply(&server, &key, "Laptop of the owner")
+        .await
+        .ok(StatusCode::CREATED);
+    let link = crate::devices::request_link(&server, &key, "laptop").await;
+    server
+        .post(
+            &owner,
+            "/api/v1/account/device-links/approve",
+            &json!({ "code": link.code, "public_key": key.public() }),
+        )
+        .await
+        .ok::<Device>(StatusCode::CREATED);
+    assert_eq!(
+        requests_of(&server, &key).await,
+        [("withdrawn".to_owned(), None)]
+    );
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/join-requests/{}/approval", request.id),
+            &json!({}),
+        )
+        .await
+        .error(ErrorCode::Conflict);
+    assert_eq!(server.login(&key).await.account_id, owner.account_id);
+    let log: AuditPage = server
+        .get(&owner, "/api/v1/audit-log")
+        .await
+        .ok(StatusCode::OK);
+    assert!(log.entries.iter().any(|entry| entry.event
+        == AuditEvent::JoinRequestWithdrawn {
+            join_request_id: request.id
+        }));
+}
+
+#[tokio::test]
+async fn a_key_that_claims_the_server_ends_its_waiting_request() {
+    let server = TestServer::start().await;
+    let key = DeviceKey::generate();
+    request_to_join_reply(&server, &key, "First")
+        .await
+        .ok::<JoinRequest>(StatusCode::CREATED);
+    server
+        .claim_owner_reply(&key, &server.owner_code)
+        .await
+        .ok::<SessionCreated>(StatusCode::CREATED);
+    assert_eq!(
+        requests_of(&server, &key).await,
+        [("withdrawn".to_owned(), None)]
+    );
+}
+
+#[tokio::test]
+async fn an_approval_and_a_withdrawal_at_the_same_time_make_at_most_one_account() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let mut approved: i64 = 0;
+    for _ in 0..3 {
+        let key = DeviceKey::generate();
+        let request: JoinRequest = request_to_join_reply(&server, &key, "Newcomer")
+            .await
+            .ok(StatusCode::CREATED);
+        let proof = server
+            .proof(&key, ChallengeOperation::WithdrawJoinRequest)
+            .await;
+        let path = format!("/api/v1/join-requests/{}/approval", request.id);
+        let (empty, withdrawal_body) = (json!({}), json!({ "proof": proof }));
+        let (approval, withdrawal) = tokio::join!(
+            server.post(&owner, &path, &empty),
+            server.open("/api/v1/join-requests/withdrawal", &withdrawal_body),
+        );
+        let states: Vec<String> = requests_of(&server, &key)
+            .await
+            .into_iter()
+            .map(|(state, _)| state)
+            .collect();
+        if approval.status == StatusCode::OK {
+            withdrawal.error(ErrorCode::KeyAlreadyRegistered);
+            assert_eq!(states, ["approved"]);
+            approved += 1;
+        } else {
+            approval.error(ErrorCode::Conflict);
+            withdrawal.empty(StatusCode::NO_CONTENT);
+            assert_eq!(states, ["withdrawn"]);
+        }
+    }
+    let accounts: i64 = sqlx::query_scalar("select count(*) from accounts where name = 'Newcomer'")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(accounts, approved);
+}
+
+#[tokio::test]
+async fn only_the_approvers_learn_how_many_accounts_have_the_name_of_a_request() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    server.join(&owner, "Linus").await;
+    let key = DeviceKey::generate();
+
+    // The requester has no account: neither answer tells which account names exist.
+    for answered in [StatusCode::CREATED, StatusCode::OK] {
+        let answer: Value = request_to_join_reply(&server, &key, " linus ")
+            .await
+            .ok(answered);
+        assert!(answer.get("accounts_with_name").is_none(), "{answer}");
+    }
+    let answer: Value = status(&server, &key).await.ok(StatusCode::OK);
+    assert!(answer.get("accounts_with_name").is_none(), "{answer}");
+
+    request_to_join_reply(&server, &DeviceKey::generate(), "Marta")
+        .await
+        .ok::<JoinRequest>(StatusCode::CREATED);
+    let listed: Vec<JoinRequest> = server
+        .get(&owner, "/api/v1/join-requests")
+        .await
+        .ok(StatusCode::OK);
+    let counts: Vec<(&str, u32)> = listed
+        .iter()
+        .map(|request| (request.name.as_str(), request.accounts_with_name))
+        .collect();
+    assert_eq!(counts, [("linus", 1), ("Marta", 0)]);
+}
+
+/// Migration 0031 keeps the join requests of the earlier states and accepts a withdrawn one.
+#[tokio::test]
+async fn migration_0031_keeps_the_stored_join_requests() {
+    use sqlx::ConnectOptions;
+
+    let database = crate::support::empty_database().await;
+    let mut connection = database.options.connect().await.unwrap();
+    crate::migration_identifiers::migrations_up_to(30)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let account = uuid::Uuid::now_v7();
+    sqlx::query(
+        "insert into accounts (id, name, status, created_at) values ($1, 'Ana', 'active', now())",
+    )
+    .bind(account)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let insert = "insert into join_requests
+        (id, public_key, name, state, created_at, expires_at, decided_at, decided_by, account_id)
+        values ($1, $2, 'Ana', $3, now(), now(), $4, $5, $6)";
+    let rows = [
+        ("pending", false, false, false),
+        ("expired", false, false, false),
+        ("denied", true, true, false),
+        ("approved", true, true, true),
+    ];
+    for (state, decided, by, made) in rows {
+        sqlx::query(sqlx::AssertSqlSafe(insert))
+            .bind(uuid::Uuid::now_v7())
+            .bind(DeviceKey::generate().public().as_bytes().as_slice())
+            .bind(state)
+            .bind(decided.then(time::OffsetDateTime::now_utc))
+            .bind(by.then_some(account))
+            .bind(made.then_some(account))
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    crate::migration_identifiers::migrations_up_to(i64::MAX)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let mut states: Vec<String> = sqlx::query_scalar("select state from join_requests")
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+    states.sort();
+    assert_eq!(states, ["approved", "denied", "expired", "pending"]);
+
+    let withdrawn = |by: Option<uuid::Uuid>| {
+        sqlx::query(sqlx::AssertSqlSafe(insert))
+            .bind(uuid::Uuid::now_v7())
+            .bind(DeviceKey::generate().public().as_bytes().as_slice())
+            .bind("withdrawn")
+            .bind(Some(time::OffsetDateTime::now_utc()))
+            .bind(by)
+            .bind(None::<uuid::Uuid>)
+    };
+    withdrawn(None).execute(&mut connection).await.unwrap();
+    assert!(
+        withdrawn(Some(account))
+            .execute(&mut connection)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

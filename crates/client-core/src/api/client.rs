@@ -12,6 +12,7 @@ use junto_protocol::ids::ServerId;
 use junto_protocol::ids::{AccountId, DeviceId};
 use junto_protocol::invite::{
     Join, JoinRequest, JoinRequestStatus, JoinRequestStatusQuery, RequestToJoin,
+    WithdrawJoinRequest,
 };
 use junto_protocol::secret::{InviteCode, OwnerCode};
 use junto_protocol::server::ServerInfo;
@@ -222,6 +223,23 @@ impl ApiClient {
         B: Serialize,
         R: DeserializeOwned,
     {
+        let (response, verified) = self
+            .prove_answer(key, operation, account, path, build)
+            .await?;
+        // The server answered that it did the work. An answer that cannot be read is a
+        // lost answer: the caller finds out what the server did.
+        let answer = read_json(&response).map_err(|_| ApiError::OutcomeUnknown)?;
+        Ok((answer, verified))
+    }
+
+    async fn prove_answer<B: Serialize>(
+        &self,
+        key: &DeviceKey,
+        operation: ChallengeOperation,
+        account: ExpectedAccount,
+        path: &str,
+        build: impl FnOnce(Proof) -> B,
+    ) -> Result<(HttpResponse, proof::VerifiedChallenge), ApiError> {
         let public_key = key.public_key();
         let ask = encode(&CreateChallenge {
             public_key,
@@ -252,10 +270,7 @@ impl ApiClient {
         let response = self
             .send(Method::Post, path, &[], None, Some(body), Repeat::Signed)
             .await?;
-        // The server answered that it did the work. An answer that cannot be read is a
-        // lost answer: the caller finds out what the server did.
-        let answer = read_json(&response).map_err(|_| ApiError::OutcomeUnknown)?;
-        Ok((answer, verified))
+        Ok((response, verified))
     }
 
     /// Starts a session. `account` is the account that the client stored for this device.
@@ -347,7 +362,21 @@ impl ApiClient {
         Ok(request)
     }
 
-    /// The state of the newest join request of this device key.
+    /// Withdraws the waiting join request of this device key. The server answers the same
+    /// when no request of the key waits.
+    pub async fn withdraw_join_request(&self, key: &DeviceKey) -> Result<(), ApiError> {
+        self.prove_answer(
+            key,
+            ChallengeOperation::WithdrawJoinRequest,
+            ExpectedAccount::None,
+            "/join-requests/withdrawal",
+            |proof| WithdrawJoinRequest { proof },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The state of the newest join request of this device key that was not withdrawn.
     pub async fn join_request_status(
         &self,
         key: &DeviceKey,

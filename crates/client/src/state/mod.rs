@@ -2460,7 +2460,8 @@ impl AppState {
     ) {
         self.pending.removing.remove(&server_id);
         match result {
-            Ok(()) => {
+            // The key has an account: the server stays, and its state shows the account.
+            Ok(()) | Err(junto_client_core::manager::RemoveError::HasAccount) => {
                 self.pending.remove_failed.remove(&server_id);
             }
             Err(error) => {

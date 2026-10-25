@@ -18,6 +18,7 @@ use junto_protocol::auth::{
 use junto_protocol::ids::{AccountId, ChallengeId, DeviceId, JoinRequestId, RecoveryId, ServerId};
 use junto_protocol::invite::{
     Join, JoinRequest, JoinRequestState, JoinRequestStatus, JoinRequestStatusQuery, RequestToJoin,
+    WithdrawJoinRequest,
 };
 use junto_protocol::keys::{Nonce, PublicKey};
 use junto_protocol::origin::Origin;
@@ -377,6 +378,16 @@ impl FakeServer {
             .iter()
             .find(|device| device.public_key == public_key)
             .map(|device| device.account_id)
+    }
+
+    /// The join requests that wait, with their keys, oldest first.
+    pub(crate) fn waiting_requests(&self) -> Vec<(JoinRequestId, PublicKey)> {
+        self.world()
+            .requests
+            .iter()
+            .filter(|request| request.state == JoinRequestState::Pending)
+            .map(|request| (request.id, request.public_key))
+            .collect()
     }
 
     pub(crate) fn account_count(&self) -> usize {
@@ -769,12 +780,21 @@ impl World {
                 if self.device_of_key(challenge.public_key).is_some() {
                     return refuse("key_already_registered");
                 }
-                let pending = self.requests.iter().any(|request| {
+                let pending = self.requests.iter().find(|request| {
                     request.public_key == challenge.public_key
                         && request.state == JoinRequestState::Pending
                 });
-                if pending {
-                    return refuse("join_request_pending");
+                if let Some(first) = pending {
+                    let now = OffsetDateTime::now_utc();
+                    let first = JoinRequest {
+                        id: first.id,
+                        name: first.name.clone(),
+                        created_at: now,
+                        expires_at: now + time::Duration::days(7),
+                        returning_account_id: None,
+                        accounts_with_name: 0,
+                    };
+                    return json(200, &first).map_err(plain);
                 }
                 let id = JoinRequestId::generate();
                 self.requests.push(Request {
@@ -791,6 +811,7 @@ impl World {
                     created_at: now,
                     expires_at: now + time::Duration::days(7),
                     returning_account_id: None,
+                    accounts_with_name: 0,
                 };
                 json(201, &created).map_err(plain)
             }
@@ -812,6 +833,24 @@ impl World {
                     account_id: found.account_id,
                 };
                 json(200, &status).map_err(plain)
+            }
+            (Method::Post, "/join-requests/withdrawal") => {
+                let body: WithdrawJoinRequest = read(request).map_err(plain)?;
+                let challenge = self
+                    .consume(
+                        &body.proof,
+                        ChallengeOperation::WithdrawJoinRequest,
+                        reached,
+                    )
+                    .map_err(plain)?;
+                if self.device_of_key(challenge.public_key).is_some() {
+                    return Err((Some(Box::new(challenge)), "key_already_registered"));
+                }
+                self.requests.retain(|request| {
+                    request.public_key != challenge.public_key
+                        || request.state != JoinRequestState::Pending
+                });
+                Ok((204, Vec::new()))
             }
             (Method::Post, "/device-links") => {
                 let body: RequestDeviceLink = read(request).map_err(plain)?;

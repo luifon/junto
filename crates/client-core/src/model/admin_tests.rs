@@ -580,6 +580,7 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
         created_at: time(),
         expires_at: time() + time::Duration::days(7),
         returning_account_id: None,
+        accounts_with_name: 0,
     };
     model.apply(&Event::JoinRequestCreated {
         join_request: request.clone(),
@@ -594,6 +595,43 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
         account_id: None,
     });
     assert!(model.admin.join_requests.loaded().unwrap().is_empty());
+
+    // An approval made an account with its name: a waiting request with that name counts
+    // it, a returning account and another name do not (ADR 0761).
+    let named = |name: &str, returning_account_id| JoinRequest {
+        id: JoinRequestId::generate(),
+        name: name.to_owned(),
+        created_at: time(),
+        expires_at: time() + time::Duration::days(7),
+        returning_account_id,
+        accounts_with_name: 0,
+    };
+    let (approved, same, other, returning) = (
+        named("Carla", None),
+        named(" carla", None),
+        named("Dario", None),
+        named("Dario", Some(ana.id)),
+    );
+    for held in [&approved, &same, &other, &returning] {
+        model.apply(&Event::JoinRequestCreated {
+            join_request: held.clone(),
+        });
+    }
+    for decided in [approved.id, returning.id] {
+        model.apply(&Event::JoinRequestDecided {
+            join_request_id: decided,
+            state: JoinRequestState::Approved,
+            account_id: Some(ana.id),
+        });
+    }
+    let held = model.admin.join_requests.loaded().unwrap();
+    let count = |id| {
+        held.iter()
+            .find(|held| held.id == id)
+            .map(|held| held.accounts_with_name)
+    };
+    assert_eq!(held.len(), 2);
+    assert_eq!((count(same.id), count(other.id)), (Some(1), Some(0)));
 
     // Access tokens.
     loaded(

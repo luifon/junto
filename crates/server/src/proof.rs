@@ -115,7 +115,8 @@ async fn store(
             | ChallengeOperation::RequestToJoin
             | ChallengeOperation::JoinRequestStatus
             | ChallengeOperation::LinkDevice
-            | ChallengeOperation::ModerationNotices => None,
+            | ChallengeOperation::ModerationNotices
+            | ChallengeOperation::WithdrawJoinRequest => None,
         };
         // A request does not replace a challenge that its key can still answer in time:
         // a party that knows a public key could otherwise end every challenge of that key

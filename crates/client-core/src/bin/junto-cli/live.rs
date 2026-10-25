@@ -783,6 +783,7 @@ fn event_details(event: &Event) -> String {
             state,
             ..
         } => format!("request={join_request_id} state={}", word(state)),
+        Event::JoinRequestWithdrawn { join_request_id } => format!("request={join_request_id}"),
         Event::WorkspaceCreated { workspace } | Event::WorkspaceUpdated { workspace } => {
             format!("workspace={}", workspace.id)
         }

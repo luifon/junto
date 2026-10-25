@@ -327,12 +327,22 @@ impl Client {
         let Ok(_gate) = server.gate.try_lock() else {
             return Err(RemoveError::Busy);
         };
-        self.remove_locked(&server)
+        let key = if may_wait(&lock(&server.state).access) {
+            KeyAfterRemoval::Kept
+        } else {
+            KeyAfterRemoval::Removed
+        };
+        self.remove_locked(&server, key)
     }
 
     /// Removes this saved entry and its key after any running access action or session
     /// renewal. The entry is selected when this method is called, so a later replacement
     /// is never removed. Poll this future on a background executor: removal writes files.
+    ///
+    /// A join request of this device that waits is withdrawn on the server first. When the
+    /// server does not confirm the withdrawal, the entry is removed and the key stays, so
+    /// that an approval cannot make an account for a key that this device no longer holds;
+    /// the server added again finds its request with that key (ADR 0111).
     pub fn remove_server_when_free(
         &self,
         server_id: ServerId,
@@ -345,19 +355,25 @@ impl Client {
             .ok_or(BookError::NotSaved { server_id });
         async move {
             let server = server?;
-            let _gate = server.gate.lock().await;
-            client.remove_locked(&server)
+            let runtime = client.inner.core.runtime.clone();
+            let work = runtime.run(async move {
+                let _gate = server.gate.lock().await;
+                let key = server.withdraw_before_removal().await?;
+                client.remove_locked(&server, key)
+            });
+            work.await.map_err(|_| RemoveError::Stopped)?
         }
     }
 
-    fn remove_locked(&self, server: &Arc<Server>) -> Result<(), RemoveError> {
+    fn remove_locked(&self, server: &Arc<Server>, key: KeyAfterRemoval) -> Result<(), RemoveError> {
         let server_id = server.id;
         if lock(&server.state).retired {
             return Err(BookError::NotSaved { server_id }.into());
         }
         let keys = self.inner.core.keys.clone();
-        let removed = self.inner.core.book.remove(server.key, || {
-            keys.remove(server_id).map_err(RemoveError::from)
+        let removed = self.inner.core.book.remove(server.key, || match key {
+            KeyAfterRemoval::Removed => keys.remove(server_id).map_err(RemoveError::from),
+            KeyAfterRemoval::Kept => Ok(()),
         });
         if matches!(&removed, Err(RemoveError::Book(BookError::Storage(_)))) {
             return removed.map(|_| ());
@@ -530,6 +546,33 @@ pub enum RemoveError {
     Book(#[from] BookError),
     #[error(transparent)]
     Key(#[from] KeyStoreError),
+    #[error("the client has stopped")]
+    Stopped,
+    /// The server answered that the key of this device has an account: the join request
+    /// was approved while the server was removed, or the account of a stale inactive state
+    /// is active or banned now. The device checked its state, and the server and its key
+    /// stay.
+    #[error("the server answered that the key has an account; the server stays")]
+    HasAccount,
+}
+
+/// True when a join request of the key of this device can wait on the server: the state
+/// waits for an approval, or the account is inactive and can have asked to return; a
+/// client that restarts without a connection shows an inactive account until a check
+/// finds its request (ADR 0712).
+fn may_wait(state: &AccessState) -> bool {
+    matches!(
+        state,
+        AccessState::WaitingForApproval { .. } | AccessState::Inactive { .. }
+    )
+}
+
+/// Whether the removal of a server from the book also removes the key of this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyAfterRemoval {
+    Removed,
+    /// A join request of the key can still wait on the server.
+    Kept,
 }
 
 /// Wakes an interface when something that it shows has changed.
@@ -1302,7 +1345,12 @@ impl Server {
             }
             AccessAction::LogOut => self.log_out().await,
             AccessAction::LogOutByPerson => self.log_out_by_person().await,
-            AccessAction::ForgetAccount => self.forget_account(),
+            AccessAction::ForgetAccount => {
+                if may_wait(before) {
+                    self.withdraw_request(before).await?;
+                }
+                self.forget_account()
+            }
             AccessAction::Join {
                 code,
                 name,
@@ -1386,7 +1434,17 @@ impl Server {
             membership: request_membership(&previous, join_request_id, &name),
         };
         match api.request_to_join(&key, name.clone()).await {
-            Ok(request) => self.settle(waiting(Some(request.id)), None),
+            // A request that already waited keeps the name that the server holds.
+            Ok(request) => self.settle(
+                Settled {
+                    state: AccessState::WaitingForApproval {
+                        join_request_id: Some(request.id),
+                        name: request.name.clone(),
+                    },
+                    membership: request_membership(&previous, Some(request.id), &request.name),
+                },
+                None,
+            ),
             Err(error)
                 if matches!(error, ApiError::OutcomeUnknown)
                     || error.code() == Some(ErrorCode::JoinRequestPending) =>
@@ -1413,6 +1471,52 @@ impl Server {
                 self.explain_by_login(&api, &key, before, error, Creates::Nothing)
                     .await
             }
+        }
+    }
+
+    /// Withdraws a join request of this device that can wait, before the server is removed
+    /// from the book. The key stays unless the server confirmed that no request of it waits.
+    /// When the request was approved meanwhile, the device logs in to the new account and
+    /// the removal stops.
+    async fn withdraw_before_removal(&self) -> Result<KeyAfterRemoval, RemoveError> {
+        let before = lock(&self.state).access.clone();
+        if !may_wait(&before) {
+            return Ok(KeyAfterRemoval::Removed);
+        }
+        let key = match self.stored_key() {
+            Ok(Some(key)) => key,
+            Ok(None) => return Ok(KeyAfterRemoval::Removed),
+            Err(_) => return Ok(KeyAfterRemoval::Kept),
+        };
+        let Ok(api) = self.contact(false).await else {
+            return Ok(KeyAfterRemoval::Kept);
+        };
+        match api.withdraw_join_request(&key).await {
+            Ok(()) => Ok(KeyAfterRemoval::Removed),
+            Err(error) if error.code() == Some(ErrorCode::KeyAlreadyRegistered) => {
+                let _ = self.reconcile(&api, &before).await;
+                let _ = self.save();
+                Err(RemoveError::HasAccount)
+            }
+            Err(_) => Ok(KeyAfterRemoval::Kept),
+        }
+    }
+
+    /// Withdraws the waiting join request of this device on the server, so that no
+    /// approval makes an account for a key that this device then discards (ADR 0111). When
+    /// the request was approved meanwhile, the device logs in and keeps its key.
+    async fn withdraw_request(&self, before: &AccessState) -> Result<(), FlowError> {
+        let Some(key) = self.stored_key()? else {
+            return Ok(());
+        };
+        let api = self.contact(false).await?;
+        match api.withdraw_join_request(&key).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == Some(ErrorCode::KeyAlreadyRegistered) => {
+                self.reconcile(&api, before).await?;
+                Err(FlowError::NotAvailable)
+            }
+            Err(error) => Err(self.failed(error)),
         }
     }
 

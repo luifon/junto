@@ -851,7 +851,9 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
             pair("account", account_id),
             pair("workspaces", listed(workspace_ids)),
         ],
-        E::JoinRequestDenied { join_request_id } => vec![pair("request", join_request_id)],
+        E::JoinRequestDenied { join_request_id } | E::JoinRequestWithdrawn { join_request_id } => {
+            vec![pair("request", join_request_id)]
+        }
         E::AccountBanned {
             reason,
             recipient_message,

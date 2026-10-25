@@ -248,6 +248,7 @@ fn join_requests() -> Vec<JoinRequest> {
             created_at: ago(days),
             expires_at: ago(days) + Duration::days(7),
             returning_account_id: None,
+            accounts_with_name: 0,
         })
         .collect()
 }

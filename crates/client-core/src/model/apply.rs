@@ -987,6 +987,7 @@ impl ServerModel {
             | Event::InvitesOfCreatorRevoked { .. }
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
+            | Event::JoinRequestWithdrawn { .. }
             | Event::ChannelOverrideSet { .. }
             | Event::GlossaryReplaced { .. }
             | Event::RetentionChanged { .. } => {}

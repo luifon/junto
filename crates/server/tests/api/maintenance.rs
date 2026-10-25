@@ -67,19 +67,40 @@ async fn maintenance_removes_what_has_expired_and_keeps_the_rest() {
         )
         .await
         .ok::<JoinRequestStatus>(StatusCode::OK);
+    let withdrawn = DeviceKey::generate();
+    let proof = server
+        .proof(&withdrawn, ChallengeOperation::RequestToJoin)
+        .await;
+    server
+        .open(
+            "/api/v1/join-requests",
+            &json!({ "proof": proof, "name": "Withdrawn" }),
+        )
+        .await
+        .ok::<JoinRequest>(StatusCode::CREATED);
+    let proof = server
+        .proof(&withdrawn, ChallengeOperation::WithdrawJoinRequest)
+        .await;
+    server
+        .open(
+            "/api/v1/join-requests/withdrawal",
+            &json!({ "proof": proof }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
 
     let before = counts(&server).await;
-    assert_eq!(before, [5, 1, 1, 2]);
+    assert_eq!(before, [7, 1, 1, 3]);
     maintenance::run_once(&server.state).await.unwrap();
     assert_eq!(counts(&server).await, before);
 
     server.clock.advance(Duration::seconds(61));
     maintenance::run_once(&server.state).await.unwrap();
-    assert_eq!(counts(&server).await, [0, 1, 1, 2]);
+    assert_eq!(counts(&server).await, [0, 1, 1, 3]);
 
     server.clock.advance(Duration::minutes(10));
     maintenance::run_once(&server.state).await.unwrap();
-    assert_eq!(counts(&server).await, [0, 0, 1, 2]);
+    assert_eq!(counts(&server).await, [0, 0, 1, 3]);
 
     server.clock.advance(Duration::days(8));
     maintenance::run_once(&server.state).await.unwrap();
@@ -87,7 +108,7 @@ async fn maintenance_removes_what_has_expired_and_keeps_the_rest() {
         .fetch_all(&server.db)
         .await
         .unwrap();
-    assert_eq!(states, ["denied", "expired"]);
+    assert_eq!(states, ["denied", "expired", "withdrawn"]);
     let proof = server
         .proof(&waiting, ChallengeOperation::JoinRequestStatus)
         .await;
