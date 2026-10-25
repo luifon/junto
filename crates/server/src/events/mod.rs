@@ -13,5 +13,5 @@ pub mod watcher;
 pub use log::{
     Receivers, channel_deleted, permissions_changed, permissions_changed_by_overrides_of,
     permissions_changed_for, permissions_changed_in_new_workspace, publish, tell_account,
-    tell_account_at, tell_inside, tell_of_recording, workspace_deleted,
+    tell_account_at, tell_inside, tell_inside_account, tell_of_recording, workspace_deleted,
 };

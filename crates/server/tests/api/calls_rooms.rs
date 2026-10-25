@@ -413,8 +413,8 @@ async fn a_request_to_enter_a_full_call_goes_to_the_holders_of_admit_to_full_cal
         .await;
     server.enter_call(ann, voice).await;
     server.enter_call(ben, voice).await;
-    let mut to_ann = server.full_stream(ann).await;
-    let mut to_ben = server.full_stream(ben).await;
+    let mut to_ann = server.subscribed(ann, Level::Background).await;
+    let mut to_ben = server.subscribed(ben, Level::Background).await;
     let requested = |request: &EntryRequest| Event::CallEntryRequested {
         request: request.clone(),
     };
@@ -471,6 +471,57 @@ async fn a_request_to_enter_a_full_call_goes_to_the_holders_of_admit_to_full_cal
         .empty(StatusCode::NO_CONTENT);
     server.join_call(&carl, voice).await;
     assert_eq!(server.count("call_members").await, 3);
+}
+
+#[tokio::test]
+async fn a_full_call_request_is_not_replayed_to_an_answerer_who_left() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let carl = server.join(owner, "Carl").await;
+    server
+        .call_settings(
+            owner,
+            voice,
+            json!({ "user_limit": 2, "hides_occupants": true }),
+        )
+        .await;
+    server
+        .grant_workspace(
+            owner,
+            ann,
+            scene.workspace_id,
+            &[junto_protocol::WorkspacePermission::AdmitToFullCall],
+        )
+        .await;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    let cursor = server.snapshot(ann).await.cursor;
+    let request: EntryRequest = ask(server, &carl, voice).await.ok(StatusCode::CREATED);
+    server.leave_call(ann).await;
+
+    let mut replay = server.stream(ann).await;
+    replay.subscribe(Level::Full, Some(cursor)).await;
+    let events = server.call_events(ann, &mut replay).await;
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::CallEntryRequested { .. })),
+        "a former answerer received a request: {events:?}"
+    );
+    answer(server, ann, &request, true)
+        .await
+        .error(ErrorCode::NotFound);
+
+    let mut own_replay = server.stream(&carl).await;
+    own_replay.subscribe(Level::Full, Some(cursor)).await;
+    let own_requests: Vec<_> = server
+        .call_events(&carl, &mut own_replay)
+        .await
+        .into_iter()
+        .filter(|event| matches!(event, Event::CallEntryRequested { .. }))
+        .collect();
+    assert_eq!(own_requests, [Event::CallEntryRequested { request }]);
 }
 
 #[tokio::test]

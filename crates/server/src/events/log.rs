@@ -86,6 +86,28 @@ pub async fn tell_inside(
     record(connection, now, &audience, event).await
 }
 
+/// Records a request for one account while it remains inside the call.
+pub async fn tell_inside_account(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    account_id: AccountId,
+    event: &Event,
+) -> ApiResult<()> {
+    let Some(mut audience @ Audience::Call { .. }) = crate::events::audience::of_the_inside(event)
+    else {
+        return Err(ApiError::internal(
+            &"the event is not for an account inside a call",
+        ));
+    };
+    if let Audience::Call {
+        account_id: target, ..
+    } = &mut audience
+    {
+        *target = Some(account_id);
+    }
+    record(connection, now, &audience, event).await
+}
+
 /// Records an event about a recording or its transcript: for the accounts that may see who
 /// is inside `running_call` while the call of the recording runs, and for the accounts that
 /// may see the voice channel when the call has ended (ADR 0604).
