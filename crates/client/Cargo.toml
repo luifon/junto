@@ -102,6 +102,9 @@ dirs = "5"
 # The table of the standard emoji, in the version of the server: a reaction that the
 # picker offers is one that the server accepts (ADR 0408).
 emojis = "0.8"
+# The signs that a reader sees as one character, to find the emoji of a text. In the
+# version of the lock file.
+unicode-segmentation = "1"
 # The tokens of a code block, for its syntax colours (ADR 0740).
 synoptic = "2.2"
 # The identifiers of notices and of the scopes of notification settings (ADR 0409).

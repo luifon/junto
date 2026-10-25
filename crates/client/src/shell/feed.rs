@@ -28,6 +28,7 @@ use junto_client_core::transfers::{DownloadStage, UploadStage};
 use super::pictures::{MOST_PICTURES, Outcome, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
+use crate::emoji::Drawings;
 use crate::highlight::{self, Token};
 use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
@@ -278,7 +279,7 @@ struct Rich {
 }
 
 impl Rich {
-    fn of(content: &[Inline], names: &Names, theme: &Theme) -> Self {
+    fn of(content: &[Inline], names: &Names, theme: &Theme, drawings: &Drawings) -> Self {
         let colors = theme.colors;
         let mut rich = Self {
             text: String::new(),
@@ -290,7 +291,7 @@ impl Rich {
             let start = rich.text.len();
             match node {
                 Inline::Text { text, marks } => {
-                    rich.text.push_str(text);
+                    rich.text.push_str(&drawings.shown(text));
                     if !marks.is_empty() {
                         let mut style = HighlightStyle::default();
                         for mark in marks {
@@ -419,10 +420,16 @@ impl Rich {
 }
 
 /// One block of a document in the list.
-fn paragraph(content: &[Inline], names: &Names, theme: &Theme, id: usize) -> AnyElement {
+fn paragraph(
+    content: &[Inline],
+    names: &Names,
+    theme: &Theme,
+    drawings: &Drawings,
+    id: usize,
+) -> AnyElement {
     div()
         .min_w_0()
-        .child(Rich::of(content, names, theme).element(id))
+        .child(Rich::of(content, names, theme, drawings).element(id))
         .into_any_element()
 }
 
@@ -1165,10 +1172,15 @@ impl Shell {
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
-    fn reply_line(quote: &Quote, faces: &ServerFaces, theme: &Theme) -> AnyElement {
+    fn reply_line(
+        quote: &Quote,
+        faces: &ServerFaces,
+        theme: &Theme,
+        drawings: &Drawings,
+    ) -> AnyElement {
         let colors = theme.colors;
         let (sentence, known): (SharedString, bool) = match &quote.text {
-            QuoteText::Text(text) => (text.clone().into(), true),
+            QuoteText::Text(text) => (drawings.shown(text).into_owned().into(), true),
             QuoteText::File(name) => (name.clone().into(), true),
             QuoteText::Deleted => (text::QUOTE_DELETED.into(), false),
             QuoteText::Unknown => (text::QUOTE_UNKNOWN.into(), false),
@@ -1229,6 +1241,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        let drawings = Drawings::of(cx);
         let mut blocks = Vec::new();
         let mut texts = 0;
         let mut next = || {
@@ -1238,7 +1251,7 @@ impl Shell {
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
                 Block::Paragraph { content } => {
-                    blocks.push(paragraph(content, names, theme, next()));
+                    blocks.push(paragraph(content, names, theme, &drawings, next()));
                 }
                 Block::Quote { content } => blocks.push(
                     div()
@@ -1247,7 +1260,7 @@ impl Shell {
                         .border_l_3()
                         .border_color(Hsla::from(colors.rule))
                         .ink(colors.ink_2)
-                        .child(paragraph(content, names, theme, next()))
+                        .child(paragraph(content, names, theme, &drawings, next()))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
@@ -1273,7 +1286,7 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, next()))
+                                .child(paragraph(item, names, theme, &drawings, next()))
                                 .into_any_element(),
                         );
                     }
@@ -1351,7 +1364,7 @@ impl Shell {
                                 .py(u(1.0))
                                 .when(checked, |row| row.ink(colors.ink_3))
                                 .child(check)
-                                .child(paragraph(&item.content, names, theme, next()))
+                                .child(paragraph(&item.content, names, theme, &drawings, next()))
                                 .into_any_element(),
                         );
                     }
@@ -1377,9 +1390,11 @@ impl Shell {
         let can_react = row.can_react;
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
+        let drawings = Drawings::of(cx);
         let chips = message.reactions.iter().enumerate().map(|(index, held)| {
             let Reaction { emoji, count, own } = held.clone();
-            let label: SharedString = text::reaction_label(&emoji, count, own).into();
+            let shown = SharedString::from(drawings.shown(&emoji).into_owned());
+            let label: SharedString = text::reaction_label(&shown, count, own).into();
             let sent = emoji.clone();
             let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
             div()
@@ -1420,7 +1435,7 @@ impl Shell {
                             });
                         }))
                 })
-                .child(SharedString::from(emoji))
+                .child(shown)
                 .child(
                     div()
                         .text_size(u(12.5))
@@ -2323,7 +2338,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme)),
+                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
             )
             .child(
                 div()
@@ -2427,7 +2442,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme)),
+                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
             )
             .child(
                 div()
@@ -2879,7 +2894,7 @@ mod tests {
             link("mailto:a@example.com"),
             link("https://user:secret@example.com"),
         ];
-        let rich = Rich::of(&content, &names, &theme);
+        let rich = Rich::of(&content, &names, &theme, &crate::emoji::without_fonts());
         assert_eq!(rich.text, "here".repeat(6));
         let opened: Vec<&str> = rich
             .links
@@ -2903,7 +2918,7 @@ mod tests {
             link(r#"mailto:a@example.com?body=x" --attach "C:\Users\a b\secret.txt"#),
             link(r#"https://example.com/a b"c?q="x y"#),
         ];
-        let rich = Rich::of(&content, &names, &theme);
+        let rich = Rich::of(&content, &names, &theme, &crate::emoji::without_fonts());
         let opened: Vec<&str> = rich
             .links
             .iter()

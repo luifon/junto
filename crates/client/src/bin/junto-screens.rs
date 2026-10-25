@@ -524,6 +524,11 @@ impl Screen {
         self
     }
 
+    fn size(mut self, width: f32, height: f32) -> Self {
+        self.size = (width, height);
+        self
+    }
+
     fn scale(mut self, scale: u32) -> Self {
         self.scale = scale;
         self

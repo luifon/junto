@@ -616,6 +616,42 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             shell.open_emoji_picker(EmojiTarget::React(other), window, cx);
         },
     )?;
+    // The picker in the smallest window, the group of flags, and emoji that the colour
+    // font of the system may not draw: in a message and in its reactions (ADR 0757).
+    studio.draw(
+        Screen::new(
+            "messages-emoji-picker-smallest",
+            with_timeline(general().timeline()),
+        )
+        .size(720.0, 480.0),
+        move |shell, window, cx| {
+            prepare(shell, none(), cx);
+            shell.open_emoji_picker(EmojiTarget::React(other), window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("messages-emoji-flags", with_timeline(general().timeline())),
+        move |shell, window, cx| {
+            prepare(shell, none(), cx);
+            shell.open_emoji_picker(EmojiTarget::React(other), window, cx);
+            shell.open_emoji_group(8, cx);
+        },
+    )?;
+    let mut made = general();
+    let newer = made.message(
+        "Ana",
+        95,
+        "Long week \u{1fae9} \u{1f642}\u{200d}\u{2194}\u{fe0f}, with a flag \u{1f1e7}\u{1f1f7}          and a newer face \u{1faea}.",
+    );
+    newer.reactions = vec![
+        reaction("\u{1fae9}", 2, false),
+        reaction("\u{1f642}\u{200d}\u{2194}\u{fe0f}", 1, true),
+        reaction("\u{1f44d}", 1, false),
+    ];
+    studio.draw(
+        Screen::new("messages-emoji-text", with_timeline(made.timeline())),
+        |shell, _, cx| prepare(shell, none(), cx),
+    )?;
     studio.draw(
         Screen::new("messages-menu", with_timeline(general().timeline())),
         move |shell, window, cx| {

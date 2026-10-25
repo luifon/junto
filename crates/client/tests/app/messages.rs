@@ -2048,3 +2048,95 @@ fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
         "a file was sent for the entry that was added again"
     );
 }
+
+/// The tabs of the groups of the emoji picker, by their test names.
+const EMOJI_TABS: [&str; 9] = [
+    "emoji-group-smileys",
+    "emoji-group-people",
+    "emoji-group-nature",
+    "emoji-group-food",
+    "emoji-group-travel",
+    "emoji-group-activities",
+    "emoji-group-objects",
+    "emoji-group-symbols",
+    "emoji-group-flags",
+];
+
+/// The names of the groups of the emoji picker.
+const EMOJI_GROUPS: [&str; 9] = [
+    "Smileys",
+    "People",
+    "Nature",
+    "Food",
+    "Travel",
+    "Activities",
+    "Objects",
+    "Symbols",
+    "Flags",
+];
+
+/// The tabs of the emoji picker are in the picker, and neither the tabs nor the names of
+/// the groups cover each other, in a large window and in the smallest window (ADR 0757).
+#[gpui::test]
+fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    for (width, height) in [(1440.0, 900.0), (720.0, 480.0)] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        window.in_shell(|shell, window, cx| {
+            shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        });
+        assert!(window.shows("emoji-picker"));
+        let painted = {
+            let _record = junto_client::ui::record_painted_text();
+            window.cx.update(|window, _| window.refresh());
+            window.settle();
+            junto_client::ui::take_painted_text()
+        };
+        let names: Vec<_> = painted
+            .iter()
+            .filter(|text| EMOJI_GROUPS.contains(&text.text.as_ref()))
+            .collect();
+        for (index, name) in names.iter().enumerate() {
+            for other in &names[index + 1..] {
+                assert!(
+                    !name.bounds.intersects(&other.bounds),
+                    "at {width} by {height}, the name {} covers {}: {:?} and {:?}",
+                    name.text,
+                    other.text,
+                    name.bounds,
+                    other.bounds
+                );
+            }
+        }
+        let picker = window.cx.debug_bounds("emoji-picker").unwrap();
+        let tabs: Vec<_> = EMOJI_TABS
+            .iter()
+            .filter_map(|tab| window.cx.debug_bounds(tab).map(|bounds| (*tab, bounds)))
+            .collect();
+        assert_eq!(tabs.len(), 9, "at {width} by {height}: {tabs:?}");
+        for (index, (tab, bounds)) in tabs.iter().enumerate() {
+            assert!(
+                bounds.left() >= picker.left()
+                    && bounds.right() <= picker.right()
+                    && bounds.top() >= picker.top()
+                    && bounds.bottom() <= picker.bottom(),
+                "at {width} by {height}, {tab} is outside the picker: {bounds:?} in {picker:?}"
+            );
+            assert!(bounds.size.width >= gpui::px(24.0), "{tab}: {bounds:?}");
+            for (other, other_bounds) in &tabs[index + 1..] {
+                assert!(
+                    !bounds.intersects(other_bounds),
+                    "at {width} by {height}, {tab} covers {other}: {bounds:?} and {other_bounds:?}"
+                );
+            }
+        }
+        window.press("escape");
+        assert!(!window.shows("emoji-picker"));
+    }
+}

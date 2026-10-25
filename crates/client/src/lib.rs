@@ -7,6 +7,7 @@
 pub mod app;
 pub mod assets;
 pub mod compose;
+pub mod emoji;
 pub mod highlight;
 pub mod images;
 pub mod moment;

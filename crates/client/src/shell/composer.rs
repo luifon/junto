@@ -23,6 +23,7 @@ use junto_client_core::transfers::{UploadSource, UploadStage};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
+use crate::emoji::{Drawing, Drawings};
 use crate::state::feed::{Feed, FeedRow, plain_text};
 use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView};
 use crate::text;
@@ -243,13 +244,15 @@ fn candidates(
 }
 
 /// The emoji that the picker offers: one group, or what a search finds in all groups. An
-/// emoji with a skin tone is not listed by itself.
-fn emoji_shown(group: usize, find: &str) -> Vec<&'static emojis::Emoji> {
+/// emoji with a skin tone is not listed by itself, and an emoji that the fonts of the
+/// system do not draw whole is not offered (ADR 0757).
+fn emoji_shown(group: usize, find: &str, drawings: &Drawings) -> Vec<&'static emojis::Emoji> {
+    let offered = |emoji: &&'static emojis::Emoji| drawings.drawing(emoji) != Drawing::Broken;
     let find = find.trim().to_lowercase();
     if find.is_empty() {
         return emojis::Group::iter()
             .nth(group)
-            .map(|group| group.emojis().take(MOST_EMOJI).collect())
+            .map(|group| group.emojis().filter(offered).take(MOST_EMOJI).collect())
             .unwrap_or_default();
     }
     emojis::iter()
@@ -259,21 +262,36 @@ fn emoji_shown(group: usize, find: &str) -> Vec<&'static emojis::Emoji> {
                     .shortcodes()
                     .any(|shortcode| shortcode.contains(&find))
         })
+        .filter(offered)
         .take(MOST_EMOJI)
         .collect()
 }
 
-fn group_name(group: emojis::Group) -> &'static str {
+/// The groups of the picker that have an emoji that it offers, with their place in the
+/// table. Windows has no picture of a flag, so it has no group of flags.
+fn groups_offered(drawings: &Drawings) -> Vec<(usize, emojis::Group)> {
+    emojis::Group::iter()
+        .enumerate()
+        .filter(|(_, group)| {
+            group
+                .emojis()
+                .any(|emoji| drawings.drawing(emoji) != Drawing::Broken)
+        })
+        .collect()
+}
+
+/// The name, the icon and the test name of the tab of a group.
+fn group_tab(group: emojis::Group) -> (&'static str, Icon, &'static str) {
     match group {
-        emojis::Group::SmileysAndEmotion => "Smileys",
-        emojis::Group::PeopleAndBody => "People",
-        emojis::Group::AnimalsAndNature => "Nature",
-        emojis::Group::FoodAndDrink => "Food",
-        emojis::Group::TravelAndPlaces => "Travel",
-        emojis::Group::Activities => "Activities",
-        emojis::Group::Objects => "Objects",
-        emojis::Group::Symbols => "Symbols",
-        emojis::Group::Flags => "Flags",
+        emojis::Group::SmileysAndEmotion => ("Smileys", Icon::Smile, "emoji-group-smileys"),
+        emojis::Group::PeopleAndBody => ("People", Icon::Person, "emoji-group-people"),
+        emojis::Group::AnimalsAndNature => ("Nature", Icon::Leaf, "emoji-group-nature"),
+        emojis::Group::FoodAndDrink => ("Food", Icon::Cup, "emoji-group-food"),
+        emojis::Group::TravelAndPlaces => ("Travel", Icon::Car, "emoji-group-travel"),
+        emojis::Group::Activities => ("Activities", Icon::Ball, "emoji-group-activities"),
+        emojis::Group::Objects => ("Objects", Icon::Bulb, "emoji-group-objects"),
+        emojis::Group::Symbols => ("Symbols", Icon::Heart, "emoji-group-symbols"),
+        emojis::Group::Flags => ("Flags", Icon::Flag, "emoji-group-flags"),
     }
 }
 
@@ -1156,16 +1174,31 @@ impl Shell {
         let colors = theme.colors;
         let find = self.composer.emoji_find.read(cx).value().to_string();
         let searching = !find.trim().is_empty();
-        let shown = emoji_shown(self.composer.emoji_group, &find);
+        let drawings = Drawings::of(cx);
+        let offered = groups_offered(&drawings);
+        let none_drawn = offered.is_empty();
+        // The group that is open, or the first that has an emoji to offer.
+        let open = offered
+            .iter()
+            .map(|(index, _)| *index)
+            .find(|index| *index == self.composer.emoji_group)
+            .or_else(|| offered.first().map(|(index, _)| *index));
+        let shown = match open {
+            Some(group) => emoji_shown(group, &find, &drawings),
+            None => Vec::new(),
+        };
         let ring_width = theme.metrics.focus_ring;
         let radius = theme.metrics.radius;
-        let groups: Vec<_> = emojis::Group::iter()
-            .enumerate()
+        let groups: Vec<_> = offered
+            .into_iter()
             .map(|(index, group)| {
-                let on = index == self.composer.emoji_group && !searching;
+                let on = Some(index) == open && !searching;
+                let (name, icon, selector) = group_tab(group);
                 Button::new(("emoji-group", index))
                     .kind(ButtonKind::Ghost)
-                    .label(group_name(group))
+                    .icon(icon)
+                    .tooltip(name)
+                    .selector(selector)
                     .when(on, |button| button.bg(Hsla::from(colors.limestone_lo)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.composer.emoji_group = index;
@@ -1234,7 +1267,11 @@ impl Shell {
                         div()
                             .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
-                            .child(text::NO_EMOJI_FOUND)
+                            .child(if none_drawn {
+                                text::NO_EMOJI_FONT
+                            } else {
+                                text::NO_EMOJI_FOUND
+                            })
                             .into_any_element()
                     } else {
                         ScrollArea::new("emoji-list", &self.composer.emoji_scroll, text::EMOJI)
@@ -1877,6 +1914,14 @@ impl Shell {
         cx.notify();
     }
 
+    /// Opens a group of the emoji picker by its place in the table, as a click on its tab
+    /// does.
+    pub fn open_emoji_group(&mut self, group: usize, cx: &mut Context<Self>) {
+        self.composer.emoji_group = group;
+        self.composer.emoji_scroll = ScrollHandle::new();
+        cx.notify();
+    }
+
     /// Puts text into the composer, as typing does.
     pub fn type_message(
         &mut self,
@@ -1980,8 +2025,9 @@ mod tests {
 
     #[test]
     fn the_emoji_of_the_picker_are_ones_that_the_server_takes() {
-        for (index, _) in emojis::Group::iter().enumerate() {
-            let shown = emoji_shown(index, "");
+        let drawings = crate::emoji::without_fonts();
+        for (index, _) in groups_offered(&drawings) {
+            let shown = emoji_shown(index, "", &drawings);
             assert!(!shown.is_empty());
             for emoji in shown {
                 assert_eq!(
@@ -1990,8 +2036,55 @@ mod tests {
                 );
             }
         }
-        let found = emoji_shown(0, "thumbs up");
+        let found = emoji_shown(0, "thumbs up", &drawings);
         assert!(found.iter().any(|emoji| emoji.as_str() == "\u{1f44d}"));
-        assert!(emoji_shown(0, "no such emoji name").is_empty());
+        assert!(emoji_shown(0, "no such emoji name", &drawings).is_empty());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn every_emoji_of_the_picker_is_drawn_whole_by_the_fonts_of_the_system() {
+        let drawings = crate::emoji::of_the_platform();
+        let platform = gpui_platform::current_platform(true).text_system();
+        let system = Arc::new(gpui::TextSystem::new(platform));
+        system.add_fonts(crate::assets::fonts()).unwrap();
+        let text = gpui::WindowTextSystem::new(system);
+        let font = gpui::font(crate::theme::Theme::stone().fonts.sans);
+        let measure = |sequence: &str| {
+            let run = gpui::TextRun {
+                len: sequence.len(),
+                font: font.clone(),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let layout = text.layout_line(sequence, gpui::px(20.0), &[run], None);
+            let glyphs = layout.runs.iter().flat_map(|run| &run.glyphs).count();
+            let missing = layout
+                .runs
+                .iter()
+                .flat_map(|run| &run.glyphs)
+                .any(|glyph| glyph.id.0 == 0);
+            (missing, glyphs, f32::from(layout.width))
+        };
+        let reference = measure("\u{1f600}").2;
+        let mut broken = Vec::new();
+        for (index, _) in emojis::Group::iter().enumerate() {
+            for emoji in emoji_shown(index, "", &drawings) {
+                let (missing, glyphs, width) = measure(emoji.as_str());
+                if missing || (glyphs > 1 && width >= reference * 1.5) {
+                    broken.push(format!("{} ({})", emoji.as_str(), emoji.name()));
+                }
+            }
+        }
+        assert!(
+            broken.is_empty(),
+            "{} emoji of the picker are not drawn whole: {}",
+            broken.len(),
+            broken.join(", ")
+        );
+        // A system with an emoji font offers its faces.
+        assert!(!emoji_shown(0, "", &drawings).is_empty());
     }
 }

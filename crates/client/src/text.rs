@@ -1510,6 +1510,7 @@ pub const ATTACH_FILE: &str = "Attach a file";
 pub const EMOJI: &str = "Emoji";
 pub const FIND_EMOJI: &str = "Find an emoji";
 pub const NO_EMOJI_FOUND: &str = "No emoji has this name.";
+pub const NO_EMOJI_FONT: &str = "This system has no font that draws emoji.";
 pub const MENTION_SOMEONE: &str = "Mention a person or a role";
 pub const NO_MENTION_FOUND: &str = "No member or role has this name.";
 pub const REMOVE_FILE: &str = "Remove this file";
