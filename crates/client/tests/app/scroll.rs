@@ -373,3 +373,26 @@ fn a_drag_of_the_scroll_bar_to_the_top_reads_the_older_page_and_tells_the_positi
         matches!(window.told_anchor(place), Some(Some(_)))
     });
 }
+
+/// A wheel up over a list whose rows all fit stops its following in gpui, and its next layout
+/// takes up the end again at once: the button to the end is not left drawn.
+#[gpui::test]
+fn a_wheel_up_over_a_list_that_fits_leaves_no_button_to_the_end(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    for number in 0..3 {
+        admin.send(&world, general, document(&format!("Line {number}")));
+    }
+    window.until_message("Line 2");
+    assert!(window.pane_at_end(Pane::Main));
+    assert!(!window.shows("go-to-end"));
+    window.wheel_over(Pane::Main, 5.0);
+    assert!(window.pane_at_end(Pane::Main));
+    assert!(
+        !window.shows("go-to-end"),
+        "the button to the end is drawn over a list at its end"
+    );
+}

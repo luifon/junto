@@ -411,6 +411,9 @@ pub struct Feed {
     /// The message that the person went to, with the number of that jump. A second jump
     /// to the same message has another number, and the list goes there again.
     pub target: Option<(MessageId, u64)>,
+    /// The messages around the message of the jump have not reached the list: what it
+    /// shows meanwhile is not read.
+    pub jump_waits: bool,
 }
 
 impl Feed {
@@ -950,6 +953,7 @@ pub fn derive(source: &Source<'_>) -> Feed {
         names: source.names.clone(),
         today: source.today,
         target: source.target,
+        jump_waits: false,
     }
 }
 

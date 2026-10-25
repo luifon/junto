@@ -14,7 +14,7 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
 use junto_client_core::model::{
-    ChannelModel, Loadable, OpenRecording, PlaceId, ServerModel, WorkspaceModel,
+    ChannelModel, Loadable, OpenRecording, PlaceId, ServerModel, Timeline, WorkspaceModel,
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{Departure, RecoveryNotice};
@@ -233,9 +233,9 @@ pub struct Known {
     /// does not hold yet (ADR 0214). The dialog of the notification settings and the
     /// page "Notifications" show them.
     pub defaults_sent: HashMap<(ServerId, WorkspaceId), super::notices::SentDefault>,
-    /// The message that the person went to from a notice or a search result, with its
-    /// server. Its list marks it.
-    pub target: Option<(ServerId, MessageId, u64)>,
+    /// The message that the person went to from a notice or a search result. Its list
+    /// marks it.
+    pub target: Option<JumpTarget>,
     /// The search of the window.
     pub search: Option<super::search::Search>,
     /// The files of recordings that the person saves, and those that were saved.
@@ -2338,13 +2338,14 @@ fn server_lists(
                 may_manage: false,
                 administrator: model.is_administrator(),
                 open_thread: None,
-                target: target_of_jump(server_id, known),
+                target: target_of_jump(server_id, timeline, known),
                 threads: true,
                 quoted: &known.quoted,
                 zone: known.zone,
                 today: known.today,
                 cards: None,
             });
+            let feed = with_jump(feed, server_id, timeline, known);
             // A conversation with a departed account is read only (ADR 0121).
             if row.departure.is_some() {
                 read_only_feed(feed)
@@ -2418,13 +2419,47 @@ struct WorkspaceParts {
     call: Option<CallPanel>,
 }
 
-/// The message that the person went to from a notice or a search result on a server, with
-/// the number of that jump.
-fn target_of_jump(server_id: ServerId, known: &Known) -> Option<(MessageId, u64)> {
-    known
-        .target
-        .filter(|(of, _, _)| *of == server_id)
-        .map(|(_, message_id, number)| (message_id, number))
+/// The message of a jump of the window, in the place whose list shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JumpTarget {
+    pub server_id: ServerId,
+    pub place: PlaceId,
+    pub message_id: MessageId,
+    pub position: u64,
+    /// The number of the jump: a second jump to the same message goes there again.
+    pub number: u64,
+    /// The list is to show the message: the person did not ask for the latest messages of
+    /// the place since the jump.
+    pub waiting: bool,
+}
+
+impl JumpTarget {
+    fn of(server_id: ServerId, timeline: &Timeline, known: &Known) -> Option<Self> {
+        known
+            .target
+            .filter(|target| target.server_id == server_id && target.place == timeline.place)
+    }
+}
+
+/// The message that the person went to from a notice or a search result, with the number of
+/// that jump, when the timeline is the place of that message.
+fn target_of_jump(
+    server_id: ServerId,
+    timeline: &Timeline,
+    known: &Known,
+) -> Option<(MessageId, u64)> {
+    JumpTarget::of(server_id, timeline, known).map(|target| (target.message_id, target.number))
+}
+
+/// The feed of a timeline, with the wait for the messages around the message of a jump:
+/// the timeline holds neither the message nor the messages around its position.
+fn with_jump(mut feed: Feed, server_id: ServerId, timeline: &Timeline, known: &Known) -> Feed {
+    feed.jump_waits = JumpTarget::of(server_id, timeline, known).is_some_and(|target| {
+        target.waiting
+            && timeline.message(target.message_id).is_none()
+            && !super::searching::covers(timeline, target.position)
+    });
+    feed
 }
 
 /// The lists of a workspace, and the messages and the call of its shown channel.
@@ -2555,7 +2590,7 @@ fn workspace_view(
         may_manage: allowed.manage_messages,
         administrator: model.is_administrator(),
         open_thread: open_thread.map(|(_, root_id)| root_id),
-        target: target_of_jump(server_id, known),
+        target: target_of_jump(server_id, timeline, known),
         threads: call.is_none(),
         quoted: &known.quoted,
         zone: known.zone,
@@ -2565,7 +2600,7 @@ fn workspace_view(
     let feed = channel
         .as_ref()
         .and_then(|row| model.timeline(PlaceId::Channel(row.id)))
-        .map(|timeline| feed::derive(&source(timeline)));
+        .map(|timeline| with_jump(feed::derive(&source(timeline)), server_id, timeline, known));
     // An archived channel takes no change (ADR 0410): its messages offer none, in the
     // main area, in a thread and in the pin list.
     let read_only = archived.is_some();
@@ -2622,7 +2657,14 @@ fn workspace_view(
                             &mut feed::Loaded::default(),
                         ))
                     }),
-                feed: timeline.map(|timeline| fixed_feed(feed::derive(&source(timeline)))),
+                feed: timeline.map(|timeline| {
+                    fixed_feed(with_jump(
+                        feed::derive(&source(timeline)),
+                        server_id,
+                        timeline,
+                        known,
+                    ))
+                }),
                 forks: timeline
                     .map(|timeline| timeline.forks.as_slice())
                     .unwrap_or_default()

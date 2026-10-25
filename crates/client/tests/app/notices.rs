@@ -705,6 +705,197 @@ fn after_a_jump_to_a_notice_the_wheel_to_the_end_reads_the_channel(cx: &mut Test
     assert!(!window.shows("go-to-end"));
 }
 
+/// A jump to a message with more later messages than the page around it: at the bottom of
+/// its loaded rows the list reads one newer page, which arrives below the view; the list does
+/// not follow, reads no further page by itself, and the place is not read (ADR 0740).
+#[gpui::test]
+fn at_the_bottom_of_the_rows_of_a_jump_one_newer_page_arrives_below_the_view(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::model::PlaceId;
+    use junto_client_core::protocol::message::SendMessage;
+    let world = World::new();
+    let (server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    // The page around a message holds 100 later messages; 160 later ones leave more. Two
+    // accounts write them: the server takes at most 120 writes of one account in a minute.
+    let code = admin.invite(&world, 1);
+    let (_device, bruno) = crate::admin_pages::joined(&world, &server, &code, "Bruno");
+    let first = admin.mention(&world, general, "far above, ", own);
+    for number in 0..160 {
+        let text = format!("filler {number}");
+        if number % 2 == 0 {
+            admin.send(&world, general, document(&text));
+        } else {
+            let message = SendMessage {
+                document: document(&text),
+                reply_to: None,
+                attachments: Vec::new(),
+            };
+            world
+                .run(
+                    bruno
+                        .api()
+                        .send_message(PlaceId::Channel(general), &message),
+                )
+                .unwrap();
+        }
+    }
+    window.until("the notice is counted", |window| {
+        window.unread_notices() == 1
+    });
+    window.open_notices();
+    window.until("the notice is listed", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.len() == 1 && panel.rows.iter().all(|row| row.jump.is_some())
+        })
+    });
+    window.cx.update(|window, _| window.activate_window());
+    window.settle();
+    window.click_named(format!("notice:{}", first.id.as_uuid()));
+    window.until("the message of the notice is shown", |window| {
+        window.selected_channel() == general
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == first.id && row.target)
+    });
+    assert!(window.feed().is_some_and(|feed| feed.more_after));
+    let loaded = window.messages().len();
+    let last = window.messages().last().unwrap().message.id;
+
+    // One turn of the wheel brings the list to the bottom of its loaded rows, before the
+    // newer page arrives.
+    let bounds_of = |window: &mut Window, message_id| {
+        window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("message:{message_id}")))
+    };
+    window.wheel_over(Pane::Main, -20000.0);
+    let list = window
+        .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+        .expect("the list was drawn");
+    assert!(
+        bounds_of(&mut window, last)
+            .is_some_and(|row| row.bottom() <= list.bottom() + gpui::px(2.0)),
+        "the wheel did not bring the list to the bottom of its loaded rows"
+    );
+    window.until("the newer page is read", |window| {
+        window.messages().len() > loaded
+    });
+    window.settle();
+    // The list does not move past the last row that the person saw, and the rows of the newer
+    // page are below the view.
+    assert!(
+        bounds_of(&mut window, last).is_none_or(|row| row.top() >= list.top()),
+        "the list moved past the last row that the person saw"
+    );
+    let newest = window.messages().last().unwrap().message.id;
+    assert!(
+        bounds_of(&mut window, newest).is_none_or(|row| row.top() >= list.bottom()),
+        "the rows of the newer page are in view"
+    );
+    assert!(!window.pane_at_end(Pane::Main));
+    assert_eq!(window.messages().len(), loaded + 50);
+    let feed = window.feed().unwrap();
+    assert!(feed.more_after && feed.unread > 0, "the place was read");
+    let stored = world
+        .run(
+            window
+                .handle()
+                .api()
+                .message_state(PlaceId::Channel(general)),
+        )
+        .unwrap()
+        .unread;
+    assert!(stored > 0, "the place was read on the server");
+    // The client core is told a row, not the end of the history.
+    let server_id = window.view().selected.unwrap().id;
+    assert!(
+        matches!(
+            crate::messages::core_anchor(&mut window, server_id, PlaceId::Channel(general)),
+            Some(Some(_))
+        ),
+        "the client core was told that the list stands at the end"
+    );
+
+    // The button to the end reads the latest page and the list follows it there.
+    window.click("go-to-end");
+    window.until("the end of the history is read", |window| {
+        window.pane_at_end(Pane::Main)
+            && window
+                .feed()
+                .is_some_and(|feed| !feed.more_after && feed.unread == 0)
+    });
+    assert!(
+        window
+            .texts()
+            .last()
+            .is_some_and(|text| text == "filler 159")
+    );
+}
+
+/// The notice of a reply in a thread opens the thread over the channel. The jump belongs to
+/// the thread: the list of the channel is read as usual while the thread stays open.
+#[gpui::test]
+fn after_a_notice_of_a_reply_the_channel_under_the_thread_is_read(cx: &mut TestAppContext) {
+    use junto_client_core::model::PlaceId;
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    let root = admin.send(&world, general, document("Tracks or mixdown?"));
+    let reply = admin.reply(&world, root.id, mention("what do you think, ", own));
+    window.until("the notice is counted", |window| {
+        window.unread_notices() == 1
+    });
+    window.open_notices();
+    window.until("the notice is listed", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.len() == 1 && panel.rows.iter().all(|row| row.jump.is_some())
+        })
+    });
+    window.cx.update(|window, _| window.activate_window());
+    window.settle();
+    window.click_named(format!("notice:{}", reply.as_uuid()));
+    window.until("the reply is shown in its thread", |window| {
+        window.selected_channel() == general
+            && window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| thread.root_id == root.id)
+    });
+
+    admin.send(&world, general, document("A new message in the channel"));
+    window.until_message("A new message in the channel");
+    let own_handle = window.handle();
+    window.until("the channel is read", |window| {
+        window.feed().is_some_and(|feed| feed.unread == 0)
+            && world
+                .run(own_handle.api().message_state(PlaceId::Channel(general)))
+                .unwrap()
+                .unread
+                == 0
+    });
+    assert!(
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.thread.is_some()),
+        "the thread closed"
+    );
+}
+
 #[gpui::test]
 fn two_marks_asked_for_one_after_the_other_are_both_sent(cx: &mut TestAppContext) {
     let world = World::new();

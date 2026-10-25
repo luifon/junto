@@ -110,10 +110,12 @@ impl Window {
     }
 
     /// Takes one action of the bar of a message: the pointer goes to the message, and the
-    /// action is clicked.
+    /// action is pressed and released as it is drawn, with no work of the application
+    /// between the two (see `a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button`).
     fn act_on(&mut self, message_id: MessageId, action: &str) {
         self.hover_named(format!("message:{message_id}"));
-        self.click_named(format!("{action}:{message_id}"));
+        self.press_as_drawn(selector(format!("{action}:{message_id}")));
+        self.settle();
     }
 }
 
@@ -359,7 +361,10 @@ fn a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button(
     window.until("the reply is shown on its root", |window| {
         window.replies_shown(root_id) == 1
     });
-    let moved = window.cx.debug_bounds(button);
+    let moved = window
+        .cx
+        .debug_bounds(button)
+        .expect("the thread button is drawn after the reply");
     window.dispatch(MouseUpEvent {
         position: pressed.center(),
         button: MouseButton::Left,
@@ -367,7 +372,7 @@ fn a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button(
         click_count: 1,
     });
     window.settle();
-    assert_ne!(moved, Some(pressed), "the thread button stayed in place");
+    assert_ne!(moved, pressed, "the thread button stayed in place");
     assert!(
         window
             .view()

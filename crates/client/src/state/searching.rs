@@ -21,7 +21,7 @@ const MOST_QUERY_BYTES: usize = 1_024;
 /// True when the loaded messages of a timeline reach over `position`: the position lies
 /// between the first and the last one, or beyond an end after which the history has no
 /// more.
-fn covers(timeline: &Timeline, position: u64) -> bool {
+pub(super) fn covers(timeline: &Timeline, position: u64) -> bool {
     let (Some(first), Some(last)) = (timeline.messages.first(), timeline.messages.last()) else {
         return !timeline.more_before && !timeline.more_after;
     };
