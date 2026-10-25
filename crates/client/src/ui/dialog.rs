@@ -173,6 +173,7 @@ impl RenderOnce for Dialog {
                 }
             })
             .child(panel)
+            .children(crate::shell::title_bar::layer_band(window, cx))
     }
 }
 

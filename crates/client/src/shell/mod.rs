@@ -1180,7 +1180,6 @@ impl Render for Shell {
             .child(self.render_main(&view, narrow, window, cx))
             .when(!matches!(self.layer, Layer::None), |body| {
                 body.child(self.render_layer(&view, window, cx))
-                    .children(title_bar::layer_band(window, cx))
             });
         div()
             .id("shell")

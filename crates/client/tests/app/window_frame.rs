@@ -337,3 +337,27 @@ fn a_press_without_a_release_does_not_keep_a_menu_closed(cx: &mut TestAppContext
     window.click("server-menu-button");
     assert!(window.shows("server-menu"), "the menu did not open again");
 }
+
+/// A menu has no cover over the headers: in the main window on macOS no band lies over them
+/// while a menu is open, so a press on a header button closes the menu and presses the button. A
+/// dialog has the band.
+#[gpui::test]
+fn a_menu_puts_no_band_over_the_headers_and_a_dialog_does(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Band");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window
+        .cx
+        .update(|window, cx| content_reaches_title_bar(window, cx));
+    window.click("server-menu-button");
+    assert!(window.shows("server-menu"));
+    assert!(
+        !window.shows("title-band"),
+        "a menu put the band over the headers"
+    );
+    window.press("escape");
+    assert!(!window.shows("server-menu"));
+    window.click("app-settings");
+    assert!(window.shows("scale-4") && window.shows("title-band"));
+}

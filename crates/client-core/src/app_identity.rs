@@ -93,8 +93,55 @@ mod windows {
     }
 
     #[cfg(test)]
+    #[allow(unsafe_code)]
     mod tests {
         use super::*;
+
+        const TEST_KEYS: &str = "junto-test-aumid-";
+
+        /// The creation time of the running process with this number, or nothing when no process
+        /// has it.
+        fn started(process: u32) -> Option<u64> {
+            use windows::Win32::Foundation::{CloseHandle, FILETIME};
+            use windows::Win32::System::Threading::{
+                GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
+            let mut times = [FILETIME::default(); 4];
+            // SAFETY: the handle is closed after the read; the times are written into the array.
+            unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process).ok()?;
+                let [created, exited, kernel, user] = &mut times;
+                let read = GetProcessTimes(handle, created, exited, kernel, user);
+                let _ = CloseHandle(handle);
+                read.ok()?;
+            }
+            Some((u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime))
+        }
+
+        /// Removes the test keys of processes that no longer run: the name holds the number and
+        /// the creation time of the process of the test (ADR 0915).
+        fn remove_ended_test_keys() {
+            let classes = windows_registry::CURRENT_USER
+                .open(r"Software\Classes")
+                .unwrap();
+            let names: Vec<String> = classes
+                .keys()
+                .unwrap()
+                .filter(|name| name.starts_with(TEST_KEYS))
+                .collect();
+            for name in names {
+                let mut parts = name[TEST_KEYS.len()..].splitn(2, '-');
+                let process = parts.next().and_then(|part| part.parse::<u32>().ok());
+                let time = parts.next().and_then(|part| part.parse::<u64>().ok());
+                let running = process
+                    .zip(time)
+                    .is_some_and(|(process, time)| started(process) == Some(time));
+                if !running {
+                    let _ = windows_registry::CURRENT_USER
+                        .remove_tree(format!(r"Software\Classes\{name}"));
+                }
+            }
+        }
 
         fn modified(path: &Path) -> std::time::SystemTime {
             std::fs::metadata(path).unwrap().modified().unwrap()
@@ -104,14 +151,28 @@ mod windows {
         fn the_key_names_the_application_and_its_picture_and_is_removed() {
             let account_parent = || windows_registry::CURRENT_USER.open(ACCOUNT.base).is_ok();
             let parent_before = account_parent();
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
+            // A key of an ended process goes, and so does one of a name of another form; the key
+            // of a running process stays.
+            let ended = format!(r"Software\Classes\{TEST_KEYS}4294967295-1");
+            let other_form = format!(r"Software\Classes\{TEST_KEYS}form");
+            let process = std::process::id();
             let base = format!(
-                r"Software\Classes\junto-test-aumid-{}-{nanos}",
-                std::process::id()
+                r"Software\Classes\{TEST_KEYS}{process}-{}",
+                started(process).unwrap()
             );
+            for name in [&ended, &other_form] {
+                windows_registry::CURRENT_USER
+                    .options()
+                    .read()
+                    .write()
+                    .create()
+                    .volatile()
+                    .open(name)
+                    .unwrap();
+            }
+            remove_ended_test_keys();
+            assert!(windows_registry::CURRENT_USER.open(&ended).is_err());
+            assert!(windows_registry::CURRENT_USER.open(&other_form).is_err());
             // Volatile: Windows also removes the keys of a killed test at the logoff of the
             // account (ADR 0915).
             let place = Place {

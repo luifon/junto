@@ -122,9 +122,11 @@ pub(crate) fn cover_top(window: &Window, cx: &App) -> f32 {
     }
 }
 
-/// A band at the top of a window whose content reaches its title bar, over an open layer: the
-/// layer covers the headers, and the band keeps the move of the window and its double press. A
-/// press there does not close the layer.
+/// A band at the top of a window whose content reaches its title bar, inside the cover of a
+/// layer that covers the window (a dialog, the administration, the account and the linking
+/// surfaces): the cover lies over the headers, and the band keeps the move of the window and its
+/// double press. A press there does not close the layer. A menu has no cover and no band: the
+/// headers stay under the pointer.
 pub(crate) fn layer_band(window: &Window, cx: &App) -> Option<AnyElement> {
     reaches_title_bar(window, cx).then(|| {
         header_zone(
