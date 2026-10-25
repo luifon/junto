@@ -3,6 +3,10 @@
 //! of the temporary directory of the account. Standard error is a pipe here, so a Windows
 //! program shows no message box.
 
+// A test reads its files by design; the refusals of the file system in `clippy.toml` are for
+// the code of the application (ADR 0730).
+#![allow(clippy::disallowed_methods)]
+
 use std::process::Command;
 
 #[test]
