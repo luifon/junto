@@ -193,6 +193,18 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.until("the sensitivity is on at its first level", |window| {
         window.shows("voice-threshold-slider") && voice(window).voice_threshold == Some(-45)
     });
+    // Outside a call the settings open the microphone for its level.
+    let testing = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().input_test_runs())
+    };
+    window.until("the level of the microphone is shown", |window| {
+        testing(window)
+            && window
+                .state
+                .read_with(&window.cx, |state, _| state.shown_levels().input > 0)
+    });
     // One click on push to talk asks first, and states the key.
     window.click("input-mode-1");
     window.until("the switch is asked", |window| {
@@ -227,6 +239,9 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     assert!(!window.shows("voice-threshold"));
     assert!(!window.shows("voice-settings-error"));
     window.press("escape");
+    window.until("the microphone of the settings closes", |window| {
+        !testing(window)
+    });
     let chosen = voice(&mut window);
     window.close();
 
@@ -1196,4 +1211,157 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
         .advance_clock(Duration::from_millis(200));
     window.park();
     assert_eq!(held(&mut window).1, Some(22));
+}
+
+/// ADR 0735: the tiles of the people fill the free area of the stage, with the largest 16:9
+/// size at which all of them fit: 1, 2, 4 and 9 people, at two sizes of the window. Before
+/// the change every tile had 222 by 126 design pixels in the middle of the stage.
+#[gpui::test]
+fn the_tiles_of_the_people_fill_the_stage(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+
+    use junto_client::state::view::ServerSnapshot;
+    use junto_client_core::model::ServerModel;
+    use junto_client_core::protocol::call::{Call, CallParticipant, ChannelCall};
+    use junto_client_core::protocol::ids::{AccountId, CallId};
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    let CallPlace::Channel {
+        workspace_id,
+        channel_id,
+    } = call.target.place
+    else {
+        unreachable!("a call of a voice channel")
+    };
+    let own = window.view().person.account_id.unwrap();
+    let handle = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers()[0].clone());
+    let snapshot = world.run(handle.api().snapshot()).unwrap().snapshot;
+    show_call(&mut window, call);
+    let participant = |account_id: AccountId| CallParticipant {
+        avatar: None,
+        account_id,
+        identity: format!("seat-{account_id}"),
+        joined_at: time::OffsetDateTime::now_utc(),
+        muted: false,
+        deafened: false,
+        microphone_block: None,
+        sound_block: None,
+        hand_raised: false,
+        screen_share: None,
+    };
+    // Two windows whose stages are wider than high, so two people are side by side.
+    for (width, height) in [(1800.0, 900.0), (1500.0, 640.0)] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        for (count, columns) in [(1usize, 1usize), (2, 2), (4, 2), (9, 3)] {
+            let people: Vec<AccountId> = std::iter::once(own)
+                .chain((1..count).map(|_| AccountId::generate()))
+                .collect();
+            let mut snapshot = snapshot.clone();
+            let workspace = (snapshot.workspaces.iter_mut())
+                .find(|state| state.workspace.id == workspace_id)
+                .unwrap();
+            workspace.calls.retain(|call| call.channel_id != channel_id);
+            workspace.calls.push(ChannelCall {
+                workspace_id,
+                channel_id,
+                in_use: true,
+                call: Some(Call {
+                    id: CallId::generate(),
+                    place: CallPlace::Channel {
+                        workspace_id,
+                        channel_id,
+                    },
+                    started_at: Some(time::OffsetDateTime::now_utc()),
+                    lock: None,
+                    meeting: None,
+                    hides_occupants: false,
+                    participants: people.iter().map(|account| participant(*account)).collect(),
+                    recording: None,
+                }),
+            });
+            let fixture = ServerSnapshot {
+                model: Some(Arc::new(ServerModel::from_snapshot(snapshot))),
+                ..ServerSnapshot::of(&handle)
+            };
+            let state = window.state.clone();
+            window.cx.update(|_, cx| {
+                state.update(cx, |state, cx| state.show_fixture(vec![fixture], cx));
+            });
+            let tiles = |window: &mut Window| -> Option<Vec<gpui::Bounds<gpui::Pixels>>> {
+                window.settle();
+                people
+                    .iter()
+                    .map(|account| {
+                        window
+                            .cx
+                            .debug_bounds(crate::harness::selector(format!("call-tile:{account}")))
+                    })
+                    .collect()
+            };
+            // The span of the tiles across or down the area of the stage, from 0 to 1.
+            let fill = |window: &mut Window| -> f32 {
+                let (Some(tiles), Some(area)) =
+                    (tiles(window), window.cx.debug_bounds("call-area"))
+                else {
+                    return 0.0;
+                };
+                let left = tiles
+                    .iter()
+                    .map(|tile| f32::from(tile.left()))
+                    .fold(f32::MAX, f32::min);
+                let right = tiles
+                    .iter()
+                    .map(|tile| f32::from(tile.right()))
+                    .fold(0.0, f32::max);
+                let top = tiles
+                    .iter()
+                    .map(|tile| f32::from(tile.top()))
+                    .fold(f32::MAX, f32::min);
+                let bottom = tiles
+                    .iter()
+                    .map(|tile| f32::from(tile.bottom()))
+                    .fold(0.0, f32::max);
+                ((right - left) / f32::from(area.size.width))
+                    .max((bottom - top) / f32::from(area.size.height))
+            };
+            window.until("the tiles fill the stage", |window| fill(window) > 0.97);
+            let tiles = tiles(&mut window).unwrap();
+            let area = window.cx.debug_bounds("call-area").unwrap();
+            let first = tiles[0].size;
+            let mut lefts: Vec<i32> = Vec::new();
+            for tile in &tiles {
+                assert_eq!(tile.size, first, "{count} people: tiles of one size");
+                assert!(
+                    tile.left() >= area.left() - gpui::px(1.0)
+                        && tile.right() <= area.right() + gpui::px(1.0)
+                        && tile.top() >= area.top() - gpui::px(1.0)
+                        && tile.bottom() <= area.bottom() + gpui::px(1.0),
+                    "{count} people: a tile {tile:?} outside the stage {area:?}"
+                );
+                let left = f32::from(tile.left()).round() as i32;
+                if !lefts.contains(&left) {
+                    lefts.push(left);
+                }
+            }
+            let ratio = f32::from(first.width) / f32::from(first.height);
+            assert!(
+                (ratio - 16.0 / 9.0).abs() < 0.05,
+                "{count} people: {first:?}"
+            );
+            assert!(area.size.width > area.size.height, "a wide stage: {area:?}");
+            assert_eq!(
+                lefts.len(),
+                columns,
+                "{count} people in a window of {width}, stage {area:?}"
+            );
+        }
+    }
 }

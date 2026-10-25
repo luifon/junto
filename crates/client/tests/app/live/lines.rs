@@ -181,12 +181,14 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
     }
     world.run(api.end_meeting(voice)).unwrap();
 
-    // Both leave: the call ends.
+    // Luca leaves, then Ada: the call ends.
     window.click("leave-call");
+    window.until("the server no longer lists Luca", |window| !in_call(window));
     world.run(caller.calls.leave());
     let expected = [
         ("Ada created this channel", SystemKind::Plain),
         ("Call started by Ada", SystemKind::Start),
+        ("Luca joined the call", SystemKind::Plain),
         ("Ada closed the microphone of Luca", SystemKind::Plain),
         (
             "Ada removed the microphone block of Luca",
@@ -196,6 +198,8 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         ("Ada changed the settings of the room", SystemKind::Plain),
         ("Ada turned meeting mode on", SystemKind::Start),
         ("Meeting mode ended", SystemKind::Plain),
+        // Luca leaves first, while Ada is inside; the departure of Ada ends the call.
+        ("Luca left the call", SystemKind::Plain),
         ("Call ended", SystemKind::Plain),
     ]
     .map(|(text, kind)| (text.to_owned(), kind));

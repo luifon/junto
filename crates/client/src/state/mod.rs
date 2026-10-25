@@ -1896,6 +1896,16 @@ impl AppState {
         self.change_voice(cx, move |voice| voice.input_mode = mode);
     }
 
+    /// Opens the microphone outside a call while the sound settings are shown, for the level
+    /// under the sensitivity, and closes it (ADR 0733). A call opens the microphone itself.
+    pub fn set_input_test(&mut self, on: bool) {
+        if on && self.calls.view().call.is_none() {
+            self.calls.start_input_test();
+        } else {
+            self.calls.stop_input_test();
+        }
+    }
+
     /// The sensitivity of voice activation: the engine uses it at once, and the file is
     /// written when `store` is set, at the release of the slider.
     pub fn set_voice_threshold(
@@ -1928,6 +1938,10 @@ impl AppState {
     ) {
         change(&mut self.known.media.voice);
         self.calls.set_voice(voice_config(&self.known.media.voice));
+        // The level test opens the device again with the changed device or processing.
+        if self.calls.input_test_runs() {
+            self.calls.start_input_test();
+        }
         self.write_voice(cx, change);
     }
 

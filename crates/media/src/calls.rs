@@ -361,6 +361,11 @@ struct Shared {
     /// How often the person closed the microphone. An open that was asked for before the
     /// last close has no effect: a close does not wait for an open that is on its way.
     closes: u64,
+    /// The microphone open outside a call for its level (ADR 0733).
+    input_test: Option<crate::audio::input_test::InputTest>,
+    /// How often the level test was started or stopped: an open that finishes after a
+    /// later start or stop is closed again.
+    input_tests: u64,
 }
 
 /// One piece of work that asks a server for a place, or gives one up.
@@ -589,6 +594,68 @@ impl Calls {
     pub fn set_voice(&self, voice: VoiceConfig) {
         self.inner.shared().voice = voice.clone();
         self.inner.tell(SessionCommand::Config(voice));
+    }
+
+    /// Opens the microphone of the sound settings outside a call, so that `levels` carries
+    /// its input level (ADR 0733). Nothing is opened while a call runs, without the
+    /// permission of the system (no question is shown), or when the device fails. A second
+    /// start opens the device again with the settings of that moment.
+    pub fn start_input_test(&self) {
+        let generation = {
+            let mut shared = self.inner.shared();
+            shared.input_tests += 1;
+            shared.input_tests
+        };
+        let inner = self.inner.clone();
+        self.inner.runtime.spawn_blocking(move || {
+            let voice = {
+                let shared = inner.shared();
+                if shared.input_tests != generation || shared.active.is_some() {
+                    return;
+                }
+                shared.voice.clone()
+            };
+            if inner.options.permission.state() != MicrophoneAccess::Allowed {
+                return;
+            }
+            let opened = crate::audio::input_test::InputTest::open(
+                inner.options.host.as_ref(),
+                voice.input_device.as_ref(),
+                voice.processing,
+                inner.levels.clone(),
+                &inner.runtime,
+            );
+            let Ok(test) = opened else {
+                return;
+            };
+            let replaced = {
+                let mut shared = inner.shared();
+                if shared.input_tests == generation && shared.active.is_none() {
+                    shared.input_test.replace(test)
+                } else {
+                    Some(test)
+                }
+            };
+            drop(replaced);
+        });
+    }
+
+    /// Closes the microphone of the sound settings, on a thread of the runtime.
+    pub fn stop_input_test(&self) {
+        let test = {
+            let mut shared = self.inner.shared();
+            shared.input_tests += 1;
+            shared.input_test.take()
+        };
+        if let Some(test) = test {
+            self.inner.runtime.spawn_blocking(move || drop(test));
+            self.inner.levels.send_modify(|levels| levels.input = 0.0);
+        }
+    }
+
+    /// The microphone of the sound settings is open.
+    pub fn input_test_runs(&self) -> bool {
+        self.inner.shared().input_test.is_some()
     }
 
     /// The volume of one person for this listener: 1.0 is 100 % (ADR 0507).
@@ -899,6 +966,8 @@ impl Calls {
         target: CallTarget,
         entry: Entry,
     ) -> impl Future<Output = Result<(), JoinError>> + Send + 'static + use<> {
+        // The call opens the microphone itself.
+        self.stop_input_test();
         let asked = ask(&self.inner, target, entry);
         async move {
             asked?
@@ -3379,6 +3448,56 @@ mod tests {
             .unwrap();
         let client = Client::open(junto_client_core::ClientOptions::new(root)).unwrap();
         (client, server_id)
+    }
+
+    /// ADR 0733: outside a call the sound settings open the microphone for its level, and the
+    /// stop closes it and clears the level. Without the permission of the system nothing is
+    /// opened and no question is shown.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_level_test_shows_the_input_outside_a_call_until_it_stops() {
+        use crate::permission::FixedPermission;
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-input-test-")
+            .tempdir()
+            .unwrap();
+        let wait = |what: &str, done: &dyn Fn() -> bool| {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(started.elapsed() < Duration::from_secs(20), "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let (client, _) = client_with_a_silent_server(&directory.path().join("client"));
+        let calls = Calls::new(client, options_with(Arc::new(crate::share::NoCapture)));
+        let levels = calls.levels();
+        calls.start_input_test();
+        wait("the level of the tone arrives", &|| {
+            calls.input_test_runs() && levels.borrow().input > 0.0
+        });
+        calls.stop_input_test();
+        assert!(!calls.input_test_runs());
+        assert_eq!(levels.borrow().input, 0.0);
+
+        let host = crate::audio::synthetic::SyntheticHost::with_tone(440.0);
+        let permission =
+            FixedPermission::new(MicrophoneAccess::NotAsked, MicrophoneAccess::Allowed);
+        let (client, _) = client_with_a_silent_server(&directory.path().join("other"));
+        let calls = Calls::new(
+            client,
+            MediaOptions {
+                host: Arc::new(host.clone()),
+                permission: Arc::new(permission.clone()),
+                ..options_with(Arc::new(crate::share::NoCapture))
+            },
+        );
+        calls.start_input_test();
+        // A start after the first one is a later start: when it has run, the first has too.
+        calls.start_input_test();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!calls.input_test_runs());
+        assert!(host.opened_inputs().is_empty());
+        assert_eq!(permission.asked(), 0);
     }
 
     /// The dialog of a share shows a still picture of each listed screen and window. The

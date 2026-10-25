@@ -8,6 +8,7 @@
 pub mod capture;
 pub mod cpal_host;
 pub mod host;
+pub mod input_test;
 pub mod level;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;

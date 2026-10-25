@@ -615,6 +615,7 @@ impl Shell {
                         .child(
                             div()
                                 .id("call-area")
+                                .debug_selector(|| "call-area".to_owned())
                                 .relative()
                                 .flex()
                                 .flex_col()

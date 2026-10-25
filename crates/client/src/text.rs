@@ -965,8 +965,8 @@ pub const SENSITIVITY_HELP: &str =
     "Voice activation sends your microphone only while its level reaches the mark.";
 pub const SENSITIVITY_LEVEL_HELP: &str =
     "The bar is your microphone now. It is bright while it reaches the mark and is sent.";
-pub const SENSITIVITY_NO_LEVEL: &str =
-    "Your microphone level shows on the bar while you are in a call.";
+pub const SENSITIVITY_NO_LEVEL: &str = "Your microphone level shows on the bar when Junto may \
+     use the microphone and it opens.";
 pub const USE_PUSH_TO_TALK: &str = "Use push to talk";
 pub const KEEP_VOICE_ACTIVATION: &str = "Keep voice activation";
 

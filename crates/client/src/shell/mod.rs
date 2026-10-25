@@ -949,6 +949,10 @@ impl Shell {
         }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
+        if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
+            self.state
+                .update(cx, |state, _| state.set_input_test(false));
+        }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
@@ -979,6 +983,10 @@ impl Shell {
             self.state.update(cx, |state, cx| state.close_link_all(cx));
         }
         self.release_share_previews(cx);
+        if matches!(self.layer, Layer::Settings) {
+            self.state
+                .update(cx, |state, _| state.set_input_test(false));
+        }
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
         cx.notify();

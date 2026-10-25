@@ -42,6 +42,7 @@ impl Shell {
         self.name_saved = false;
         self.show_quiet_times(window, cx);
         self.open_layer(Layer::Settings, window, cx);
+        self.state.update(cx, |state, _| state.set_input_test(true));
     }
 
     /// Stores the typed name as the name of the profile preset. The result arrives through
@@ -305,7 +306,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = theme.colors;
-        let level = self.state.read(cx).media_calls().call.is_some().then(|| {
+        let shown = {
+            let state = self.state.read(cx);
+            state.media_calls().call.is_some() || state.calls().input_test_runs()
+        };
+        let level = shown.then(|| {
             self.state.read(cx).shown_levels().input as f32
                 / crate::state::view::INPUT_SEGMENTS as f32
         });
