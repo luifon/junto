@@ -2643,7 +2643,7 @@
         "tags": [
           "calls"
         ],
-        "summary": "Reports that the person shares a screen, and which sound the share sends. The server\nshows the share for as long as the media server lists a screen track of the person.",
+        "summary": "Reports that the person shares a screen or a window in one slot, and which sound the\nshare sends. A person runs up to `MAX_SHARES` shares. The server shows a share for as\nlong as the media server lists its picture track (ADR 0510).",
         "operationId": "report_screen_share",
         "requestBody": {
           "content": {
@@ -2687,8 +2687,21 @@
         "tags": [
           "calls"
         ],
-        "summary": "Reports that the person no longer shares a screen. Meeting mode that the person runs ends.",
+        "summary": "Reports that a share of the person ended, or every share without a slot. Meeting mode\nthat the person runs ends with the last share of the person.",
         "operationId": "end_screen_share",
+        "parameters": [
+          {
+            "name": "slot",
+            "in": "query",
+            "description": "The share that ends. Absent: every share of the person ends, as a client from before\nseveral shares ends its one share.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
         "responses": {
           "204": {
             "headers": {
@@ -13814,12 +13827,20 @@
           "screen_share": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ScreenShare"
+                "$ref": "#/components/schemas/ScreenShare",
+                "description": "The share of the lowest slot. A client from before several shares reads only this."
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "screen_shares": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScreenShare"
+            },
+            "description": "Every share of the person, in the order of their slots. A server from before several\nshares sends none; [`CallParticipant::shares`] then reads `screen_share`."
           },
           "sound_block": {
             "oneOf": [
@@ -17037,6 +17058,22 @@
         "properties": {
           "audio": {
             "$ref": "#/components/schemas/ShareAudio"
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The share that the report is about, below `MAX_SHARES`. Absent: slot 0, as a client\nfrom before several shares reports its one share.",
+            "minimum": 0
           }
         }
       },
@@ -17174,6 +17211,23 @@
         "properties": {
           "audio": {
             "$ref": "#/components/schemas/ShareAudio"
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareKind",
+                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number that the sharing device gave the share, below `MAX_SHARES`. A device that\nruns one share uses slot 0; a server or a client from before several shares states\nno slot, which is slot 0.",
+            "minimum": 0
           },
           "started_at": {
             "type": "string",
@@ -17700,6 +17754,14 @@
           "application",
           "system",
           "none"
+        ]
+      },
+      "ShareKind": {
+        "type": "string",
+        "description": "What a screen share shows.",
+        "enum": [
+          "screen",
+          "window"
         ]
       },
       "Signature": {

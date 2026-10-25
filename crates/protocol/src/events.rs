@@ -440,7 +440,7 @@ pub enum Event {
         place: CallPlace,
         participant: CallParticipant,
     },
-    /// The own settings, the blocks, the raised hand or the screen share of a person in a
+    /// The own settings, the blocks, the raised hand or a screen share of a person in a
     /// call changed. The event carries the whole participant.
     CallParticipantUpdated {
         call_id: CallId,
@@ -1011,6 +1011,7 @@ mod tests {
             sound_block: None,
             hand_raised: false,
             screen_share: None,
+            screen_shares: Vec::new(),
         };
         let workspace = Workspace {
             id: workspace_id,

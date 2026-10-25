@@ -571,7 +571,7 @@
       "type": "object"
     },
     "call_participant_updated": {
-      "description": "The own settings, the blocks, the raised hand or the screen share of a person in a\ncall changed. The event carries the whole participant.",
+      "description": "The own settings, the blocks, the raised hand or a screen share of a person in a\ncall changed. The event carries the whole participant.",
       "properties": {
         "call_id": {
           "$ref": "#/components/schemas/CallId"
@@ -2451,12 +2451,20 @@
           "screen_share": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ScreenShare"
+                "$ref": "#/components/schemas/ScreenShare",
+                "description": "The share of the lowest slot. A client from before several shares reads only this."
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "screen_shares": {
+            "description": "Every share of the person, in the order of their slots. A server from before several\nshares sends none; [`CallParticipant::shares`] then reads `screen_share`.",
+            "items": {
+              "$ref": "#/components/schemas/ScreenShare"
+            },
+            "type": "array"
           },
           "sound_block": {
             "oneOf": [
@@ -3761,7 +3769,7 @@
             "type": "object"
           },
           {
-            "description": "The own settings, the blocks, the raised hand or the screen share of a person in a\ncall changed. The event carries the whole participant.",
+            "description": "The own settings, the blocks, the raised hand or a screen share of a person in a\ncall changed. The event carries the whole participant.",
             "properties": {
               "call_id": {
                 "$ref": "#/components/schemas/CallId"
@@ -5525,6 +5533,23 @@
           "audio": {
             "$ref": "#/components/schemas/ShareAudio"
           },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareKind",
+                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot": {
+            "description": "The number that the sharing device gave the share, below `MAX_SHARES`. A device that\nruns one share uses slot 0; a server or a client from before several shares states\nno slot, which is slot 0.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "started_at": {
             "format": "date-time",
             "type": "string"
@@ -5769,6 +5794,14 @@
           "application",
           "system",
           "none"
+        ],
+        "type": "string"
+      },
+      "ShareKind": {
+        "description": "What a screen share shows.",
+        "enum": [
+          "screen",
+          "window"
         ],
         "type": "string"
       },
