@@ -651,7 +651,7 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     // The person presents: Ada stops sharing, the person shares and turns meeting mode
     // on. The server accepts it when its check has seen the share; a refusal before
     // that is told.
-    scene.caller.calls.stop_share();
+    scene.caller.calls.stop_share(None);
     scene.window.click("call-share");
     scene
         .window

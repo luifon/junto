@@ -509,7 +509,7 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     call.until("the call window leaves Ada out of the strip", |call| {
         call.shows("share-viewport") && only_own(call)
     });
-    caller.calls.stop_share();
+    caller.calls.stop_share(None);
     call.until("the call window leaves Ada out of the grid", |call| {
         !call.shows("share-viewport") && only_own(call)
     });

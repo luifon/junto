@@ -72,6 +72,9 @@ pub(crate) enum Layer {
     /// The dialog in which the person chooses what to share. It holds the lists of the
     /// system, which are larger than every other layer.
     SharePicker(Box<share::SharePicker>),
+    /// The menu of the shares of this device, at the share button of the strip of the
+    /// call: a stop of each share, "Share another" and a stop of every share.
+    ShareMenu,
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
     /// The menu of a message, at the message.
@@ -168,6 +171,8 @@ pub enum Open {
     InputDevices,
     /// The dialog in which the person chooses what to share.
     SharePicker,
+    /// The menu of the shares of this device.
+    ShareMenu,
     /// What happened to the last recording of the call.
     RecordingDetails,
     /// The list of the members who can be invited into the call.
@@ -236,6 +241,9 @@ pub struct Shell {
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
+    /// A press closed the menu of the shares; the click on the share button that follows
+    /// does not open it again.
+    pub(crate) share_menu_closed_by_press: bool,
     /// The pictures of the shares of the call, as images of the window.
     pub(crate) pictures: share::ShownPictures,
     pub(crate) cameras: camera::ShownCameras,
@@ -613,6 +621,7 @@ impl Shell {
             invitations_scroll: ScrollHandle::new(),
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
+            share_menu_closed_by_press: false,
             detached,
             software_video: window
                 .gpu_specs()
@@ -921,6 +930,7 @@ impl Shell {
                 self.open_device_menu(DeviceKind::Input, window, cx);
             }
             Open::SharePicker => self.open_share_picker(window, cx),
+            Open::ShareMenu => self.open_layer(Layer::ShareMenu, window, cx),
             Open::RecordingDetails => {
                 self.recording_details_open = true;
                 cx.notify();
@@ -1295,6 +1305,7 @@ impl Shell {
     fn presses_over(&mut self) {
         self.server_menu_closed_by_press = false;
         self.device_menu_closed_by_press = false;
+        self.share_menu_closed_by_press = false;
         self.recording_details_closed_by_press = false;
         self.invite_closed_by_press = false;
         self.filter_closed_by_press = false;
@@ -1386,6 +1397,11 @@ impl Shell {
             // The languages belong to the button that records, which a call of this
             // device without a recording shows to a person who may record.
             Layer::RecordLanguage => !self.records_now(view),
+            // The menu lists the shares of this device, and every share has ended.
+            Layer::ShareMenu => view
+                .call
+                .as_ref()
+                .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
@@ -1412,7 +1428,8 @@ impl Shell {
             | Layer::SearchFilter(_)
             | Layer::RecordingFiles(_)
             | Layer::RecordingParts(_)
-            | Layer::RecordLanguage => div().into_any_element(),
+            | Layer::RecordLanguage
+            | Layer::ShareMenu => div().into_any_element(),
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)
             }

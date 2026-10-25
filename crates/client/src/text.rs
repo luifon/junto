@@ -495,7 +495,19 @@ pub fn call_refused(reason: &str) -> String {
 // The share of this device.
 pub const SHARE_SCREEN: &str = "Share screen";
 pub const SHARE_STARTING: &str = "Your share starts";
-pub const SHARE_RUNS: &str = "You are sharing your screen. Press to stop.";
+pub const SHARE_RUNS: &str = "You are sharing. Press to stop a share or to share another.";
+pub const YOUR_SHARES: &str = "Your shares";
+pub const SHARE_ANOTHER: &str = "Share another screen or window";
+pub const STOP_ALL_SHARES: &str = "Stop every share";
+pub const SHARE_STARTS: &str = "Starts…";
+
+/// Why "Share another" is disabled: the person runs as many shares as one person can.
+pub fn share_limit() -> String {
+    format!(
+        "You share {} things, the most at once. Stop one to share another.",
+        junto_client_core::protocol::call::MAX_SHARES
+    )
+}
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
     "Share screen. Screen sharing is not available on this system in this version.";
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
@@ -597,18 +609,23 @@ pub fn capture_error(error: &CaptureError) -> String {
         CaptureError::CreatorsUnknown => SOUND_CREATORS_UNKNOWN.to_owned(),
         CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
         CaptureError::Interrupted => "The connection to the call was lost.".to_owned(),
+        CaptureError::TooMany => share_limit(),
         CaptureError::Failed(reason) => {
             format!("The system reported: {}", sentence(reason))
         }
     }
 }
 
-/// The notice about a share of this device that the person did not end.
+/// The notice about a share of this device that the person did not end, or that did not
+/// start because the person runs as many shares as one person can.
 pub fn share_ended(error: &CaptureError) -> String {
-    format!(
-        "Your screen share ended. {} Start the share again when you want to continue.",
-        capture_error(error)
-    )
+    match error {
+        CaptureError::TooMany => format!("Your new share did not start. {}", share_limit()),
+        error => format!(
+            "Your screen share ended. {} Start the share again when you want to continue.",
+            capture_error(error)
+        ),
+    }
 }
 
 // The shares of a call.
@@ -629,16 +646,35 @@ pub fn shares_count(count: usize) -> String {
 
 /// The name of a share: "Carla's screen", "Bruno's window", "Your screen".
 pub fn share_title(share: &ShareCard, is_own: bool) -> String {
-    let what = match share.kind {
-        Some(ShareKind::Screen) => "screen",
-        Some(ShareKind::Window) => "window",
-        None => "share",
-    };
+    let what = share_what(share.kind, share.number);
     if is_own {
         format!("Your {what}")
     } else {
         let name = share.name.as_deref().unwrap_or(UNKNOWN_PERSON);
         format!("{name}'s {what}")
+    }
+}
+
+/// What a share shows, with its number among the shares of one kind of its person:
+/// "screen", "window 2".
+fn share_what(kind: Option<ShareKind>, number: Option<usize>) -> String {
+    let what = match kind {
+        Some(ShareKind::Screen) => "screen",
+        Some(ShareKind::Window) => "window",
+        None => "share",
+    };
+    match number {
+        Some(number) => format!("{what} {number}"),
+        None => what.to_owned(),
+    }
+}
+
+/// The name of a share of this device in the menu of the share button: "Your screen",
+/// "Your window 2", or "Your new share" while it starts.
+pub fn own_share_title(kind: Option<ShareKind>, number: Option<usize>) -> String {
+    match kind {
+        Some(_) => format!("Your {}", share_what(kind, number)),
+        None => "Your new share".to_owned(),
     }
 }
 
@@ -2998,10 +3034,11 @@ mod tests {
         use junto_media::engine::ShareId;
 
         let mut share = ShareCard {
-            id: ShareId::Of(AccountId::generate()),
+            id: ShareId::of(AccountId::generate(), 0),
             account_id: AccountId::generate(),
             name: Some("Carla".to_owned()),
             kind: Some(ShareKind::Screen),
+            number: None,
             sound: Some(ShareAudio::System),
             sound_held: false,
             size: Some((1920, 1200)),
@@ -3012,6 +3049,17 @@ mod tests {
         assert_eq!(share_title(&share, true), "Your screen");
         share.kind = Some(ShareKind::Window);
         assert_eq!(share_title(&share, false), "Carla's window");
+        // Two windows of one person are told apart by their numbers.
+        share.number = Some(2);
+        assert_eq!(share_title(&share, false), "Carla's window 2");
+        assert_eq!(share_title(&share, true), "Your window 2");
+        assert_eq!(
+            own_share_title(Some(ShareKind::Screen), None),
+            "Your screen"
+        );
+        assert_eq!(own_share_title(None, None), "Your new share");
+        assert!(share_ended(&CaptureError::TooMany).starts_with("Your new share did not start."));
+        share.number = None;
         share.kind = None;
         share.name = None;
         assert_eq!(share_title(&share, false), "Unknown person's share");

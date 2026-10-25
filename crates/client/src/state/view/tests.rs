@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use junto_client_core::flow::FlowError;
@@ -65,6 +66,7 @@ fn participant(account_id: AccountId) -> CallParticipant {
         sound_block: None,
         hand_raised: false,
         screen_share: None,
+        screen_shares: Vec::new(),
     }
 }
 
@@ -520,6 +522,8 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     held.hand_raised = true;
     let mut sharing = participant(dora);
     sharing.screen_share = Some(ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::None,
         started_at: time(),
     });
@@ -1108,7 +1112,8 @@ pub(super) mod calls {
             output_device: None,
             microphone_block: None,
             sound_block: None,
-            share: ShareState::Off,
+            own_shares: std::collections::BTreeMap::new(),
+            share_ended: None,
             shares: Vec::new(),
             watched: None,
         }
@@ -1128,6 +1133,8 @@ pub(super) mod calls {
         listed.deafened = true;
         listed.hand_raised = true;
         listed.screen_share = Some(ScreenShare {
+            slot: 0,
+            kind: None,
             audio: ShareAudio::None,
             started_at: time(),
         });
@@ -1165,7 +1172,8 @@ pub(super) mod calls {
         // device runs. The list of the server is the same.
         known.media.calls.muted = true;
         known.media.calls.deafened = true;
-        known.media.calls.call.as_mut().unwrap().share = running_share();
+        known.media.calls.call.as_mut().unwrap().own_shares =
+            BTreeMap::from([(0, running_share())]);
         let shown = own_row(&known);
         assert_eq!(shown.microphone, Microphone::Closed);
         assert!(shown.sound_off && shown.sharing);
@@ -1979,6 +1987,8 @@ pub(super) mod calls {
     fn sharing(account_id: AccountId, audio: ShareAudio) -> CallParticipant {
         let mut participant = participant(account_id);
         participant.screen_share = Some(ScreenShare {
+            slot: 0,
+            kind: None,
             audio,
             started_at: time(),
         });
@@ -1986,8 +1996,13 @@ pub(super) mod calls {
     }
 
     fn seen(account_id: AccountId, kind: ShareKind) -> SeenShare {
+        seen_in(account_id, 0, kind)
+    }
+
+    fn seen_in(account_id: AccountId, slot: u8, kind: ShareKind) -> SeenShare {
         SeenShare {
             account_id,
+            slot,
             kind: Some(kind),
             frame_rate: Some(30),
             size: Some((1920, 1200)),
@@ -2027,7 +2042,7 @@ pub(super) mod calls {
 
         // Two people share. The engine tells the tracks; the server tells the sound.
         call.shares = vec![seen(ana, ShareKind::Screen), seen(ben, ShareKind::Window)];
-        call.watched = Some(ShareId::Of(ana));
+        call.watched = Some(ShareId::of(ana, 0));
         let mut known = in_call(call.clone());
         known.media.voice.share_volume = 60;
         let view = derive(servers, &selected(&server, &scene, daily), &known);
@@ -2035,7 +2050,7 @@ pub(super) mod calls {
         assert_eq!(stage.volume, 60);
         assert_eq!(stage.shares.len(), 2);
         let first = &stage.shares[0];
-        assert_eq!((first.id, first.account_id), (ShareId::Of(ana), ana));
+        assert_eq!((first.id, first.account_id), (ShareId::of(ana, 0), ana));
         assert_eq!(
             (first.kind, first.sound, first.watched),
             (Some(ShareKind::Screen), Some(ShareAudio::System), true)
@@ -2051,19 +2066,22 @@ pub(super) mod calls {
         );
         assert_eq!(
             stage.watched().map(|share| share.id),
-            Some(ShareId::Of(ana))
+            Some(ShareId::of(ana, 0))
         );
         assert!(occupant(&view, "Daily", ana).sharing);
 
         // The share of this device is the last of the list, with what the engine sends.
-        call.share = ShareState::Running(ShareInfo {
-            kind: ShareKind::Window,
-            sound: ShareAudio::Application,
-            sound_held: true,
-            size: (1280, 800),
-            frame_rate: 15,
-        });
-        call.watched = Some(ShareId::Own);
+        call.own_shares = BTreeMap::from([(
+            0,
+            ShareState::Running(ShareInfo {
+                kind: ShareKind::Window,
+                sound: ShareAudio::Application,
+                sound_held: true,
+                size: (1280, 800),
+                frame_rate: 15,
+            }),
+        )]);
+        call.watched = Some(ShareId::own(0));
         let view = derive(
             servers,
             &selected(&server, &scene, daily),
@@ -2072,7 +2090,7 @@ pub(super) mod calls {
         let stage = panel(&view).stage.unwrap();
         let own_share = stage.shares.last().unwrap();
         assert_eq!(stage.shares.len(), 3);
-        assert_eq!((own_share.id, own_share.account_id), (ShareId::Own, own));
+        assert_eq!((own_share.id, own_share.account_id), (ShareId::own(0), own));
         assert_eq!(own_share.name.as_deref(), Some("Luca"));
         assert_eq!(
             (own_share.sound, own_share.sound_held, own_share.watched),
@@ -2095,7 +2113,7 @@ pub(super) mod calls {
 
         // A share that starts, and one that ended by itself.
         call.shares.clear();
-        call.share = ShareState::Starting;
+        call.own_shares = BTreeMap::from([(0, ShareState::Starting)]);
         let view = derive(
             servers,
             &selected(&server, &scene, daily),
@@ -2103,10 +2121,141 @@ pub(super) mod calls {
         );
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Starting);
         assert_eq!(panel(&view).stage, None);
-        call.share = ShareState::Ended(CaptureError::SourceGone);
+        call.own_shares.clear();
+        call.share_ended = Some(CaptureError::SourceGone);
         let view = derive(servers, &selected(&server, &scene, general), &in_call(call));
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Off);
         assert_eq!(view.share_notice, Some(CaptureError::SourceGone));
+    }
+
+    /// Several shares of one person (ADR 0738): each share is a card of its own with its
+    /// sound, two of one kind are numbered, and the menu of the share button lists the own
+    /// shares in the order of their slots.
+    #[test]
+    fn the_shares_of_one_person_are_cards_of_their_own_and_the_own_ones_are_in_the_menu() {
+        let mut scene = scene();
+        let ana = AccountId::generate();
+        let (own, daily) = (scene.own, scene.daily);
+        let at = time();
+        let mut ana_row = participant(ana);
+        let shared = |slot, audio| ScreenShare {
+            slot,
+            kind: None,
+            audio,
+            started_at: at,
+        };
+        ana_row.screen_shares = vec![
+            shared(0, ShareAudio::System),
+            shared(1, ShareAudio::None),
+            shared(2, ShareAudio::Application),
+        ];
+        ana_row.screen_share = ana_row.screen_shares.first().cloned();
+        scene.call(daily, vec![ana_row, participant(own)]);
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+        let mut call = active(target(&server, &scene, daily));
+        call.shares = vec![
+            seen_in(ana, 0, ShareKind::Screen),
+            seen_in(ana, 2, ShareKind::Window),
+            seen_in(ana, 1, ShareKind::Screen),
+        ];
+        call.watched = Some(ShareId::of(ana, 2));
+        let running = |kind| {
+            ShareState::Running(ShareInfo {
+                kind,
+                sound: ShareAudio::None,
+                sound_held: false,
+                size: (1280, 800),
+                frame_rate: 30,
+            })
+        };
+        call.own_shares = BTreeMap::from([
+            (0, running(ShareKind::Window)),
+            (1, ShareState::Starting),
+            (2, running(ShareKind::Window)),
+        ]);
+        let view = derive(servers, &selected(&server, &scene, daily), &in_call(call));
+        let stage = panel(&view).stage.unwrap();
+        let cards: Vec<_> = stage
+            .shares
+            .iter()
+            .map(|share| {
+                (
+                    share.id,
+                    share.kind,
+                    share.number,
+                    share.sound,
+                    share.watched,
+                )
+            })
+            .collect();
+        assert_eq!(
+            cards,
+            [
+                (
+                    ShareId::of(ana, 0),
+                    Some(ShareKind::Screen),
+                    Some(1),
+                    Some(ShareAudio::System),
+                    false
+                ),
+                (
+                    ShareId::of(ana, 2),
+                    Some(ShareKind::Window),
+                    None,
+                    Some(ShareAudio::Application),
+                    true
+                ),
+                (
+                    ShareId::of(ana, 1),
+                    Some(ShareKind::Screen),
+                    Some(2),
+                    Some(ShareAudio::None),
+                    false
+                ),
+                (
+                    ShareId::own(0),
+                    Some(ShareKind::Window),
+                    Some(1),
+                    Some(ShareAudio::None),
+                    false
+                ),
+                (
+                    ShareId::own(2),
+                    Some(ShareKind::Window),
+                    Some(2),
+                    Some(ShareAudio::None),
+                    false
+                ),
+            ]
+        );
+        assert_eq!(
+            crate::text::share_title(&stage.shares[2], false),
+            "Unknown person's screen 2"
+        );
+        let strip = view.call.clone().unwrap();
+        assert_eq!(strip.share, OwnShare::Running);
+        assert_eq!(
+            strip.own_shares,
+            [
+                OwnShareItem {
+                    slot: 0,
+                    kind: Some(ShareKind::Window),
+                    number: Some(1)
+                },
+                OwnShareItem {
+                    slot: 1,
+                    kind: None,
+                    number: None
+                },
+                OwnShareItem {
+                    slot: 2,
+                    kind: Some(ShareKind::Window),
+                    number: Some(2)
+                },
+            ]
+        );
+        assert!(occupant(&view, "Daily", ana).sharing);
     }
 
     #[test]
@@ -2425,17 +2574,21 @@ pub(super) mod calls {
         everyone_may(&mut scene, &[WorkspacePermission::RunMeetingMode]);
         assert_eq!(start(&scene, &|_| {}), MeetingStart::NotSharing);
         assert_eq!(
-            start(&scene, &|call| call.share = ShareState::Starting),
+            start(&scene, &|call| {
+                call.own_shares = BTreeMap::from([(0, ShareState::Starting)]);
+            }),
             MeetingStart::NotSharing
         );
         assert_eq!(
-            start(&scene, &|call| call.share = running_share()),
+            start(&scene, &|call| {
+                call.own_shares = BTreeMap::from([(0, running_share())]);
+            }),
             MeetingStart::Possible
         );
         // A person whose microphone is blocked cannot start it (ADR 0512).
         assert_eq!(
             start(&scene, &|call| {
-                call.share = running_share();
+                call.own_shares = BTreeMap::from([(0, running_share())]);
                 call.microphone_block = Some(MicrophoneBlock {
                     by: AccountId::generate(),
                     reason: BlockReason::Moderator,
@@ -2473,7 +2626,7 @@ pub(super) mod calls {
         });
         let server = scene.server();
         let mut own_call = active(target(&server, &scene, daily));
-        own_call.share = running_share();
+        own_call.own_shares = BTreeMap::from([(0, running_share())]);
         let mut known = in_call(own_call);
         known.people.read_name(server.id, ana, "Ana");
         known.people.read_name(server.id, ben, "Ben");

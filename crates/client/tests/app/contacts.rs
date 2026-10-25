@@ -540,7 +540,7 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
 ) {
     use junto_client_core::protocol::call::CallPlace;
     use junto_media::calls::{ActiveCall, CallTarget, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
 
     let world = World::new();
     let server = world.server("Harbor");
@@ -578,7 +578,8 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
             output_device: None,
             microphone_block: None,
             sound_block: None,
-            share: ShareState::Off,
+            own_shares: std::collections::BTreeMap::new(),
+            share_ended: None,
             shares: Vec::new(),
             watched: None,
         },

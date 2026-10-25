@@ -500,7 +500,7 @@ impl Rehearsal {
         ] {
             window.click("call-camera");
             window.state.update(&mut window.cx, |state, _| {
-                state.watch_share(junto_media::engine::ShareId::Of(other));
+                state.watch_share(junto_media::engine::ShareId::of(other, 0));
             });
         }
         for (window, other) in [

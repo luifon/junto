@@ -74,6 +74,7 @@ impl Scene {
                         sound_block: None,
                         hand_raised: false,
                         screen_share: None,
+                        screen_shares: Vec::new(),
                     })
                     .collect(),
                 recording: None,
@@ -135,7 +136,8 @@ fn in_call(server_id: ServerId, scene: &Scene, channel_id: ChannelId) -> Known {
                     output_device: None,
                     microphone_block: None,
                     sound_block: None,
-                    share: ShareState::Off,
+                    own_shares: std::collections::BTreeMap::new(),
+                    share_ended: None,
                     shares: Vec::new(),
                     watched: None,
                 }),

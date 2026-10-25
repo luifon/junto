@@ -333,7 +333,7 @@ fn each_unsuccessful_move_outcome_is_shown_and_dismissible(cx: &mut gpui::TestAp
 /// engine states it, without a media server.
 pub(crate) fn connected_call(window: &mut Window, channel: &str) -> junto_media::calls::ActiveCall {
     use junto_media::calls::{ActiveCall, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
 
     let view = window.view();
     let row = (window.channels().into_iter())
@@ -359,7 +359,8 @@ pub(crate) fn connected_call(window: &mut Window, channel: &str) -> junto_media:
         output_device: None,
         microphone_block: None,
         sound_block: None,
-        share: ShareState::Off,
+        own_shares: std::collections::BTreeMap::new(),
+        share_ended: None,
         shares: Vec::new(),
         watched: None,
     }
@@ -396,7 +397,7 @@ pub(crate) fn show_call(window: &mut Window, call: junto_media::calls::ActiveCal
 #[gpui::test]
 fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
     use junto_client_core::protocol::ids::AccountId;
-    use junto_media::engine::{MainPicture, ShareId};
+    use junto_media::engine::{MainPicture, Person, ShareId};
     use junto_media::share::picture::VideoPicture;
     use junto_media::share::synthetic::two_colours;
     use std::cell::Cell;
@@ -421,13 +422,13 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
         Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap())
     };
     let (share, camera) = (
-        ShareId::Of(AccountId::generate()),
-        ShareId::Of(AccountId::generate()),
+        ShareId::of(AccountId::generate(), 0),
+        Person::Of(AccountId::generate()),
     );
     // The three sources, and all of them at once.
     let main = |width: u32| {
         calls.show_main_picture_for_test(Some(MainPicture {
-            share: ShareId::Own,
+            share: ShareId::own(0),
             frame: frame(width),
         }));
     };
@@ -576,7 +577,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     use junto_client_core::protocol::call::ShareAudio;
     use junto_client_core::protocol::ids::AccountId;
     use junto_media::camera::CameraState;
-    use junto_media::engine::{MainPicture, SeenShare, ShareId, ShareInfo, ShareState};
+    use junto_media::engine::{MainPicture, Person, SeenShare, ShareId, ShareInfo, ShareState};
     use junto_media::share::ShareKind;
     use junto_media::share::picture::VideoPicture;
     use junto_media::share::synthetic::two_colours;
@@ -593,20 +594,24 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     let mut call = connected_call(&mut window, "Daily");
     call.camera = CameraState::Running;
     call.cameras = vec![other];
-    call.share = ShareState::Running(ShareInfo {
-        kind: ShareKind::Window,
-        sound: ShareAudio::None,
-        sound_held: false,
-        size: (64, 36),
-        frame_rate: 30,
-    });
+    call.own_shares = std::collections::BTreeMap::from([(
+        0,
+        ShareState::Running(ShareInfo {
+            kind: ShareKind::Window,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size: (64, 36),
+            frame_rate: 30,
+        }),
+    )]);
     call.shares = vec![SeenShare {
         account_id: other,
+        slot: 0,
         kind: Some(ShareKind::Screen),
         frame_rate: Some(30),
         size: Some((64, 36)),
     }];
-    call.watched = Some(ShareId::Of(other));
+    call.watched = Some(ShareId::of(other, 0));
     show_call(&mut window, call);
     let calls = window
         .state
@@ -641,16 +646,16 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
             .borrow_mut()
             .push(pictures.iter().map(Arc::downgrade).collect());
         calls.show_main_picture_for_test(Some(MainPicture {
-            share: ShareId::Of(other),
+            share: ShareId::of(other, 0),
             frame: pictures[0].clone(),
         }));
         calls.show_small_pictures_for_test(HashMap::from([
-            (ShareId::Own, pictures[3].clone()),
-            (ShareId::Of(other), pictures[4].clone()),
+            (ShareId::own(0), pictures[3].clone()),
+            (ShareId::of(other, 0), pictures[4].clone()),
         ]));
         calls.show_camera_pictures_for_test(HashMap::from([
-            (ShareId::Own, pictures[1].clone()),
-            (ShareId::Of(other), pictures[2].clone()),
+            (Person::Own, pictures[1].clone()),
+            (Person::Of(other), pictures[2].clone()),
         ]));
         window.until_pictures_taken();
         // The window made each pixel buffer when it took the picture; the test holds one
@@ -836,21 +841,24 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
     window.click_channel("Daily");
     // The person shares and watches the own share.
     let mut call = connected_call(&mut window, "Daily");
-    call.share = ShareState::Running(ShareInfo {
-        kind: ShareKind::Window,
-        sound: ShareAudio::None,
-        sound_held: false,
-        size: (64, 36),
-        frame_rate: 30,
-    });
-    call.watched = Some(ShareId::Own);
+    call.own_shares = std::collections::BTreeMap::from([(
+        0,
+        ShareState::Running(ShareInfo {
+            kind: ShareKind::Window,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size: (64, 36),
+            frame_rate: 30,
+        }),
+    )]);
+    call.watched = Some(ShareId::own(0));
     show_call(&mut window, call);
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
     let pixels = two_colours(64, 36, (200, 30, 30), (30, 30, 200));
     calls.show_main_picture_for_test(Some(MainPicture {
-        share: ShareId::Own,
+        share: ShareId::own(0),
         frame: Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap()),
     }));
     window.until_pictures_taken();
@@ -931,20 +939,24 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
     let other: AccountId = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f".parse().unwrap();
     // Two shares: the bar of the shares shows a small picture of each.
     let mut call = connected_call(&mut window, "Daily");
-    call.share = ShareState::Running(ShareInfo {
-        kind: ShareKind::Window,
-        sound: ShareAudio::None,
-        sound_held: false,
-        size: (64, 36),
-        frame_rate: 30,
-    });
+    call.own_shares = std::collections::BTreeMap::from([(
+        0,
+        ShareState::Running(ShareInfo {
+            kind: ShareKind::Window,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size: (64, 36),
+            frame_rate: 30,
+        }),
+    )]);
     call.shares = vec![SeenShare {
         account_id: other,
+        slot: 0,
         kind: Some(ShareKind::Screen),
         frame_rate: Some(30),
         size: Some((64, 36)),
     }];
-    call.watched = Some(ShareId::Of(other));
+    call.watched = Some(ShareId::of(other, 0));
     show_call(&mut window, call);
     let calls = window
         .state
@@ -954,8 +966,8 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
         Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap())
     };
     calls.show_small_pictures_for_test(HashMap::from([
-        (ShareId::Own, small()),
-        (ShareId::Of(other), small()),
+        (ShareId::own(0), small()),
+        (ShareId::of(other, 0), small()),
     ]));
     window.until_pictures_taken();
     let images = window
@@ -974,8 +986,8 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
         let painted = junto_client::ui::take_painted_surfaces();
         drop(record);
         // The selectors of gpui live as long as the program.
-        let other_card: &'static str = format!("share-card:{other}").leak();
-        for card in ["share-card:own", other_card] {
+        let other_card: &'static str = format!("share-card:{other}:0").leak();
+        for card in ["share-card:own:0", other_card] {
             let bounds = window.cx.debug_bounds(card).unwrap();
             assert!(
                 painted
@@ -1134,7 +1146,7 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
     cx: &mut TestAppContext,
 ) {
     use junto_client_core::protocol::ids::AccountId;
-    use junto_media::engine::{MainPicture, ShareId};
+    use junto_media::engine::{MainPicture, Person, ShareId};
     use junto_media::share::picture::VideoPicture;
     use junto_media::share::synthetic::two_colours;
     use std::collections::HashMap;
@@ -1155,7 +1167,7 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
         let pixels = two_colours(width, 2, (255, 255, 255), (255, 255, 255));
         Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap())
     };
-    let camera = ShareId::Of(AccountId::generate());
+    let camera = Person::Of(AccountId::generate());
     let show_camera = |width: u32| {
         calls.show_camera_pictures_for_test(HashMap::from([(camera, frame(width))]));
     };
@@ -1189,7 +1201,7 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
     // A picture of a camera that arrives in the rest waits; one of the share is taken.
     show_camera(21);
     calls.show_main_picture_for_test(Some(MainPicture {
-        share: ShareId::Own,
+        share: ShareId::own(0),
         frame: frame(30),
     }));
     assert_eq!(held(&mut window), (Some(30), Some(20)));
@@ -1256,6 +1268,7 @@ fn the_tiles_of_the_people_fill_the_stage(cx: &mut TestAppContext) {
         sound_block: None,
         hand_raised: false,
         screen_share: None,
+        screen_shares: Vec::new(),
     };
     // Two windows whose stages are wider than high, so two people are side by side.
     for (width, height) in [(1800.0, 900.0), (1500.0, 640.0)] {

@@ -186,7 +186,7 @@ fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
     calls
         .call
         .as_ref()
-        .is_some_and(|call| matches!(call.share, junto_media::engine::ShareState::Ended(_)))
+        .is_some_and(|call| call.share_ended.is_some())
 }
 
 /// The quality of a share as the media engine takes it.
@@ -978,8 +978,9 @@ impl AppState {
         cx.notify();
     }
 
-    /// Starts the share of this device at the seat for which the person chose it, with
-    /// the stored resolution and frame rate. The result is in the view.
+    /// Starts a share of this device at the seat for which the person chose it, with the
+    /// stored resolution and frame rate; the shares that run go on. The result is in the
+    /// view.
     pub fn start_share(&mut self, seat: &Seat, picture: PictureSource, sound: SoundChoice) {
         let request = CaptureRequest {
             picture,
@@ -989,9 +990,10 @@ impl AppState {
         self.calls.start_share_in(seat, request);
     }
 
-    /// Ends the share of this device, and puts away the statement that a share ended.
-    pub fn stop_share(&mut self) {
-        self.calls.stop_share();
+    /// Ends the share of this device in `slot`, or every share without a slot, and puts
+    /// away the statement that a share ended.
+    pub fn stop_share(&mut self, slot: Option<u8>) {
+        self.calls.stop_share(slot);
     }
 
     /// Puts away the notice of the own share that ended by itself. The notice goes at
@@ -999,7 +1001,7 @@ impl AppState {
     /// still state the end.
     pub fn dismiss_share_notice(&mut self, cx: &mut Context<Self>) {
         self.known.share_notice_dismissed = true;
-        self.calls.stop_share();
+        self.calls.forget_share_end();
         self.changed(cx);
     }
 
