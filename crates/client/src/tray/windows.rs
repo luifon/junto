@@ -1,4 +1,4 @@
-//! The tray icon of Windows: an icon of the notification area (ADR 0757).
+//! The tray icon of Windows: an icon of the notification area (ADR 0759).
 
 use std::cell::RefCell;
 use std::rc::Rc;

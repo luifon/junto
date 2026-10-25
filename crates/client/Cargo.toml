@@ -94,7 +94,7 @@ gpui-base = "=0.7.1"
 # The result of a write on a background thread returns to the interface thread through
 # its one-time channel. gpui uses the same crate.
 futures-channel = "0.3"
-# The task on the interface thread that takes the presses on the tray menu (ADR 0757).
+# The task on the interface thread that takes the presses on the tray menu (ADR 0759).
 futures-util = { workspace = true }
 # The picture of a share is given to gpui as an image of this crate, in the version that
 # gpui uses.
@@ -146,7 +146,7 @@ raw-window-handle = "0.6"
 
 [build-dependencies]
 # The icon of the program on Windows and of its windows on X11 (ADR 0756), and the pictures of
-# the tray icon on every system (ADR 0757).
+# the tray icon on every system (ADR 0759).
 junto-icon = { path = "../icon" }
 
 [lints]

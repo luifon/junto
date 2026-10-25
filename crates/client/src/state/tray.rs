@@ -1,5 +1,5 @@
 //! The state of the application tells the tray icon the state of the call of this device
-//! (ADR 0757).
+//! (ADR 0759).
 
 use std::rc::Rc;
 

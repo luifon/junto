@@ -1,5 +1,5 @@
 //! The tray icon of a Linux desktop: a StatusNotifierItem with a dbusmenu menu on the session
-//! bus, which a StatusNotifierWatcher of the desktop shows (ADR 0757). It is driven on its own
+//! bus, which a StatusNotifierWatcher of the desktop shows (ADR 0759). It is driven on its own
 //! worker, as the desktop notifications are (ADR 0752).
 
 use std::collections::HashMap;

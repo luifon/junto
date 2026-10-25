@@ -42,7 +42,7 @@ pub const WINDOW: u32 = 64;
 /// The side of the picture that a notification of the client shows on Windows.
 pub const NOTIFICATION: u32 = 256;
 
-/// The mark of a call state that a tray picture draws over the application icon (ADR 0757).
+/// The mark of a call state that a tray picture draws over the application icon (ADR 0759).
 /// Each source is a picture of 1024 by 1024 with the mark in the lower right corner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
@@ -249,7 +249,7 @@ pub fn png(size: u32) -> Result<Vec<u8>, Error> {
 }
 
 /// The tray picture of `size` by `size` pixels: the body of the icon, with the mark of a call
-/// state in a call (ADR 0757).
+/// state in a call (ADR 0759).
 pub fn tray(mark: Option<Mark>, size: u32) -> Result<Picture, Error> {
     renderer::tray(mark, size)
 }

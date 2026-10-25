@@ -1,5 +1,5 @@
 //! The text of the icon of the application in the menu bar of macOS, the notification area of
-//! Windows and the status area of a Linux desktop (ADR 0757).
+//! Windows and the status area of a Linux desktop (ADR 0759).
 
 pub const MUTE_MICROPHONE: &str = "Mute microphone";
 pub const UNMUTE_MICROPHONE: &str = "Unmute microphone";
