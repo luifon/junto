@@ -17,25 +17,50 @@ use junto_client_core::protocol::call::CallPlace;
 /// The width of the card of an invitation, in pixels of the design.
 const CARD_WIDTH: f32 = 380.0;
 
+/// How many cards of invitations are drawn before the line that shows the others.
+pub const MOST_CARDS: usize = 3;
+
+/// The room around the cards inside their scrolling list for the shadow of a card, in
+/// pixels of the design: the list cuts what lies outside its bounds.
+const SHADOW_ROOM: f32 = 24.0;
+
 impl Shell {
-    /// The cards of the invitations that wait for the person, on every server, placed at
-    /// the top centre of the window under its first line at `top` pixels of the design.
-    /// Absent while no invitation waits.
+    /// The cards of the invitations that wait for the person, on every server, in the order
+    /// in which they arrived, at the top of the window at `top` pixels of the design,
+    /// centred over the part of the window that starts at `left`, or over the whole window
+    /// when that part is narrower than a card. A new invitation is added after the drawn
+    /// cards, so no drawn card moves when one arrives. At most [`MOST_CARDS`] are drawn; a
+    /// line under them states how many more wait and shows them. The cards stay inside the
+    /// window and scroll when they do not fit. The ids of a card and of its buttons are
+    /// made from the identifier of its invitation, so a press and the keyboard focus stay
+    /// with their invitation. Absent while no invitation waits.
     pub(crate) fn render_invitation_cards(
         &mut self,
         view: &ShellView,
         top: f32,
+        left: f32,
+        window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if view.invitations.len() <= MOST_CARDS {
+            self.invitations_open = false;
+        }
         if view.invitations.is_empty() {
             return None;
         }
         let several_servers = view.servers.len() > 1;
-        let cards: Vec<AnyElement> = view
-            .invitations
-            .iter()
-            .enumerate()
-            .map(|(index, invited)| {
+        let mut arrived: Vec<&Invited> = view.invitations.iter().collect();
+        arrived.sort_by_key(|one| (one.created_at, one.id));
+        let more = arrived.len().saturating_sub(MOST_CARDS);
+        let drawn = if self.invitations_open {
+            arrived.len()
+        } else {
+            arrived.len().min(MOST_CARDS)
+        };
+        let mut cards: Vec<AnyElement> = arrived
+            .into_iter()
+            .take(drawn)
+            .map(|invited| {
                 let server = if several_servers {
                     view.servers
                         .iter()
@@ -44,23 +69,67 @@ impl Shell {
                 } else {
                     None
                 };
-                self.render_invitation_card(invited, server, index, cx)
+                self.render_invitation_card(invited, server, cx)
             })
             .collect();
+        if more > 0 {
+            let open = self.invitations_open;
+            cards.push(
+                div()
+                    .flex()
+                    .justify_center()
+                    .occlude()
+                    .child(
+                        Button::new("invitation-more")
+                            .label(if open {
+                                text::FEWER_INVITATIONS.to_owned()
+                            } else {
+                                text::more_invitations(more)
+                            })
+                            .selector("invitation-more")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.invitations_open = !open;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        // A part of the window narrower than a card and its margins, such as the main area
+        // beside the channel column at a large scale, takes the cards over the whole window.
+        let left = if super::logical_width(window) - left < CARD_WIDTH + 24.0 {
+            0.0
+        } else {
+            left
+        };
+        let height = (super::logical_height(window) - top - 12.0 + SHADOW_ROOM).max(0.0);
         // The frame takes no pointer event: only the cards cover what lies under them.
         Some(
             div()
                 .absolute()
-                .top(u(top))
-                .left_0()
+                .top(u(top - SHADOW_ROOM))
+                .left(u(left))
                 .right_0()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(u(8.0))
                 .px(u(12.0))
                 .debug_selector(|| "invitation-cards".to_owned())
-                .children(cards)
+                .child(
+                    div()
+                        .id("invitation-list")
+                        .debug_selector(|| "invitation-list".to_owned())
+                        .flex()
+                        .flex_col()
+                        .gap(u(8.0))
+                        .p(u(SHADOW_ROOM))
+                        .w(u(CARD_WIDTH + 2.0 * SHADOW_ROOM))
+                        .max_w_full()
+                        .max_h(u(height))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.invitations_scroll)
+                        .children(cards),
+                )
                 .into_any_element(),
         )
     }
@@ -69,7 +138,6 @@ impl Shell {
         &mut self,
         invited: &Invited,
         server: Option<String>,
-        index: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -95,25 +163,27 @@ impl Shell {
         };
         let label: SharedString = format!("{title}. {sentence}").into();
         let (accepted, declined) = (invited.clone(), invited.clone());
+        let invitation_id = invited.id;
+        let id = |name: &str| SharedString::from(format!("{name}:{invitation_id}"));
         let (accept, decline) = if direct {
             (
-                Button::new(("direct-call-accept", index))
+                Button::new(id("direct-call-accept"))
                     .label(text::ACCEPT_CALL)
                     .icon(Icon::Phones)
                     .kind(ButtonKind::Primary)
                     .selector("direct-call-accept"),
-                Button::new(("direct-call-decline", index))
+                Button::new(id("direct-call-decline"))
                     .label(text::DECLINE)
                     .selector("direct-call-decline"),
             )
         } else {
             (
-                Button::new(("invitation-join", index))
+                Button::new(id("invitation-join"))
                     .label(text::JOIN)
                     .icon(Icon::Phones)
                     .kind(ButtonKind::Primary)
                     .selector("invitation-join"),
-                Button::new(("invitation-decline", index))
+                Button::new(id("invitation-decline"))
                     .label(text::DECLINE)
                     .selector("invitation-decline"),
             )
@@ -126,8 +196,8 @@ impl Shell {
             this.state
                 .update(cx, |state, cx| state.decline_invitation(&declined, cx));
         }));
-        div()
-            .id(("invitation-card", index))
+        let card = div()
+            .id(id("invitation-card"))
             .role(Role::AlertDialog)
             .aria_label(label)
             .debug_selector(move || selector.to_owned())
@@ -136,8 +206,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(u(10.0))
-            .w(u(CARD_WIDTH))
-            .max_w_full()
+            .flex_none()
             .p(u(12.0))
             .rounded(u(theme.metrics.radius))
             .bg(Hsla::from(colors.travertine_hi))
@@ -187,10 +256,22 @@ impl Shell {
                     .flex()
                     .justify_end()
                     .gap(u(6.0))
-                    .child(decline)
-                    .child(accept),
+                    .child(
+                        div()
+                            .debug_selector(move || format!("invitation-decline:{invitation_id}"))
+                            .child(decline),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(move || format!("invitation-accept:{invitation_id}"))
+                            .child(accept),
+                    ),
             )
-            .when(direct, |card| card.border_color(Hsla::from(colors.cypress)))
+            .when(direct, |card| card.border_color(Hsla::from(colors.cypress)));
+        div()
+            .flex_none()
+            .debug_selector(move || format!("invitation-card:{invitation_id}"))
+            .child(card)
             .into_any_element()
     }
 }

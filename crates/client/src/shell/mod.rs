@@ -220,6 +220,9 @@ pub struct Shell {
 
     // The call.
     pub(crate) call_tab: CallTab,
+    /// The invitations beyond the first ones are shown (ADR 0739).
+    pub(crate) invitations_open: bool,
+    pub(crate) invitations_scroll: ScrollHandle,
     /// The panel of the call lies over the content of a narrow window.
     pub(crate) call_panel_open: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
@@ -597,6 +600,8 @@ impl Shell {
             members_open: false,
             call_tab: CallTab::default(),
             call_panel_open: false,
+            invitations_open: false,
+            invitations_scroll: ScrollHandle::new(),
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
             detached,
@@ -1120,6 +1125,12 @@ fn logical_width(window: &Window) -> f32 {
     window.viewport_size().width / rem * theme::REM_AT_100
 }
 
+/// The height of the window in pixels of the design.
+fn logical_height(window: &Window) -> f32 {
+    let rem = window.rem_size();
+    window.viewport_size().height / rem * theme::REM_AT_100
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "test-support")]
@@ -1196,7 +1207,13 @@ impl Render for Shell {
             })
             // An invitation into a call is drawn over everything else, also over a dialog,
             // so that the person sees it whatever the window shows (ADR 0739).
-            .children(self.render_invitation_cards(&view, theme.metrics.header_height + 8.0, cx))
+            .children(self.render_invitation_cards(
+                &view,
+                theme.metrics.header_height + 8.0,
+                self.rail_width + theme.metrics.channel_column_width,
+                window,
+                cx,
+            ))
             .into_any_element()
     }
 }

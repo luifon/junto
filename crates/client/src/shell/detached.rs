@@ -268,6 +268,15 @@ impl Shell {
                         .flatten(),
                 )
         });
+        // The cards of the invitations start under the header, and under the line of the
+        // recording control when it has a line of its own (ADR 0739).
+        let cards_top = HEADER_HEIGHT
+            + if records && !recording_beside {
+                RECORDING_LINE_HEIGHT
+            } else {
+                0.0
+            }
+            + 8.0;
         let (in_header, under_header) = if recording_beside {
             (recording, None)
         } else {
@@ -282,15 +291,16 @@ impl Shell {
             .px(u(8.0))
             .child(controls)
             .child(in_header.unwrap_or_else(|| div().flex_1()))
-            .when(panel.is_some(), |header| {
-                header.child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .gap(u(6.0))
-                        .children(self.render_call_panel_buttons(&view, cx)),
-                )
-            });
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(u(6.0))
+                    .when(panel.is_some(), |buttons| {
+                        buttons.children(self.render_call_panel_buttons(cx))
+                    })
+                    .child(self.render_call_notices_button(&view, cx)),
+            );
         body = body.child(header);
         if let Some(recording) = under_header {
             body = body.child(
@@ -426,7 +436,7 @@ impl Shell {
         if let Some(strip) = &view.call {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }
-        let invitations = self.render_invitation_cards(&view, HEADER_HEIGHT + 8.0, cx);
+        let invitations = self.render_invitation_cards(&view, cards_top, 0.0, window, cx);
         body.when(!matches!(self.layer, super::Layer::None), |body| {
             body.child(self.render_layer(&view, window, cx))
         })

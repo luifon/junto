@@ -421,7 +421,16 @@ pub fn invite_footer(channel: &str) -> String {
     )
 }
 
-/// The prompt of a person who was invited into a call.
+pub const FEWER_INVITATIONS: &str = "Show fewer invitations";
+
+pub fn more_invitations(count: usize) -> String {
+    if count == 1 {
+        "1 more invitation".to_owned()
+    } else {
+        format!("{count} more invitations")
+    }
+}
+
 pub const CALL_INVITATION: &str = "Invitation to a call";
 pub const INCOMING_CALL: &str = "Incoming call";
 pub const ACCEPT_CALL: &str = "Accept";
@@ -435,6 +444,7 @@ pub fn on_server(server: &str) -> String {
     format!("On {server}.")
 }
 
+/// The prompt of a person who was invited into a call.
 pub fn invitation(by: Option<&str>, channel: Option<&str>) -> String {
     let by = by.unwrap_or(UNKNOWN_PERSON);
     match channel {

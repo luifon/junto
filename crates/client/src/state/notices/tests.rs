@@ -1584,3 +1584,32 @@ fn a_notice_of_a_gone_workspace_waits_for_nothing_and_a_failed_archived_list_is_
     assert_eq!(panel.archive_failed, [scene.studio]);
     assert!(!panel.reading && panel.more);
 }
+
+#[test]
+fn an_invitation_of_a_quiet_time_reaches_no_sound() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    scene.settings(
+        SettingsScope::Account,
+        NotificationSettings {
+            do_not_disturb: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let invitation = CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        place: CallPlace::Channel {
+            workspace_id: scene.studio,
+            channel_id: scene.daily,
+        },
+        account_id: scene.own,
+        invited_by: scene.ana,
+        created_at: morning(),
+        expires_at: morning() + Duration::minutes(1),
+    };
+    scene.model.invitations.push(invitation);
+    // "Do not disturb": no system notification and no sound; the window draws the card.
+    assert_eq!(scene.alerts(&mut seen), Alerts::default());
+}

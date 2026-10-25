@@ -296,16 +296,10 @@ impl Shell {
         ]
     }
 
-    /// The buttons of the header that open the panel of the call in a narrow window and in
-    /// the call window: one per tab, and in the call window, which has no channel column,
-    /// the notices of the server of the call with the count of those that the person has
-    /// not read (ADR 0742).
-    pub(crate) fn render_call_panel_buttons(
-        &mut self,
-        view: &ShellView,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let mut buttons: Vec<AnyElement> = [
+    /// The buttons of the header that open the panel of the call at one tab, in a narrow
+    /// window and in the call window.
+    pub(crate) fn render_call_panel_buttons(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        [
             (CallTab::Chat, Icon::Chat, text::CHAT, "open-call-chat"),
             (
                 CallTab::Members,
@@ -332,30 +326,36 @@ impl Shell {
                 }))
                 .into_any_element()
         })
-        .collect();
-        if self.detached {
-            let unread = view.lists().map_or(0, |lists| lists.unread_notices);
-            let label: SharedString = if unread > 0 {
-                format!("{}, {}", text::NOTIFICATIONS, text::unread_notices(unread)).into()
-            } else {
-                text::NOTIFICATIONS.into()
-            };
-            buttons.push(
-                Button::new("open-call-notices")
-                    .icon(Icon::Bell)
-                    .tooltip(text::NOTIFICATIONS)
-                    .accessible_label(label)
-                    .count((unread > 0).then(|| text::unread_count(unread as u64)))
-                    .selector("open-call-notices")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_call_notices(cx);
-                        this.call_panel_open = true;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
-        }
-        buttons
+        .collect()
+    }
+
+    /// The button of the call window, which has no channel column, that opens the panel of
+    /// the call at the notices of the server of the call, with the count of those that the
+    /// person has not read (ADR 0742). It is drawn also while the panel waits for the
+    /// conversation of a direct-message call.
+    pub(crate) fn render_call_notices_button(
+        &mut self,
+        view: &ShellView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let unread = view.lists().map_or(0, |lists| lists.unread_notices);
+        let label: SharedString = if unread > 0 {
+            format!("{}, {}", text::NOTIFICATIONS, text::unread_notices(unread)).into()
+        } else {
+            text::NOTIFICATIONS.into()
+        };
+        Button::new("open-call-notices")
+            .icon(Icon::Bell)
+            .tooltip(text::NOTIFICATIONS)
+            .accessible_label(label)
+            .count((unread > 0).then(|| text::unread_count(unread as u64)))
+            .selector("open-call-notices")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_call_notices(cx);
+                this.call_panel_open = true;
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     /// Shows the notices of the server of the call in the panel of the call.

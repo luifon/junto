@@ -1466,6 +1466,8 @@ pub struct Invited {
     pub by: Option<String>,
     /// The name of the voice channel. Absent for a direct-message call.
     pub channel: Option<String>,
+    /// When the invitation was made: the window shows the newest ones first.
+    pub created_at: OffsetDateTime,
 }
 
 /// How the last join or call ended, when the person did not end it.
@@ -3320,6 +3322,7 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
                 target,
                 by,
                 channel: channel_of(servers, &target),
+                created_at: invitation.created_at,
             });
         }
     }
