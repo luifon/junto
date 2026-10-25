@@ -2,8 +2,8 @@
 //! which the standard library does not offer. A private directory is created with the user
 //! of the process as its owner and a protected access list that has one entry: full access
 //! for that user, inherited by everything inside. The security of an object is read from its
-//! opened handle. This is the only module of the library with unsafe code. The tests of the
-//! storage run it on Windows in continuous integration (ADR 0905).
+//! opened handle. With `console`, this is one of the two modules of the library with unsafe
+//! code. The tests of the storage run it on Windows in continuous integration (ADR 0905).
 
 #![allow(unsafe_code)]
 

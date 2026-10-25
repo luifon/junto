@@ -39,6 +39,9 @@ pub const ICO: [u32; 6] = [16, 24, 32, 48, 64, 256];
 /// The side of the window icon that the client gives to an X11 window manager.
 pub const WINDOW: u32 = 64;
 
+/// The side of the picture that a notification of the client shows on Windows.
+pub const NOTIFICATION: u32 = 256;
+
 /// The largest picture that this crate renders: the largest entry of the macOS icon file.
 pub const LARGEST: u32 = 1024;
 

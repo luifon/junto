@@ -30,6 +30,7 @@ mod server_menu;
 mod settings;
 pub mod share;
 mod threads;
+pub mod title_bar;
 mod transcript_edit;
 
 use std::collections::HashMap;
@@ -1165,6 +1166,21 @@ impl Render for Shell {
         } else {
             theme.metrics.rail_width
         };
+        let frame = title_bar::draws_frame(window, true, cx);
+        // A layer covers the columns and not the strip of the window buttons, which stay
+        // usable while a dialog is open.
+        let body = div()
+            .relative()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(self.render_rail(&view, collapsed, narrow, window, cx))
+            .child(self.render_channel_column(&view, window, cx))
+            .child(self.render_main(&view, narrow, window, cx))
+            .when(!matches!(self.layer, Layer::None), |body| {
+                body.child(self.render_layer(&view, window, cx))
+            });
         div()
             .id("shell")
             .key_context("Shell")
@@ -1172,6 +1188,7 @@ impl Render for Shell {
             .relative()
             .size_full()
             .flex()
+            .flex_col()
             .overflow_hidden()
             .bg(Hsla::from(theme.colors.travertine))
             .typeface(theme.types.body, &theme)
@@ -1181,11 +1198,12 @@ impl Render for Shell {
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx);
             }))
-            .child(self.render_rail(&view, collapsed, narrow, window, cx))
-            .child(self.render_channel_column(&view, window, cx))
-            .child(self.render_main(&view, narrow, window, cx))
-            .when(!matches!(self.layer, Layer::None), |shell| {
-                shell.child(self.render_layer(&view, window, cx))
+            .when(frame, |shell| {
+                shell.child(self.render_title_strip(text::APP_NAME.into(), window, cx))
+            })
+            .child(body)
+            .when(frame, |shell| {
+                shell.children(title_bar::resize_bands(window))
             })
             .into_any_element()
     }
@@ -1368,8 +1386,8 @@ impl Shell {
 }
 
 /// A measure in design pixels that differs between systems: the height of the strip at the
-/// top of the server book where macOS draws the window controls. The other systems draw
-/// their title bar outside the window content.
+/// top of the server book where macOS draws the window controls. On the other systems the
+/// title bar is above the content: the system's, or the strip of `title_bar`.
 pub(crate) fn window_controls_height(cx: &App) -> f32 {
     if cfg!(target_os = "macos") {
         theme(cx).metrics.window_controls_height

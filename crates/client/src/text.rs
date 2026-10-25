@@ -30,6 +30,11 @@ pub mod transcripts;
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
+/// The buttons of a window whose title bar the application draws.
+pub const WINDOW_MINIMIZE: &str = "Minimize";
+pub const WINDOW_MAXIMIZE: &str = "Maximize";
+pub const WINDOW_RESTORE: &str = "Restore";
+pub const WINDOW_CLOSE: &str = "Close";
 
 // The server book.
 pub const SERVER_BOOK: &str = "Server book";

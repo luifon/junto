@@ -659,7 +659,7 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
     assert!(window.shows("quiet-differs"));
 
     // The switch turns it on for both.
-    window.click("do-not-disturb");
+    window.click_in_settings("do-not-disturb");
     window.until("do not disturb on both servers", |window| {
         let quiet = window.view().quiet;
         quiet.do_not_disturb == Some(Agreement::All(true)) && !quiet.busy
@@ -673,7 +673,7 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
         &format!("/notification-settings/{}", uuid::Uuid::nil()),
         [Fault::Cut],
     );
-    window.click("do-not-disturb");
+    window.click_in_settings("do-not-disturb");
     window.until("the change of one server failed", |window| {
         let quiet = window.view().quiet;
         !quiet.busy && quiet.failed.len() == 1
@@ -686,7 +686,7 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
 
     // The switch of servers that differ is drawn off, and a press turns it on for both.
     // The failure is not shown any more.
-    window.click("do-not-disturb");
+    window.click_in_settings("do-not-disturb");
     window.until("do not disturb on both servers again", |window| {
         let quiet = window.view().quiet;
         !quiet.busy && quiet.failed.is_empty() && quiet.do_not_disturb == Some(Agreement::All(true))

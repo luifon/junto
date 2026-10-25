@@ -306,7 +306,8 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/compose.rs` | The marks of the composer and the document of a message, in both directions, and the limits of a document. |
 | `src/state/feed.rs` | The derivation of the rows of a message list. |
 | `src/state/notices.rs`, `src/state/search.rs`, `src/state/recorded.rs` | The derivation of the notices with the notification settings and the system notifications, of the search panel, and of the card of a recording with its transcript. |
-| `src/notify.rs` | The interface to the notifications of the system. |
+| `src/notify.rs` | The interface to the notifications of the system, and on Windows the identity of the notifications (ADR 0742). |
+| `src/shell/title_bar.rs` | The title bar: the headers that act as the title bar on macOS, and the strip with the window buttons on Windows and on a Wayland compositor without server decorations (ADR 0703). |
 | `src/highlight.rs` | The syntax colours of a code block. |
 | `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, `composer.rs` the composer with its pickers, `notices.rs` the notices and the notification settings, `search.rs` the search, and `recorded.rs` the card of a recording and the transcript. |
 | `src/state/admin.rs`, `src/state/admin/` | The administration: the open page, its requests, and the derivation of each page. |

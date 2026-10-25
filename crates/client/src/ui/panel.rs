@@ -50,7 +50,7 @@ impl RenderOnce for SideHeader {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        div()
+        crate::shell::title_bar::header_zone(div())
             .flex()
             .flex_none()
             .items_center()

@@ -58,6 +58,13 @@ System notifications:
 - A press on a system notification brings the application to the front, marks the notice as read and shows its message as a row of the list does. A notice whose message could not be read shows its server, and so does an invitation. What a press leads to is kept as long as the notification is shown.
 - With more than one saved server the title of the system notification of a notice names its server, and the text of the one of an invitation does.
 
+Windows:
+
+- Windows shows a notification of a program that it did not install from a package only under an application user model identifier that the account registered: the key `Software\Classes\AppUserModelId\<identifier>` of the current user, with the name (`DisplayName`) and the picture (`IconUri`) that the notification shows. The other way, a Start menu shortcut that carries the identifier, would create an entry that the package does not create (ADR 0755), and gpui writes the key at its first notification anyway, with the name only. Without an identifier gpui shows no notification and writes a warning.
+- At each start, before the first window, the program writes the picture of 256 pixels (ADR 0756) as `notification-icon.png` into the data directory when the file differs, writes the key of `chat.junto.Junto` with the name `Junto` and the path of that file, and names that identifier for the process (`App::set_app_identity`, which calls `SetCurrentProcessExplicitAppUserModelID`). The code of the key is in `junto-client-core` (`app_identity`), so that the recovery program removes it: `junto-recover unregister` (ADR 0755). A failure to write the key is logged, and the notifications then depend on the key that gpui writes.
+- The key names the picture of the data directory of the last start. A second installation or a second data directory of the same account uses the same identifier.
+- gpui activates no application on Windows and on Linux: a press on a notification asks the main window to come to the front, which restores it when it is minimized.
+
 ## Consequences
 
 - The notices and notification settings use the components of ADR 0731.
@@ -67,5 +74,6 @@ System notifications:
 - A device with sessions on two servers can hold two values of "do not disturb" after a change on another device. The settings say so.
 - The first notice after "do not disturb" ended can miss its system notification when it arrives in the same change of the state as the notices of the quiet time.
 - On macOS the system notifications need an application bundle, which the build does not make yet (ADR 0701). `cargo run` shows none.
+- On Windows a start writes one key of the registry of the account. A unit test of `junto-client-core` writes the values into a volatile key of its own and removes it; the check of the Windows package reads the key and the picture after a start of the installed program, removes the key with the recovery program and restores the key of the account as it was before the check (ADR 0915). That a notification appears with the name and the picture, and that a press on it brings the window forward, is checked by a person.
 - The window tests against the real server cover a mention that makes a notice and a system notification, the rules for an active window and for a quiet time, the jump from a notice, "mark all as read", the level and the mute of a channel from its menu, the dialogs of the server and of the workspace, and the loss of the notices of a channel with the access to it.
 - New direct dependency of the desktop client: `uuid`, for the identifiers of notices and of the scopes of settings. It was in the lock file already.

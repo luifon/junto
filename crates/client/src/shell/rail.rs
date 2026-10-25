@@ -159,7 +159,9 @@ impl Shell {
             .border_r_1()
             .border_color(Hsla::from(colors.basalt_edge))
             .ink(colors.bone)
-            .child(div().flex_none().h(u(window_controls_height(cx))));
+            .child(super::title_bar::header_zone(
+                div().flex_none().h(u(window_controls_height(cx))),
+            ));
         if collapsed {
             frame.children(self.render_rail_collapsed(view, narrow, &theme, window, cx))
         } else {

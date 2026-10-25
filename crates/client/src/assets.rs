@@ -105,6 +105,10 @@ icons! {
     Trash => "trash",
     Unlock => "unlock",
     Warning => "warn",
+    WindowClose => "winclose",
+    WindowMaximize => "winmax",
+    WindowMinimize => "winmin",
+    WindowRestore => "winrestore",
     X => "x",
 }
 

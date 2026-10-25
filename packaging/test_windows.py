@@ -25,7 +25,29 @@ def resource_linker():
     return found or (str(versions[0]) if versions else None)
 
 
+def program_with_subsystem(magic, value):
+    """The headers of a Windows program, up to the subsystem field."""
+    header = 0x80
+    data = bytearray(header + 4 + 20 + 70)
+    data[:2] = b"MZ"
+    data[0x3C:0x40] = header.to_bytes(4, "little")
+    data[header:header + 4] = b"PE\0\0"
+    optional = header + 24
+    data[optional:optional + 2] = magic.to_bytes(2, "little")
+    data[optional + 68:optional + 70] = value.to_bytes(2, "little")
+    return bytes(data)
+
+
 class WindowsPackageTests(unittest.TestCase):
+    def test_the_subsystem_is_read_from_the_optional_header_of_both_formats(self):
+        for magic in (0x10B, 0x20B):
+            for value in (windows.WINDOWS_SUBSYSTEM, windows.CONSOLE_SUBSYSTEM):
+                self.assertEqual(windows.subsystem(program_with_subsystem(magic, value)), value)
+        for broken in [b"ZM" + bytes(200), program_with_subsystem(0x107, 2),
+                       program_with_subsystem(0x20B, 2).replace(b"PE\0\0", b"NE\0\0")]:
+            with self.assertRaises(ValueError):
+                windows.subsystem(broken)
+
     def test_the_zip_holds_one_folder_with_the_programs_the_description_and_the_licences(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

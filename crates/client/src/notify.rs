@@ -76,19 +76,26 @@ impl SystemNotifier for PlatformNotifier {
 /// Brings the application to the front after a press on one of its notifications.
 pub fn bring_to_front(cx: &mut App) {
     cx.activate(true);
-    // gpui activates no application on Linux. The main window, which is the first one, is
-    // asked instead: X11 gives it the focus, and a Wayland compositor decides by itself.
-    #[cfg(target_os = "linux")]
+    // gpui activates no application on Linux and on Windows. The main window, which is the
+    // first one, is asked instead: it is restored when it is minimized, X11 and Windows give
+    // it the focus, and a Wayland compositor decides by itself.
+    #[cfg(any(target_os = "linux", windows))]
     if let Some(window) = cx.windows().first() {
         let _ = window.update(cx, |_, window, _| window.activate_window());
     }
 }
 
 /// Installs the system backend and its activation route only for the real application.
+/// `data_dir` holds the picture of the notifications on Windows.
 pub fn platform(
     cx: &mut App,
+    data_dir: &std::path::Path,
     pressed: impl Fn(&str, &mut App) + 'static,
 ) -> std::rc::Rc<dyn SystemNotifier> {
+    #[cfg(windows)]
+    windows_identity(cx, data_dir);
+    #[cfg(not(windows))]
+    let _ = data_dir;
     #[cfg(target_os = "linux")]
     {
         std::rc::Rc::new(linux::DesktopNotifier::new(cx, pressed))
@@ -102,6 +109,26 @@ pub fn platform(
         }
         std::rc::Rc::new(PlatformNotifier)
     }
+}
+
+/// A program without a package identity shows notifications on Windows only under an
+/// application user model identifier that the account registered with a name and a picture
+/// (ADR 0742). gpui writes the name at the first notification; the program writes the key and
+/// the picture before, at the start, and names the identifier of the process.
+#[cfg(windows)]
+fn windows_identity(cx: &mut App, data_dir: &std::path::Path) {
+    use junto_client_core::app_identity::{self, Registration};
+    const PICTURE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/notification-icon.png"));
+    let picture = data_dir.join(app_identity::NOTIFICATION_PICTURE);
+    let registration = Registration {
+        identifier: app_identity::APP_ID,
+        name: crate::text::APP_NAME,
+        picture: &picture,
+    };
+    if let Err(error) = app_identity::register(&registration, PICTURE) {
+        tracing::warn!(%error, "the identity of the notifications was not registered");
+    }
+    cx.set_app_identity(app_identity::APP_ID, crate::text::APP_NAME);
 }
 
 /// What a [`KeptNotifier`] was told.
