@@ -18,6 +18,7 @@ mod join;
 pub mod linking;
 mod main_area;
 mod notices;
+mod panic_notice;
 mod people;
 mod person_drag;
 mod pictures;
@@ -1187,6 +1188,7 @@ impl Render for Shell {
             .when(!matches!(self.layer, Layer::None), |shell| {
                 shell.child(self.render_layer(&view, window, cx))
             })
+            .children(self.render_panic_notice(cx))
             .into_any_element()
     }
 }
@@ -1202,6 +1204,10 @@ impl Shell {
             .on_mouse_up(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, _, _| {
+                    #[cfg(feature = "test-support")]
+                    crate::panics::test_support::reached(
+                        crate::panics::test_support::Handler::PressEnd,
+                    );
                     this.server_menu_closed_by_press = false;
                     this.device_menu_closed_by_press = false;
                     this.recording_details_closed_by_press = false;

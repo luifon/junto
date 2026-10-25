@@ -630,6 +630,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(feature = "test-support")]
+        crate::panics::test_support::reached(crate::panics::test_support::Handler::FeedScroll);
         let Some(feed) = self.pane_feed(pane).cloned() else {
             return;
         };

@@ -806,6 +806,26 @@ pub const ALONE_IN_CALL: &str = "You are the only person in this call.";
 pub const SOUND_RETURNS: &str = "The sound of the other people returns when the call is back.";
 pub const DISMISS: &str = "Close";
 
+/// The notice after a panic that the application stopped (ADR 0757).
+pub fn panic_notice(count: usize, report: Option<&std::path::Path>) -> String {
+    let happened = if count == 1 {
+        "An error happened in Junto, and the action that was running may not have finished."
+            .to_owned()
+    } else {
+        format!(
+            "{count} errors happened in Junto, and the actions that were running may not have finished."
+        )
+    };
+    match report {
+        Some(report) if count == 1 => format!("{happened} The report is in {}.", report.display()),
+        Some(report) => format!(
+            "{happened} The report of the latest one is in {}.",
+            report.display()
+        ),
+        None => format!("{happened} No report file was written; the log of Junto names the error."),
+    }
+}
+
 /// The line beside the title of a voice channel that this device is not in.
 pub fn voice_channel_topic(inside: usize, hidden: bool) -> String {
     let state = if hidden {

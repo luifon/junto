@@ -594,9 +594,23 @@ pub struct AppState {
     /// The time that the view is derived for in place of the time of the system.
     #[cfg(feature = "test-support")]
     clock_fixture: Option<time::OffsetDateTime>,
+    /// The panics of this data directory since the start, until the person closes the
+    /// notice (ADR 0757).
+    panic_notice: Option<PanicNotice>,
     _changes: Task<()>,
     _retry: Task<()>,
     _media: [Task<()>; 3],
+    _panics: Task<()>,
+}
+
+/// The notice of the panics that the panic hook recorded for the data directory of the
+/// window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanicNotice {
+    /// The panics since the notice was last closed.
+    pub count: usize,
+    /// The latest of them.
+    pub latest: crate::panics::Report,
 }
 
 impl Drop for AppState {
@@ -699,6 +713,18 @@ impl AppState {
         let follow = cx.spawn(async move |this, cx| {
             while changes.changed().await {
                 if this.update(cx, |this, cx| this.changed(cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut reports = crate::panics::watch(client.data_dir().root());
+        let panics = cx.spawn(async move |this, cx| {
+            use futures_util::StreamExt as _;
+            while let Some(report) = reports.next().await {
+                if this
+                    .update(cx, |this, cx| this.panic_recorded(report, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -831,9 +857,11 @@ impl AppState {
             fixture: None,
             #[cfg(feature = "test-support")]
             clock_fixture: None,
+            panic_notice: None,
             _changes: follow,
             _retry: retry,
             _media: [follow_calls, follow_levels, clock],
+            _panics: panics,
         };
         if state.voice_failed.is_some() {
             // The microphone was closed for settings that were not read: the person
@@ -843,6 +871,32 @@ impl AppState {
         state.load_preset_picture(cx);
         state.changed(cx);
         state
+    }
+
+    fn panic_recorded(&mut self, report: crate::panics::Report, cx: &mut Context<Self>) {
+        tracing::error!(
+            report = ?report.file,
+            location = %report.location,
+            "a panic was recorded: {}",
+            report.message
+        );
+        let count = self.panic_notice.as_ref().map_or(0, |notice| notice.count) + 1;
+        self.panic_notice = Some(PanicNotice {
+            count,
+            latest: report,
+        });
+        cx.notify();
+    }
+
+    /// The notice of the panics since the start or since the person closed it.
+    pub fn panic_notice(&self) -> Option<&PanicNotice> {
+        self.panic_notice.as_ref()
+    }
+
+    pub fn close_panic_notice(&mut self, cx: &mut Context<Self>) {
+        if self.panic_notice.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn is_call_detached(&self) -> bool {

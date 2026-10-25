@@ -93,14 +93,14 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
 - `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.
-- The Linux job runs format, clippy, the workspace build and suite, the ignored `junto-media` tests `linux_audio` and `tls_trust`, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with PostgreSQL; macOS also runs the media unit tests, the signing and update checks, and the start of the bundle of the client build until its first frame; Windows also runs the check of the Windows package, and fails when a dialog of the system that its tests opened stays open (ADR 0915).
+- The Linux job runs format, clippy, the workspace build and suite, the ignored `junto-media` tests `linux_audio` and `tls_trust`, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with PostgreSQL; macOS also runs the media unit tests, the signing and update checks, the start of the bundle of the client build until its first frame, and the native panic test (ADR 0757); Windows also runs the check of the Windows package, and fails when a dialog of the system that its tests opened stays open (ADR 0915).
 
 ## `vendor/`
 
-Copies of the build inputs of `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, with corrections. The `[patch.crates-io]` section of `Cargo.toml` and `spikes/test-participant` use them. Each change carries a `Modified:` comment.
+Copies of the build inputs of `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8 and `gpui-pre-scheduler` 0.3.8, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
 
 - `vendor/README.md`: the checksum of each source archive, the files that were kept, each correction, when to remove it, and the tests to run when a copy is replaced.
-- ADR 0733 explains each correction and its regression checks. A change of a copy also changes `vendor/README.md` and ADR 0733.
+- ADR 0733 explains each correction of the call library and its regression checks, ADR 0757 those of gpui. A change of a copy also changes `vendor/README.md` and the ADR of the copy.
 
 ## Build
 
@@ -148,6 +148,7 @@ Run each heavy command through `tools/serial.sh` when other work shares the mach
   - `frames` (ADR 0774): `JUNTO_TEST_FRAMES=1 tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh cargo test -p junto-client --test frames`
   - `endurance`: `JUNTO_TEST_ENDURANCE=1` with the same wrappers and `--test endurance`. `JUNTO_TEST_ENDURANCE_MINUTES` sets the measured time (default 10).
   - `modes` (ADR 0914): `JUNTO_TEST_MODES=1` with the same wrappers, `--release` and `--test modes`, after `cargo build --release -p junto-server` and the release build of `spikes/test-participant`. It measures one window per process in six modes and prints the table; `JUNTO_TEST_MODES_PROFILE` names a directory for the profiles of each mode. `docs/client-performance.md` has the measured figures.
+  - `native_panics` (ADR 0757): `JUNTO_TEST_NATIVE_PANICS=1 cargo test -p junto-client --test native_panics`. It needs no server; a panic in a task and in a press posted through AppKit, after which the client must continue. It also runs on Windows and Linux with a desktop, where only the task panics.
   - `rehearsal`: against a deployment installed with `docs/install.md` ("Trial on one machine"), with `JUNTO_REHEARSAL_ADDRESS`, `JUNTO_REHEARSAL_OWNER_CODE_FILE`, `JUNTO_REHEARSAL_SPEECH` and `JUNTO_REHEARSAL_WORK`. See `crates/client/tests/rehearsal/main.rs`.
   - Native device stages (ADR 0913): `JUNTO_TEST_NATIVE_DEVICES=1 tools/native-devices.sh <stage>`. They open real devices and need a person at the machine and the BlackHole virtual sound device; a permission request also needs `JUNTO_TEST_PERMISSION_REQUEST`. The stages that start services need the six variables above. See `crates/media/tests/native/README.md`.
 

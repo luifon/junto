@@ -63,6 +63,10 @@ if [ "$system" = macos ]; then
     build="${CARGO_TARGET_DIR:-target}/debug"
     python3 packaging/bundle.py "$build/junto" "$temporary/Junto.app" "$build/junto-recover" "$build/junto-icon"
     python3 packaging/check_start.py "$temporary/Junto.app"
+    # A panic in a task and in a press that AppKit delivers: the client continues, writes the
+    # report and states it (ADR 0757). The window appears without taking the focus.
+    step "Panics in the callbacks of the platform"
+    JUNTO_TEST_NATIVE_PANICS=1 cargo test --locked --workspace --test native_panics
     # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0916):
     # updates:: without a database, then the other tests against the PostgreSQL build for
     # macOS of the version of the CI image. Not here: the tests of live::, which need LiveKit.

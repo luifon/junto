@@ -175,6 +175,40 @@ pub struct Window {
     /// The lock check of ADR 0730 knows the application of the window while the window
     /// exists.
     _checked: CheckedApp,
+    panics: PanicCheck,
+}
+
+/// A panic in a handler of the window stops in gpui and does not reach the test (ADR 0757).
+/// When the last window of an application is dropped, the test fails if its thread panicked
+/// more often than the test expected.
+#[derive(Clone)]
+struct PanicCheck(std::rc::Rc<PanicCount>);
+
+struct PanicCount {
+    at_open: usize,
+    expected: std::cell::Cell<usize>,
+}
+
+impl PanicCheck {
+    fn new() -> Self {
+        Self(std::rc::Rc::new(PanicCount {
+            at_open: junto_client::panics::panics_on_this_thread(),
+            expected: std::cell::Cell::new(0),
+        }))
+    }
+}
+
+impl Drop for PanicCount {
+    fn drop(&mut self) {
+        let panics = junto_client::panics::panics_on_this_thread() - self.at_open;
+        if !std::thread::panicking() && panics > self.expected.get() {
+            panic!(
+                "the window panicked {panics} times, and the test expected {}; the latest panics: {:?}",
+                self.expected.get(),
+                junto_client::panics::messages_on_this_thread()
+            );
+        }
+    }
 }
 
 /// The pieces of work of the application on the thread of the windows: the work of one
@@ -323,6 +357,7 @@ fn open_client(
         camera,
         permission,
         _checked: CheckedApp::new(cx),
+        panics: PanicCheck::new(),
         cx: VisualTestContext::from_window(window.into(), cx),
         shell,
         state,
@@ -340,6 +375,11 @@ struct Initialized;
 impl gpui::Global for Initialized {}
 
 impl Window {
+    /// The panics that the windows of this application may have in this test.
+    pub fn expect_panics(&mut self, count: usize) {
+        self.panics.0.expected.set(count);
+    }
+
     /// Runs `work` and counts it as one piece of work of the application in [`Window::held`].
     /// A piece inside another is a part of the outer one.
     pub fn holding<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
@@ -804,6 +844,7 @@ impl Window {
             .expect("the window draws a shell");
         let mut window = Window {
             _checked: CheckedApp::new(&self.cx),
+            panics: self.panics.clone(),
             cx: VisualTestContext::from_window(handle, &self.cx),
             shell,
             state: self.state.clone(),

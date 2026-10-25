@@ -52,6 +52,7 @@ mod logout;
 mod messages;
 mod notice_settings;
 mod notices;
+mod panics;
 mod people;
 mod permissions;
 mod recordings;

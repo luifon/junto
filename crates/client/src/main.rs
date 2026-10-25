@@ -5,10 +5,12 @@ use std::process::ExitCode;
 
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
+use junto_client::logs::LogFile;
 use junto_client_core::paths::{DATA_DIR_VARIABLE, data_dir_of_this_user};
 use junto_client_core::{Client, ClientOptions};
 
-/// The level of the log on standard error: `error`, `warn`, `info`, `debug` or `trace`.
+/// The level of the log on standard error and in the log file: `error`, `warn`, `info`,
+/// `debug` or `trace`.
 const LOG_LEVEL_VARIABLE: &str = "JUNTO_LOG_LEVEL";
 
 const USAGE: &str = "\
@@ -28,7 +30,9 @@ options:
   --version                print the version
   --help                   print this text
 
-The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn).";
+The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn)
+and in the file logs/junto.log of the data directory (default: info). A panic is written
+to a report file in the directory panics of the data directory.";
 
 struct Arguments {
     data_dir: Option<PathBuf>,
@@ -136,7 +140,39 @@ fn update_from(source: &str) -> ExitCode {
     }
 }
 
+/// The log on standard error and, once [`LogFile::open`] is called, in the log file of the
+/// data directory (ADR 0757).
+fn start_log() -> LogFile {
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::{Layer as _, fmt};
+    let chosen = std::env::var(LOG_LEVEL_VARIABLE)
+        .ok()
+        .and_then(|level| level.parse::<tracing::Level>().ok());
+    let log_file = LogFile::new();
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(LevelFilter::from_level(
+                    chosen.unwrap_or(tracing::Level::WARN),
+                )),
+        )
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(log_file.clone())
+                .with_filter(LevelFilter::from_level(
+                    chosen.unwrap_or(tracing::Level::INFO),
+                )),
+        )
+        .init();
+    log_file
+}
+
 fn main() -> ExitCode {
+    junto_client::panics::install();
     let arguments = match parse(
         std::env::args().skip(1),
         junto_client_core::releases::TEST_CONFIGURATION,
@@ -166,17 +202,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let level = std::env::var(LOG_LEVEL_VARIABLE)
-        .ok()
-        .and_then(|level| level.parse::<tracing::Level>().ok())
-        .unwrap_or(tracing::Level::WARN);
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(level)
-        .init();
+    let log_file = start_log();
     #[cfg(target_os = "linux")]
     junto_client::renderer::choose_before_the_first_window();
     let client = data_dir(arguments.data_dir).and_then(|directory| {
+        junto_client::panics::record_into(&directory);
         let mut options = ClientOptions::new(directory);
         options.update_source = junto_client_core::releases::HttpSource::compiled()
             .map_err(|error| error.to_string())?
@@ -195,6 +225,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The client holds the lock of the data directory now, so no other instance writes
+    // the same log file.
+    junto_client::panics::record_into(client.data_dir().root());
+    if let Err(error) = log_file.open(client.data_dir().root()) {
+        tracing::warn!(%error, "the log file was not opened");
+    }
     let start = arguments.start;
     let check_startup = arguments.check_startup;
     let started = std::rc::Rc::new(std::cell::Cell::new(false));
