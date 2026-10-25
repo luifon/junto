@@ -433,8 +433,11 @@ impl Shell {
                     .filter(|p| self.camera_image(p).is_some())
                     .map(|p| p.account_id)
                     .collect();
-                let visible =
-                    super::camera::visible_people(&ids, &cameras, panel.hide_without_video);
+                let hidden = super::camera::hidden_people(
+                    &ids,
+                    &self.people_with_video(people, cx),
+                    panel.hide_without_video,
+                );
                 let speakers: Vec<_> = people
                     .iter()
                     .filter(|p| matches!(p.microphone, Microphone::Open { speaking: true }))
@@ -448,7 +451,7 @@ impl Shell {
                 self.focused_camera.set(focus);
                 let tiles = people
                     .iter()
-                    .filter(|p| visible.contains(&p.account_id))
+                    .filter(|p| !hidden.contains(&p.account_id))
                     .enumerate()
                     .map(|(index, occupant)| {
                         let (marks, label) = tile_marks(occupant);
@@ -519,16 +522,10 @@ impl Shell {
                                     .child(note(text::ALONE_IN_CALL.to_owned())),
                             )
                         })
-                        .when(visible.len() < people.len(), |viewport| {
-                            let (strong, rest) = text::people_hidden(people.len() - visible.len());
-                            viewport.child(
-                                div()
-                                    .mt(u(14.0))
-                                    .ink(colors.bone_2)
-                                    .typeface(theme.types.small, theme)
-                                    .child(format!("{strong}{rest}")),
-                            )
-                        }),
+                        .children(
+                            self.hidden_note(people, &hidden, theme)
+                                .map(|note| note.mt(u(14.0))),
+                        ),
                 )
             }
         };

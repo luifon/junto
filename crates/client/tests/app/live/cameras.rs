@@ -381,3 +381,117 @@ fn the_focus_draws_the_camera_of_the_person_who_speaks_large_and_the_grid_return
     window.click("leave-call");
     world.run(caller.calls.leave());
 }
+
+/// "Hide people without video" leaves out the tiles of the people without a camera in every
+/// layout of the call: the grid, the focus, the stage of a share and the call window, also
+/// while nobody has a camera, and states how many it leaves out. A camera that starts while
+/// the setting is on is drawn.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Hidden without video");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: room(&mut window).id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let ada = admin.handle.account().unwrap();
+    let own = window.view().person.account_id.unwrap();
+    let tile = |window: &mut Window, account| window.shows_named(format!("call-tile:{account}"));
+    // The tile of the window, without Ada's, with the statement of the hidden person.
+    let only_own = |window: &mut Window| {
+        tile(window, own) && !tile(window, ada) && window.shows("people-hidden")
+    };
+    let drawn = |window: &mut Window| {
+        window
+            .shell
+            .read_with(&window.cx, |shell, _| shell.drawn_camera_count())
+    };
+    window.until("both tiles are drawn", |window| {
+        tile(window, ada) && tile(window, own)
+    });
+
+    // Nobody has a camera: the setting leaves out both tiles and says so.
+    window.click("call-tab-settings");
+    window.click("hide-without-video");
+    window.until("both tiles are hidden", |window| {
+        !tile(window, ada) && !tile(window, own) && window.shows("people-hidden")
+    });
+
+    // The camera of the window starts: its tile returns.
+    window.click("call-camera");
+    window.until("the tile of the own camera is drawn", |window| {
+        only_own(window) && drawn(window) == 1
+    });
+
+    // The camera of Ada starts while the setting is on: her tile and picture are drawn.
+    caller.calls.start_camera(None);
+    window.until("the tile of the camera of Ada is drawn", |window| {
+        tile(window, ada)
+            && tile(window, own)
+            && !window.shows("people-hidden")
+            && drawn(window) == 2
+    });
+    caller.calls.stop_camera();
+    window.until("the tile of Ada leaves with her camera", |window| {
+        only_own(window)
+    });
+
+    // The focus.
+    window.click("camera-focus");
+    window.until("the focus leaves Ada out", |window| only_own(window));
+    window.click("camera-focus");
+
+    // A share of Ada: the strip under the picture.
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Display(1),
+        sound: SoundChoice::None,
+        quality: ShareQuality::default(),
+    });
+    window.until("the strip of the share leaves Ada out", |window| {
+        window.shows("share-viewport") && only_own(window)
+    });
+
+    // The call window, with the share and without it.
+    window.click("detach-call");
+    let mut call = window.call_window();
+    call.until("the call window leaves Ada out of the strip", |call| {
+        call.shows("share-viewport") && only_own(call)
+    });
+    caller.calls.stop_share();
+    call.until("the call window leaves Ada out of the grid", |call| {
+        !call.shows("share-viewport") && only_own(call)
+    });
+    call.click("return-call");
+    drop(call);
+    window.until("the call returns", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+
+    // The setting is turned off: both tiles return.
+    window.click("call-tab-settings");
+    window.click("hide-without-video");
+    window.until("both tiles return", |window| {
+        tile(window, ada) && tile(window, own) && !window.shows("people-hidden")
+    });
+    window.click("leave-call");
+    world.run(caller.calls.leave());
+}

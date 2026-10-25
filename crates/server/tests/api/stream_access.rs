@@ -248,15 +248,14 @@ async fn a_permission_removed_while_events_wait_hides_them() {
         ["workspace_member_roles_changed", "permissions_changed"]
     );
     assert!(!losing.raw.join("\n").contains("secret-"));
+    // The three renames by one person in a short time have one system line (ADR 0408).
     let kept = server.traffic(&second, &mut keeping).await;
     assert_eq!(
         types(&kept),
         [
             "message_changed",
             "channel_updated",
-            "message_changed",
             "channel_updated",
-            "message_changed",
             "channel_updated",
             "workspace_member_roles_changed"
         ]
@@ -429,10 +428,11 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         )
         .await
         .ok::<Value>(StatusCode::OK);
-    // The second change records two system lines: the change of the position and the
-    // permanent messages that it turns on (ADR 0402).
-    let mut to_manager = managing.events(7).await;
-    let mut to_insider = inside.events(6).await;
+    // The second change records the line of the permanent messages that it turns on
+    // (ADR 0402). Its change of the position follows the rename by the same person, so it
+    // has no line of its own (ADR 0408).
+    let mut to_manager = managing.events(6).await;
+    let mut to_insider = inside.events(5).await;
     server
         .delete(owner, &format!("/api/v1/channels/{channel_id}"))
         .await
@@ -445,7 +445,6 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
             "message_changed",
             "channel_updated",
             "message_changed",
-            "message_changed",
             "channel_updated",
             "message_changed",
             "channel_deleted"
@@ -457,7 +456,6 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         [
             "message_changed",
             "channel_updated",
-            "message_changed",
             "message_changed",
             "channel_updated",
             "message_changed",

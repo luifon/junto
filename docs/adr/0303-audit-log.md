@@ -15,7 +15,7 @@ Administrators and moderators can change roles, change channel settings, move pe
 - The log is read-only.
 - A viewer sees an entry about a channel only if the viewer can see that channel.
 - Entries about a deleted channel stay visible to server administrators.
-- Actions that concern a channel also appear in that channel as system lines.
+- Actions that concern a channel also appear in that channel as system lines. A repeated change of the settings of a channel by one person in a short time has one line (ADR 0408); the log keeps each change.
 - The log records which invite code created each account (ADR 0105).
 - Reading the server audit log needs the "view the server audit log" server permission. Reading the audit entries of a workspace needs the "view the workspace's audit entries" workspace permission (ADR 0301).
 

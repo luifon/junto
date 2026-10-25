@@ -999,12 +999,15 @@ impl Shell {
         let state = self.list(pane).list.clone();
         let rows = feed.rows.clone();
         let feed_of_rows = feed.clone();
+        // The list lays out each row as a root, where a flex row takes the width of its
+        // content. The block gives every row the width of the list, so that its text wraps.
         let render =
             cx.processor(
                 move |this: &mut Self, index: usize, window, cx| match rows.get(index) {
-                    Some(row) => {
-                        this.render_feed_row(index, row, &feed_of_rows, compact, window, cx)
-                    }
+                    Some(row) => div()
+                        .w_full()
+                        .child(this.render_feed_row(index, row, &feed_of_rows, compact, window, cx))
+                        .into_any_element(),
                     None => div().into_any_element(),
                 },
             );
@@ -2857,6 +2860,7 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
                 .child(mark.flex_none().mt(u(7.0)).size(u(6.0)))
                 .child(
                     div()
+                        .debug_selector(move || format!("system-text:{message_id}"))
                         .min_w_0()
                         .child(StyledText::new(line).with_highlights(strong)),
                 ),

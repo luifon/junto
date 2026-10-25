@@ -1,7 +1,10 @@
-use gpui::TestAppContext;
+use gpui::{TestAppContext, px};
 use junto_client::shell::Pane;
+use junto_client::state::feed::FeedRow;
 use junto_client_core::api::Statement;
 use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::structure::SetChannelOverride;
 
 use crate::harness::{World, member};
 use crate::messages::document;
@@ -92,4 +95,65 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
     if let Some(viewport) = viewport {
         assert_eq!(window.cx.debug_bounds("message-list").unwrap(), viewport);
     }
+}
+
+/// A system line longer than the message list is wide wraps inside the list, at every width
+/// of the window.
+#[gpui::test]
+fn a_long_system_line_wraps_inside_the_message_list(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Layout");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let api = admin.handle.api();
+    let name = "Administrator of the north recording studio";
+    world.run(api.update_profile(name)).unwrap();
+    let channel = window.selected_channel();
+    let workspace_id = window.view().workspace().unwrap().id;
+    let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap().id;
+    let change = SetChannelOverride {
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::MentionEveryone],
+    };
+    world
+        .run(api.set_channel_override(channel, everyone, &change))
+        .unwrap();
+    let sentence = format!("{name} changed the permissions of this channel");
+    let mut line = None;
+    window.until("the line names the administrator", |window| {
+        line = window.feed().and_then(|feed| {
+            feed.rows.iter().find_map(|row| match row {
+                FeedRow::System(row)
+                    if row
+                        .parts
+                        .iter()
+                        .map(|part| part.text.as_str())
+                        .collect::<String>()
+                        == sentence =>
+                {
+                    Some(row.message.id)
+                }
+                _ => None,
+            })
+        });
+        line.is_some()
+    });
+    let text = crate::harness::selector(format!("system-text:{}", line.unwrap()));
+    let mut heights = Vec::new();
+    for width in [720.0, 1000.0, 1600.0] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(px(width), px(600.0))));
+        window.settle();
+        let list = window.cx.debug_bounds("message-list").unwrap();
+        let drawn = window.cx.debug_bounds(text).unwrap();
+        assert!(
+            drawn.left() >= list.left() && drawn.right() <= list.right(),
+            "at a width of {width}, the line {drawn:?} passes the edge of the list {list:?}"
+        );
+        heights.push(drawn.size.height);
+    }
+    assert!(
+        heights[0] > heights[2],
+        "the line does not wrap in the narrow window: {heights:?}"
+    );
 }

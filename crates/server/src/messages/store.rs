@@ -272,6 +272,49 @@ pub async fn snapshot(
     states(connection, access, &places, now).await
 }
 
+/// The actions whose line states only that a person changed settings of the channel. The
+/// line is not written again while the latest line of the channel is the same action by the
+/// same person, written less than [`JOINED_LINES_WITHIN`] earlier (ADR 0408).
+const JOINED_ACTIONS: [&str; 3] = [
+    "channel_updated",
+    "channel_override_set",
+    "channel_call_settings_updated",
+];
+pub const JOINED_LINES_WITHIN: time::Duration = time::Duration::minutes(5);
+
+/// Whether this line repeats the latest line of its place, under the lock of the place, so
+/// that two changes at the same time do not both find no repeat.
+async fn repeats_latest(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    place: &Place,
+    system: &SystemMessage,
+) -> ApiResult<bool> {
+    let Some(actor_id) = system.actor_id else {
+        return Ok(false);
+    };
+    if !JOINED_ACTIONS.contains(&system.action.as_str()) {
+        return Ok(false);
+    }
+    place.ensure(connection).await?;
+    sqlx::query("select 1 from message_places where id=$1 for update")
+        .bind(place.id)
+        .execute(&mut *connection)
+        .await?;
+    Ok(sqlx::query_scalar(
+        "select coalesce((select system->>'action'=$2 and (system->>'actor_id')::uuid=$3
+             and created_at>=$4
+             from messages where place_id=$1 and thread_root is null
+             order by position desc,created_at desc,id desc limit 1),false)",
+    )
+    .bind(place.id)
+    .bind(&system.action)
+    .bind(actor_id)
+    .bind(now - JOINED_LINES_WITHIN)
+    .fetch_one(connection)
+    .await?)
+}
+
 pub async fn system(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -297,6 +340,9 @@ pub async fn system(
         scope: None,
         archived: false,
     };
+    if call_id.is_none() && repeats_latest(connection, now, &place, system).await? {
+        return Ok(());
+    }
     let readers: Option<Vec<junto_protocol::ids::AccountId>> = if let Some(call_id) = call_id {
         let active: bool = sqlx::query_scalar("select exists(select 1 from calls where id=$1)")
             .bind(call_id)
