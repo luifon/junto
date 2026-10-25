@@ -19346,7 +19346,8 @@
           "disconnect_members",
           "lock_room",
           "run_meeting_mode",
-          "view_audit_entries"
+          "view_audit_entries",
+          "admit_to_full_call"
         ]
       },
       "WorkspaceRole": {
