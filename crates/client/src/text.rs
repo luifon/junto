@@ -422,6 +422,19 @@ pub fn invite_footer(channel: &str) -> String {
 }
 
 /// The prompt of a person who was invited into a call.
+pub const CALL_INVITATION: &str = "Invitation to a call";
+pub const INCOMING_CALL: &str = "Incoming call";
+pub const ACCEPT_CALL: &str = "Accept";
+
+pub fn direct_ring(by: &str) -> String {
+    format!("{by} is calling you.")
+}
+
+/// The server of an invitation, when the device has more than one saved server.
+pub fn on_server(server: &str) -> String {
+    format!("On {server}.")
+}
+
 pub fn invitation(by: Option<&str>, channel: Option<&str>) -> String {
     let by = by.unwrap_or(UNKNOWN_PERSON);
     match channel {
@@ -2146,8 +2159,6 @@ pub const CHANNEL_MENU: &str = "Channel menu";
 pub const CONVERSATION_MENU: &str = "Conversation menu";
 pub const SERVER_NOTIFICATIONS: &str = "Notifications of this server…";
 pub const WORKSPACE_NOTIFICATIONS: &str = "Notifications of this workspace…";
-
-pub const NOTICES_IN_CALL: &str = "The notifications are shown outside the view of your call.";
 
 pub fn unread_notices(count: usize) -> String {
     if count == 1 {

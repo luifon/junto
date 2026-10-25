@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::model::{AdminPart, CollectionState, Named, PlaceId, ServerModel};
 use junto_client_core::protocol::account::Departure;
+use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::discovery::{
     DailyQuiet, NotificationKind, NotificationLevel, NotificationSettings,
 };
@@ -860,11 +861,15 @@ pub struct AlertScene<'a> {
     pub shown: Shown,
 }
 
-/// The system notifications to show and the tags to take away after a change.
+/// The system notifications to show and the tags to take away after a change, and the
+/// invitations into a voice channel that the person got with it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Alerts {
     pub show: Vec<(Alert, AlertTarget)>,
     pub dismiss: Vec<String>,
+    /// The invitations into a voice channel that were not seen before, whatever their
+    /// system notification. A direct-message call rings with its tone (ADR 0515).
+    pub arrived: Vec<CallInvitationId>,
 }
 
 /// What a press on a system notification leads to.
@@ -1049,6 +1054,9 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
             break;
         }
         seen.invitations.push(invitation.id);
+        if matches!(invitation.place, CallPlace::Channel { .. }) {
+            alerts.arrived.push(invitation.id);
+        }
         if quiet || scene.active || seen.recent.len() >= MOST_ALERTS {
             continue;
         }

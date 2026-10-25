@@ -296,9 +296,16 @@ impl Shell {
         ]
     }
 
-    /// The buttons of the header that open the panel of the call in a narrow window.
-    pub(crate) fn render_call_panel_buttons(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        [
+    /// The buttons of the header that open the panel of the call in a narrow window and in
+    /// the call window: one per tab, and in the call window, which has no channel column,
+    /// the notices of the server of the call with the count of those that the person has
+    /// not read (ADR 0742).
+    pub(crate) fn render_call_panel_buttons(
+        &mut self,
+        view: &ShellView,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut buttons: Vec<AnyElement> = [
             (CallTab::Chat, Icon::Chat, text::CHAT, "open-call-chat"),
             (
                 CallTab::Members,
@@ -325,10 +332,70 @@ impl Shell {
                 }))
                 .into_any_element()
         })
-        .collect()
+        .collect();
+        if self.detached {
+            let unread = view.lists().map_or(0, |lists| lists.unread_notices);
+            let label: SharedString = if unread > 0 {
+                format!("{}, {}", text::NOTIFICATIONS, text::unread_notices(unread)).into()
+            } else {
+                text::NOTIFICATIONS.into()
+            };
+            buttons.push(
+                Button::new("open-call-notices")
+                    .icon(Icon::Bell)
+                    .tooltip(text::NOTIFICATIONS)
+                    .accessible_label(label)
+                    .count((unread > 0).then(|| text::unread_count(unread as u64)))
+                    .selector("open-call-notices")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_call_notices(cx);
+                        this.call_panel_open = true;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        buttons
+    }
+
+    /// Shows the notices of the server of the call in the panel of the call.
+    pub(crate) fn open_call_notices(&mut self, cx: &mut Context<Self>) {
+        if self.detached {
+            self.state
+                .update(cx, |state, cx| state.show_call_window_notices(true, cx));
+            return;
+        }
+        let server_id = self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id);
+        if let Some(server_id) = server_id {
+            self.members_open = false;
+            self.state
+                .update(cx, |state, cx| state.open_notices(server_id, cx));
+        }
+    }
+
+    /// The panel of the call shows a tab again in place of the notices.
+    pub(crate) fn close_call_notices(&mut self, cx: &mut Context<Self>) {
+        if self.detached {
+            self.state
+                .update(cx, |state, cx| state.show_call_window_notices(false, cx));
+            return;
+        }
+        let in_call_with_notices = self
+            .view
+            .as_ref()
+            .and_then(|view| view.lists())
+            .is_some_and(|lists| lists.call.is_some() && lists.notices.is_some());
+        if in_call_with_notices {
+            self.state.update(cx, |state, cx| state.close_notices(cx));
+        }
     }
 
     pub(crate) fn show_call_tab(&mut self, tab: CallTab, cx: &mut Context<Self>) {
+        self.close_call_notices(cx);
         self.call_tab = tab;
         if tab != CallTab::Members {
             self.invite_open = false;
@@ -570,13 +637,19 @@ impl Shell {
     ) -> AnyElement {
         let theme = &theme(cx);
         let colors = theme.colors;
+        // The notices of the server of the call take the place of the tab that is shown
+        // (ADR 0742).
+        let notices = view
+            .lists()
+            .and_then(|lists| lists.notices.as_ref())
+            .zip(view.selected.as_ref().map(|server| server.id));
         let tab = |tab: CallTab,
                    shown: Icon,
                    label: &'static str,
                    selector: &'static str,
                    cx: &mut Context<Self>| {
             Tab::new(selector, shown, label)
-                .on(self.call_tab == tab)
+                .on(self.call_tab == tab && notices.is_none())
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| this.show_call_tab(tab, cx)))
         };
@@ -638,10 +711,11 @@ impl Shell {
                     ),
                 )
             });
-        let pane = match self.call_tab {
-            CallTab::Chat => self.render_call_chat(view, panel, theme, window, cx),
-            CallTab::Members => self.render_call_members(view, panel, theme, window, cx),
-            CallTab::Settings => self.render_call_settings(panel, theme, window, cx),
+        let pane = match (&notices, self.call_tab) {
+            (Some((shown, server_id)), _) => self.render_notices_panel(*server_id, shown, true, cx),
+            (None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
+            (None, CallTab::Members) => self.render_call_members(view, panel, theme, window, cx),
+            (None, CallTab::Settings) => self.render_call_settings(panel, theme, window, cx),
         };
         div()
             .id("call-panel")

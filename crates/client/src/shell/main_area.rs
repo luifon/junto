@@ -76,9 +76,8 @@ impl Shell {
                     (None, Some(pins), ..) => {
                         Some(this.render_pins_panel(pins, lists.feed.as_ref(), window, cx))
                     }
-                    (None, None, Some(notices), _) => {
-                        server_id.map(|server_id| this.render_notices_panel(server_id, notices, cx))
-                    }
+                    (None, None, Some(notices), _) => server_id
+                        .map(|server_id| this.render_notices_panel(server_id, notices, false, cx)),
                     (None, None, None, Some(search)) => {
                         Some(this.render_search_panel(search, window, cx))
                     }
@@ -341,7 +340,7 @@ impl Shell {
                 }
             }
             if narrow {
-                after.extend(self.render_call_panel_buttons(cx));
+                after.extend(self.render_call_panel_buttons(view, cx));
             }
         } else {
             if permanent {

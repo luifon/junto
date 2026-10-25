@@ -790,12 +790,13 @@ fn an_invitation_that_the_first_state_holds_is_a_system_notification() {
         .collect();
     assert_eq!(tags, [invitation_tag(scene.server_id, invitation.id)]);
     assert_eq!(scene.alerts(&mut seen), Alerts::default());
-    // An active window draws the invitation itself, also at its start.
+    // An active window draws the invitation itself, also at its start. The call point of
+    // the sound of an invitation is reached once in either case.
     let mut seen = Seen::default();
-    assert_eq!(
-        alerts(&mut seen, &scene.alert_scene(true, Shown::default())),
-        Alerts::default()
-    );
+    let told = alerts(&mut seen, &scene.alert_scene(true, Shown::default()));
+    assert!(told.show.is_empty() && told.dismiss.is_empty());
+    assert_eq!(told.arrived, [invitation.id]);
+    assert_eq!(scene.alerts(&mut seen), Alerts::default());
 }
 
 #[test]
@@ -1200,6 +1201,7 @@ fn an_invitation_into_a_call_is_a_system_notification_while_the_window_is_not_ac
     );
     assert_eq!(told.show[0].0.title, "Ana invites you to Daily.");
     assert_eq!(told.show[0].1, AlertTarget::Invitation(scene.server_id));
+    assert_eq!(told.arrived, [first.id]);
     assert_eq!(scene.alerts(&mut seen), Alerts::default());
 
     // The invitation ended: its system notification is taken away.

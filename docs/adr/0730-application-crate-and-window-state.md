@@ -53,7 +53,7 @@ Window:
 
 Notice areas:
 
-- A notice, error or bar that arrives after a view is drawn must preserve the bounds of its existing controls. Its region either keeps a fixed height or grows from the edge opposite the content anchor. The notice area scrolls when its contents do not fit; notices are not drawn over controls.
+- A notice, error or bar that arrives after a view is drawn must preserve the bounds of its existing controls. Its region either keeps a fixed height or grows from the edge opposite the content anchor. The notice area scrolls when its contents do not fit; notices are not drawn over controls. The one exception is the card of an invitation into a call (ADR 0739).
 - State panels put notices in the growing part under their actions (ADR 0732).
 - A message area reserves a scrolling notice area above the message list, under the controls of a direct call. The list keeps both its bounds and its scroll position when a notice arrives, whether it is at its end or scrolled away. Changing the top edge and compensating the scroll would preserve row coordinates but would clip the rows under the new notice; it would not preserve the control under the pointer.
 - A call reserves a scrolling notice area at the end of its stage column, including the meeting bar. The side panel keeps its bounds. This area has a fixed height even when empty: the tiles are centred inside the stage and a shared picture fits its height, so taking height from either edge would move them. The separate call window follows the same rule.

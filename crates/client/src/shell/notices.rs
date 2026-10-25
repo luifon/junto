@@ -228,7 +228,8 @@ impl Shell {
 
     /// The entry of the channel column that opens the notices of the server, with the
     /// count of the notices that the person has not read. `in_call`: the main area shows
-    /// the call of this device, whose side panel is the panel of the call.
+    /// the call of this device, whose side panel is the panel of the call: the notices
+    /// open there (ADR 0742).
     pub(crate) fn render_notices_row(
         &mut self,
         lists: &ServerLists,
@@ -247,8 +248,14 @@ impl Shell {
                 ChannelRow::new("notices-row", Icon::Bell, text::NOTIFICATIONS)
                     .selected(lists.notices.is_some())
                     .unread(sign)
-                    .unavailable(in_call.then_some(text::NOTICES_IN_CALL))
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_notices(cx))),
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_notices(cx);
+                        // A narrow window draws the panel of the call over the stage
+                        // only while it is open.
+                        if in_call {
+                            this.call_panel_open = true;
+                        }
+                    })),
             )
             .when(unread > 0, |row| {
                 row.child(
@@ -267,6 +274,17 @@ impl Shell {
             return;
         };
         let (notice_id, unread) = (row.id, !row.read);
+        // The main window shows the message: the call window brings it to the front.
+        if self.detached {
+            let call_window = self.state.read(cx).call_window();
+            if let Some(main) = cx
+                .windows()
+                .into_iter()
+                .find(|handle| Some(*handle) != call_window)
+            {
+                let _ = main.update(cx, |_, window, _| window.activate_window());
+            }
+        }
         self.go_to(jump, cx);
         if unread {
             self.state.update(cx, |state, cx| {
@@ -282,11 +300,13 @@ impl Shell {
         cx.notify();
     }
 
-    /// The side panel of the notices of the shown server.
+    /// The side panel of the notices of the shown server. `in_call`: the list is drawn in
+    /// the panel of a call, in place of its tab.
     pub(crate) fn render_notices_panel(
         &mut self,
         server_id: ServerId,
         panel: &NoticesPanel,
+        in_call: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -304,8 +324,12 @@ impl Shell {
                     .icon(Icon::X)
                     .tooltip(text::CLOSE_NOTIFICATIONS)
                     .selector("close-notices")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.close_notices(cx));
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if in_call {
+                            this.close_call_notices(cx);
+                        } else {
+                            this.state.update(cx, |state, cx| state.close_notices(cx));
+                        }
                     })),
             );
         let bar = (panel.unread > 0).then(|| {
@@ -456,7 +480,18 @@ impl Shell {
                 .child(div().flex_none().h(u(6.0)))
                 .into_any_element()
         };
-        side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
+        let frame = if in_call {
+            div()
+                .id("call-notices")
+                .debug_selector(|| "notices-panel".to_owned())
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+        } else {
+            side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
+        };
+        frame
             .child(header)
             .child(crate::ui::notice_slot("notices-bar-slot").children(bar))
             .child(

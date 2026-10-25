@@ -573,8 +573,12 @@ pub struct AppState {
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
     kept: crate::notify::KeptNotifier,
-    /// The window is the active window of the system.
+    /// The main window is the active window of the system.
     window_active: bool,
+    /// The call window is the active window of the system.
+    call_window_active: bool,
+    /// The panel of the call window shows the notices of the server of the call.
+    call_window_notices: bool,
     /// What was seen of the notices and the invitations of each server.
     seen: HashMap<ServerId, notices::Seen>,
     /// The number of the last read of the message of a search result. The answer of an
@@ -821,6 +825,8 @@ impl AppState {
             notifier: std::rc::Rc::new(kept.clone()),
             kept,
             window_active: false,
+            call_window_active: false,
+            call_window_notices: false,
             seen: HashMap::new(),
             result_asks: 0,
             result_answers: 0,
@@ -2232,7 +2238,7 @@ impl AppState {
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.follow_result_jump(shown);
-        self.tell_alerts(&snapshots, shown, cx);
+        self.tell_alerts(&snapshots, shown, call_window, cx);
         self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();

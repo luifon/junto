@@ -11,6 +11,20 @@ impl AppState {
         }
         self.calls.set_talking(!self.talking_windows.is_empty());
     }
+    /// The call window, while it is open.
+    pub fn call_window(&self) -> Option<gpui::AnyWindowHandle> {
+        self.call_window.map(Into::into)
+    }
+
+    /// Shows the notices of the server of the call in the panel of the call window, or
+    /// closes them there.
+    pub fn show_call_window_notices(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.call_window_notices != shown {
+            self.call_window_notices = shown;
+            self.changed(cx);
+        }
+    }
+
     pub fn call_window_settings(&self) -> CallWindowSettings {
         self.call_window_settings
     }
@@ -19,6 +33,9 @@ impl AppState {
         window: gpui::WindowHandle<gpui_base::Root>,
         cx: &mut Context<Self>,
     ) {
+        self.call_window_active = window
+            .update(cx, |_, window, _| window.is_window_active())
+            .unwrap_or(false);
         self.call_window = Some(window);
         self.known.call_in_own_window = true;
         // The call window reads the messages of the place of the call.
@@ -49,6 +66,8 @@ impl AppState {
 
     fn call_window_closed(&mut self, cx: &mut Context<Self>) {
         self.call_window = None;
+        self.call_window_active = false;
+        self.call_window_notices = false;
         self.known.call_in_own_window = false;
         self.talking_windows.clear();
         self.calls.set_talking(false);
@@ -138,10 +157,16 @@ impl AppState {
     /// The chat of a direct-message call is the conversation of its two accounts.
     pub fn call_view(&self) -> ShellView {
         let mut selection = self.selection.clone();
+        // The panel of the call window shows the notices of the server of the call when
+        // the person opened them there, whatever the main window shows (ADR 0742).
+        selection.notices = None;
         let snapshots = self.snapshots();
         if let Some(call) = &self.media_calls().call {
             let server_id = call.target.server_id;
             selection.server = Some(server_id);
+            if self.call_window_notices {
+                selection.notices = Some(server_id);
+            }
             match call.target.place {
                 CallPlace::Channel {
                     workspace_id,

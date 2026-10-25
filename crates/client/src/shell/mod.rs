@@ -14,6 +14,7 @@ mod contacts;
 pub mod detached;
 mod direct;
 mod feed;
+mod invited;
 mod join;
 pub mod linking;
 mod main_area;
@@ -479,7 +480,10 @@ impl Shell {
                 // The rules of a system notification read whether the person looks at
                 // the window (ADR 0742).
                 let active = window.is_window_active();
-                if !this.detached {
+                if this.detached {
+                    this.state
+                        .update(cx, |state, cx| state.set_call_window_active(active, cx));
+                } else {
                     this.state
                         .update(cx, |state, cx| state.set_window_active(active, cx));
                 }
@@ -685,7 +689,11 @@ impl Shell {
             shell.take_handed_drafts(window, cx);
         }
         let active = window.is_window_active();
-        if !detached {
+        if detached {
+            shell
+                .state
+                .update(cx, |state, cx| state.set_call_window_active(active, cx));
+        } else {
             shell
                 .state
                 .update(cx, |state, cx| state.set_window_active(active, cx));
@@ -1187,6 +1195,9 @@ impl Render for Shell {
             .when(!matches!(self.layer, Layer::None), |shell| {
                 shell.child(self.render_layer(&view, window, cx))
             })
+            // An invitation into a call is drawn over everything else, also over a dialog,
+            // so that the person sees it whatever the window shows (ADR 0739).
+            .children(self.render_invitation_cards(&view, theme.metrics.header_height + 8.0, cx))
             .into_any_element()
     }
 }

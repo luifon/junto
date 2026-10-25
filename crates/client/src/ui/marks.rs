@@ -42,6 +42,40 @@ impl RenderOnce for Badge {
     }
 }
 
+/// A count at the corner of a control, such as the notices that the person has not read
+/// on the button that opens them.
+#[derive(IntoElement)]
+pub struct CornerCount {
+    text: SharedString,
+}
+
+impl CornerCount {
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl RenderOnce for CornerCount {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .h(u(16.0))
+            .min_w(u(16.0))
+            .px(u(4.0))
+            .rounded_full()
+            .bg(Hsla::from(theme.colors.terracotta))
+            .typeface(theme.types.small_strong, &theme)
+            .text_size(u(11.0))
+            .line_height(u(16.0))
+            .ink(theme.colors.on_terracotta)
+            .child(self.text)
+    }
+}
+
 /// The sign of something new without a count.
 pub fn unread_dot(cx: &App) -> impl IntoElement + use<> {
     div()

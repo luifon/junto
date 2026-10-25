@@ -35,7 +35,7 @@ pub use controls::{SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use form_space::{FormSpace, NewRow};
-pub use marks::{Badge, Chip, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
+pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;

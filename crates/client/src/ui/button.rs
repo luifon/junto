@@ -51,6 +51,7 @@ pub struct Button {
     icon: Option<Icon>,
     icon_colour: Option<Rgba>,
     tag: Option<(SharedString, bool)>,
+    count: Option<SharedString>,
     disabled: bool,
     tooltip: Option<SharedString>,
     accessible_label: Option<SharedString>,
@@ -68,6 +69,7 @@ impl Button {
             icon: None,
             icon_colour: None,
             tag: None,
+            count: None,
             disabled: false,
             tooltip: None,
             accessible_label: None,
@@ -102,6 +104,13 @@ impl Button {
     /// A small word after the label that states what the button switches: "On" or "Off".
     pub fn tag(mut self, word: impl Into<SharedString>, on: bool) -> Self {
         self.tag = Some((word.into(), on));
+        self
+    }
+
+    /// A count at the corner of the button, such as the notices that the person has not
+    /// read. The accessible label of the button states it too.
+    pub fn count(mut self, count: Option<impl Into<SharedString>>) -> Self {
+        self.count = count.map(Into::into);
         self
     }
 
@@ -404,6 +413,7 @@ impl RenderOnce for Button {
         frame.style().refine(&self.style);
 
         let ring = focus_ring(look.ring, metrics.focus_ring);
+        let selector = self.selector;
         frame
             .when_some(label.clone(), |frame, label| frame.aria_label(label))
             .when_some(self.selector, |frame, selector| {
@@ -430,6 +440,18 @@ impl RenderOnce for Button {
             })
             .when_some(self.label, |frame, text| {
                 frame.child(super::paint_text(text, label))
+            })
+            .when_some(self.count, |frame, count| {
+                frame.relative().child(
+                    div()
+                        .absolute()
+                        .top(u(-6.0))
+                        .right(u(-6.0))
+                        .when_some(selector, |corner, selector| {
+                            corner.debug_selector(move || format!("{selector}-count"))
+                        })
+                        .child(super::CornerCount::new(count)),
+                )
             })
             .when_some(self.tag, |frame, (word, on)| {
                 let colors = theme.colors;

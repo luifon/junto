@@ -1875,6 +1875,36 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
         Screen::new("call-invitation", vec![invited(), harbor()]).media(no_call()),
         |_, _, _| {},
     )?;
+    // An invitation into the Focus room while the person is in the call of Daily: the card
+    // lies over the view of the call.
+    let mut in_daily = acme_with_luca(|_| {});
+    if let Some(model) = &mut in_daily.model {
+        Arc::make_mut(model).invitations.push(CallInvitation {
+            id: id(64),
+            call_id: id(41),
+            place: CallPlace::Channel {
+                workspace_id: id(10),
+                channel_id: id(35),
+            },
+            account_id: person("Luca"),
+            invited_by: person("Carla"),
+            created_at: at(),
+            expires_at: at() + time::Duration::seconds(60),
+        });
+    }
+    studio.draw(
+        Screen::call("call-invitation-in-call", in_call(Phase::Connected))
+            .servers(vec![in_daily, harbor()]),
+        |shell, _, cx| select_channel(shell, "Daily", cx),
+    )?;
+    // The notices of the server in the panel of the call, in place of its tab.
+    studio.draw(
+        Screen::call("notices-in-call", in_call(Phase::Connected)),
+        |shell, _, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.toggle_notices(cx);
+        },
+    )?;
 
     // View K: the menu of a person in a voice channel, as a moderator and as a member.
     let menu_of_diego = |moving: bool| {
