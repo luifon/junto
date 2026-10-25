@@ -1,5 +1,6 @@
 //! AVFoundation capture. Session objects stay on one capture thread.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -182,6 +183,8 @@ impl Drop for Running {
 
 struct Ivars {
     sink: Arc<dyn CameraSink>,
+    // Set after a panic: later pictures are dropped until the worker stops the session.
+    broken: AtomicBool,
 }
 
 define_class!(
@@ -194,12 +197,18 @@ define_class!(
         #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
         fn frame(&self, _: &AVCaptureOutput, sample: &CMSampleBuffer, _: &AVCaptureConnection) {
             // A panic cannot unwind into AVFoundation; after one the camera ends (ADR 0757).
+            if self.ivars().broken.load(Ordering::Relaxed) {
+                return;
+            }
             crate::callback::stop_panic(
                 "camera picture",
                 || {
-                    self.ivars()
-                        .sink
-                        .ended(CameraError::Failed("the camera callback panicked".into()))
+                    self.ivars().broken.store(true, Ordering::Relaxed);
+                    crate::callback::after_a_panic("camera end", || {
+                        self.ivars()
+                            .sink
+                            .ended(CameraError::Failed("the camera callback panicked".into()))
+                    });
                 },
                 || {
                     // SAFETY: sample is valid during the callback; the retained image
@@ -267,7 +276,10 @@ impl Session {
             }
             session.addOutput(&output);
             let delegate: Retained<Output> =
-                msg_send![super(Output::alloc().set_ivars(Ivars { sink })), init];
+                msg_send![super(Output::alloc().set_ivars(Ivars {
+                    sink,
+                    broken: AtomicBool::new(false),
+                })), init];
             let queue = DispatchQueue::new("camera-frames", None);
             output.setSampleBufferDelegate_queue(
                 Some(ProtocolObject::from_ref(&*delegate)),

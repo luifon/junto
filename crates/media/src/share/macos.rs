@@ -272,11 +272,13 @@ define_class!(
 
 impl Output {
     fn end_after_a_panic(&self) {
-        if !self.ivars().ended.swap(true, Ordering::Relaxed) {
-            self.ivars()
-                .sink
-                .ended(CaptureError::Failed("the share callback panicked".into()));
-        }
+        crate::callback::after_a_panic("share end", || {
+            if !self.ivars().ended.swap(true, Ordering::Relaxed) {
+                self.ivars()
+                    .sink
+                    .ended(CaptureError::Failed("the share callback panicked".into()));
+            }
+        });
     }
 
     fn new(sink: Arc<dyn CaptureSink>, ended: Arc<AtomicBool>, one_window: bool) -> Retained<Self> {

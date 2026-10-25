@@ -40,6 +40,12 @@ pub(crate) fn stop_panic<R>(
     }
 }
 
+/// Runs the work that follows a stopped panic, such as the end of a share, under a stop of its
+/// own: a fallback of [`stop_panic`] runs outside the stop of its body.
+pub(crate) fn after_a_panic(site: &'static str, work: impl FnOnce()) {
+    stop_panic(site, || (), work);
+}
+
 fn is_a_power_of_ten(mut count: usize) -> bool {
     while count >= 10 && count.is_multiple_of(10) {
         count /= 10;
@@ -50,6 +56,19 @@ fn is_a_power_of_ten(mut count: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_in_the_work_after_a_panic_is_stopped() {
+        let fallback = stop_panic(
+            "test",
+            || {
+                after_a_panic("test after", || panic!("a panic of the test after a panic"));
+                2
+            },
+            || panic!("a panic of the test"),
+        );
+        assert_eq!(fallback, 2);
+    }
 
     #[test]
     fn a_panic_in_a_body_gives_the_fallback() {

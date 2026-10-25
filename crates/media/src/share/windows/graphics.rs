@@ -359,11 +359,15 @@ impl Session {
                     crate::callback::stop_panic(
                         "share picture",
                         || {
-                            arrival
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .life
-                                .fail(CaptureError::Failed("the share callback panicked".into()));
+                            crate::callback::after_a_panic("share picture end", || {
+                                arrival
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .life
+                                    .fail(CaptureError::Failed(
+                                        "the share callback panicked".into(),
+                                    ))
+                            });
                             Ok(())
                         },
                         || {

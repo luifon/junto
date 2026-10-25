@@ -193,7 +193,7 @@ where
                 },
             );
             if broken {
-                tell(&told, panicked());
+                crate::callback::after_a_panic("microphone failure", || tell(&told, panicked()));
             }
         },
         report(failed, false),
@@ -233,7 +233,9 @@ where
                     },
                 );
                 if broken {
-                    tell(&told, panicked());
+                    crate::callback::after_a_panic("sound output failure", || {
+                        tell(&told, panicked())
+                    });
                 }
             }
             if broken {
