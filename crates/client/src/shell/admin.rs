@@ -881,6 +881,7 @@ impl Shell {
             .bg(Hsla::from(colors.scrim))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| by_cover(window, cx))
             .child(panel)
+            .children(crate::shell::title_bar::layer_band(window, cx))
             .into_any_element()
     }
 

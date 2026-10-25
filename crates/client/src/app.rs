@@ -58,12 +58,16 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
     .detach();
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
     cx.on_action(|_: &Quit, cx| {
-        // The windows close without a request to close them.
-        #[cfg(windows)]
-        for window in cx.windows() {
-            let _ = window.update(cx, |_, window, _| crate::taskbar::forget(window));
-        }
-        cx.quit()
+        // The windows close without a request to close them. The action runs inside the update
+        // of the focused window, which cannot be updated again there; the deferred work runs
+        // when no window is updated.
+        cx.defer(|cx| {
+            #[cfg(windows)]
+            for window in cx.windows() {
+                let _ = window.update(cx, |_, window, _| crate::taskbar::forget(window));
+            }
+            cx.quit()
+        })
     });
     Ok(())
 }
