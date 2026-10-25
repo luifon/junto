@@ -1246,10 +1246,10 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The notices about the rules of a call: an invitation that waits for the person, a
-    /// person who asks to enter the call of this device, the statement that the person
-    /// may speak when the call is not shown, what the application tells about the call,
-    /// and a request that the server did not perform.
+    /// The notices about the rules of a call: a person who asks to enter the call of this
+    /// device, the statement that the person may speak when the call is not shown, what the
+    /// application tells about the call, and a request that the server did not perform. An
+    /// invitation for the person has a card of its own (`render_invitation_cards`).
     pub(crate) fn render_call_rule_notices(
         &mut self,
         view: &ShellView,
@@ -1266,50 +1266,6 @@ impl Shell {
         let pair =
             |first: Button, second: Button| div().flex().gap(u(6.0)).child(first).child(second);
         let mut notices = Vec::new();
-        for (index, invited) in view.invitations.iter().enumerate() {
-            let (accepted, declined) = (invited.clone(), invited.clone());
-            if matches!(
-                invited.target.place,
-                junto_client_core::protocol::call::CallPlace::Direct { .. }
-            ) {
-                notices.push(self.render_incoming_direct(invited, index, cx));
-                continue;
-            }
-            notices.push(wrap(
-                Notice::new(text::invitation(
-                    invited.by.as_deref(),
-                    invited.channel.as_deref(),
-                ))
-                .icon(Icon::Invite)
-                .selector(
-                    if matches!(
-                        invited.target.place,
-                        junto_client_core::protocol::call::CallPlace::Direct { .. }
-                    ) {
-                        "incoming-direct-call"
-                    } else {
-                        "call-invitation"
-                    },
-                )
-                .action(pair(
-                    Button::new(("invitation-join", index))
-                        .kind(ButtonKind::Primary)
-                        .label(text::JOIN)
-                        .selector("invitation-join")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.accept_invitation(&accepted, cx));
-                        })),
-                    Button::new(("invitation-decline", index))
-                        .label(text::DECLINE)
-                        .selector("invitation-decline")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.decline_invitation(&declined, cx));
-                        })),
-                )),
-            ));
-        }
         for (index, prompt) in view.entry_prompts.iter().enumerate() {
             let request_id = prompt.id;
             notices.push(wrap(

@@ -31,9 +31,9 @@ const RECORDING_LINE_HEIGHT: f32 = 40.0;
 
 /// The narrowest call window, in pixels of the design, whose first line of the header
 /// holds the recording control between the window controls and the buttons of the panel
-/// (ADR 0772). The controls and the buttons take 244 of them; the rest holds the mark of
+/// (ADR 0772). The controls and the buttons take 284 of them; the rest holds the mark of
 /// a running recording with its words and the action after it.
-const RECORDING_BESIDE_CONTROLS: f32 = 560.0;
+const RECORDING_BESIDE_CONTROLS: f32 = 600.0;
 
 /// The narrowest stage that the call window draws beside the panel of the call, in pixels
 /// of the design. A narrower window draws the panel over the stage.
@@ -288,7 +288,7 @@ impl Shell {
                         .flex()
                         .flex_none()
                         .gap(u(6.0))
-                        .children(self.render_call_panel_buttons(cx)),
+                        .children(self.render_call_panel_buttons(&view, cx)),
                 )
             });
         body = body.child(header);
@@ -426,9 +426,11 @@ impl Shell {
         if let Some(strip) = &view.call {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }
+        let invitations = self.render_invitation_cards(&view, HEADER_HEIGHT + 8.0, cx);
         body.when(!matches!(self.layer, super::Layer::None), |body| {
             body.child(self.render_layer(&view, window, cx))
         })
+        .children(invitations)
         .map(|body| Self::presses_and_escape(body, cx))
         .on_modifiers_changed(
             cx.listener(|this, event: &gpui::ModifiersChangedEvent, _, cx| {

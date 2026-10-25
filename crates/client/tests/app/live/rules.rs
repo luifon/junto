@@ -1565,3 +1565,75 @@ fn a_move_that_the_moved_device_cannot_join_is_told_to_the_mover(cx: &mut TestAp
         state.pending().call_told.is_none()
     }));
 }
+
+/// An invitation is a card at the top of every window of the application, over the call
+/// that the person is in, and it lets the person into a full room: an invitation passes
+/// the user limit (ADR 0504, ADR 0739).
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn an_invitation_into_a_full_room_is_a_card_in_every_window_and_passes_the_limit(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let (voice, luca) = (scene.voice, scene.luca);
+    // Ada is alone in the room, whose limit is one: the room is full.
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .world
+        .run(api.update_call_settings(
+            voice,
+            &UpdateCallSettings {
+                user_limit: Some(Some(1)),
+                hides_occupants: None,
+            },
+        ))
+        .unwrap();
+    scene.window.until("the room is full", |window| {
+        voice_of(window).closed == Some(Closed::Full)
+    });
+    // The person is in the call of the other voice channel, in the call window.
+    let other = scene
+        .window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.id != voice)
+        .unwrap();
+    scene.window.click_channel(&other.name);
+    scene.window.click("join-call");
+    scene
+        .window
+        .until("the person is in the other call", connected);
+    scene.window.click("detach-call");
+    let mut detached = scene.window.call_window();
+    assert!(!scene.window.shows("invitation-cards") && !detached.shows("invitation-cards"));
+
+    // Ada invites the person: both windows draw the card over what they show.
+    scene.world.run(api.invite_to_call(voice, luca)).unwrap();
+    scene
+        .window
+        .until("the main window draws the card", |window| {
+            window.shows("invitation-cards") && window.shows("call-invitation")
+        });
+    detached.until("the call window draws the card over the stage", |window| {
+        window.shows("call-invitation") && window.shows("call-stage")
+    });
+    let invited = scene.window.view().invitations;
+    assert_eq!(
+        (invited[0].by.as_deref(), invited[0].channel.as_deref()),
+        (Some("Ada"), Some(ROOM))
+    );
+
+    // Join in the call window: the person enters the full room, which then holds more
+    // people than its limit.
+    detached.click("invitation-join");
+    scene
+        .window
+        .until("the person is in the full room", |window| {
+            connected(window) && own(window).is_some() && occupants(window).len() == 2
+        });
+    assert_eq!(voice_of(&mut scene.window).user_limit, Some(1));
+    assert!(!scene.window.shows("call-invitation"));
+    drop(detached);
+    scene.world.run(scene.caller.calls.leave());
+}

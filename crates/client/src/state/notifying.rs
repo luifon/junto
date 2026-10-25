@@ -11,7 +11,9 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::discovery::{DailyQuiet, NotificationLevel, NotificationSettings};
-use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId, WorkspaceId};
+use junto_client_core::protocol::ids::{
+    AccountId, CallInvitationId, ChannelId, ServerId, WorkspaceId,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -800,7 +802,7 @@ impl AppState {
         self.kept.kept()
     }
 
-    /// The window became the active window of the system, or stopped being it.
+    /// The main window became the active window of the system, or stopped being it.
     pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.window_active != active {
             self.window_active = active;
@@ -810,6 +812,17 @@ impl AppState {
         // comes back to this window.
         if active {
             self.read_system_zone(cx);
+        }
+    }
+
+    /// The call window became the active window of the system, or stopped being it. The
+    /// rules of a system notification count it as a window of the application that shows
+    /// the place of the call (ADR 0742).
+    pub fn set_call_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        let active = active && self.call_window.is_some();
+        if self.call_window_active != active {
+            self.call_window_active = active;
+            self.changed(cx);
         }
     }
 
@@ -862,9 +875,19 @@ impl AppState {
         &mut self,
         servers: &[ServerSnapshot],
         shown: Shown,
+        call_window: Option<(ServerId, PlaceId)>,
         cx: &mut Context<Self>,
     ) {
         let now = OffsetDateTime::now_utc();
+        // The person looks at the active window of the application: the main window with
+        // what it shows, or the call window with the place of the call.
+        let (active, shown) = if self.window_active {
+            (true, shown)
+        } else if self.call_window_active {
+            (true, Shown::of_place(call_window))
+        } else {
+            (false, shown)
+        };
         // A server that is gone, or whose session ended, takes its system notifications
         // with it. Its next state is a first state again.
         let gone: Vec<ServerId> = self
@@ -899,12 +922,15 @@ impl AppState {
                     model,
                     known: &self.known,
                     now,
-                    active: self.window_active,
+                    active,
                     shown,
                 },
             );
             for tag in told.dismiss {
                 self.notifier.dismiss(&tag, cx);
+            }
+            for invitation_id in told.arrived {
+                self.invitation_sound(server.id, invitation_id);
             }
             // What a press leads to is kept with what was seen of the server, for as
             // long as the notification is shown.
@@ -913,6 +939,11 @@ impl AppState {
             }
         }
     }
+
+    /// An invitation into a voice channel arrived for the person. The sound of an
+    /// invitation is played here once the application has sounds; it plays none yet
+    /// (ADR 0739).
+    fn invitation_sound(&mut self, _server_id: ServerId, _invitation_id: CallInvitationId) {}
 
     /// The person pressed a notification of the system: the window shows what it was
     /// about, and its notice is read.

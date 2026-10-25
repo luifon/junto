@@ -15,59 +15,6 @@ use junto_client_core::protocol::{
 };
 
 impl Shell {
-    pub(crate) fn render_incoming_direct(
-        &self,
-        invited: &crate::state::view::Invited,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        use gpui::InteractiveElement as _;
-        let accepted = invited.clone();
-        let declined = invited.clone();
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(u(12.0))
-            .p(u(24.0))
-            .debug_selector(|| "incoming-direct-call".to_owned())
-            .child(super::people::avatar(
-                &self.faces(invited.target.server_id),
-                invited.caller,
-                48.0,
-            ))
-            .child(format!(
-                "{} is calling",
-                invited.by.as_deref().unwrap_or(text::UNKNOWN_PERSON)
-            ))
-            .child(
-                div()
-                    .flex()
-                    .gap(u(8.0))
-                    .child(
-                        Button::new(("direct-call-accept", index))
-                            .label("Accept")
-                            .icon(Icon::Phones)
-                            .kind(ButtonKind::Primary)
-                            .selector("direct-call-accept")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.accept_invitation(&accepted, cx))
-                            })),
-                    )
-                    .child(
-                        Button::new(("direct-call-decline", index))
-                            .label(text::DECLINE)
-                            .selector("direct-call-decline")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.decline_invitation(&declined, cx))
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
     /// What a direct conversation shows above its messages while the main window does not
     /// draw its call: the button that starts a direct-message call, or the statement that
     /// the call window draws the call of the conversation with Return, and the outcome of

@@ -297,8 +297,9 @@ fn a_server_without_a_workspace_shows_its_direct_conversations_and_notices() {
             .map(|direct| (direct.other, direct.name.as_deref())),
         Some((ana, Some("Ana")))
     );
-    // The side panel is the panel of the call.
-    assert!(lists.notices.is_none());
+    // The side panel is the panel of the call, which shows the notices in place of its
+    // tab (ADR 0742).
+    assert!(lists.notices.is_some());
     known.call_in_own_window = true;
     let view = derive(std::slice::from_ref(&server), &selection, &known);
     assert!(view.lists().unwrap().call.is_none());

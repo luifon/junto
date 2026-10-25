@@ -1017,13 +1017,14 @@ const RECORDING_PARTS: [&str; 7] = [
     "no-record-permission",
 ];
 
-const HEADER_BUTTONS: [&str; 6] = [
+const HEADER_BUTTONS: [&str; 7] = [
     "call-on-top",
     "return-call",
     "call-fullscreen",
     "open-call-chat",
     "open-call-members",
     "open-call-settings",
+    "open-call-notices",
 ];
 
 /// Checks the recording control of the call window at each size of [`CALL_WINDOW_SIZES`],

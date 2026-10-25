@@ -1618,6 +1618,26 @@ pub struct Shown {
 }
 
 impl Shown {
+    /// What a window shows that shows the messages of one place and nothing else, as the
+    /// call window shows the chat of its call.
+    pub fn of_place(place: Option<(ServerId, PlaceId)>) -> Self {
+        let Some((server_id, place)) = place else {
+            return Self::default();
+        };
+        Self {
+            server: Some(server_id),
+            channel: match place {
+                PlaceId::Channel(channel_id) => Some(channel_id),
+                _ => None,
+            },
+            conversation: match place {
+                PlaceId::Direct(conversation_id) => Some(conversation_id),
+                _ => None,
+            },
+            ..Self::default()
+        }
+    }
+
     /// The place whose messages the main area shows.
     pub fn place(&self) -> Option<PlaceId> {
         self.conversation
@@ -2362,13 +2382,14 @@ fn server_lists(
             .and_then(|view| view.channel.as_ref())
             .map(|row| PlaceId::Channel(row.id)));
     // The notices of the server lie under a thread, under the pinned messages and under
-    // a transcript, and the call of this device has its own panel.
+    // a transcript. In the view of the call of this device they lie in the panel of the
+    // call, which shows no thread, pin list or transcript (ADR 0742).
     let notices = selection
         .notices
         .filter(|of| *of == server_id)
         .filter(|_| {
-            call.is_none()
-                && shown.as_ref().is_none_or(|view| {
+            call.is_some()
+                || shown.as_ref().is_none_or(|view| {
                     view.thread.is_none() && view.pins.is_none() && view.transcript.is_none()
                 })
         })
