@@ -1226,11 +1226,32 @@ impl gpui::Render for Pad {
 
 /// Opens a window of a [`Pad`] and runs its work until it rests.
 pub fn pad(cx: &mut TestAppContext, press: Press) -> VisualTestContext {
+    open_view(cx, move |_, _| Pad { press })
+}
+
+/// Opens a window of a view of the test that uses gpui alone, with the panic hook, and runs
+/// its work until it rests.
+pub fn open_view<V: gpui::Render>(
+    cx: &mut TestAppContext,
+    view: impl FnOnce(&mut gpui::Window, &mut gpui::Context<V>) -> V,
+) -> VisualTestContext {
     junto_client::panics::install();
-    let window = cx.add_window(move |_, _| Pad { press });
+    let window = cx.add_window(view);
     let cx = VisualTestContext::from_window(window.into(), cx);
     cx.run_until_parked();
     cx
+}
+
+/// Draws every window from a task of the application, which the platform runs from its own
+/// callback, so that gpui stops a panic of the draw; then runs the work until it rests.
+pub fn draw_from_a_task(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.spawn(async move |cx| {
+            cx.update(|cx| cx.refresh_windows());
+        })
+        .detach();
+    });
+    cx.run_until_parked();
 }
 
 /// Presses and releases the left button on the pad, through the input callback of the test

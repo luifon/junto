@@ -11,7 +11,7 @@ use gpui::{
     AppContext as _, BorrowAppContext as _, EventEmitter, Global, TestAppContext, VisualTestContext,
 };
 
-use crate::harness::{dispatch_from_the_window, pad, press_pad};
+use crate::harness::{dispatch_from_the_window, draw_from_a_task, open_view, pad, press_pad};
 
 gpui::actions!(gpui_panics, [Probe]);
 
@@ -211,32 +211,17 @@ impl gpui::Render for MeasuredView {
     }
 }
 
-/// Draws every window from a task, which the platform runs from its own callback, so that
-/// gpui stops a panic of the draw.
-fn draw_from_a_task(cx: &mut VisualTestContext) {
-    cx.update(|_, cx| {
-        cx.spawn(async move |cx| {
-            cx.update(|cx| cx.refresh_windows());
-        })
-        .detach();
-    });
-    cx.run_until_parked();
-}
-
 /// A measure that panics inside `compute_layout`: the layout engine returns to the window, and
 /// the next draw lays the view out again.
 #[gpui::test]
 fn the_layout_engine_stays_after_a_panic_in_a_measure(cx: &mut TestAppContext) {
-    junto_client::panics::install();
     let armed = Rc::new(Cell::new(false));
     let measures = Rc::new(Cell::new(0));
     let (view_armed, view_measures) = (armed.clone(), measures.clone());
-    let window = cx.add_window(move |_, _| MeasuredView {
+    let mut cx = open_view(cx, move |_, _| MeasuredView {
         armed: view_armed,
         measures: view_measures,
     });
-    let mut cx = VisualTestContext::from_window(window.into(), cx);
-    cx.run_until_parked();
     let before = junto_client::panics::panics_on_this_thread();
     armed.set(true);
     draw_from_a_task(&mut cx);
