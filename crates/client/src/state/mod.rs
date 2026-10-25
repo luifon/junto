@@ -612,7 +612,34 @@ pub struct AppState {
 }
 
 /// How long the task of the panic reports waits after a panic in its own update.
-const PAUSE_AFTER_A_PANIC_IN_THE_NOTICE: std::time::Duration = std::time::Duration::from_secs(1);
+const PAUSE_AFTER_A_PANIC: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What one update of a task that follows a source for the life of the state gave.
+enum Updated<R> {
+    Done(R),
+    /// The state is gone: the task ends.
+    Gone,
+    /// The update panicked. The hook recorded the panic; the task waits
+    /// [`PAUSE_AFTER_A_PANIC`] and updates again, so that the state reads its source again.
+    Panicked,
+}
+
+/// Runs one update of a task that follows a source for the life of the state: the calls, the
+/// levels, the changes of the client core, the clock, the retries and the panic reports. A
+/// panic in the update, such as one in an observer that the update notifies, ends this
+/// update only; without the stop the panic would end the task, and the state would no longer
+/// follow its source (ADR 0757).
+fn update_once<R>(
+    this: &gpui::WeakEntity<AppState>,
+    cx: &mut gpui::AsyncApp,
+    update: impl FnOnce(&mut AppState, &mut Context<AppState>) -> R,
+) -> Updated<R> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.update(cx, update))) {
+        Ok(Ok(value)) => Updated::Done(value),
+        Ok(Err(_)) => Updated::Gone,
+        Err(_) => Updated::Panicked,
+    }
+}
 
 /// The notice of the panics that the panic hook recorded for the data directory of the
 /// window.
@@ -672,8 +699,13 @@ impl AppState {
         let mut calls_watch = calls.watch();
         let follow_calls = cx.spawn(async move |this, cx| {
             while calls_watch.changed().await.is_ok() {
-                if this.update(cx, |this, cx| this.calls_changed(cx)).is_err() {
-                    break;
+                match update_once(&this, cx, |this, cx| this.calls_changed(cx)) {
+                    Updated::Done(()) => {}
+                    Updated::Gone => break,
+                    Updated::Panicked => {
+                        calls_watch.mark_changed();
+                        cx.background_executor().timer(PAUSE_AFTER_A_PANIC).await;
+                    }
                 }
             }
         });
@@ -681,21 +713,26 @@ impl AppState {
         let follow_levels = cx.spawn(async move |this, cx| {
             while levels.changed().await.is_ok() {
                 let shown = shown_levels(&levels.borrow_and_update());
-                let told = this.update(cx, |this, cx| {
+                let told = update_once(&this, cx, |this, cx| {
                     if this.known.media.levels != shown {
                         this.known.media.levels = shown;
                         cx.emit(LevelsChanged);
                     }
                 });
-                if told.is_err() {
-                    break;
+                match told {
+                    Updated::Done(()) => {}
+                    Updated::Gone => break,
+                    Updated::Panicked => {
+                        levels.mark_changed();
+                        cx.background_executor().timer(PAUSE_AFTER_A_PANIC).await;
+                    }
                 }
             }
         });
         let clock = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let told = this.update(cx, |this, cx| {
+                let told = update_once(&this, cx, |this, cx| {
                     let was_ringing = this.direct.ringing();
                     this.reconcile_direct(cx);
                     if was_ringing || this.direct.ringing() {
@@ -706,7 +743,7 @@ impl AppState {
                         cx.notify();
                     }
                 });
-                if told.is_err() {
+                if let Updated::Gone = told {
                     break;
                 }
             }
@@ -722,9 +759,16 @@ impl AppState {
 
         let mut changes = client.changes();
         let follow = cx.spawn(async move |this, cx| {
-            while changes.changed().await {
-                if this.update(cx, |this, cx| this.changed(cx)).is_err() {
-                    break;
+            let mut again = false;
+            while again || changes.changed().await {
+                again = false;
+                match update_once(&this, cx, |this, cx| this.changed(cx)) {
+                    Updated::Done(()) => {}
+                    Updated::Gone => break,
+                    Updated::Panicked => {
+                        again = true;
+                        cx.background_executor().timer(PAUSE_AFTER_A_PANIC).await;
+                    }
                 }
             }
         });
@@ -741,16 +785,11 @@ impl AppState {
                 // starts, is recorded by the hook and ends this update only. The task then waits
                 // before it takes the next reports, so that an update that panics at each run
                 // returns to the event loop between two runs (ADR 0757).
-                let updated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    this.update(cx, |this, cx| this.panics_recorded(batch, cx))
-                }));
-                match updated {
-                    Ok(Ok(())) => {}
-                    Ok(Err(_)) => break,
-                    Err(_) => {
-                        cx.background_executor()
-                            .timer(PAUSE_AFTER_A_PANIC_IN_THE_NOTICE)
-                            .await;
+                match update_once(&this, cx, |this, cx| this.panics_recorded(batch, cx)) {
+                    Updated::Done(()) => {}
+                    Updated::Gone => break,
+                    Updated::Panicked => {
+                        cx.background_executor().timer(PAUSE_AFTER_A_PANIC).await;
                     }
                 }
             }
@@ -759,10 +798,7 @@ impl AppState {
         let retry = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(retry_interval).await;
-                if this
-                    .update(cx, |this, cx| this.retry_unreached(cx))
-                    .is_err()
-                {
+                if let Updated::Gone = update_once(&this, cx, |this, cx| this.retry_unreached(cx)) {
                     break;
                 }
             }

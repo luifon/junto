@@ -240,3 +240,40 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
     assert_eq!(notice.count, 2);
     assert_eq!(panics::panics_on_this_thread(), before + 2);
 }
+
+/// The calls change outside a press of the window: the observer of the state in the shell
+/// panics in the update that takes the change. The task that follows the calls goes on, so a
+/// later change of the calls reaches the window.
+#[gpui::test]
+fn a_panic_while_the_calls_change_leaves_the_window_following_the_calls(cx: &mut TestAppContext) {
+    use junto_client::state::view::MicrophoneButton;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.settle();
+    assert_eq!(window.view().controls.microphone, MicrophoneButton::Open);
+    let before = panics::panics_on_this_thread();
+    window.expect_panics(1);
+    panics::test_support::panic_in_the_next(panics::test_support::Handler::StateObserver);
+    window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().mute());
+    window.settle();
+    assert_eq!(panics::panics_on_this_thread(), before + 1);
+    // The task waits after the panic, then reads the calls again.
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    window.until("the closed microphone is shown", |window| {
+        window.view().controls.microphone == MicrophoneButton::Muted
+    });
+    window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().unmute_in(None));
+    window.until("the open microphone is shown", |window| {
+        window.view().controls.microphone == MicrophoneButton::Open
+    });
+    assert_eq!(panics::panics_on_this_thread(), before + 1);
+}
