@@ -380,6 +380,8 @@ async fn a_person_with_the_permission_removes_a_recording_with_its_files_and_its
         notes,
         [
             ("call_started".to_owned(), None),
+            // The second person of the call joined it while it ran.
+            ("person_joined".to_owned(), None),
             ("recording_started".to_owned(), None),
             ("recording_stopped".to_owned(), None),
             ("recording_started".to_owned(), of_kept),

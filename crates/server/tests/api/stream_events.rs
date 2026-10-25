@@ -410,7 +410,8 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
             deleted: false,
         })
         .collect();
-    assert_eq!(changes.len(), 3);
+    // The second request repeats the override: it writes no line and tells nothing.
+    assert_eq!(changes.len(), 2);
     assert_eq!(
         events(server.traffic(&owner, &mut stream).await),
         [
@@ -418,8 +419,6 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
             set(vec![WorkspacePermission::ManageMessages]),
             notice.clone(),
             changes[1].clone(),
-            set(vec![WorkspacePermission::ManageMessages]),
-            changes[2].clone(),
             set(vec![]),
             notice,
         ]
