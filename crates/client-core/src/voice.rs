@@ -1,7 +1,8 @@
 //! The sound settings of one installation: the chosen devices, the processing of the
 //! microphone, the input mode, the volume that the person set for other people, and what
-//! the person set for screen shares (ADR 0502, ADR 0507, ADR 0701, ADR 0710). They belong to
-//! no server, except the volumes, which name an account of a server.
+//! the person set for screen shares, and the sounds of call events (ADR 0502, ADR 0507,
+//! ADR 0701, ADR 0707, ADR 0710). They belong to no server, except the volumes, which name
+//! an account of a server.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 3;
+pub const VOICE_FORMAT_VERSION: u32 = 4;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -29,7 +30,11 @@ const VOICE: Versioned = Versioned {
     name: VOICE_FILE,
     kind: "sound settings",
     version: VOICE_FORMAT_VERSION,
-    migrations: &[settings_of_shares, settings_of_camera],
+    migrations: &[
+        settings_of_shares,
+        settings_of_camera,
+        settings_of_call_sounds,
+    ],
     limit: 512 * 1024,
 };
 
@@ -66,6 +71,16 @@ fn settings_of_camera(mut value: serde_json::Value) -> Result<serde_json::Value,
         .ok_or("the sound settings are not an object")?
         .entry("camera_device")
         .or_insert(serde_json::Value::Null);
+    Ok(value)
+}
+
+/// Version 3 had no setting of the sounds of call events. They are on in version 4.
+fn settings_of_call_sounds(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    value
+        .as_object_mut()
+        .ok_or("the sound settings are not an object")?
+        .entry("call_sounds")
+        .or_insert(serde_json::Value::Bool(true));
     Ok(value)
 }
 
@@ -125,6 +140,8 @@ pub struct VoiceSettings {
     pub share_volume: u16,
     /// The strip of a call shows only the people who send a camera picture.
     pub hide_people_without_video: bool,
+    /// The short tones of the events of a call (ADR 0707).
+    pub call_sounds: bool,
 }
 
 impl Default for VoiceSettings {
@@ -143,6 +160,7 @@ impl Default for VoiceSettings {
             share_frame_rate: SHARE_FRAME_RATE_DEFAULT,
             share_volume: VOLUME_DEFAULT_PERCENT,
             hide_people_without_video: false,
+            call_sounds: true,
         }
     }
 }
@@ -222,6 +240,7 @@ struct VoiceFile {
     share_frame_rate: u32,
     share_volume: u16,
     hide_people_without_video: bool,
+    call_sounds: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +272,7 @@ impl VoiceStore {
             share_frame_rate: file.share_frame_rate,
             share_volume: file.share_volume,
             hide_people_without_video: file.hide_people_without_video,
+            call_sounds: file.call_sounds,
         }
         .bounded())
     }
@@ -291,6 +311,7 @@ impl VoiceStore {
                 share_frame_rate: settings.share_frame_rate,
                 share_volume: settings.share_volume,
                 hide_people_without_video: settings.hide_people_without_video,
+                call_sounds: settings.call_sounds,
             },
         )?;
         Ok(settings)
@@ -337,7 +358,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 3"), "{text}");
+        assert!(text.contains("\"format_version\": 4"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -394,11 +415,11 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":4,"later":true}"#;
+        let newer = r#"{"format_version":5,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 4, .. })
+            Err(StorageError::NewerFormat { found: 5, .. })
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -440,6 +461,7 @@ mod tests {
             (ShareResolution::P1080, 30, 100)
         );
         assert!(!read.hide_people_without_video);
+        assert!(read.call_sounds);
 
         // The next change writes the file in the present version.
         let written = store
@@ -453,8 +475,32 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 3"), "{text}");
+        assert!(text.contains("\"format_version\": 4"), "{text}");
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
+    }
+
+    #[test]
+    fn a_file_of_version_3_gets_the_sounds_of_call_events_on_and_they_can_be_turned_off() {
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(VOICE_FILE);
+        let third = r#"{"format_version":3,"camera_device":null,"input_device":null,
+            "output_device":"phones","echo_cancellation":true,"noise_suppression":true,
+            "automatic_gain":false,"input_mode":"voice_activation","talk_key":"alt",
+            "volumes":{},"share_resolution":"p1080","share_frame_rate":30,
+            "share_volume":100,"hide_people_without_video":true}"#;
+        fs::write(&file, third).unwrap();
+        let read = store.load().unwrap();
+        assert!(read.call_sounds);
+        assert!(read.hide_people_without_video && !read.automatic_gain);
+        assert_eq!(read.output_device.as_deref(), Some("phones"));
+
+        let written = store
+            .update(|settings| settings.call_sounds = false)
+            .unwrap();
+        assert!(!written.call_sounds);
+        assert_eq!(store.load().unwrap(), written);
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"call_sounds\": false"), "{text}");
     }
 
     #[test]

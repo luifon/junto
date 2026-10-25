@@ -160,6 +160,9 @@ pub struct Window {
     /// The sound devices of the application: a tone as the microphone and a sink that
     /// measures. No test opens a real device.
     pub sound: SyntheticHost,
+    /// The output on which the application plays the tones of call events (ADR 0707), apart
+    /// from `sound`, so that a tone does not change what a test measures of a call.
+    pub tones: SyntheticHost,
     /// The screen capture of the application: a picture and a tone that the program
     /// makes. Only the native stage of a share (ADR 0913) gives the application the capture
     /// of the system in its place; this one is then unused.
@@ -311,6 +314,12 @@ fn open_client(
         }
         app::state_with_media(client, start, media, cx)
     });
+    let tones = SyntheticHost::with_tone(WINDOW_TONE_HZ);
+    cx.update(|cx| {
+        state.update(cx, |state, _| {
+            state.use_sounds_host(std::sync::Arc::new(tones.clone()));
+        });
+    });
     let built: std::rc::Rc<std::cell::RefCell<Option<Entity<Shell>>>> = std::rc::Rc::default();
     let (slot, shown) = (built.clone(), state.clone());
     let window = cx.add_window(move |window, cx| {
@@ -327,6 +336,7 @@ fn open_client(
         shell,
         state,
         sound,
+        tones,
         capture,
         held: Held::default(),
         holding: 0,
@@ -817,6 +827,7 @@ impl Window {
             shell,
             state: self.state.clone(),
             sound: self.sound.clone(),
+            tones: self.tones.clone(),
             capture: self.capture.clone(),
             camera: self.camera.clone(),
             permission: self.permission.clone(),

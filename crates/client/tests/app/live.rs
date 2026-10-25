@@ -43,6 +43,7 @@ mod lines;
 mod native_share;
 mod rules;
 mod sound_help;
+mod tones;
 #[cfg(target_os = "windows")]
 mod windows_share;
 
