@@ -94,7 +94,7 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
             state.update(cx, |state, cx| state.alert_pressed(tag, cx));
         }
     });
-    // The tray icon of the system, and the presses on its menu (ADR 0757). Only this start
+    // The tray icon of the system, and the presses on its menu (ADR 0759). Only this start
     // shows it: a test and the screen tool keep what it would show.
     let held = state.downgrade();
     let tray = crate::tray::platform(cx, move |action, cx| {

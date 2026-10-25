@@ -1,5 +1,5 @@
 //! The icon of the application in the notification area of Windows, with its menu
-//! (ADR 0757). A hidden window of the thread receives the messages of the icon; the message
+//! (ADR 0759). A hidden window of the thread receives the messages of the icon; the message
 //! loop of the thread, which the window library runs, gives them to its window procedure.
 //! One icon exists per thread.
 

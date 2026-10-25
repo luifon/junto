@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The pictures of the tray icon (ADR 0757), one for each call state: on macOS a PNG picture
+/// The pictures of the tray icon (ADR 0759), one for each call state: on macOS a PNG picture
 /// for the menu bar, elsewhere straight RGBA pixels in each size of `junto_icon::TRAY`. The
 /// file `tray-pictures.rs` lists them as `(mark, side, bytes)`, with the mark `plain` outside
 /// a call.

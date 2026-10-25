@@ -1,5 +1,5 @@
 //! The tray icon of the call of this device and its menu, through the kept tray of a start
-//! without the tray of the system (ADR 0757), without a media server.
+//! without the tray of the system (ADR 0759), without a media server.
 
 use gpui::TestAppContext;
 use junto_client::text::tray as text;

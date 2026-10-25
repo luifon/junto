@@ -1,4 +1,4 @@
-//! The tray icon of macOS: a status item of the menu bar (ADR 0757).
+//! The tray icon of macOS: a status item of the menu bar (ADR 0759).
 
 use std::cell::RefCell;
 use std::rc::Rc;

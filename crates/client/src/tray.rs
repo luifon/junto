@@ -1,5 +1,5 @@
 //! The icon of the application in the menu bar of macOS, in the notification area of Windows
-//! and in the status area of a Linux desktop, with a menu of call actions (ADR 0757).
+//! and in the status area of a Linux desktop, with a menu of call actions (ADR 0759).
 //!
 //! The state of the application derives a [`TrayState`] at each change and tells it to a
 //! [`SystemTray`]. Only the start of the binary installs the tray of the system; every other

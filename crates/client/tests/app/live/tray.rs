@@ -1,4 +1,4 @@
-//! The tray menu acts on a real call (ADR 0757): the kept tray of a start without the tray of
+//! The tray menu acts on a real call (ADR 0759): the kept tray of a start without the tray of
 //! the system takes the presses.
 
 use gpui::TestAppContext;

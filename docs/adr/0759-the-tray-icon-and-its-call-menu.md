@@ -1,4 +1,4 @@
-# 0757. The tray icon and its call menu
+# 0759. The tray icon and its call menu
 
 ## Status
 

@@ -83,7 +83,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The status item of the menu bar (ADR 0757), in the versions that gpui and the client use.
+# The status item of the menu bar (ADR 0759), in the versions that gpui and the client use.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
@@ -126,7 +126,7 @@ rustix = { version = "1", features = ["pty"] }
 # exist on Windows only and one that exists on macOS only: the library reads and sets owners
 # and access lists (ADR 0711), attaches a program of the Windows subsystem to the console of
 # its parent, sets the taskbar properties of a window (ADR 0755), shows the icon of the
-# notification area of Windows and the status item of the macOS menu bar (ADR 0757), and the
+# notification area of Windows and the status item of the macOS menu bar (ADR 0759), and the
 # tool turns the echo of the console off (ADR 0711).
 [lints.rust]
 unsafe_code = "deny"

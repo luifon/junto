@@ -1,4 +1,4 @@
-//! The status item of the application in the menu bar of macOS, with its menu (ADR 0757). A
+//! The status item of the application in the menu bar of macOS, with its menu (ADR 0759). A
 //! menu entry calls an Objective-C method of a target object; the class of that object is
 //! defined here, which needs unsafe code.
 

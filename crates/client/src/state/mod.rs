@@ -587,7 +587,7 @@ pub struct AppState {
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
     kept: crate::notify::KeptNotifier,
-    /// The tray icon (ADR 0757).
+    /// The tray icon (ADR 0759).
     tray: std::rc::Rc<dyn crate::tray::SystemTray>,
     /// The tray of a start without the tray icon of the system.
     kept_tray: crate::tray::KeptTray,
