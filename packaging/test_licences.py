@@ -85,7 +85,7 @@ class ClientLicenceTests(unittest.TestCase):
         self.assertTrue(icons.startswith("Lucide icons ") and icons.endswith(", and mic-held: LICENSE"), icons)
         for drawing in licences.LUCIDE.glob("*.svg"):
             self.assertIn(f" {drawing.stem},", icons)
-        apache =licences.normal((licences.ROOT / "LICENSE").read_bytes())
+        apache = licences.normal((licences.ROOT / "LICENSE").read_bytes())
         self.assertEqual([text for text, _ in blocks(document)].count(apache), 1, "the Apache text is printed once")
         self.assertIn("livekit 0.9.4, standard text of Apache-2.0", found[apache])
 

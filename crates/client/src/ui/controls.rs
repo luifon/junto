@@ -111,7 +111,7 @@ impl RenderOnce for Toggle {
                     .h(u(18.0))
                     .rounded(u(9.0))
                     .bg(Hsla::from(if self.on {
-                        colors.cypress
+                        colors.toggle_on
                     } else {
                         colors.toggle_off
                     }))
@@ -122,7 +122,7 @@ impl RenderOnce for Toggle {
                             .left(u(if self.on { 18.0 } else { 2.0 }))
                             .size(u(14.0))
                             .rounded_full()
-                            .bg(Hsla::from(colors.travertine_hi)),
+                            .bg(Hsla::from(colors.toggle_knob)),
                     ),
             )
             .child(

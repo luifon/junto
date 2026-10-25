@@ -128,16 +128,15 @@ fn offers_downloads(recording: &Recording, model: &ServerModel) -> bool {
 
 /// The files of a recording as its card states them, from the recording that the client
 /// core holds open for the page.
+/// `channel` is the name of the row, which names an archived channel too.
 fn files(
     server_id: ServerId,
     recording: &Recording,
+    channel: &str,
     model: &ServerModel,
     known: &Known,
     accounts: &HashMap<AccountId, String>,
 ) -> RecordingCard {
-    let channel = model
-        .readable_channel(recording.channel_id)
-        .map_or("", |channel| channel.name.as_str());
     recorded::card(&recorded::CardSource {
         server_id,
         recording_id: recording.id,
@@ -190,7 +189,10 @@ pub fn recordings(
                     && list.files_open == Some(recording.id)
                     && let Some(accounts) = &accounts
                 {
-                    row.files = Some(files(server_id, recording, model, known, accounts));
+                    let channel = row.channel.clone().unwrap_or_default();
+                    row.files = Some(files(
+                        server_id, recording, &channel, model, known, accounts,
+                    ));
                 }
                 row
             })
