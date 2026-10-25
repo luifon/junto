@@ -135,8 +135,10 @@ pub struct Colors {
     pub cinnabar_ink: Rgba,
     /// An unlit segment of a level meter.
     pub meter_off: Rgba,
-    /// A switch that is off.
+    /// The track of a switch that is off, the track of a switch that is on, and its knob.
     pub toggle_off: Rgba,
+    pub toggle_on: Rgba,
+    pub toggle_knob: Rgba,
     /// The ground of the stage of a call.
     pub stage: Rgba,
     /// The plate with the name on the tile of a person, and the edge of the avatar there.
@@ -384,7 +386,9 @@ impl Theme {
                 cinnabar_wash_rule: hex(0xD9A898),
                 cinnabar_ink: hex(0x7A2416),
                 meter_off: hex(0xC2B291),
-                toggle_off: hex(0xA99A80),
+                toggle_off: hex(0x8A7B62),
+                toggle_on: hex(0x2F4B3C),
+                toggle_knob: hex(0xFAF5EA),
                 stage: hex(0x1C1815),
                 plate: hex(0x161310),
                 tile_edge: hex(0x14110F),
@@ -491,7 +495,7 @@ impl Theme {
             bone_hi: hex(0xF7F6F2),
             bone_label: hex(0xB9BCBB),
             terracotta: hex(0x6FD3E8),
-            terracotta_deep: hex(0x6FD3E8),
+            terracotta_deep: hex(0xA6E6F2),
             terracotta_wash: hex(0x1B3F48),
             terracotta_wash_rule: hex(0x2C6573),
             code_wash: hex(0x0D0F11),
@@ -512,7 +516,9 @@ impl Theme {
             cinnabar_wash_rule: hex(0x7A2A24),
             cinnabar_ink: hex(0xFF9A90),
             meter_off: hex(0x2D3338),
-            toggle_off: hex(0x4A535A),
+            toggle_off: hex(0x6A7278),
+            toggle_on: hex(0x278A55),
+            toggle_knob: hex(0xECEAE4),
             stage: hex(0x0D0F11),
             plate: hex(0x08090A),
             tile_edge: hex(0x08090A),
@@ -525,7 +531,7 @@ impl Theme {
             call_on_text: hex(0x0D0F11),
             call_disabled_rule: hex(0x2D3338),
             call_disabled_text: hex(0x6A7278),
-            cinnabar_deep: hex(0xB3261E),
+            cinnabar_deep: hex(0xFF7B72),
             on_cinnabar: hex(0x0D0F11),
             scrim: hex_alpha(0x000000, 0.6),
             scrim_soft: hex_alpha(0x000000, 0.5),
@@ -709,11 +715,49 @@ mod tests {
                 ),
                 ("call_on_text on call_on", c.call_on_text, c.call_on),
                 ("on_cinnabar on cinnabar", c.on_cinnabar, c.cinnabar),
+                (
+                    "on_terracotta on terracotta_deep (hover)",
+                    c.on_terracotta,
+                    c.terracotta_deep,
+                ),
+                (
+                    "on_cinnabar on cinnabar_deep (hover)",
+                    c.on_cinnabar,
+                    c.cinnabar_deep,
+                ),
             ];
             for (name, text, ground) in pairs {
                 let ratio = contrast(text, ground);
                 assert!(ratio >= 4.5, "{name}: {ratio:.2}");
             }
+        }
+    }
+
+    /// The parts of a switch have a contrast of at least 3 to 1 with what is next to them
+    /// (WCAG AA for the parts of a control), and a button that is filled with an accent
+    /// changes its ground under the pointer.
+    #[test]
+    fn the_parts_of_a_control_are_seen_in_both_themes() {
+        for theme in [Theme::stone(), Theme::broadcast()] {
+            let c = theme.colors;
+            let pairs = [
+                ("knob on the track that is on", c.toggle_knob, c.toggle_on),
+                ("knob on the track that is off", c.toggle_knob, c.toggle_off),
+                ("track that is on, on plaster", c.toggle_on, c.plaster),
+                ("track that is on, on travertine", c.toggle_on, c.travertine),
+                ("track that is off, on plaster", c.toggle_off, c.plaster),
+                (
+                    "track that is off, on travertine",
+                    c.toggle_off,
+                    c.travertine,
+                ),
+            ];
+            for (name, part, ground) in pairs {
+                let ratio = contrast(part, ground);
+                assert!(ratio >= 3.0, "{name}: {ratio:.2}");
+            }
+            assert_ne!(c.terracotta_deep, c.terracotta);
+            assert_ne!(c.cinnabar_deep, c.cinnabar);
         }
     }
 
