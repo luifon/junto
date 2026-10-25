@@ -19,6 +19,7 @@ Measured on 2026-10-17 on a Mac with Apple silicon, macOS 26, inside the machine
 | The same call with the own camera and the camera of the other person | 77.9 MiB | 0.9 MiB | 14.6 MiB | 24.1% | 26.2% | 21 |
 | The same call, the own screen shared and the share of the other person watched (1920 × 1080, 30 pictures a second) | 158.6 MiB | 6.2 MiB | 33.6 MiB | 34.6% | 37.7% | 24 |
 | A call with three other people, each with a camera (1280 × 720, 30 pictures a second), and the own camera | 90.9 MiB | 1.0 MiB | 16.1 MiB | 25.2% | 26.2% | 22 |
+| The call with the two cameras, the own screen also shared (`share-camera`) | not measured yet | | | | | |
 
 These figures are for the code before the changes below. The readings did not grow over the 2 minutes of any mode. After the change of the bar of actions, the idle mode measured 27.2 MiB (Rust 8.5 MiB) and the text mode 30.8 MiB (Rust 10.3 MiB). After the change of the watched share, the share mode measured 125.0 to 138.5 MiB (Rust 15.8 MiB, graphics 1.3 MiB). See "What was changed".
 

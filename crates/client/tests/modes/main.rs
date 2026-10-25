@@ -129,16 +129,20 @@ enum Mode {
     /// A call with three other people who each send a microphone and a camera, with the
     /// camera of this device.
     Cameras,
+    /// The call of `Camera`; this device also shares its screen. The window draws the two
+    /// cameras and watches no share.
+    ShareCamera,
 }
 
 #[cfg(target_os = "macos")]
-const MODES: [Mode; 6] = [
+const MODES: [Mode; 7] = [
     Mode::Idle,
     Mode::Text,
     Mode::Voice,
     Mode::Camera,
     Mode::Share,
     Mode::Cameras,
+    Mode::ShareCamera,
 ];
 
 #[cfg(target_os = "macos")]
@@ -151,11 +155,21 @@ impl Mode {
             Mode::Camera => "camera",
             Mode::Share => "share",
             Mode::Cameras => "cameras",
+            Mode::ShareCamera => "share-camera",
         }
     }
 
     fn named(name: &str) -> Option<Self> {
         MODES.into_iter().find(|mode| mode.name() == name)
+    }
+
+    /// The cameras that the window draws in the mode: its own and those of the others.
+    fn cameras(self) -> usize {
+        match self {
+            Mode::Camera | Mode::ShareCamera => 2,
+            Mode::Cameras => 4,
+            Mode::Idle | Mode::Text | Mode::Voice | Mode::Share => 0,
+        }
     }
 
     /// The modes in which the window shows the text channel with its long history.
@@ -191,7 +205,7 @@ impl Mode {
         match self {
             Mode::Idle | Mode::Text => Vec::new(),
             Mode::Voice => vec![with("440", &[])],
-            Mode::Camera => vec![with("440", &CAMERA)],
+            Mode::Camera | Mode::ShareCamera => vec![with("440", &CAMERA)],
             Mode::Share => vec![with("440", &SCREEN)],
             Mode::Cameras => vec![
                 with("440", &CAMERA),
@@ -570,25 +584,21 @@ fn check_mode(
             wheel.turns, wheel.missed
         ));
     }
-    let wanted_cameras = match mode {
-        Mode::Camera => 2,
-        Mode::Cameras => 4,
-        _ => 0,
-    };
+    let wanted_cameras = mode.cameras();
     if cameras != wanted_cameras {
         failures.push(format!("{cameras} cameras are drawn, not {wanted_cameras}"));
     }
-    if mode == Mode::Share {
+    if matches!(mode, Mode::Share | Mode::ShareCamera) {
         let share = window.view().call.map(|call| call.share);
         if share != Some(junto_client::state::view::OwnShare::Running) {
             failures.push(format!("the own share is {share:?}"));
         }
-        if !watches_a_share(window) {
-            failures.push("the window does not watch the share of the other person".to_owned());
-        }
+    }
+    if mode == Mode::Share && !watches_a_share(window) {
+        failures.push("the window does not watch the share of the other person".to_owned());
     }
     // A video mode draws pictures of the call through the whole time.
-    if matches!(mode, Mode::Camera | Mode::Share | Mode::Cameras) && drawn.1 < 100 {
+    if !matches!(mode, Mode::Idle | Mode::Text | Mode::Voice) && drawn.1 < 100 {
         failures.push(format!("only {} drawings for pictures", drawn.1));
     }
     failures
@@ -812,7 +822,7 @@ fn enter_call(
     window.until("the window hears the other people", |window| {
         harness::heard(&window.sound, 440.0) > harness::HEARD_DBFS
     });
-    if matches!(mode, Mode::Camera | Mode::Cameras) {
+    if matches!(mode, Mode::Camera | Mode::Cameras | Mode::ShareCamera) {
         start_camera(window);
     }
     if mode == Mode::Share {
@@ -824,6 +834,8 @@ fn enter_call(
         window.state.update(&mut window.cx, |state, _| {
             state.watch_share(junto_media::engine::ShareId::Of(sharer));
         });
+    }
+    if matches!(mode, Mode::Share | Mode::ShareCamera) {
         let seat = window
             .state
             .read_with(&window.cx, |state, _| state.calls().view().call)
@@ -840,16 +852,14 @@ fn enter_call(
             window.view().call.map(|call| call.share)
                 == Some(junto_client::state::view::OwnShare::Running)
         });
+    }
+    if mode == Mode::Share {
         window.until(
             "the window draws the share of the other person",
             watches_a_share,
         );
     }
-    let cameras = match mode {
-        Mode::Camera => 2,
-        Mode::Cameras => 4,
-        _ => 0,
-    };
+    let cameras = mode.cameras();
     window.until("the window draws every camera of the mode", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state.calls().camera_pictures().borrow().len()

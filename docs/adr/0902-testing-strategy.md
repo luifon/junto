@@ -131,7 +131,7 @@ Tests on real systems:
     thread of the test, so a piece includes them; work on the runtime of the client and
     on the threads of the media engine is not included, as in the product.
 
-- On macOS the test target `modes` measures one window per process in six modes of the
+- On macOS the test target `modes` measures one window per process in seven modes of the
   use and prints the memory, the processor share and the threads of each (ADR 0914).
 
 - The native targets run only with their own variable (`JUNTO_TEST_FRAMES=1`,
