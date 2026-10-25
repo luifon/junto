@@ -818,12 +818,15 @@ impl Client {
             .find(|(held, _, _)| *held == part)
             .map_or(0, |(_, tries, _)| *tries);
         self.messages.retries.retain(|(held, _, _)| *held != part);
-        // A page is read again when the reader asks again. Every other read follows an
-        // event that is not delivered a second time, so the client tries again by itself.
-        // A reader can ask for the messages of a place again and not for its summary: the
+        // The first page of a place is read again when the reader asks again. A page before
+        // or after the loaded messages is tried again as other reads are: the list asks for
+        // it once for each number of its rows (ADR 0740). Every other read follows an event
+        // that is not delivered a second time, so the client tries again by itself. A
+        // reader can ask for the messages of a place again and not for its summary: the
         // read of a summary has no last try.
         let again = transient(&error)
             && match part {
+                Part::Messages(_, Reach::Older | Reach::Newer) => tries < READ_TRIES,
                 Part::Messages(..)
                 | Part::Pins(_)
                 | Part::MoreThreads
@@ -1054,6 +1057,9 @@ impl Client {
                     self.pending.retain(|pending| {
                         !matches!(pending.load, Load::Part(Part::Messages(of, _)) if of == place)
                     });
+                    self.messages.retries.retain(|(part, _, _)| {
+                        !matches!(part, Part::Messages(of, _) if *of == place)
+                    });
                     if let Some(timeline) = self
                         .model
                         .as_mut()
@@ -1063,7 +1069,13 @@ impl Client {
                         self.model_changed = true;
                     }
                 }
-                self.read(Part::Messages(place, reach));
+                // A page that failed for a while waits for its next try, which the client
+                // makes by itself.
+                let part = Part::Messages(place, reach);
+                if self.messages.retries.iter().any(|(held, _, _)| *held == part) {
+                    return;
+                }
+                self.read(part);
             }
             Command::MessageAnchor { place, position } => {
                 if let Some(wanted) = self.messages.wanted.get_mut(&place) {

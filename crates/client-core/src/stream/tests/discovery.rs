@@ -1042,6 +1042,35 @@ async fn a_place_that_the_server_no_longer_gives_holds_no_message() {
     assert_eq!(model.timeline(place).unwrap().failed, None);
 }
 
+// The list asks for a page once per number of its rows (ADR 0740), so a page read that
+// failed for a while is read again by the client core.
+#[tokio::test(start_paused = true)]
+async fn a_page_of_older_messages_that_failed_for_a_while_is_read_again() {
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    let text_place = rig.scene.text_place();
+    let other = room.other;
+    room.chat(|chat| {
+        chat.messages = (1..=300)
+            .map(|position| message(text_place, position, other, "x"))
+            .collect();
+    });
+    rig.live.read_latest_messages(place);
+    rig.model_when("the latest page", |model| {
+        positions(model, place).first() == Some(&251)
+    })
+    .await;
+    rig.http.fail("/messages", 503, "unavailable");
+    rig.http.fail("/messages", 503, "unavailable");
+    rig.live.read_older_messages(place);
+    let model = rig
+        .model_when("the older page", |model| {
+            positions(model, place).first() == Some(&201)
+        })
+        .await;
+    assert!(!model.timeline(place).unwrap().reading.older);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_page_that_starts_at_a_message_that_is_gone_does_not_empty_its_place() {
     let room = room().await;
