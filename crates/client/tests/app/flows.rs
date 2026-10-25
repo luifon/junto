@@ -333,9 +333,7 @@ fn removing_a_waiting_server_withdraws_its_request(cx: &mut TestAppContext) {
 /// refused because the key has an account, the server stays without a failure sentence, and
 /// the window opens the account (ADR 0712).
 #[gpui::test]
-fn a_removal_that_meets_an_approval_keeps_the_server_and_tells_no_failure(
-    cx: &mut TestAppContext,
-) {
+fn a_removal_that_meets_an_approval_keeps_the_server_and_tells_no_failure(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
