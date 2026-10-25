@@ -32,7 +32,8 @@ WEBRTC_ARCHITECTURES = {"aarch64": "arm64", "x86_64": "x64"}
 @dataclass
 class Product:
     """The programs that a licence file covers: their Cargo packages, the sentence that names
-    them, what holds the file, and whether the fonts of the client are compiled into them."""
+    them, what holds the file, and whether the fonts and the icons of the client are compiled into
+    them."""
     packages: list
     programs: str
     holder: str
@@ -491,6 +492,21 @@ def font_section():
     return section
 
 
+LUCIDE = ROOT / "crates/client/assets/icons/lucide"
+
+
+def icon_section():
+    icons = sorted(path.stem for path in LUCIDE.glob("*.svg"))
+    if not icons:
+        raise ValueError(f"no icon in {LUCIDE}")
+    return Section("Icons", [
+        "The icons of Lucide that are compiled into junto, unchanged, under the ISC licence of Lucide. The icons "
+        "that Lucide derived from the Feather project, which its licence file names, are also under the MIT "
+        "licence of Feather. The icon mic-held of junto is drawn from the Lucide icons mic-off and lock and is "
+        "under the same licences."],
+        [(f"Lucide icons {', '.join(icons)}, and mic-held: LICENSE", (LUCIDE / "LICENSE").read_bytes())])
+
+
 def normal(text):
     lines = text.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     return "\n".join(line.rstrip() for line in lines).strip("\n")
@@ -512,7 +528,8 @@ def document(version, triple, build, extra=(), workspace=ROOT, product=CLIENT):
         texts[numbers[key] - 1][1].append(label)
         return numbers[key]
 
-    pictures = "; the icons and the other pictures of the programs are part of Junto" if product.fonts else ""
+    pictures = ("; the pictures of the programs are part of Junto, except the icons that the section Icons names"
+                if product.fonts else "")
     lines = [f"Junto {version} for {triple}: third-party licences", "",
              f"This file names the third-party code in {product.holder} and gives its licence texts. Junto is "
              f"under the Apache License 2.0, in the file Junto-LICENSE.txt beside this file{pictures}. The licence "
@@ -550,6 +567,7 @@ def document(version, triple, build, extra=(), workspace=ROOT, product=CLIENT):
             sections.append(webrtc_section(build, triple, webrtc_tag(crate.directory)))
     if product.fonts:
         sections.append(font_section())
+        sections.append(icon_section())
     sections.extend(extra)
     for section in sections:
         lines += ["", RULE, section.title, RULE, "", *section.description]
