@@ -10,7 +10,8 @@ use junto_client_core::protocol::transcript::TranscriptState;
 use crate::state::admin::view::recordings::RecordingLine;
 
 pub const HELP: &str = "The recordings of the calls of this workspace that your account can see, the newest \
-     first. This version of Junto lists them; it does not play, save or remove a recording.";
+     first. \"Download\" lists the files and the transcript of a recording; each one is saved \
+     to your download folder. This page does not play or remove a recording.";
 pub const NO_RECORDINGS: &str = "This workspace has no recording that your account can see.";
 pub const LOAD_OLDER: &str = "Load older";
 pub const READ_AGAIN: &str = "Read again";
@@ -180,6 +181,8 @@ mod tests {
             transcript: TranscriptState::None,
             transcript_lines: 0,
             bytes: None,
+            downloads: false,
+            files: None,
         }
     }
 

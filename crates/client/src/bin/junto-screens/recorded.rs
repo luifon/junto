@@ -1,11 +1,12 @@
 //! The screens of a finished recording (ADR 0744, view G of the design): the card in the
 //! chat of its voice channel with each state of its job and of its transcript, the list
-//! of its files, the downloads, the question before a removal, and the transcript in the
-//! side panel.
+//! of its files, the downloads, the question before a removal, the transcript in the side
+//! panel, and the files of the recording on the page of the recordings (ADR 0784).
 
 use std::sync::Arc;
 
 use junto_client::shell::Shell;
+use junto_client::state::admin::{AdminOpen, AdminPage, RecordingList};
 use junto_client::state::transcript_work::TranscriptChange;
 use junto_client::state::view::{Known, ServerSnapshot};
 use junto_client::text;
@@ -477,6 +478,47 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                 },
                 cx,
             );
+        },
+    )?;
+    // The page of the recordings of the administration lists the files of the recording
+    // in its row, with a download that runs and one that ended.
+    studio.draw(
+        Screen::new("admin-recording-files", acme(Some(ready()), |_| {})),
+        |shell, window, cx| {
+            show(
+                shell,
+                |known| {
+                    known.segment_downloads.insert(
+                        (server_id(), segment_id(0)),
+                        progress(DownloadStage::Receiving, 148_000_000, 361_000_000),
+                    );
+                    known.text_downloads.insert(
+                        (server_id(), recording_id()),
+                        progress(
+                            DownloadStage::Saved("/downloads/Daily transcript.txt".into()),
+                            12_000,
+                            12_000,
+                        ),
+                    );
+                },
+                cx,
+            );
+            let open = AdminOpen::Server {
+                server_id: server_id(),
+                page: AdminPage::Recordings,
+            };
+            shell.open_admin(open, window, cx);
+            let recordings = match ready().detail {
+                Loadable::Loaded(detail) => vec![detail.recording],
+                _ => Vec::new(),
+            };
+            let list =
+                RecordingList::loaded(server_id(), id(10), person("Luca"), recordings, false)
+                    .with_files_open(recording_id());
+            shell
+                .state()
+                .clone()
+                .update(cx, |state, cx| state.show_recording_list_fixture(list, cx));
         },
     )?;
     studio.draw(

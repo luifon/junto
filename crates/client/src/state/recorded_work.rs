@@ -86,9 +86,17 @@ impl AppState {
     }
 
     /// Holds the recordings that the window shows open in the client core, releases the
-    /// others, and reads the first lines of a transcript that has some.
+    /// others, and reads the first lines of a transcript that has some. The recording
+    /// whose files the page of the recordings lists is held open too; its lines are not
+    /// read.
     pub(super) fn follow_recordings(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        let wanted = self.wanted_recordings(shown);
+        let with_lines = self.wanted_recordings(shown);
+        let mut wanted = with_lines.clone();
+        if let Some(key) = self.admin_recording_files()
+            && !wanted.contains(&key)
+        {
+            wanted.push(key);
+        }
         let gone: Vec<(ServerId, RecordingId)> = self
             .open_recordings
             .keys()
@@ -132,7 +140,7 @@ impl AppState {
         }
         // The lines of a transcript are read when a reader asks for them: the first page
         // of each shown transcript, once, and again after the state was replaced.
-        for (server_id, recording_id) in wanted {
+        for (server_id, recording_id) in with_lines {
             let Some(server) = self.client.server(server_id) else {
                 continue;
             };

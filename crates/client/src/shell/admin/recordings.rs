@@ -1,17 +1,24 @@
 //! The page of the recordings of a workspace (ADR 0784): a list that is read in pages on
-//! demand. It shows no player, and no control that saves or removes a recording.
+//! demand. A row lists the files and the transcript of its recording for download. The
+//! page shows no player, and no control that removes a recording.
 
 use super::list::Row;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
 };
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
+use junto_client_core::protocol::transcript::TranscriptState;
+use junto_client_core::transfers::DownloadStage;
 
 use super::{line, named, page_title, sentence};
+use crate::assets::Icon;
 use crate::shell::Shell;
+use crate::shell::recorded::file_title;
+use crate::state::RecordedFile;
 use crate::state::admin::AdminPage;
 use crate::state::admin::view::AdminView;
 use crate::state::admin::view::recordings::{RecordingLine, RecordingsPage, RecordingsRead};
+use crate::state::recorded::{CardState, FileKind, RecordingCard};
 use crate::text;
 use crate::text::admin::recordings as txt;
 use crate::theme::{Theme, theme, u};
@@ -24,19 +31,32 @@ pub(crate) struct Ui {
     pub(crate) asked: Option<(ServerId, WorkspaceId)>,
 }
 
-/// One recording. The name of the channel and the name of the person are text of a
-/// server: each has a line of its own that is cut at the width of the row.
-fn recording_row(row: &RecordingLine, theme: &Theme) -> AnyElement {
-    let colors = theme.colors;
-    let detail = |text: String| {
-        div()
-            .typeface(theme.types.small, theme)
-            .ink(colors.ink_2)
-            .truncate()
-            .child(text)
-    };
-    let content = line(theme).child(
-        div()
+impl Shell {
+    /// One recording. The name of the channel and the name of the person are text of a
+    /// server: each has a line of its own that is cut at the width of the row. A row with
+    /// saved files has "Download", which lists them under the text of the row.
+    fn render_recording_row(
+        &mut self,
+        server_id: ServerId,
+        index: usize,
+        row: &RecordingLine,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let recording_id = row.id;
+        let detail = |text: String| {
+            div()
+                .typeface(theme.types.small, theme)
+                .ink(colors.ink_2)
+                .truncate()
+                .child(text)
+        };
+        let files = row
+            .files
+            .as_ref()
+            .map(|card| self.render_row_files(index, card, theme, cx));
+        let lines = div()
             .flex_1()
             .min_w_0()
             .child(
@@ -57,15 +77,224 @@ fn recording_row(row: &RecordingLine, theme: &Theme) -> AnyElement {
             .child(detail(txt::transcript(
                 row.transcript,
                 row.transcript_lines,
-            ))),
-    );
-    named(format!("recording-row-{}", row.id), content)
-        .flex()
-        .flex_col()
-        .into_any_element()
-}
+            )))
+            .children(files);
+        let mut content = line(theme).items_start().child(lines);
+        if row.downloads {
+            content = content.child(
+                named(
+                    format!("recording-download-{recording_id}"),
+                    Button::new(("recording-download", index))
+                        .icon(Icon::Download)
+                        .icon_colour(colors.cypress)
+                        .label(text::DOWNLOAD)
+                        .tooltip(text::RECORDING_FILES)
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.toggle_recording_files(server_id, recording_id, cx);
+                            });
+                        })),
+                )
+                .mt(u(2.0)),
+            );
+        }
+        named(format!("recording-row-{recording_id}"), content)
+            .flex()
+            .flex_col()
+            .into_any_element()
+    }
 
-impl Shell {
+    /// The files of a recording and its transcript as text, each with a control that saves
+    /// it to the download directory, and the downloads with their progress, as the card of
+    /// the recording has them (ADR 0744).
+    fn render_row_files(
+        &mut self,
+        index: usize,
+        card: &RecordingCard,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (server_id, recording_id) = (card.server_id, card.recording_id);
+        let panel = div()
+            .flex()
+            .flex_col()
+            .gap(u(6.0))
+            .mt(u(6.0))
+            .debug_selector(move || format!("recording-files-{recording_id}"));
+        let detail = match &card.state {
+            CardState::Reading => {
+                return panel
+                    .child(sentence(text::RECORDING_READING, theme))
+                    .into_any_element();
+            }
+            // The server answers "not found" also for a recording that the account may
+            // read later (ADR 0604): both states can be read again.
+            CardState::Gone | CardState::Failed => {
+                let reason = if card.state == CardState::Gone {
+                    text::RECORDING_GONE
+                } else {
+                    text::RECORDING_NOT_READ
+                };
+                return panel
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(8.0))
+                            .child(sentence(reason, theme).flex_1())
+                            .child(
+                                Button::new(("recording-files-reload", index))
+                                    .icon(Icon::Retry)
+                                    .label(text::TRY_AGAIN)
+                                    .h(u(28.0))
+                                    .px(u(10.0))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.reload_recording(server_id, recording_id, cx);
+                                        });
+                                    })),
+                            ),
+                    )
+                    .into_any_element();
+            }
+            CardState::Shown(detail) => detail,
+        };
+        let mut choices = div().flex().flex_wrap().gap(u(6.0));
+        for (position, file) in detail.files.iter().enumerate() {
+            let (segment_id, stem) = (file.segment_id, file.stem.clone());
+            let mut button = Button::new(("recording-file", index * 1000 + position))
+                .icon(match file.kind {
+                    FileKind::Video => Icon::Play,
+                    FileKind::Microphone => Icon::Microphone,
+                    FileKind::ShareSound => Icon::Screen,
+                })
+                .label(format!(
+                    "{} · {}",
+                    file_title(file),
+                    text::file_size(file.bytes)
+                ))
+                .h(u(28.0))
+                .px(u(10.0))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.save_recording_file(
+                            server_id,
+                            recording_id,
+                            RecordedFile::Segment(segment_id),
+                            &stem,
+                            false,
+                            cx,
+                        );
+                    });
+                }));
+            if file.problem.is_some() {
+                button = button.tooltip(text::FILE_FAILED_CHECK);
+            }
+            choices = choices.child(named(
+                format!("recording-file-{recording_id}-{position}"),
+                button,
+            ));
+        }
+        if matches!(
+            detail.transcript.state,
+            TranscriptState::Ready | TranscriptState::Partial
+        ) {
+            let stem = detail.text_stem.clone();
+            choices = choices.child(named(
+                format!("recording-text-{recording_id}"),
+                Button::new(("recording-text", index))
+                    .icon(Icon::List)
+                    .label(text::RECORDING_TRANSCRIPT_TEXT)
+                    .h(u(28.0))
+                    .px(u(10.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.save_recording_file(
+                                server_id,
+                                recording_id,
+                                RecordedFile::Text,
+                                &stem,
+                                false,
+                                cx,
+                            );
+                        });
+                    })),
+            ));
+        }
+        let problems: Vec<AnyElement> = detail
+            .files
+            .iter()
+            .filter_map(|file| {
+                let problem = file.problem.as_ref()?;
+                Some(sentence(format!("{}: {problem}", file_title(file)), theme).into_any_element())
+            })
+            .collect();
+        // The files that are saved, and what happened to each.
+        let mut downloads: Vec<AnyElement> = Vec::new();
+        for (position, file) in detail.files.iter().enumerate() {
+            if let Some(progress) = &file.download
+                && progress.stage != DownloadStage::Cancelled
+            {
+                let control = self.recorded_download(
+                    card,
+                    RecordedFile::Segment(file.segment_id),
+                    index * 1000 + position,
+                    progress,
+                    theme,
+                    cx,
+                );
+                downloads.push(Self::download_row(
+                    file_title(file),
+                    control,
+                    position,
+                    theme,
+                ));
+            }
+        }
+        if let Some(progress) = &detail.text_download
+            && progress.stage != DownloadStage::Cancelled
+        {
+            let control = self.recorded_download(
+                card,
+                RecordedFile::Text,
+                index * 1000 + 999,
+                progress,
+                theme,
+                cx,
+            );
+            downloads.push(Self::download_row(
+                text::RECORDING_TRANSCRIPT_TEXT.to_owned(),
+                control,
+                999,
+                theme,
+            ));
+        }
+        let refusal = card.refused.clone().map(|reason| {
+            div().flex_none().child(
+                Notice::error(reason)
+                    .selector("recording-files-refused")
+                    .action(
+                        Button::new(("recording-files-dismiss", index))
+                            .label(text::DISMISS)
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.dismiss_recording_refusal(server_id, recording_id, cx);
+                                });
+                            })),
+                    ),
+            )
+        });
+        let mut panel = panel.child(choices).children(problems).children(refusal);
+        if !downloads.is_empty() {
+            panel = panel.child(div().flex().flex_col().gap(u(2.0)).children(downloads));
+        }
+        panel.into_any_element()
+    }
+
     /// The page asks for its list again when it is shown again.
     pub(crate) fn reset_recordings_ui(&mut self) {
         self.admin.recordings.asked = None;
@@ -153,7 +382,7 @@ impl Shell {
             .chain(
                 page.rows
                     .iter()
-                    .map(|row| Row::new(format!("recording-{}", row.id), false)),
+                    .map(|row| Row::new(format!("recording-{}", row.id), row.downloads)),
             )
             .chain(std::iter::once(Row::new("recordings-footer", true).part()))
             .collect();
@@ -172,7 +401,7 @@ impl Shell {
                     .into_any_element();
                 }
                 if let Some(row) = page.rows.get(index - 1) {
-                    return recording_row(row, &theme);
+                    return this.render_recording_row(server_id, index, row, &theme, cx);
                 }
                 this.render_recordings_footer(server_id, &page, cx)
             },

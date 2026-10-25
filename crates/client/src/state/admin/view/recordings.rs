@@ -1,16 +1,20 @@
 //! The page of the recordings of a workspace (ADR 0784): the recordings that the server
 //! gives the account, the newest first, as the page has read them.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use junto_client_core::model::{ServerModel, WorkspaceModel};
-use junto_client_core::protocol::ids::{RecordingId, ServerId, WorkspaceId};
+use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::ids::{AccountId, RecordingId, ServerId, WorkspaceId};
 use junto_client_core::protocol::recording::{Recording, RecordingFailure, RecordingState};
 use junto_client_core::protocol::transcript::TranscriptState;
 use time::OffsetDateTime;
 
 use super::records::Names;
 use crate::state::admin::AdminState;
+use crate::state::recorded::{self, RecordingCard};
 use crate::state::view::Known;
 
 /// The number of recordings that one read asks for.
@@ -60,6 +64,11 @@ pub struct RecordingLine {
     pub transcript_lines: u32,
     /// The bytes of the files. Absent until the server has processed them.
     pub bytes: Option<u64>,
+    /// The row offers its files and its transcript for download.
+    pub downloads: bool,
+    /// The files of the recording, its transcript as text and their downloads, as the
+    /// card of the recording states them (ADR 0744), while the row lists its files.
+    pub files: Option<RecordingCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +103,61 @@ fn line(recording: &Recording, names: &Names<'_>) -> RecordingLine {
         transcript: recording.transcript,
         transcript_lines: recording.transcript_lines,
         bytes: recording.bytes,
+        downloads: false,
+        files: None,
     }
+}
+
+/// True when the page offers the files of a recording: the server has saved them, the
+/// state names its channel, and the permissions of the account in that channel, when the
+/// state holds them, include reading it. The list holds only recordings that the server
+/// lets the account read, by the rule of the routes of the files (ADR 0604), so a channel
+/// whose permissions the state does not hold, such as an archived one, takes the answer
+/// of the list.
+fn offers_downloads(recording: &Recording, model: &ServerModel) -> bool {
+    let saved = matches!(
+        recording.state,
+        RecordingState::Ready | RecordingState::PartlyFailed
+    );
+    let readable = match model.permissions_in(recording.channel_id) {
+        Some(held) => held.contains(&WorkspacePermission::ViewChannel),
+        None => model.readable_channel(recording.channel_id).is_some(),
+    };
+    saved && readable
+}
+
+/// The files of a recording as its card states them, from the recording that the client
+/// core holds open for the page.
+fn files(
+    server_id: ServerId,
+    recording: &Recording,
+    model: &ServerModel,
+    known: &Known,
+    accounts: &HashMap<AccountId, String>,
+) -> RecordingCard {
+    let channel = model
+        .readable_channel(recording.channel_id)
+        .map_or("", |channel| channel.name.as_str());
+    recorded::card(&recorded::CardSource {
+        server_id,
+        recording_id: recording.id,
+        open: model.recording(recording.id).map(Arc::as_ref),
+        channel,
+        channel_id: recording.channel_id,
+        names: accounts,
+        zone: known.zone,
+        today: known.today,
+        may_remove: false,
+        may_request: false,
+        downloads: &known.segment_downloads,
+        texts: &known.text_downloads,
+        removing: false,
+        requesting: false,
+        refused: known
+            .recording_refused
+            .get(&(server_id, recording.id))
+            .map(String::as_str),
+    })
 }
 
 /// The page of the recordings of the shown workspace.
@@ -112,11 +175,25 @@ pub fn recordings(
     let read =
         list.shown == Some((server_id, workspace_id)) && list.account == Some(model.account.id);
     let names = Names::new(server_id, model, known);
+    let accounts = list
+        .files_open
+        .filter(|_| read)
+        .map(|_| crate::state::notices::account_names(server_id, model, known));
     let rows: Vec<RecordingLine> = if read {
         list.recordings
             .iter()
             .filter(|recording| recording.workspace_id == workspace_id)
-            .map(|recording| line(recording, &names))
+            .map(|recording| {
+                let mut row = line(recording, &names);
+                row.downloads = offers_downloads(recording, model);
+                if row.downloads
+                    && list.files_open == Some(recording.id)
+                    && let Some(accounts) = &accounts
+                {
+                    row.files = Some(files(server_id, recording, model, known, accounts));
+                }
+                row
+            })
             .collect()
     } else {
         Vec::new()
@@ -145,20 +222,29 @@ pub fn recordings(
 mod tests {
     use std::sync::Arc;
 
-    use junto_client_core::model::{AdminModel, Collection};
+    use junto_client_core::model::{
+        AdminModel, Collection, Loadable, OpenRecording, TranscriptLines,
+    };
     use junto_client_core::protocol::account::OwnAccount;
     use junto_client_core::protocol::events::Cursor;
-    use junto_client_core::protocol::ids::{AccountId, CallId, ChannelId, StreamEpoch};
-    use junto_client_core::protocol::recording::{RecordingStop, RecordingStopReason};
+    use junto_client_core::protocol::ids::{
+        AccountId, CallId, ChannelId, RecordingSegmentId, StreamEpoch,
+    };
+    use junto_client_core::protocol::recording::{
+        FileCheck, RecordingDetail, RecordingSegment, RecordingStop, RecordingStopReason,
+        SegmentFile, SegmentSource, SegmentState,
+    };
     use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
     use junto_client_core::protocol::structure::{
         ArchivedChannel, Channel, ChannelKind, Workspace, WorkspaceMember,
     };
+    use junto_client_core::transfers::{DownloadProgress, DownloadStage};
     use time::UtcOffset;
 
     use super::*;
     use crate::state::admin::recordings::{RecordingList, RecordingsFailure};
     use crate::state::feed::Zone;
+    use crate::state::recorded::{CardState, FileKind};
 
     fn time() -> OffsetDateTime {
         // 15 January 2027, 08:00 UTC.
@@ -578,5 +664,198 @@ mod tests {
         assert_eq!(scene.page(&admin).rows.len(), 1);
         scene.snapshot.account.id = scene.ana;
         assert!(scene.page(&admin).rows.is_empty());
+    }
+
+    /// The state of the scene in which the account may read the channels of "Studio".
+    fn reading(scene: &Scene) -> ServerModel {
+        let mut model = scene.model();
+        Arc::make_mut(&mut model.workspaces[0]).permissions =
+            vec![WorkspacePermission::ViewChannel];
+        model
+    }
+
+    fn page_in(
+        scene: &Scene,
+        model: &ServerModel,
+        admin: &AdminState,
+        known: &Known,
+    ) -> RecordingsPage {
+        let workspace = model.workspace(scene.studio).unwrap();
+        recordings(scene.server_id, model, workspace, known, admin)
+    }
+
+    fn offered(scene: &Scene, model: &ServerModel, admin: &AdminState) -> Vec<bool> {
+        page_in(scene, model, admin, &known())
+            .rows
+            .iter()
+            .map(|row| row.downloads)
+            .collect()
+    }
+
+    #[test]
+    fn a_row_offers_its_files_when_the_server_saved_them_and_the_account_reads_the_channel() {
+        let mut scene = scene();
+        let admin = scene.list(vec![
+            scene.recording(scene.daily, RecordingState::Ready),
+            scene.recording(scene.daily, RecordingState::PartlyFailed),
+            scene.recording(scene.daily, RecordingState::Processing),
+            scene.recording(scene.daily, RecordingState::Recording),
+            scene.recording(scene.daily, RecordingState::Failed),
+            // A channel that the state does not hold.
+            scene.recording(ChannelId::generate(), RecordingState::Ready),
+        ]);
+        assert_eq!(
+            offered(&scene, &reading(&scene), &admin),
+            [true, true, false, false, false, false]
+        );
+        // The list of the channel does not hold "view channel".
+        assert_eq!(offered(&scene, &scene.model(), &admin), [false; 6]);
+
+        // An archived channel whose permissions the state does not hold takes the answer
+        // of the list; its permissions decide once the state holds them.
+        let retro = scene.retro.clone();
+        scene.snapshot.workspaces[0]
+            .channels
+            .retain(|channel| channel.id != retro.id);
+        scene.admin.archived = vec![(
+            scene.studio,
+            Collection::Loaded(vec![ArchivedChannel {
+                channel: retro.clone(),
+                archived_at: time(),
+                deletes_at: None,
+            }]),
+        )];
+        let admin = scene.list(vec![scene.recording(retro.id, RecordingState::Ready)]);
+        assert_eq!(offered(&scene, &reading(&scene), &admin), [true]);
+        scene.admin.channel_permissions = vec![(retro.id, Collection::Loaded(Vec::new()))];
+        assert_eq!(offered(&scene, &reading(&scene), &admin), [false]);
+        scene.admin.channel_permissions = vec![(
+            retro.id,
+            Collection::Loaded(vec![WorkspacePermission::ViewChannel]),
+        )];
+        assert_eq!(offered(&scene, &reading(&scene), &admin), [true]);
+    }
+
+    #[test]
+    fn the_open_row_states_the_files_and_the_downloads_of_its_recording() {
+        let scene = scene();
+        let ready = scene.recording(scene.daily, RecordingState::Ready);
+        let other = scene.recording(scene.daily, RecordingState::Ready);
+        let processing = scene.recording(scene.daily, RecordingState::Processing);
+        let mut admin = scene.list(vec![ready.clone(), other, processing.clone()]);
+        let mut model = reading(&scene);
+        let mut known = known();
+        let page = page_in(&scene, &model, &admin, &known);
+        assert!(page.rows.iter().all(|row| row.files.is_none()));
+
+        // The row lists its files: the client core reads the recording first.
+        admin.recordings.files_open = Some(ready.id);
+        let page = page_in(&scene, &model, &admin, &known);
+        let card = page.rows[0].files.clone().unwrap();
+        assert_eq!(
+            (card.server_id, card.recording_id),
+            (scene.server_id, ready.id)
+        );
+        assert_eq!(card.state, CardState::Reading);
+        assert!(page.rows[1..].iter().all(|row| row.files.is_none()));
+
+        // The recording is held open with a video, a microphone and a segment without a
+        // file.
+        let segment = |source, account_id, saved: bool| RecordingSegment {
+            id: RecordingSegmentId::generate(),
+            source,
+            account_id,
+            state: if saved {
+                SegmentState::Ended
+            } else {
+                SegmentState::Failed
+            },
+            failure: None,
+            requested_at: time(),
+            started_at: Some(time()),
+            ended_at: None,
+            duration_ms: None,
+            file: saved.then(|| SegmentFile {
+                media_type: "audio/ogg".to_owned(),
+                bytes: 9_400,
+                duration_ms: 2_000,
+                starts_at: None,
+                width: None,
+                height: None,
+                check: FileCheck::Passed,
+                problems: Vec::new(),
+                silent: false,
+                recovered: false,
+            }),
+        };
+        let segments = vec![
+            segment(SegmentSource::Composite, None, true),
+            segment(SegmentSource::Microphone, Some(scene.own), true),
+            segment(SegmentSource::Microphone, Some(scene.ana), false),
+        ];
+        let microphone = segments[1].id;
+        model.recordings = vec![Arc::new(OpenRecording {
+            id: ready.id,
+            detail: Loadable::Loaded(RecordingDetail {
+                recording: ready.clone(),
+                segments,
+            }),
+            transcript: Loadable::NotLoaded,
+            lines: TranscriptLines::default(),
+            failed: None,
+            gone: false,
+            stale: false,
+        })];
+        let receiving = DownloadProgress {
+            stage: DownloadStage::Receiving,
+            received: 4_000,
+            bytes: 9_400,
+            interrupted: false,
+        };
+        known
+            .segment_downloads
+            .insert((scene.server_id, microphone), receiving.clone());
+        known
+            .text_downloads
+            .insert((scene.server_id, ready.id), receiving.clone());
+        known
+            .recording_refused
+            .insert((scene.server_id, ready.id), "No folder.".to_owned());
+        let page = page_in(&scene, &model, &admin, &known);
+        let card = page.rows[0].files.clone().unwrap();
+        assert_eq!(card.refused.as_deref(), Some("No folder."));
+        let CardState::Shown(detail) = card.state else {
+            panic!("the files are shown");
+        };
+        let files: Vec<(FileKind, Option<&str>, &str)> = detail
+            .files
+            .iter()
+            .map(|file| (file.kind, file.person.as_deref(), file.stem.as_str()))
+            .collect();
+        // The files are named by the channel and the start in the time zone of the person.
+        assert_eq!(
+            files,
+            [
+                (FileKind::Video, None, "Daily 2027-01-15 10.00 video"),
+                (
+                    FileKind::Microphone,
+                    Some("Luca"),
+                    "Daily 2027-01-15 10.00 microphone Luca"
+                ),
+            ]
+        );
+        assert_eq!(detail.files[0].download, None);
+        assert_eq!(detail.files[1].download, Some(receiving.clone()));
+        assert_eq!(detail.text_stem, "Daily 2027-01-15 10.00 transcript");
+        assert_eq!(detail.text_download, Some(receiving));
+
+        // A row that offers no download lists no files, and a recording that the list
+        // does not hold opens nothing.
+        admin.recordings.files_open = Some(processing.id);
+        let page = page_in(&scene, &model, &admin, &known);
+        assert!(page.rows.iter().all(|row| row.files.is_none()));
+        admin.recordings.files_open = Some(RecordingId::generate());
+        let page = page_in(&scene, &model, &admin, &known);
+        assert!(page.rows.iter().all(|row| row.files.is_none()));
     }
 }

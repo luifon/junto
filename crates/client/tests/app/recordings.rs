@@ -44,6 +44,18 @@ impl Window {
         }
     }
 
+    /// The files of a recording that its row on the page of the recordings lists.
+    fn row_files(&mut self, recording_id: RecordingId) -> Option<CardDetail> {
+        let row = recordings_page(self)?
+            .rows
+            .into_iter()
+            .find(|row| row.id == recording_id)?;
+        match row.files?.state {
+            CardState::Shown(detail) => Some(*detail),
+            _ => None,
+        }
+    }
+
     /// Waits until a file of the recording is saved, and returns its path.
     #[track_caller]
     fn until_saved(
@@ -51,9 +63,21 @@ impl Window {
         recording_id: RecordingId,
         segment_id: Option<RecordingSegmentId>,
     ) -> std::path::PathBuf {
+        self.until_saved_in(Self::detail, recording_id, segment_id)
+    }
+
+    /// Waits until a file of the recording is saved as `read` states it, and returns its
+    /// path.
+    #[track_caller]
+    fn until_saved_in(
+        &mut self,
+        read: fn(&mut Self, RecordingId) -> Option<CardDetail>,
+        recording_id: RecordingId,
+        segment_id: Option<RecordingSegmentId>,
+    ) -> std::path::PathBuf {
         let mut saved = None;
         self.until("the file of the recording is saved", |window| {
-            let Some(detail) = window.detail(recording_id) else {
+            let Some(detail) = read(window, recording_id) else {
                 return false;
             };
             let progress = match segment_id {
@@ -764,6 +788,113 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
     });
     assert!(window.shows_named(format!("recording-row-{second}")));
     assert!(window.shows_named(format!("recording-row-{first}")));
+}
+
+#[gpui::test]
+fn the_recordings_page_saves_a_file_and_the_transcript_of_a_recording(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (server, admin, _directory, mut window, voice, luca) = recorded_scene(cx, &world);
+    let own = window.own_account();
+    let downloads = tempfile::tempdir().unwrap();
+    let target = downloads.path().to_path_buf();
+    window.state.update(&mut window.cx, |state, _| {
+        state.set_download_directory(target)
+    });
+    let recording_id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let line = Spoken {
+        account_id: own,
+        speaker: None,
+        start_ms: 100,
+        end_ms: 120,
+        text: "The plan for the week.".to_owned(),
+    };
+    world.run(server.transcribe(recording_id, std::slice::from_ref(&line)));
+    let held_open = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.client().servers())
+            .remove(0)
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.recording(recording_id).is_some())
+    };
+
+    window.open_administration();
+    window.until("the page of the recordings is offered", |window| {
+        window.shows("admin-nav-recordings")
+    });
+    window.click("admin-nav-recordings");
+    window.until("the row offers the files of the recording", |window| {
+        window.cx.executor().advance_clock(Duration::from_secs(1));
+        recordings_page(window).is_some_and(|page| {
+            page.rows.len() == 1
+                && page.rows[0].downloads
+                && page.rows[0].transcript == TranscriptState::Ready
+        }) && window.shows_named(format!("recording-download-{recording_id}"))
+    });
+    // The window reads the files of a recording only for the row that lists them.
+    assert!(!held_open(&mut window));
+
+    // "Download" lists the video, the two microphones, the shared sound and the
+    // transcript in the row.
+    window.click_named(format!("recording-download-{recording_id}"));
+    let detail = window.until_read(
+        "the row lists the files of the recording",
+        |window| window.row_files(recording_id),
+        |detail| {
+            detail
+                .as_ref()
+                .is_some_and(|detail| detail.files.len() == 4)
+        },
+    );
+    let detail = detail.unwrap();
+    assert!(window.shows_named(format!("recording-files-{recording_id}")));
+    assert!(window.shows_named(format!("recording-text-{recording_id}")));
+    let (position, own_file) = detail
+        .files
+        .iter()
+        .enumerate()
+        .find(|(_, file)| {
+            file.kind == FileKind::Microphone && file.person.as_deref() == Some("Luca")
+        })
+        .map(|(position, file)| (position, file.clone()))
+        .unwrap();
+
+    // The microphone of Luca is saved and is the file that the server holds.
+    window.click_named(format!("recording-file-{recording_id}-{position}"));
+    let saved = window.until_saved_in(Window::row_files, recording_id, Some(own_file.segment_id));
+    assert_eq!(
+        saved,
+        downloads.path().join(format!("{}.ogg", own_file.stem))
+    );
+    let held = on_disk(
+        &server,
+        recording_id,
+        &format!("{}.ogg", own_file.segment_id),
+    );
+    assert_eq!(held.len() as u64, own_file.bytes);
+    assert!(std::fs::read(&saved).unwrap() == held);
+    assert!(window.shows_named(format!("recorded-download-{position}")));
+
+    // The transcript is saved as a text file with the speaker of each line.
+    window.click_named(format!("recording-text-{recording_id}"));
+    let saved = window.until_saved_in(Window::row_files, recording_id, None);
+    assert_eq!(
+        saved,
+        downloads.path().join(format!("{}.txt", detail.text_stem))
+    );
+    let written = std::fs::read_to_string(&saved).unwrap();
+    assert!(
+        written.contains("Luca: The plan for the week."),
+        "{written}"
+    );
+    assert_eq!(names(downloads.path()).len(), 2);
+
+    // "Download" again closes the list, and the window releases the recording.
+    window.click_named(format!("recording-download-{recording_id}"));
+    assert!(!window.shows_named(format!("recording-files-{recording_id}")));
+    window.until("the recording is released", |window| !held_open(window));
 }
 
 #[gpui::test]

@@ -145,6 +145,8 @@ pub struct RecordingList {
     /// number had started. The list holds nothing until a later read answers: the answers
     /// of this read and of the reads before it are not taken.
     pub(crate) withdrawn: Option<u64>,
+    /// The recording whose list of files the page shows. One list is open at a time.
+    pub(crate) files_open: Option<RecordingId>,
 }
 
 impl RecordingList {
@@ -412,6 +414,39 @@ impl AppState {
         }
     }
 
+    /// Opens the list of the files of a recording of the page, or closes it when it is
+    /// open. The list of another recording closes.
+    pub fn toggle_recording_files(
+        &mut self,
+        server_id: ServerId,
+        recording_id: RecordingId,
+        cx: &mut Context<Self>,
+    ) {
+        let list = &mut self.admin.recordings;
+        if list.shown.map(|(shown, _)| shown) != Some(server_id) {
+            return;
+        }
+        list.files_open = (list.files_open != Some(recording_id)).then_some(recording_id);
+        self.changed(cx);
+    }
+
+    /// The recording whose files the open page lists, while the list holds it for the
+    /// account that the device has. The window holds it open in the client core, which
+    /// reads its segments, so that a file of it can be saved.
+    pub(in crate::state) fn admin_recording_files(&self) -> Option<(ServerId, RecordingId)> {
+        let (server_id, _) = self.open_recordings()?;
+        let list = &self.admin.recordings;
+        let recording_id = list.files_open?;
+        let account = self.client.server(server_id)?.account();
+        (account.is_some()
+            && account == list.account
+            && list
+                .recordings
+                .iter()
+                .any(|recording| recording.id == recording_id))
+        .then_some((server_id, recording_id))
+    }
+
     /// Draws this list of recordings in place of what a server answered. The page starts
     /// no read for a list that names its workspace. The screen tool uses it.
     #[cfg(feature = "test-support")]
@@ -449,6 +484,12 @@ impl RecordingList {
     pub fn with_reading(mut self) -> Self {
         self.reading = true;
         self.failed = None;
+        self
+    }
+
+    /// The page shows the list of the files of this recording.
+    pub fn with_files_open(mut self, recording_id: RecordingId) -> Self {
+        self.files_open = Some(recording_id);
         self
     }
 

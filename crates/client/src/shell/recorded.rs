@@ -132,7 +132,7 @@ impl TranscriptList {
 }
 
 /// The file of a recording as its menu and its row name it.
-fn file_title(file: &FileRow) -> String {
+pub(super) fn file_title(file: &FileRow) -> String {
     match (file.kind, &file.person) {
         (FileKind::Video, _) => text::RECORDING_VIDEO.to_owned(),
         (FileKind::Microphone, person) => text::recording_microphone(person.as_deref()),
@@ -216,7 +216,7 @@ impl Shell {
     }
 
     /// The state of the download of one file, as words and a control.
-    fn recorded_download(
+    pub(super) fn recorded_download(
         &mut self,
         card: &RecordingCard,
         file: RecordedFile,
@@ -1254,7 +1254,7 @@ impl Shell {
         body
     }
 
-    fn download_row(
+    pub(super) fn download_row(
         title: String,
         control: AnyElement,
         position: usize,
