@@ -937,6 +937,7 @@ impl Shell {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
         self.close_hover_menu(cx);
+        self.release_share_previews(cx);
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
@@ -966,6 +967,7 @@ impl Shell {
             self.reset_linking_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_link_all(cx));
         }
+        self.release_share_previews(cx);
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
         cx.notify();

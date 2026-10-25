@@ -504,6 +504,12 @@ pub const SHARE_DESKTOP_HELP: &str = "The desktop will ask which one after you p
 pub const SCREENS: &str = "Screens";
 pub const WINDOWS: &str = "Windows";
 pub const NO_WINDOWS: &str = "No window of another application is open.";
+/// The accessible names of the picture of a screen or a window in the dialog of a share.
+pub const SHARE_PREVIEW_LOADING: &str = "The picture is being taken";
+pub const SHARE_PREVIEW_NONE: &str = "No picture";
+pub fn share_preview(name: &str) -> String {
+    format!("Picture of {name}")
+}
 pub const WHAT_TO_SHARE: &str = "What to share";
 pub const SHARE_SOUND: &str = "Sound of this share";
 pub const SOUND_NONE: &str = "No sound";

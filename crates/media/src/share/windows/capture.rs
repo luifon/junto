@@ -16,8 +16,10 @@ use super::graphics::{Gpu, Session, Target};
 use super::rules::{self, Creators};
 use super::sound::{Capture, Event, Loopback};
 use super::sources;
+use super::still::{self, Still};
 use crate::share::delivery::{CAPACITY, Latest, Life, deliver};
 use crate::share::listing::Own;
+use crate::share::picture::PictureFrame;
 use crate::share::{
     CaptureError, CaptureRequest, CaptureSink, CaptureStream, FRAME_RATES, Pending, PictureSource,
     ScreenAccess, ScreenCapture, ShareSources, SoundChoice,
@@ -106,6 +108,42 @@ impl ScreenCapture for SystemCapture {
             tokio::task::spawn_blocking(move || sources::sources(&own))
                 .await
                 .map_err(|error| CaptureError::Failed(error.to_string()))
+        })
+    }
+
+    /// A picture made with GDI on a blocking thread of the runtime: one picture needs no
+    /// session of Windows Graphics Capture and no graphics device (ADR 0736).
+    fn preview(
+        &self,
+        source: PictureSource,
+        bound: (u32, u32),
+    ) -> Pending<Result<PictureFrame, CaptureError>> {
+        let (own, supported) = (self.own.clone(), self.supported);
+        Box::pin(async move {
+            if !supported {
+                return Err(CaptureError::Unsupported);
+            }
+            tokio::task::spawn_blocking(move || {
+                let still = match source {
+                    PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
+                    PictureSource::Display(id) => Still::Monitor(
+                        sources::displays()
+                            .into_iter()
+                            .find(|display| display.source.id == id)
+                            .ok_or(CaptureError::SourceGone)?
+                            .monitor,
+                    ),
+                    PictureSource::Window(id) => {
+                        if !sources::windows(&own).iter().any(|window| window.id == id) {
+                            return Err(CaptureError::SourceGone);
+                        }
+                        Still::Window(HWND(rules::window_handle(id) as *mut c_void))
+                    }
+                };
+                still::picture(&still, bound)
+            })
+            .await
+            .map_err(|error| CaptureError::Failed(error.to_string()))?
         })
     }
 
