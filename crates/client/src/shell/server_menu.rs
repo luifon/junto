@@ -276,6 +276,7 @@ impl Shell {
                                 cx.notify();
                             })),
                     )
+                    .child(self.render_move_error(view, cx))
                     .child(div().h(u(4.0))),
             )
             .into_any_element()

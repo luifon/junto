@@ -875,3 +875,25 @@ fn a_member_reads_the_recordings_of_a_workspace_that_has_none_and_a_read_that_fa
     window.click("admin-close");
     assert!(!window.shows("admin"));
 }
+
+/// Finding 11 of the first live test: the menu of a server kept an empty space for a
+/// refusal of a move between "Move down" and the next item. The refusal now follows the
+/// last item.
+#[gpui::test]
+fn the_server_menu_has_no_empty_space_after_its_move_items(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
+    window.open_server_menu();
+    window.until("the menu offers the administration", |window| {
+        window.shows("menu-move-down") && window.shows("menu-administration")
+    });
+    let down = window.cx.debug_bounds("menu-move-down").unwrap();
+    let next = window.cx.debug_bounds("menu-administration").unwrap();
+    let gap = next.top() - down.bottom();
+    assert!(
+        gap < gpui::px(16.0),
+        "{gap:?} between Move down and the next item"
+    );
+}

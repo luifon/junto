@@ -702,6 +702,11 @@ mod tests {
                 ("call_text on cypress", c.call_text, c.cypress),
                 ("cypress_ink on travertine", c.cypress_ink, c.travertine),
                 ("cypress_ink on plaster", c.cypress_ink, c.plaster),
+                (
+                    "cypress_ink on travertine_hi",
+                    c.cypress_ink,
+                    c.travertine_hi,
+                ),
                 ("call_on_text on call_on", c.call_on_text, c.call_on),
                 ("on_cinnabar on cinnabar", c.on_cinnabar, c.cinnabar),
             ];

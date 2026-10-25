@@ -122,7 +122,7 @@ impl Shell {
         };
         let server_id = view.servers[index].id;
         let count = view.servers.len();
-        let mut items: Vec<AnyElement> = [
+        let items: Vec<AnyElement> = [
             (Step::Up, "move-server-up", "menu-move-up", index == 0),
             (
                 Step::Down,
@@ -144,17 +144,27 @@ impl Shell {
                 .into_any_element()
         })
         .collect();
-        let failed = self
-            .state
-            .read(cx)
-            .move_failure(server_id)
-            .map(str::to_owned);
-        items.push(
-            crate::ui::notice_slot("move-server-error-slot")
-                .children(failed.map(|failed| Notice::error(failed).selector("move-server-error")))
-                .into_any_element(),
-        );
         items
+    }
+
+    /// Why the selected server was not moved. It follows the last item of the menu, which
+    /// opens downwards, so a refusal that arrives moves no item (ADR 0730).
+    pub(crate) fn render_move_error(
+        &mut self,
+        view: &ShellView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let failed = view
+            .servers
+            .iter()
+            .find(|row| row.selected)
+            .and_then(|row| self.state.read(cx).move_failure(row.id))
+            .map(str::to_owned);
+        crate::ui::notice_slot("move-server-error-slot")
+            .at_end()
+            .px(u(8.0))
+            .children(failed.map(|failed| Notice::error(failed).selector("move-server-error")))
+            .into_any_element()
     }
 
     /// The notice of a newer build: one line of the channel column, directly above the

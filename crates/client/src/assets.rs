@@ -266,6 +266,9 @@ mod tests {
         assert_eq!(Assets.list("icons/").unwrap().len(), Icon::ALL.len());
     }
 
+    // A test reads the files of the repository; the refusals of the file system are for
+    // the application (ADR 0730).
+    #[allow(clippy::disallowed_methods)]
     #[test]
     fn every_file_of_the_icons_is_the_drawing_of_one_icon() {
         let mut files = Vec::new();
@@ -303,6 +306,9 @@ mod tests {
         assert_eq!(files, paths);
     }
 
+    // A test reads the files of the repository; the refusals of the file system are for
+    // the application (ADR 0730).
+    #[allow(clippy::disallowed_methods)]
     #[test]
     fn the_licence_of_lucide_is_beside_its_icons() {
         let licence = std::fs::read_to_string(icons_directory().join("lucide/LICENSE")).unwrap();
