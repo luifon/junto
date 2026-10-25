@@ -248,12 +248,15 @@ pub enum Audience {
     /// Accounts that may see the voice channel, as far as `reach` states for the call
     /// `call_id`. Whether that call hides who is inside is the state that it started with;
     /// who is inside it is read when the event is delivered. An account that enters a later
-    /// call of the channel is not inside this one (ADR 0517).
+    /// call of the channel is not inside this one (ADR 0517). An account identifier further
+    /// restricts delivery to that account.
     Call {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
         call_id: CallId,
         reach: CallReach,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_id: Option<AccountId>,
     },
     /// The two participants of a direct message.
     Direct {
@@ -328,6 +331,7 @@ fn of_call(place: &CallPlace, inside: Option<(CallId, CallReach)>) -> Audience {
             channel_id,
             call_id,
             reach,
+            account_id: None,
         },
         (
             CallPlace::Direct {
@@ -406,6 +410,10 @@ impl Audience {
     pub const fn account_id(&self) -> Option<AccountId> {
         match self {
             Self::Mention {
+                account_id: Some(account_id),
+                ..
+            }
+            | Self::Call {
                 account_id: Some(account_id),
                 ..
             }
@@ -825,10 +833,18 @@ impl Audience {
                 | Event::CallEntryAnswered { .. },
                 Self::Account { .. } | Self::AccountSeeing { .. },
             ) => true,
-            // The account that asked, for its other devices, and each account that answers a
-            // request to enter a full call (ADR 0514), while it may see the voice channel.
-            (Event::CallEntryRequested { request }, Self::AccountSeeing { account_id, .. }) => {
-                *self == Self::addressed_at(*account_id, &[request.place])
+            (Event::CallEntryRequested { request }, Self::AccountSeeing { .. }) => {
+                *self == Self::addressed_at(request.account_id, &[request.place])
+            }
+            (Event::CallEntryRequested { .. }, Self::Call { account_id, .. }) => {
+                let mut inside = of_the_inside(event);
+                if let Some(Self::Call {
+                    account_id: target, ..
+                }) = &mut inside
+                {
+                    *target = *account_id;
+                }
+                inside.as_ref() == Some(self)
             }
             (Event::CallEntryRequested { .. } | Event::CallEntryResolved { .. }, _) => {
                 of_the_inside(event).as_ref() == Some(self)
@@ -1170,6 +1186,7 @@ pub fn receives<'a>(
             channel_id,
             call_id,
             reach,
+            account_id,
             ..
         } => workspace
             .and_then(|standing| standing.channels.get(channel_id))
@@ -1179,6 +1196,7 @@ pub fn receives<'a>(
                     .get(call_id)
                     .is_some_and(|call| call.reached(*reach));
                 reached
+                    && account_id.is_none_or(|account_id| account_id == recipient.account_id)
                     && !channel.deleted
                     && allows(Request::Channel {
                         scope: &channel.scope,
@@ -1528,6 +1546,7 @@ mod tests {
             channel_id: place.channel_id,
             call_id,
             reach,
+            account_id: None,
         };
         let plain = member();
         let boss = administrator();
