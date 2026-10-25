@@ -293,11 +293,20 @@ fn write_report(data_dir: &Path, message: &str, location: &str) -> std::io::Resu
     Ok(path)
 }
 
-/// The backtrace with the names of its functions, then the address of each frame with the
-/// base address of its module, from which a report of a build without the symbols can be
-/// resolved with the symbols of the release (ADR 0757).
+/// The backtrace with the names of its functions. On Windows also the address of each frame
+/// with the base address of its module: the package carries no symbols, and the offsets are
+/// resolved with the symbols file of the release (ADR 0757). On macOS and Linux the program
+/// holds its symbol table, and the backtrace has the names.
 fn backtrace() -> String {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut text = std::backtrace::Backtrace::force_capture().to_string();
+    #[cfg(windows)]
+    frames(&mut text);
+    text
+}
+
+#[cfg(windows)]
+fn frames(text: &mut String) {
     text.push_str("\nframes (address, base of its module, offset):\n");
     backtrace::trace(|frame| {
         let address = frame.ip() as usize;
@@ -309,7 +318,6 @@ fn backtrace() -> String {
         );
         true
     });
-    text
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -351,6 +359,8 @@ mod tests {
             .collect();
         assert_eq!(reports.len(), 1, "{reports:?}");
         let text = std::fs::read_to_string(&reports[0]).unwrap();
+        // With `--nocapture` the report is shown, for a check of the resolution of its frames.
+        println!("{text}");
         assert!(
             text.contains("message: a panic of the report test"),
             "{text}"
@@ -359,7 +369,10 @@ mod tests {
             text.contains("a_function_whose_name_the_report_shows"),
             "the backtrace names no function:\n{text}"
         );
-        assert!(text.contains("frames (address, base of its module, offset):"));
+        assert_eq!(
+            text.contains("frames (address, base of its module, offset):"),
+            cfg!(windows)
+        );
     }
 
     #[test]
@@ -407,6 +420,9 @@ pub mod test_support {
         PressEnd,
         /// The render of the shell, inside a draw of the window.
         Render,
+        /// The observer of the state of the application in the shell, which runs at each
+        /// change of the state.
+        StateObserver,
     }
 
     thread_local! {

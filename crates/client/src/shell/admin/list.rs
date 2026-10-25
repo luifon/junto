@@ -1257,6 +1257,12 @@ mod tests {
             cx.run_until_parked();
             if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
                 cx.run_until_parked();
+                assert_eq!(
+                    crate::panics::panics_on_this_thread(),
+                    0,
+                    "a handler panicked: {:?}",
+                    crate::panics::messages_on_this_thread()
+                );
                 return;
             }
         }

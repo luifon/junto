@@ -109,9 +109,10 @@ fn draw_from_a_task(window: &mut crate::harness::Window, arm: fn()) {
     window.park();
 }
 
-/// A render of the shell panics once inside a draw, while the elements of the window have
-/// pushed their ids, offsets and masks. The window draws again: the notice of the panic and
-/// a message sent after it are drawn, and no other panic follows.
+/// A render of the shell panics once inside a draw, during the layout of the views, while the
+/// draw has pushed the id of the root view. The window draws again: the notice of the panic
+/// and a message sent after it are drawn, and no other panic follows. The stacks that prepaint
+/// and paint push are not reached by this panic.
 #[gpui::test]
 fn a_panic_in_a_render_is_reported_and_the_window_draws_again(cx: &mut TestAppContext) {
     let world = World::new();
@@ -156,7 +157,12 @@ fn a_render_that_panics_at_every_call_does_not_draw_at_every_frame(cx: &mut Test
     draw_from_a_task(&mut window, || {
         panics::test_support::panic_in_every(panics::test_support::Handler::Render)
     });
+    // The task of the reports waits one second after a panic in its update.
     for _ in 0..20 {
+        window
+            .cx
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(2));
         window.frame();
         window.park();
     }
@@ -193,4 +199,44 @@ fn a_render_that_panics_at_every_call_does_not_draw_at_every_frame(cx: &mut Test
     assert_eq!(notice.count, 3);
     assert_eq!(notice.latest.occurrence, 3);
     assert_eq!(panics::panics_on_this_thread(), before + 3);
+}
+
+/// The observer of the state in the shell panics at each change of the state. The notice of a
+/// panic changes the state, so each update of the task of the reports panics and sends a new
+/// report. The task waits after such a panic: the work of the window comes to rest, and the
+/// panics stay two. When the observer works again, the task takes the waiting report and the
+/// window states both panics.
+#[gpui::test]
+fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.settle();
+    let before = panics::panics_on_this_thread();
+    window.expect_panics(2);
+    panics::test_support::panic_in_every(panics::test_support::Handler::StateObserver);
+    window.cx.update(|_, cx| {
+        cx.spawn(async move |_| {
+            panic!("{}", panics::test_support::MESSAGE);
+        })
+        .detach();
+    });
+    window.park();
+    assert_eq!(panics::panics_on_this_thread(), before + 2);
+
+    panics::test_support::stop_panicking();
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    window.until("the window states the panics", |window| {
+        window.shows("panic-notice")
+    });
+    let notice = window
+        .state
+        .read_with(&window.cx, |state, _| state.panic_notice().cloned())
+        .expect("the state holds the notice");
+    assert_eq!(notice.count, 2);
+    assert_eq!(panics::panics_on_this_thread(), before + 2);
 }

@@ -21,24 +21,27 @@ def description(version, architecture):
 
 
 def assemble(client, recover, version, output, architecture="x86_64", epoch=None, *, build):
-    """Writes `output/package-directory/Junto` and `output/Junto-<version>-windows-<architecture>.zip`;
-    `build` is the directory of the programs of the build, whose licences the package carries."""
+    """Writes `output/package-directory/Junto`, `output/Junto-<version>-windows-<architecture>.zip`
+    and `output/Junto-<version>-windows-<architecture>.pdb`, the symbols of the program beside
+    `client`, which the release publishes as a file of its own and the package does not carry
+    (ADR 0755, ADR 0757); `build` is the directory of the programs of the build, whose licences
+    the package carries."""
     client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
     for program in [client, recover]:
         if not program.is_file() or program.read_bytes()[:2] != b"MZ":
             raise ValueError(f"{program} is not a Windows program")
+    symbols = client.with_suffix(".pdb")
+    if not symbols.is_file():
+        raise ValueError(f"{symbols}: the build wrote no symbols of the program")
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "315532800")) if epoch is None else epoch
     output.mkdir(parents=False, exist_ok=False)
     try:
         folder = output / "package-directory/Junto"
         (folder / "licences").mkdir(parents=True)
         shutil.copyfile(client, folder / "junto.exe")
-        # The symbols of the program, from which a panic report names its functions (ADR 0757).
-        symbols = client.with_suffix(".pdb")
-        if symbols.is_file():
-            shutil.copyfile(symbols, folder / "junto.pdb")
+        shutil.copyfile(symbols, output / f"Junto-{version}-windows-{architecture}.pdb")
         shutil.copyfile(recover, folder / "junto-recover.exe")
         (folder / "junto-package.json").write_text(description(version, architecture), newline="\n")
         for name, text in licences.package_files(version, licences.target("windows", architecture), build).items():

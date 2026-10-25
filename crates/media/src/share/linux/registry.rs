@@ -127,19 +127,10 @@ fn reconcile(
                     .error({
                         let refused = objects.refused.clone();
                         move |_, _, message| {
-                            crate::callback::stop_panic(
-                                "PipeWire registry error",
-                                || (),
-                                || {
-                                    tracing::debug!(
-                                        output,
-                                        input,
-                                        message,
-                                        "a sound link was refused"
-                                    );
-                                    refused.borrow_mut().insert((output, input));
-                                },
-                            )
+                            super::connection::in_callback("PipeWire registry error", || {
+                                tracing::debug!(output, input, message, "a sound link was refused");
+                                refused.borrow_mut().insert((output, input));
+                            })
                         }
                     })
                     .register();
@@ -196,194 +187,181 @@ impl Registry {
                 let changed = changed.clone();
                 let life = life.clone();
                 move |global| {
-                    crate::callback::stop_panic(
-                        "PipeWire registry global",
-                        || (),
-                        || {
-                            let (Some(registry), Some(graph), Some(objects)) =
-                                (registry.upgrade(), graph.upgrade(), objects.upgrade())
-                            else {
-                                return;
-                            };
-                            let id = global.id;
-                            let Some(props) = global.props else {
-                                return;
-                            };
-                            match global.type_ {
-                                ObjectType::Client => {
-                                    let bound = match registry.bind::<pw::client::Client, _>(global)
-                                    {
-                                        Ok(bound) => bound,
-                                        Err(failure) => {
-                                            life.fail(error(failure));
-                                            return;
+                    super::connection::in_callback("PipeWire registry global", || {
+                        let (Some(registry), Some(graph), Some(objects)) =
+                            (registry.upgrade(), graph.upgrade(), objects.upgrade())
+                        else {
+                            return;
+                        };
+                        let id = global.id;
+                        let Some(props) = global.props else {
+                            return;
+                        };
+                        match global.type_ {
+                            ObjectType::Client => {
+                                let bound = match registry.bind::<pw::client::Client, _>(global) {
+                                    Ok(bound) => bound,
+                                    Err(failure) => {
+                                        life.fail(error(failure));
+                                        return;
+                                    }
+                                };
+                                let listener = bound
+                                    .add_listener_local()
+                                    .info({
+                                        let graph = Rc::downgrade(&graph);
+                                        let changed = changed.clone();
+                                        move |info| {
+                                            super::connection::in_callback(
+                                                "PipeWire registry info",
+                                                || {
+                                                    if let (Some(graph), Some(props)) =
+                                                        (graph.upgrade(), info.props())
+                                                    {
+                                                        graph
+                                                            .borrow_mut()
+                                                            .clients
+                                                            .insert(id, client(props));
+                                                        changed();
+                                                    }
+                                                },
+                                            )
                                         }
-                                    };
-                                    let listener = bound
-                                        .add_listener_local()
-                                        .info({
-                                            let graph = Rc::downgrade(&graph);
-                                            let changed = changed.clone();
-                                            move |info| {
-                                                crate::callback::stop_panic(
-                                                    "PipeWire registry info",
-                                                    || (),
-                                                    || {
-                                                        if let (Some(graph), Some(props)) =
-                                                            (graph.upgrade(), info.props())
-                                                        {
-                                                            graph
-                                                                .borrow_mut()
-                                                                .clients
-                                                                .insert(id, client(props));
-                                                            changed();
-                                                        }
-                                                    },
-                                                )
-                                            }
-                                        })
-                                        .register();
-                                    objects
-                                        .borrow_mut()
-                                        .clients
-                                        .insert(id, Bound::new(bound, listener));
-                                }
-                                ObjectType::Node => {
-                                    let initial = node(props, false);
-                                    graph.borrow_mut().nodes.insert(id, initial.clone());
-                                    let bound = match registry.bind::<pw::node::Node, _>(global) {
-                                        Ok(bound) => bound,
-                                        Err(failure) => {
-                                            life.fail(error(failure));
-                                            return;
-                                        }
-                                    };
-                                    let listener = bound
-                                        .add_listener_local()
-                                        .info({
-                                            let graph = Rc::downgrade(&graph);
-                                            let changed = changed.clone();
-                                            move |info| {
-                                                crate::callback::stop_panic(
-                                                    "PipeWire registry info",
-                                                    || (),
-                                                    || {
-                                                        if let (Some(graph), Some(props)) =
-                                                            (graph.upgrade(), info.props())
-                                                        {
-                                                            let mut current = node(props, true);
-                                                            current.client =
-                                                                current.client.or(initial.client);
-                                                            if props.get("media.class").is_none() {
-                                                                current.playback = initial.playback;
-                                                            }
-                                                            graph
-                                                                .borrow_mut()
-                                                                .nodes
-                                                                .insert(id, current);
-                                                            changed();
-                                                        }
-                                                    },
-                                                )
-                                            }
-                                        })
-                                        .register();
-                                    objects
-                                        .borrow_mut()
-                                        .nodes
-                                        .insert(id, Bound::new(bound, listener));
-                                }
-                                ObjectType::Port => {
-                                    let initial = port(props);
-                                    // A port's bound information can change without replacing its registry ID.
-                                    let bound = match registry.bind::<pw::port::Port, _>(global) {
-                                        Ok(bound) => bound,
-                                        Err(failure) => {
-                                            life.fail(error(failure));
-                                            return;
-                                        }
-                                    };
-                                    let listener = bound
-                                        .add_listener_local()
-                                        .info({
-                                            let graph = Rc::downgrade(&graph);
-                                            let changed = changed.clone();
-                                            move |info| {
-                                                crate::callback::stop_panic(
-                                                    "PipeWire registry info",
-                                                    || (),
-                                                    || {
-                                                        if let (Some(graph), Some(props)) =
-                                                            (graph.upgrade(), info.props())
-                                                        {
-                                                            let mut held = graph.borrow_mut();
-                                                            held.ports.remove(&id);
-                                                            let current =
-                                                                port(props).or_else(|| {
-                                                                    initial.as_ref().map(|base| {
-                                                                        Port {
-                                                    node: base.node,
-                                                    output: props
-                                                        .get("port.direction")
-                                                        .map_or(base.output, |direction| {
-                                                            direction == "out"
-                                                        }),
-                                                    monitor: props
-                                                        .get("port.monitor")
-                                                        .map_or(base.monitor, |monitor| {
-                                                            monitor == "true"
-                                                        }),
-                                                    channel: props
-                                                        .get("audio.channel")
-                                                        .unwrap_or(&base.channel)
-                                                        .to_owned(),
-                                                }
-                                                                    })
-                                                                });
-                                                            if let Some(port) = current {
-                                                                held.ports.insert(id, port);
-                                                            }
-                                                            drop(held);
-                                                            changed();
-                                                        }
-                                                    },
-                                                )
-                                            }
-                                        })
-                                        .register();
-                                    objects
-                                        .borrow_mut()
-                                        .ports
-                                        .insert(id, Bound::new(bound, listener));
-                                }
-                                _ => {}
+                                    })
+                                    .register();
+                                objects
+                                    .borrow_mut()
+                                    .clients
+                                    .insert(id, Bound::new(bound, listener));
                             }
-                            changed();
-                        },
-                    )
+                            ObjectType::Node => {
+                                let initial = node(props, false);
+                                graph.borrow_mut().nodes.insert(id, initial.clone());
+                                let bound = match registry.bind::<pw::node::Node, _>(global) {
+                                    Ok(bound) => bound,
+                                    Err(failure) => {
+                                        life.fail(error(failure));
+                                        return;
+                                    }
+                                };
+                                let listener = bound
+                                    .add_listener_local()
+                                    .info({
+                                        let graph = Rc::downgrade(&graph);
+                                        let changed = changed.clone();
+                                        move |info| {
+                                            super::connection::in_callback(
+                                                "PipeWire registry info",
+                                                || {
+                                                    if let (Some(graph), Some(props)) =
+                                                        (graph.upgrade(), info.props())
+                                                    {
+                                                        let mut current = node(props, true);
+                                                        current.client =
+                                                            current.client.or(initial.client);
+                                                        if props.get("media.class").is_none() {
+                                                            current.playback = initial.playback;
+                                                        }
+                                                        graph
+                                                            .borrow_mut()
+                                                            .nodes
+                                                            .insert(id, current);
+                                                        changed();
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    })
+                                    .register();
+                                objects
+                                    .borrow_mut()
+                                    .nodes
+                                    .insert(id, Bound::new(bound, listener));
+                            }
+                            ObjectType::Port => {
+                                let initial = port(props);
+                                // A port's bound information can change without replacing its registry ID.
+                                let bound = match registry.bind::<pw::port::Port, _>(global) {
+                                    Ok(bound) => bound,
+                                    Err(failure) => {
+                                        life.fail(error(failure));
+                                        return;
+                                    }
+                                };
+                                let listener = bound
+                                    .add_listener_local()
+                                    .info({
+                                        let graph = Rc::downgrade(&graph);
+                                        let changed = changed.clone();
+                                        move |info| {
+                                            super::connection::in_callback(
+                                                "PipeWire registry info",
+                                                || {
+                                                    if let (Some(graph), Some(props)) =
+                                                        (graph.upgrade(), info.props())
+                                                    {
+                                                        let mut held = graph.borrow_mut();
+                                                        held.ports.remove(&id);
+                                                        let current = port(props).or_else(|| {
+                                                            initial.as_ref().map(|base| Port {
+                                                                node: base.node,
+                                                                output: props
+                                                                    .get("port.direction")
+                                                                    .map_or(
+                                                                        base.output,
+                                                                        |direction| {
+                                                                            direction == "out"
+                                                                        },
+                                                                    ),
+                                                                monitor: props
+                                                                    .get("port.monitor")
+                                                                    .map_or(
+                                                                        base.monitor,
+                                                                        |monitor| monitor == "true",
+                                                                    ),
+                                                                channel: props
+                                                                    .get("audio.channel")
+                                                                    .unwrap_or(&base.channel)
+                                                                    .to_owned(),
+                                                            })
+                                                        });
+                                                        if let Some(port) = current {
+                                                            held.ports.insert(id, port);
+                                                        }
+                                                        drop(held);
+                                                        changed();
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    })
+                                    .register();
+                                objects
+                                    .borrow_mut()
+                                    .ports
+                                    .insert(id, Bound::new(bound, listener));
+                            }
+                            _ => {}
+                        }
+                        changed();
+                    })
                 }
             })
             .global_remove({
                 let graph = Rc::downgrade(&graph);
                 let objects = Rc::downgrade(&objects);
                 move |id| {
-                    crate::callback::stop_panic(
-                        "PipeWire registry global_remove",
-                        || (),
-                        || {
-                            if let (Some(graph), Some(objects)) =
-                                (graph.upgrade(), objects.upgrade())
-                            {
-                                graph.borrow_mut().remove(id);
-                                let mut held = objects.borrow_mut();
-                                held.clients.remove(&id);
-                                held.nodes.remove(&id);
-                                held.ports.remove(&id);
-                                drop(held);
-                                changed();
-                            }
-                        },
-                    )
+                    super::connection::in_callback("PipeWire registry global_remove", || {
+                        if let (Some(graph), Some(objects)) = (graph.upgrade(), objects.upgrade()) {
+                            graph.borrow_mut().remove(id);
+                            let mut held = objects.borrow_mut();
+                            held.clients.remove(&id);
+                            held.nodes.remove(&id);
+                            held.ports.remove(&id);
+                            drop(held);
+                            changed();
+                        }
+                    })
                 }
             })
             .register();

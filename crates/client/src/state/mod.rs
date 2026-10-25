@@ -603,6 +603,9 @@ pub struct AppState {
     _panics: Task<()>,
 }
 
+/// How long the task of the panic reports waits after a panic in its own update.
+const PAUSE_AFTER_A_PANIC_IN_THE_NOTICE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// The notice of the panics that the panic hook recorded for the data directory of the
 /// window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,14 +724,26 @@ impl AppState {
         let panics = cx.spawn(async move |this, cx| {
             use futures_util::StreamExt as _;
             while let Some(report) = reports.next().await {
-                // A panic in this update, such as one in a draw that the notice starts, is
-                // recorded by the hook and ends this update only, not the task that takes
-                // the later reports (ADR 0757).
+                // The reports that wait are taken into the same update.
+                let mut batch = vec![report];
+                while let Ok(report) = reports.try_recv() {
+                    batch.push(report);
+                }
+                // A panic in this update, such as one in a draw or an observer that the notice
+                // starts, is recorded by the hook and ends this update only. The task then waits
+                // before it takes the next reports, so that an update that panics at each run
+                // returns to the event loop between two runs (ADR 0757).
                 let updated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    this.update(cx, |this, cx| this.panic_recorded(report, cx))
+                    this.update(cx, |this, cx| this.panics_recorded(batch, cx))
                 }));
-                if matches!(updated, Ok(Err(_))) {
-                    break;
+                match updated {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        cx.background_executor()
+                            .timer(PAUSE_AFTER_A_PANIC_IN_THE_NOTICE)
+                            .await;
+                    }
                 }
             }
         });
@@ -876,23 +891,25 @@ impl AppState {
         state
     }
 
-    fn panic_recorded(&mut self, report: crate::panics::Report, cx: &mut Context<Self>) {
-        // The 1st, 10th, 100th, ... panic of each location, so that a panic that repeats does
-        // not fill the log (ADR 0757).
-        if crate::panics::is_a_power_of_ten(report.occurrence) {
-            tracing::error!(
-                report = ?report.file,
-                location = %report.location,
-                occurrence = report.occurrence,
-                "a panic was recorded: {}",
-                report.message
-            );
+    fn panics_recorded(&mut self, reports: Vec<crate::panics::Report>, cx: &mut Context<Self>) {
+        for report in reports {
+            // The 1st, 10th, 100th, ... panic of each location, so that a panic that repeats
+            // does not fill the log (ADR 0757).
+            if crate::panics::is_a_power_of_ten(report.occurrence) {
+                tracing::error!(
+                    report = ?report.file,
+                    location = %report.location,
+                    occurrence = report.occurrence,
+                    "a panic was recorded: {}",
+                    report.message
+                );
+            }
+            let count = self.panic_notice.as_ref().map_or(0, |notice| notice.count) + 1;
+            self.panic_notice = Some(PanicNotice {
+                count,
+                latest: report,
+            });
         }
-        let count = self.panic_notice.as_ref().map_or(0, |notice| notice.count) + 1;
-        self.panic_notice = Some(PanicNotice {
-            count,
-            latest: report,
-        });
         cx.notify();
     }
 

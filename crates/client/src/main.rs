@@ -175,7 +175,7 @@ fn start_log() -> LogFile {
     log_file
 }
 
-/// The file of the temporary directory of the account that states why the last start
+/// The file of a directory of the account that states why the last start
 /// failed before it had a data directory (ADR 0757).
 const START_FAILURE_FILE: &str = "junto-start-failure.txt";
 
@@ -183,7 +183,15 @@ const START_FAILURE_FILE: &str = "junto-start-failure.txt";
 // The start writes it before any window (ADR 0730).
 #[allow(clippy::disallowed_methods)]
 fn write_start_failure(problem: &str) {
-    let path = std::env::temp_dir().join(START_FAILURE_FILE);
+    // The temporary directory of the account on macOS and Windows; on Linux `/tmp` is shared
+    // by every account, so the runtime directory of the account, or its cache directory.
+    #[cfg(target_os = "linux")]
+    let directory = dirs::runtime_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(std::env::temp_dir);
+    #[cfg(not(target_os = "linux"))]
+    let directory = std::env::temp_dir();
+    let path = directory.join(START_FAILURE_FILE);
     let time = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
@@ -191,7 +199,14 @@ fn write_start_failure(problem: &str) {
         "{time} {}: junto cannot start: {problem}\n",
         junto_client_core::releases::build_label()
     );
-    if let Err(error) = std::fs::write(&path, text) {
+    // A new file, which follows no link that is at its name.
+    let _ = std::fs::remove_file(&path);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()));
+    if let Err(error) = written {
         eprintln!("{} cannot be written: {error}", path.display());
     }
 }
@@ -268,6 +283,7 @@ fn main() -> ExitCode {
             if let Err(error) = app::init(cx) {
                 eprintln!("junto cannot start: {error:#}");
                 tracing::error!("junto cannot start: {error:#}");
+                log_file.written();
                 cx.quit();
                 return;
             }
@@ -290,6 +306,7 @@ fn main() -> ExitCode {
                 Err(error) => {
                     eprintln!("junto cannot open its window: {error:#}");
                     tracing::error!("junto cannot open its window: {error:#}");
+                    log_file.written();
                     cx.quit();
                 }
             }

@@ -81,7 +81,9 @@ class Check:
         self.zip = self.packages / "Junto-1.0.0-windows-x86_64.zip"
         with zipfile.ZipFile(self.zip) as archive:
             names = sorted(archive.namelist())
-        expect({"Junto/junto.exe", "Junto/junto.pdb", "Junto/junto-recover.exe", "Junto/junto-package.json",
+        expect(not any(name.endswith(".pdb") for name in names), f"the ZIP holds symbols: {names}")
+        expect((self.packages / "Junto-1.0.0-windows-x86_64.pdb").is_file(), "no file of the symbols")
+        expect({"Junto/junto.exe", "Junto/junto-recover.exe", "Junto/junto-package.json",
                 "Junto/licences/Junto-LICENSE.txt", f"Junto/licences/{licences.NAME}"} <= set(names),
                f"ZIP entries: {names}")
         with zipfile.ZipFile(self.zip) as archive:

@@ -494,6 +494,10 @@ impl Shell {
                 }
             }),
             cx.observe_in(&state, window, |this, state, window, cx| {
+                #[cfg(feature = "test-support")]
+                crate::panics::test_support::reached(
+                    crate::panics::test_support::Handler::StateObserver,
+                );
                 // A share that is being chosen belongs to one call, in both windows.
                 this.drop_stale_share_picker(window, cx);
                 // The call window shows the place of the call, with its chat (ADR 0772).
