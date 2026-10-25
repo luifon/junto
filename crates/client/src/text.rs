@@ -241,8 +241,8 @@ pub const RAISE_HAND: &str = "Raise hand";
 pub const LOWER_HAND: &str = "Your hand is raised. Lower it.";
 
 // The rules of the room of a call (ADR 0739).
-pub const MEETING_MODE_HELP: &str = "The person sharing can turn this on. All other microphones close; people raise a hand to \
-     speak.";
+pub const MEETING_MODE_HELP: &str = "The person who shares a screen can turn it on. It closes \
+     every other microphone; the others raise a hand to ask to speak.";
 pub const MEETING_NEEDS_SHARE: &str =
     "Share your screen first. The person sharing can turn meeting mode on.";
 pub const MEETING_NO_PERMISSION: &str = "You do not have the “run meeting mode” permission.";
@@ -253,18 +253,21 @@ pub const MEETING_TURN_OFF: &str =
 pub const LOCK_ROOM: &str = "Lock room";
 pub const LOCK_ROOM_HELP: &str =
     "While the room is locked, only people who are invited or moved in can enter";
-pub const LOCK_ROOM_SETTING_HELP: &str = "Only people who are invited or moved in can enter.";
+pub const LOCK_ROOM_SETTING_HELP: &str =
+    "While it is on, only people who are invited or moved in by a moderator can join.";
 pub const LOCK_NO_PERMISSION: &str = "You do not have the “lock room” permission.";
 pub const USER_LIMIT: &str = "User limit";
-pub const USER_LIMIT_HELP: &str = "The most people who can join by themselves. People who are invited or moved in can still \
-     enter.";
-pub const NO_USER_LIMIT: &str = "off";
+pub const USER_LIMIT_HELP: &str = "The number of people who can join on their own. Above it, \
+     a person asks to join and someone inside lets them in. Invited people and people moved in \
+     by a moderator can join above it.";
+pub const NO_USER_LIMIT: &str = "None";
 pub const LOWER_USER_LIMIT: &str = "Lower the user limit";
 pub const RAISE_USER_LIMIT: &str = "Raise the user limit";
 pub const HIDE_OCCUPANTS: &str = "Hide who is inside";
-pub const HIDE_OCCUPANTS_HELP: &str = "Others see only “in use”.";
+pub const HIDE_OCCUPANTS_HELP: &str =
+    "People outside the call see “in use” in place of the names of the people in it.";
 pub const HIDE_OCCUPANTS_NEXT_CALL: &str =
-    "This call keeps its setting. The change holds from the next call.";
+    "The change applies from the next call. This call keeps the setting it started with.";
 pub const MANAGE_NO_PERMISSION: &str = "You do not have the “manage channel” permission.";
 pub const MEETING_IS_ON: &str = "Meeting mode is on";
 pub const YOU_RUN_IT: &str = " · you run it";
@@ -349,16 +352,17 @@ pub fn more_hands(count: usize) -> String {
 /// The count of a room for the people inside: who is inside and what the limit means.
 pub fn occupancy_help(inside: usize, limit: u32) -> String {
     format!(
-        "{inside} {} inside, limit {limit}. People who are invited or moved in can enter above \
-         the limit. Change the limit in Settings.",
+        "{inside} {} inside, limit {limit}. People who are invited or moved in, and people whose \
+         request to join is accepted, can enter above the limit. Change the limit in Settings.",
         if inside == 1 { "person" } else { "people" }
     )
 }
 
 // A room that a person cannot enter without help, and the requests to enter.
 pub const ASK_TO_ENTER: &str = "Ask to enter";
-pub const ASK_TO_ENTER_HELP: &str =
-    "The people inside get a prompt. You enter when one of them accepts.";
+pub const ASK_TO_ENTER_HELP: &str = "The people inside get your request; for a full call, \
+     the people inside who may admit to a full call, or everyone inside when none of them is \
+     in it. You enter when one of them accepts.";
 pub const FULL_NOTE: &str = "Full. You can enter when a person leaves or invites you.";
 pub const ENTRY_ASKING: &str = "Asking…";
 pub const ENTRY_WAITING_TITLE: &str = "You asked to enter";
@@ -415,8 +419,8 @@ pub fn invite_to(channel: &str) -> String {
 
 pub fn invite_help(channel: &str) -> String {
     format!(
-        "The member gets a prompt and enters {channel} on accept, also when the room is locked \
-         or full."
+        "The member is asked to join {channel}. If they accept, they join, also when the room is \
+         locked or full."
     )
 }
 
@@ -505,6 +509,12 @@ pub const SHARE_DESKTOP_HELP: &str = "The desktop will ask which one after you p
 pub const SCREENS: &str = "Screens";
 pub const WINDOWS: &str = "Windows";
 pub const NO_WINDOWS: &str = "No window of another application is open.";
+/// The accessible names of the picture of a screen or a window in the dialog of a share.
+pub const SHARE_PREVIEW_LOADING: &str = "The picture is being taken";
+pub const SHARE_PREVIEW_NONE: &str = "No picture";
+pub fn share_preview(name: &str) -> String {
+    format!("Picture of {name}")
+}
 pub const WHAT_TO_SHARE: &str = "What to share";
 pub const SHARE_SOUND: &str = "Sound of this share";
 pub const SOUND_NONE: &str = "No sound";
@@ -694,12 +704,14 @@ pub fn people_hidden(count: usize) -> (String, &'static str) {
 pub const YOUR_SCREEN_SHARE: &str = "Your screen share";
 pub const RESOLUTION: &str = "Resolution";
 pub const FRAME_RATE: &str = "Frame rate";
-pub const SHARE_SETTINGS_HELP: &str = "Used the next time you share.";
+pub const SHARE_SETTINGS_HELP: &str =
+    "They apply when you start your next share. A share that runs keeps its settings.";
 pub const YOUR_VIEW: &str = "Your view";
 pub const HIDE_WITHOUT_VIDEO: &str = "Hide people without video";
-pub const HIDE_WITHOUT_VIDEO_HELP: &str = "They stay in Members and in the channel list.";
+pub const HIDE_WITHOUT_VIDEO_HELP: &str = "Only on your screen: the stage shows only the people whose camera is on. The others stay \
+     in the call and are listed in Members.";
 pub const SHARE_VOLUME: &str = "Sound of the share you watch";
-pub const SHARE_VOLUME_HELP: &str = "At 0 % you keep the picture without its sound.";
+pub const SHARE_VOLUME_HELP: &str = "At 0 % you see the share and do not hear it.";
 
 pub fn share_resolution(resolution: ShareResolution) -> &'static str {
     match resolution {
@@ -715,7 +727,7 @@ pub const START_RECORDING: &str = "Start a recording of this call";
 pub const START_NEW_RECORDING: &str = "Start a new recording";
 pub const STOP: &str = "Stop";
 pub const STOP_RECORDING: &str = "Stop recording";
-pub const RECORDING_STOPS: &str = "The recording stops";
+pub const RECORDING_STOPS: &str = "The recording is stopping…";
 pub const RECORDING_STARTS: &str = "starting…";
 pub const RECORDING_TIME: &str = "Recording time";
 pub const NO_RECORD_PERMISSION: &str = "You do not have the “record calls” permission.";
@@ -920,8 +932,8 @@ pub const OUTPUT_DEVICE: &str = "Output device";
 pub const INPUT_LEVEL: &str = "Input level";
 pub const SYSTEM_DEFAULT: &str = "System default";
 pub const DEVICE_NOT_CONNECTED: &str = "A device that is not connected";
-pub const MORE_SOUND_SETTINGS: &str =
-    "Echo cancellation, noise suppression, gain and push to talk are in the app settings.";
+pub const MORE_SOUND_SETTINGS: &str = "Echo cancellation, noise suppression, gain, the \
+     sensitivity of voice activation and push to talk are in Settings, under Voice.";
 
 /// The default device of the system in a list of devices.
 pub fn system_default(name: &str) -> String {
@@ -962,6 +974,30 @@ pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
 pub const CALL_SOUNDS: &str = "Call sounds";
 pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or leaves your call, when your microphone or sound turns on or off, when a share starts, and when you leave.";
+
+/// The question before the switch to push to talk.
+pub fn push_to_talk_question(key: TalkKey) -> String {
+    format!(
+        "With push to talk, your microphone sends sound only while you hold {}, and only while \
+         Junto is the focused application. Switch to push to talk?",
+        talk_key(key)
+    )
+}
+pub const SENSITIVITY: &str = "Sensitivity";
+pub const SENSITIVITY_HELP: &str =
+    "Voice activation sends your microphone only while its level reaches the mark.";
+pub const SENSITIVITY_LEVEL_HELP: &str =
+    "The bar is your microphone now. It is bright while it reaches the mark and is sent.";
+pub const SENSITIVITY_NO_LEVEL: &str = "Your microphone level shows on the bar when Junto may \
+     use the microphone and it opens.";
+pub const USE_PUSH_TO_TALK: &str = "Use push to talk";
+pub const KEEP_VOICE_ACTIVATION: &str = "Keep voice activation";
+
+/// The input mode in the call strip while push to talk is on.
+pub fn push_to_talk_mark(key: TalkKey) -> String {
+    format!("Push to talk: hold {} to speak", talk_key(key))
+}
+pub const PUSH_TO_TALK_MARK_HELP: &str = "Change the input mode in Settings, under Voice.";
 
 pub fn talk_key(key: TalkKey) -> &'static str {
     match key {
@@ -1822,6 +1858,8 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "screen_share_started" => (Start, "{actor} started sharing"),
         "entry_requested" => (Plain, "{actor} asked to enter"),
         "joined_by_invitation" => (Plain, "{actor} joined by invitation"),
+        "person_joined" => (Plain, "{actor} joined the call"),
+        "person_left" => (Plain, "{actor} left the call"),
         "meeting_started" => (Start, "{actor} turned meeting mode on"),
         "meeting_ended" => (Plain, "Meeting mode ended"),
         "recording_started" => (Recording, "Recording started by {actor}"),
@@ -2673,6 +2711,12 @@ mod tests {
     use junto_client_core::protocol::ids::{AccountId, ServerId};
 
     use super::*;
+
+    #[test]
+    fn the_lines_of_a_person_who_joins_or_leaves_a_call_are_known() {
+        assert_eq!(system_line("person_joined").1, "{actor} joined the call");
+        assert_eq!(system_line("person_left").1, "{actor} left the call");
+    }
 
     #[test]
     fn all_remote_label_sources_use_display_sanitization() {

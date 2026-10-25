@@ -834,15 +834,21 @@ pub async fn request_entry(
                 "too many requests to enter this voice channel wait",
             ));
         }
+        let answerers = match call.lock {
+            None => full_call_answerers(connection, &call, channel_id).await?,
+            Some(_) => None,
+        };
         sqlx::query(
-            "insert into call_entry_requests (id, call_id, account_id, created_at, expires_at)
-             values ($1, $2, $3, $4, $5)",
+            "insert into call_entry_requests
+                 (id, call_id, account_id, created_at, expires_at, answerers)
+             values ($1, $2, $3, $4, $5, $6)",
         )
         .bind(id)
         .bind(call.id)
         .bind(access.account_id)
         .bind(now)
         .bind(expires_at)
+        .bind(&answerers)
         .execute(&mut *connection)
         .await
         .map_err(ApiError::concurrent)?;
@@ -852,7 +858,15 @@ pub async fn request_entry(
         let requested = Event::CallEntryRequested {
             request: request.clone(),
         };
-        events::tell_inside(connection, now, &requested).await?;
+        match &answerers {
+            None => events::tell_inside(connection, now, &requested).await?,
+            Some(answerers) => {
+                let at = [request.place];
+                for answerer in answerers {
+                    events::tell_account_at(connection, now, *answerer, &at, &requested).await?;
+                }
+            }
+        }
         // The other devices of the account that asked learn of the request, which the
         // snapshot carries (ADR 0207).
         let at = [request.place];
@@ -862,12 +876,44 @@ pub async fn request_entry(
     Ok((StatusCode::CREATED, Json(request)))
 }
 
+/// The people inside a full call that is not locked who answer a request to enter it: those
+/// who hold "admit to full call" in the channel. None when no holder is inside: then everyone
+/// inside answers (ADR 0514).
+async fn full_call_answerers(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    channel_id: ChannelId,
+) -> ApiResult<Option<Vec<AccountId>>> {
+    let mut holders = Vec::new();
+    for member in store::members(&mut *connection, call.id).await? {
+        if member.connected_at.is_none() {
+            continue;
+        }
+        let Some(other) = Access::of_account(&mut *connection, member.account_id).await? else {
+            continue;
+        };
+        let scope = match other.channel(&mut *connection, channel_id).await {
+            Ok((_, scope)) => scope,
+            Err(error) if error.code() == junto_protocol::error::ErrorCode::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if other.allows(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::AdmitToFullCall,
+        }) {
+            holders.push(member.account_id);
+        }
+    }
+    Ok((!holders.is_empty()).then_some(holders))
+}
+
 type StoredEntry = (
     junto_protocol::ids::CallId,
     AccountId,
     OffsetDateTime,
     OffsetDateTime,
     Option<AccountId>,
+    Option<Vec<AccountId>>,
 );
 
 /// Answers a request to enter the voice channel that the caller is in. The first answer
@@ -900,15 +946,18 @@ pub async fn answer_entry_request(
             return Err(ApiError::not_found());
         }
         let stored: Option<StoredEntry> = sqlx::query_as(
-            "select call_id, account_id, created_at, expires_at, accepted_by
+            "select call_id, account_id, created_at, expires_at, accepted_by, answerers
              from call_entry_requests where id = $1 and call_id = $2 for update",
         )
         .bind(request_id)
         .bind(member.call_id)
         .fetch_optional(&mut *connection)
         .await?;
-        let (call_id, account_id, created_at, expires_at, accepted_by) =
+        let (call_id, account_id, created_at, expires_at, accepted_by, answerers) =
             stored.ok_or_else(ApiError::not_found)?;
+        if answerers.is_some_and(|answerers| !answerers.contains(&access.account_id)) {
+            return Err(ApiError::not_found());
+        }
         let call = store::call(connection, By::Id(call_id), true)
             .await?
             .ok_or_else(ApiError::not_found)?;

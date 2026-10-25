@@ -33,12 +33,13 @@ use objc2_core_media::{
 };
 use objc2_foundation::{NSArray, NSBundle, NSError, NSProcessInfo};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCRunningApplication, SCShareableContent, SCStream,
-    SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
+    SCContentFilter, SCDisplay, SCRunningApplication, SCScreenshotManager, SCShareableContent,
+    SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
 };
 use tokio::sync::oneshot;
 
 use super::listing::{Own, shareable_applications};
+use super::picture::PictureFrame;
 use super::{
     ApplicationId, CaptureError, CaptureRequest, CaptureSink, CaptureStream, DisplaySource,
     Pending, PictureSource, ScreenAccess, ScreenCapture, ShareSources, SoundChoice, WindowSource,
@@ -317,6 +318,34 @@ impl Output {
             self.ivars().sink.sound(&samples, format);
         }
     }
+}
+
+/// The picture of a sample buffer of a screenshot, at most `bound` pixels.
+///
+/// # Safety
+///
+/// `sample` is a valid sample buffer.
+unsafe fn picture_of(
+    sample: &CMSampleBuffer,
+    bound: (u32, u32),
+) -> Result<PictureFrame, CaptureError> {
+    // SAFETY: the method returns a retained reference to the image buffer of the sample.
+    let Some(image) = (unsafe { sample.image_buffer() }) else {
+        return Err(CaptureError::Failed(
+            "the screenshot has no picture".to_owned(),
+        ));
+    };
+    let image: NonNull<c_void> = CFRetained::into_raw(image).cast();
+    // SAFETY: the pointer is a pixel buffer with one reference that this call gives away:
+    // the call library takes its own reference and releases the given one.
+    let buffer = unsafe { NativeBuffer::from_cv_pixel_buffer(image.as_ptr()) };
+    super::picture::convert(&buffer, bound)
+        .ok_or_else(|| CaptureError::Failed("the screenshot has no picture".to_owned()))
+}
+
+/// Whether this macOS has the screenshot of ScreenCaptureKit (macOS 14 and later).
+fn screenshots_available() -> bool {
+    objc2::runtime::AnyClass::get(c"SCScreenshotManager").is_some()
 }
 
 /// Reads the samples of a sound buffer of the system.
@@ -698,21 +727,21 @@ impl Content {
     }
 
     /// Makes the streams of a share. They do not run yet.
-    fn streams(
+    /// The filter of the picture of a screen or a window, and its size in pixels.
+    fn picture_filter(
         &self,
-        request: &CaptureRequest,
-        sink: &Arc<dyn CaptureSink>,
+        picture: PictureSource,
         own: &Own,
-    ) -> Result<(Streams, (u32, u32)), CaptureError> {
-        let ended = Arc::new(AtomicBool::new(false));
-        // SAFETY: the content and the objects of its lists are valid. Each filter and each
-        // configuration is made and used on this thread.
+    ) -> Result<(Retained<SCContentFilter>, (u32, u32)), CaptureError> {
+        // SAFETY: the content and the objects of its lists are valid. The filter is made on
+        // this thread.
         unsafe {
-            let displays = self.content.displays();
-            let (filter, source) = match request.picture {
-                PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
+            match picture {
+                PictureSource::Portal(_) => Err(CaptureError::Unsupported),
                 PictureSource::Display(id) => {
-                    let display = displays
+                    let display = self
+                        .content
+                        .displays()
                         .iter()
                         .find(|display| display.displayID() == id)
                         .ok_or(CaptureError::SourceGone)?;
@@ -721,7 +750,7 @@ impl Content {
                         &display,
                         &NSArray::new(),
                     );
-                    (filter, display_pixels(&display).0)
+                    Ok((filter, display_pixels(&display).0))
                 }
                 PictureSource::Window(id) => {
                     let sources = self.sources(own);
@@ -743,9 +772,78 @@ impl Content {
                         SCContentFilter::alloc(),
                         &window,
                     );
-                    (filter, (listed.width, listed.height))
+                    Ok((filter, (listed.width, listed.height)))
+                }
+            }
+        }
+    }
+
+    /// Asks the system for one picture of a screen or a window, at most `bound` pixels
+    /// (`SCScreenshotManager`, macOS 14 and later). The answer arrives on a queue of the
+    /// system.
+    fn screenshot(
+        &self,
+        picture: PictureSource,
+        bound: (u32, u32),
+        own: &Own,
+    ) -> Result<oneshot::Receiver<Result<PictureFrame, CaptureError>>, CaptureError> {
+        let (filter, source) = self.picture_filter(picture, own)?;
+        let (width, height) = super::picture::fit(source, bound);
+        let (taken, result) = oneshot::channel();
+        let taken = Mutex::new(Some(taken));
+        let handler = RcBlock::new(move |sample: *mut CMSampleBuffer, error: *mut NSError| {
+            // SAFETY: the system passes a valid sample buffer or null, and a valid error or
+            // null, for the time of this call.
+            let outcome = unsafe {
+                match (sample.as_ref(), error.as_ref()) {
+                    (Some(sample), _) => picture_of(sample, bound),
+                    (None, Some(error)) if error.code() == USER_DECLINED => {
+                        Err(CaptureError::NotAllowed)
+                    }
+                    (None, Some(error)) => Err(CaptureError::Failed(
+                        error.localizedDescription().to_string(),
+                    )),
+                    (None, None) => Err(CaptureError::Failed("no picture".to_owned())),
                 }
             };
+            if let Ok(mut taken) = taken.lock()
+                && let Some(taken) = taken.take()
+            {
+                let _ = taken.send(outcome);
+            }
+        });
+        // SAFETY: the filter and the configuration are valid objects of this thread; the
+        // system copies the block and calls it once on a queue of its own, and the block
+        // owns what it uses.
+        unsafe {
+            let configuration = SCStreamConfiguration::new();
+            configuration.setWidth(width as usize);
+            configuration.setHeight(height as usize);
+            configuration.setScalesToFit(true);
+            configuration.setPixelFormat(PIXEL_FORMAT);
+            configure_color(&configuration);
+            configuration.setShowsCursor(false);
+            SCScreenshotManager::captureSampleBufferWithFilter_configuration_completionHandler(
+                &filter,
+                &configuration,
+                Some(&*handler),
+            );
+        }
+        Ok(result)
+    }
+
+    fn streams(
+        &self,
+        request: &CaptureRequest,
+        sink: &Arc<dyn CaptureSink>,
+        own: &Own,
+    ) -> Result<(Streams, (u32, u32)), CaptureError> {
+        let ended = Arc::new(AtomicBool::new(false));
+        let (filter, source) = self.picture_filter(request.picture, own)?;
+        // SAFETY: the content and the objects of its lists are valid. Each filter and each
+        // configuration is made and used on this thread.
+        unsafe {
+            let displays = self.content.displays();
             let (width, height) = request.quality.resolution.fit(source.0, source.1);
             let configuration = SCStreamConfiguration::new();
             configuration.setWidth(width as usize);
@@ -872,6 +970,27 @@ impl ScreenCapture for SystemCapture {
             }
             let content = answer(content()).await??;
             Ok(content.sources(&own))
+        })
+    }
+
+    fn preview(
+        &self,
+        source: PictureSource,
+        bound: (u32, u32),
+    ) -> Pending<Result<PictureFrame, CaptureError>> {
+        let own = self.own.clone();
+        let allowed = self.access() == ScreenAccess::Allowed;
+        Box::pin(async move {
+            if !allowed {
+                return Err(CaptureError::NotAllowed);
+            }
+            if !screenshots_available() {
+                return Err(CaptureError::Unsupported);
+            }
+            let content = answer(content()).await??;
+            let taken = content.screenshot(source, bound, &own)?;
+            drop(content);
+            answer(taken).await?
         })
     }
 

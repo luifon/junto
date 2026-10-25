@@ -1447,7 +1447,7 @@ fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
 }
 
 /// The Stop action of a running recording: its label in the wide form, and the text of its
-/// tooltip and accessible label. While the recording stops, the disabled action states it.
+/// tooltip and accessible label. While the recording is stopping, the disabled action states it.
 fn stop_action(stopping: bool) -> (&'static str, &'static str) {
     if stopping {
         (text::RECORDING_STOPS, text::RECORDING_STOPS)

@@ -27,6 +27,42 @@ pub enum TileMark {
 pub const TILE_SIZE: (f32, f32) = (222.0, 126.0);
 /// The size of a tile of the strip under a share, as the design draws it.
 pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
+/// The space between two tiles of the stage.
+pub const TILE_GAP: f32 = 8.0;
+
+/// The columns of a grid of `count` tiles and the size of each tile: the largest 16:9 size
+/// with which every tile fits in `stage`, with `TILE_GAP` between the tiles, and at least the
+/// size of a tile of the strip. Below that size the tiles keep it and the stage scrolls. A
+/// wide stage has no more rows than columns and a tall stage no more columns than rows, so
+/// two people are side by side in a wide stage.
+pub fn grid(count: usize, stage: (f32, f32)) -> (usize, (f32, f32)) {
+    let (width, height) = stage;
+    let count = count.max(1);
+    let wide = width >= height;
+    let fitted = (1..=count)
+        .filter(|columns| {
+            let rows = count.div_ceil(*columns);
+            if wide {
+                rows <= *columns
+            } else {
+                *columns <= rows
+            }
+        })
+        .map(|columns| {
+            let rows = count.div_ceil(columns);
+            let across = (width - TILE_GAP * (columns - 1) as f32) / columns as f32;
+            let down = (height - TILE_GAP * (rows - 1) as f32) / rows as f32 * 16.0 / 9.0;
+            (columns, across.min(down))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap_or((1, 0.0));
+    if fitted.1 < STRIP_TILE_SIZE.0 {
+        let columns = ((width + TILE_GAP) / (STRIP_TILE_SIZE.0 + TILE_GAP)).floor() as usize;
+        return (columns.clamp(1, count), STRIP_TILE_SIZE);
+    }
+    let tile = fitted.1.floor();
+    (fitted.0, (tile, (tile * 9.0 / 16.0).floor()))
+}
 
 #[derive(IntoElement)]
 pub struct PersonTile {
@@ -43,6 +79,7 @@ pub struct PersonTile {
     in_strip: bool,
     focused: bool,
     sidebar: bool,
+    size: Option<(f32, f32)>,
 }
 
 impl PersonTile {
@@ -67,6 +104,7 @@ impl PersonTile {
             in_strip: false,
             focused: false,
             sidebar: false,
+            size: None,
         }
     }
 
@@ -80,6 +118,12 @@ impl PersonTile {
 
     pub fn sidebar(mut self, sidebar: bool) -> Self {
         self.sidebar = sidebar;
+        self
+    }
+
+    /// The size of the tile in a grid that fills the stage (`grid`).
+    pub fn size(mut self, size: (f32, f32)) -> Self {
+        self.size = Some(size);
         self
     }
 
@@ -129,6 +173,8 @@ impl RenderOnce for PersonTile {
         let colors = theme.colors;
         let (size, avatar) = if self.sidebar {
             ((96.0, 60.0), 28.0)
+        } else if let Some(size) = self.size {
+            (size, (size.1 * 0.4).clamp(34.0, 128.0))
         } else if self.focused {
             ((480.0, 270.0), 51.0)
         } else if self.in_strip {
@@ -213,5 +259,48 @@ impl RenderOnce for PersonTile {
                     .children(marks)
                     .child(div().min_w_0().truncate().child(self.name)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fits(count: usize, stage: (f32, f32)) {
+        let (columns, (width, height)) = grid(count, stage);
+        let rows = count.div_ceil(columns);
+        assert!(columns as f32 * width + TILE_GAP * (columns - 1) as f32 <= stage.0);
+        assert!(rows as f32 * height + TILE_GAP * (rows - 1) as f32 <= stage.1);
+        assert!((width / height - 16.0 / 9.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn the_tiles_fill_the_stage_with_the_largest_size_that_fits() {
+        for stage in [(1176.0, 746.0), (656.0, 380.0)] {
+            for count in [1, 2, 4, 9] {
+                fits(count, stage);
+            }
+        }
+        // One person: the width of the stage.
+        assert_eq!(grid(1, (1176.0, 746.0)), (1, (1176.0, 661.0)));
+        // Two people side by side, each about half of the width.
+        assert_eq!(grid(2, (1176.0, 746.0)), (2, (584.0, 328.0)));
+        // Four people in two rows of two.
+        assert_eq!(grid(4, (1176.0, 746.0)), (2, (584.0, 328.0)));
+        // Nine people in three rows of three.
+        assert_eq!(grid(9, (1176.0, 746.0)), (3, (386.0, 217.0)));
+        // A small stage: one person limited by the height, two side by side.
+        assert_eq!(grid(1, (656.0, 380.0)), (1, (656.0, 369.0)));
+        assert_eq!(grid(2, (656.0, 380.0)), (2, (324.0, 182.0)));
+        assert_eq!(grid(4, (656.0, 380.0)), (2, (324.0, 182.0)));
+        assert_eq!(grid(9, (656.0, 380.0)), (3, (213.0, 119.0)));
+        // A tall stage: two people one above the other.
+        assert_eq!(grid(2, (400.0, 700.0)), (1, (400.0, 225.0)));
+    }
+
+    #[test]
+    fn many_tiles_keep_the_size_of_the_strip_and_the_stage_scrolls() {
+        assert_eq!(grid(40, (656.0, 380.0)), (4, STRIP_TILE_SIZE));
+        assert_eq!(grid(3, (100.0, 380.0)), (1, STRIP_TILE_SIZE));
     }
 }

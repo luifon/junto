@@ -98,6 +98,7 @@ async fn a_stopped_recording_becomes_ready_with_a_video_and_a_file_for_each_trac
         server.notes(scene.voice.id).await,
         [
             "call_started",
+            "person_joined",
             "recording_started",
             "recording_stopped",
             "recording_ready"

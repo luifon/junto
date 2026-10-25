@@ -371,7 +371,7 @@ async fn complete_move(
         left: Some(LeaveReason::Moved),
     };
     events::tell_account(&mut *connection, now, member.account_id, &own).await?;
-    seen_in_room(&mut *connection, now, destination, member.account_id).await?;
+    seen_in_room(&mut *connection, now, destination, member.account_id, false).await?;
     store::tell_move(&mut *connection, now, pending, MoveOutcome::Completed).await?;
     let (account_id, mover) = (member.account_id, Some(pending.moved_by));
     for (place, entry) in [
@@ -399,12 +399,14 @@ async fn complete_move(
 
 /// Records that the media server lists a member for the first time: the member is in the
 /// call for everyone who may see who is inside, and the call has started when it is the
-/// first one.
+/// first one. A member who joins a running call has a line, except after a move, which has
+/// the line of its audit entry (`announce` false).
 async fn seen_in_room(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     call: &CallRow,
     account_id: junto_protocol::ids::AccountId,
+    announce: bool,
 ) -> ApiResult<()> {
     let started =
         sqlx::query("update calls set started_at = $2 where id = $1 and started_at is null")
@@ -422,6 +424,8 @@ async fn seen_in_room(
             started_at: now,
         };
         events::publish(&mut *connection, now, &started).await?;
+    } else if announce {
+        store::note_joined(&mut *connection, now, call, account_id).await?;
     }
     for participant in store::participants(&mut *connection, call.id, Some(account_id)).await? {
         let joined = Event::CallParticipantJoined {
@@ -542,7 +546,7 @@ async fn apply(
             .bind(now)
             .execute(&mut *connection)
             .await?;
-            seen_in_room(&mut *connection, now, &call, member.account_id).await?;
+            seen_in_room(&mut *connection, now, &call, member.account_id, true).await?;
             call.started_at = call.started_at.or(Some(now));
             if matches!(call.place, CallPlace::Direct { .. }) {
                 store::direct_call_seen(&mut *connection, now, &call, member.account_id).await?;

@@ -2160,8 +2160,35 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
     talk.voice.input_mode = InputMode::PushToTalk;
     talk.voice.noise_suppression = false;
     studio.draw(
-        Screen::new("settings-push-to-talk", two_servers()).media(talk),
-        |shell, window, cx| shell.open(Open::Settings, window, cx),
+        Screen::new("settings-push-to-talk", two_servers()).media(talk.clone()),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Voice, window, cx);
+        },
+    )?;
+    // The question before the switch to push to talk.
+    studio.draw(
+        Screen::new("settings-push-to-talk-question", two_servers()).media(no_call()),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Voice, window, cx);
+            shell.ask_push_to_talk_fixture(cx);
+        },
+    )?;
+    // The call strip states push to talk and its key.
+    let mut talking = in_call(Phase::Connected);
+    talking.voice.input_mode = InputMode::PushToTalk;
+    studio.draw(Screen::call("call-push-to-talk", talking), show_daily)?;
+    // The sensitivity of voice activation, with the live level of a call.
+    let mut sensitive = in_call(Phase::Connected);
+    sensitive.voice.voice_threshold = Some(-40);
+    studio.draw(
+        Screen::call("settings-voice-sensitivity", sensitive),
+        |shell, window, cx| {
+            show_daily(shell, window, cx);
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Voice, window, cx);
+        },
     )?;
     Ok(())
 }

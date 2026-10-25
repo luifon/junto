@@ -245,6 +245,9 @@ fn workspace_help_of(permission: junto_client_core::protocol::WorkspacePermissio
         P::LockRoom => "Lock and unlock a call.",
         P::RunMeetingMode => "Turn meeting mode on in a call.",
         P::ViewAuditEntries => "Read the audit entries of the workspace.",
+        P::AdmitToFullCall => {
+            "Get the requests to join a full call, and let the person in above the user limit."
+        }
     }
 }
 

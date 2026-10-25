@@ -230,6 +230,8 @@ async fn every_call_note_becomes_exactly_one_line_in_order() {
         (Note::JoinedByInvitation, "joined_by_invitation"),
         (Note::MeetingStarted, "meeting_started"),
         (Note::MeetingEnded, "meeting_ended"),
+        (Note::PersonJoined, "person_joined"),
+        (Note::PersonLeft, "person_left"),
         (Note::CallEnded, "call_ended"),
     ];
     let mut transaction = server.db.begin().await.unwrap();
@@ -259,6 +261,48 @@ async fn every_call_note_becomes_exactly_one_line_in_order() {
         assert_eq!(line.action, action);
         assert_eq!(line.actor_id, Some(scene.ann.account_id));
     }
+}
+
+/// A person who joins a running call and leaves it while others stay has one line each. A
+/// new seat of a person who is inside, and the departure of the last person, have none.
+#[tokio::test]
+async fn a_person_who_joins_or_leaves_a_running_call_has_one_line() {
+    let scene = crate::calls_support::Scene::start().await;
+    let server = &scene.server;
+    let (ann, ben) = (&scene.ann, &scene.ben);
+    let route = format!("/api/v1/channels/{}/messages", scene.voice.id);
+    let before: MessagePage = server.get(ann, &route).await.ok(StatusCode::OK);
+    let position = before.messages.last().unwrap().position;
+    server.enter_call(ann, scene.voice.id).await;
+    server.enter_call(ben, scene.voice.id).await;
+    // A second join of Ben is a new seat in the same call.
+    server.enter_call(ben, scene.voice.id).await;
+    server.leave_call(ben).await;
+    server.enter_call(ben, scene.voice.id).await;
+    server.leave_call(ben).await;
+    server.leave_call(ann).await;
+    let page: MessagePage = server
+        .get(ann, &format!("{route}?after={position}"))
+        .await
+        .ok(StatusCode::OK);
+    let lines: Vec<(String, Option<junto_protocol::ids::AccountId>)> = page
+        .messages
+        .iter()
+        .filter_map(|message| message.system.as_ref())
+        .map(|line| (line.action.clone(), line.actor_id))
+        .collect();
+    let (ann, ben) = (Some(ann.account_id), Some(ben.account_id));
+    assert_eq!(
+        lines,
+        [
+            ("call_started".to_owned(), ann),
+            ("person_joined".to_owned(), ben),
+            ("person_left".to_owned(), ben),
+            ("person_joined".to_owned(), ben),
+            ("person_left".to_owned(), ben),
+            ("call_ended".to_owned(), None),
+        ]
+    );
 }
 
 #[tokio::test]

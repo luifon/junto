@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, RenderImage, Role,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, canvas,
-    div, prelude::FluentBuilder,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledImage, StyledText,
+    Window, canvas, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::call::ShareAudio;
 use junto_media::calls::{ActiveCall, CallsView, Seat};
@@ -41,6 +41,18 @@ pub enum SoundKind {
 
 const SOUND_KINDS: [SoundKind; 3] = [SoundKind::None, SoundKind::System, SoundKind::Application];
 
+/// The picture of a screen or a window in the dialog of a share (ADR 0738).
+#[derive(Clone)]
+pub(crate) enum Preview {
+    Loading,
+    Shown(Arc<RenderImage>),
+    /// The system gives no picture of the source.
+    Absent,
+}
+
+/// The size in which the dialog draws the picture of a source, in design pixels.
+const PREVIEW_SIZE: (f32, f32) = (96.0, 54.0);
+
 /// What the system lists for a share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Listed {
@@ -64,6 +76,9 @@ pub(crate) struct SharePicker {
     /// The call and the seat that the dialog was opened for. What the person chooses in it
     /// is shared there and nowhere else (ADR 0788).
     seat: Seat,
+    /// The pictures of the listed screens and windows. They are released from the GPU when
+    /// the dialog closes or is replaced (`Shell::release_share_previews`).
+    previews: HashMap<PictureSource, Preview>,
 }
 
 impl SharePicker {
@@ -77,7 +92,19 @@ impl SharePicker {
             scroll: ScrollHandle::new(),
             read,
             seat,
+            previews: HashMap::new(),
         }
+    }
+
+    /// The images of the pictures that the dialog holds, taken out of it.
+    fn take_preview_images(&mut self) -> Vec<Arc<RenderImage>> {
+        self.previews
+            .drain()
+            .filter_map(|(_, preview)| match preview {
+                Preview::Shown(image) => Some(image),
+                Preview::Loading | Preview::Absent => None,
+            })
+            .collect()
     }
 
     /// True while the device is in the call, at the seat, that the dialog was opened for.
@@ -507,19 +534,137 @@ impl Shell {
         let reading = calls.share_sources();
         cx.spawn(async move |this, cx| {
             let listed = reading.await;
-            let _ = this.update(cx, |this, cx| {
-                if let Layer::SharePicker(picker) = &mut this.layer
-                    && picker.read == read
-                {
+            let wanted: Vec<PictureSource> = match &listed {
+                Ok(sources) => sources
+                    .displays
+                    .iter()
+                    .map(|display| PictureSource::Display(display.id))
+                    .chain(
+                        sources
+                            .windows
+                            .iter()
+                            .map(|window| PictureSource::Window(window.id)),
+                    )
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            let open = this
+                .update(cx, |this, cx| {
+                    let Layer::SharePicker(picker) = &mut this.layer else {
+                        return false;
+                    };
+                    if picker.read != read {
+                        return false;
+                    }
                     picker.listed = match listed {
                         Ok(sources) => Listed::Sources(sources),
                         Err(error) => Listed::Failed(error),
                     };
+                    picker.previews = wanted
+                        .iter()
+                        .map(|source| (*source, Preview::Loading))
+                        .collect();
                     cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !open {
+                return;
+            }
+            // One picture at a time: a system with many windows is not asked for all of
+            // them at once. A system without pictures is asked once.
+            let mut unsupported = false;
+            for source in wanted {
+                let taken = if unsupported {
+                    Err(CaptureError::Unsupported)
+                } else {
+                    calls
+                        .share_preview(source, junto_media::share::PREVIEW_BOUND)
+                        .await
+                };
+                unsupported = matches!(taken, Err(CaptureError::Unsupported));
+                let image = taken.ok().and_then(render_image);
+                let still_open = this
+                    .update(cx, |this, cx| {
+                        match &mut this.layer {
+                            Layer::SharePicker(picker) if picker.read == read => {
+                                picker
+                                    .previews
+                                    .insert(source, image.map_or(Preview::Absent, Preview::Shown));
+                                cx.notify();
+                                true
+                            }
+                            // The dialog closed: its pictures are not kept.
+                            _ => false,
+                        }
+                    })
+                    .unwrap_or(false);
+                if !still_open {
+                    return;
                 }
-            });
+            }
         })
         .detach();
+    }
+
+    /// Releases the pictures of the dialog of a share from the GPU of every window: the
+    /// dialog closes or another layer replaces it (ADR 0774).
+    pub(crate) fn release_share_previews(&mut self, cx: &mut Context<Self>) {
+        if let Layer::SharePicker(picker) = &mut self.layer {
+            for image in picker.take_preview_images() {
+                crate::images::release(image, cx);
+            }
+        }
+    }
+
+    /// The picture of a screen or a window beside its name in the dialog of a share.
+    fn render_share_preview(&self, source: PictureSource, name: &str, theme: &Theme) -> AnyElement {
+        let colors = theme.colors;
+        let preview = match &self.layer {
+            Layer::SharePicker(picker) => picker.previews.get(&source).cloned(),
+            _ => None,
+        };
+        let key = match source {
+            PictureSource::Display(id) => format!("display:{id}"),
+            PictureSource::Window(id) => format!("window:{id}"),
+            PictureSource::Portal(_) => "portal".to_owned(),
+        };
+        let (label, shown) = match &preview {
+            Some(Preview::Shown(_)) => (text::share_preview(name), true),
+            Some(Preview::Loading) => (text::SHARE_PREVIEW_LOADING.to_owned(), false),
+            Some(Preview::Absent) | None => (text::SHARE_PREVIEW_NONE.to_owned(), false),
+        };
+        let selector = if shown {
+            format!("share-preview-image:{key}")
+        } else {
+            format!("share-preview:{key}")
+        };
+        div()
+            .id(SharedString::from(format!("share-preview-{key}")))
+            .role(Role::Image)
+            .aria_label(label)
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .w(u(PREVIEW_SIZE.0))
+            .h(u(PREVIEW_SIZE.1))
+            .overflow_hidden()
+            .rounded(u(theme.metrics.radius_small))
+            .border_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.basalt_2))
+            .map(|frame| match preview {
+                Some(Preview::Shown(image)) => frame.child(
+                    gpui::img(image)
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                ),
+                Some(Preview::Loading) => frame.child(icon(Icon::Retry, 15.0, colors.bone_2)),
+                Some(Preview::Absent) | None => frame,
+            })
+            .into_any_element()
     }
 
     /// True while the dialog of a share is open.
@@ -832,6 +977,7 @@ impl Shell {
         let row = |id: (&'static str, usize),
                    selector: String,
                    shown: Icon,
+                   preview: Option<AnyElement>,
                    title: SharedString,
                    detail: SharedString,
                    on: bool| {
@@ -865,6 +1011,7 @@ impl Shell {
                         colors.ink_2
                     },
                 ))
+                .children(preview)
                 .child(
                     div()
                         .flex_1()
@@ -908,6 +1055,7 @@ impl Shell {
                     ("share-portal-screen", 0),
                     "share-portal-screen".into(),
                     Icon::Screen,
+                    None,
                     text::SHARE_DESKTOP_SCREEN.into(),
                     text::SHARE_DESKTOP_HELP.into(),
                     picture == Some(source),
@@ -923,12 +1071,14 @@ impl Shell {
         }
         for (index, display) in sources.displays.iter().enumerate() {
             let source = PictureSource::Display(display.id);
+            let name = text::screen_name(index + 1);
             rows.push(
                 row(
                     ("share-display", index),
                     format!("share-display:{}", display.id),
                     Icon::Screen,
-                    text::screen_name(index + 1).into(),
+                    Some(self.render_share_preview(source, &name, &theme)),
+                    name.into(),
                     text::pixels((display.width, display.height)).into(),
                     picture == Some(source),
                 )
@@ -949,6 +1099,7 @@ impl Shell {
                     ("share-portal-window", 0),
                     "share-portal-window".into(),
                     Icon::AppWindow,
+                    None,
                     text::SHARE_DESKTOP_WINDOW.into(),
                     text::SHARE_DESKTOP_HELP.into(),
                     picture == Some(source),
@@ -984,11 +1135,13 @@ impl Shell {
                 shared.application_name,
                 text::pixels((shared.width, shared.height))
             );
+            let preview = self.render_share_preview(source, &title, &theme);
             rows.push(
                 row(
                     ("share-window", index),
                     format!("share-window:{}", shared.id),
                     Icon::AppWindow,
+                    Some(preview),
                     title,
                     detail.into(),
                     picture == Some(source),
@@ -1039,6 +1192,7 @@ impl Shell {
                                 format!("share-application:{}", shared.id.process_id)
                             },
                             Icon::AppWindow,
+                            None,
                             shared.name.clone().into(),
                             if shared.id.process_id == 0 {
                                 "".into()

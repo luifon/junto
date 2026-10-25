@@ -2,12 +2,14 @@
 //! a list of sections and one section at a time (ADR 0703, ADR 0717).
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div,
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window,
+    div,
 };
+use gpui_base::slider::{SliderEvent, SliderState};
 
 use junto_client_core::settings::ThemeChoice;
-use junto_client_core::voice::{InputMode, TalkKey};
+use junto_client_core::voice::{InputMode, THRESHOLD_DEFAULT, THRESHOLD_RANGE, TalkKey};
 
 use super::account::Surface;
 use super::{Layer, Shell};
@@ -16,8 +18,8 @@ use crate::state::ProcessingPart;
 use crate::text;
 use crate::theme::{self, Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, ChannelRow, Dialog, Field, Notice, Segmented, StyleExt, Toggle,
-    dialog_footer,
+    Button, ButtonKind, ChannelRow, Dialog, Field, LevelSlider, Notice, Segmented, StyleExt,
+    Toggle, dialog_footer,
 };
 
 /// The themes that the setting offers, in its order.
@@ -212,6 +214,10 @@ impl Shell {
             self.settings_section = section;
             self.settings_scroll().set_offset(gpui::Point::default());
         }
+        // The microphone is open for its level while the Voice section is shown (ADR 0733).
+        self.state.update(cx, |state, _| {
+            state.set_input_test(section == SettingsSection::Voice)
+        });
         cx.notify();
     }
 
@@ -248,7 +254,7 @@ impl Shell {
             SettingsSection::Interface => self.render_interface_section(&theme, cx),
             SettingsSection::Voice => {
                 let mut parts = vec![group_label(text::VOICE, &theme).into_any_element()];
-                parts.extend(self.render_voice_settings(&theme, cx));
+                parts.extend(self.render_voice_settings(&theme, window, cx));
                 parts
             }
             SettingsSection::Quiet => {
@@ -471,12 +477,140 @@ impl Shell {
         parts
     }
 
+    /// The settings ask before the switch to push to talk, for the pictures of the screens.
+    pub fn ask_push_to_talk_fixture(&mut self, cx: &mut Context<Self>) {
+        self.push_to_talk_question = true;
+        cx.notify();
+    }
+
+    /// The state of the slider of the sensitivity, created at its first drawing.
+    fn voice_threshold_control(
+        &mut self,
+        threshold: i16,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<SliderState>, FocusHandle) {
+        let range = (f32::from(THRESHOLD_RANGE.0), f32::from(THRESHOLD_RANGE.1));
+        let control = self.voice_threshold.get_or_insert_with(|| {
+            let state = cx.new(|_| LevelSlider::state(range, f32::from(threshold)));
+            let changes = cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
+                let (value, release) = match event {
+                    SliderEvent::Change(value) => (value.end(), false),
+                    SliderEvent::Release(value) => (value.end(), true),
+                };
+                let threshold = value.round().clamp(range.0, range.1) as i16;
+                this.state.update(cx, |state, cx| {
+                    state.set_voice_threshold(Some(threshold), release, cx);
+                });
+            });
+            super::call::VolumeControl {
+                state,
+                focus: cx.focus_handle(),
+                _changes: changes,
+            }
+        });
+        let shown = control.state.read(cx).value().end().round() as i16;
+        if shown != threshold {
+            control.state.update(cx, |state, cx| {
+                state.set_value(f32::from(threshold), window, cx)
+            });
+        }
+        (control.state.clone(), control.focus.clone())
+    }
+
+    /// The sensitivity of voice activation: off, or a threshold on the live level of the
+    /// microphone (ADR 0701).
+    fn render_voice_threshold(
+        &mut self,
+        threshold: Option<i16>,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let colors = theme.colors;
+        let shown = {
+            let state = self.state.read(cx);
+            state.media_calls().call.is_some() || state.calls().input_test_runs()
+        };
+        let level = shown.then(|| {
+            self.state.read(cx).shown_levels().input as f32
+                / crate::state::view::INPUT_SEGMENTS as f32
+        });
+        let toggle = Toggle::new(
+            "voice-threshold",
+            text::SENSITIVITY,
+            threshold.is_some(),
+            (text::ON, text::OFF),
+        )
+        .selector("voice-threshold")
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let next = match threshold {
+                Some(_) => None,
+                None => Some(THRESHOLD_DEFAULT),
+            };
+            this.state
+                .update(cx, |state, cx| state.set_voice_threshold(next, true, cx));
+        }));
+        let mut column = div().flex().flex_col().gap(u(4.0)).mt(u(8.0)).child(
+            div()
+                .flex()
+                .items_start()
+                .gap(u(10.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .typeface(theme.types.control, theme)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .ink(colors.ink)
+                                .child(text::SENSITIVITY),
+                        )
+                        .child(
+                            div()
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_2)
+                                .child(text::SENSITIVITY_HELP),
+                        ),
+                )
+                .child(toggle),
+        );
+        if let Some(threshold) = threshold {
+            let (state, focus) = self.voice_threshold_control(threshold, window, cx);
+            column = column
+                .child(
+                    LevelSlider::new(
+                        "voice-threshold-slider",
+                        &state,
+                        &focus,
+                        text::SENSITIVITY,
+                        (f32::from(THRESHOLD_RANGE.0), f32::from(THRESHOLD_RANGE.1)),
+                    )
+                    .level(level)
+                    .selector("voice-threshold-slider"),
+                )
+                .child(
+                    div()
+                        .typeface(theme.types.small, theme)
+                        .ink(colors.ink_2)
+                        .child(if level.is_some() {
+                            text::SENSITIVITY_LEVEL_HELP
+                        } else {
+                            text::SENSITIVITY_NO_LEVEL
+                        }),
+                );
+        }
+        column.into_any_element()
+    }
+
     /// The sound settings that hold for every call: when the microphone is sent, the
     /// processing of the microphone, and the tones of call events (ADR 0507, ADR 0701,
     /// ADR 0707).
     fn render_voice_settings(
         &mut self,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
         let (voice, error) = {
@@ -514,9 +648,22 @@ impl Shell {
                     .selector("input-mode")
                     .on_select({
                         let select = cx.listener(move |this, index: &usize, _, cx| {
-                            if let Some(mode) = modes.get(*index).copied() {
-                                this.state
-                                    .update(cx, |state, cx| state.set_input_mode(mode, cx));
+                            match modes.get(*index).copied() {
+                                // Push to talk sends nothing until the key is held: the
+                                // settings ask before the switch.
+                                Some(InputMode::PushToTalk)
+                                    if this.state.read(cx).voice().input_mode
+                                        != InputMode::PushToTalk =>
+                                {
+                                    this.push_to_talk_question = true;
+                                    cx.notify();
+                                }
+                                Some(mode) => {
+                                    this.push_to_talk_question = false;
+                                    this.state
+                                        .update(cx, |state, cx| state.set_input_mode(mode, cx));
+                                }
+                                None => {}
                             }
                         });
                         move |index, window, cx| select(&index, window, cx)
@@ -524,6 +671,56 @@ impl Shell {
                 )
                 .into_any_element(),
         ];
+        if self.push_to_talk_question && voice.input_mode != InputMode::PushToTalk {
+            rows.push(
+                div()
+                    .id("push-to-talk-question")
+                    .role(Role::Alert)
+                    .aria_label(text::push_to_talk_question(voice.talk_key))
+                    .debug_selector(|| "push-to-talk-question".to_owned())
+                    .flex()
+                    .flex_col()
+                    .gap(u(8.0))
+                    .mt(u(8.0))
+                    .p(u(10.0))
+                    .rounded(u(theme.metrics.radius_small))
+                    .border_1()
+                    .border_color(Hsla::from(colors.ochre))
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink)
+                            .child(text::push_to_talk_question(voice.talk_key)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(u(8.0))
+                            .child(
+                                Button::new("confirm-push-to-talk")
+                                    .kind(ButtonKind::Primary)
+                                    .label(text::USE_PUSH_TO_TALK)
+                                    .selector("confirm-push-to-talk")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.push_to_talk_question = false;
+                                        this.state.update(cx, |state, cx| {
+                                            state.set_input_mode(InputMode::PushToTalk, cx)
+                                        });
+                                    })),
+                            )
+                            .child(
+                                Button::new("keep-voice-activation")
+                                    .label(text::KEEP_VOICE_ACTIVATION)
+                                    .selector("keep-voice-activation")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.push_to_talk_question = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
         if voice.input_mode == InputMode::PushToTalk {
             rows.push(
                 div()
@@ -554,6 +751,9 @@ impl Shell {
             );
         }
         rows.push(help(text::INPUT_MODE_HELP, theme).into_any_element());
+        if voice.input_mode == InputMode::VoiceActivation {
+            rows.push(self.render_voice_threshold(voice.voice_threshold, theme, window, cx));
+        }
         for (part, on, title, sentence, selector) in [
             (
                 Some(ProcessingPart::EchoCancellation),

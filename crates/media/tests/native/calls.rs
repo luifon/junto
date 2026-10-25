@@ -55,6 +55,7 @@ fn config(host: &Guard) -> VoiceConfig {
         output_device: Some(host.id().clone()),
         processing: Processing::OFF,
         push_to_talk: false,
+        threshold: None,
     }
 }
 

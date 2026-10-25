@@ -625,3 +625,155 @@ impl RenderOnce for VolumeSlider {
             )
     }
 }
+
+/// The sensitivity of voice activation: a track over the range of the input meter, the live
+/// level of the microphone drawn on it, and the threshold as the thumb. The arrow keys move
+/// the threshold by 1 dB while it holds the keyboard focus.
+#[derive(IntoElement)]
+pub struct LevelSlider {
+    id: ElementId,
+    state: Entity<SliderState>,
+    focus: FocusHandle,
+    label: SharedString,
+    range: (f32, f32),
+    /// The live level as a share of the track, from 0 to 1, while it is known.
+    level: Option<f32>,
+    selector: Option<SharedString>,
+}
+
+impl LevelSlider {
+    pub fn new(
+        id: impl Into<ElementId>,
+        state: &Entity<SliderState>,
+        focus: &FocusHandle,
+        label: impl Into<SharedString>,
+        range: (f32, f32),
+    ) -> Self {
+        Self {
+            id: id.into(),
+            state: state.clone(),
+            focus: focus.clone(),
+            label: label.into(),
+            range,
+            level: None,
+            selector: None,
+        }
+    }
+
+    pub fn state(range: (f32, f32), value: f32) -> SliderState {
+        SliderState::new()
+            .min(range.0)
+            .max(range.1)
+            .step(1.0)
+            .default_value(value)
+    }
+
+    pub fn level(mut self, level: Option<f32>) -> Self {
+        self.level = level;
+        self
+    }
+
+    pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
+        self
+    }
+}
+
+impl RenderOnce for LevelSlider {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let (low, high) = self.range;
+        let value = self.state.read(cx).value().end();
+        let share = ((value - low) / (high - low)).clamp(0.0, 1.0);
+        let level = self.level.unwrap_or(0.0).clamp(0.0, 1.0);
+        let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+        let state = self.state.clone();
+        div()
+            .id(self.id)
+            .aria_label(self.label)
+            .when_some(self.selector, |slider, selector| {
+                slider.debug_selector(move || selector.to_string())
+            })
+            .flex()
+            .flex_1()
+            .min_w(u(60.0))
+            .items_center()
+            .gap(u(8.0))
+            .rounded(u(theme.metrics.radius))
+            .track_focus(&self.focus)
+            .tab_stop(true)
+            .children(super::reveal::report(&self.focus, window))
+            .focus_visible(move |style| style.shadow(ring))
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                let step = match event.keystroke.key.as_str() {
+                    "right" | "up" => 1.0,
+                    "left" | "down" => -1.0,
+                    _ => return,
+                };
+                state.update(cx, |state, cx| {
+                    let next = (state.value().end() + step).clamp(low, high);
+                    state.set_value(next, window, cx);
+                    cx.emit(gpui_base::slider::SliderEvent::Change(state.value()));
+                    cx.emit(gpui_base::slider::SliderEvent::Release(state.value()));
+                });
+                cx.stop_propagation();
+            })
+            .child(
+                Slider::new(&self.state).flex().flex_1().child(
+                    SliderTrack::new(&self.state)
+                        .flex()
+                        .flex_1()
+                        .items_center()
+                        .h(u(18.0))
+                        .cursor_pointer()
+                        .child(
+                            SliderIndicator::new(&self.state)
+                                .relative()
+                                .w_full()
+                                .h(u(8.0))
+                                .rounded(u(2.0))
+                                .bg(Hsla::from(colors.rule))
+                                // The live level: bright above the threshold, where it is
+                                // sent, and dim below it.
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .top_0()
+                                        .h_full()
+                                        .w(relative(level))
+                                        .rounded(u(2.0))
+                                        .bg(Hsla::from(if level >= share {
+                                            colors.olive_bright
+                                        } else {
+                                            colors.ink_3
+                                        })),
+                                )
+                                .child(
+                                    SliderThumb::new(&self.state)
+                                        .absolute()
+                                        .left(relative(share))
+                                        .top(u(-4.0))
+                                        .ml(u(-3.0))
+                                        .w(u(6.0))
+                                        .h(u(16.0))
+                                        .rounded(u(2.0))
+                                        .border_1()
+                                        .border_color(Hsla::from(colors.ink_2))
+                                        .bg(Hsla::from(colors.travertine_hi)),
+                                ),
+                        ),
+                ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(u(52.0))
+                    .text_right()
+                    .typeface(theme.types.mono_field, &theme)
+                    .ink(colors.ink)
+                    .child(format!("{} dB", value.round() as i32)),
+            )
+    }
+}

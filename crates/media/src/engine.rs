@@ -103,6 +103,9 @@ pub struct VoiceConfig {
     /// The microphone is sent only while the key is held. Without it the open microphone
     /// is sent all the time.
     pub push_to_talk: bool,
+    /// Without push to talk, the open microphone is sent only while its level reaches this
+    /// many dBFS, with a hold after it. Absent: all of it is sent.
+    pub threshold: Option<i16>,
 }
 
 /// What the person and the server have set for this device in the call.
@@ -1552,6 +1555,11 @@ impl Actor {
     /// it or push-to-talk waits for its key. A mute is also told to the room, so that the
     /// media server forwards nothing.
     fn sync_gate(&self) {
+        self.link.set_threshold(if self.config.push_to_talk {
+            None
+        } else {
+            self.config.threshold
+        });
         let open =
             !self.controls.muted && !self.input_held && (!self.config.push_to_talk || self.talking);
         self.link.set_open(open && self.capture.is_some());

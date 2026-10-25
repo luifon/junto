@@ -142,7 +142,16 @@ pub struct VoiceSettings {
     pub hide_people_without_video: bool,
     /// The short tones of the events of a call (ADR 0707).
     pub call_sounds: bool,
+    /// Voice activation sends the microphone only while its level reaches this many dBFS,
+    /// from [`THRESHOLD_RANGE`]. Absent: all of the open microphone is sent.
+    pub voice_threshold: Option<i16>,
 }
+
+/// The levels that the sensitivity of voice activation can have, in dBFS: the range of the
+/// input meter.
+pub const THRESHOLD_RANGE: (i16, i16) = (-60, -12);
+/// The level that the sensitivity has when the person turns it on.
+pub const THRESHOLD_DEFAULT: i16 = -45;
 
 impl Default for VoiceSettings {
     fn default() -> Self {
@@ -161,6 +170,7 @@ impl Default for VoiceSettings {
             share_volume: VOLUME_DEFAULT_PERCENT,
             hide_people_without_video: false,
             call_sounds: true,
+            voice_threshold: None,
         }
     }
 }
@@ -216,6 +226,9 @@ impl VoiceSettings {
             self.share_frame_rate = SHARE_FRAME_RATE_DEFAULT;
         }
         self.share_volume = self.share_volume.min(VOLUME_MAX_PERCENT);
+        self.voice_threshold = self
+            .voice_threshold
+            .map(|threshold| threshold.clamp(THRESHOLD_RANGE.0, THRESHOLD_RANGE.1));
         self
     }
 }
@@ -241,6 +254,8 @@ struct VoiceFile {
     share_volume: u16,
     hide_people_without_video: bool,
     call_sounds: bool,
+    #[serde(default)]
+    voice_threshold: Option<i16>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +288,7 @@ impl VoiceStore {
             share_volume: file.share_volume,
             hide_people_without_video: file.hide_people_without_video,
             call_sounds: file.call_sounds,
+            voice_threshold: file.voice_threshold,
         }
         .bounded())
     }
@@ -312,6 +328,7 @@ impl VoiceStore {
                 share_volume: settings.share_volume,
                 hide_people_without_video: settings.hide_people_without_video,
                 call_sounds: settings.call_sounds,
+                voice_threshold: settings.voice_threshold,
             },
         )?;
         Ok(settings)

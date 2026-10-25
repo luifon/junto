@@ -1243,7 +1243,7 @@ async fn the_database_refuses_states_that_break_the_invariants() {
         ),
         (
             "a role holds an unknown permission bit",
-            format!("update workspace_roles set permissions = 65536 where id = '{}'", local.id),
+            format!("update workspace_roles set permissions = 131072 where id = '{}'", local.id),
         ),
         (
             "an override allows and denies one permission",
