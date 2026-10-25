@@ -20,8 +20,9 @@ const WINDOW_SIZE: (f32, f32) = (1440.0, 900.0);
 const WINDOW_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
 /// The identifier of the application for the desktop: the window class on Linux and the
-/// name of its desktop entry (ADR 0701).
-pub const APP_ID: &str = "chat.junto.Junto";
+/// name of its desktop entry (ADR 0701), and the application user model identifier on
+/// Windows (ADR 0742).
+pub const APP_ID: &str = junto_client_core::app_identity::APP_ID;
 
 /// How the main window opens.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,7 +57,14 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
     })
     .detach();
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| {
+        // The windows close without a request to close them.
+        #[cfg(windows)]
+        for window in cx.windows() {
+            let _ = window.update(cx, |_, window, _| crate::taskbar::forget(window));
+        }
+        cx.quit()
+    });
     Ok(())
 }
 
@@ -67,7 +75,8 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
     // The notifications of the system, and the press on one of them. Only this start
     // shows them: a test and the screen tool keep what they would show (ADR 0742).
     let held = state.downgrade();
-    let notifier = crate::notify::platform(cx, move |tag, cx| {
+    let data_dir = state.read(cx).client().data_dir().root().to_path_buf();
+    let notifier = crate::notify::platform(cx, &data_dir, move |tag, cx| {
         if let Some(state) = held.upgrade() {
             crate::notify::bring_to_front(cx);
             state.update(cx, |state, cx| state.alert_pressed(tag, cx));
@@ -124,10 +133,14 @@ pub fn open_main_window(
             titlebar: Some(TitlebarOptions {
                 title: Some(text::APP_NAME.into()),
                 // The server book reaches the top edge of the window; macOS draws the
-                // window controls over it.
+                // window controls over it. Windows draws no title bar: the window draws
+                // its strip with the window buttons (ADR 0703).
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(12.0), px(13.0))),
             }),
+            // The headers at the top act as the title bar on macOS: they move the window
+            // and take its double press (`shell::title_bar`).
+            app_owns_titlebar_drag: true,
             focus: start.activate,
             show: true,
             app_id: Some(APP_ID.to_owned()),
@@ -137,9 +150,17 @@ pub fn open_main_window(
         },
         move |window, cx| {
             window.set_rem_size(theme::rem_size(scale));
+            #[cfg(target_os = "macos")]
+            crate::shell::title_bar::content_reaches_title_bar(window, cx);
+            #[cfg(windows)]
+            crate::taskbar::identify(window);
             let held = state.clone();
-            window.on_window_should_close(cx, move |_, cx| {
+            window.on_window_should_close(cx, move |window, cx| {
                 held.update(cx, |state, cx| state.return_call(cx));
+                #[cfg(windows)]
+                crate::taskbar::forget(window);
+                #[cfg(not(windows))]
+                let _ = window;
                 true
             });
             let shell = cx.new(|cx| Shell::new(state, window, cx));

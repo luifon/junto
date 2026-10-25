@@ -26,6 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resource = output.join("junto.res");
         std::fs::write(&resource, junto_icon::windows_resource()?)?;
         println!("cargo:rustc-link-arg-bin=junto={}", resource.display());
+        // The picture of the notifications, which the program writes for the system (ADR 0742).
+        std::fs::write(
+            output.join("notification-icon.png"),
+            junto_icon::png(junto_icon::NOTIFICATION)?,
+        )?;
     }
     if target == "linux" {
         std::fs::write(

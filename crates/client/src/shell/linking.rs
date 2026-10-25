@@ -897,7 +897,7 @@ impl Shell {
 
     pub(crate) fn render_link_all(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(view) = self.state.read(cx).link_all_view() else {
@@ -928,7 +928,7 @@ impl Shell {
             page,
             page_scroll: self.linking.scroll.clone(),
         };
-        self.render_surface(surface, cx)
+        self.render_surface(surface, window, cx)
     }
 
     /// The section "Devices" of the settings: the two ways into the link on all servers.

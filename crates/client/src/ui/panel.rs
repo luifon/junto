@@ -18,6 +18,7 @@ pub struct SideHeader {
     icon: Option<Icon>,
     note: Option<SharedString>,
     trailing: Option<AnyElement>,
+    title_bar: bool,
 }
 
 impl SideHeader {
@@ -27,6 +28,7 @@ impl SideHeader {
             icon: None,
             note: None,
             trailing: None,
+            title_bar: false,
         }
     }
 
@@ -44,13 +46,26 @@ impl SideHeader {
         self.trailing = Some(element.into_any_element());
         self
     }
+
+    /// The header of a side panel at the top of the window: on macOS it acts as the title bar
+    /// of the main window (ADR 0703). The header of a dialog does not.
+    pub fn title_bar(mut self) -> Self {
+        self.title_bar = true;
+        self
+    }
 }
 
 impl RenderOnce for SideHeader {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        div()
+        let header = div();
+        let header = if self.title_bar {
+            crate::shell::title_bar::header_zone(header)
+        } else {
+            header
+        };
+        header
             .flex()
             .flex_none()
             .items_center()

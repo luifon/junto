@@ -357,7 +357,7 @@ impl Shell {
             }
             after.push(div().flex_1().into_any_element());
         }
-        div()
+        super::title_bar::header_zone(div())
             .id("main-header")
             .relative()
             .flex()
@@ -1240,6 +1240,7 @@ impl Shell {
         let colors = theme.colors;
         let faces = self.shown_faces();
         let header = SideHeader::new(text::MEMBERS)
+            .title_bar()
             .icon(Icon::People)
             .note(
                 workspace

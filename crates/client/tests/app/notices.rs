@@ -300,7 +300,7 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
         window.view().quiet.do_not_disturb,
         Some(Agreement::All(false))
     );
-    window.click("do-not-disturb");
+    window.click_in_settings("do-not-disturb");
     window.until("do not disturb is on", |window| {
         let quiet = window.view().quiet;
         quiet.do_not_disturb == Some(Agreement::All(true)) && !quiet.busy && quiet.quiet_now
@@ -318,7 +318,7 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
 
     // The quiet time ends, and the list holds its notices. They are not told
     // afterwards; a later one is.
-    window.click("do-not-disturb");
+    window.click_in_settings("do-not-disturb");
     window.until("do not disturb is off", |window| {
         let quiet = window.view().quiet;
         quiet.do_not_disturb == Some(Agreement::All(false)) && !quiet.busy

@@ -16,6 +16,8 @@ pub mod opening;
 pub mod renderer;
 pub mod shell;
 pub mod state;
+#[cfg(windows)]
+pub mod taskbar;
 pub mod text;
 pub mod theme;
 pub mod ui;

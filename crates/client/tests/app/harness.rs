@@ -636,6 +636,15 @@ impl Window {
         self.settle();
     }
 
+    /// Clicks a control of the Settings dialog after it scrolled the control into the
+    /// visible part of the dialog: a smaller window shows less of the dialog.
+    #[track_caller]
+    pub fn click_in_settings(&mut self, selector: &'static str) {
+        let scroll = self.in_shell(|shell, _, _| shell.settings_scroll_handle());
+        self.reveal(&scroll, selector);
+        self.click(selector);
+    }
+
     /// Clicks the element with this name when it is drawn now. A test uses it for an
     /// element that a reload of the state takes away for a moment.
     pub fn click_if_shown(&mut self, selector: &'static str) -> bool {

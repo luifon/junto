@@ -1,4 +1,8 @@
 //! The binary `junto`: reads its arguments, opens the data directory and starts the window.
+//! On Windows it is a program of the Windows subsystem, so Windows opens no console beside the
+//! window (ADR 0755).
+
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -28,7 +32,9 @@ options:
   --version                print the version
   --help                   print this text
 
-The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn).";
+The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (default: warn).
+On Windows the log of a running window is kept only when standard error is redirected,
+for example: junto.exe 2> junto.log";
 
 struct Arguments {
     data_dir: Option<PathBuf>,
@@ -137,10 +143,15 @@ fn update_from(source: &str) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let arguments = match parse(
+    let parsed = parse(
         std::env::args().skip(1),
         junto_client_core::releases::TEST_CONFIGURATION,
-    ) {
+    );
+    // A command that writes a text for the person and opens no window.
+    if !matches!(parsed, Ok(Parsed::Run(_))) {
+        junto_client_core::console::attach_to_parent();
+    }
+    let arguments = match parsed {
         Ok(Parsed::Run(arguments)) => arguments,
         Ok(Parsed::Rollback) => {
             let result = junto_client_core::releases::PlatformInstaller::running()
@@ -191,6 +202,7 @@ fn main() -> ExitCode {
         Err(problem) => {
             // The files of the data directory are not changed by a start that fails
             // (ADR 0710). The person reads why and decides.
+            junto_client_core::console::attach_to_parent();
             eprintln!("junto cannot start: {problem}");
             return ExitCode::FAILURE;
         }
@@ -203,6 +215,7 @@ fn main() -> ExitCode {
         .with_assets(Assets)
         .run(move |cx| {
             if let Err(error) = app::init(cx) {
+                junto_client_core::console::attach_to_parent();
                 eprintln!("junto cannot start: {error:#}");
                 cx.quit();
                 return;
@@ -224,6 +237,7 @@ fn main() -> ExitCode {
                 }
                 Ok(_) => reached.set(true),
                 Err(error) => {
+                    junto_client_core::console::attach_to_parent();
                     eprintln!("junto cannot open its window: {error:#}");
                     cx.quit();
                 }

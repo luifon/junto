@@ -50,6 +50,20 @@ zeroize = "1"
 rustix = { version = "1", features = ["fs", "process", "stdio", "termios"] }
 
 [target.'cfg(windows)'.dependencies]
+# The key of the identity of the application for the notifications (ADR 0742). gpui uses the
+# same crate for the same key.
+windows-registry = "0.6"
+# The properties of the main window for the taskbar (ADR 0755), through the interfaces of the
+# shell. gpui uses the same version.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -73,9 +87,11 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { version = "1", features = ["pty"] }
 
-# The workspace forbids unsafe code. This crate denies it and allows it in two modules that
-# exist on Windows only: the library reads and sets owners and access lists, and the tool
-# turns the echo of the console off (ADR 0711).
+# The workspace forbids unsafe code. This crate denies it and allows it in four modules that
+# exist on Windows only: the library reads and sets owners and access lists (ADR 0711),
+# attaches a program of the Windows subsystem to the console of its parent and sets the
+# taskbar properties of a window (ADR 0755), and the tool turns the echo of the console off
+# (ADR 0711).
 [lints.rust]
 unsafe_code = "deny"
 

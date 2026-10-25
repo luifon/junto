@@ -122,7 +122,7 @@ impl Shell {
                 (Some(server), None) => (None, server.name.clone().into()),
                 (None, _) => (None, SharedString::default()),
             };
-        let header = div()
+        let header = super::title_bar::header_zone(div())
             .flex()
             .flex_none()
             .items_center()

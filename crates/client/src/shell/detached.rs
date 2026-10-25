@@ -437,16 +437,30 @@ impl Shell {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }
         let invitations = self.render_invitation_cards(&view, cards_top, 0.0, window, cx);
-        body.when(!matches!(self.layer, super::Layer::None), |body| {
-            body.child(self.render_layer(&view, window, cx))
-        })
-        .children(invitations)
-        .map(|body| Self::presses_and_escape(body, cx))
-        .on_modifiers_changed(
-            cx.listener(|this, event: &gpui::ModifiersChangedEvent, _, cx| {
-                this.modifiers_changed(event.modifiers, cx)
-            }),
-        )
-        .into_any_element()
+        let body = body
+            .when(!matches!(self.layer, super::Layer::None), |body| {
+                body.child(self.render_layer(&view, window, cx))
+            })
+            .children(invitations)
+            .map(|body| Self::presses_and_escape(body, cx))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.modifiers_changed(event.modifiers, cx)
+                },
+            ));
+        // The system draws the title bar of this window, except on a Wayland compositor
+        // without server decorations. A layer covers the call and not that strip.
+        if !super::title_bar::draws_frame(window, false, cx) {
+            return body.into_any_element();
+        }
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.render_title_strip(view.call_title().into(), window, cx))
+            .child(body.flex_1().min_h_0())
+            .children(super::title_bar::resize_bands(window, cx))
+            .into_any_element()
     }
 }

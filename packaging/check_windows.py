@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Checks of the Windows package on a Windows machine (ADR 0755): the ZIP is extracted into a
-folder of the account, its program starts and draws its first frame, a running installation
-is updated from a local source, and its recovery program rolls the update back.
+folder of the account, its program starts and draws its first frame, its window acts as a window
+of Windows with its title bar and registers the identity of its notifications, a running
+installation is updated from a local source, and its recovery program rolls the update back.
 
 Each step prints its name; a failure prints the step, the command, its exit code and both of
 its outputs. It builds the client and the release tools in the target directory of the
@@ -19,6 +20,7 @@ import icons
 import licences
 import release_tools
 import check_lifecycle
+import window_frame
 import windows
 from programs import outcome
 
@@ -104,6 +106,15 @@ class Check:
                 expect(picture == icons.png(icons.rendering(TARGET / "junto-icon.exe", size)),
                        f"the icon of {size} pixels of {program} is not the rendering of the source")
 
+    @step("the client is a program of the Windows subsystem and the recovery program a console program")
+    def subsystems(self):
+        # Windows opens a console beside a program of the console subsystem that Explorer starts.
+        for program, expected in [("junto.exe", windows.WINDOWS_SUBSYSTEM),
+                                  ("junto-recover.exe", windows.CONSOLE_SUBSYSTEM)]:
+            with zipfile.ZipFile(self.zip) as archive:
+                found = windows.subsystem(archive.read(f"Junto/{program}"))
+            expect(found == expected, f"{program} has the subsystem {found}, not {expected}")
+
     @step("install: extract the ZIP into a folder of the account")
     def install(self):
         programs = self.root / "Programs"
@@ -126,6 +137,38 @@ class Check:
                       "--check-startup"], timeout=300)
         expect(result.returncode == 0 and "Junto first frame rendered" in (result.stdout + result.stderr).splitlines(),
                "the program did not draw its first frame", result)
+
+    @step("the window: its strip acts as the title bar, and its notifications have their identity")
+    def window(self):
+        data = self.root / "window-data"
+        process = subprocess.Popen([str(self.installed / "junto.exe"), "--data-dir", str(data), "--no-activate"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            window_frame.check_frame(process.pid, expect)
+            try:
+                stdout, stderr = process.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise AssertionError("the close button of the window did not end the program") from None
+            expect(process.returncode == 0, "the program did not end without an error after its close",
+                   subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+        values = window_frame.identity()
+        expect(values is not None, "the program registered no identity of its notifications")
+        picture = data / "notification-icon.png"
+        expect(values.get("DisplayName", (None,))[0] == "Junto", f"the identity names {values}")
+        expect(pathlib.Path(values.get("IconUri", ("",))[0]) == picture, f"the identity names {values}")
+        expect(icons.png(picture.read_bytes()) == icons.png(icons.rendering(TARGET / "junto-icon.exe", 256)),
+               "the picture of the notifications is not the rendering of the icon at 256 pixels")
+        result = ran([self.installed / "junto-recover.exe", "unregister"])
+        expect(result.returncode == 0 and "removed" in result.stdout, "the recovery program did not unregister",
+               result)
+        expect(window_frame.identity() is None, "the key of the identity is still there")
+        result = ran([self.installed / "junto-recover.exe", "unregister"])
+        expect(result.returncode == 0 and "no registration" in result.stdout,
+               "a second removal of the identity did not succeed", result)
 
     @step("update a running installation from a local source")
     def update(self):
@@ -204,13 +247,15 @@ def main():
     temporary = pathlib.Path(tempfile.mkdtemp(prefix="junto-windows-package-"))
     check = Check(temporary)
     try:
-        for number, (name, function) in enumerate(STEPS, 1):
-            print(f"[{number}/{len(STEPS)}] {name}", flush=True)
-            try:
-                function(check)
-            except Exception as error:
-                print(f"FAILED at step {number}: {name}\n{type(error).__name__}: {error}", flush=True)
-                return 1
+        # Each start of a client writes the key of the identity of the notifications.
+        with window_frame.kept_identity():
+            for number, (name, function) in enumerate(STEPS, 1):
+                print(f"[{number}/{len(STEPS)}] {name}", flush=True)
+                try:
+                    function(check)
+                except Exception as error:
+                    print(f"FAILED at step {number}: {name}\n{type(error).__name__}: {error}", flush=True)
+                    return 1
         print(f"all {len(STEPS)} steps of the Windows package check passed", flush=True)
         return 0
     finally:

@@ -165,6 +165,7 @@ impl RenderOnce for Dialog {
             .items_center()
             .justify_center()
             .p(u(16.0))
+            .pt(u(crate::shell::title_bar::cover_top(window, cx)))
             .bg(Hsla::from(colors.scrim))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 if let Some(close) = &by_cover {

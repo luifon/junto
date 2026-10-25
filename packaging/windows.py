@@ -15,6 +15,27 @@ import zipfile
 import licences
 
 
+# The subsystems of a program in its optional header (ADR 0755): Windows opens a console for a
+# program of the console subsystem when its parent has none.
+WINDOWS_SUBSYSTEM = 2
+CONSOLE_SUBSYSTEM = 3
+
+
+def subsystem(program):
+    """The subsystem of the optional header of a Windows program (PE32 or PE32+)."""
+    if program[:2] != b"MZ":
+        raise ValueError("not a Windows program")
+    header = int.from_bytes(program[0x3C:0x40], "little")
+    if program[header:header + 4] != b"PE\0\0":
+        raise ValueError("the program has no PE header")
+    # The optional header follows the signature and the file header of 20 bytes; its subsystem
+    # field is at offset 68 in both formats.
+    optional = header + 4 + 20
+    if int.from_bytes(program[optional:optional + 2], "little") not in (0x10B, 0x20B):
+        raise ValueError("the program has no optional header of PE32 or PE32+")
+    return int.from_bytes(program[optional + 68:optional + 70], "little")
+
+
 def description(version, architecture):
     return json.dumps({"format": 1, "version": version, "system": "windows", "package": "directory",
                        "architecture": architecture}) + "\n"

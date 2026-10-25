@@ -6,7 +6,9 @@
 
 pub mod address;
 pub mod api;
+pub mod app_identity;
 pub mod book;
+pub mod console;
 pub mod events;
 pub mod flow;
 pub mod keys;
@@ -23,6 +25,8 @@ pub mod secret;
 pub mod settings;
 pub mod storage;
 pub mod stream;
+#[cfg(windows)]
+pub mod taskbar;
 pub mod transfers;
 pub mod updates;
 pub mod version;

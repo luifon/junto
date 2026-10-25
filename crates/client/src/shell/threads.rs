@@ -49,6 +49,7 @@ impl Shell {
         let theme = theme(cx);
         let colors = theme.colors;
         let header = SideHeader::new(text::THREAD)
+            .title_bar()
             .icon(Icon::Chat)
             .note(format!("# {}", thread.channel_name))
             .trailing(
@@ -385,6 +386,7 @@ impl Shell {
         let theme = theme(cx);
         let colors = theme.colors;
         let header = SideHeader::new(text::PINS)
+            .title_bar()
             .icon(Icon::Pin)
             .note(format!("# {}", pins.channel_name))
             .trailing(
