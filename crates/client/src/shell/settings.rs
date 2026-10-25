@@ -786,6 +786,7 @@ impl Shell {
         ] {
             rows.push(
                 div()
+                    .debug_selector(move || format!("{selector}-row"))
                     .flex()
                     .items_start()
                     .gap(u(10.0))

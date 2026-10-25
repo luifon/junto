@@ -71,8 +71,8 @@ fn a_section_ends_after_its_last_control_and_its_help(cx: &mut TestAppContext) {
     for (section, last) in [
         (SettingsSection::Profile, "save-name"),
         (SettingsSection::Interface, "theme-0"),
-        // The tones of call events follow the processing (ADR 0707).
-        (SettingsSection::Voice, "call-sounds"),
+        // The row of the tones of call events, with its help, ends the section (ADR 0707).
+        (SettingsSection::Voice, "call-sounds-row"),
         (SettingsSection::Notifications, "notifications-state"),
     ] {
         window.click(section.selector());
