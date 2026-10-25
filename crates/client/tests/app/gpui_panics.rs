@@ -123,3 +123,220 @@ fn a_global_stays_after_a_panic_in_its_update(cx: &mut TestAppContext) {
     twice(&mut cx);
     assert_eq!(cx.update(|_, cx| cx.global::<Store>().0), 2);
 }
+
+/// A leaf whose measure in the layout panics once after `armed` is set.
+struct Measured {
+    armed: Rc<Cell<bool>>,
+    measures: Rc<Cell<usize>>,
+}
+
+impl gpui::IntoElement for Measured {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for Measured {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        let (armed, measures) = (self.armed.clone(), self.measures.clone());
+        let id = window.request_measured_layout(gpui::Style::default(), move |_, _, _, _| {
+            if armed.replace(false) {
+                panic!("{MESSAGE}");
+            }
+            measures.set(measures.get() + 1);
+            gpui::size(gpui::px(10.0), gpui::px(10.0))
+        });
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+    }
+}
+
+struct MeasuredView {
+    armed: Rc<Cell<bool>>,
+    measures: Rc<Cell<usize>>,
+}
+
+impl gpui::Render for MeasuredView {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        gpui::div().size_full().child(Measured {
+            armed: self.armed.clone(),
+            measures: self.measures.clone(),
+        })
+    }
+}
+
+/// Draws every window from a task, which the platform runs from its own callback, so that
+/// gpui stops a panic of the draw.
+fn draw_from_a_task(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        cx.spawn(async move |cx| {
+            cx.update(|cx| cx.refresh_windows());
+        })
+        .detach();
+    });
+    cx.run_until_parked();
+}
+
+/// A measure that panics inside `compute_layout`: the layout engine returns to the window, and
+/// the next draw lays the view out again.
+#[gpui::test]
+fn the_layout_engine_stays_after_a_panic_in_a_measure(cx: &mut TestAppContext) {
+    junto_client::panics::install();
+    let armed = Rc::new(Cell::new(false));
+    let measures = Rc::new(Cell::new(0));
+    let (view_armed, view_measures) = (armed.clone(), measures.clone());
+    let window = cx.add_window(move |_, _| MeasuredView {
+        armed: view_armed,
+        measures: view_measures,
+    });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    cx.run_until_parked();
+    let before = junto_client::panics::panics_on_this_thread();
+    armed.set(true);
+    draw_from_a_task(&mut cx);
+    assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+    let measured = measures.get();
+    draw_from_a_task(&mut cx);
+    assert!(measures.get() > measured, "the next draw measures the view again");
+    assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+}
+
+/// An input handler of text whose replacement panics the first time.
+struct Typing {
+    once: Once,
+    typed: Rc<std::cell::RefCell<String>>,
+}
+
+impl gpui::InputHandler for Typing {
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> Option<gpui::UTF16Selection> {
+        None
+    }
+
+    fn marked_text_range(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> Option<std::ops::Range<usize>> {
+        None
+    }
+
+    fn text_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: &mut Option<std::ops::Range<usize>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> Option<String> {
+        None
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+        self.once.panic_the_first_time();
+        self.typed.borrow_mut().push_str(text);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        _: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+    }
+
+    fn unmark_text(&mut self, _: &mut gpui::Window, _: &mut gpui::App) {}
+
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        None
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<gpui::Pixels>,
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) -> Option<usize> {
+        None
+    }
+}
+
+/// The platform gives text to the input handler of a window outside any update of gpui, as an
+/// input method does on macOS and Windows. A panic in the handler becomes an error for the
+/// platform, the window returns to the application, and the next text reaches the handler.
+#[gpui::test]
+fn the_text_input_handler_takes_text_again_after_a_panic_in_it(cx: &mut TestAppContext) {
+    let typed = Rc::new(std::cell::RefCell::new(String::new()));
+    let mut cx = pad(cx, Rc::new(|_, _| {}));
+    let before = junto_client::panics::panics_on_this_thread();
+    let window_cx = cx.update(|window, cx| window.to_async(cx));
+    let mut handler = gpui::PlatformInputHandler::new(
+        window_cx,
+        Box::new(Typing {
+            once: Once::default(),
+            typed: typed.clone(),
+        }),
+    );
+    handler.replace_text_in_range(None, "a");
+    handler.replace_text_in_range(None, "b");
+    assert_eq!(*typed.borrow(), "b");
+    assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+}
