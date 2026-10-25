@@ -15,7 +15,8 @@ use junto_client_core::protocol::discovery::{
     DailyQuiet, NotificationKind, NotificationLevel, NotificationSettings,
 };
 use junto_client_core::protocol::ids::{
-    AccountId, CallInvitationId, ChannelId, MessageId, ServerId, WorkspaceId,
+    AccountId, CallInvitationId, ChannelId, EntryRequestId, JoinRequestId, MessageId, ServerId,
+    WorkspaceId,
 };
 use junto_client_core::protocol::message::{Message, MessagePlace};
 use junto_client_core::protocol::structure::ChannelKind;
@@ -800,6 +801,11 @@ pub struct Seen {
     shown: Vec<ShownAlert>,
     /// The invitations that were seen.
     invitations: Vec<CallInvitationId>,
+    /// The join requests that were seen, from the first list of them that the window held
+    /// while the person may decide them (ADR 0761).
+    join_requests: Option<Vec<JoinRequestId>>,
+    /// The requests of people outside to enter the call of the account that were seen.
+    entry_requests: Vec<EntryRequestId>,
     /// "Do not disturb" was on in the state that was seen last.
     do_not_disturb: bool,
     /// When the last system notifications of this server were shown.
@@ -829,6 +835,21 @@ impl Seen {
                 jump: shown.jump,
             });
         }
+        if self
+            .entry_requests
+            .iter()
+            .any(|request_id| entry_request_tag(server_id, *request_id) == tag)
+        {
+            return Some(AlertTarget::Call(server_id));
+        }
+        if self
+            .join_requests
+            .iter()
+            .flatten()
+            .any(|request_id| join_request_tag(server_id, *request_id) == tag)
+        {
+            return Some(AlertTarget::JoinRequests(server_id));
+        }
         self.invitations
             .iter()
             .any(|invitation_id| invitation_tag(server_id, *invitation_id) == tag)
@@ -842,7 +863,20 @@ impl Seen {
             .invitations
             .iter()
             .map(|invitation_id| invitation_tag(server_id, *invitation_id));
-        notices.chain(invitations).collect()
+        let requests = self
+            .join_requests
+            .iter()
+            .flatten()
+            .map(|request_id| join_request_tag(server_id, *request_id));
+        let entries = self
+            .entry_requests
+            .iter()
+            .map(|request_id| entry_request_tag(server_id, *request_id));
+        notices
+            .chain(invitations)
+            .chain(requests)
+            .chain(entries)
+            .collect()
     }
 }
 
@@ -884,6 +918,10 @@ pub enum AlertTarget {
     },
     /// The server of an invitation into a call.
     Invitation(ServerId),
+    /// The page of the join requests of a server.
+    JoinRequests(ServerId),
+    /// The call of this device, on a server.
+    Call(ServerId),
 }
 
 pub fn notice_tag(server_id: ServerId, notice_id: Uuid) -> String {
@@ -892,6 +930,14 @@ pub fn notice_tag(server_id: ServerId, notice_id: Uuid) -> String {
 
 pub fn invitation_tag(server_id: ServerId, invitation_id: CallInvitationId) -> String {
     format!("invitation:{server_id}:{invitation_id}")
+}
+
+pub fn join_request_tag(server_id: ServerId, request_id: JoinRequestId) -> String {
+    format!("join-request:{server_id}:{request_id}")
+}
+
+pub fn entry_request_tag(server_id: ServerId, request_id: EntryRequestId) -> String {
+    format!("entry-request:{server_id}:{request_id}")
 }
 
 /// A text of a server as a system notification takes it: one line without control
@@ -978,7 +1024,9 @@ fn muted(scene: &AlertScene<'_>, message: &Message) -> bool {
 /// in a quiet time, so the client learns of those notices when the quiet time has ended.
 /// The notices of the state in which "do not disturb" ended are not shown, and neither is
 /// a notice that was made inside the daily quiet time. An invitation into a call gets a
-/// system notification unless the account is quiet or the window is active. One server
+/// system notification unless the account is quiet or the window is active, and so does a
+/// join request that a person who may decide it did not see before, and a request of a
+/// person outside to enter the call of the account. One server
 /// shows at most [`MOST_ALERTS`] within [`ALERT_SPAN`]; what passes that bound is not
 /// shown later.
 pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
@@ -1080,6 +1128,9 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
         ));
     }
 
+    join_request_alerts(seen, scene, quiet, &mut alerts);
+    entry_request_alerts(seen, scene, quiet, first, &mut alerts, &accounts);
+
     if first {
         return alerts;
     }
@@ -1178,6 +1229,119 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
             .extend(seen.shown.drain(..excess).map(|shown| shown.tag));
     }
     alerts
+}
+
+/// The requests of people outside to enter the call of the account (ADR 0514). The state
+/// holds those that the account may answer. The requests of the first state are not new.
+fn entry_request_alerts<'a>(
+    seen: &mut Seen,
+    scene: &AlertScene<'_>,
+    quiet: bool,
+    first: bool,
+    alerts: &mut Alerts,
+    accounts: &dyn Fn() -> &'a HashMap<AccountId, String>,
+) {
+    let model = scene.model;
+    seen.entry_requests.retain(|request_id| {
+        let stays = model
+            .entry_requests
+            .iter()
+            .any(|request| request.id == *request_id);
+        if !stays {
+            alerts
+                .dismiss
+                .push(entry_request_tag(scene.server_id, *request_id));
+        }
+        stays
+    });
+    for request in &model.entry_requests {
+        if seen.entry_requests.contains(&request.id) || seen.entry_requests.len() >= MOST_SHOWN {
+            continue;
+        }
+        seen.entry_requests.push(request.id);
+        if first || quiet || scene.active || seen.recent.len() >= MOST_ALERTS {
+            continue;
+        }
+        let name = accounts().get(&request.account_id).map(String::as_str);
+        let channel = request
+            .place
+            .channel_id()
+            .and_then(|channel_id| model.channel(channel_id))
+            .map(|channel| channel.channel.name.as_str());
+        seen.recent.push(scene.now);
+        alerts.show.push((
+            Alert {
+                tag: entry_request_tag(scene.server_id, request.id),
+                title: one_line(
+                    &text::entry_request_alert(name, channel),
+                    ALERT_TITLE_CHARACTERS,
+                ),
+                body: if scene.several_servers {
+                    one_line(scene.server_name, EXCERPT_CHARACTERS)
+                } else {
+                    String::new()
+                },
+            },
+            AlertTarget::Call(scene.server_id),
+        ));
+    }
+}
+
+/// The join requests that wait for a decision of the person (ADR 0761). The first list
+/// that the window holds is not new: those requests waited before. A request that leaves
+/// the list, decided or withdrawn, takes its notification away. While the list is not
+/// held, what was seen stays, so that a request that arrives meanwhile is new when the
+/// list is read again.
+fn join_request_alerts(seen: &mut Seen, scene: &AlertScene<'_>, quiet: bool, alerts: &mut Alerts) {
+    let model = scene.model;
+    if !super::admin::view::holds_server(
+        model,
+        junto_client_core::protocol::ServerPermission::ApproveJoinRequests,
+    ) {
+        for request_id in seen.join_requests.take().into_iter().flatten() {
+            alerts
+                .dismiss
+                .push(join_request_tag(scene.server_id, request_id));
+        }
+        return;
+    }
+    let Some(requests) = model.admin.join_requests.loaded() else {
+        return;
+    };
+    let Some(held) = seen.join_requests.as_mut() else {
+        seen.join_requests = Some(requests.iter().map(|request| request.id).collect());
+        return;
+    };
+    held.retain(|request_id| {
+        let stays = requests.iter().any(|request| request.id == *request_id);
+        if !stays {
+            alerts
+                .dismiss
+                .push(join_request_tag(scene.server_id, *request_id));
+        }
+        stays
+    });
+    for request in requests {
+        if held.contains(&request.id) || held.len() >= MOST_SHOWN {
+            continue;
+        }
+        held.push(request.id);
+        if quiet || scene.active || seen.recent.len() >= MOST_ALERTS {
+            continue;
+        }
+        seen.recent.push(scene.now);
+        alerts.show.push((
+            Alert {
+                tag: join_request_tag(scene.server_id, request.id),
+                title: one_line(
+                    &text::join_request_alert(&request.name),
+                    ALERT_TITLE_CHARACTERS,
+                ),
+                body: one_line(scene.server_name, EXCERPT_CHARACTERS),
+            },
+            AlertTarget::JoinRequests(scene.server_id),
+        ));
+    }
 }
 
 #[cfg(test)]

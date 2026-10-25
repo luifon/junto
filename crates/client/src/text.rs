@@ -430,9 +430,9 @@ pub const FEWER_INVITATIONS: &str = "Show fewer invitations";
 
 pub fn more_invitations(count: usize) -> String {
     if count == 1 {
-        "1 more invitation".to_owned()
+        "1 earlier invitation".to_owned()
     } else {
-        format!("{count} more invitations")
+        format!("{count} earlier invitations")
     }
 }
 
@@ -2090,6 +2090,20 @@ pub fn alert_title(
 /// The title of the system notification of an invitation into a call.
 pub fn invitation_alert(by: Option<&str>, channel: Option<&str>) -> String {
     invitation(by, channel)
+}
+
+/// The title of the system notification of a request to enter the call of the person.
+pub fn entry_request_alert(name: Option<&str>, channel: Option<&str>) -> String {
+    let name = name.unwrap_or(UNKNOWN_PERSON);
+    match channel {
+        Some(channel) => format!("{name} asks to enter {channel}"),
+        None => format!("{name} asks to enter your call"),
+    }
+}
+
+/// The title of the system notification of a join request.
+pub fn join_request_alert(name: &str) -> String {
+    format!("{name} asks to join")
 }
 
 pub const NOTIFICATION_SETTINGS: &str = "Notification settings";

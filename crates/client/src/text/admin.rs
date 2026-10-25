@@ -121,6 +121,17 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
     }
 }
 
+/// What the count beside a page of the navigation states, for the tooltip and the
+/// accessibility tree.
+pub fn waiting(page: AdminPage, count: usize) -> String {
+    match (page, count) {
+        (AdminPage::JoinRequests, 1) => "1 join request waits".to_owned(),
+        (AdminPage::JoinRequests, _) => format!("{count} join requests wait"),
+        (_, 1) => "1 item waits".to_owned(),
+        (_, _) => format!("{count} items wait"),
+    }
+}
+
 pub const fn channel_page_name(page: ChannelPage) -> &'static str {
     match page {
         ChannelPage::Overview => "Overview",

@@ -403,6 +403,12 @@ pub struct LevelsChanged;
 
 impl gpui::EventEmitter<LevelsChanged> for AppState {}
 
+/// A press outside the window, on a system notification, asks the main window to show a page
+/// of the administration.
+pub struct OpenAdmin(pub admin::AdminOpen);
+
+impl gpui::EventEmitter<OpenAdmin> for AppState {}
+
 /// What the call window does before it closes.
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 

@@ -29,9 +29,9 @@ impl Shell {
     /// in which they arrived, at the top of the window at `top` pixels of the design,
     /// centred over the part of the window that starts at `left`, or over the whole window
     /// when that part is narrower than a card. A new invitation is added after the drawn
-    /// cards, so no drawn card moves when one arrives. At most [`MOST_CARDS`] are drawn; a
-    /// line under them states how many more wait and shows them. The cards stay inside the
-    /// window and scroll when they do not fit. The ids of a card and of its buttons are
+    /// cards. At most [`MOST_CARDS`] are drawn, the newest ones; a line above them states
+    /// how many earlier ones wait and shows them. The cards stay inside the window and
+    /// scroll when they do not fit. The ids of a card and of its buttons are
     /// made from the identifier of its invitation, so a press and the keyboard focus stay
     /// with their invitation. Absent while no invitation waits.
     pub(crate) fn render_invitation_cards(
@@ -52,26 +52,8 @@ impl Shell {
         let mut arrived: Vec<&Invited> = view.invitations.iter().collect();
         arrived.sort_by_key(|one| (one.created_at, one.id));
         let more = arrived.len().saturating_sub(MOST_CARDS);
-        let drawn = if self.invitations_open {
-            arrived.len()
-        } else {
-            arrived.len().min(MOST_CARDS)
-        };
-        let mut cards: Vec<AnyElement> = arrived
-            .into_iter()
-            .take(drawn)
-            .map(|invited| {
-                let server = if several_servers {
-                    view.servers
-                        .iter()
-                        .find(|row| row.id == invited.target.server_id)
-                        .map(|row| row.name.clone())
-                } else {
-                    None
-                };
-                self.render_invitation_card(invited, server, cx)
-            })
-            .collect();
+        let hidden = if self.invitations_open { 0 } else { more };
+        let mut cards: Vec<AnyElement> = Vec::new();
         if more > 0 {
             let open = self.invitations_open;
             cards.push(
@@ -95,6 +77,17 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        cards.extend(arrived.into_iter().skip(hidden).map(|invited| {
+            let server = if several_servers {
+                view.servers
+                    .iter()
+                    .find(|row| row.id == invited.target.server_id)
+                    .map(|row| row.name.clone())
+            } else {
+                None
+            };
+            self.render_invitation_card(invited, server, cx)
+        }));
         // A part of the window narrower than a card and its margins, such as the main area
         // beside the channel column at a large scale, takes the cards over the whole window.
         let left = if super::logical_width(window) - left < CARD_WIDTH + 24.0 {

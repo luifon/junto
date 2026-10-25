@@ -1207,6 +1207,48 @@ fn two_waiting_requests_with_one_name_are_marked_in_the_window(cx: &mut TestAppC
     });
 }
 
+/// Finding 14: the join requests that wait are counted on the server in the server book and
+/// beside the page in the navigation, without the page being open first (ADR 0761).
+#[gpui::test]
+fn the_waiting_join_requests_are_counted_on_the_server_and_in_the_navigation(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    let waiting = |window: &mut Window| {
+        window
+            .view()
+            .servers
+            .first()
+            .map_or(0, |row| row.waiting_join_requests)
+    };
+    assert_eq!(waiting(&mut window), 0);
+    assert!(!window.shows("server-waiting-0"));
+
+    let (_first, _linus, first) = asks_to_join(&world, &server, "Linus");
+    let (_second, _marta, _) = asks_to_join(&world, &server, "Marta");
+    window.until("the server book counts the two requests", |window| {
+        waiting(window) == 2 && window.shows("server-waiting-0")
+    });
+
+    // A press on the count opens the page of the join requests; its row in the navigation
+    // carries the count too.
+    window.click("server-waiting-0");
+    awaited(
+        &mut window,
+        "the page of the join requests is open",
+        |window| server_page!(window, JoinRequests),
+    );
+    window.until("the navigation counts the requests", |window| {
+        window.shows("admin-nav-requests-count")
+    });
+
+    // An approval takes the request out of both counts.
+    click_in_page(&mut window, sel("request-approve", first));
+    window.until("one request is counted", |window| waiting(window) == 1);
+}
+
 #[gpui::test]
 fn the_owner_hides_a_channel_from_everyone_and_shows_it_again_on_the_permissions_page(
     cx: &mut TestAppContext,

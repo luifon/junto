@@ -975,6 +975,17 @@ impl AppState {
                 }
             }
             AlertTarget::Invitation(server_id) => self.select_server(server_id, cx),
+            AlertTarget::Call(server_id) => {
+                self.select_server(server_id, cx);
+                self.show_call(cx);
+            }
+            AlertTarget::JoinRequests(server_id) => {
+                self.select_server(server_id, cx);
+                cx.emit(super::OpenAdmin(super::admin::AdminOpen::Server {
+                    server_id,
+                    page: super::admin::AdminPage::JoinRequests,
+                }));
+            }
         }
     }
 }
