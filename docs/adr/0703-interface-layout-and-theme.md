@@ -40,7 +40,9 @@ Visual design:
 
 Theme, scaling and language:
 
-- The first version has one theme. All colours, fonts and spacing are in one theme file.
+- There are two themes: the light theme of the design (stone) and a dark theme with the colours of design 2 (broadcast) on the same layout, fonts and measures. All colours, fonts and spacing are in one theme file. The person chooses Light, Dark or System in the section "Interface" of the settings; System follows the light or dark appearance of the system and changes with it. A new installation, and the settings file of a client without themes, have Light, so an installation keeps its look until the person chooses.
+- Text has a contrast of at least 4.5 to 1 with its ground in both themes (WCAG AA). A unit test of the theme holds it for the pairs of text and ground colours that the screens use.
+- The settings of the application are a layer of the size of the administration (ADR 0761): a list of sections at the left (Profile, Picture, Interface, Voice, Quiet times, Notifications, Devices, About) and one section at the right, as Discord, Slack and Teams show their settings. The settings open at Profile. "About" holds the data directory and the version of the build with its update check (ADR 0704); the update notice opens the settings at About.
 - The interface scales from 90% to 150%. The scale changes the rem size of the window, and text and controls of the component library follow it.
 - The client gives its own sizes in rems. A size that is given in pixels does not scale: a dialog with a width in pixels kept that width at 150% while its text grew.
 - The interface language is English. All interface text is in one catalog.
@@ -53,7 +55,7 @@ Drag and drop:
 
 ## Consequences
 
-- A second theme requires a second theme file and no change to the code that draws the interface. A dark theme is in the later list of `docs/scope.md`.
+- The dark theme changed only the theme file and the settings: no drawing code names a colour. A further theme is a further value of the theme.
 - A second interface language requires a second catalog.
 - The cost of state for several servers is paid in build step 1, before any screen uses it.
 - No other element of the interface uses red.

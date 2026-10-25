@@ -1062,6 +1062,7 @@ fn open_thread(window: &mut Window, root: MessageId) {
 /// A steady tone passes unchanged only without the processing of a voice.
 fn turn_processing_off(window: &mut Window) {
     window.click("app-settings");
+    window.click("settings-section-voice");
     for part in ["echo-cancellation", "noise-suppression", "automatic-gain"] {
         window.click(part);
     }

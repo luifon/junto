@@ -123,6 +123,7 @@ fn a_drawn_frame_puts_the_strip_with_the_window_buttons_above_the_columns(cx: &m
     assert_strip(&mut window);
     // A dialog covers the columns and leaves the strip and its buttons free.
     window.click("app-settings");
+    window.click("settings-section-interface");
     assert!(window.shows("scale-4"));
     assert_strip(&mut window);
 }
@@ -206,6 +207,7 @@ fn the_strip_works_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let requests = record_requests(cx);
     let (_directory, mut window) = named(cx, "Luca");
     window.click("app-settings");
+    window.click("settings-section-interface");
     assert!(window.shows("scale-4"));
     window.click("window-minimize");
     assert_eq!(taken(&requests), [TitleBarRequest::Minimize]);
@@ -290,6 +292,7 @@ fn over_a_layer_the_top_band_is_the_title_bar_and_a_dialog_header_is_not(cx: &mu
         .cx
         .update(|window, cx| content_reaches_title_bar(window, cx));
     window.click("app-settings");
+    window.click("settings-section-interface");
     assert!(window.shows("scale-4"));
     let band = bounds(&mut window, "title-band");
     assert_eq!(band.top(), px(0.0));
@@ -359,5 +362,6 @@ fn a_menu_puts_no_band_over_the_headers_and_a_dialog_does(cx: &mut TestAppContex
     window.press("escape");
     assert!(!window.shows("server-menu"));
     window.click("app-settings");
+    window.click("settings-section-interface");
     assert!(window.shows("scale-4") && window.shows("title-band"));
 }

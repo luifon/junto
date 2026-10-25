@@ -653,6 +653,7 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
         )
         .unwrap();
     window.click("app-settings");
+    window.click("settings-section-quiet");
     window.until("the servers differ", |window| {
         window.view().quiet.do_not_disturb == Some(Agreement::Differs)
     });

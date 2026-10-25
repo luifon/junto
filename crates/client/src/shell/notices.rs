@@ -139,7 +139,7 @@ impl Excerpt {
                             .min_w_0()
                             .truncate()
                             .font_weight(FontWeight::BOLD)
-                            .ink(colors.cypress)
+                            .ink(colors.cypress_ink)
                             .child(self.place),
                     )
                     .child(div().flex_none().child(self.day))
@@ -149,7 +149,7 @@ impl Excerpt {
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::BOLD)
-                                .ink(colors.cypress)
+                                .ink(colors.cypress_ink)
                                 .child(action),
                         )
                     }),

@@ -46,7 +46,7 @@ Pictures of the screens:
 
 ## Consequences
 
-- A second theme is a second value of the theme. A colour that a screen needs and the theme lacks is added to the theme.
+- The dark theme is a second value of the theme (`Theme::broadcast`) with other colours and the measures, fonts and text styles of the light theme. A colour that a screen needs and the theme lacks is added to the theme. `junto-screens` draws every screen in both themes.
 - At 150% in a window of 1440 pixels the layout has 960 logical pixels and is narrow.
 - A window of 1320 pixels at 100% is wide and gives the content 544 pixels while the side panel is open.
 - The width of the scroll bar and of a border does not follow the scale.

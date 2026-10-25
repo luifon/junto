@@ -950,7 +950,6 @@ impl Shell {
         };
         vec![
             div()
-                .mt(u(16.0))
                 .mb(u(5.0))
                 .typeface(theme.types.label, theme)
                 .ink(theme.colors.bronze)

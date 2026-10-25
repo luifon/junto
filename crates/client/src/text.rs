@@ -1251,6 +1251,13 @@ pub const WELCOME: &str = "People on a server see this name. A new account on a 
 pub const NAME_FIELD: &str = "Name";
 pub const CONTINUE: &str = "Continue";
 pub const SETTINGS: &str = "Settings";
+pub const SETTINGS_SECTIONS: &str = "Sections of the settings";
+pub const PICTURE: &str = "Picture";
+pub const ABOUT: &str = "About";
+pub const NOTIFICATIONS_SHOWN: &str = "Junto shows notifications of the system.";
+pub const NOTIFICATIONS_OFF_BY_SYSTEM: &str =
+    "The system does not show the notifications of Junto.";
+pub const NOTIFICATIONS_HELP: &str = "What a server notifies you of is chosen in the menu of that server. Quiet times hold for every server.";
 pub const PROFILE: &str = "Profile";
 pub const PROFILE_NAME_HELP: &str =
     "A new account on a server starts with this name. Accounts that exist keep their name.";
@@ -1259,6 +1266,17 @@ pub const SAVED: &str = "Saved";
 pub const INTERFACE: &str = "Interface";
 pub const SCALE: &str = "Scale";
 pub const SCALE_HELP: &str = "The size of text and controls in this window.";
+pub const THEME: &str = "Theme";
+pub const THEME_HELP: &str = "System follows the light or dark appearance of the system.";
+
+pub fn theme_choice(choice: junto_client_core::settings::ThemeChoice) -> &'static str {
+    use junto_client_core::settings::ThemeChoice;
+    match choice {
+        ThemeChoice::Light => "Light",
+        ThemeChoice::Dark => "Dark",
+        ThemeChoice::System => "System",
+    }
+}
 pub const DATA_DIRECTORY: &str = "Data directory";
 pub const DATA_DIRECTORY_HELP: &str =
     "The server book, the profile and the device keys of this installation are in this directory.";

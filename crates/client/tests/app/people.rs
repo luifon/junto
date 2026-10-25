@@ -324,6 +324,7 @@ fn the_picture_of_the_preset_is_set_in_the_settings_and_goes_to_a_server_joined_
     let stored = directory.path().join("junto").join("avatar.png");
 
     window.click("app-settings");
+    window.click("settings-section-picture");
     assert!(window.shows("settings-dialog"));
     assert!(window.shows("preset-picture") && window.shows("choose-picture"));
     assert!(!window.shows("remove-picture"));
@@ -396,6 +397,7 @@ fn the_picture_of_the_preset_is_set_in_the_settings_and_goes_to_a_server_joined_
     // The picture of the preset is removed: the file is gone, and the account on the
     // server keeps its avatar (ADR 0717).
     window.click("app-settings");
+    window.click("settings-section-picture");
     assert!(!window.shows("preset-refused"));
     window.click("remove-picture");
     window.until("the preset has no picture", |window| {
@@ -437,6 +439,7 @@ fn a_server_that_refused_the_picture_of_the_preset_is_named_in_the_settings(
     assert_eq!(window.face(own), None);
 
     window.click("app-settings");
+    window.click("settings-section-picture");
     assert!(window.shows_named(format!("preset-refused:{server_id}")));
     let line = junto_client::text::people::preset_refused("Acme Studio");
     assert!(line.starts_with("Acme Studio did not accept"));

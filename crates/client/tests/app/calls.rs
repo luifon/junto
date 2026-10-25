@@ -185,6 +185,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     assert!(!voice_file(directory.path()).exists());
 
     window.click("app-settings");
+    window.click("settings-section-voice");
     assert!(window.shows("settings-dialog"));
     // Voice activation has no key to choose.
     assert!(window.shows("input-mode-0") && !window.shows("talk-key-0"));
@@ -216,6 +217,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     let mut window = open(cx, directory.path());
     assert_eq!(voice(&mut window), chosen);
     window.click("app-settings");
+    window.click("settings-section-voice");
     assert!(window.shows("talk-key-1"));
 }
 

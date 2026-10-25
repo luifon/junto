@@ -29,9 +29,10 @@ pub(crate) struct BookUi {
     page_shown: Option<String>,
     /// The address that was given to the clipboard while the settings are open.
     copied: Option<String>,
-    /// The position of the content of the settings, so that the update notice can show
-    /// their last section.
+    /// The position of the open section of the settings.
     settings_scroll: ScrollHandle,
+    /// The position of the list of the sections of the settings.
+    pub(crate) settings_nav_scroll: ScrollHandle,
     /// The keyboard focus of the update notice.
     notice: FocusHandle,
 }
@@ -45,6 +46,7 @@ impl BookUi {
             page_shown: None,
             copied: None,
             settings_scroll: ScrollHandle::new(),
+            settings_nav_scroll: ScrollHandle::new(),
             notice: cx.focus_handle().tab_stop(true),
         }
     }
@@ -85,7 +87,7 @@ impl Shell {
     pub fn open_version_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.book.copied = None;
         self.open_settings(window, cx);
-        self.book.settings_scroll.scroll_to_bottom();
+        self.open_settings_section(super::settings::SettingsSection::About, window, cx);
     }
 
     /// The settings scroll position used by the window tests.
@@ -193,14 +195,14 @@ impl Shell {
                 .bg(Hsla::from(colors.cypress_wash))
                 .typeface(theme.types.control, theme)
                 .text_size(u(13.0))
-                .ink(colors.cypress)
+                .ink(colors.cypress_ink)
                 .cursor_pointer()
                 .focus_visible(move |style| style.shadow(ring))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.state.update(cx, |state, cx| state.install_update(cx));
                     this.open_version_settings(window, cx);
                 }))
-                .child(icon(Icon::Download, 14.0, colors.cypress))
+                .child(icon(Icon::Download, 14.0, colors.cypress_ink))
                 .child(div().flex_1().min_w_0().truncate().child(txt::NEW_VERSION))
                 .child(
                     div()

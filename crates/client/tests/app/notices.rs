@@ -295,6 +295,7 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
 
     // "Do not disturb" is a switch of the settings. The server holds it.
     window.click("app-settings");
+    window.click("settings-section-quiet");
     assert!(window.shows("settings-dialog") && window.shows("do-not-disturb"));
     assert_eq!(
         window.view().quiet.do_not_disturb,

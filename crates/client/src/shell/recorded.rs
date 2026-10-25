@@ -265,7 +265,7 @@ impl Shell {
                 .into_any_element(),
             DownloadStage::Saved(path) => {
                 let path = path.clone();
-                row.child(small(text::DOWNLOAD_SAVED.into(), colors.cypress))
+                row.child(small(text::DOWNLOAD_SAVED.into(), colors.cypress_ink))
                     .child(
                         div()
                             .flex_none()
@@ -486,7 +486,7 @@ impl Shell {
             .font_weight(FontWeight::MEDIUM)
             .text_size(u(12.5))
             .line_height(u(22.0))
-            .ink(colors.cypress)
+            .ink(colors.cypress_ink)
             .child(SharedString::from(row.time.clone()));
         let frame = div()
             .id(("transcript-line", line as usize))
@@ -622,7 +622,7 @@ impl Shell {
                         .debug_selector(move || format!("show-transcript:{recording_id}"))
                         .flex_none()
                         .font_weight(FontWeight::BOLD)
-                        .ink(colors.cypress)
+                        .ink(colors.cypress_ink)
                         .cursor_pointer()
                         .focusable()
                         .tab_stop(true)
@@ -1004,7 +1004,7 @@ impl Shell {
             actions.push(
                 Button::new(("open-recording", index))
                     .icon(Icon::Open)
-                    .icon_colour(colors.cypress)
+                    .icon_colour(colors.cypress_ink)
                     .label(text::OPEN)
                     .tooltip(text::OPEN_RECORDING)
                     .selector("open-recording")
@@ -1050,7 +1050,7 @@ impl Shell {
                     .child(
                         Button::new(("download-recording", index))
                             .icon(Icon::Download)
-                            .icon_colour(colors.cypress)
+                            .icon_colour(colors.cypress_ink)
                             .label(text::DOWNLOAD)
                             .tooltip(text::RECORDING_FILES)
                             .selector("download-recording")

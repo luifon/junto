@@ -65,6 +65,7 @@ mod roles;
 mod scroll;
 mod search;
 mod servers;
+mod settings;
 mod states;
 mod thread_actions;
 mod threads;

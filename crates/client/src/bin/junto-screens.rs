@@ -8,6 +8,7 @@
 //!
 //! ```sh
 //! cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
+//! JUNTO_SCREENS_THEME=dark cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 //! ```
 
 // The program is a tool of the developers that writes the files of the screens that it
@@ -26,7 +27,7 @@ use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
 use junto_client::shell::call::CallTab;
 use junto_client::shell::share::SoundKind;
-use junto_client::shell::{Open, Shell};
+use junto_client::shell::{Open, SettingsSection, Shell};
 use junto_client::state::AppState;
 use junto_client::state::fixtures::from_roles;
 use junto_client::state::view::{EntryState, MediaSnapshot, OwnEntry, ServerSnapshot, ShownLevels};
@@ -58,6 +59,7 @@ use junto_client_core::protocol::structure::{
 };
 use junto_client_core::protocol::transcript::TranscriptState;
 use junto_client_core::secret::SecretBytes;
+use junto_client_core::settings::ThemeChoice;
 use junto_client_core::version::{Incompatibility, SupportedVersions};
 use junto_client_core::voice::{InputMode, VoiceSettings};
 use junto_client_core::{Client, ClientOptions, Reach};
@@ -477,6 +479,8 @@ struct Studio {
     out: PathBuf,
     scratch: PathBuf,
     drawn: usize,
+    /// The theme of every screen (`JUNTO_SCREENS_THEME`: `light`, the default, or `dark`).
+    theme: ThemeChoice,
 }
 
 /// One screen: the servers it shows, the state of the calls and the interface scale.
@@ -562,11 +566,17 @@ impl Studio {
         cx.update(app::init).map_err(|error| format!("{error:#}"))?;
         // The screens show the emoji as the fonts of the system draw them (ADR 0758).
         cx.update(junto_client::emoji::measure_now);
+        let theme = match std::env::var("JUNTO_SCREENS_THEME").as_deref() {
+            Ok("dark") => ThemeChoice::Dark,
+            Ok("light") | Err(_) => ThemeChoice::Light,
+            Ok(other) => return Err(format!("JUNTO_SCREENS_THEME is light or dark, not {other}")),
+        };
         Ok(Self {
             cx,
             out,
             scratch,
             drawn: 0,
+            theme,
         })
     }
 
@@ -648,8 +658,10 @@ impl Studio {
             capture: screen.capture,
             timing: CallTiming::default(),
         };
+        let chosen = self.theme;
         let state: Entity<AppState> = self.cx.update(|cx| {
             let state = app::state_with_media(client, start, devices, cx);
+            state.update(cx, |state, cx| state.set_theme(chosen, cx));
             if !servers.is_empty() {
                 state.update(cx, |state, cx| state.show_fixture(servers, cx));
             }
@@ -2315,6 +2327,23 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
         Screen::new("settings", two_servers()),
         |shell, window, cx| shell.open(Open::Settings, window, cx),
     )?;
+    for (name, section) in [
+        ("settings-picture", SettingsSection::Picture),
+        ("settings-interface", SettingsSection::Interface),
+        ("settings-voice", SettingsSection::Voice),
+        ("settings-quiet", SettingsSection::Quiet),
+        ("settings-notifications", SettingsSection::Notifications),
+        ("settings-devices", SettingsSection::Devices),
+        ("settings-about", SettingsSection::About),
+    ] {
+        studio.draw(
+            Screen::new(name, two_servers()),
+            move |shell, window, cx| {
+                shell.open(Open::Settings, window, cx);
+                shell.open_settings_section(section, window, cx);
+            },
+        )?;
+    }
     studio.draw(
         Screen::new(
             "main-meeting-mode-full-room-categories",

@@ -463,7 +463,7 @@ impl Rich {
                     let stand_ins = rich.push_shown(text, drawings);
                     let range = start..rich.text.len();
                     let style = HighlightStyle {
-                        color: Some(colors.cypress.into()),
+                        color: Some(colors.cypress_ink.into()),
                         underline: Some(UnderlineStyle {
                             thickness: px(1.0),
                             color: None,
@@ -2065,7 +2065,7 @@ impl Shell {
                 Button::new(("download", index))
                     .kind(ButtonKind::Ghost)
                     .icon(Icon::Download)
-                    .icon_colour(colors.cypress)
+                    .icon_colour(colors.cypress_ink)
                     .tooltip(text::DOWNLOAD)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.state.update(cx, |state, cx| {
@@ -2092,7 +2092,7 @@ impl Shell {
                 .child(small(text::DOWNLOAD_CHECKING.into(), colors.ink_2))
                 .into_any_element(),
             Some((DownloadStage::Saved(path), _)) => row
-                .child(small(text::DOWNLOAD_SAVED.into(), colors.cypress))
+                .child(small(text::DOWNLOAD_SAVED.into(), colors.cypress_ink))
                 .child(named(
                     "show-file",
                     Button::new(("show-file", index))
