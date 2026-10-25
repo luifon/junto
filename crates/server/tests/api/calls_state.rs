@@ -1251,6 +1251,8 @@ async fn a_background_connection_of_an_account_in_a_call_receives_the_events_of_
         during,
         [
             "own_call_changed",
+            // The line of the chat that Ben joined the running call.
+            "message_changed",
             "call_participant_joined",
             "call_participant_updated"
         ]

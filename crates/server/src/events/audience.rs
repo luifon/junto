@@ -825,8 +825,10 @@ impl Audience {
                 | Event::CallEntryAnswered { .. },
                 Self::Account { .. } | Self::AccountSeeing { .. },
             ) => true,
-            (Event::CallEntryRequested { request }, Self::AccountSeeing { .. }) => {
-                *self == Self::addressed_at(request.account_id, &[request.place])
+            // The account that asked, for its other devices, and each account that answers a
+            // request to enter a full call (ADR 0514), while it may see the voice channel.
+            (Event::CallEntryRequested { request }, Self::AccountSeeing { account_id, .. }) => {
+                *self == Self::addressed_at(*account_id, &[request.place])
             }
             (Event::CallEntryRequested { .. } | Event::CallEntryResolved { .. }, _) => {
                 of_the_inside(event).as_ref() == Some(self)

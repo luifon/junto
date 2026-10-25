@@ -217,6 +217,44 @@ async fn override_and_membership_changes_use_their_indexes() {
     assert!(visited_rows(&overrides[0]["Plan"]) < 10, "{overrides}");
 }
 
+/// A request that sets the whole override to what it holds writes no audit entry, no line
+/// and no event.
+#[tokio::test]
+async fn an_identical_override_writes_no_history() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let channel = server.channel(&owner, workspace.id, "text").await;
+    let role = server.everyone_role(&owner, workspace.id).await;
+    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    for body in [
+        json!({"allow": [], "deny": []}),
+        json!({"allow": ["mute_members"], "deny": ["lock_room"]}),
+    ] {
+        server
+            .put(&owner, &route, &body)
+            .await
+            .ok::<Value>(StatusCode::OK);
+        let before = (
+            server.count("audit_entries").await,
+            server.count("messages").await,
+            server.snapshot(&owner).await.cursor,
+        );
+        server
+            .put(&owner, &route, &body)
+            .await
+            .ok::<Value>(StatusCode::OK);
+        assert_eq!(
+            (
+                server.count("audit_entries").await,
+                server.count("messages").await,
+                server.snapshot(&owner).await.cursor
+            ),
+            before
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_unchanged_permission_writes_no_history() {
     let server = TestServer::start().await;

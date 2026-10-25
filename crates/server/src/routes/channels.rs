@@ -915,7 +915,6 @@ pub async fn set_channel_override(
             now,
             (channel_id, role_id),
             next,
-            false,
         )
         .await
     })
@@ -974,7 +973,6 @@ pub async fn change_channel_override(
             now,
             (channel_id, role_id),
             next,
-            true,
         )
         .await
     })
@@ -988,7 +986,6 @@ pub(crate) async fn set_override_in(
     now: OffsetDateTime,
     (channel_id, role_id): (ChannelId, WorkspaceRoleId),
     next: Override,
-    only_if_changed: bool,
 ) -> ApiResult<ChannelOverride> {
     let (allow, deny) = (next.allow(), next.deny());
     let result = ChannelOverride {
@@ -1031,7 +1028,8 @@ pub(crate) async fn set_override_in(
         granting: previous.granted_by_change_to(next),
     })?;
 
-    if only_if_changed && previous == next {
+    // A request that changes nothing writes no audit entry, no line and no event.
+    if previous == next {
         return Ok(result);
     }
     if next.is_none() {
@@ -1075,10 +1073,8 @@ pub(crate) async fn set_override_in(
         deny: result.deny.clone(),
     };
     events::publish(connection, now, &set).await?;
-    if previous != next {
-        crate::calls::store::mark_channel(connection, calls, channel_id).await?;
-        let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
-        events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
-    }
+    crate::calls::store::mark_channel(connection, calls, channel_id).await?;
+    let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
+    events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
     Ok(result)
 }

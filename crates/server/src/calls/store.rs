@@ -95,6 +95,8 @@ pub enum Note {
     JoinedByInvitation,
     MeetingStarted,
     MeetingEnded,
+    PersonJoined,
+    PersonLeft,
 }
 
 impl Note {
@@ -107,8 +109,56 @@ impl Note {
             Self::JoinedByInvitation => "joined_by_invitation",
             Self::MeetingStarted => "meeting_started",
             Self::MeetingEnded => "meeting_ended",
+            Self::PersonJoined => "person_joined",
+            Self::PersonLeft => "person_left",
         }
     }
+}
+
+/// Notes that a person joined a running call, unless the latest note of the person in this
+/// call already says that the person is inside: the start of the call, an entry by
+/// invitation, or a join from another device or seat.
+pub async fn note_joined(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let latest: Option<String> = sqlx::query_scalar(
+        "select kind from call_notes where call_id = $1 and account_id = $2
+             and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left')
+         order by occurred_at desc, id desc limit 1",
+    )
+    .bind(call.id)
+    .bind(account_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if latest.is_some_and(|kind| kind != Note::PersonLeft.stored()) {
+        return Ok(());
+    }
+    note(connection, now, call, Note::PersonJoined, Some(account_id)).await
+}
+
+/// Notes that a person left a call that others are still in. The last person to leave is
+/// not noted: the line of the end of the call follows.
+pub async fn note_left(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let others: bool = sqlx::query_scalar(
+        "select exists(select 1 from call_members where call_id = $1 and account_id <> $2
+             and connected_at is not null)",
+    )
+    .bind(call.id)
+    .bind(account_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if !others {
+        return Ok(());
+    }
+    note(connection, now, call, Note::PersonLeft, Some(account_id)).await
 }
 
 /// Keeps what happened in the call of a voice channel, for the system lines that the text
@@ -1047,6 +1097,16 @@ pub async fn take_out(
     .bind(now)
     .execute(&mut *connection)
     .await?;
+    // A move and a removal by a moderator have the lines of their audit entries, and a
+    // switch to another seat in the same call is no departure.
+    if member.connected_at.is_some()
+        && matches!(
+            reason,
+            LeaveReason::Left | LeaveReason::ConnectionLost | LeaveReason::AccessEnded
+        )
+    {
+        note_left(&mut *connection, now, call, member.account_id).await?;
+    }
     if member.connected_at.is_some() {
         let left = Event::CallParticipantLeft {
             call_id: call.id,
@@ -1227,8 +1287,10 @@ pub fn entry_request(call: &CallRow, row: EntryRow) -> EntryRequest {
     }
 }
 
-/// The requests to enter a call that wait for an answer, for an account inside the call.
-/// Another account gets none: the requests are for the people inside (ADR 0517).
+/// The requests to enter a call that wait for an answer, for an account inside the call
+/// that answers them. Another account gets none: the requests are for the people inside
+/// (ADR 0517), and a request to enter a full call for the holders of "admit to full call"
+/// among them when one is inside (ADR 0514).
 pub async fn entry_requests(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -1241,10 +1303,12 @@ pub async fn entry_requests(
     let rows: Vec<EntryRow> = sqlx::query_as(AssertSqlSafe(format!(
         "select {ENTRY_COLUMNS} from call_entry_requests
          where call_id = $1 and accepted_by is null and expires_at > $2
+           and (answerers is null or $3 = any(answerers))
          order by created_at, id"
     )))
     .bind(call.id)
     .bind(now)
+    .bind(reader)
     .fetch_all(connection)
     .await?;
     Ok(rows

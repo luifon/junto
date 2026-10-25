@@ -630,8 +630,7 @@ async fn apply_one(
                 ChannelId::from_uuid(channel_id),
                 WorkspaceRoleId::from_uuid(role_id),
             );
-            channels::set_override_in(connection, &app.calls, access, now, ids, next, false)
-                .await?;
+            channels::set_override_in(connection, &app.calls, access, now, ids, next).await?;
             Ok(())
         }
         StructureChange::DeleteChannel { id } => {

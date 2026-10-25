@@ -399,6 +399,80 @@ async fn a_person_outside_asks_to_enter_and_the_first_answer_of_a_person_inside_
     assert_eq!(server.count("call_members").await, 3);
 }
 
+/// A request to enter a full call that is not locked goes to the people inside who hold
+/// "admit to full call", and only they answer it. With none of them inside, everyone inside
+/// gets it and answers it.
+#[tokio::test]
+async fn a_request_to_enter_a_full_call_goes_to_the_holders_of_admit_to_full_call() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let carl = server.join(owner, "Carl").await;
+    server
+        .call_settings(owner, voice, json!({ "user_limit": 2 }))
+        .await;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    let mut to_ann = server.full_stream(ann).await;
+    let mut to_ben = server.full_stream(ben).await;
+    let requested = |request: &EntryRequest| Event::CallEntryRequested {
+        request: request.clone(),
+    };
+
+    // Nobody inside holds the permission: both get the request, and either answers.
+    let first: EntryRequest = ask(server, &carl, voice).await.ok(StatusCode::CREATED);
+    assert_eq!(
+        server.call_events(ann, &mut to_ann).await,
+        [requested(&first)]
+    );
+    assert_eq!(
+        server.call_events(ben, &mut to_ben).await,
+        [requested(&first)]
+    );
+    answer(server, ben, &first, false)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.call_events(ann, &mut to_ann).await;
+    server.call_events(ben, &mut to_ben).await;
+
+    // Ann holds it: only she gets the next request and answers it.
+    server
+        .grant_workspace(
+            owner,
+            ann,
+            scene.workspace_id,
+            &[junto_protocol::WorkspacePermission::AdmitToFullCall],
+        )
+        .await;
+    let second: EntryRequest = ask(server, &carl, voice).await.ok(StatusCode::CREATED);
+    assert_eq!(
+        server.call_events(ann, &mut to_ann).await,
+        [requested(&second)]
+    );
+    assert!(server.call_events(ben, &mut to_ben).await.is_empty());
+    assert!(
+        server
+            .own_call(ben)
+            .await
+            .call
+            .unwrap()
+            .entry_requests
+            .is_empty()
+    );
+    assert_eq!(
+        server.own_call(ann).await.call.unwrap().entry_requests,
+        std::slice::from_ref(&second)
+    );
+    answer(server, ben, &second, true)
+        .await
+        .error(ErrorCode::NotFound);
+    answer(server, ann, &second, true)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.join_call(&carl, voice).await;
+    assert_eq!(server.count("call_members").await, 3);
+}
+
 #[tokio::test]
 async fn an_invitation_passes_the_lock_and_the_limit_and_no_permission() {
     let scene = Scene::start().await;

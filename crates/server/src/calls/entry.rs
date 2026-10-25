@@ -242,6 +242,9 @@ pub async fn enter(
             {
                 let switched = LeaveReason::Switched;
                 app.calls.mark(other.room.as_str());
+                if member.connected_at.is_some() {
+                    store::note_left(&mut *connection, now, &other, member.account_id).await?;
+                }
                 store::take_out(&mut *connection, now, &other, &member, switched).await?;
                 store::end_if_empty(&mut *connection, now, other.id).await?;
             }

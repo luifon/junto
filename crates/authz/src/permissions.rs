@@ -149,6 +149,7 @@ permission_set! {
     LockRoom = 13 => "lock_room",
     RunMeetingMode = 14 => "run_meeting_mode",
     ViewAuditEntries = 15 => "view_audit_entries",
+    AdmitToFullCall = 16 => "admit_to_full_call",
 }
 
 impl WorkspacePermissions {
@@ -213,6 +214,7 @@ mod tests {
                 (1 << 13, "lock_room"),
                 (1 << 14, "run_meeting_mode"),
                 (1 << 15, "view_audit_entries"),
+                (1 << 16, "admit_to_full_call"),
             ]
         );
     }
@@ -229,10 +231,10 @@ mod tests {
         );
         assert_eq!(ServerPermissions::from_bits(64), None);
         assert_eq!(
-            WorkspacePermissions::from_bits(0xFFFF),
+            WorkspacePermissions::from_bits(0x1_FFFF),
             Some(WorkspacePermissions::ALL)
         );
-        assert_eq!(WorkspacePermissions::from_bits(0x1_0000), None);
+        assert_eq!(WorkspacePermissions::from_bits(0x2_0000), None);
     }
 
     #[test]

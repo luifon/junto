@@ -15,7 +15,7 @@ Two levels of roles:
 - Server roles hold the permissions that act on the whole server.
 - Workspace roles hold all other permissions. They are created per workspace as needed.
 - Server permissions: administrator, create workspace, create invites, approve join requests, ban members, view the server audit log.
-- Workspace permissions named so far: manage roles, manage channel, manage messages, mention everyone in a channel, manage glossary, record calls, manage recordings, export channel, move members, mute members, deafen members, disconnect members, lock room, run meeting mode, view the workspace's audit entries.
+- Workspace permissions named so far: manage roles, manage channel, manage messages, mention everyone in a channel, manage glossary, record calls, manage recordings, export channel, move members, mute members, deafen members, disconnect members, lock room, run meeting mode, view the workspace's audit entries, admit to full call (bit 16: get the requests to enter a full call and let the person in above the user limit, ADR 0514). No default role holds "admit to full call"; an administrator holds it as every workspace permission. Migration `0033_admit_to_full_call` widens the stored range of role permissions and overrides to 17 bits.
 - Defaults: administrators have "create invites" and "export channel"; all members have "lock room" and "run meeting mode".
 
 Channel overrides:

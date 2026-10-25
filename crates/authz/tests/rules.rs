@@ -1038,3 +1038,39 @@ fn audit_entries_follow_the_scope_they_are_about() {
         );
     }
 }
+
+/// "Admit to full call" is not a permission of everyone: a role or an override gives it in a
+/// channel, and an administrator holds it.
+#[test]
+fn admit_to_full_call_is_held_by_a_role_an_override_or_an_administrator() {
+    assert!(!WorkspacePermissions::EVERYONE_DEFAULT.contains(W::AdmitToFullCall));
+    let member = workspace(
+        &WorkspacePermissions::EVERYONE_DEFAULT
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![],
+    );
+    let holder = workspace(&[W::ViewChannel], vec![role(1, &[W::AdmitToFullCall])]);
+    let open = channel(member.clone(), rule(&[], &[]), vec![]);
+    let granted_here = channel(member, rule(&[W::AdmitToFullCall], &[]), vec![]);
+    let held = channel(holder.clone(), rule(&[], &[]), vec![]);
+    let denied_here = channel(
+        holder,
+        rule(&[], &[]),
+        vec![role_rule(1, &[], &[W::AdmitToFullCall])],
+    );
+    let cases = [
+        (plain(), &open, missing(W::AdmitToFullCall)),
+        (plain(), &granted_here, Allow),
+        (plain(), &held, Allow),
+        (plain(), &denied_here, missing(W::AdmitToFullCall)),
+        (administrator(), &open, Allow),
+    ];
+    for (actor, scope, expected) in cases {
+        let request = Request::Channel {
+            scope,
+            permission: W::AdmitToFullCall,
+        };
+        assert_eq!(authorize(&actor, &request), expected, "{actor:?} {scope:?}");
+    }
+}
