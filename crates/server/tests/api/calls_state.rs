@@ -676,6 +676,89 @@ async fn meeting_mode_lasts_while_its_presenter_runs_a_share() {
     assert_eq!(meeting_of(&scene).await, None);
 }
 
+/// Migration 0035 moves the one share of each member of `call_members` into `call_shares`
+/// as slot 0, and keeps what the admission check had seen of it.
+#[tokio::test]
+async fn migration_0035_keeps_the_share_of_each_member_as_slot_0() {
+    use sqlx::ConnectOptions;
+
+    let database = crate::support::empty_database().await;
+    let mut connection = database.options.connect().await.unwrap();
+    crate::migration_identifiers::migrations_up_to(34)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let mut accounts = [uuid::Uuid::now_v7(), uuid::Uuid::now_v7()];
+    accounts.sort();
+    for (account, name) in accounts.iter().zip(["Ana", "Ben"]) {
+        sqlx::query(
+            "insert into accounts (id, name, status, created_at) values ($1, $2, 'active', now())",
+        )
+        .bind(account)
+        .bind(name)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    }
+    let call = uuid::Uuid::now_v7();
+    sqlx::query(
+        "insert into calls (id, room_name, direct_low, direct_high, created_at)
+         values ($1, $2, $3, $4, now())",
+    )
+    .bind(call)
+    .bind(format!("jr-{}-{}", "a".repeat(12), "b".repeat(32)))
+    .bind(accounts[0])
+    .bind(accounts[1])
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let seen = time::OffsetDateTime::now_utc();
+    for (index, account) in accounts.iter().enumerate() {
+        let shares = index == 0;
+        sqlx::query(
+            "insert into call_members (call_id, account_id, device_id, session_id, identity,
+                 admitted_at, usable_until, connected_at, share_audio, share_started_at,
+                 share_seen_at, share_missing_since)
+             values ($1, $2, $3, $4, $5, now(), now(), now(), $6, $7, $8, $9)",
+        )
+        .bind(call)
+        .bind(account)
+        .bind(uuid::Uuid::now_v7())
+        .bind(uuid::Uuid::now_v7())
+        .bind(format!("{account}:{}", "c".repeat(31) + &index.to_string()))
+        .bind(shares.then_some("system"))
+        .bind(shares.then_some(seen))
+        .bind(shares.then_some(seen))
+        .bind(shares.then_some(seen))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    }
+    crate::migration_identifiers::migrations_up_to(i64::MAX)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let rows: Vec<(uuid::Uuid, i16, Option<String>, String, bool, bool)> = sqlx::query_as(
+        "select account_id, slot, kind, audio, seen_at is not null, missing_since is not null
+         from call_shares order by account_id",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [(accounts[0], 0, None, "system".to_owned(), true, true)]
+    );
+    let left: bool = sqlx::query_scalar(
+        "select exists (select 1 from information_schema.columns
+                        where table_name = 'call_members' and column_name like 'share_%')",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert!(!left, "the columns of the one share are gone");
+}
+
 fn meeting_path(channel_id: ChannelId) -> String {
     format!("/api/v1/channels/{channel_id}/call/meeting")
 }
