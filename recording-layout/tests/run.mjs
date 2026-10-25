@@ -122,7 +122,7 @@ await test('recording layout against LiveKit', async (t) => {
     const first = await participant('first');
     const second = await participant('second');
     const voice = await participant('voice-only');
-    const publish = (page, source, frequency) => page.evaluate(([source, frequency]) => window.publish(source, frequency), [source, frequency]);
+    const publish = (page, source, frequency, name) => page.evaluate(([source, frequency, name]) => window.publish(source, frequency, name ?? undefined), [source, frequency, name ?? null]);
     const tracks = {};
     tracks.firstCamera = await publish(first, 'camera');
     tracks.firstMic = await publish(first, 'microphone', 440);
@@ -203,6 +203,7 @@ await test('recording layout against LiveKit', async (t) => {
     const caseNames = {
       readiness: ['stalled camera'], deadline: ['stalled camera'], labels: ['labels show'],
       quality: ['live layout update'], cache: ['empty update', 'mute updates'],
+      slots: ['two shares of one person'],
       preserve: ['empty update', 'recorder full reconnect'], outage: ['outage beyond'],
     };
     const scenario = (name, run) => t.test(name, {
@@ -240,6 +241,25 @@ await test('recording layout against LiveKit', async (t) => {
       await until(() => page.evaluate(() => receivedLayoutData
         && room.remoteParticipants.get('first').metadata.includes('layout')
         && room.metadata.includes('main_share')), 'untrusted updates arrived');
+      await mainIs(tracks.secondShare);
+    });
+    await scenario('two shares of one person: the main share plays the sound of its own slot', async () => {
+      const windowShare = await publish(first, 'screen_share', undefined, 'window/10/1');
+      const windowSound = await publish(first, 'screen_share_audio', 1550, 'share-sound/1');
+      try {
+        await update(`main:${windowShare}`);
+        await mainIs(windowShare);
+        await subscriptions([...baseTracks(), windowShare, windowSound]);
+        await sounds([tracks.firstMic, tracks.secondMic, tracks.voice, windowSound]);
+        await update(`main:${tracks.firstShare}`);
+        await mainIs(tracks.firstShare);
+        await subscriptions([...baseTracks(), windowShare, tracks.firstSound]);
+        await sounds([tracks.firstMic, tracks.secondMic, tracks.voice, tracks.firstSound]);
+      } finally {
+        await first.evaluate((sid) => unpublish(sid), windowShare);
+        await first.evaluate((sid) => unpublish(sid), windowSound);
+      }
+      await update(`main:${tracks.secondShare}`);
       await mainIs(tracks.secondShare);
     });
     await scenario('empty update selects latest share and new publications change the fallback', async () => {
