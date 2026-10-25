@@ -51,6 +51,7 @@ Each measurement and removal is written to the standard output. Exit status 1: t
 job for lack of free space. Exit status 2: a setting, a size or the free space could not be read;
 before a run the run then starts no job, and no cache is removed.
 """
+import json
 import os
 from pathlib import Path
 import re
@@ -159,6 +160,45 @@ def program(arguments, what):
     return done.stdout
 
 
+def kib(number, unit):
+    """KiB of a size that Docker states in decimal units, such as 114.7kB or 3.22GB."""
+    factor = {"B": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[unit]
+    return int(float(number) * factor) // 1024
+
+
+def stopped_nodes():
+    """The nodes of the builder whose container does not run. buildx du and prune fail on them
+    with "is not running"; buildx inspect without --bootstrap reads them without a start."""
+    output = program(["docker", "buildx", "inspect", BUILDER], f"the nodes of the builder {BUILDER}")
+    nodes = output.partition("\nNodes:")[2]
+    stopped, node = [], None
+    for line in nodes.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "Name":
+            node = value.strip()
+        elif key.strip() == "Status" and node and value.strip() != "running":
+            stopped.append(node)
+    return stopped
+
+
+def state_size(nodes):
+    """KiB of the state volumes of stopped nodes: buildx keeps the cache of a node of the
+    docker-container driver in the volume buildx_buildkit_<node>_state."""
+    output = program(["docker", "system", "df", "-v", "--format", "{{json .Volumes}}"], "the sizes of the volumes")
+    try:
+        volumes = {volume["Name"]: volume["Size"] for volume in json.loads(output) or []}
+    except (ValueError, TypeError, KeyError) as error:
+        raise Failed(f"the sizes of the volumes are not in: {output.strip()[-200:]!r}") from error
+    total = 0
+    for node in nodes:
+        size = volumes.get(f"buildx_buildkit_{node}_state", "0B")
+        found = re.fullmatch(r"([0-9.]+)\s*([kMGT]?B)", size.strip())
+        if not found:
+            raise Failed(f"the size of the state of {node} is not a size: {size!r}")
+        total += kib(found.group(1), found.group(2))
+    return total
+
+
 class Linux:
     """The Docker volumes of the Linux host, read and emptied in containers."""
 
@@ -200,6 +240,9 @@ class Linux:
     def mark(self, stamp):
         self.container("stamp", self.target, ["sh", "-c", f"printf '%s\\n' \"$1\" >/cache/{STAMP}", "sh", stamp])
 
+    def describe(self, name):
+        return name
+
     def writers(self):
         """The Linux runners of every version take the same run lock: no other run writes."""
         return []
@@ -218,18 +261,24 @@ class Local:
         else:
             self.caches.append((f"builder {BUILDER}", limits["JUNTO_CI_BUILDER_CAP_GIB"]))
         self.target = "cargo-target"
+        self.stopped = []
+
+    def describe(self, name):
+        return f"{name} (stopped)" if name.startswith("builder ") and self.stopped else name
 
     def size(self, name):
         if name.startswith("builder "):
             names = program(["docker", "buildx", "ls", "--format", "{{.Name}}"], "the list of BuildKit builders")
             if BUILDER not in names.split():
                 return None
+            self.stopped = stopped_nodes()
+            if self.stopped:
+                return state_size(self.stopped)
             output = program(["docker", "buildx", "du", "--builder", BUILDER], f"the size of the builder {BUILDER}")
             found = re.search(r"^Total:\s+([0-9.]+)\s*([kMGT]?B)\s*$", output, re.MULTILINE)
             if not found:
                 raise Failed(f"the size of the builder {BUILDER} is not in: {output.strip()[-200:]!r}")
-            factor = {"B": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}[found.group(2)]
-            return int(float(found.group(1)) * factor) // 1024
+            return kib(found.group(1), found.group(2))
         path = self.directory / name
         if not path.is_dir():
             return None
@@ -246,6 +295,11 @@ class Local:
 
     def empty(self, name):
         if name.startswith("builder "):
+            # buildx prune needs a running builder; the deployment job creates a removed builder
+            # again, and a stopped builder is not started, so that it takes no memory.
+            if self.stopped:
+                program(["docker", "buildx", "rm", BUILDER], f"the removal of the stopped builder {BUILDER}")
+                return
             program(["docker", "buildx", "prune", "--builder", BUILDER, "--all", "--force"],
                     f"the removal of the cache of the builder {BUILDER}")
             return
@@ -420,10 +474,10 @@ def check(directory, runner, phase, run):
                 continue
         if size > cap:
             machine.empty(name)
-            log(phase, f"cache {name}: {size} KiB, above its cap of {cap} KiB; emptied")
+            log(phase, f"cache {machine.describe(name)}: {size} KiB, above its cap of {cap} KiB; emptied")
             size = 0
         else:
-            log(phase, f"cache {name}: {size} KiB of {cap} KiB")
+            log(phase, f"cache {machine.describe(name)}: {size} KiB of {cap} KiB")
         remaining.append((name, size))
     free = machine.free()
     target = dict(remaining).get(machine.target, 0)

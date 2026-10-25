@@ -44,8 +44,25 @@ if arguments[:2] == ["buildx", "ls"]:
     if os.environ.get("FAKE_BUILDER_KIB"):
         print("junto-ci-deployment")
     sys.exit(0)
+stopped = os.environ.get("FAKE_BUILDER_STOPPED") and not (root / "builder-removed").exists()
+if arguments[:2] == ["buildx", "inspect"]:
+    print(f"Name:          junto-ci-deployment\nDriver:        docker-container\n\nNodes:\n"
+          f"Name:                  junto-ci-deployment0\nStatus:                {'stopped' if stopped else 'running'}")
+    sys.exit(0)
+if arguments[:2] in (["buildx", "du"], ["buildx", "prune"]) and stopped:
+    print("ERROR: Error response from daemon: container 81a9 is not running", file=sys.stderr)
+    sys.exit(1)
 if arguments[:2] == ["buildx", "du"]:
     print(f"Reclaimable:\t1kB\nTotal:\t\t{int(os.environ['FAKE_BUILDER_KIB']) * 1024 / 1e9:.2f}GB")
+    sys.exit(0)
+if arguments[:2] == ["buildx", "rm"]:
+    (root / "builder-removed").touch()
+    sys.exit(0)
+if arguments[:3] == ["system", "df", "-v"]:
+    import json
+    size = f"{int(os.environ['FAKE_BUILDER_KIB']) * 1024 / 1e9:.2f}GB"
+    print(json.dumps([{"Name": "other_state", "Size": "9GB"},
+                      {"Name": "buildx_buildkit_junto-ci-deployment0_state", "Size": size}]))
     sys.exit(0)
 if arguments[0] != "run":
     sys.exit(0)
@@ -227,6 +244,7 @@ class Fixture(unittest.TestCase):
         self.environment = dict(os.environ, PATH=f"{programs}:{os.environ['PATH']}", FAKE_ROOT=str(self.root),
                                 FAKE_DISK=str(200 * GIB), JUNTO_CI_PYTHON_IMAGE="python-image")
         self.environment.pop("FAKE_BUILDER_KIB", None)
+        self.environment.pop("FAKE_BUILDER_STOPPED", None)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -289,6 +307,20 @@ class Local(Fixture):
         self.assertIn("buildx prune --builder junto-ci-deployment --all --force", self.log())
         absent = self.caches("macos", "after")
         self.assertNotIn("builder", absent.stdout)
+
+    # A builder whose container is stopped answers no buildx du or prune; the run went on to its
+    # jobs only after the builder was started by hand.
+    def test_a_stopped_builder_is_measured_by_its_state_volume_and_removed_above_its_cap(self):
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\nJUNTO_CI_BUILDER_CAP_GIB=4\n")
+        within = self.caches("macos", "before", FAKE_BUILDER_KIB=str(3 * GIB), FAKE_BUILDER_STOPPED="1")
+        self.assertEqual(within.returncode, 0, within.stdout + within.stderr)
+        self.assertRegex(within.stdout, r"cache builder junto-ci-deployment \(stopped\): 314\d{4} KiB of 4194304 KiB")
+        self.assertNotIn("buildx rm", self.log())
+        above = self.caches("macos", "before", FAKE_BUILDER_KIB=str(5 * GIB), FAKE_BUILDER_STOPPED="1")
+        self.assertEqual(above.returncode, 0, above.stdout + above.stderr)
+        self.assertRegex(above.stdout, r"cache builder junto-ci-deployment \(stopped\): 524\d{4} KiB, above its cap of 4194304 KiB; emptied")
+        self.assertIn("buildx rm junto-ci-deployment", self.log())
+        self.assertNotIn("buildx prune", self.log())
 
 
 class Stamp(Fixture):
