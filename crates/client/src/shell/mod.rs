@@ -54,7 +54,7 @@ pub use settings::SettingsSection;
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;
-use crate::state::{AppState, LevelsChanged};
+use crate::state::{AppState, LevelsChanged, OpenAdmin};
 use crate::text;
 use crate::theme::{self, theme};
 use crate::ui::{Field, FieldEvent, StyleExt, tabular_numerals};
@@ -545,6 +545,9 @@ impl Shell {
                 this.take_handed_drafts(window, cx);
                 this.feed_changed(&view, window, cx);
                 cx.notify();
+            }),
+            cx.subscribe_in(&state, window, |this, _, event: &OpenAdmin, window, cx| {
+                this.open_admin(event.0, window, cx);
             }),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {

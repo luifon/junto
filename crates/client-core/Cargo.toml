@@ -60,6 +60,7 @@ windows-registry = "0.6"
 # shell. gpui uses the same version.
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Storage_EnhancedStorage",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
@@ -69,6 +70,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -78,6 +80,32 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The status item of the menu bar (ADR 0757), in the versions that gpui and the client use.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSButton",
+    "NSControl",
+    "NSImage",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+    "objc2-core-foundation",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSData",
+    "NSGeometry",
+    "NSObject",
+    "NSString",
+    "objc2-core-foundation",
 ] }
 
 [dev-dependencies]
@@ -94,11 +122,12 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { version = "1", features = ["pty"] }
 
-# The workspace forbids unsafe code. This crate denies it and allows it in four modules that
-# exist on Windows only: the library reads and sets owners and access lists (ADR 0711),
-# attaches a program of the Windows subsystem to the console of its parent and sets the
-# taskbar properties of a window (ADR 0755), and the tool turns the echo of the console off
-# (ADR 0711).
+# The workspace forbids unsafe code. This crate denies it and allows it in five modules that
+# exist on Windows only and one that exists on macOS only: the library reads and sets owners
+# and access lists (ADR 0711), attaches a program of the Windows subsystem to the console of
+# its parent, sets the taskbar properties of a window (ADR 0755), shows the icon of the
+# notification area of Windows and the status item of the macOS menu bar (ADR 0757), and the
+# tool turns the echo of the console off (ADR 0711).
 [lints.rust]
 unsafe_code = "deny"
 

@@ -738,6 +738,38 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The notices of the server of the call in the place of the panel of the call, while
+    /// the call window has no panel: before the state holds the conversation of a
+    /// direct-message call. Absent while the notices are not open.
+    pub(crate) fn render_call_notices_alone(
+        &mut self,
+        view: &ShellView,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let shown = view.lists()?.notices.as_ref()?;
+        let server_id = view.selected.as_ref()?.id;
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let list = self.render_notices_panel(server_id, shown, true, cx);
+        Some(
+            div()
+                .id("call-panel")
+                .role(Role::Complementary)
+                .aria_label(text::NOTIFICATIONS)
+                .debug_selector(|| "call-panel".to_owned())
+                .flex()
+                .flex_col()
+                .flex_none()
+                .w(u(theme.metrics.call_panel_width))
+                .h_full()
+                .bg(Hsla::from(colors.plaster))
+                .border_l_1()
+                .border_color(Hsla::from(colors.rule))
+                .child(list)
+                .into_any_element(),
+        )
+    }
+
     /// The chat of the call in the panel of the call: the messages of the voice channel, or
     /// of the direct conversation of a direct-message call, and the composer.
     fn render_call_chat(

@@ -34,7 +34,7 @@ use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, ChannelRow, Field, FieldEvent, FormSpace, Notice, ScrollArea, SideHeader,
-    StyleExt, float_shadow,
+    StyleExt, UnreadSign, float_shadow,
 };
 
 /// The width and the height of the layer in design pixels.
@@ -907,13 +907,28 @@ impl Shell {
             );
             for page in group.pages.iter().copied() {
                 let name = text::admin::page_name(page);
+                let waiting = group.waiting(page);
+                let sign = (waiting > 0).then(|| UnreadSign {
+                    mentions: Some(text::unread_count(waiting as u64).into()),
+                    label: text::admin::waiting(page, waiting).into(),
+                });
                 column = column.child(
-                    ChannelRow::new(name, text::admin::page_icon(page), name)
-                        .selected(page == selected)
-                        .selector(text::admin::page_selector(page))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_server_admin(page, window, cx);
-                        })),
+                    div()
+                        .flex_none()
+                        .child(
+                            ChannelRow::new(name, text::admin::page_icon(page), name)
+                                .selected(page == selected)
+                                .selector(text::admin::page_selector(page))
+                                .unread(sign)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_server_admin(page, window, cx);
+                                })),
+                        )
+                        .when(waiting > 0, |row| {
+                            row.child(div().absolute().size_0().debug_selector(move || {
+                                format!("{}-count", text::admin::page_selector(page))
+                            }))
+                        }),
                 );
             }
         }

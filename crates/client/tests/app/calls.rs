@@ -197,6 +197,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.click("noise-suppression");
     window.click("echo-cancellation");
     window.click("echo-cancellation");
+    window.click_in_settings("call-sounds");
     window.until("the settings are used", |window| {
         let voice = voice(window);
         voice.input_mode == InputMode::PushToTalk
@@ -204,6 +205,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
             && !voice.noise_suppression
             && voice.echo_cancellation
             && voice.automatic_gain
+            && !voice.call_sounds
     });
     assert!(!window.shows("voice-settings-error"));
     window.press("escape");
@@ -214,6 +216,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     let text = std::fs::read_to_string(voice_file(directory.path())).unwrap();
     assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     assert!(text.contains("\"talk_key\": \"control\""), "{text}");
+    assert!(text.contains("\"call_sounds\": false"), "{text}");
     let mut window = open(cx, directory.path());
     assert_eq!(voice(&mut window), chosen);
     window.click("app-settings");

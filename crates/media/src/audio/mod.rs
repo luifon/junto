@@ -50,3 +50,6 @@ pub(crate) fn to_f32(sample: i16) -> f32 {
 }
 
 pub mod ring;
+pub mod sounds;
+#[cfg(test)]
+mod test_output;

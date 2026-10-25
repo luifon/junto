@@ -947,10 +947,17 @@ impl AppState {
         }
     }
 
-    /// An invitation into a voice channel arrived for the person. The sound of an
-    /// invitation is played here once the application has sounds; it plays none yet
-    /// (ADR 0739).
-    fn invitation_sound(&mut self, _server_id: ServerId, _invitation_id: CallInvitationId) {}
+    /// An invitation into a voice channel arrived for the person: one short tone, unless
+    /// the person turned the tones or the sound off (ADR 0707, ADR 0739).
+    fn invitation_sound(&mut self, _server_id: ServerId, _invitation_id: CallInvitationId) {
+        if self.known.media.voice.call_sounds && !self.known.media.calls.deafened {
+            let device = self.chosen_output();
+            self.sounds.play(
+                junto_media::audio::sounds::Sound::Invitation,
+                device.as_ref(),
+            );
+        }
+    }
 
     /// The person pressed a notification of the system: the window shows what it was
     /// about, and its notice is read.
@@ -975,6 +982,17 @@ impl AppState {
                 }
             }
             AlertTarget::Invitation(server_id) => self.select_server(server_id, cx),
+            AlertTarget::Call(server_id) => {
+                self.select_server(server_id, cx);
+                self.show_call(cx);
+            }
+            AlertTarget::JoinRequests(server_id) => {
+                self.select_server(server_id, cx);
+                cx.emit(super::OpenAdmin(super::admin::AdminOpen::Server {
+                    server_id,
+                    page: super::admin::AdminPage::JoinRequests,
+                }));
+            }
         }
     }
 }

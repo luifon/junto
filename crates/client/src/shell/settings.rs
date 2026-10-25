@@ -471,8 +471,9 @@ impl Shell {
         parts
     }
 
-    /// The sound settings that hold for every call: when the microphone is sent, and the
-    /// processing of the microphone (ADR 0507, ADR 0701).
+    /// The sound settings that hold for every call: when the microphone is sent, the
+    /// processing of the microphone, and the tones of call events (ADR 0507, ADR 0701,
+    /// ADR 0707).
     fn render_voice_settings(
         &mut self,
         theme: &Theme,
@@ -555,25 +556,32 @@ impl Shell {
         rows.push(help(text::INPUT_MODE_HELP, theme).into_any_element());
         for (part, on, title, sentence, selector) in [
             (
-                ProcessingPart::EchoCancellation,
+                Some(ProcessingPart::EchoCancellation),
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                ProcessingPart::NoiseSuppression,
+                Some(ProcessingPart::NoiseSuppression),
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                ProcessingPart::AutomaticGain,
+                Some(ProcessingPart::AutomaticGain),
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
                 "automatic-gain",
+            ),
+            (
+                None,
+                voice.call_sounds,
+                text::CALL_SOUNDS,
+                text::CALL_SOUNDS_HELP,
+                "call-sounds",
             ),
         ] {
             rows.push(
@@ -604,8 +612,10 @@ impl Shell {
                         Toggle::new(selector, title, on, (text::ON, text::OFF))
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.set_processing(part, !on, cx));
+                                this.state.update(cx, |state, cx| match part {
+                                    Some(part) => state.set_processing(part, !on, cx),
+                                    None => state.set_call_sounds(!on, cx),
+                                });
                             })),
                     )
                     .into_any_element(),

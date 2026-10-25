@@ -64,6 +64,18 @@ pub enum NavTitle {
 pub struct NavGroup {
     pub title: NavTitle,
     pub pages: Vec<AdminPage>,
+    /// The pages that hold work waiting for the person, with its count.
+    pub waiting: Vec<(AdminPage, usize)>,
+}
+
+impl NavGroup {
+    /// The count of the work that waits on a page for the person; 0 when none waits.
+    pub fn waiting(&self, page: AdminPage) -> usize {
+        self.waiting
+            .iter()
+            .find(|(held, _)| *held == page)
+            .map_or(0, |(_, count)| *count)
+    }
 }
 
 /// One workspace of the server.
@@ -478,6 +490,24 @@ pub fn holds_workspace(workspace: &WorkspaceModel, permission: WorkspacePermissi
     workspace.holds(permission)
 }
 
+/// The join requests that wait for a decision, when the person may decide them and the
+/// window holds their list. The window holds it for every server whose account may decide
+/// them, so that the server book and the navigation show the count (ADR 0761).
+pub fn waiting_join_requests(model: &ServerModel) -> usize {
+    if !holds_server(model, ServerPermission::ApproveJoinRequests) {
+        return 0;
+    }
+    model.admin.join_requests.loaded().map_or(0, Vec::len)
+}
+
+/// The count of the work that waits for the person on a page of the administration.
+pub fn waiting_on(page: AdminPage, model: &ServerModel) -> usize {
+    match page {
+        AdminPage::JoinRequests => waiting_join_requests(model),
+        _ => 0,
+    }
+}
+
 /// The pages that the person may use, in their groups. A page that the person may not
 /// use is absent.
 pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGroup> {
@@ -508,6 +538,7 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
     }
     let mut groups = vec![NavGroup {
         title: NavTitle::Server,
+        waiting: waiting_of(&server, model),
         pages: server,
     }];
     if let Some(workspace) = workspace {
@@ -530,6 +561,7 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
         pages.push(AdminPage::Glossary);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
+            waiting: waiting_of(&pages, model),
             pages,
         });
     }
@@ -542,9 +574,18 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
     own.push(AdminPage::Exports);
     groups.push(NavGroup {
         title: NavTitle::Own,
+        waiting: waiting_of(&own, model),
         pages: own,
     });
     groups
+}
+
+fn waiting_of(pages: &[AdminPage], model: &ServerModel) -> Vec<(AdminPage, usize)> {
+    pages
+        .iter()
+        .map(|page| (*page, waiting_on(*page, model)))
+        .filter(|(_, count)| *count > 0)
+        .collect()
 }
 
 /// The collections of the client core that a page needs.

@@ -1613,3 +1613,170 @@ fn an_invitation_of_a_quiet_time_reaches_no_sound() {
     // "Do not disturb": no system notification and no sound; the window draws the card.
     assert_eq!(scene.alerts(&mut seen), Alerts::default());
 }
+
+fn join_request(name: &str) -> junto_client_core::protocol::invite::JoinRequest {
+    junto_client_core::protocol::invite::JoinRequest {
+        id: JoinRequestId::generate(),
+        name: name.to_owned(),
+        created_at: morning(),
+        expires_at: morning() + Duration::days(1),
+        returning_account_id: None,
+        accounts_with_name: 0,
+    }
+}
+
+fn set_join_requests(
+    scene: &mut Scene,
+    requests: Vec<junto_client_core::protocol::invite::JoinRequest>,
+) {
+    Arc::make_mut(&mut scene.model.admin).join_requests = Collection::Loaded(requests);
+}
+
+#[test]
+fn a_new_join_request_is_a_system_notification_for_a_person_who_may_decide_it() {
+    let mut scene = scene();
+    scene
+        .model
+        .account
+        .server_permissions
+        .push(junto_client_core::protocol::ServerPermission::ApproveJoinRequests);
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+
+    // The first list that the window holds waited before: nothing is shown for it.
+    let waited = join_request("Marta");
+    set_join_requests(&mut scene, vec![waited.clone()]);
+    assert_eq!(scene.alerts(&mut seen), Alerts::default());
+
+    let new = join_request("Linus");
+    set_join_requests(&mut scene, vec![waited.clone(), new.clone()]);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.show.len(), 1);
+    assert_eq!(
+        told.show[0].0.tag,
+        join_request_tag(scene.server_id, new.id)
+    );
+    assert_eq!(told.show[0].0.title, "Linus asks to join");
+    assert_eq!(told.show[0].0.body, "Acme Studio");
+    assert_eq!(told.show[0].1, AlertTarget::JoinRequests(scene.server_id));
+    assert_eq!(
+        seen.target(scene.server_id, &told.show[0].0.tag),
+        Some(AlertTarget::JoinRequests(scene.server_id))
+    );
+    assert_eq!(scene.alerts(&mut seen), Alerts::default());
+
+    // The request was decided: its notification is taken away.
+    set_join_requests(&mut scene, vec![waited.clone()]);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.dismiss, [join_request_tag(scene.server_id, new.id)]);
+
+    // A list that is read again holds what arrived meanwhile: it is new.
+    Arc::make_mut(&mut scene.model.admin).join_requests = Collection::Loading;
+    assert_eq!(scene.alerts(&mut seen), Alerts::default());
+    let meanwhile = join_request("Ines");
+    set_join_requests(&mut scene, vec![waited, meanwhile.clone()]);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(
+        told.show
+            .iter()
+            .map(|(alert, _)| alert.tag.clone())
+            .collect::<Vec<_>>(),
+        [join_request_tag(scene.server_id, meanwhile.id)]
+    );
+
+    // An active window draws the count itself.
+    let other = join_request("Theo");
+    let mut list = model_requests(&scene);
+    list.push(other);
+    set_join_requests(&mut scene, list);
+    let told = alerts(&mut seen, &scene.alert_scene(true, Shown::default()));
+    assert!(told.show.is_empty());
+}
+
+fn model_requests(scene: &Scene) -> Vec<junto_client_core::protocol::invite::JoinRequest> {
+    scene
+        .model
+        .admin
+        .join_requests
+        .loaded()
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_join_request_is_no_system_notification_without_the_permission_or_in_a_quiet_time() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    set_join_requests(&mut scene, Vec::new());
+    scene.alerts(&mut seen);
+    set_join_requests(&mut scene, vec![join_request("Linus")]);
+    assert!(scene.alerts(&mut seen).show.is_empty());
+
+    scene
+        .model
+        .account
+        .server_permissions
+        .push(junto_client_core::protocol::ServerPermission::ApproveJoinRequests);
+    set_join_requests(&mut scene, Vec::new());
+    scene.alerts(&mut seen);
+    scene.settings(
+        SettingsScope::Account,
+        NotificationSettings {
+            do_not_disturb: true,
+            ..level(NotificationLevel::All)
+        },
+    );
+    set_join_requests(&mut scene, vec![join_request("Ines")]);
+    assert!(scene.alerts(&mut seen).show.is_empty());
+}
+
+#[test]
+fn a_request_to_enter_the_call_is_a_system_notification() {
+    use junto_client_core::protocol::call::EntryRequest;
+
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    let entry = |scene: &Scene| EntryRequest {
+        id: EntryRequestId::generate(),
+        call_id: CallId::generate(),
+        place: CallPlace::Channel {
+            workspace_id: scene.studio,
+            channel_id: scene.daily,
+        },
+        account_id: scene.ana,
+        created_at: morning(),
+        expires_at: morning() + Duration::minutes(1),
+    };
+    // A request of the first state is not new.
+    scene.model.entry_requests.push(entry(&scene));
+    assert!(scene.alerts(&mut seen).show.is_empty());
+
+    let new = entry(&scene);
+    scene.model.entry_requests.push(new.clone());
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.show.len(), 1);
+    assert_eq!(
+        told.show[0].0.tag,
+        entry_request_tag(scene.server_id, new.id)
+    );
+    assert_eq!(told.show[0].0.title, "Ana asks to enter Daily");
+    assert_eq!(told.show[0].1, AlertTarget::Call(scene.server_id));
+    assert_eq!(scene.alerts(&mut seen), Alerts::default());
+
+    // The request was answered: its notification is taken away.
+    scene
+        .model
+        .entry_requests
+        .retain(|request| request.id != new.id);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.dismiss, [entry_request_tag(scene.server_id, new.id)]);
+
+    // An active window shows the request in the call.
+    scene.model.entry_requests.push(entry(&scene));
+    assert!(
+        alerts(&mut seen, &scene.alert_scene(true, Shown::default()))
+            .show
+            .is_empty()
+    );
+}

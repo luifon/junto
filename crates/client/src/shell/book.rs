@@ -12,6 +12,7 @@ use junto_client_core::version::Incompatibility;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
+use crate::state::admin::{AdminOpen, AdminPage};
 use crate::state::book::{CheckShown, Step};
 use crate::state::view::{ServerRow, ShellView};
 use crate::text::book as txt;
@@ -53,12 +54,19 @@ impl BookUi {
 }
 
 /// The name of the head of a server for the accessibility tree: the name of the server,
-/// and what the head shows as unread.
+/// what the head shows as unread, and the join requests that wait.
 pub(crate) fn head_label(row: &ServerRow) -> SharedString {
-    match super::channels::unread_sign(row.head_unread) {
-        Some(sign) => format!("{}, {}", row.name, sign.label).into(),
-        None => row.name.clone().into(),
+    let mut label = row.name.clone();
+    if let Some(sign) = super::channels::unread_sign(row.head_unread) {
+        label = format!("{label}, {}", sign.label);
     }
+    if row.waiting_join_requests > 0 {
+        label = format!(
+            "{label}, {}",
+            crate::text::admin::waiting(AdminPage::JoinRequests, row.waiting_join_requests)
+        );
+    }
+    label.into()
 }
 
 /// The unread sign of the head of a server in the expanded server book: the sign of the
@@ -83,6 +91,48 @@ pub(crate) fn head_sign(row: &ServerRow, index: usize, cx: &App) -> Option<AnyEl
 }
 
 impl Shell {
+    /// The count of the join requests that wait for the person on the head of a server in
+    /// the expanded server book. A press opens the page of the join requests (ADR 0761).
+    pub(crate) fn render_waiting_sign(
+        &mut self,
+        index: usize,
+        row: &ServerRow,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let waiting = row.waiting_join_requests;
+        if waiting == 0 {
+            return None;
+        }
+        let server_id = row.id;
+        let label: SharedString =
+            crate::text::admin::waiting(AdminPage::JoinRequests, waiting).into();
+        Some(
+            div()
+                .id(("server-waiting", index))
+                .flex_none()
+                .cursor_pointer()
+                .role(Role::Button)
+                .aria_label(label.clone())
+                .debug_selector(move || format!("server-waiting-{index}"))
+                .tooltip(tooltip(label))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.state
+                        .update(cx, |state, cx| state.select_server(server_id, cx));
+                    let open = AdminOpen::Server {
+                        server_id,
+                        page: AdminPage::JoinRequests,
+                    };
+                    this.open_admin(open, window, cx);
+                }))
+                .child(
+                    Badge::new(crate::text::unread_count(waiting as u64))
+                        .icon(crate::text::admin::page_icon(AdminPage::JoinRequests)),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Opens the settings at the section "Version", which is the last one.
     pub fn open_version_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.book.copied = None;
@@ -455,6 +505,7 @@ mod tests {
             has_recovery: false,
             unread: head_unread,
             head_unread,
+            waiting_join_requests: 0,
             workspaces: Vec::new(),
         }
     }

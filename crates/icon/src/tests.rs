@@ -307,3 +307,41 @@ fn the_windows_resource_holds_the_pictures_and_the_group_that_lists_them() {
     }
     assert_eq!(resources.len(), ICO.len() + 2);
 }
+
+#[test]
+fn a_tray_picture_is_the_body_of_the_icon_with_the_mark_of_its_state() {
+    for side in TRAY.into_iter().chain([MENU_BAR]) {
+        let plain = tray(None, side).unwrap();
+        assert_eq!(plain.rgba.len(), (side * side * 4) as usize);
+        // The body fills the picture: the middle of each edge is opaque, a corner outside the
+        // rounded body is transparent.
+        assert_eq!(plain.pixel(0, side / 2)[3], 255, "{side}");
+        assert_eq!(plain.pixel(side - 1, side / 2)[3], 255, "{side}");
+        assert_eq!(plain.pixel(0, 0)[3], 0, "{side}");
+        // The centre of the mark: green in a call, a glyph on red otherwise, and the icon
+        // without a mark.
+        let centre = side * 752 / 1024;
+        let at = |mark| tray(Some(mark), side).unwrap().pixel(centre, centre);
+        assert_eq!(at(Mark::Call), [0x2e, 0x9e, 0x5b, 255], "{side}");
+        assert_ne!(at(Mark::Muted), at(Mark::Call), "{side}");
+        assert_ne!(plain.pixel(centre, centre), at(Mark::Call), "{side}");
+        assert_ne!(plain.pixel(centre, centre), at(Mark::Muted), "{side}");
+        // The red disc between its white edge and the glyph. At 16 pixels the edge of the
+        // glyph is a small part of the pixel.
+        let left = side * 600 / 1024;
+        let [red, green, blue, alpha] = tray(Some(Mark::SoundOff), side)
+            .unwrap()
+            .pixel(left, centre);
+        assert!(
+            alpha == 255 && green == blue && red >= 0xc9 && green <= 0x50,
+            "{side}: {:?}",
+            [red, green, blue, alpha]
+        );
+    }
+    assert!(matches!(tray(None, 0), Err(Error::Size(0))));
+    assert!(
+        tray_png(Some(Mark::Call), MENU_BAR)
+            .unwrap()
+            .starts_with(PNG_SIGNATURE)
+    );
+}

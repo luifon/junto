@@ -8,6 +8,7 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+mod call_sounds;
 pub mod contacts;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
@@ -30,6 +31,7 @@ pub mod search;
 mod searching;
 mod threads;
 pub mod transcript_work;
+mod tray;
 mod update_install;
 pub mod view;
 
@@ -404,6 +406,12 @@ pub struct LevelsChanged;
 
 impl gpui::EventEmitter<LevelsChanged> for AppState {}
 
+/// A press outside the window, on a system notification, asks the main window to show a page
+/// of the administration.
+pub struct OpenAdmin(pub admin::AdminOpen);
+
+impl gpui::EventEmitter<OpenAdmin> for AppState {}
+
 /// What the call window does before it closes.
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
@@ -417,6 +425,10 @@ pub struct AppState {
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
     ringer: junto_media::audio::ring::RingPlayer,
+    /// The short tones of the events of the call of this device (ADR 0707).
+    sounds: junto_media::audio::sounds::SoundPlayer,
+    /// What the last tones of the call were decided from.
+    heard: call_sounds::Heard,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
@@ -574,6 +586,12 @@ pub struct AppState {
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
     kept: crate::notify::KeptNotifier,
+    /// The tray icon (ADR 0757).
+    tray: std::rc::Rc<dyn crate::tray::SystemTray>,
+    /// The tray of a start without the tray icon of the system.
+    kept_tray: crate::tray::KeptTray,
+    /// The state that the tray was told last.
+    tray_shown: Option<crate::tray::TrayState>,
     /// The main window is the active window of the system.
     window_active: bool,
     /// The call window is the active window of the system.
@@ -658,6 +676,7 @@ impl AppState {
             }
         };
         let ringer = junto_media::audio::ring::RingPlayer::new(media.host.clone());
+        let sounds = junto_media::audio::sounds::SoundPlayer::new(media.host.clone());
         let calls = Calls::new(client.clone(), media);
         if voice_failed.is_some() {
             // The settings of the person were not read, and the defaults send an open
@@ -789,6 +808,7 @@ impl AppState {
             ..Known::default()
         };
         let kept = crate::notify::KeptNotifier::default();
+        let kept_tray = crate::tray::KeptTray::default();
         let call_window_settings =
             junto_client_core::call_window::CallWindowStore::new(client.data_dir().clone())
                 .load()
@@ -801,6 +821,8 @@ impl AppState {
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
             ringer,
+            sounds,
+            heard: call_sounds::Heard::default(),
             client,
             calls,
             voice_failed,
@@ -874,6 +896,9 @@ impl AppState {
             moderation_asks: 0,
             notifier: std::rc::Rc::new(kept.clone()),
             kept,
+            tray: std::rc::Rc::new(kept_tray.clone()),
+            kept_tray,
+            tray_shown: None,
             window_active: false,
             call_window_active: false,
             call_window_notices: false,
@@ -1112,6 +1137,60 @@ impl AppState {
 
     pub fn set_hide_without_video(&mut self, hide: bool, cx: &mut Context<Self>) {
         self.change_voice(cx, move |voice| voice.hide_people_without_video = hide);
+    }
+
+    /// Plays the tones of call events on another host than the sound of the calls.
+    #[cfg(feature = "test-support")]
+    pub fn use_sounds_host(&mut self, host: std::sync::Arc<dyn junto_media::audio::AudioHost>) {
+        self.sounds = junto_media::audio::sounds::SoundPlayer::new(host);
+    }
+
+    /// Turns the short tones of the events of a call on or off (ADR 0707).
+    pub fn set_call_sounds(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| voice.call_sounds = on);
+    }
+
+    /// Plays the tones of the change of the call of this device since the last change
+    /// (ADR 0707).
+    fn play_call_sounds(&mut self) {
+        let calls = &self.known.media.calls;
+        let model = calls
+            .call
+            .as_ref()
+            .and_then(|call| self.client.server(call.target.server_id))
+            .and_then(|server| server.live().view().model);
+        let participants = calls
+            .call
+            .as_ref()
+            .zip(model.as_deref())
+            .map(|(call, model)| {
+                model
+                    .call_at(&call.target.place)
+                    .map(|listed| listed.participants.as_slice())
+                    .unwrap_or_default()
+            });
+        let next = call_sounds::heard(
+            calls,
+            participants,
+            model.as_deref().map(|model| model.account.id),
+        );
+        let before = std::mem::replace(&mut self.heard, next);
+        let played = call_sounds::sounds(&before, &self.heard, self.known.media.voice.call_sounds);
+        let device = self
+            .heard
+            .output
+            .as_ref()
+            .or(before.output.as_ref())
+            .cloned();
+        let device = device.or_else(|| self.chosen_output());
+        for sound in played {
+            self.sounds.play(sound, device.as_ref());
+        }
+    }
+
+    /// The output device that the person chose, which a call and the tones use.
+    fn chosen_output(&self) -> Option<DeviceId> {
+        self.known.media.voice.output_device.clone().map(DeviceId)
     }
 
     /// The server and the voice channel of the call of this device.
@@ -2203,6 +2282,7 @@ impl AppState {
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.reconcile_direct(cx);
+        self.play_call_sounds();
         let servers = self.client.servers();
         let ids: HashSet<ServerId> = servers.iter().map(ServerHandle::id).collect();
         self.watchers.retain(|id, _| ids.contains(id));
@@ -2371,6 +2451,7 @@ impl AppState {
         self.follow_jump(shown);
         self.follow_result_jump(shown);
         self.tell_alerts(&snapshots, shown, call_window, cx);
+        self.follow_tray();
         self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();

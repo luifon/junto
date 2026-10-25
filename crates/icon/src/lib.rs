@@ -42,6 +42,53 @@ pub const WINDOW: u32 = 64;
 /// The side of the picture that a notification of the client shows on Windows.
 pub const NOTIFICATION: u32 = 256;
 
+/// The mark of a call state that a tray picture draws over the application icon (ADR 0757).
+/// Each source is a picture of 1024 by 1024 with the mark in the lower right corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// In a call: a green disc.
+    Call,
+    /// In a call with the microphone closed: a red disc with a crossed microphone.
+    Muted,
+    /// In a call with the sound off: a red disc with crossed headphones.
+    SoundOff,
+}
+
+impl Mark {
+    pub const ALL: [Mark; 3] = [Mark::Call, Mark::Muted, Mark::SoundOff];
+
+    pub fn svg(self) -> &'static str {
+        match self {
+            Mark::Call => include_str!("../../../packaging/icon/marks/call.svg"),
+            Mark::Muted => include_str!("../../../packaging/icon/marks/muted.svg"),
+            Mark::SoundOff => include_str!("../../../packaging/icon/marks/sound-off.svg"),
+        }
+    }
+
+    /// The name of the mark in the names of files.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mark::Call => "call",
+            Mark::Muted => "muted",
+            Mark::SoundOff => "sound-off",
+        }
+    }
+}
+
+/// The sides of the tray pictures of Windows and Linux: the small icon of Windows at 100, 125,
+/// 150, 200 and 300 % of scale, and the sizes that Linux status areas ask for.
+pub const TRAY: [u32; 6] = [16, 20, 22, 24, 32, 48];
+
+/// The side of the tray picture of macOS: 18 points of the menu bar at 2x.
+pub const MENU_BAR: u32 = 36;
+
+/// The side of the body of the icon in the source, and the margin of the macOS icon grid
+/// around it.
+#[cfg(feature = "render")]
+const BODY: f32 = 824.0;
+#[cfg(feature = "render")]
+const MARGIN: f32 = 100.0;
+
 /// The largest picture that this crate renders: the largest entry of the macOS icon file.
 pub const LARGEST: u32 = 1024;
 
@@ -102,8 +149,34 @@ mod renderer {
         Ok(pixmap)
     }
 
-    pub fn render(size: u32) -> Result<Picture, Error> {
-        let pixmap = pixmap(size)?;
+    /// The body of the icon fills the picture without the margin and the shadow of the macOS
+    /// icon grid, and the mark is drawn over it.
+    fn tray_pixmap(mark: Option<super::Mark>, size: u32) -> Result<Pixmap, Error> {
+        if !(1..=LARGEST).contains(&size) {
+            return Err(Error::Size(size));
+        }
+        let tree = usvg::Tree::from_str(super::SVG, &usvg::Options::default())?;
+        let mut pixmap = Pixmap::new(size, size).ok_or(Error::Size(size))?;
+        let scale = size as f32 / super::BODY;
+        let shift = -super::MARGIN * scale;
+        resvg::render(
+            &tree,
+            Transform::from_row(scale, 0.0, 0.0, scale, shift, shift),
+            &mut pixmap.as_mut(),
+        );
+        if let Some(mark) = mark {
+            let tree = usvg::Tree::from_str(mark.svg(), &usvg::Options::default())?;
+            let scale = size as f32 / tree.size().width();
+            resvg::render(
+                &tree,
+                Transform::from_scale(scale, scale),
+                &mut pixmap.as_mut(),
+            );
+        }
+        Ok(pixmap)
+    }
+
+    fn straight(pixmap: &Pixmap, size: u32) -> Picture {
         let rgba = pixmap
             .pixels()
             .iter()
@@ -112,7 +185,21 @@ mod renderer {
                 [color.red(), color.green(), color.blue(), color.alpha()]
             })
             .collect();
-        Ok(Picture { size, rgba })
+        Picture { size, rgba }
+    }
+
+    pub fn render(size: u32) -> Result<Picture, Error> {
+        Ok(straight(&pixmap(size)?, size))
+    }
+
+    pub fn tray(mark: Option<super::Mark>, size: u32) -> Result<Picture, Error> {
+        Ok(straight(&tray_pixmap(mark, size)?, size))
+    }
+
+    pub fn tray_png(mark: Option<super::Mark>, size: u32) -> Result<Vec<u8>, Error> {
+        tray_pixmap(mark, size)?
+            .encode_png()
+            .map_err(|error| Error::Png(size, error.to_string()))
     }
 
     pub fn png(size: u32) -> Result<Vec<u8>, Error> {
@@ -138,6 +225,14 @@ mod renderer {
         Err(Error::NoRenderer)
     }
 
+    pub fn tray(_: Option<super::Mark>, _: u32) -> Result<Picture, Error> {
+        Err(Error::NoRenderer)
+    }
+
+    pub fn tray_png(_: Option<super::Mark>, _: u32) -> Result<Vec<u8>, Error> {
+        Err(Error::NoRenderer)
+    }
+
     pub fn premultiplied(_: u32) -> Result<Vec<u8>, Error> {
         Err(Error::NoRenderer)
     }
@@ -151,6 +246,17 @@ pub fn render(size: u32) -> Result<Picture, Error> {
 /// The icon rendered at `size` by `size` pixels, as a PNG picture.
 pub fn png(size: u32) -> Result<Vec<u8>, Error> {
     renderer::png(size)
+}
+
+/// The tray picture of `size` by `size` pixels: the body of the icon, with the mark of a call
+/// state in a call (ADR 0757).
+pub fn tray(mark: Option<Mark>, size: u32) -> Result<Picture, Error> {
+    renderer::tray(mark, size)
+}
+
+/// The tray picture of [`tray`] as a PNG picture.
+pub fn tray_png(mark: Option<Mark>, size: u32) -> Result<Vec<u8>, Error> {
+    renderer::tray_png(mark, size)
 }
 
 /// The macOS icon file: an entry for each line of [`ICNS`].

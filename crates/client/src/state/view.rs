@@ -635,6 +635,8 @@ pub struct ServerRow {
     /// What of it no listed workspace shows: the direct conversations, and every place
     /// of a server without a listed workspace. The head of the server shows its sign.
     pub head_unread: Unread,
+    /// The join requests that wait for a decision of the person (ADR 0761).
+    pub waiting_join_requests: usize,
     pub workspaces: Vec<WorkspaceRow>,
 }
 
@@ -3586,6 +3588,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     .as_ref()
                     .map(|(model, unreads)| head_unread(model, unreads))
                     .unwrap_or_default(),
+                waiting_join_requests: unreads.as_ref().map_or(0, |(model, _)| {
+                    super::admin::view::waiting_join_requests(model)
+                }),
                 workspaces: unreads
                     .as_ref()
                     .map(|(model, unreads)| {

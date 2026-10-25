@@ -27,7 +27,8 @@ use crate::api::{
     server_info,
 };
 use crate::book::{
-    BookError, ConnectionMode, EntryKey, Membership, Owner, ProfileSync, ServerBook, ServerEntry,
+    BookError, ConnectionMode, EntryKey, KEPT_KEY_DAYS, Membership, Owner, ProfileSync, ServerBook,
+    ServerEntry,
 };
 use crate::events::{ConnectionLevel, EventStreams, StreamTarget};
 use crate::flow::access::{
@@ -192,6 +193,16 @@ impl Client {
         let keys = options
             .key_store
             .unwrap_or_else(|| Arc::new(FileKeyStore::new(data_dir.clone())));
+        // The kept keys of removed servers whose join request has ended are deleted
+        // (ADR 0712).
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        if let Err(error) = book.discard_ended_kept_keys(now, |server_id| {
+            keys.remove(server_id)
+                .inspect_err(|error| tracing::warn!(%error, "a kept key was not deleted"))
+                .is_ok()
+        }) {
+            tracing::warn!(%error, "the kept keys were not read");
+        }
         let runtime = match options.runtime {
             Some(runtime) => runtime,
             None => Runtime::current_or_new()?,
@@ -371,10 +382,22 @@ impl Client {
             return Err(BookError::NotSaved { server_id }.into());
         }
         let keys = self.inner.core.keys.clone();
-        let removed = self.inner.core.book.remove(server.key, || match key {
-            KeyAfterRemoval::Removed => keys.remove(server_id).map_err(RemoveError::from),
-            KeyAfterRemoval::Kept => Ok(()),
-        });
+        let removed = match key {
+            KeyAfterRemoval::Removed => self.inner.core.book.remove(server.key, || {
+                keys.remove(server_id).map_err(RemoveError::from)
+            }),
+            // The book records the kept key, and a later start deletes it when its join
+            // request has ended (ADR 0712).
+            KeyAfterRemoval::Kept => {
+                let until =
+                    OffsetDateTime::now_utc().unix_timestamp() + KEPT_KEY_DAYS * 24 * 60 * 60;
+                self.inner
+                    .core
+                    .book
+                    .remove_keeping_key(server.key, until)
+                    .map_err(RemoveError::from)
+            }
+        };
         if matches!(&removed, Err(RemoveError::Book(BookError::Storage(_)))) {
             return removed.map(|_| ());
         }
@@ -1496,6 +1519,10 @@ impl Server {
             Err(error) if error.code() == Some(ErrorCode::KeyAlreadyRegistered) => {
                 let _ = self.reconcile(&api, &before).await;
                 let _ = self.save();
+                // The device is logged in to the new account: its event stream starts, as
+                // after a login of an action.
+                self.announce_level();
+                self.core.notify();
                 Err(RemoveError::HasAccount)
             }
             Err(_) => Ok(KeyAfterRemoval::Kept),

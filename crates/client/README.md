@@ -307,6 +307,7 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/state/feed.rs` | The derivation of the rows of a message list. |
 | `src/state/notices.rs`, `src/state/search.rs`, `src/state/recorded.rs` | The derivation of the notices with the notification settings and the system notifications, of the search panel, and of the card of a recording with its transcript. |
 | `src/notify.rs` | The interface to the notifications of the system, and on Windows the identity of the notifications (ADR 0742). |
+| `src/tray.rs`, `src/tray/`, `src/state/tray.rs` | The tray icon with the state of the call and its menu: the state and the menu derived from the calls, the kept tray of tests, and the menu bar of macOS, the notification area of Windows and the StatusNotifierItem of Linux (ADR 0757). |
 | `src/shell/title_bar.rs` | The title bar: the headers that act as the title bar on macOS, and the strip with the window buttons on Windows and on a Wayland compositor without server decorations (ADR 0703). |
 | `src/highlight.rs` | The syntax colours of a code block. |
 | `src/emoji.rs` | Which emoji of the table the fonts of the system draw, measured once on the background executor, and the stand-in of one that they do not draw (ADR 0758). |
@@ -399,7 +400,13 @@ Linux system notifications use the session bus's `org.freedesktop.Notifications`
 tools/linux-container.sh cargo test -p junto-client --lib notify::linux::tests
 ```
 
-Application tests and the screenshot tool retain the in-memory notifier. A real desktop daemon's visual presentation and a person's portal interaction require separate manual checks; fake-service and headless tests do not establish those results.
+The Linux tray icon is a StatusNotifierItem with a dbusmenu menu on the same bus (ADR 0757). Its private-bus tests check the registration with a watcher, a watcher that starts later, the properties of the item, the menu and its presses:
+
+```sh
+tools/linux-container.sh cargo test -p junto-client --lib tray::
+```
+
+Application tests and the screenshot tool retain the in-memory notifier and the kept tray. A real desktop daemon's visual presentation and a person's portal interaction require separate manual checks; fake-service and headless tests do not establish those results.
 
 ## macOS bundles and updates
 

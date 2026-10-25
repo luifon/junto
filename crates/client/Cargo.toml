@@ -103,7 +103,8 @@ gpui-base = "=0.7.1"
 # The result of a write on a background thread returns to the interface thread through
 # its one-time channel. gpui uses the same crate.
 futures-channel = "0.3"
-# The reports of the panic hook reach the window through a channel of `futures-channel`.
+# The reports of the panic hook reach the window through a channel of `futures-channel`, and
+# the task on the interface thread takes the presses on the tray menu.
 futures-util = { workspace = true }
 # The addresses of the frames of a panic report with the base of their module (ADR 0757).
 # gpui uses the same crate.
@@ -157,12 +158,9 @@ x11rb = "0.13"
 raw-window-handle = "0.6"
 
 [build-dependencies]
-# The icon of the program on Windows and of its windows on X11 (ADR 0756). The build for
-# macOS renders nothing, so only the builds for Windows and Linux compile the renderer.
-junto-icon = { path = "../icon", default-features = false }
-
-[target.'cfg(any(windows, target_os = "linux"))'.build-dependencies]
-junto-icon = { path = "../icon", features = ["render"] }
+# The icon of the program on Windows and of its windows on X11 (ADR 0756), and the pictures of
+# the tray icon on every system (ADR 0757).
+junto-icon = { path = "../icon" }
 
 [lints]
 workspace = true

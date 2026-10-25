@@ -27,6 +27,7 @@ pub mod book;
 pub mod followed;
 pub mod people;
 pub mod transcripts;
+pub mod tray;
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
@@ -430,9 +431,9 @@ pub const FEWER_INVITATIONS: &str = "Show fewer invitations";
 
 pub fn more_invitations(count: usize) -> String {
     if count == 1 {
-        "1 more invitation".to_owned()
+        "1 earlier invitation".to_owned()
     } else {
-        format!("{count} more invitations")
+        format!("{count} earlier invitations")
     }
 }
 
@@ -959,6 +960,8 @@ pub const NOISE_SUPPRESSION: &str = "Noise suppression";
 pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
+pub const CALL_SOUNDS: &str = "Call sounds";
+pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or leaves your call, when your microphone or sound turns on or off, when a share starts, and when you leave.";
 
 pub fn talk_key(key: TalkKey) -> &'static str {
     match key {
@@ -2128,6 +2131,20 @@ pub fn alert_title(
 /// The title of the system notification of an invitation into a call.
 pub fn invitation_alert(by: Option<&str>, channel: Option<&str>) -> String {
     invitation(by, channel)
+}
+
+/// The title of the system notification of a request to enter the call of the person.
+pub fn entry_request_alert(name: Option<&str>, channel: Option<&str>) -> String {
+    let name = name.unwrap_or(UNKNOWN_PERSON);
+    match channel {
+        Some(channel) => format!("{name} asks to enter {channel}"),
+        None => format!("{name} asks to enter your call"),
+    }
+}
+
+/// The title of the system notification of a join request.
+pub fn join_request_alert(name: &str) -> String {
+    format!("{name} asks to join")
 }
 
 pub const NOTIFICATION_SETTINGS: &str = "Notification settings";

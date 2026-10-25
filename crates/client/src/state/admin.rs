@@ -26,6 +26,7 @@ use junto_client_core::protocol::ids::{
     WorkspaceId, WorkspaceRoleId,
 };
 
+use junto_client_core::protocol::ServerPermission;
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
 pub use recordings::RecordingList;
@@ -567,7 +568,8 @@ impl AppState {
     /// (ADR 0310); for the open notices and the open search, the archived list of each
     /// workspace that a notice or a result names with a channel that is in no channel
     /// list. The notices that the call window shows are those of the server of its call,
-    /// whatever the main window shows (ADR 0742).
+    /// whatever the main window shows (ADR 0742). The join requests of every server whose
+    /// account may decide them, for their count (ADR 0761).
     pub(super) fn archived_readers(
         &self,
         view: &super::view::ShellView,
@@ -579,6 +581,13 @@ impl AppState {
                 wanted.push(key);
             }
         };
+        for server in snapshots {
+            if view::shown(server).is_some_and(|model| {
+                view::holds_server(model, ServerPermission::ApproveJoinRequests)
+            }) {
+                want((server.id, AdminPart::JoinRequests));
+            }
+        }
         let call_notices = self
             .media_calls()
             .call

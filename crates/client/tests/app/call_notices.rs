@@ -214,10 +214,58 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
             .notices()
             .is_some_and(|panel| panel.rows.first().is_some_and(|row| row.read))
     });
+    // Both windows count the notices that stay unread: the notice of the archived channel
+    // at least, and fewer than before.
+    window.until("the main window counts fewer notices", |window| {
+        (1..3).contains(&window.unread_notices()) && window.shows("notices-count")
+    });
+    let unread = window.unread_notices();
+    detached.until("the call window counts as many notices", |window| {
+        window.unread_notices() == unread && window.shows("open-call-notices-count")
+    });
 
     // A tab of the panel shows its pane again.
     detached.click("call-tab-chat");
     assert!(!detached.shows("notices-panel") && detached.shows("call-chat"));
+}
+
+/// Before the state holds the conversation of a direct-message call, the call window has no
+/// panel of the call; its bell still opens the notices of the server (ADR 0772).
+#[gpui::test]
+fn the_bell_of_the_call_window_opens_the_notices_before_the_conversation_exists(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (general, own) = (window.selected_channel(), window.own_account());
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    give_calls(&mut window, call.clone());
+    window.click("detach-call");
+    // The call of this device becomes a direct-message call with an account whose
+    // conversation the state does not hold.
+    let direct = ActiveCall {
+        target: CallTarget {
+            server_id: call.target.server_id,
+            place: CallPlace::direct(own, junto_client_core::protocol::ids::AccountId::generate()),
+        },
+        ..call
+    };
+    give_calls(&mut window, direct);
+    let mut detached = window.call_window();
+    assert!(!detached.shows("call-tab-chat"));
+
+    admin.mention(&world, general, "here, ", own);
+    detached.until("the bell counts the notice", |window| {
+        window.shows("open-call-notices-count")
+    });
+    detached.click("open-call-notices");
+    detached.until("the notices are listed in the call window", |window| {
+        window.shows("notices-panel")
+    });
 }
 
 /// The rules of a system notification count the call window as a window of the
@@ -326,18 +374,20 @@ fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppCo
     let five: Vec<CallInvitation> = (1..=5).map(invitation).collect();
     show(&mut window, five.clone());
 
-    // The three that arrived first are drawn, and a line states the two others.
+    // The three newest are drawn, and a line above them states the two earlier ones.
     let one = bounds_of(&mut window, "call-invitation");
     let all = bounds_of(&mut window, "invitation-cards");
     assert!(all.size.height < one.size.height * 4.0, "{all:?} {one:?}");
     for (index, held) in five.iter().enumerate() {
         assert_eq!(
             window.shows_named(format!("invitation-card:{}", held.id)),
-            index < 3,
+            index >= 2,
             "card {index}"
         );
     }
     assert!(window.shows("invitation-more"));
+    let line = bounds_of(&mut window, "invitation-more");
+    assert!(line.bottom() <= one.top(), "{line:?} {one:?}");
 
     // The cards lie over the main area and over the stage of the call, under the header
     // that lies above the stage, inside the window, also in a window of the least width.
@@ -413,6 +463,63 @@ fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppCo
     assert!(calls.joining.is_none() && calls.outcome.is_none());
     assert!(window.shows("call-invitation"));
     assert_eq!(window.shows("settings-dialog"), dialog);
+}
+
+/// A card of an invitation in a call window of 480 pixels lies inside the window, under its
+/// header, with both buttons inside the card (ADR 0739).
+#[gpui::test]
+fn a_card_of_an_invitation_fits_a_narrow_call_window(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let daily = window.selected_channel();
+    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let target = call.target;
+    give_calls(&mut window, call);
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    detached.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(480.0), gpui::px(480.0))));
+    let (own, ada) = (window.own_account(), admin.handle.account().unwrap());
+    let now = time::OffsetDateTime::now_utc();
+    let invitation = CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        place: CallPlace::Channel {
+            workspace_id: match target.place {
+                CallPlace::Channel { workspace_id, .. } => workspace_id,
+                CallPlace::Direct { .. } => unreachable!("a voice channel"),
+            },
+            channel_id: daily,
+        },
+        account_id: own,
+        invited_by: ada,
+        created_at: now,
+        expires_at: now + time::Duration::hours(1),
+    };
+    let state = window.state.clone();
+    state.update(&mut window.cx, |state, cx| {
+        state.show_invitations_fixture(target.server_id, vec![invitation], cx);
+    });
+    detached.settle();
+
+    let card = bounds_of(&mut detached, "call-invitation");
+    let size = detached.cx.update(|window, _| window.viewport_size());
+    assert!(
+        card.left() >= gpui::px(0.0) && card.right() <= size.width && card.bottom() <= size.height,
+        "{card:?} {size:?}"
+    );
+    for button in ["invitation-join", "invitation-decline"] {
+        let drawn = bounds_of(&mut detached, button);
+        assert!(
+            drawn.left() >= card.left() && drawn.right() <= card.right(),
+            "{button} {drawn:?} {card:?}"
+        );
+    }
+    let header = bounds_of(&mut detached, "open-call-notices");
+    assert!(card.top() >= header.bottom(), "{card:?} {header:?}");
 }
 
 fn press_events(position: gpui::Point<gpui::Pixels>) -> (gpui::MouseDownEvent, gpui::MouseUpEvent) {

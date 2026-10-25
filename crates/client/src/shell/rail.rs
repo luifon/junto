@@ -14,8 +14,8 @@ use crate::state::view::{ServerRow, ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Band, BandKind, Button, ButtonKind, Field, FieldKind, Menu, ScrollArea, StatusLine,
-    StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
+    Avatar, Band, BandKind, Button, ButtonKind, CornerCount, Field, FieldKind, Menu, ScrollArea,
+    StatusLine, StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
 };
 
 /// The line under the name of a server: an icon and a text for every state that is not
@@ -358,6 +358,7 @@ impl Shell {
                     )
                     .child(line),
             )
+            .children(self.render_waiting_sign(index, row, cx))
             // What the server holds unread that no row of a workspace shows.
             .children(super::book::head_sign(row, index, cx));
         let workspaces = row
@@ -559,6 +560,19 @@ impl Shell {
                         .border_color(Hsla::from(colors.basalt))
                         .bg(Hsla::from(colors.terracotta))
                         .debug_selector(move || format!("server-unread-{index}")),
+                )
+            })
+            .when(row.waiting_join_requests > 0, |icon| {
+                // The join requests that wait for the person: their count at the lower
+                // corner of the avatar.
+                let waiting = row.waiting_join_requests;
+                icon.child(
+                    div()
+                        .absolute()
+                        .right(u(4.0))
+                        .bottom(u(1.0))
+                        .debug_selector(move || format!("server-waiting-{index}"))
+                        .child(CornerCount::new(text::unread_count(waiting as u64))),
                 )
             })
             .when(status_line(row).is_some(), |icon| {

@@ -11,19 +11,20 @@ use crate::address::ServerAddress;
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 5;
+pub const BOOK_FORMAT_VERSION: u32 = 6;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
-    migrations: &[unchanged, unchanged, unchanged, unchanged],
+    migrations: &[unchanged, unchanged, unchanged, unchanged, unchanged],
     limit: 4 * 1024 * 1024,
 };
 
 /// Version 2 added the state `refused` of the profile preset, version 3 the moderation
 /// notices that the person put away, version 4 the logout of the person, and version 5 the
-/// memberships `inactive` and `deleted` (ADR 0121). Every book of an earlier version is a
+/// memberships `inactive` and `deleted` (ADR 0121), version 6 the kept keys of removed
+/// servers (ADR 0712). Every book of an earlier version is a
 /// book of the next one, with no notice put away and no logout; the version tells an older
 /// client that it cannot read the file, so that it does not drop the field or the entry
 /// when it writes the book.
@@ -270,6 +271,26 @@ fn known_versions(reported: &[u32]) -> Vec<u32> {
 struct BookFile {
     format_version: u32,
     servers: Vec<ServerEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    kept_keys: Vec<KeptKey>,
+}
+
+/// How long the key of a removed server whose join request may still wait is kept: the
+/// lifetime of a join request on the server (7 days, ADR 0111) and one day for a clock that
+/// differs.
+pub const KEPT_KEY_DAYS: i64 = 8;
+/// How many kept keys the book records at most.
+const MOST_KEPT_KEYS: usize = 64;
+
+/// The key file of a server that was removed while a join request of this device could
+/// still wait and the server did not confirm its withdrawal (ADR 0712). The key stays so
+/// that an approval cannot make an account for a key that the device no longer holds; it
+/// is deleted when its time ends and the server was not added again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptKey {
+    pub server_id: ServerId,
+    /// The moment after which the key is deleted, in seconds since 1970.
+    pub until_unix: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -303,9 +324,22 @@ impl ServerBook {
     }
 
     pub fn entries(&self) -> Result<Vec<ServerEntry>, StorageError> {
+        Ok(self.file()?.servers)
+    }
+
+    /// The kept keys of removed servers (ADR 0712).
+    pub fn kept_keys(&self) -> Result<Vec<KeptKey>, StorageError> {
+        Ok(self.file()?.kept_keys)
+    }
+
+    fn file(&self) -> Result<BookFile, StorageError> {
         let files = self.data_dir.files();
         let Some(file) = BOOK.load::<BookFile>(files)? else {
-            return Ok(Vec::new());
+            return Ok(BookFile {
+                format_version: BOOK_FORMAT_VERSION,
+                servers: Vec::new(),
+                kept_keys: Vec::new(),
+            });
         };
         let corrupted = |detail: String| BOOK.corrupted(files, detail);
         let mut ids = BTreeSet::new();
@@ -319,7 +353,10 @@ impl ServerBook {
                 )));
             }
         }
-        Ok(file.servers)
+        if file.kept_keys.len() > MOST_KEPT_KEYS {
+            return Err(corrupted("too many kept keys".to_owned()));
+        }
+        Ok(file)
     }
 
     pub fn entry(&self, server_id: ServerId) -> Result<Option<ServerEntry>, StorageError> {
@@ -343,7 +380,8 @@ impl ServerBook {
         mut entry: ServerEntry,
         check: impl FnOnce() -> Result<(), E>,
     ) -> Result<ServerEntry, E> {
-        self.change(|servers| {
+        let _lock = self.data_dir.lock().map_err(BookError::from)?;
+        let added = self.change::<_, E>(|servers| {
             for saved in servers.iter() {
                 if saved.server_id == entry.server_id {
                     return Err(BookError::AlreadySaved {
@@ -364,7 +402,14 @@ impl ServerBook {
             entry.generation = new_generation().map_err(BookError::from)?;
             servers.push(entry.clone());
             Ok(entry)
-        })
+        })?;
+        // The server uses its kept key again: it is no longer only kept.
+        let server_id = added.server_id;
+        self.change_file(|file| {
+            file.kept_keys.retain(|kept| kept.server_id != server_id);
+            Ok::<(), BookError>(())
+        })?;
+        Ok(added)
     }
 
     /// Removes one entry and then runs `then`, both under the lock of the book. An entry
@@ -381,6 +426,63 @@ impl ServerBook {
         })?;
         then()?;
         Ok(removed)
+    }
+
+    /// Like [`ServerBook::remove`], and records that the key of the server stays until
+    /// `until_unix` (ADR 0712). The oldest record gives way when the book holds
+    /// [`MOST_KEPT_KEYS`]; its key then stays without an end, as before the record existed.
+    pub fn remove_keeping_key(
+        &self,
+        key: EntryKey,
+        until_unix: i64,
+    ) -> Result<ServerEntry, BookError> {
+        self.change_file(|file| {
+            let index = position(&file.servers, key)?;
+            let removed = file.servers.remove(index);
+            file.kept_keys
+                .retain(|kept| kept.server_id != key.server_id);
+            if file.kept_keys.len() >= MOST_KEPT_KEYS {
+                file.kept_keys.remove(0);
+            }
+            file.kept_keys.push(KeptKey {
+                server_id: key.server_id,
+                until_unix,
+            });
+            Ok(removed)
+        })
+    }
+
+    /// Deletes each kept key whose time ended at `now_unix` with `delete`, and its record,
+    /// under the lock of the book. A key of a server that the book holds again is not
+    /// deleted. A record whose deletion failed stays, for the next start. Returns the
+    /// servers whose keys were deleted.
+    pub fn discard_ended_kept_keys(
+        &self,
+        now_unix: i64,
+        mut delete: impl FnMut(ServerId) -> bool,
+    ) -> Result<Vec<ServerId>, BookError> {
+        self.change_file(|file| {
+            let mut deleted = Vec::new();
+            let servers = &file.servers;
+            file.kept_keys.retain(|kept| {
+                if servers
+                    .iter()
+                    .any(|entry| entry.server_id == kept.server_id)
+                {
+                    return false;
+                }
+                if kept.until_unix > now_unix {
+                    return true;
+                }
+                if delete(kept.server_id) {
+                    deleted.push(kept.server_id);
+                    false
+                } else {
+                    true
+                }
+            });
+            Ok(deleted)
+        })
     }
 
     /// Changes one entry and returns its new content. The identifier, the generation and
@@ -453,23 +555,27 @@ impl ServerBook {
         &self,
         change: impl FnOnce(&mut Vec<ServerEntry>) -> Result<R, E>,
     ) -> Result<R, E> {
+        self.change_file(|file| change(&mut file.servers))
+    }
+
+    fn change_file<R, E: From<BookError>>(
+        &self,
+        change: impl FnOnce(&mut BookFile) -> Result<R, E>,
+    ) -> Result<R, E> {
         let _lock = self.data_dir.lock().map_err(BookError::from)?;
-        let mut servers = self.entries().map_err(BookError::from)?;
-        let before = servers.clone();
-        let result = change(&mut servers)?;
-        if servers == before {
+        let mut file = self.file().map_err(BookError::from)?;
+        let (servers, kept_keys) = (file.servers.clone(), file.kept_keys.clone());
+        let result = change(&mut file)?;
+        if file.servers == servers && file.kept_keys == kept_keys {
             return Ok(result);
         }
         let files = self.data_dir.files();
-        for entry in &servers {
+        for entry in &file.servers {
             entry
                 .check()
                 .map_err(|detail| BookError::from(BOOK.corrupted(files, detail)))?;
         }
-        let file = BookFile {
-            format_version: BOOK_FORMAT_VERSION,
-            servers,
-        };
+        file.format_version = BOOK_FORMAT_VERSION;
         BOOK.store(files, &file).map_err(BookError::from)?;
         Ok(result)
     }
@@ -635,7 +741,7 @@ mod tests {
         .unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 5);
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
         assert_eq!(stored["servers"][0]["membership"]["state"], "inactive");
         assert_eq!(stored["servers"][1]["membership"]["state"], "deleted");
         let entries = book.entries().unwrap();
@@ -1146,13 +1252,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":6,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":7,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 6,
-                supported: 5,
+                found: 7,
+                supported: 6,
                 ..
             })
         ));

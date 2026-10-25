@@ -10,15 +10,25 @@ use super::{StyleExt, icon};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
-/// A count on terracotta, such as the number of mentions of a channel.
+/// A count on terracotta, such as the number of mentions of a channel, with the icon of
+/// what it counts when the place holds more than one kind of count.
 #[derive(IntoElement)]
 pub struct Badge {
     text: SharedString,
+    icon: Option<Icon>,
 }
 
 impl Badge {
     pub fn new(text: impl Into<SharedString>) -> Self {
-        Self { text: text.into() }
+        Self {
+            text: text.into(),
+            icon: None,
+        }
+    }
+
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 }
 
@@ -30,6 +40,7 @@ impl RenderOnce for Badge {
             .flex_none()
             .items_center()
             .justify_center()
+            .gap(u(3.0))
             .h(u(18.0))
             .min_w(u(28.0))
             .px(u(5.0))
@@ -38,6 +49,9 @@ impl RenderOnce for Badge {
             .typeface(theme.types.small_strong, &theme)
             .line_height(u(18.0))
             .ink(theme.colors.on_terracotta)
+            .when_some(self.icon, |badge, shown| {
+                badge.child(icon(shown, 12.0, theme.colors.on_terracotta))
+            })
             .child(self.text)
     }
 }

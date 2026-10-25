@@ -329,6 +329,57 @@ fn removing_a_waiting_server_withdraws_its_request(cx: &mut TestAppContext) {
     );
 }
 
+/// A removal that meets an approval which the window has not seen yet: the withdrawal is
+/// refused because the key has an account, the server stays without a failure sentence, and
+/// the window opens the account (ADR 0712).
+#[gpui::test]
+fn a_removal_that_meets_an_approval_keeps_the_server_and_tells_no_failure(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&proxy.address());
+    window.click("request-access");
+    window.until("the request waits", |window| window.shows("cancel-request"));
+    window.click("close-join");
+
+    // The withdrawal of the removal waits at the proxy while the request is approved.
+    proxy.hold_request("POST", "/join-requests/withdrawal");
+    let server_id = window.view().servers[0].id;
+    window.click("server-menu-button");
+    window.click("menu-remove-server");
+    window.click("confirm");
+    window.until("the withdrawal waits", |_| {
+        proxy
+            .seen("/api/v1/join-requests/withdrawal")
+            .iter()
+            .any(|seen| seen.answer.is_none())
+    });
+    let requests = world.run(admin.handle.api().join_requests()).unwrap();
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .approve_join_request(requests[0].id, &ApproveJoinRequest::default()),
+        )
+        .unwrap();
+    proxy.release_requests();
+
+    window.until("the removal has its answer", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            !state.pending().removing.contains(&server_id)
+        })
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.pending().remove_failed.is_empty()
+    }));
+    assert_eq!(window.view().servers.len(), 1);
+    window.until_ready();
+}
+
 #[gpui::test]
 fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut TestAppContext) {
     let world = World::new();
