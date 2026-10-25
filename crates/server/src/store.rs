@@ -5,10 +5,13 @@ use junto_protocol::account::{
     AccountProfile, AccountStatus, AccountSummary, Avatar, Departure, Device, DeviceOrigin,
     ImageType, OwnAccount, RecoveryNotice,
 };
+use junto_protocol::audit::AuditEvent;
 use junto_protocol::auth::SessionCreated;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
-use junto_protocol::ids::{AccountId, DeviceId, RecoveryId, ServerRoleId, WorkspaceId};
+use junto_protocol::ids::{
+    AccountId, DeviceId, JoinRequestId, RecoveryId, ServerRoleId, WorkspaceId,
+};
 use junto_protocol::keys::PublicKey;
 use junto_protocol::secret::SessionToken;
 use junto_protocol::structure::WorkspaceMember;
@@ -129,6 +132,41 @@ pub async fn server_role_ids_of(
     .await?)
 }
 
+/// Ends the waiting join request of `public_key` as withdrawn: the device withdrew it, or
+/// the key has an account by another way. Approvers get `join_request_withdrawn`.
+pub async fn end_waiting_join_request(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    public_key: &PublicKey,
+) -> ApiResult<Option<JoinRequestId>> {
+    let ended: Option<JoinRequestId> = sqlx::query_scalar(
+        "update join_requests set state = 'withdrawn', decided_at = $2
+         where public_key = $1 and state = 'pending' and expires_at > $2
+         returning id",
+    )
+    .bind(public_key.as_bytes().as_slice())
+    .bind(now)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some(join_request_id) = ended {
+        crate::audit::record(
+            connection,
+            now,
+            None,
+            crate::audit::About::Server,
+            &AuditEvent::JoinRequestWithdrawn { join_request_id },
+        )
+        .await?;
+        events::publish(
+            connection,
+            now,
+            &Event::JoinRequestWithdrawn { join_request_id },
+        )
+        .await?;
+    }
+    Ok(ended)
+}
+
 pub async fn create_device(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -152,6 +190,9 @@ pub async fn create_device(
     .await;
     match inserted {
         Ok(_) => {
+            if origin != DeviceOrigin::JoinRequest {
+                end_waiting_join_request(connection, now, public_key).await?;
+            }
             sqlx::query(
                 "delete from moderation_notice_devices where public_key=$1 and account_id<>$2",
             )

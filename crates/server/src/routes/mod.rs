@@ -251,6 +251,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(invites::request_to_join, invites::list_join_requests)
     });
     add(&mut router, || routes!(invites::join_request_status));
+    add(&mut router, || routes!(invites::withdraw_join_request));
     add(&mut router, || routes!(invites::approve_join_request));
     add(&mut router, || routes!(invites::deny_join_request));
     add(&mut router, || routes!(moderation::list_accounts));

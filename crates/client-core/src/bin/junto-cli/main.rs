@@ -573,7 +573,10 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "approve-all" => approve_all(&client, &arguments).await,
         "remove" => {
             let server = pick(&client, &arguments)?;
-            client.remove_server(server.id()).map_err(failed)?;
+            client
+                .remove_server_when_free(server.id())
+                .await
+                .map_err(failed)?;
             println!("removed {}", server.entry().address);
             Ok(())
         }

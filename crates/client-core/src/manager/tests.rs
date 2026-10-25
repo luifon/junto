@@ -542,6 +542,143 @@ async fn waiting_goes_on_after_an_unknown_error_code_of_a_failing_or_limiting_se
     ));
 }
 
+fn ask(name: &str) -> AccessAction {
+    AccessAction::RequestAccess {
+        name: name.to_owned(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_second_press_while_the_request_is_sent_makes_no_second_request() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    let answer = server.hold_answer("/join-requests");
+    let first = handle.dispatch_when_free(ask("Grace"));
+    let second = handle.dispatch_when_free(ask("Grace"));
+    while server.count("/join-requests") == 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.dispatch(ask("Grace")).await,
+        Err(FlowError::Busy)
+    ));
+    answer.add_permits(1);
+    first.await.unwrap();
+    assert!(matches!(second.await, Err(FlowError::NotAvailable)));
+    assert_eq!(server.count("/join-requests"), 1);
+    let key = handle.device_public_key().unwrap();
+    assert_eq!(server.waiting_requests().len(), 1);
+    assert_eq!(server.waiting_requests()[0].1, key);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_request_is_withdrawn_before_the_key_is_discarded() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let first_key = handle.device_public_key().unwrap();
+    assert_eq!(server.waiting_requests().len(), 1);
+
+    handle.dispatch(AccessAction::ForgetAccount).await.unwrap();
+    assert!(server.waiting_requests().is_empty());
+    assert_eq!(server.count("/join-requests/withdrawal"), 1);
+    assert!(!device.client.data_dir().key_file(handle.id()).exists());
+    assert_eq!(
+        handle.access().state,
+        AccessState::NoAccount { notice: None }
+    );
+
+    // Asking again makes a new key and one waiting request: no approval can make an
+    // account for the discarded key.
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let second_key = handle.device_public_key().unwrap();
+    assert_ne!(second_key, first_key);
+    let waiting = server.waiting_requests();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].1, second_key);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_withdrawal_that_the_server_does_not_confirm_keeps_the_request_and_the_key() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let key = handle.device_public_key().unwrap();
+    let waiting = handle.access().state;
+
+    server.set_down(true);
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    server.set_down(false);
+    assert_eq!(handle.access().state, waiting);
+    assert_eq!(handle.device_public_key().unwrap(), key);
+    assert_eq!(server.waiting_requests().len(), 1);
+
+    // A request approved while the person cancels it gives the account to this device.
+    server.decide_request(key, true);
+    assert!(matches!(
+        handle.dispatch(AccessAction::ForgetAccount).await,
+        Err(FlowError::NotAvailable)
+    ));
+    assert_eq!(server.account_of(key), Some(logged_in(&handle)));
+    assert_eq!(handle.device_public_key().unwrap(), key);
+    assert_eq!(server.account_count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn removing_a_waiting_server_withdraws_its_request_or_keeps_its_key() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    assert!(server.waiting_requests().is_empty());
+    assert!(!device.client.data_dir().key_file(handle.id()).exists());
+
+    // Without an answer of the server the entry goes and the key stays. The server added
+    // again finds the same request with that key, and a second request returns it.
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let key = handle.device_public_key().unwrap();
+    let request = server.waiting_requests()[0].0;
+    server.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    assert!(device.client.servers().is_empty());
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+    server.set_down(false);
+
+    let again = device.add("acme").await;
+    again.dispatch(AccessAction::Check).await.unwrap();
+    assert_eq!(
+        again.access().state,
+        AccessState::WaitingForApproval {
+            join_request_id: Some(request),
+            name: String::new(),
+        }
+    );
+    assert_eq!(again.device_public_key().unwrap(), key);
+    assert_eq!(server.waiting_requests(), [(request, key)]);
+
+    // A removal that cannot wait for the server keeps the key too.
+    device.client.remove_server(again.id()).unwrap();
+    assert!(device.client.data_dir().key_file(again.id()).exists());
+    assert_eq!(server.waiting_requests().len(), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_request_that_the_server_already_holds_is_found_again() {
     let network = Arc::new(Network::default());

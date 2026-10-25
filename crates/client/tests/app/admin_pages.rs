@@ -1167,6 +1167,37 @@ fn the_owner_approves_one_join_request_and_denies_another_in_the_window(cx: &mut
 }
 
 #[gpui::test]
+fn two_waiting_requests_with_one_name_are_marked_in_the_window(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-requests", |window| {
+        server_page!(window, JoinRequests).is_some()
+    });
+    let (_first, _linus, first) = asks_to_join(&world, &server, "Linus");
+    awaited(&mut window, "the first request has its row", |window| {
+        request_line(window, first).filter(|_| window.shows(sel("request-row", first)))
+    });
+    assert!(!window.shows("request-same-name"));
+
+    // A second device key with the same name: both rows say so.
+    let (_second, _again, second) = asks_to_join(&world, &server, "Linus");
+    let marked = awaited(&mut window, "both rows are marked", |window| {
+        let both = request_line(window, first).zip(request_line(window, second));
+        both.filter(|(one, two)| one.same_name && two.same_name)
+    });
+    assert_eq!(
+        (marked.0.name.as_str(), marked.1.name.as_str()),
+        ("Linus", "Linus")
+    );
+    window.until("the notice is drawn", |window| {
+        window.shows("request-same-name")
+    });
+}
+
+#[gpui::test]
 fn the_owner_hides_a_channel_from_everyone_and_shows_it_again_on_the_permissions_page(
     cx: &mut TestAppContext,
 ) {

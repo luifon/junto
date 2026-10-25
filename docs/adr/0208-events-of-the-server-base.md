@@ -21,7 +21,7 @@ Audiences:
 | `server_role_created`, `server_role_updated` | Accounts with `administrator` |
 | `invite_created`, `invite_used`, `invite_revoked` | Accounts with `create_invites` that created the invite or may see every workspace that it names (ADR 0111) |
 | `invites_of_creator_revoked` | Accounts with `create_invites` |
-| `join_request_created`, `join_request_decided` | Accounts with `approve_join_requests` |
+| `join_request_created`, `join_request_decided`, `join_request_withdrawn` | Accounts with `approve_join_requests` |
 | `workspace_created`, `workspace_updated`, `workspace_member_added`, `workspace_member_removed`, `workspace_member_roles_changed`, `workspace_role_created`, `workspace_role_updated`, `category_created`, `category_updated` | Accounts that may see the workspace |
 | `channel_created`, `channel_updated`, `channel_deleted` | Accounts with `view_channel` in the channel |
 | `channel_override_set` | Accounts with `manage_channel` in the channel |

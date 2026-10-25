@@ -22,7 +22,7 @@ Server identifier:
 
 Challenge:
 
-- A device asks for a challenge with its public key and an operation. The operations are `login`, `claim_owner`, `join`, `request_to_join`, `join_request_status`, `link_device` and `moderation_notices` (ADR 0120).
+- A device asks for a challenge with its public key and an operation. The operations are `login`, `claim_owner`, `join`, `request_to_join`, `join_request_status`, `link_device`, `moderation_notices` (ADR 0120) and `withdraw_join_request` (ADR 0111).
 - The response carries the challenge identifier, the server identifier, the operation, the account identifier (present only for login), the public key, the nonce and the expiry time in whole seconds.
 - The device signs these bytes, built by the client from the fields:
 

@@ -359,6 +359,10 @@ pub enum Event {
         state: JoinRequestState,
         account_id: Option<AccountId>,
     },
+    /// The device withdrew its waiting request, or its key got an account in another way.
+    JoinRequestWithdrawn {
+        join_request_id: JoinRequestId,
+    },
     WorkspaceCreated {
         workspace: Workspace,
     },
@@ -720,6 +724,7 @@ impl Event {
         "invites_of_creator_revoked",
         "join_request_created",
         "join_request_decided",
+        "join_request_withdrawn",
         "workspace_created",
         "workspace_updated",
         "workspace_member_added",
@@ -813,6 +818,7 @@ impl Event {
             Self::InvitesOfCreatorRevoked { .. } => "invites_of_creator_revoked",
             Self::JoinRequestCreated { .. } => "join_request_created",
             Self::JoinRequestDecided { .. } => "join_request_decided",
+            Self::JoinRequestWithdrawn { .. } => "join_request_withdrawn",
             Self::WorkspaceCreated { .. } => "workspace_created",
             Self::WorkspaceUpdated { .. } => "workspace_updated",
             Self::WorkspaceMemberAdded { .. } => "workspace_member_added",
@@ -1207,6 +1213,9 @@ mod tests {
                 join_request_id: JoinRequestId::generate(),
                 state: JoinRequestState::Approved,
                 account_id: Some(account_id),
+            },
+            Event::JoinRequestWithdrawn {
+                join_request_id: JoinRequestId::generate(),
             },
             Event::WorkspaceCreated {
                 workspace: workspace.clone(),

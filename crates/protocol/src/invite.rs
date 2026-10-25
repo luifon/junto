@@ -106,6 +106,13 @@ pub struct JoinRequestStatusQuery {
     pub proof: Proof,
 }
 
+/// Withdraws the waiting join request of the device key that signs the proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WithdrawJoinRequest {
+    pub proof: Proof,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]

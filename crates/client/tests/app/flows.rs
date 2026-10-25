@@ -243,8 +243,17 @@ fn a_cancelled_request_leaves_no_server_in_the_server_book(cx: &mut TestAppConte
     let mut window = open(cx, directory.path());
     assert!(window.view().servers.is_empty());
 
+    // The cancellation withdrew the request on the server, so no approval can make an
+    // account for the key that the device discarded.
+    assert!(
+        world
+            .run(admin.handle.api().join_requests())
+            .unwrap()
+            .is_empty()
+    );
+
     // The same address can be entered again, and the request of before does not hold
-    // the name.
+    // the name. The server holds one request: the new one.
     window.find_server(&server.address());
     window.click("request-access");
     window.until("the second request waits", |window| {
@@ -253,11 +262,70 @@ fn a_cancelled_request_leaves_no_server_in_the_server_book(cx: &mut TestAppConte
             Some(ServerStatus::WaitingForApproval { .. })
         )
     });
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
+    );
+}
+
+#[gpui::test]
+fn two_presses_of_the_request_make_one_request(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&server.address());
+    window.press_as_drawn("request-access");
+    window.press_as_drawn("request-access");
+    window.until("the request waits", |window| {
+        window.shows("cancel-request")
+            && window.status()
+                == Some(ServerStatus::WaitingForApproval {
+                    name: "Luca".to_owned(),
+                })
+    });
+    assert!(!window.shows("request-access"));
+    assert!(window.in_shell(|shell, _, _| shell.join_error().is_none()));
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
+    );
+}
+
+#[gpui::test]
+fn removing_a_waiting_server_withdraws_its_request(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the request waits", |window| window.shows("cancel-request"));
+    window.click("close-join");
+    window.click("server-menu-button");
+    window.click("menu-remove-server");
+    window.click("confirm");
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
     assert!(
-        !world
+        world
             .run(admin.handle.api().join_requests())
             .unwrap()
             .is_empty()
+    );
+
+    // Asking again after the removal makes the one request that waits.
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the second request waits", |window| {
+        window.shows("cancel-request")
+    });
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
     );
 }
 

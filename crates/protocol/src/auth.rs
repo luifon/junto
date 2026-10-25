@@ -19,6 +19,7 @@ pub enum ChallengeOperation {
     JoinRequestStatus,
     LinkDevice,
     ModerationNotices,
+    WithdrawJoinRequest,
 }
 
 impl ChallengeOperation {
@@ -30,6 +31,7 @@ impl ChallengeOperation {
         Self::JoinRequestStatus,
         Self::LinkDevice,
         Self::ModerationNotices,
+        Self::WithdrawJoinRequest,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -41,6 +43,7 @@ impl ChallengeOperation {
             Self::JoinRequestStatus => "join_request_status",
             Self::LinkDevice => "link_device",
             Self::ModerationNotices => "moderation_notices",
+            Self::WithdrawJoinRequest => "withdraw_join_request",
         }
     }
 }

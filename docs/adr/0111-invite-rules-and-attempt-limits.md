@@ -27,12 +27,16 @@ Invites:
 Join requests:
 
 - A join request stores the public key and the name. The list for approvers returns the identifier, the name and the two dates.
-- A request has one of four states: waiting, approved, denied, expired.
+- A request has one of five states: waiting, approved, denied, expired, withdrawn. The state `withdrawn` is stored only: the status route and the events of API version 1 do not carry it (ADR 0206).
 - A waiting request expires after 7 days. An expired request is not in the list for approvers, cannot be approved, and does not count as waiting.
-- One device key has at most one waiting request. A key whose request expired or was denied can ask again; the earlier request stays stored.
+- One device key has at most one waiting request. A second request of a key whose request waits creates nothing and returns the waiting request with the status 200, with its own name and dates; a new request gets 201. Reason: a person who presses the button again, or a client that sends again after a lost answer, must not create a second request, and the client needs no error path for it. Requests of one key at the same time are serialized by the single challenge of the key and operation (ADR 0108) and by the serializable transaction (ADR 0009); the partial unique index on the waiting request of a key stays as the last check.
+- The device withdraws its waiting request with a signed `withdraw_join_request` challenge at `POST /api/v1/join-requests/withdrawal`. The answer is 204 also when no request of the key waits. A key that belongs to an active or banned account gets `key_already_registered`: its request was approved, and the device must keep its key. A withdrawn request is not in the list for approvers and cannot be approved or denied. The approvers get the event `join_request_withdrawn`, and the audit log records `join_request_withdrawn` without an acting account.
+- When a key gets a device of an account in another way (an invite code, the owner code, a device link, a recovery) or an inactive account returns with an invite, its waiting request is withdrawn in the same transaction, with the same event and audit entry. An approval of that request is then refused as `conflict` and not with `key_already_registered`.
+- Reason for the withdrawal: a client that gives up a request (cancel, removal of the server) deletes its key. Before this route the request stayed on the server, the person asked again with a new key, and the approval of both requests made two accounts for one person on one device. The server cannot tell two keys of one device apart, so the device must end its request before it deletes the key.
+- A key whose request expired, was denied or was withdrawn can ask again; the earlier request stays stored. A denial is not a ban: the person can ask again, and each new request waits for a new decision. The limit of attempts per client address and the ceiling of waiting requests bound repeated requests.
 - The server holds at most 200 waiting requests and refuses further ones with the error `join_requests_full`. The count and the new request are one serializable transaction (ADR 0009), so concurrent requests cannot pass the ceiling.
-- Denied and expired requests stay stored as history for 30 days after their expiry time. The maintenance task deletes them then (ADR 0009). Approved requests are kept.
-- The waiting device asks for the result with a signed `join_request_status` challenge (ADR 0108). The result is the state of the newest request of that key. A request of another device does not change it.
+- Denied, expired and withdrawn requests stay stored as history for 30 days after their expiry time. The maintenance task deletes them then (ADR 0009). Approved requests are kept.
+- The waiting device asks for the result with a signed `join_request_status` challenge (ADR 0108). The result is the state of the newest request of that key that was not withdrawn, and `not_found` when there is none. A request of another device does not change it.
 - An approval creates the account and its device from the stored key. The device then logs in.
 - A key that already belongs to an account cannot join or ask to join.
 
@@ -61,6 +65,8 @@ An invite includes `created_by_name`, the creator's current retained display nam
 - Two simultaneous joins with a one-use code create one account; the other gets the error `invite_exhausted`.
 - A change of the default workspace does not change invites that exist.
 - A person whose request expired or was denied can ask again with the same key, and until then the device still gets `expired` or `denied` as its result.
+- One device makes at most one account from its requests: one key has at most one waiting request and one account, and a device withdraws its request before it gives up its key. A device that deletes its key without the withdrawal (an older client, a deleted data directory, a second installation) still makes a second request; the window marks waiting requests that share a name (ADR 0761), and the approver decides.
+- Tests: `joining::a_second_request_of_one_key_returns_the_first_one`, `joining::simultaneous_requests_of_one_key_make_one_request`, `joining::a_withdrawn_request_cannot_be_approved_and_the_key_can_ask_again`, `joining::a_key_that_joins_with_a_code_ends_its_waiting_request` and `maintenance::maintenance_removes_what_has_expired_and_keeps_the_rest` in `crates/server`.
 - 200 waiting requests stop further requests until an approver answers some or they expire.
 - People behind one address share the limit of 20 attempts per 10 minutes.
 - A restart of the server clears the counts of the address limits, the count of wrong signatures included.

@@ -453,6 +453,10 @@ pub struct RequestLine {
     /// In the time zone of the person.
     pub created: OffsetDateTime,
     pub expires: OffsetDateTime,
+    /// Another waiting request has the same name, apart from case and surrounding spaces.
+    /// Each device key makes its own request, so one person with two keys has two
+    /// requests, and approving both makes two accounts (ADR 0111).
+    pub same_name: bool,
 }
 
 /// The join requests that wait.
@@ -754,6 +758,7 @@ pub fn invites(
 pub fn requests(model: &ServerModel, known: &Known) -> RequestsPage {
     RequestsPage {
         requests: Listed::of(&model.admin.join_requests, |requests| {
+            let compared = |name: &str| name.trim().to_lowercase();
             requests
                 .iter()
                 .map(|request| RequestLine {
@@ -761,6 +766,9 @@ pub fn requests(model: &ServerModel, known: &Known) -> RequestsPage {
                     name: request.name.clone(),
                     created: known.zone.local(request.created_at),
                     expires: known.zone.local(request.expires_at),
+                    same_name: requests.iter().any(|other| {
+                        other.id != request.id && compared(&other.name) == compared(&request.name)
+                    }),
                 })
                 .collect()
         }),
@@ -1912,6 +1920,36 @@ mod tests {
         assert_eq!(rows[0].created.hour(), 5);
         assert_eq!(rows[0].expires, time() + Duration::days(7));
         assert_eq!(rows[0].expires.offset(), offset);
+        assert!(rows.iter().all(|row| !row.same_name));
+    }
+
+    #[test]
+    fn requests_with_the_same_name_are_marked() {
+        let scene = scene();
+        let request = |name: &str| JoinRequest {
+            id: JoinRequestId::generate(),
+            name: name.to_owned(),
+            created_at: time(),
+            expires_at: time() + Duration::days(7),
+            returning_account_id: None,
+        };
+        let model = scene.model(AdminModel {
+            join_requests: Collection::Loaded(vec![
+                request("Nina"),
+                request("Otto"),
+                request(" nina "),
+            ]),
+            ..AdminModel::default()
+        });
+        let page = requests(&model, &Known::default());
+        let marked: Vec<bool> = page
+            .requests
+            .loaded()
+            .unwrap()
+            .iter()
+            .map(|row| row.same_name)
+            .collect();
+        assert_eq!(marked, [true, false, true]);
     }
 
     #[test]

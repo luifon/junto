@@ -108,6 +108,7 @@ impl Class {
             | Event::InvitesOfCreatorRevoked { .. }
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
+            | Event::JoinRequestWithdrawn { .. }
             | Event::WorkspaceCreated { .. }
             | Event::WorkspaceUpdated { .. }
             | Event::WorkspaceMemberAdded { .. }
@@ -704,7 +705,9 @@ impl Audience {
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. } => None,
             Event::InvitesOfCreatorRevoked { .. } => permission(ServerPermission::CreateInvites),
-            Event::JoinRequestCreated { .. } | Event::JoinRequestDecided { .. } => {
+            Event::JoinRequestCreated { .. }
+            | Event::JoinRequestDecided { .. }
+            | Event::JoinRequestWithdrawn { .. } => {
                 permission(ServerPermission::ApproveJoinRequests)
             }
             Event::WorkspaceCreated { workspace: changed }

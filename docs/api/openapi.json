@@ -6217,7 +6217,7 @@
         "tags": [
           "joining"
         ],
-        "summary": "Asks to join without a code. The request carries a name and waits for an approval.",
+        "summary": "Asks to join without a code. The request carries a name and waits for an approval. A key\nthat already has a waiting request gets that request again, with the status 200.",
         "operationId": "request_to_join",
         "requestBody": {
           "content": {
@@ -6230,6 +6230,23 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequest"
+                }
+              }
+            }
+          },
           "201": {
             "headers": {
               "junto-event-cursor": {
@@ -6292,6 +6309,47 @@
                 "schema": {
                   "$ref": "#/components/schemas/JoinRequestStatus"
                 }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/join-requests/withdrawal": {
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Withdraws the waiting join request of a device key. The device sends this before it\ndiscards its key, so that no approval makes an account for a key that nobody holds. A key\nwithout a waiting request gets the same answer.",
+        "operationId": "withdraw_join_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawJoinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
               }
             }
           },
@@ -11841,6 +11899,25 @@
           },
           {
             "type": "object",
+            "description": "The device withdrew its waiting request, or its key got an account in another way.",
+            "required": [
+              "join_request_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "join_request_withdrawn"
+                ]
+              },
+              "join_request_id": {
+                "$ref": "#/components/schemas/JoinRequestId"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "account_id",
               "action"
@@ -13919,7 +13996,8 @@
           "request_to_join",
           "join_request_status",
           "link_device",
-          "moderation_notices"
+          "moderation_notices",
+          "withdraw_join_request"
         ]
       },
       "ChangeChannelOverride": {
@@ -19133,6 +19211,18 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "WithdrawJoinRequest": {
+        "type": "object",
+        "description": "Withdraws the waiting join request of the device key that signs the proof.",
+        "required": [
+          "proof"
+        ],
+        "properties": {
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
           }
         }
       },

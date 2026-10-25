@@ -93,6 +93,10 @@ pub enum AuditEvent {
     JoinRequestDenied {
         join_request_id: JoinRequestId,
     },
+    /// The device withdrew its waiting request, or its key got an account in another way.
+    JoinRequestWithdrawn {
+        join_request_id: JoinRequestId,
+    },
     AccountRemoved {
         #[serde(default)]
         reason: Option<String>,
@@ -388,6 +392,7 @@ impl AuditEvent {
             Self::AccountJoined { .. } => "account_joined",
             Self::JoinRequestApproved { .. } => "join_request_approved",
             Self::JoinRequestDenied { .. } => "join_request_denied",
+            Self::JoinRequestWithdrawn { .. } => "join_request_withdrawn",
             Self::AccountRemoved { .. } => "account_removed",
             Self::AccountBanned { .. } => "account_banned",
             Self::AccountUnbanned { .. } => "account_unbanned",

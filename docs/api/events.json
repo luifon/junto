@@ -1267,6 +1267,25 @@
       ],
       "type": "object"
     },
+    "join_request_withdrawn": {
+      "description": "The device withdrew its waiting request, or its key got an account in another way.",
+      "properties": {
+        "join_request_id": {
+          "$ref": "#/components/schemas/JoinRequestId"
+        },
+        "type": {
+          "enum": [
+            "join_request_withdrawn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "join_request_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "message_changed": {
       "properties": {
         "deleted": {
@@ -3328,6 +3347,25 @@
             "required": [
               "join_request_id",
               "state",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The device withdrew its waiting request, or its key got an account in another way.",
+            "properties": {
+              "join_request_id": {
+                "$ref": "#/components/schemas/JoinRequestId"
+              },
+              "type": {
+                "enum": [
+                  "join_request_withdrawn"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "join_request_id",
               "type"
             ],
             "type": "object"

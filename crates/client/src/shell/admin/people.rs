@@ -2034,13 +2034,25 @@ impl Shell {
                     });
                 }),
             ));
+        let same_name = row.same_name.then(|| {
+            div()
+                .flex_none()
+                .mt(u(4.0))
+                .mb(u(4.0))
+                .child(
+                    Notice::new(txt::SAME_NAME)
+                        .icon(Icon::Warning)
+                        .selector("request-same-name"),
+                )
+                .into_any_element()
+        });
         framed(
             format!("request-row-{request_id}"),
             content,
-            refusal(
+            same_name.into_iter().chain(refusal(
                 view.refused(approve).or(view.refused(deny)),
                 "request-refused",
-            ),
+            )),
         )
     }
 

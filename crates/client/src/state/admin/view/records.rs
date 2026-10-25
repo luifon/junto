@@ -249,7 +249,8 @@ impl AuditGroup {
             | AuditEvent::InviteRevoked { .. }
             | AuditEvent::InviteRedeemed { .. }
             | AuditEvent::JoinRequestApproved { .. }
-            | AuditEvent::JoinRequestDenied { .. } => Self::Invites,
+            | AuditEvent::JoinRequestDenied { .. }
+            | AuditEvent::JoinRequestWithdrawn { .. } => Self::Invites,
             AuditEvent::ServerRoleCreated { .. }
             | AuditEvent::ServerRoleUpdated { .. }
             | AuditEvent::ServerRoleAssigned { .. }
@@ -321,7 +322,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 72] = [
+pub const ACTIONS: [(&str, AuditGroup); 73] = [
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -339,6 +340,7 @@ pub const ACTIONS: [(&str, AuditGroup); 72] = [
     ("invite_redeemed", AuditGroup::Invites),
     ("join_request_approved", AuditGroup::Invites),
     ("join_request_denied", AuditGroup::Invites),
+    ("join_request_withdrawn", AuditGroup::Invites),
     ("server_role_created", AuditGroup::Roles),
     ("server_role_updated", AuditGroup::Roles),
     ("server_role_assigned", AuditGroup::Roles),
@@ -1491,6 +1493,7 @@ mod tests {
             AuditEvent::AccountLeft { .. } => 70,
             AuditEvent::AccountDeleted { .. } => 71,
             AuditEvent::AccountReturned { .. } => 72,
+            AuditEvent::JoinRequestWithdrawn { .. } => 73,
         }
     }
 
@@ -1752,6 +1755,10 @@ mod tests {
                     join_request_id: None,
                 },
                 vec!["Ana", "returned", "invite"],
+            ),
+            (
+                AuditEvent::JoinRequestWithdrawn { join_request_id },
+                vec!["withdrawn"],
             ),
             (
                 AuditEvent::CategoryCreated {
@@ -2784,7 +2791,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..73).collect::<Vec<usize>>());
+        assert_eq!(places, (0..74).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

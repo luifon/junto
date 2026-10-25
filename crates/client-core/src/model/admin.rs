@@ -1014,6 +1014,11 @@ impl AdminModel {
                     requests.retain(|held| held.id != *join_request_id);
                 }
             }
+            Event::JoinRequestWithdrawn { join_request_id } => {
+                if let Some(requests) = self.join_requests.loaded_mut() {
+                    requests.retain(|held| held.id != *join_request_id);
+                }
+            }
             Event::ExportUpdated { export } => {
                 if let Some(exports) = self.exports.loaded_mut() {
                     upsert(exports, export, |held| held.id == export.id);
@@ -1079,7 +1084,9 @@ impl AdminPart {
             ),
             Self::JoinRequests => matches!(
                 event,
-                Event::JoinRequestCreated { .. } | Event::JoinRequestDecided { .. }
+                Event::JoinRequestCreated { .. }
+                    | Event::JoinRequestDecided { .. }
+                    | Event::JoinRequestWithdrawn { .. }
             ),
             Self::AccessTokens => matches!(
                 event,

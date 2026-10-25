@@ -190,6 +190,7 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
             "post /api/v1/join",
             "post /api/v1/join-requests",
             "post /api/v1/join-requests/status",
+            "post /api/v1/join-requests/withdrawal",
             "post /api/v1/owner/claim",
         ]
     );

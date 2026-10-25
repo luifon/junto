@@ -11,7 +11,7 @@ use junto_protocol::ids::{AccountId, InviteId, JoinRequestId, WorkspaceId};
 use junto_protocol::invite::{
     ApproveJoinRequest, CreateInvite, Invite, InviteCreated, InviteRevocation, Join, JoinRequest,
     JoinRequestState, JoinRequestStatus, JoinRequestStatusQuery, RedeemInvite, Redemption,
-    RequestToJoin,
+    RequestToJoin, WithdrawJoinRequest,
 };
 use junto_protocol::secret::InviteCode;
 use sqlx::PgConnection;
@@ -525,6 +525,7 @@ pub async fn join(
         // (ADR 0121).
         if let Some((account_id, device_id)) = returning {
             super::departures::reactivate(connection, now, account_id, &workspace_ids).await?;
+            store::end_waiting_join_request(connection, now, &proven.public_key).await?;
             audit::record(
                 connection,
                 now,
@@ -568,13 +569,18 @@ pub async fn join(
     Ok((StatusCode::CREATED, Json(session)))
 }
 
-/// Asks to join without a code. The request carries a name and waits for an approval.
+/// Asks to join without a code. The request carries a name and waits for an approval. A key
+/// that already has a waiting request gets that request again, with the status 200.
 #[utoipa::path(
     post,
     path = "/api/v1/join-requests",
     tag = "joining",
     request_body = RequestToJoin,
-    responses((status = 201, body = JoinRequest), ApiError)
+    responses(
+        (status = 201, body = JoinRequest),
+        (status = 200, body = JoinRequest),
+        ApiError
+    )
 )]
 pub async fn request_to_join(
     State(app): State<AppState>,
@@ -593,7 +599,7 @@ pub async fn request_to_join(
         returning_account_id: None,
     };
 
-    let request = transact!(app, |connection| {
+    let (status, request) = transact!(app, |connection| {
         let proven = proof::consume(
             &app,
             connection,
@@ -605,10 +611,7 @@ pub async fn request_to_join(
         .await?;
         let returning =
             super::departures::returning_account(connection, &proven.public_key).await?;
-        let request = JoinRequest {
-            returning_account_id: returning.map(|(account_id, _)| account_id),
-            ..request.clone()
-        };
+        let returning_account_id = returning.map(|(account_id, _)| account_id);
         sqlx::query(
             "update join_requests set state = 'expired'
              where public_key = $1 and state = 'pending' and expires_at <= $2",
@@ -617,6 +620,28 @@ pub async fn request_to_join(
         .bind(now)
         .execute(&mut *connection)
         .await?;
+        let waiting: Option<(JoinRequestId, String, OffsetDateTime, OffsetDateTime)> =
+            sqlx::query_as(
+                "select id, name, created_at, expires_at from join_requests
+                 where public_key = $1 and state = 'pending'",
+            )
+            .bind(proven.public_key.as_bytes().as_slice())
+            .fetch_optional(&mut *connection)
+            .await?;
+        if let Some((id, name, created_at, expires_at)) = waiting {
+            let first = JoinRequest {
+                id,
+                name,
+                created_at,
+                expires_at,
+                returning_account_id,
+            };
+            return Ok((StatusCode::OK, first));
+        }
+        let request = JoinRequest {
+            returning_account_id,
+            ..request.clone()
+        };
         let pending: i64 = sqlx::query_scalar(
             "select count(*) from join_requests where state = 'pending' and expires_at > $1",
         )
@@ -641,23 +666,57 @@ pub async fn request_to_join(
         .execute(&mut *connection)
         .await;
         match inserted {
-            Ok(_) => {
-                let created = Event::JoinRequestCreated {
-                    join_request: request.clone(),
-                };
-                events::publish(connection, now, &created).await?;
-                Ok(request)
-            }
+            Ok(_) => {}
+            // A concurrent request of the same key normally fails as a serialization
+            // failure and runs again, finding the first request (ADR 0009).
             Err(error) if violates(&error, "join_requests_one_pending_per_key") => {
-                Err(ApiError::new(
+                return Err(ApiError::new(
                     ErrorCode::JoinRequestPending,
                     "a join request of this device key already waits for an answer",
-                ))
+                ));
             }
-            Err(error) => Err(error.into()),
+            Err(error) => return Err(error.into()),
         }
+        let created = Event::JoinRequestCreated {
+            join_request: request.clone(),
+        };
+        events::publish(connection, now, &created).await?;
+        Ok((StatusCode::CREATED, request))
     })?;
-    Ok((StatusCode::CREATED, Json(request)))
+    Ok((status, Json(request)))
+}
+
+/// Withdraws the waiting join request of a device key. The device sends this before it
+/// discards its key, so that no approval makes an account for a key that nobody holds. A key
+/// without a waiting request gets the same answer.
+#[utoipa::path(
+    post,
+    path = "/api/v1/join-requests/withdrawal",
+    tag = "joining",
+    request_body = WithdrawJoinRequest,
+    responses((status = 204), ApiError)
+)]
+pub async fn withdraw_join_request(
+    State(app): State<AppState>,
+    ClientAddress(address): ClientAddress,
+    ApiJson(body): ApiJson<WithdrawJoinRequest>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let proven = proof::consume(
+            &app,
+            connection,
+            address,
+            &body.proof,
+            ChallengeOperation::WithdrawJoinRequest,
+            now,
+        )
+        .await?;
+        super::departures::returning_account(connection, &proven.public_key).await?;
+        store::end_waiting_join_request(connection, now, &proven.public_key).await?;
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The result of the latest join request of a device key, given to the holder of that key.
@@ -687,7 +746,7 @@ pub async fn join_request_status(
         let row: Option<(JoinRequestId, String, OffsetDateTime, Option<AccountId>)> =
             sqlx::query_as(
                 "select id, state, expires_at, account_id from join_requests
-                 where public_key = $1
+                 where public_key = $1 and state <> 'withdrawn'
                  order by created_at desc, id desc
                  limit 1",
             )
