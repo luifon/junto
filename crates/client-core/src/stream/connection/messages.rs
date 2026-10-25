@@ -1057,9 +1057,9 @@ impl Client {
                     self.pending.retain(|pending| {
                         !matches!(pending.load, Load::Part(Part::Messages(of, _)) if of == place)
                     });
-                    self.messages.retries.retain(|(part, _, _)| {
-                        !matches!(part, Part::Messages(of, _) if *of == place)
-                    });
+                    self.messages.retries.retain(
+                        |(part, _, _)| !matches!(part, Part::Messages(of, _) if *of == place),
+                    );
                     if let Some(timeline) = self
                         .model
                         .as_mut()
@@ -1072,7 +1072,12 @@ impl Client {
                 // A page that failed for a while waits for its next try, which the client
                 // makes by itself.
                 let part = Part::Messages(place, reach);
-                if self.messages.retries.iter().any(|(held, _, _)| *held == part) {
+                if self
+                    .messages
+                    .retries
+                    .iter()
+                    .any(|(held, _, _)| *held == part)
+                {
                     return;
                 }
                 self.read(part);

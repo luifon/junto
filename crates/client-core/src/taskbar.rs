@@ -154,7 +154,12 @@ fn mark_pin(path: &Path, program: &Path, identifier: &str) -> std::io::Result<bo
             return Ok(false);
         }
         let store: IPropertyStore = link.cast().map_err(error)?;
-        if store.GetValue(&PKEY_AppUserModel_ID).map_err(error)?.to_string() == identifier {
+        if store
+            .GetValue(&PKEY_AppUserModel_ID)
+            .map_err(error)?
+            .to_string()
+            == identifier
+        {
             return Ok(false);
         }
         let mut value = PROPVARIANT::from(identifier);
@@ -257,14 +262,17 @@ mod tests {
     }
 
     fn identifier_of(path: &Path) -> String {
-        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ};
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
+        };
         use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
         use windows::core::{HSTRING, Interface as _};
         unsafe {
             let link: IShellLinkW =
                 CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
             let file: IPersistFile = link.cast().unwrap();
-            file.Load(&HSTRING::from(path.as_os_str()), STGM_READ).unwrap();
+            file.Load(&HSTRING::from(path.as_os_str()), STGM_READ)
+                .unwrap();
             let store: IPropertyStore = link.cast().unwrap();
             store.GetValue(&PKEY_AppUserModel_ID).unwrap().to_string()
         }
@@ -276,16 +284,25 @@ mod tests {
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let pins = tempfile::tempdir().unwrap();
         let programs = tempfile::tempdir().unwrap();
-        let (program, other) = (programs.path().join("junto.exe"), programs.path().join("other.exe"));
+        let (program, other) = (
+            programs.path().join("junto.exe"),
+            programs.path().join("other.exe"),
+        );
         std::fs::write(&program, b"").unwrap();
         std::fs::write(&other, b"").unwrap();
         let (ours, theirs) = (pins.path().join("Junto.lnk"), pins.path().join("Other.lnk"));
         shortcut(&ours, &program);
         shortcut(&theirs, &other);
         assert_eq!(identifier_of(&ours), "");
-        assert_eq!(mark_pins(pins.path(), &program, "chat.junto.Test").unwrap(), 1);
+        assert_eq!(
+            mark_pins(pins.path(), &program, "chat.junto.Test").unwrap(),
+            1
+        );
         assert_eq!(identifier_of(&ours), "chat.junto.Test");
         assert_eq!(identifier_of(&theirs), "");
-        assert_eq!(mark_pins(pins.path(), &program, "chat.junto.Test").unwrap(), 0);
+        assert_eq!(
+            mark_pins(pins.path(), &program, "chat.junto.Test").unwrap(),
+            0
+        );
     }
 }

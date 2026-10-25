@@ -198,7 +198,11 @@ struct MeasuredView {
 }
 
 impl gpui::Render for MeasuredView {
-    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
         use gpui::{ParentElement as _, Styled as _};
         gpui::div().size_full().child(Measured {
             armed: self.armed.clone(),
@@ -239,7 +243,10 @@ fn the_layout_engine_stays_after_a_panic_in_a_measure(cx: &mut TestAppContext) {
     assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
     let measured = measures.get();
     draw_from_a_task(&mut cx);
-    assert!(measures.get() > measured, "the next draw measures the view again");
+    assert!(
+        measures.get() > measured,
+        "the next draw measures the view again"
+    );
     assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
 }
 

@@ -275,11 +275,13 @@ impl Session {
                 return Err(CameraError::Failed("camera output is unavailable".into()));
             }
             session.addOutput(&output);
-            let delegate: Retained<Output> =
-                msg_send![super(Output::alloc().set_ivars(Ivars {
+            let delegate: Retained<Output> = msg_send![
+                super(Output::alloc().set_ivars(Ivars {
                     sink,
                     broken: AtomicBool::new(false),
-                })), init];
+                })),
+                init
+            ];
             let queue = DispatchQueue::new("camera-frames", None);
             output.setSampleBufferDelegate_queue(
                 Some(ProtocolObject::from_ref(&*delegate)),
