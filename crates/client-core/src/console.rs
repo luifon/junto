@@ -21,10 +21,7 @@ pub fn attach_to_parent() -> bool {
         if !unset(GetStdHandle(STD_ERROR_HANDLE)) {
             return true;
         }
-        if unset(GetStdHandle(STD_OUTPUT_HANDLE)) && AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
-            return !unset(GetStdHandle(STD_ERROR_HANDLE));
-        }
-        false
+        unset(GetStdHandle(STD_OUTPUT_HANDLE)) && AttachConsole(ATTACH_PARENT_PROCESS) != 0
     }
 }
 
