@@ -62,13 +62,13 @@ async fn the_futures_of_the_calls_end_on_an_executor_without_a_tokio_runtime() {
         ben.until("the own share runs", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| matches!(call.share, ShareState::Running(_)))
+                .is_some_and(|call| matches!(call.own_shares.get(&0), Some(ShareState::Running(_))))
         })
         .await;
         ann.until("Ann watches the share of Ben", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.watched == Some(ShareId::Of(ben_id)))
+                .is_some_and(|call| call.watched == Some(ShareId::of(ben_id, 0)))
         })
         .await;
 

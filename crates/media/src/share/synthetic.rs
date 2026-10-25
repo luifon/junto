@@ -69,6 +69,8 @@ struct State {
     access: ScreenAccess,
     sources: ShareSources,
     colours: (Colour, Colour),
+    /// The colours of the pictures of one source, in place of `colours`.
+    source_colours: HashMap<PictureSource, (Colour, Colour)>,
     system_tones: Tones,
     application_tones: HashMap<ApplicationId, Tones>,
     /// A capture gives one picture and then none, as the capture of a screen that does
@@ -134,6 +136,7 @@ impl SyntheticCapture {
                     }],
                 },
                 colours: ((200, 30, 30), (30, 30, 200)),
+                source_colours: HashMap::new(),
                 system_tones: (700.0, 1_900.0),
                 application_tones: HashMap::from([(player, (1_100.0, 2_700.0))]),
                 still: false,
@@ -170,6 +173,12 @@ impl SyntheticCapture {
 
     pub fn set_sources(&self, sources: ShareSources) {
         self.lock().sources = sources;
+    }
+
+    /// The colours of the left and of the right half of the pictures of one source from
+    /// now on, so that two shares of one person are told apart.
+    pub fn set_source_colours(&self, source: PictureSource, left: Colour, right: Colour) {
+        self.lock().source_colours.insert(source, (left, right));
     }
 
     /// The colours of the left and of the right half of every picture from now on.
@@ -371,6 +380,7 @@ impl ScreenCapture for SyntheticCapture {
             };
             let (width, height) = request.quality.resolution.fit(width, height);
             let frame_rate = request.quality.frame_rate.max(1);
+            let picture = request.picture;
             state.started.push(request);
             let stop = Arc::new(AtomicBool::new(false));
             state.live.push((Arc::downgrade(&stop), sink.clone()));
@@ -381,7 +391,7 @@ impl ScreenCapture for SyntheticCapture {
                     &capture,
                     &stopped,
                     sink.as_ref(),
-                    (width, height),
+                    (picture, (width, height)),
                     frame_rate,
                     tones,
                 );
@@ -404,7 +414,7 @@ fn produce(
     capture: &SyntheticCapture,
     stop: &AtomicBool,
     sink: &dyn CaptureSink,
-    size: (u32, u32),
+    (source, size): (PictureSource, (u32, u32)),
     frame_rate: u32,
     tones: Option<Tones>,
 ) {
@@ -422,7 +432,8 @@ fn produce(
         if pictures < pictures_due {
             let (colours, still) = {
                 let state = capture.lock();
-                (state.colours, state.still)
+                let colours = state.source_colours.get(&source).copied();
+                (colours.unwrap_or(state.colours), state.still)
             };
             if pictures == 0 || !still {
                 let picture = two_colours(size.0, size.1, colours.0, colours.1);
