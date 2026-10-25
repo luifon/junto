@@ -48,11 +48,13 @@ pub(crate) fn channel_states(voice: &VoiceState) -> Vec<ChannelState> {
             text: text::IN_USE.into(),
             strong: false,
         });
-    } else if let (true, Some(limit)) = (voice.full, voice.user_limit) {
+    }
+    // The count against a user limit, also before the channel is full (1 / 2).
+    if let (Some(limit), false) = (voice.user_limit, voice.hidden) {
         states.push(ChannelState::Marked {
             icon: Icon::People,
-            text: text::occupancy(voice.occupants.len(), limit, true).into(),
-            strong: true,
+            text: text::occupancy(voice.occupants.len(), limit, voice.full).into(),
+            strong: voice.full,
         });
     }
     states
@@ -775,4 +777,63 @@ pub(crate) fn unread_sign(unread: crate::state::view::Unread) -> Option<crate::u
         mentions: (unread.mentions > 0).then(|| text::mention_badge(unread.mentions).into()),
         label: text::unread_tooltip(unread.messages, unread.mentions).into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_user_limit_is_shown_whenever_it_is_set() {
+        let people = |count: usize| {
+            vec![
+                Occupant {
+                    account_id: junto_client_core::protocol::ids::AccountId::generate(),
+                    name: None,
+                    is_self: false,
+                    microphone: Microphone::Closed,
+                    held_by: None,
+                    sharing: false,
+                    hand_raised: false,
+                    sound_off: false,
+                    sound_blocked: false,
+                    level: None,
+                    presence: Presence::Here,
+                    volume: 100,
+                };
+                count
+            ]
+        };
+        let count = |voice: &VoiceState| {
+            channel_states(voice)
+                .into_iter()
+                .find_map(|state| match state {
+                    ChannelState::Marked {
+                        icon: Icon::People,
+                        text,
+                        strong,
+                    } => Some((text.to_string(), strong)),
+                    _ => None,
+                })
+        };
+        let mut voice = VoiceState {
+            user_limit: Some(2),
+            occupants: people(1),
+            ..VoiceState::default()
+        };
+        assert_eq!(count(&voice), Some(("1 / 2".to_owned(), false)));
+        voice.occupants = people(2);
+        voice.full = true;
+        assert_eq!(count(&voice), Some(("2 / 2 · full".to_owned(), true)));
+        // A locked room shows the count next to the lock.
+        voice.locked = true;
+        assert!(count(&voice).is_some());
+        // Without a limit, and while the room hides who is inside, no count.
+        voice.user_limit = None;
+        assert_eq!(count(&voice), None);
+        voice.user_limit = Some(2);
+        voice.hidden = true;
+        voice.locked = false;
+        assert_eq!(count(&voice), None);
+    }
 }

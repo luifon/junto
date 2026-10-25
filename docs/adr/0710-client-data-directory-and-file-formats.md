@@ -27,7 +27,7 @@ Files:
 | `profile.json` | The profile preset: a name and the media type of the avatar |
 | `avatar.png`, `avatar.jpg` or `avatar.webp` | The avatar of the preset, at most 256 KiB, the bound of a server (ADR 0119) |
 | `settings.json` | The settings of the interface: the interface scale and the form of the server book (ADR 0731) |
-| `voice.json` | The sound settings: the chosen devices, the processing of the microphone, the input mode and its key, the volume per account of a server (ADR 0734), and the settings of shares: resolution, frame rate, the volume of a watched share, and "hide people without video" (ADR 0738) |
+| `voice.json` | The sound settings: the chosen devices, the processing of the microphone, the input mode and its key, the sensitivity of voice activation (ADR 0733), the volume per account of a server (ADR 0734), and the settings of shares: resolution, frame rate, the volume of a watched share, and "hide people without video" (ADR 0738) |
 | `emoji-fonts.json` | The emoji of the table that the fonts of the system do not draw whole and those that a font without colour draws, with the key of the fonts that they were measured with (ADR 0758) |
 | `keys/<server identifier>.key` | The device key of one server (ADR 0711) |
 | `lock` | An empty file that carries the lock of the directory |

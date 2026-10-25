@@ -575,6 +575,7 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
     // Push-to-talk with the Control key, chosen in the settings.
     window.click("app-settings");
     window.click("input-mode-1");
+    window.click("confirm-push-to-talk");
     window.until("the key is offered", |window| window.shows("talk-key-1"));
     window.click("talk-key-1");
     window.press("escape");
@@ -590,6 +591,8 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
     });
     assert!(heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS);
+    // The call strip states the mode and its key.
+    assert!(window.shows("input-mode-mark"));
 
     let held = Modifiers {
         control: true,

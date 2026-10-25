@@ -187,6 +187,12 @@ pub struct Shell {
     software_video: bool,
     camera_focus: bool,
     focused_camera: std::cell::Cell<Option<AccountId>>,
+    /// The size of the area of the tiles of the stage when it was drawn last, in design
+    /// pixels: the tiles of the next drawing fill it (`ui::tile::grid`).
+    stage_area: std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>>,
+    /// The person chose push to talk in the settings, and the settings ask before the
+    /// switch (ADR 0507).
+    push_to_talk_question: bool,
     pub(crate) state: Entity<AppState>,
     focus: FocusHandle,
     /// The focus of the layer that is open.
@@ -253,6 +259,8 @@ pub struct Shell {
     pub(crate) share_reads: u64,
     /// The volume control of the sound of the watched share.
     pub(crate) share_volume: Option<VolumeControl>,
+    /// The slider of the sensitivity of voice activation in the settings.
+    pub(crate) voice_threshold: Option<VolumeControl>,
     /// The details of the last recording of the call are shown.
     pub(crate) recording_details_open: bool,
     /// The press of the pointer that closed the details was on their button: the click
@@ -612,6 +620,8 @@ impl Shell {
             camera_focus: false,
             hovered_message: None,
             focused_camera: std::cell::Cell::new(None),
+            stage_area: std::rc::Rc::default(),
+            push_to_talk_question: false,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
             drawing_call: false,
@@ -626,6 +636,7 @@ impl Shell {
             picture_draws: 0,
             share_reads: 0,
             share_volume: None,
+            voice_threshold: None,
             recording_details_open: false,
             recording_details_closed_by_press: false,
             invite_open: false,

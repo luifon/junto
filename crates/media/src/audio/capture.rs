@@ -3,7 +3,7 @@
 //! or replaced by silence (ADR 0733).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use livekit::webrtc::native::audio_resampler::AudioResampler;
 use tokio::sync::mpsc;
@@ -16,7 +16,7 @@ use super::recent::Recent;
 use super::{FRAME_SAMPLES, SAMPLE_RATE, to_i16};
 
 /// What the engine and the thread of the input device share.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CaptureLink {
     /// The frames of the microphone are sent. While this is false, silence is sent: the
     /// microphone is muted, or push-to-talk waits for its key.
@@ -40,7 +40,16 @@ pub struct CaptureLink {
     stops: AtomicU64,
     /// The number of those closes that the engine task has taken into what it holds.
     stops_taken: AtomicU64,
+    /// The level in whole dBFS below which voice activation sends silence, or
+    /// `NO_THRESHOLD` (ADR 0701).
+    threshold: AtomicI32,
 }
+
+const NO_THRESHOLD: i32 = i32::MIN;
+
+/// A sound above the threshold of voice activation keeps it open for this many frames of
+/// 10 ms, so that the quiet ends of words and the pauses between them are sent.
+pub const THRESHOLD_HOLD_FRAMES: u32 = 30;
 
 /// The frames that the media connection took: with the sound of the microphone, and as
 /// silence while the gate was closed.
@@ -50,7 +59,39 @@ pub struct Taken {
     pub silence: Recent,
 }
 
+impl Default for CaptureLink {
+    fn default() -> Self {
+        Self {
+            open: AtomicBool::default(),
+            closures: AtomicU64::default(),
+            input: LevelCell::default(),
+            sent: LevelCell::default(),
+            speaking: AtomicBool::default(),
+            dropped: AtomicU64::default(),
+            captured: Recent::default(),
+            taken: Taken::default(),
+            stops: AtomicU64::default(),
+            stops_taken: AtomicU64::default(),
+            threshold: AtomicI32::new(NO_THRESHOLD),
+        }
+    }
+}
+
 impl CaptureLink {
+    /// Voice activation sends only frames whose level reaches `threshold` dBFS, with a
+    /// hold after them. Absent: every frame of the open microphone is sent.
+    pub fn set_threshold(&self, threshold: Option<i16>) {
+        self.threshold
+            .store(threshold.map_or(NO_THRESHOLD, i32::from), Ordering::Relaxed);
+    }
+
+    fn threshold(&self) -> Option<f32> {
+        match self.threshold.load(Ordering::Relaxed) {
+            NO_THRESHOLD => None,
+            threshold => Some(threshold as f32),
+        }
+    }
+
     pub fn set_open(&self, open: bool) {
         if self.open.swap(open, Ordering::Relaxed) && !open {
             self.closures.fetch_add(1, Ordering::Relaxed);
@@ -179,6 +220,8 @@ pub struct CaptureChain {
     /// The frames of one step at the rate of the pipeline.
     converted: Vec<i16>,
     speaking: Speaking,
+    /// The frames that the hold of the threshold still sends.
+    held: u32,
 }
 
 impl CaptureChain {
@@ -197,6 +240,7 @@ impl CaptureChain {
             pending: Vec::new(),
             converted: Vec::new(),
             speaking: Speaking::default(),
+            held: 0,
         }
     }
 
@@ -254,7 +298,7 @@ impl CaptureChain {
         self.link.input.frame(&frame);
         // Read before the gate: a closure after this line makes the frame an old one.
         let closures = self.link.closures();
-        if self.link.is_open() {
+        if self.link.is_open() && self.above_threshold(&frame) {
             let level = self.link.sent.frame(&frame);
             self.link
                 .speaking
@@ -272,6 +316,24 @@ impl CaptureChain {
         if self.frames.try_send(frame).is_err() {
             self.link.dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Whether voice activation sends this frame: without a threshold always, and with one
+    /// while the level reaches it and for the hold after it.
+    fn above_threshold(&mut self, frame: &[i16]) -> bool {
+        let Some(threshold) = self.link.threshold() else {
+            self.held = 0;
+            return true;
+        };
+        if super::level::dbfs(frame) >= threshold {
+            self.held = THRESHOLD_HOLD_FRAMES;
+            return true;
+        }
+        if self.held > 0 {
+            self.held -= 1;
+            return true;
+        }
+        false
     }
 }
 
@@ -318,6 +380,64 @@ mod tests {
             .filter(|pair| pair[0] < 0 && pair[1] >= 0)
             .count();
         rises as f32 * SAMPLE_RATE as f32 / samples.len() as f32
+    }
+
+    /// With a threshold, a quiet sound is sent as silence and a louder one is sent, with the
+    /// hold after it; the input level shows both.
+    #[test]
+    fn voice_activation_sends_only_sound_above_the_threshold() {
+        let (link, mut chain, mut taken) = chain();
+        link.set_open(true);
+        link.set_threshold(Some(-30));
+        let format = Format {
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+        };
+        let frame = FRAME_SAMPLES;
+        let quiet: Vec<f32> = tone(format, 440.0, frame * 10, 0)
+            .into_iter()
+            .map(|sample| sample * 0.05)
+            .collect();
+        chain.deliver(&quiet, format);
+        let frames = drain(&mut taken);
+        assert_eq!(frames.len(), 10);
+        assert!(frames.iter().all(|frame| frame.iter().all(|s| *s == 0)));
+        assert!(link.input.read() > SILENCE_DBFS);
+        assert!(!link.speaking());
+
+        let loud = tone(format, 440.0, frame * 2, 0);
+        chain.deliver(&loud, format);
+        chain.deliver(&quiet, format);
+        let frames = drain(&mut taken);
+        assert_eq!(frames.len(), 12);
+        // The loud frames and the quiet ones of the hold are sent.
+        assert!(frames.iter().all(|frame| frame.iter().any(|s| *s != 0)));
+        let rest = (THRESHOLD_HOLD_FRAMES as usize - 10) * frame;
+        chain.deliver(
+            &quiet
+                .iter()
+                .copied()
+                .cycle()
+                .take(rest + frame * 2)
+                .collect::<Vec<_>>(),
+            format,
+        );
+        let frames = drain(&mut taken);
+        let sent = frames
+            .iter()
+            .filter(|frame| frame.iter().any(|s| *s != 0))
+            .count();
+        assert_eq!(sent, THRESHOLD_HOLD_FRAMES as usize - 10);
+        assert!(frames.last().unwrap().iter().all(|s| *s == 0));
+
+        // Without a threshold the quiet sound is sent.
+        link.set_threshold(None);
+        chain.deliver(&quiet, format);
+        assert!(
+            drain(&mut taken)
+                .iter()
+                .all(|frame| frame.iter().any(|s| *s != 0))
+        );
     }
 
     #[test]

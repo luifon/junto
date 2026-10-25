@@ -31,7 +31,7 @@ use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, W
 
 pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
-pub use controls::{SelectBox, Stepper, Tab, Toggle, VolumeSlider};
+pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use form_space::{FormSpace, NewRow};

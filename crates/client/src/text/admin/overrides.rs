@@ -75,6 +75,7 @@ pub const fn name(permission: WorkspacePermission) -> &'static str {
         WorkspacePermission::LockRoom => "Lock room",
         WorkspacePermission::RunMeetingMode => "Run meeting mode",
         WorkspacePermission::ViewAuditEntries => "View audit entries",
+        WorkspacePermission::AdmitToFullCall => "Admit to full call",
     }
 }
 
@@ -133,6 +134,10 @@ pub const fn help(permission: WorkspacePermission) -> &'static str {
         WorkspacePermission::ViewAuditEntries => {
             "Read the audit entries about this channel; a member also needs this permission \
              in the workspace."
+        }
+        WorkspacePermission::AdmitToFullCall => {
+            "Get the requests to join the call in this channel while it is full, and let the \
+             person in above the user limit or decline."
         }
     }
 }

@@ -152,6 +152,7 @@ fn voice_config(voice: &VoiceSettings) -> VoiceConfig {
             automatic_gain: voice.automatic_gain,
         },
         push_to_talk: voice.input_mode == InputMode::PushToTalk,
+        threshold: voice.voice_threshold,
     }
 }
 
@@ -1893,6 +1894,24 @@ impl AppState {
             self.calls.set_talking(false);
         }
         self.change_voice(cx, move |voice| voice.input_mode = mode);
+    }
+
+    /// The sensitivity of voice activation: the engine uses it at once, and the file is
+    /// written when `store` is set, at the release of the slider.
+    pub fn set_voice_threshold(
+        &mut self,
+        threshold: Option<i16>,
+        store: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let change = move |voice: &mut VoiceSettings| voice.voice_threshold = threshold;
+        if store {
+            self.change_voice(cx, change);
+        } else {
+            change(&mut self.known.media.voice);
+            self.calls.set_voice(voice_config(&self.known.media.voice));
+            cx.notify();
+        }
     }
 
     pub fn set_talk_key(&mut self, key: TalkKey, cx: &mut Context<Self>) {

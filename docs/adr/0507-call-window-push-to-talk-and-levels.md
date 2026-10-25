@@ -14,6 +14,7 @@ Push-to-talk:
 
 - Push-to-talk works while the application or the detached call window is focused.
 - Voice activation is the default.
+- A switch from voice activation to push to talk in the settings asks first. One click on "Push to talk" shows a question that names the key ("…only while you hold Option…") with "Use push to talk" and "Keep voice activation"; the mode changes only after "Use push to talk". The switch back to voice activation does not ask, because it cannot leave a person without sound. While push to talk is on, the call strip states it under the name of the call with the key: "Push to talk: hold Option to speak". Reason: one click changed the mode with no word, and a person who chose push to talk by accident sent no sound in a call and could not see why. Tests: `calls::the_sound_settings_of_the_application_are_kept_over_a_restart` reads that one click asks and does not change the mode, that "Keep voice activation" keeps it, and that "Use push to talk" changes it; `live::push_to_talk_and_a_block_of_a_moderator_in_the_window` reads the mark in the call strip.
 
 Call window:
 

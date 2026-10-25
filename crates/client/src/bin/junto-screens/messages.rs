@@ -270,6 +270,7 @@ fn daily_chat() -> Made {
     let mut made = Made::new(DAILY);
     made.system(38, "call_started", Some("Ana"), None);
     made.system(41, "recording_started", Some("Ana"), None);
+    made.system(43, "person_joined", Some("Bruno"), None);
     made.system(44, "joined_by_invitation", Some("Marta"), None);
     made.message(
         "Bruno",
@@ -278,6 +279,7 @@ fn daily_chat() -> Made {
     );
     made.system(52, "screen_share_started", Some("Carla"), None);
     made.system(57, "call_microphone_blocked", Some("Ana"), Some("Luca"));
+    made.system(60, "person_left", Some("Marta"), None);
     let notes = made.message("Carla", 65, "Notes from the Alpha review:");
     notes.attachments = vec![file(3, "alpha-review-notes.pdf", 96_000, None)];
     let bruno = made.message(

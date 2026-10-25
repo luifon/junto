@@ -354,9 +354,19 @@ fn the_focus_draws_the_camera_of_the_person_who_speaks_large_and_the_grid_return
     window.until("Ada speaks and the window does not", |window| {
         speaking(window, ada) && !speaking(window, own)
     });
-    // The grid: both tiles have one size.
+    // The grid: both tiles have one size, side by side, each about half of the stage.
     assert!(width(&mut window, ada).is_some());
     assert_eq!(width(&mut window, ada), width(&mut window, own));
+    let stage = window
+        .cx
+        .debug_bounds(crate::harness::selector("call-stage".to_owned()))
+        .map(|bounds| f32::from(bounds.size.width))
+        .unwrap();
+    let tile = width(&mut window, ada).unwrap();
+    assert!(
+        tile > stage * 0.4 && tile < stage * 0.5,
+        "a tile of {tile} in a stage of {stage}"
+    );
 
     // The focus draws the camera of Ada large.
     window.click("camera-focus");
@@ -474,10 +484,11 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
             .debug_bounds(crate::harness::selector(format!("call-tile:{own}")))
             .map(|bounds| f32::from(bounds.size.width))
     };
+    // One tile fills the stage in the grid and in the focus.
     let grid = width(&mut window);
     window.click("camera-focus");
     window.until("the focus leaves Ada out", |window| {
-        width(window) > grid && only_own(window)
+        width(window) == grid && only_own(window)
     });
     window.click("camera-focus");
     window.until("the grid returns", |window| width(window) == grid);

@@ -411,6 +411,7 @@ impl Shell {
         &self,
         panel: &CallPanel,
         theme: &Theme,
+        shell: gpui::WeakEntity<Self>,
         cx: &gpui::App,
     ) -> AnyElement {
         let colors = theme.colors;
@@ -516,62 +517,162 @@ impl Shell {
                     None
                 };
                 self.focused_camera.set(focus);
-                let tiles = people
+                let shown: Vec<&Occupant> = people
                     .iter()
                     .filter(|p| !hidden.contains(&p.account_id))
-                    .enumerate()
-                    .map(|(index, occupant)| {
-                        let (marks, label) = tile_marks(occupant);
-                        let name: SharedString = if occupant.is_self {
-                            format!("{} ({})", occupant_name(occupant), text::YOU).into()
+                    .collect();
+                let area = self.stage_area.get().unwrap_or((
+                    crate::ui::tile::TILE_SIZE.0 * 2.0 + crate::ui::tile::TILE_GAP,
+                    crate::ui::tile::TILE_SIZE.1,
+                ));
+                // The focused tile fills the stage above one row of the size of the strip.
+                let others = shown.len().saturating_sub(usize::from(focus.is_some()));
+                let (columns, size) = match focus {
+                    Some(_) if others > 0 => crate::ui::tile::grid(
+                        1,
+                        (
+                            area.0,
+                            area.1 - crate::ui::tile::STRIP_TILE_SIZE.1 - crate::ui::tile::TILE_GAP,
+                        ),
+                    ),
+                    Some(_) => crate::ui::tile::grid(1, area),
+                    None => crate::ui::tile::grid(shown.len(), area),
+                };
+                let tile = |index: usize, occupant: &Occupant| {
+                    let (marks, label) = tile_marks(occupant);
+                    let name: SharedString = if occupant.is_self {
+                        format!("{} ({})", occupant_name(occupant), text::YOU).into()
+                    } else {
+                        occupant_name(occupant)
+                    };
+                    let focused = focus == Some(occupant.account_id);
+                    PersonTile::new(
+                        ("tile", index),
+                        name,
+                        occupant.account_id.as_uuid().as_u128(),
+                        label,
+                    )
+                    .map(|tile| {
+                        if focus.is_some() && !focused {
+                            tile.in_strip()
                         } else {
-                            occupant_name(occupant)
-                        };
-                        PersonTile::new(
-                            ("tile", index),
-                            name,
-                            occupant.account_id.as_uuid().as_u128(),
-                            label,
-                        )
-                        .when(
-                            self.detached && focus != Some(occupant.account_id),
-                            |tile| tile.in_strip(),
-                        )
-                        .focused(focus == Some(occupant.account_id))
-                        .picture(faces.image(occupant.account_id))
-                        .camera_view(self.camera_request(occupant, cx))
-                        .camera_picture(self.camera_image(occupant))
-                        .speaking(matches!(
-                            occupant.microphone,
-                            Microphone::Open { speaking: true }
-                        ))
-                        .marks(marks)
-                        .selector(format!("call-tile:{}", occupant.account_id))
-                    });
+                            tile.size(size)
+                        }
+                    })
+                    .focused(focused)
+                    .picture(faces.image(occupant.account_id))
+                    .camera_view(self.camera_request(occupant, cx))
+                    .camera_picture(self.camera_image(occupant))
+                    .speaking(matches!(
+                        occupant.microphone,
+                        Microphone::Open { speaking: true }
+                    ))
+                    .marks(marks)
+                    .selector(format!("call-tile:{}", occupant.account_id))
+                };
+                let (large, strip): (Vec<_>, Vec<_>) = shown
+                    .iter()
+                    .enumerate()
+                    .partition(|(_, p)| focus.is_none() || focus == Some(p.account_id));
+                let width = match focus {
+                    Some(_) => size.0,
+                    None => {
+                        columns as f32 * size.0
+                            + crate::ui::tile::TILE_GAP * columns.saturating_sub(1) as f32
+                    }
+                };
+                let measured = self.stage_area.clone();
+                let shell = shell.clone();
+                // The size of the free area of the stage, in design pixels: a new size draws
+                // the tiles again at the size that fills it.
+                let measure = gpui::canvas(
+                    move |bounds, window, cx| {
+                        let scale = f32::from(window.rem_size()) / 16.0;
+                        let size = (
+                            (f32::from(bounds.size.width) / scale).floor(),
+                            (f32::from(bounds.size.height) / scale).floor(),
+                        );
+                        if size.0 <= 0.0 || measured.get() == Some(size) {
+                            return;
+                        }
+                        measured.set(Some(size));
+                        window.defer(cx, move |_, cx| {
+                            let _ = shell.update(cx, |_, cx| cx.notify());
+                        });
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full();
                 viewport.child(
                     div()
                         .flex()
                         .flex_col()
-                        .flex_none()
-                        .min_h_full()
-                        .justify_center()
-                        .items_center()
+                        .flex_1()
+                        .min_h_0()
                         .w_full()
+                        .items_center()
                         .child(
                             div()
-                                .id("call-people")
-                                .role(Role::List)
-                                .aria_label(text::IN_THE_CALL)
-                                .debug_selector(|| "call-people".to_owned())
+                                .id("call-area")
+                                .relative()
                                 .flex()
-                                .flex_wrap()
-                                .justify_center()
-                                .content_center()
-                                .when(focus.is_some(), |people| people.content_start())
-                                .gap(u(8.0))
+                                .flex_col()
+                                .flex_1()
+                                .min_h_0()
                                 .w_full()
-                                .flex_none()
-                                .children(tiles),
+                                .overflow_y_scroll()
+                                .child(measure)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .flex_none()
+                                        .min_h_full()
+                                        .w_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .id("call-people")
+                                                .role(Role::List)
+                                                .aria_label(text::IN_THE_CALL)
+                                                .debug_selector(|| "call-people".to_owned())
+                                                .flex()
+                                                .flex_wrap()
+                                                .justify_center()
+                                                .content_center()
+                                                .gap(u(crate::ui::tile::TILE_GAP))
+                                                .w(u(width))
+                                                .max_w_full()
+                                                .flex_none()
+                                                .children(
+                                                    large
+                                                        .into_iter()
+                                                        .map(|(index, p)| tile(index, p)),
+                                                ),
+                                        )
+                                        .when(!strip.is_empty(), |area| {
+                                            area.child(
+                                                div()
+                                                    .debug_selector(|| {
+                                                        "call-focus-strip".to_owned()
+                                                    })
+                                                    .flex()
+                                                    .flex_wrap()
+                                                    .justify_center()
+                                                    .gap(u(crate::ui::tile::TILE_GAP))
+                                                    .mt(u(crate::ui::tile::TILE_GAP))
+                                                    .w_full()
+                                                    .flex_none()
+                                                    .children(
+                                                        strip
+                                                            .into_iter()
+                                                            .map(|(index, p)| tile(index, p)),
+                                                    ),
+                                            )
+                                        }),
+                                ),
                         )
                         .when_some(ringing, |viewport, direct| {
                             viewport.child(
@@ -1426,6 +1527,13 @@ impl Shell {
             .unwrap_or_else(|| text::A_VOICE_CHANNEL.to_owned())
             .into();
         let interrupted = strip.phase == Phase::Reconnecting;
+        // The input mode is stated while it is push to talk: the microphone sends nothing
+        // until the key is held.
+        let push_to_talk = {
+            let voice = self.state.read(cx).voice();
+            (!interrupted && voice.input_mode == junto_client_core::voice::InputMode::PushToTalk)
+                .then_some(voice.talk_key)
+        };
         let (ground, ink) = if interrupted {
             (colors.ochre, colors.ink)
         } else {
@@ -1664,6 +1772,30 @@ impl Shell {
             .bg(Hsla::from(ground))
             .ink(ink)
             .child(first)
+            .when_some(push_to_talk, |strip, key| {
+                strip.child(
+                    div()
+                        .id("input-mode-mark")
+                        .role(Role::Status)
+                        .aria_label(text::push_to_talk_mark(key))
+                        .debug_selector(|| "input-mode-mark".to_owned())
+                        .tooltip(tooltip(text::PUSH_TO_TALK_MARK_HELP))
+                        .flex()
+                        .items_center()
+                        .gap(u(6.0))
+                        .mt(u(5.0))
+                        .typeface(theme.types.small, theme)
+                        .line_height(u(16.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(icon(Icon::MicrophoneHeld, 13.0, ink))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(text::push_to_talk_mark(key)),
+                        ),
+                )
+            })
             .child(second)
             .into_any_element()
     }
@@ -1825,7 +1957,7 @@ impl Shell {
             Some(shares) if share_visible(panel.phase) => {
                 self.render_share_stage(panel, shares, theme, cx)
             }
-            _ => self.render_stage(panel, theme, cx),
+            _ => self.render_stage(panel, theme, cx.weak_entity(), cx),
         }
     }
 

@@ -186,9 +186,27 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
 
     window.click("app-settings");
     assert!(window.shows("settings-dialog"));
-    // Voice activation has no key to choose.
+    // Voice activation has no key to choose, and offers the sensitivity, off at first.
     assert!(window.shows("input-mode-0") && !window.shows("talk-key-0"));
+    assert!(!window.shows("voice-threshold-slider"));
+    window.click("voice-threshold");
+    window.until("the sensitivity is on at its first level", |window| {
+        window.shows("voice-threshold-slider") && voice(window).voice_threshold == Some(-45)
+    });
+    // One click on push to talk asks first, and states the key.
     window.click("input-mode-1");
+    window.until("the switch is asked", |window| {
+        window.shows("push-to-talk-question")
+    });
+    assert!(!window.shows("talk-key-1"));
+    assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
+    window.click("keep-voice-activation");
+    window.until("the question closes", |window| {
+        !window.shows("push-to-talk-question")
+    });
+    assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
+    window.click("input-mode-1");
+    window.click("confirm-push-to-talk");
     window.until("the key of push-to-talk is offered", |window| {
         window.shows("talk-key-1")
     });
@@ -203,7 +221,10 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
             && !voice.noise_suppression
             && voice.echo_cancellation
             && voice.automatic_gain
+            && voice.voice_threshold == Some(-45)
     });
+    // Push to talk sends while the key is held: the sensitivity is not offered.
+    assert!(!window.shows("voice-threshold"));
     assert!(!window.shows("voice-settings-error"));
     window.press("escape");
     let chosen = voice(&mut window);
@@ -213,6 +234,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     let text = std::fs::read_to_string(voice_file(directory.path())).unwrap();
     assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     assert!(text.contains("\"talk_key\": \"control\""), "{text}");
+    assert!(text.contains("\"voice_threshold\": -45"), "{text}");
     let mut window = open(cx, directory.path());
     assert_eq!(voice(&mut window), chosen);
     window.click("app-settings");
