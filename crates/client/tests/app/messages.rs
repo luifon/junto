@@ -2208,3 +2208,44 @@ fn an_emoji_that_the_fonts_do_not_draw_is_shown_by_its_short_code(cx: &mut TestA
     );
     window.press("escape");
 }
+
+/// The grid of an open emoji picker stays as it was when a measurement of the fonts arrives,
+/// so that it does not move under the pointer; the next opening shows the measurement
+/// (ADR 0758).
+#[gpui::test]
+fn an_open_picker_keeps_its_emoji_when_a_measurement_arrives(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let grinning = "\u{1f600}";
+    let cell = format!("emoji:{grinning}");
+    window.in_shell(|shell, window, cx| {
+        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+    });
+    assert!(window.shows_named(cell.clone()));
+    window.in_shell(|_, _, cx| {
+        junto_client::emoji::set_results(
+            cx,
+            [(grinning, junto_client::emoji::Drawing::Broken)].into(),
+        );
+    });
+    window.settle();
+    assert!(
+        window.shows_named(cell.clone()),
+        "the grid of the open picker stays"
+    );
+    window.press("escape");
+    window.in_shell(|shell, window, cx| {
+        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+    });
+    assert!(window.shows("emoji-picker"));
+    assert!(
+        !window.shows_named(cell),
+        "the next opening shows the measurement"
+    );
+    window.press("escape");
+}

@@ -108,11 +108,30 @@ fn main() {
             ));
         }
     }
-    // The window measures the table on a thread of the background executor.
-    let (table, elapsed) = std::thread::spawn(move || {
+    // The application measures on a thread of the background executor, with the text
+    // system of the measurement: a first start without a kept measurement, and a start
+    // that finds the kept measurement of the same fonts.
+    let before = memory();
+    let window_text = text.clone();
+    let (table, kept, first, again) = std::thread::spawn(move || {
         let started = Instant::now();
-        let table = Measure::new(text, family).table();
-        (table, started.elapsed())
+        let (table, kept) = junto_client::emoji::measure(
+            junto_client::emoji::measurement_text_system(window_text.clone()),
+            family.clone(),
+            None,
+        );
+        let first = started.elapsed();
+        let started = Instant::now();
+        let (_, measured_again) = junto_client::emoji::measure(
+            junto_client::emoji::measurement_text_system(window_text),
+            family,
+            kept.clone(),
+        );
+        assert!(
+            measured_again.is_none(),
+            "the kept measurement of the same fonts is used"
+        );
+        (table, kept, first, started.elapsed())
     })
     .join()
     .expect("the measurement on another thread ends");
@@ -120,11 +139,20 @@ fn main() {
     println!(
         "The table of {} emoji was measured in {} ms: {} in colour, {} without colour, {} not drawn whole.",
         table.len(),
-        elapsed.as_millis(),
+        first.as_millis(),
         count(Drawing::Colour),
         count(Drawing::Text),
         count(Drawing::Broken)
     );
+    println!(
+        "A start with the kept measurement took {} ms. The kept file holds {} bytes of emoji.",
+        again.as_millis(),
+        kept.map_or(0, |kept| kept.broken.concat().len()
+            + kept.text.concat().len())
+    );
+    if let (Some(before), Some(after)) = (before, memory()) {
+        println!("Memory of the process: {before} before the measurements, {after} after.");
+    }
     let mut broken: Vec<&str> = table
         .iter()
         .filter(|(_, drawing)| **drawing == Drawing::Broken)
@@ -144,4 +172,20 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+/// The resident memory and its peak, where the system tells them to the process.
+fn memory() -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let field = |name: &str| {
+        status
+            .lines()
+            .find(|line| line.starts_with(name))
+            .map(|line| line[name.len()..].trim().to_owned())
+    };
+    Some(format!(
+        "resident {}, peak {}",
+        field("VmRSS:")?,
+        field("VmHWM:")?
+    ))
 }

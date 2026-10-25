@@ -1,14 +1,18 @@
 //! Which emoji of the table the fonts of this system draw (ADR 0758).
 //!
 //! The window draws emoji with the emoji fonts of the system, and they can be older than
-//! the table of the server, or lack a kind of sequence. The whole table is laid out once,
-//! on the background executor after the first use, in the family of the text of messages.
-//! Until the results arrive every emoji counts as drawn.
+//! the table of the server, or lack a kind of sequence. The table is laid out on the
+//! background executor in the family of the text of messages, and the result is kept in
+//! the data directory with a key of the fonts; the next start that finds the same key
+//! measures only the key. Until the results arrive every emoji counts as drawn.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
+
+use junto_client_core::emoji_fonts::{EmojiFontsStore, EmojiMeasurement};
 
 use gpui::{
     App, Font, FontId, Global, Pixels, SharedString, TextRun, TextSystem, WindowTextSystem, px,
@@ -190,12 +194,7 @@ pub struct Drawings(Option<Arc<HashMap<&'static str, Drawing>>>);
 impl Drawings {
     /// The measurements, after the measurement of the table is started on first use.
     pub fn of(cx: &mut App) -> Self {
-        if !cx
-            .try_global::<Results>()
-            .is_some_and(|results| results.started)
-        {
-            start(cx);
-        }
+        start(cx, None);
         Self::current(cx)
     }
 
@@ -311,6 +310,20 @@ impl Shown<'_> {
     pub fn into_owned(self) -> String {
         self.text.into_owned()
     }
+
+    /// The shown text with each stand-in in `colour`, the colour of secondary text, so that
+    /// it differs from text that a person typed.
+    pub fn styled(&self, colour: gpui::Hsla) -> gpui::StyledText {
+        let style = gpui::HighlightStyle {
+            color: Some(colour),
+            ..gpui::HighlightStyle::default()
+        };
+        gpui::StyledText::new(SharedString::from(self.text.to_string())).with_highlights(
+            self.stand_ins()
+                .map(|range| (range, style))
+                .collect::<Vec<_>>(),
+        )
+    }
 }
 
 /// The text that stands for an emoji that the fonts do not draw: its short code, or its
@@ -322,36 +335,177 @@ pub fn stand_in(emoji: &emojis::Emoji) -> String {
     }
 }
 
+/// The emoji whose drawing names the version of the emoji fonts: the newest of each
+/// version of the standard from 12.0, a country flag, a subdivision flag, a skin tone, a
+/// family and a keycap. A font that gains a version changes the drawing of one of them.
+const PROBES: &[&str] = &[
+    "\u{1f600}",
+    "\u{1f971}",
+    "\u{1f972}",
+    "\u{2764}\u{fe0f}\u{200d}\u{1f525}",
+    "\u{1fae0}",
+    "\u{1fae8}",
+    "\u{1f642}\u{200d}\u{2194}\u{fe0f}",
+    "\u{1fae9}",
+    "\u{1faea}",
+    "\u{1f1e7}\u{1f1f7}",
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
+    "\u{1f44d}\u{1f3fd}",
+    "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+    "1\u{fe0f}\u{20e3}",
+];
+
+/// The text system of the measurement. On Linux it has a text system of its own: the text
+/// system of the window holds one lock while it lays out a line, and for a sign that no
+/// font has cosmic-text tries every installed face and keeps each in its cache. Elsewhere
+/// the text system of the window lays out such a sign at once.
+pub fn measurement_text_system(window: Arc<TextSystem>) -> Arc<TextSystem> {
+    // The text system of the test platform has no fonts, and the measurement follows it.
+    #[cfg(target_os = "linux")]
+    if !window.all_font_names().is_empty() {
+        let own = Arc::new(TextSystem::new(Arc::new(gpui_wgpu::CosmicTextSystem::new(
+            "IBM Plex Sans",
+        ))));
+        if let Err(error) = own.add_fonts(crate::assets::fonts()) {
+            tracing::warn!("the measurement of emoji has not the fonts of the design: {error:#}");
+        }
+        return own;
+    }
+    window
+}
+
+/// The key of a measurement: the version of the client, the size of the table, the names
+/// of the installed fonts, and the drawing of the probes.
+pub fn key(measure: &Measure, text: &TextSystem) -> String {
+    let mut names = text.all_font_names();
+    names.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    names.hash(&mut hasher);
+    let probes: String = PROBES
+        .iter()
+        .map(|probe| match measure.drawing(probe) {
+            Drawing::Colour => 'c',
+            Drawing::Text => 't',
+            Drawing::Broken => 'b',
+        })
+        .collect();
+    format!(
+        "{} {} {:016x} {probes}",
+        env!("CARGO_PKG_VERSION"),
+        table().count(),
+        hasher.finish()
+    )
+}
+
+/// The results of a kept measurement, by the emoji of the table.
+fn kept(measurement: &EmojiMeasurement) -> HashMap<&'static str, Drawing> {
+    let entries = |list: &[String], drawing: Drawing| {
+        list.iter()
+            .filter_map(|sequence| emojis::get(sequence).filter(|emoji| emoji.as_str() == sequence))
+            .map(move |emoji| (emoji.as_str(), drawing))
+            .collect::<Vec<_>>()
+    };
+    entries(&measurement.broken, Drawing::Broken)
+        .into_iter()
+        .chain(entries(&measurement.text, Drawing::Text))
+        .collect()
+}
+
+/// The measurement to keep of a measured table.
+fn to_keep(key: String, table: &HashMap<&'static str, Drawing>) -> EmojiMeasurement {
+    let list = |wanted: Drawing| {
+        let mut list: Vec<String> = table
+            .iter()
+            .filter(|(_, drawing)| **drawing == wanted)
+            .map(|(sequence, _)| (*sequence).to_owned())
+            .collect();
+        list.sort_unstable();
+        list
+    };
+    EmojiMeasurement {
+        key,
+        broken: list(Drawing::Broken),
+        text: list(Drawing::Text),
+    }
+}
+
+/// The results for the fonts of `text`: the kept measurement when its key is the key of
+/// these fonts, or else a measurement of the whole table, which is returned to be kept.
+pub fn measure(
+    text: Arc<TextSystem>,
+    family: SharedString,
+    kept_measurement: Option<EmojiMeasurement>,
+) -> (HashMap<&'static str, Drawing>, Option<EmojiMeasurement>) {
+    let measure = Measure::new(text.clone(), family);
+    let key = key(&measure, &text);
+    match kept_measurement {
+        Some(measurement) if measurement.key == key => (kept(&measurement), None),
+        _ => {
+            let table = measure.table();
+            let measurement = to_keep(key, &table);
+            (table, Some(measurement))
+        }
+    }
+}
+
+/// Sets the results of the application, as an ended measurement does, for a test.
+pub fn set_results(cx: &mut App, table: HashMap<&'static str, Drawing>) {
+    cx.set_global(Results {
+        started: true,
+        table: Some(Arc::new(table)),
+    });
+    cx.refresh_windows();
+}
+
 /// Measures the table on the calling thread and keeps the results, for a tool that draws
 /// screens once.
 pub fn measure_now(cx: &mut App) {
-    let text = cx.text_system().clone();
+    let text = measurement_text_system(cx.text_system().clone());
     let family = crate::theme::theme(cx).fonts.sans.clone();
-    let table = Measure::new(text, family).table();
+    let (table, _) = measure(text, family, None);
     cx.set_global(Results {
         started: true,
         table: Some(Arc::new(table)),
     });
 }
 
-/// Measures the table on the background executor once, keeps the results and draws the
-/// windows again.
-fn start(cx: &mut App) {
+/// Starts the measurement of the application on the background executor, with the
+/// measurement kept in `store`. It ends with the results in the window, which is drawn
+/// again, and with a new measurement kept when the key has changed.
+pub fn start(cx: &mut App, store: Option<EmojiFontsStore>) {
+    if cx
+        .try_global::<Results>()
+        .is_some_and(|results| results.started)
+    {
+        return;
+    }
     cx.set_global(Results {
         started: true,
         table: None,
+    });
+    let kept_measurement = store.as_ref().and_then(|store| match store.load() {
+        Ok(measurement) => measurement,
+        Err(error) => {
+            tracing::warn!("the kept measurement of emoji is not read: {error}");
+            None
+        }
     });
     let text = cx.text_system().clone();
     let family = crate::theme::theme(cx).fonts.sans.clone();
     let measured = cx
         .background_executor()
-        .spawn(async move { Measure::new(text, family).table() });
+        .spawn(async move { measure(measurement_text_system(text), family, kept_measurement) });
     cx.spawn(async move |cx| {
-        let table = Arc::new(measured.await);
+        let (table, measurement) = measured.await;
+        if let (Some(store), Some(measurement)) = (store, measurement)
+            && let Err(error) = store.save(&measurement)
+        {
+            tracing::warn!("the measurement of emoji is not kept: {error}");
+        }
         cx.update(|cx| {
             cx.set_global(Results {
                 started: true,
-                table: Some(table),
+                table: Some(Arc::new(table)),
             });
             cx.refresh_windows();
         });

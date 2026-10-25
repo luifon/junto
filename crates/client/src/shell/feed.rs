@@ -1217,11 +1217,11 @@ impl Shell {
         drawings: &Drawings,
     ) -> AnyElement {
         let colors = theme.colors;
-        let (sentence, known): (SharedString, bool) = match &quote.text {
-            QuoteText::Text(text) => (drawings.shown(text).into_owned().into(), true),
-            QuoteText::File(name) => (name.clone().into(), true),
-            QuoteText::Deleted => (text::QUOTE_DELETED.into(), false),
-            QuoteText::Unknown => (text::QUOTE_UNKNOWN.into(), false),
+        let (sentence, known): (StyledText, bool) = match &quote.text {
+            QuoteText::Text(text) => (drawings.shown(text).styled(colors.ink_3.into()), true),
+            QuoteText::File(name) => (StyledText::new(name.clone()), true),
+            QuoteText::Deleted => (StyledText::new(text::QUOTE_DELETED), false),
+            QuoteText::Unknown => (StyledText::new(text::QUOTE_UNKNOWN), false),
         };
         div()
             .relative()

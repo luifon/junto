@@ -91,6 +91,17 @@ The processing module of WebRTC worked at 32 kHz inside, the default of its vers
 
 A received picture in planes that is drawn smaller is scaled from its planes where they are, without a copy of them first (ADR 0774). Measured on 2026-10-23 with `timing::the_scale_of_a_picture_with_and_without_a_copy_of_its_planes` on an x86-64 Linux machine in the test build, in two runs, a picture of 1920 × 1080 scaled to 1128 × 634 took medians of 2.81 and 3.28 ms with the copy and 1.81 and 1.95 ms without it (each over six rounds of 1,000 pictures). A run on a Mac with Apple silicon on 2026-10-22, of which no record was kept, gave 1.36 ms and 1.25 ms; the copy allocates 3 MiB for each picture.
 
+### The emoji of the fonts are measured once per installation and font set
+
+At a start the client measures which emoji of the table the fonts of the system draw (ADR 0758). It lays out 14 probes on the background executor and reads the kept measurement of `emoji-fonts.json`; only when the key of the fonts differs does it lay out the whole table of 3,944 emoji, and on Linux it does so with a text system of its own, which is dropped afterwards. Measured on 2026-10-25 with the target `emoji_fonts` in a release build, the measurement on a thread other than the main thread:
+
+| System | Whole table | Start with the kept measurement | Memory of the process |
+|---|---|---|---|
+| Linux build image (two processors, DejaVu Sans and Noto Color Emoji 2.042) | 92 ms | 10 ms | resident 15.9 MB before, 18.9 MB after; peak 23.0 MB |
+| Windows 11 | not measured in a release build; 0.26 to 0.31 s in a debug build | not measured | not measured |
+
+The kept file held 4,345 bytes of emoji on Linux. A desktop with many more fonts than the build image takes longer for a sign that no font has, because cosmic-text tries every face; that time is on the text system of the measurement, not on the text system of the window. No figure was taken on macOS or on a Linux desktop.
+
 ## What uses the memory and the processor
 
 From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLogging=1`), as allocated bytes of the live blocks:

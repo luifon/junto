@@ -119,6 +119,9 @@ pub(crate) struct Composer {
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
     emoji_scroll: ScrollHandle,
+    /// The measurement of the emoji when the picker opened: the grid of an open picker
+    /// does not change when a measurement arrives (ADR 0758).
+    emoji_drawings: Drawings,
 }
 
 fn token_id(target: MentionTarget) -> String {
@@ -316,6 +319,7 @@ impl Composer {
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
             emoji_scroll: ScrollHandle::new(),
+            emoji_drawings: Drawings::default(),
         }
     }
 }
@@ -1134,6 +1138,7 @@ impl Shell {
         self.composer
             .emoji_find
             .update(cx, |find, cx| find.set_value("", window, cx));
+        self.composer.emoji_drawings = Drawings::of(cx);
         self.open_layer(Layer::Emoji(target), window, cx);
         self.focus_field(&self.composer.emoji_find.clone(), window, cx);
     }
@@ -1174,7 +1179,7 @@ impl Shell {
         let colors = theme.colors;
         let find = self.composer.emoji_find.read(cx).value().to_string();
         let searching = !find.trim().is_empty();
-        let drawings = Drawings::of(cx);
+        let drawings = self.composer.emoji_drawings.clone();
         let offered = groups_offered(&drawings);
         let none_drawn = offered.is_empty();
         // The group that is open, or the first that has an emoji to offer.
@@ -1490,7 +1495,7 @@ impl Shell {
                     .map(|document| {
                         drawings
                             .shown(&plain_text(document, &names, 80))
-                            .into_owned()
+                            .styled(colors.ink_3.into())
                     });
                 Some((Icon::Reply, text::replying_to(&author).into(), excerpt))
             }
@@ -1515,12 +1520,7 @@ impl Shell {
                         .ink(colors.ink)
                         .child(title),
                 )
-                .children(excerpt.map(|excerpt| {
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(excerpt))
-                }))
+                .children(excerpt.map(|excerpt| div().min_w_0().truncate().child(excerpt)))
                 .child(div().flex_1())
                 .child(
                     Button::new("cancel-compose-state")

@@ -100,6 +100,21 @@ impl Excerpt {
             .into_iter()
             .map(|range| (range, mark))
             .collect();
+        // A stand-in outside the marks has the colour of secondary text.
+        let muted = HighlightStyle {
+            color: Some(colors.ink_3.into()),
+            ..HighlightStyle::default()
+        };
+        let mut marks = marks;
+        for stand_in in shown.stand_ins() {
+            if !marks
+                .iter()
+                .any(|(range, _)| range.start < stand_in.end && stand_in.start < range.end)
+            {
+                marks.push((stand_in, muted));
+            }
+        }
+        marks.sort_by_key(|(range, _)| range.start);
         let text = SharedString::from(shown.into_owned());
         div()
             .flex()

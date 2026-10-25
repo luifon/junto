@@ -27,8 +27,6 @@ name = "app"
 path = "tests/app/main.rs"
 required-features = ["test-support"]
 
-# Native windows against an installed deployment, on the main thread (ADR 0902). It does
-# nothing unless its variables name the deployment.
 # The emoji as the text system of the system draws them (ADR 0758). Its own main on the
 # main thread, which the text system of macOS needs.
 [[test]]
@@ -36,6 +34,8 @@ name = "emoji_fonts"
 path = "tests/emoji_fonts/main.rs"
 harness = false
 
+# Native windows against an installed deployment, on the main thread (ADR 0902). It does
+# nothing unless its variables name the deployment.
 [[test]]
 name = "rehearsal"
 path = "tests/rehearsal/main.rs"
