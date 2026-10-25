@@ -679,6 +679,51 @@ async fn removing_a_waiting_server_withdraws_its_request_or_keeps_its_key() {
     assert_eq!(server.waiting_requests().len(), 1);
 }
 
+/// The book records a kept key with the end of its join request; the server added again
+/// uses the key and ends the record; a start after the end deletes the key (ADR 0712).
+#[tokio::test(start_paused = true)]
+async fn a_kept_key_is_recorded_and_deleted_after_its_request_ended() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let book = ServerBook::new(device.client.data_dir().clone());
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    server.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    let kept = book.kept_keys().unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].server_id, handle.id());
+    let ends = OffsetDateTime::now_utc().unix_timestamp() + KEPT_KEY_DAYS * 24 * 60 * 60;
+    assert!((ends - kept[0].until_unix).abs() < 60, "{kept:?}");
+
+    // A start before the end keeps the key.
+    drop(device.reopened(&network));
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+
+    // The server added again uses the key: the record ends.
+    server.set_down(false);
+    let again = device.add("acme").await;
+    assert!(book.kept_keys().unwrap().is_empty());
+    again.dispatch(AccessAction::Check).await.unwrap();
+    device.client.remove_server(again.id()).unwrap();
+    assert_eq!(book.kept_keys().unwrap().len(), 1);
+
+    // A start after the end deletes the key and the record.
+    let path = device.client.data_dir().book_file();
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    stored["kept_keys"][0]["until_unix"] = serde_json::json!(0);
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    drop(device.reopened(&network));
+    assert!(!device.client.data_dir().key_file(again.id()).exists());
+    assert!(book.kept_keys().unwrap().is_empty());
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_removal_during_an_approval_keeps_the_server_and_the_key_of_the_new_account() {
     let network = Arc::new(Network::default());
