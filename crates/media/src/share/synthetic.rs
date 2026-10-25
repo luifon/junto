@@ -79,6 +79,7 @@ struct State {
     fail_next: Option<CaptureError>,
     asked: u32,
     settings_opened: u32,
+    previewed: Vec<PictureSource>,
     started: Vec<CaptureRequest>,
     live: Vec<(Weak<AtomicBool>, Arc<dyn CaptureSink>)>,
 }
@@ -140,6 +141,7 @@ impl SyntheticCapture {
                 fail_next: None,
                 asked: 0,
                 settings_opened: 0,
+                previewed: Vec::new(),
                 started: Vec::new(),
                 live: Vec::new(),
             })),
@@ -159,6 +161,11 @@ impl SyntheticCapture {
 
     pub fn set_access(&self, access: ScreenAccess) {
         self.lock().access = access;
+    }
+
+    /// What the capture lists now.
+    pub fn listed(&self) -> ShareSources {
+        self.lock().sources.clone()
     }
 
     pub fn set_sources(&self, sources: ShareSources) {
@@ -194,6 +201,11 @@ impl SyntheticCapture {
 
     pub fn settings_opened(&self) -> u32 {
         self.lock().settings_opened
+    }
+
+    /// The sources whose preview was asked for, in order.
+    pub fn previewed(&self) -> Vec<PictureSource> {
+        self.lock().previewed.clone()
     }
 
     /// The requests of the captures that were started.
@@ -256,6 +268,57 @@ impl ScreenCapture for SyntheticCapture {
         Box::pin(async move {
             crate::executor::require_runtime("the source list of the synthetic capture");
             result
+        })
+    }
+
+    /// The picture of a source in the colours of the capture, with the left half of a
+    /// screen or window of another identifier in another colour, so that two screens of
+    /// one size give two pictures.
+    fn preview(
+        &self,
+        source: PictureSource,
+        bound: (u32, u32),
+    ) -> Pending<Result<super::picture::PictureFrame, CaptureError>> {
+        let capture = self.clone();
+        Box::pin(async move {
+            crate::executor::require_runtime("the preview of the synthetic capture");
+            let mut state = capture.lock();
+            if state.access == ScreenAccess::NotAllowed {
+                return Err(CaptureError::NotAllowed);
+            }
+            state.previewed.push(source);
+            let (size, id) = match source {
+                PictureSource::Display(id) => (
+                    state
+                        .sources
+                        .displays
+                        .iter()
+                        .find(|display| display.id == id)
+                        .map(|display| (display.width, display.height)),
+                    id,
+                ),
+                PictureSource::Window(id) => (
+                    state
+                        .sources
+                        .windows
+                        .iter()
+                        .find(|window| window.id == id)
+                        .map(|window| (window.width, window.height)),
+                    id,
+                ),
+                PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
+            };
+            let (width, height) = size.ok_or(CaptureError::SourceGone)?;
+            let (left, right) = state.colours;
+            drop(state);
+            let left = (
+                left.0,
+                left.1.wrapping_add((id as u8).wrapping_mul(40)),
+                left.2,
+            );
+            let picture = two_colours(width, height, left, right);
+            super::picture::convert(&picture, bound)
+                .ok_or_else(|| CaptureError::Failed("the picture has no size".to_owned()))
         })
     }
 

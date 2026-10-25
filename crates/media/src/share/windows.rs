@@ -24,6 +24,9 @@ mod sound;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod sources;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod still;
 
 #[cfg(target_os = "windows")]
 pub use capture::SystemCapture;

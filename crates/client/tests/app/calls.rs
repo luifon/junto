@@ -1059,6 +1059,58 @@ fn a_share_dialog_closes_and_tells_when_its_call_ends(cx: &mut TestAppContext) {
     assert!(!window.shows("call-told"));
 }
 
+/// The dialog of a share shows a picture of each listed screen and window, which the
+/// capture takes when the dialog lists them (ADR 0738). Two screens of one size have two
+/// pictures, so that a person tells them apart.
+#[gpui::test]
+fn the_share_dialog_shows_a_picture_of_each_screen_and_window(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    let mut sources = window.capture.listed();
+    sources.displays.push(junto_media::share::DisplaySource {
+        id: 2,
+        width: 1280,
+        height: 720,
+    });
+    window.capture.set_sources(sources);
+    let media = junto_client::state::view::MediaSnapshot {
+        calls: junto_media::calls::CallsView {
+            call: Some(call),
+            ..junto_media::calls::CallsView::default()
+        },
+        can_share: true,
+        ..junto_client::state::view::MediaSnapshot::default()
+    };
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| state.show_media_fixture(media, cx));
+    });
+    window.settle();
+    window.click("call-share");
+    window.until("the screens and the window have their pictures", |window| {
+        window.shows("share-preview-image:display:1")
+            && window.shows("share-preview-image:display:2")
+            && window.shows("share-preview-image:window:11")
+    });
+    use junto_media::share::PictureSource;
+    assert_eq!(
+        window.capture.previewed(),
+        [
+            PictureSource::Display(1),
+            PictureSource::Display(2),
+            PictureSource::Window(11),
+        ]
+    );
+    window.click("share-cancel");
+    assert!(!window.shows("share-picker"));
+    assert!(window.capture.started().is_empty());
+}
+
 /// ADR 0793: without a graphics processor the window takes the pictures of the cameras at
 /// most once in 200 ms, and the pictures of the shares as they arrive. With one it takes
 /// each newer picture of a camera.

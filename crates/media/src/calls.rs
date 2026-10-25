@@ -41,7 +41,7 @@ use crate::engine::{
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::VideoPicture;
 use crate::share::{
-    CaptureError, CaptureRequest, Pending, ScreenAccess, ScreenCapture, ShareSources,
+    CaptureError, CaptureRequest, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareSources,
 };
 
 /// The times of the work that the calls do by themselves.
@@ -648,6 +648,25 @@ impl Calls {
                 &self.inner.runtime,
                 async move { capture.sources().await },
             );
+        Box::pin(async move {
+            reading
+                .await
+                .map_err(|error| CaptureError::Failed(error.to_string()))?
+        })
+    }
+
+    /// A still picture of a listed screen or window for the dialog of a share, at most
+    /// `bound` pixels. The capture makes it in a task of the runtime of the client, as it
+    /// reads the sources.
+    pub fn share_preview(
+        &self,
+        source: PictureSource,
+        bound: (u32, u32),
+    ) -> Pending<Result<crate::share::picture::PictureFrame, CaptureError>> {
+        let capture = self.inner.options.capture.clone();
+        let reading = crate::executor::on_runtime(&self.inner.runtime, async move {
+            capture.preview(source, bound).await
+        });
         Box::pin(async move {
             reading
                 .await
@@ -3360,6 +3379,72 @@ mod tests {
             .unwrap();
         let client = Client::open(junto_client_core::ClientOptions::new(root)).unwrap();
         (client, server_id)
+    }
+
+    /// The dialog of a share shows a still picture of each listed screen and window. The
+    /// capture makes it on the runtime of the client, inside the bound and with the
+    /// proportions of the source; two screens of one size give two pictures. A system
+    /// without previews answers that it has none.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_preview_of_a_source_fits_its_bound_and_tells_two_screens_apart() {
+        use crate::share::synthetic::SyntheticCapture;
+        use crate::share::{DisplaySource, PREVIEW_BOUND};
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-preview-")
+            .tempdir()
+            .unwrap();
+        let (client, _) = client_with_a_silent_server(&directory.path().join("client"));
+        let capture = SyntheticCapture::new();
+        let mut sources = ShareSources {
+            system_sound: true,
+            ..ShareSources::default()
+        };
+        sources.displays = [1, 2]
+            .map(|id| DisplaySource {
+                id,
+                width: 2560,
+                height: 1440,
+            })
+            .to_vec();
+        sources.windows = capture.listed().windows;
+        capture.set_sources(sources);
+        let calls = Calls::new(client, options_with(Arc::new(capture.clone())));
+        let none = {
+            let (client, _) = client_with_a_silent_server(&directory.path().join("other"));
+            Calls::new(client, options_with(Arc::new(crate::share::NoCapture)))
+        };
+        without_runtime(move || {
+            use futures_executor::block_on;
+            let first =
+                block_on(calls.share_preview(PictureSource::Display(1), PREVIEW_BOUND)).unwrap();
+            let second =
+                block_on(calls.share_preview(PictureSource::Display(2), PREVIEW_BOUND)).unwrap();
+            assert_eq!((first.width, first.height), (320, 180));
+            assert_eq!(first.source, (2560, 1440));
+            assert_ne!(first.pixel(10, 90), second.pixel(10, 90));
+            // A window of 800 × 600 keeps its proportions inside the bound.
+            let window =
+                block_on(calls.share_preview(PictureSource::Window(11), PREVIEW_BOUND)).unwrap();
+            assert_eq!((window.width, window.height), (240, 180));
+            assert_eq!(
+                block_on(calls.share_preview(PictureSource::Display(9), PREVIEW_BOUND)),
+                Err(CaptureError::SourceGone)
+            );
+            assert_eq!(
+                block_on(none.share_preview(PictureSource::Display(1), PREVIEW_BOUND)),
+                Err(CaptureError::Unsupported)
+            );
+        });
+        assert_eq!(
+            capture.previewed(),
+            [
+                PictureSource::Display(1),
+                PictureSource::Display(2),
+                PictureSource::Window(11),
+                PictureSource::Display(9),
+            ]
+        );
     }
 
     /// The window polls the futures of the calls on the executor of gpui, which has no

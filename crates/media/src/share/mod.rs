@@ -177,6 +177,9 @@ impl Resolution {
     }
 }
 
+/// The largest picture of a source in the dialog of a share.
+pub const PREVIEW_BOUND: (u32, u32) = (320, 180);
+
 /// The frame rates that a person chooses from.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
 pub const DEFAULT_FRAME_RATE: u32 = 30;
@@ -298,6 +301,19 @@ pub trait ScreenCapture: Send + Sync + 'static {
 
     /// The screens, windows and applications that can be shared now.
     fn sources(&self) -> Pending<Result<ShareSources, CaptureError>>;
+
+    /// One still picture of a listed screen or window for the dialog in which the person
+    /// chooses what to share, at most `bound` pixels with the proportions of the source.
+    /// A system without such a picture answers [`CaptureError::Unsupported`]: on Linux the
+    /// desktop portal shows its own dialog (ADR 0736).
+    fn preview(
+        &self,
+        source: PictureSource,
+        bound: (u32, u32),
+    ) -> Pending<Result<picture::PictureFrame, CaptureError>> {
+        let _ = (source, bound);
+        Box::pin(async { Err(CaptureError::Unsupported) })
+    }
 
     /// Starts a capture. Pictures and sound go to `sink` until the stream is dropped or
     /// the capture ends by itself.
