@@ -680,6 +680,86 @@ async fn removing_a_waiting_server_withdraws_its_request_or_keeps_its_key() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_removal_during_an_approval_keeps_the_server_and_the_key_of_the_new_account() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let key = handle.device_public_key().unwrap();
+    server.decide_request(key, true);
+    assert!(matches!(
+        device.client.remove_server_when_free(handle.id()).await,
+        Err(RemoveError::Approved)
+    ));
+    assert_eq!(device.client.servers().len(), 1);
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+    assert_eq!(server.account_of(key), Some(logged_in(&handle)));
+    assert_eq!(server.account_count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_kept_key_of_another_address_withdraws_its_request_before_it_is_discarded() {
+    let network = Arc::new(Network::default());
+    let real = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    real.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    real.set_down(false);
+    assert!(device.client.data_dir().key_file(real.server_id()).exists());
+    assert_eq!(real.waiting_requests().len(), 1);
+
+    network.plug("moved", real.clone());
+    let flow = device.client.add_server();
+    let fetch = AddServerAction::Fetch {
+        address: "moved.example.test".to_owned(),
+    };
+    assert!(flow.dispatch(fetch).await.is_err());
+
+    // Without an answer of the server the key stays and its request waits.
+    real.set_down(true);
+    assert!(flow.dispatch(AddServerAction::DiscardKey).await.is_err());
+    real.set_down(false);
+    assert!(device.client.data_dir().key_file(real.server_id()).exists());
+    assert_eq!(real.waiting_requests().len(), 1);
+
+    flow.dispatch(AddServerAction::DiscardKey).await.unwrap();
+    assert!(real.waiting_requests().is_empty());
+    assert!(!device.client.data_dir().key_file(real.server_id()).exists());
+    assert!(matches!(flow.view().state, AddServerState::Preview(_)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_that_already_waits_is_shown_with_the_name_that_the_server_holds() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    server.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    server.set_down(false);
+
+    let again = device.add("acme").await;
+    again.dispatch(ask("Another name")).await.unwrap();
+    assert!(matches!(
+        again.access().state,
+        AccessState::WaitingForApproval { name, .. } if name == "Grace"
+    ));
+    assert_eq!(server.waiting_requests().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_request_that_the_server_already_holds_is_found_again() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");

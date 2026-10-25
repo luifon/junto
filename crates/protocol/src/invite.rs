@@ -98,6 +98,12 @@ pub struct JoinRequest {
     /// account active again with its own name, not the name of the request (ADR 0121).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub returning_account_id: Option<AccountId>,
+    /// The number of other active, inactive or banned accounts whose name is the name of
+    /// the request, apart from case and surrounding spaces, when the server gave the
+    /// request. The returning account is not counted. A person with a second device key
+    /// asks with the name of the account that the first key made (ADR 0761).
+    #[serde(default)]
+    pub accounts_with_name: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -20,7 +20,7 @@ use time::OffsetDateTime;
 use crate::access::{self, Access};
 use crate::audit::{self, About};
 use crate::db::{self, StoredText};
-use crate::error::{ApiError, ApiResult, violates};
+use crate::error::{ApiError, ApiResult};
 use crate::events;
 use crate::events::audience::Audience;
 use crate::extract::{ApiJson, ApiPath, Bearer, ClientAddress};
@@ -48,6 +48,7 @@ type JoinRequestRow = (
     OffsetDateTime,
     OffsetDateTime,
     Option<AccountId>,
+    i64,
 );
 
 const INVITE_SELECT: &str = "select i.id, i.created_by, i.created_at, i.expires_at, i.max_uses, \
@@ -597,6 +598,7 @@ pub async fn request_to_join(
         created_at: now,
         expires_at: now + limits.join_request_lifetime,
         returning_account_id: None,
+        accounts_with_name: 0,
     };
 
     let (status, request) = transact!(app, |connection| {
@@ -612,6 +614,8 @@ pub async fn request_to_join(
         let returning =
             super::departures::returning_account(connection, &proven.public_key).await?;
         let returning_account_id = returning.map(|(account_id, _)| account_id);
+        let accounts_with_name =
+            count_accounts_named(connection, &request.name, returning_account_id).await?;
         sqlx::query(
             "update join_requests set state = 'expired'
              where public_key = $1 and state = 'pending' and expires_at <= $2",
@@ -629,17 +633,21 @@ pub async fn request_to_join(
             .fetch_optional(&mut *connection)
             .await?;
         if let Some((id, name, created_at, expires_at)) = waiting {
+            let accounts_with_name =
+                count_accounts_named(connection, &name, returning_account_id).await?;
             let first = JoinRequest {
                 id,
                 name,
                 created_at,
                 expires_at,
                 returning_account_id,
+                accounts_with_name,
             };
             return Ok((StatusCode::OK, first));
         }
         let request = JoinRequest {
             returning_account_id,
+            accounts_with_name,
             ..request.clone()
         };
         let pending: i64 = sqlx::query_scalar(
@@ -654,7 +662,9 @@ pub async fn request_to_join(
                 "too many join requests wait for an answer",
             ));
         }
-        let inserted = sqlx::query(
+        // A concurrent request of the same key that inserted first makes this transaction
+        // run again, and the next run returns that request (ADR 0009, ADR 0111).
+        sqlx::query(
             "insert into join_requests (id, public_key, name, state, created_at, expires_at)
              values ($1, $2, $3, 'pending', $4, $5)",
         )
@@ -664,19 +674,8 @@ pub async fn request_to_join(
         .bind(request.created_at)
         .bind(request.expires_at)
         .execute(&mut *connection)
-        .await;
-        match inserted {
-            Ok(_) => {}
-            // A concurrent request of the same key normally fails as a serialization
-            // failure and runs again, finding the first request (ADR 0009).
-            Err(error) if violates(&error, "join_requests_one_pending_per_key") => {
-                return Err(ApiError::new(
-                    ErrorCode::JoinRequestPending,
-                    "a join request of this device key already waits for an answer",
-                ));
-            }
-            Err(error) => return Err(error.into()),
-        }
+        .await
+        .map_err(ApiError::concurrent)?;
         let created = Event::JoinRequestCreated {
             join_request: request.clone(),
         };
@@ -684,6 +683,26 @@ pub async fn request_to_join(
         Ok((StatusCode::CREATED, request))
     })?;
     Ok((status, Json(request)))
+}
+
+/// The number of active, inactive or banned accounts other than `returning` whose name is
+/// `name`, apart from case and surrounding spaces.
+async fn count_accounts_named(
+    connection: &mut PgConnection,
+    name: &str,
+    returning: Option<AccountId>,
+) -> ApiResult<u32> {
+    let count: i64 = sqlx::query_scalar(
+        "select count(*) from accounts
+         where lower(btrim(name)) = lower(btrim($1))
+           and status in ('active', 'inactive', 'banned')
+           and id is distinct from $2",
+    )
+    .bind(name)
+    .bind(returning)
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// Withdraws the waiting join request of a device key. The device sends this before it
@@ -788,12 +807,18 @@ pub async fn list_join_requests(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::ApproveJoinRequests))?;
         let rows: Vec<JoinRequestRow> = sqlx::query_as(
-            "select r.id, r.name, r.created_at, r.expires_at,
-                    (select a.id from devices d join accounts a on a.id = d.account_id
-                     where d.public_key = r.public_key and a.status = 'inactive')
-             from join_requests r
-             where r.state = 'pending' and r.expires_at > $1
-             order by r.created_at, r.id",
+            "select w.id, w.name, w.created_at, w.expires_at, w.returning,
+                    (select count(*) from accounts a
+                     where lower(btrim(a.name)) = lower(btrim(w.name))
+                       and a.status in ('active', 'inactive', 'banned')
+                       and a.id is distinct from w.returning)
+             from (select r.id, r.name, r.created_at, r.expires_at,
+                          (select a.id from devices d join accounts a on a.id = d.account_id
+                           where d.public_key = r.public_key and a.status = 'inactive')
+                              as returning
+                   from join_requests r
+                   where r.state = 'pending' and r.expires_at > $1) w
+             order by w.created_at, w.id",
         )
         .bind(now)
         .fetch_all(&mut *connection)
@@ -801,12 +826,13 @@ pub async fn list_join_requests(
         Ok(rows
             .into_iter()
             .map(
-                |(id, name, created_at, expires_at, returning_account_id)| JoinRequest {
+                |(id, name, created_at, expires_at, returning_account_id, accounts)| JoinRequest {
                     id,
                     name,
                     created_at,
                     expires_at,
                     returning_account_id,
+                    accounts_with_name: u32::try_from(accounts).unwrap_or(u32::MAX),
                 },
             )
             .collect())

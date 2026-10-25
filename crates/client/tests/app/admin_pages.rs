@@ -1195,6 +1195,16 @@ fn two_waiting_requests_with_one_name_are_marked_in_the_window(cx: &mut TestAppC
     window.until("the notice is drawn", |window| {
         window.shows("request-same-name")
     });
+
+    // The first is approved: the second keeps its mark, because an account has the name now.
+    click_in_page(&mut window, sel("request-approve", first));
+    let left = awaited(&mut window, "the first request left the list", |window| {
+        request_line(window, second).filter(|_| request_line(window, first).is_none())
+    });
+    assert!(left.same_name);
+    window.until("the notice is still drawn", |window| {
+        window.shows("request-same-name")
+    });
 }
 
 #[gpui::test]

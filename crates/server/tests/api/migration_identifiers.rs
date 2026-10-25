@@ -229,7 +229,7 @@ async fn migration_0013_reads_malformed_invite_identifiers_as_naming_nothing() {
 }
 
 /// The migrations of `MIGRATIONS` up to `version`.
-fn migrations_up_to(version: i64) -> sqlx::migrate::Migrator {
+pub(crate) fn migrations_up_to(version: i64) -> sqlx::migrate::Migrator {
     let migrations = junto_server::bootstrap::MIGRATIONS
         .iter()
         .filter(|migration| migration.version <= version)

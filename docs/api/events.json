@@ -5058,6 +5058,12 @@
       },
       "JoinRequest": {
         "properties": {
+          "accounts_with_name": {
+            "description": "The number of other active, inactive or banned accounts whose name is the name of\nthe request, apart from case and surrounding spaces, when the server gave the\nrequest. The returning account is not counted. A person with a second device key\nasks with the name of the account that the first key made (ADR 0761).",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"

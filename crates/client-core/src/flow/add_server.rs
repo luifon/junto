@@ -4,13 +4,14 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::ServerId;
 use url::Url;
 
 use super::machine::{Machine, Outcome};
 use super::{FlowError, FlowView};
 use crate::address::ServerAddress;
-use crate::api::server_info;
+use crate::api::{ApiClient, server_info};
 use crate::book::{ConnectionMode, ServerEntry};
 use crate::manager::Inner;
 use crate::version::{ApiVersion, Incompatibility};
@@ -158,7 +159,16 @@ impl AddServerFlow {
                 }
                 Err(error) => Outcome::failed(error),
             },
-            (AddServerAction::DiscardKey, AddServerState::KeyOfOtherAddress { preview, .. }) => {
+            (
+                AddServerAction::DiscardKey,
+                AddServerState::KeyOfOtherAddress {
+                    preview,
+                    key_address,
+                },
+            ) => {
+                if let Err(error) = self.withdraw_with_stored_key(&preview, &key_address).await {
+                    return Outcome::failed(error);
+                }
                 let discarded = core.book.lock().map_err(FlowError::from).and_then(|_lock| {
                     let saved = core.book.entry(preview.server_id)?;
                     if let Some(saved) = saved {
@@ -199,6 +209,36 @@ impl AddServerFlow {
             (AddServerAction::Save { .. } | AddServerAction::DiscardKey, _) => {
                 Outcome::failed(FlowError::NotAvailable)
             }
+        }
+    }
+
+    /// Withdraws a join request that the stored key of the previewed server can still have
+    /// waiting, before the key is discarded: a removal that the server did not confirm keeps
+    /// the key of a waiting request (ADR 0712). The device signs at the previewed address; the
+    /// signature names that origin and the withdrawal, so it withdraws at most a request and
+    /// a server whose public origins do not include that address refuses it (ADR 0711). A key
+    /// that belongs to an account is discarded as before.
+    async fn withdraw_with_stored_key(
+        &self,
+        preview: &ServerPreview,
+        key_address: &ServerAddress,
+    ) -> Result<(), FlowError> {
+        let core = &self.client.core;
+        let Some(key) = core.keys.load(preview.server_id, key_address)? else {
+            return Ok(());
+        };
+        let version = preview.version.map_err(FlowError::Incompatible)?;
+        let api = ApiClient::new(
+            core.transport.clone(),
+            preview.address.clone(),
+            preview.server_id,
+            version,
+            core.policy,
+        );
+        match api.withdraw_join_request(&key).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == Some(ErrorCode::KeyAlreadyRegistered) => Ok(()),
+            Err(error) => Err(error.into()),
         }
     }
 

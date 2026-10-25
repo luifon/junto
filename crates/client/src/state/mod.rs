@@ -2403,7 +2403,9 @@ impl AppState {
     ) {
         self.pending.removing.remove(&server_id);
         match result {
-            Ok(()) => {
+            // An approval that came during the removal keeps the server: its state shows the
+            // new account.
+            Ok(()) | Err(junto_client_core::manager::RemoveError::Approved) => {
                 self.pending.remove_failed.remove(&server_id);
             }
             Err(error) => {

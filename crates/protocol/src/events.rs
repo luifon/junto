@@ -1207,6 +1207,7 @@ mod tests {
                     created_at: time(),
                     expires_at: time(),
                     returning_account_id: None,
+                    accounts_with_name: 0,
                 },
             },
             Event::JoinRequestDecided {

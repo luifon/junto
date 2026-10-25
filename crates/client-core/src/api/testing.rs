@@ -792,6 +792,7 @@ impl World {
                         created_at: now,
                         expires_at: now + time::Duration::days(7),
                         returning_account_id: None,
+                        accounts_with_name: 0,
                     };
                     return json(200, &first).map_err(plain);
                 }
@@ -810,6 +811,7 @@ impl World {
                     created_at: now,
                     expires_at: now + time::Duration::days(7),
                     returning_account_id: None,
+                    accounts_with_name: 0,
                 };
                 json(201, &created).map_err(plain)
             }

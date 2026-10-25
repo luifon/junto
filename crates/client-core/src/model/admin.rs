@@ -1011,7 +1011,19 @@ impl AdminModel {
                 if *state != JoinRequestState::Pending
                     && let Some(requests) = self.join_requests.loaded_mut()
                 {
-                    requests.retain(|held| held.id != *join_request_id);
+                    let decided = requests.iter().position(|held| held.id == *join_request_id);
+                    if let Some(decided) = decided.map(|index| requests.remove(index))
+                        && *state == JoinRequestState::Approved
+                        && decided.returning_account_id.is_none()
+                    {
+                        // The approval made an account with this name (ADR 0761).
+                        let name = comparable_name(&decided.name);
+                        for held in requests.iter_mut() {
+                            if comparable_name(&held.name) == name {
+                                held.accounts_with_name = held.accounts_with_name.saturating_add(1);
+                            }
+                        }
+                    }
                 }
             }
             Event::JoinRequestWithdrawn { join_request_id } => {
@@ -1473,4 +1485,10 @@ impl ServerModel {
     ) {
         self.admin_mut().forget_workspace(workspace_id, channels);
     }
+}
+
+/// A name as the comparison of the names of join requests and accounts reads it: without
+/// surrounding spaces and without case (ADR 0761).
+pub fn comparable_name(name: &str) -> String {
+    name.trim().to_lowercase()
 }
