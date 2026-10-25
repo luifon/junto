@@ -309,6 +309,7 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/notify.rs` | The interface to the notifications of the system, and on Windows the identity of the notifications (ADR 0742). |
 | `src/shell/title_bar.rs` | The title bar: the headers that act as the title bar on macOS, and the strip with the window buttons on Windows and on a Wayland compositor without server decorations (ADR 0703). |
 | `src/highlight.rs` | The syntax colours of a code block. |
+| `src/emoji.rs` | Which emoji of the table the fonts of the system draw, measured once on the background executor, and the stand-in of one that they do not draw (ADR 0758). |
 | `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, `composer.rs` the composer with its pickers, `notices.rs` the notices and the notification settings, `search.rs` the search, and `recorded.rs` the card of a recording and the transcript. |
 | `src/state/admin.rs`, `src/state/admin/` | The administration: the open page, its requests, and the derivation of each page. |
 | `src/shell/admin.rs`, `src/shell/admin/` | The layer of the administration and its pages. |

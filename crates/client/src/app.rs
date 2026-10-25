@@ -75,6 +75,10 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
 /// The state of the application over an opened client, with the sound devices of the
 /// machine.
 pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppState> {
+    // The emoji that the fonts draw, kept in the data directory with a key of the fonts
+    // (ADR 0758).
+    let emoji = junto_client_core::emoji_fonts::EmojiFontsStore::new(client.data_dir().clone());
+    crate::emoji::start(cx, Some(emoji));
     let state = state_with_media(client, start, MediaOptions::system(), cx);
     // The notifications of the system, and the press on one of them. Only this start
     // shows them: a test and the screen tool keep what they would show (ADR 0742).

@@ -52,9 +52,12 @@ macro_rules! icons {
 }
 
 icons! {
+    Ball => "ball",
     Bell => "bell",
     BellOff => "belloff",
+    Bulb => "bulb",
     Camera => "cam",
+    Car => "car",
     Chat => "thread",
     Check => "check",
     ChevronDown => "chev",
@@ -64,18 +67,22 @@ icons! {
     Code => "code",
     CodeBlock => "cblock",
     Collapse => "collapse",
+    Cup => "cup",
     Detach => "detach",
     Download => "down",
     Edit => "edit",
     EditOff => "editoff",
     Expand => "expand",
     EyeOff => "eyeoff",
+    Flag => "flag",
     Fork => "fork",
     Gear => "gear",
     Hand => "hand",
     Hash => "hash",
+    Heart => "heart",
     Invite => "invite",
     Key => "key",
+    Leaf => "leaf",
     Leave => "leave",
     Link => "link",
     List => "list",
@@ -86,6 +93,7 @@ icons! {
     Minus => "minus",
     Open => "open",
     People => "people",
+    Person => "person",
     Phones => "phones",
     PhonesOff => "phonesoff",
     Picture => "img",
@@ -133,10 +141,14 @@ impl AssetSource for Assets {
     }
 }
 
+/// The typefaces of the design.
+pub fn fonts() -> Vec<Cow<'static, [u8]>> {
+    FONTS.iter().map(|font| Cow::Borrowed(*font)).collect()
+}
+
 /// Gives the text system the typefaces of the design.
 pub fn load_fonts(cx: &App) -> gpui::Result<()> {
-    cx.text_system()
-        .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
+    cx.text_system().add_fonts(fonts())
 }
 
 #[cfg(test)]

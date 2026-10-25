@@ -77,6 +77,9 @@ impl Excerpt {
             font_weight: Some(FontWeight::BOLD),
             ..HighlightStyle::default()
         };
+        // An emoji that the fonts do not draw is shown by its stand-in, and the marks of
+        // a search follow it (ADR 0758).
+        let shown = crate::emoji::Drawings::current(cx).shown(&self.text);
         let marks: Vec<(Range<usize>, HighlightStyle)> = self
             .marks
             .into_iter()
@@ -86,8 +89,33 @@ impl Excerpt {
                     && self.text.is_char_boundary(range.end)
                     && range.end <= self.text.len()
             })
+            .map(|range| shown.range(range))
+            .fold(Vec::new(), |mut kept: Vec<Range<usize>>, range| {
+                // Two marks in one replaced emoji become one range.
+                if kept.last().is_none_or(|last| last.end <= range.start) {
+                    kept.push(range);
+                }
+                kept
+            })
+            .into_iter()
             .map(|range| (range, mark))
             .collect();
+        // A stand-in outside the marks has the colour of secondary text.
+        let muted = HighlightStyle {
+            color: Some(colors.ink_3.into()),
+            ..HighlightStyle::default()
+        };
+        let mut marks = marks;
+        for stand_in in shown.stand_ins() {
+            if !marks
+                .iter()
+                .any(|(range, _)| range.start < stand_in.end && stand_in.start < range.end)
+            {
+                marks.push((stand_in, muted));
+            }
+        }
+        marks.sort_by_key(|(range, _)| range.start);
+        let text = SharedString::from(shown.into_owned());
         div()
             .flex()
             .flex_col()
@@ -177,7 +205,7 @@ impl Excerpt {
                                     .text_size(u(14.5))
                                     .line_height(u(21.0))
                                     .ink(colors.ink)
-                                    .child(StyledText::new(self.text).with_highlights(marks)),
+                                    .child(StyledText::new(text).with_highlights(marks)),
                             ),
                     ),
             )

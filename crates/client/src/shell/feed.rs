@@ -30,6 +30,7 @@ use junto_client_core::transfers::{DownloadStage, UploadStage};
 use super::pictures::{MOST_PICTURES, Outcome, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
+use crate::emoji::Drawings;
 use crate::highlight::{self, Token};
 use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
@@ -403,7 +404,7 @@ struct Rich {
 }
 
 impl Rich {
-    fn of(content: &[Inline], names: &Names, theme: &Theme) -> Self {
+    fn of(content: &[Inline], names: &Names, theme: &Theme, drawings: &Drawings) -> Self {
         let colors = theme.colors;
         let mut rich = Self {
             text: String::new(),
@@ -415,9 +416,9 @@ impl Rich {
             let start = rich.text.len();
             match node {
                 Inline::Text { text, marks } => {
-                    rich.text.push_str(text);
-                    if !marks.is_empty() {
-                        let mut style = HighlightStyle::default();
+                    let stand_ins = rich.push_shown(text, drawings);
+                    let mut style = HighlightStyle::default();
+                    if !marks.is_empty() || !stand_ins.is_empty() {
                         for mark in marks {
                             match mark {
                                 Mark::Bold => style.font_weight = Some(FontWeight::BOLD),
@@ -430,24 +431,23 @@ impl Rich {
                                 }
                             }
                         }
-                        rich.highlights.push((start..rich.text.len(), style));
+                        let end = rich.text.len();
+                        rich.style(start..end, style, &stand_ins, theme);
                     }
                 }
                 Inline::Code { text } => {
                     // A thin space at each end stands for the padding of the design.
                     rich.text.push('\u{2009}');
-                    rich.text.push_str(text);
+                    let stand_ins = rich.push_shown(text, drawings);
                     rich.text.push('\u{2009}');
                     let range = start..rich.text.len();
-                    rich.highlights.push((
-                        range.clone(),
-                        HighlightStyle {
-                            color: Some(colors.terracotta_deep.into()),
-                            background_color: Some(colors.code_wash.into()),
-                            font_weight: Some(FontWeight::MEDIUM),
-                            ..HighlightStyle::default()
-                        },
-                    ));
+                    let style = HighlightStyle {
+                        color: Some(colors.terracotta_deep.into()),
+                        background_color: Some(colors.code_wash.into()),
+                        font_weight: Some(FontWeight::MEDIUM),
+                        ..HighlightStyle::default()
+                    };
+                    rich.style(range.clone(), style, &stand_ins, theme);
                     rich.families.push((range, theme.fonts.mono.clone()));
                 }
                 // The document came from a server, and a server is not trusted with what
@@ -455,23 +455,23 @@ impl Rich {
                 // take as a link is drawn as text, and a link opens in the form of ADR 0740.
                 Inline::Link { text, url } => {
                     let Some(link) = Link::parse(url) else {
-                        rich.text.push_str(text);
+                        let stand_ins = rich.push_shown(text, drawings);
+                        let end = rich.text.len();
+                        rich.style(start..end, HighlightStyle::default(), &stand_ins, theme);
                         continue;
                     };
-                    rich.text.push_str(text);
+                    let stand_ins = rich.push_shown(text, drawings);
                     let range = start..rich.text.len();
-                    rich.highlights.push((
-                        range.clone(),
-                        HighlightStyle {
-                            color: Some(colors.cypress.into()),
-                            underline: Some(UnderlineStyle {
-                                thickness: px(1.0),
-                                color: None,
-                                wavy: false,
-                            }),
-                            ..HighlightStyle::default()
-                        },
-                    ));
+                    let style = HighlightStyle {
+                        color: Some(colors.cypress.into()),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.0),
+                            color: None,
+                            wavy: false,
+                        }),
+                        ..HighlightStyle::default()
+                    };
+                    rich.style(range.clone(), style, &stand_ins, theme);
                     rich.links.push((range, link));
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
@@ -513,6 +513,45 @@ impl Rich {
         rich
     }
 
+    /// Adds `text` as the window shows it (ADR 0758). Returns the ranges of the stand-ins
+    /// of the emoji that the fonts do not draw.
+    fn push_shown(&mut self, text: &str, drawings: &Drawings) -> Vec<Range<usize>> {
+        let start = self.text.len();
+        let shown = drawings.shown(text);
+        let stand_ins = shown
+            .stand_ins()
+            .map(|range| start + range.start..start + range.end)
+            .collect();
+        self.text.push_str(&shown.text);
+        stand_ins
+    }
+
+    /// Gives `range` the style `style`, and each stand-in inside it the colour of secondary
+    /// text as well. The ranges of the highlights stay in order and do not overlap.
+    fn style(
+        &mut self,
+        range: Range<usize>,
+        style: HighlightStyle,
+        stand_ins: &[Range<usize>],
+        theme: &Theme,
+    ) {
+        let mut at = range.start;
+        for stand_in in stand_ins {
+            if at < stand_in.start {
+                self.highlights.push((at..stand_in.start, style));
+            }
+            let muted = HighlightStyle {
+                color: Some(theme.colors.ink_3.into()),
+                ..style
+            };
+            self.highlights.push((stand_in.clone(), muted));
+            at = stand_in.end;
+        }
+        if at < range.end {
+            self.highlights.push((at..range.end, style));
+        }
+    }
+
     /// The element of the text. `id` is the name of the element among the texts of its
     /// row.
     fn element(self, id: usize) -> AnyElement {
@@ -544,10 +583,16 @@ impl Rich {
 }
 
 /// One block of a document in the list.
-fn paragraph(content: &[Inline], names: &Names, theme: &Theme, id: usize) -> AnyElement {
+fn paragraph(
+    content: &[Inline],
+    names: &Names,
+    theme: &Theme,
+    drawings: &Drawings,
+    id: usize,
+) -> AnyElement {
     div()
         .min_w_0()
-        .child(Rich::of(content, names, theme).element(id))
+        .child(Rich::of(content, names, theme, drawings).element(id))
         .into_any_element()
 }
 
@@ -1386,13 +1431,18 @@ impl Shell {
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
-    fn reply_line(quote: &Quote, faces: &ServerFaces, theme: &Theme) -> AnyElement {
+    fn reply_line(
+        quote: &Quote,
+        faces: &ServerFaces,
+        theme: &Theme,
+        drawings: &Drawings,
+    ) -> AnyElement {
         let colors = theme.colors;
-        let (sentence, known): (SharedString, bool) = match &quote.text {
-            QuoteText::Text(text) => (text.clone().into(), true),
-            QuoteText::File(name) => (name.clone().into(), true),
-            QuoteText::Deleted => (text::QUOTE_DELETED.into(), false),
-            QuoteText::Unknown => (text::QUOTE_UNKNOWN.into(), false),
+        let (sentence, known): (StyledText, bool) = match &quote.text {
+            QuoteText::Text(text) => (drawings.shown(text).styled(colors.ink_3.into()), true),
+            QuoteText::File(name) => (StyledText::new(name.clone()), true),
+            QuoteText::Deleted => (StyledText::new(text::QUOTE_DELETED), false),
+            QuoteText::Unknown => (StyledText::new(text::QUOTE_UNKNOWN), false),
         };
         div()
             .relative()
@@ -1450,6 +1500,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        let drawings = Drawings::of(cx);
         let mut blocks = Vec::new();
         let mut texts = 0;
         let mut next = || {
@@ -1459,7 +1510,7 @@ impl Shell {
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
                 Block::Paragraph { content } => {
-                    blocks.push(paragraph(content, names, theme, next()));
+                    blocks.push(paragraph(content, names, theme, &drawings, next()));
                 }
                 Block::Quote { content } => blocks.push(
                     div()
@@ -1468,7 +1519,7 @@ impl Shell {
                         .border_l_3()
                         .border_color(Hsla::from(colors.rule))
                         .ink(colors.ink_2)
-                        .child(paragraph(content, names, theme, next()))
+                        .child(paragraph(content, names, theme, &drawings, next()))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
@@ -1494,7 +1545,7 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, next()))
+                                .child(paragraph(item, names, theme, &drawings, next()))
                                 .into_any_element(),
                         );
                     }
@@ -1572,7 +1623,7 @@ impl Shell {
                                 .py(u(1.0))
                                 .when(checked, |row| row.ink(colors.ink_3))
                                 .child(check)
-                                .child(paragraph(&item.content, names, theme, next()))
+                                .child(paragraph(&item.content, names, theme, &drawings, next()))
                                 .into_any_element(),
                         );
                     }
@@ -1598,9 +1649,12 @@ impl Shell {
         let can_react = row.can_react;
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
+        let drawings = Drawings::of(cx);
         let chips = message.reactions.iter().enumerate().map(|(index, held)| {
             let Reaction { emoji, count, own } = held.clone();
-            let label: SharedString = text::reaction_label(&emoji, count, own).into();
+            let shown = SharedString::from(drawings.shown(&emoji).into_owned());
+            let stand_in = shown.as_ref() != emoji.as_str();
+            let label: SharedString = text::reaction_label(&shown, count, own).into();
             let sent = emoji.clone();
             let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
             div()
@@ -1641,7 +1695,11 @@ impl Shell {
                             });
                         }))
                 })
-                .child(SharedString::from(emoji))
+                .child(
+                    div()
+                        .when(stand_in, |sign| sign.ink(colors.ink_3))
+                        .child(crate::ui::paint_text(shown, None)),
+                )
                 .child(
                     div()
                         .text_size(u(12.5))
@@ -2544,7 +2602,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme)),
+                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
             )
             .child(
                 div()
@@ -2648,7 +2706,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme)),
+                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
             )
             .child(
                 div()
@@ -3101,7 +3159,7 @@ mod tests {
             link("mailto:a@example.com"),
             link("https://user:secret@example.com"),
         ];
-        let rich = Rich::of(&content, &names, &theme);
+        let rich = Rich::of(&content, &names, &theme, &Drawings::default());
         assert_eq!(rich.text, "here".repeat(6));
         let opened: Vec<&str> = rich
             .links
@@ -3125,7 +3183,7 @@ mod tests {
             link(r#"mailto:a@example.com?body=x" --attach "C:\Users\a b\secret.txt"#),
             link(r#"https://example.com/a b"c?q="x y"#),
         ];
-        let rich = Rich::of(&content, &names, &theme);
+        let rich = Rich::of(&content, &names, &theme, &Drawings::default());
         let opened: Vec<&str> = rich
             .links
             .iter()
@@ -3138,5 +3196,56 @@ mod tests {
                 "https://example.com/a%20b%22c?q=%22x%20y"
             ]
         );
+    }
+
+    #[test]
+    fn a_message_shows_the_stand_in_of_an_emoji_in_its_text_its_links_and_its_code() {
+        let theme = Theme::stone();
+        let names = Names::default();
+        let brazil = "\u{1f1e7}\u{1f1f7}";
+        let drawings = Drawings::given([(brazil, crate::emoji::Drawing::Broken)].into());
+        let content = [
+            Inline::Text {
+                text: format!("Hello {brazil} and"),
+                marks: vec![Mark::Bold],
+            },
+            Inline::Link {
+                text: format!(" {brazil}"),
+                url: "https://example.com/a".to_owned(),
+            },
+            Inline::Code {
+                text: brazil.to_owned(),
+            },
+        ];
+        let rich = Rich::of(&content, &names, &theme, &drawings);
+        assert_eq!(
+            rich.text,
+            "Hello :brazil: and :brazil:\u{2009}:brazil:\u{2009}"
+        );
+        // The highlights are in order and do not overlap, as gpui requires, and every
+        // stand-in has the colour of secondary text.
+        let mut end = 0;
+        for (range, _) in &rich.highlights {
+            assert!(
+                range.start >= end && range.end > range.start,
+                "{:?}",
+                rich.highlights
+            );
+            end = range.end;
+        }
+        let muted: Vec<&str> = rich
+            .highlights
+            .iter()
+            .filter(|(_, style)| style.color == Some(theme.colors.ink_3.into()))
+            .map(|(range, _)| &rich.text[range.clone()])
+            .collect();
+        assert_eq!(muted, [":brazil:", ":brazil:", ":brazil:"]);
+        let bold: Vec<&str> = rich
+            .highlights
+            .iter()
+            .filter(|(_, style)| style.font_weight == Some(FontWeight::BOLD))
+            .map(|(range, _)| &rich.text[range.clone()])
+            .collect();
+        assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
     }
 }

@@ -25,6 +25,7 @@ Limits per mode were considered and not chosen. A limit fails a change that adds
 
 ## Consequences
 
+- The measurement of the emoji of the fonts at a start (ADR 0758) is measured with the target `emoji_fonts` of the client in a release build: the time of a start without a kept measurement and of a start with one, and the memory of the process. Its figures are in `docs/client-performance.md`.
 - The table of the modes and its comparison with other clients are in `docs/client-performance.md`. A change that is meant to reduce the memory or the processor time of a mode is measured with this target before and after.
 - The readings include the program that drives the window: its runtime with two worker threads for the accounts of the other people and the frames that it gives the window at the rate of a display. On the test platform of gpui the background tasks of gpui run on the thread of the windows, so their processor time is in the process as in the product, but on one thread.
 - The camera of the client is the synthetic camera, which makes pictures of 640 × 360; a real camera gives 1280 × 720, so the camera modes measure less encoding than a real camera needs. The sound devices are the synthetic ones of the tests.

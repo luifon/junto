@@ -524,6 +524,11 @@ impl Screen {
         self
     }
 
+    fn size(mut self, width: f32, height: f32) -> Self {
+        self.size = (width, height);
+        self
+    }
+
     fn scale(mut self, scale: u32) -> Self {
         self.scale = scale;
         self
@@ -555,6 +560,8 @@ impl Studio {
             gpui_platform::current_headless_renderer()
         });
         cx.update(app::init).map_err(|error| format!("{error:#}"))?;
+        // The screens show the emoji as the fonts of the system draw them (ADR 0758).
+        cx.update(junto_client::emoji::measure_now);
         Ok(Self {
             cx,
             out,

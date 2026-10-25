@@ -38,7 +38,7 @@ Actions of a message:
 - React, reply, edit and delete are a bar at the message under the pointer. The same actions are a menu of the message: a right click, and from the keyboard the Menu key, Shift and F10, Enter or Space while the message holds the focus (ADR 0702). Each action is offered only where the server takes it; a message without an action has no menu, and no bar unless the bar states that the message is permanent.
 - Edit is offered for an own message, and delete for an own message and with "manage messages". The roles are a prediction; the server decides (ADR 0739).
 - A deletion asks first. A reaction, an edit and a deletion change nothing on screen before the server tells the change with its event; the answer to the request is not shown (ADR 0746). A refusal is told above the composer.
-- The emoji of the picker are the table that the server uses, by group and by a search of their names.
+- The emoji of the picker are the table that the server uses, by group and by a search of their names. The picker offers only the emoji that the fonts of the system draw whole, and its group tabs are icons with the name of the open group above the grid; a message, a reaction and the reply line show an emoji that the fonts do not draw as its short code (ADR 0758).
 
 Waiting messages:
 

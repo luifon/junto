@@ -56,6 +56,7 @@ pub struct Button {
     tooltip: Option<SharedString>,
     accessible_label: Option<SharedString>,
     selector: Option<&'static str>,
+    selected: Option<bool>,
     style: StyleRefinement,
     on_click: Option<ClickHandler>,
 }
@@ -74,6 +75,7 @@ impl Button {
             tooltip: None,
             accessible_label: None,
             selector: None,
+            selected: None,
             style: StyleRefinement::default(),
             on_click: None,
         }
@@ -135,6 +137,12 @@ impl Button {
     /// The name under which a test finds the button.
     pub fn selector(mut self, selector: &'static str) -> Self {
         self.selector = Some(selector);
+        self
+    }
+
+    /// States whether the button is the selected one of a set, such as an open tab.
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = Some(selected);
         self
     }
 
@@ -416,6 +424,9 @@ impl RenderOnce for Button {
         let selector = self.selector;
         frame
             .when_some(label.clone(), |frame, label| frame.aria_label(label))
+            .when_some(self.selected, |frame, selected| {
+                frame.aria_selected(selected)
+            })
             .when_some(self.selector, |frame, selector| {
                 frame.debug_selector(|| selector.to_owned())
             })

@@ -28,6 +28,7 @@ Files:
 | `avatar.png`, `avatar.jpg` or `avatar.webp` | The avatar of the preset, at most 256 KiB, the bound of a server (ADR 0119) |
 | `settings.json` | The settings of the interface: the interface scale and the form of the server book (ADR 0731) |
 | `voice.json` | The sound settings: the chosen devices, the processing of the microphone, the input mode and its key, the volume per account of a server (ADR 0734), and the settings of shares: resolution, frame rate, the volume of a watched share, and "hide people without video" (ADR 0738) |
+| `emoji-fonts.json` | The emoji of the table that the fonts of the system do not draw whole and those that a font without colour draws, with the key of the fonts that they were measured with (ADR 0758) |
 | `keys/<server identifier>.key` | The device key of one server (ADR 0711) |
 | `lock` | An empty file that carries the lock of the directory |
 
@@ -76,6 +77,7 @@ Unreadable files:
 - `settings.json` is the exception: it holds nothing that a person cannot set again. The desktop client starts with the default settings when the file cannot be read. A change of a setting replaces a file that is not a settings file. It replaces no other file that it cannot read: not a file of a newer format, and not a file that is larger than the client reads, whose format the client does not learn.
 - A change of one setting reads the file again under the lock, changes that setting and writes the file, as a change of the server book does.
 - `voice.json` is read and replaced by the same rules as `settings.json`.
+- `emoji-fonts.json` is at version 1 and holds at most 512 KiB. It holds nothing that a person set: a file that cannot be read, or whose key differs from the key of the fonts, is measured again and replaced. A file of a newer format is not replaced.
 - The client can move a corrupted server book aside under the name `servers.json.corrupt-<time>` and start with an empty book. This is an explicit call, never an automatic step. The key files stay, so a server that is added again finds its key.
 
 ## Consequences

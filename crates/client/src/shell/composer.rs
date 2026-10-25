@@ -23,6 +23,7 @@ use junto_client_core::transfers::{UploadSource, UploadStage};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
+use crate::emoji::{Drawing, Drawings};
 use crate::state::feed::{Feed, FeedRow, plain_text};
 use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView};
 use crate::text;
@@ -118,6 +119,9 @@ pub(crate) struct Composer {
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
     emoji_scroll: ScrollHandle,
+    /// The measurement of the emoji when the picker opened: the grid of an open picker
+    /// does not change when a measurement arrives (ADR 0758).
+    emoji_drawings: Drawings,
 }
 
 fn token_id(target: MentionTarget) -> String {
@@ -243,13 +247,15 @@ fn candidates(
 }
 
 /// The emoji that the picker offers: one group, or what a search finds in all groups. An
-/// emoji with a skin tone is not listed by itself.
-fn emoji_shown(group: usize, find: &str) -> Vec<&'static emojis::Emoji> {
+/// emoji with a skin tone is not listed by itself, and an emoji that the fonts of the
+/// system do not draw whole is not offered (ADR 0758).
+fn emoji_shown(group: usize, find: &str, drawings: &Drawings) -> Vec<&'static emojis::Emoji> {
+    let offered = |emoji: &&'static emojis::Emoji| drawings.drawing(emoji) != Drawing::Broken;
     let find = find.trim().to_lowercase();
     if find.is_empty() {
         return emojis::Group::iter()
             .nth(group)
-            .map(|group| group.emojis().take(MOST_EMOJI).collect())
+            .map(|group| group.emojis().filter(offered).take(MOST_EMOJI).collect())
             .unwrap_or_default();
     }
     emojis::iter()
@@ -259,21 +265,36 @@ fn emoji_shown(group: usize, find: &str) -> Vec<&'static emojis::Emoji> {
                     .shortcodes()
                     .any(|shortcode| shortcode.contains(&find))
         })
+        .filter(offered)
         .take(MOST_EMOJI)
         .collect()
 }
 
-fn group_name(group: emojis::Group) -> &'static str {
+/// The groups of the picker that have an emoji that it offers, with their place in the
+/// table.
+fn groups_offered(drawings: &Drawings) -> Vec<(usize, emojis::Group)> {
+    emojis::Group::iter()
+        .enumerate()
+        .filter(|(_, group)| {
+            group
+                .emojis()
+                .any(|emoji| drawings.drawing(emoji) != Drawing::Broken)
+        })
+        .collect()
+}
+
+/// The name, the icon and the test name of the tab of a group.
+fn group_tab(group: emojis::Group) -> (&'static str, Icon, &'static str) {
     match group {
-        emojis::Group::SmileysAndEmotion => "Smileys",
-        emojis::Group::PeopleAndBody => "People",
-        emojis::Group::AnimalsAndNature => "Nature",
-        emojis::Group::FoodAndDrink => "Food",
-        emojis::Group::TravelAndPlaces => "Travel",
-        emojis::Group::Activities => "Activities",
-        emojis::Group::Objects => "Objects",
-        emojis::Group::Symbols => "Symbols",
-        emojis::Group::Flags => "Flags",
+        emojis::Group::SmileysAndEmotion => ("Smileys", Icon::Smile, "emoji-group-smileys"),
+        emojis::Group::PeopleAndBody => ("People", Icon::Person, "emoji-group-people"),
+        emojis::Group::AnimalsAndNature => ("Nature", Icon::Leaf, "emoji-group-nature"),
+        emojis::Group::FoodAndDrink => ("Food", Icon::Cup, "emoji-group-food"),
+        emojis::Group::TravelAndPlaces => ("Travel", Icon::Car, "emoji-group-travel"),
+        emojis::Group::Activities => ("Activities", Icon::Ball, "emoji-group-activities"),
+        emojis::Group::Objects => ("Objects", Icon::Bulb, "emoji-group-objects"),
+        emojis::Group::Symbols => ("Symbols", Icon::Heart, "emoji-group-symbols"),
+        emojis::Group::Flags => ("Flags", Icon::Flag, "emoji-group-flags"),
     }
 }
 
@@ -298,6 +319,7 @@ impl Composer {
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
             emoji_scroll: ScrollHandle::new(),
+            emoji_drawings: Drawings::default(),
         }
     }
 }
@@ -1116,6 +1138,7 @@ impl Shell {
         self.composer
             .emoji_find
             .update(cx, |find, cx| find.set_value("", window, cx));
+        self.composer.emoji_drawings = Drawings::of(cx);
         self.open_layer(Layer::Emoji(target), window, cx);
         self.focus_field(&self.composer.emoji_find.clone(), window, cx);
     }
@@ -1156,16 +1179,32 @@ impl Shell {
         let colors = theme.colors;
         let find = self.composer.emoji_find.read(cx).value().to_string();
         let searching = !find.trim().is_empty();
-        let shown = emoji_shown(self.composer.emoji_group, &find);
+        let drawings = self.composer.emoji_drawings.clone();
+        let offered = groups_offered(&drawings);
+        let none_drawn = offered.is_empty();
+        // The group that is open, or the first that has an emoji to offer.
+        let open = offered
+            .iter()
+            .map(|(index, _)| *index)
+            .find(|index| *index == self.composer.emoji_group)
+            .or_else(|| offered.first().map(|(index, _)| *index));
+        let shown = match open {
+            Some(group) => emoji_shown(group, &find, &drawings),
+            None => Vec::new(),
+        };
         let ring_width = theme.metrics.focus_ring;
         let radius = theme.metrics.radius;
-        let groups: Vec<_> = emojis::Group::iter()
-            .enumerate()
+        let groups: Vec<_> = offered
+            .into_iter()
             .map(|(index, group)| {
-                let on = index == self.composer.emoji_group && !searching;
+                let on = Some(index) == open && !searching;
+                let (name, icon, selector) = group_tab(group);
                 Button::new(("emoji-group", index))
                     .kind(ButtonKind::Ghost)
-                    .label(group_name(group))
+                    .icon(icon)
+                    .tooltip(name)
+                    .selector(selector)
+                    .selected(on)
                     .when(on, |button| button.bg(Hsla::from(colors.limestone_lo)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.composer.emoji_group = index;
@@ -1226,15 +1265,36 @@ impl Shell {
             )
             .child(
                 div()
+                    .mt(u(6.0))
+                    .typeface(theme.types.small, &theme)
+                    .ink(colors.ink_2)
+                    .debug_selector(|| "emoji-group-name".to_owned())
+                    .child(crate::ui::paint_text(
+                        if searching {
+                            text::EMOJI_FOUND
+                        } else {
+                            open.and_then(|index| emojis::Group::iter().nth(index))
+                                .map_or("", |group| group_tab(group).0)
+                        }
+                        .into(),
+                        None,
+                    )),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_col()
-                    .mt(u(8.0))
+                    .mt(u(4.0))
                     .h(u(260.0))
                     .child(if shown.is_empty() {
                         div()
                             .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
-                            .child(text::NO_EMOJI_FOUND)
+                            .child(if none_drawn {
+                                text::NO_EMOJI_FONT
+                            } else {
+                                text::NO_EMOJI_FOUND
+                            })
                             .into_any_element()
                     } else {
                         ScrollArea::new("emoji-list", &self.composer.emoji_scroll, text::EMOJI)
@@ -1416,6 +1476,7 @@ impl Shell {
             });
 
         // The state above the box: a reply or an edit, with the control that ends it.
+        let drawings = Drawings::of(cx);
         let banner = match (self.pen(pane).editing.is_some(), self.pen(pane).reply_to) {
             (true, _) => Some((Icon::Edit, SharedString::from(text::EDITING_MESSAGE), None)),
             (false, Some(message_id)) => {
@@ -1431,7 +1492,11 @@ impl Shell {
                 let excerpt = quoted
                     .as_ref()
                     .and_then(|message| message.document.as_ref())
-                    .map(|document| plain_text(document, &names, 80));
+                    .map(|document| {
+                        drawings
+                            .shown(&plain_text(document, &names, 80))
+                            .styled(colors.ink_3.into())
+                    });
                 Some((Icon::Reply, text::replying_to(&author).into(), excerpt))
             }
             (false, None) => None,
@@ -1455,12 +1520,7 @@ impl Shell {
                         .ink(colors.ink)
                         .child(title),
                 )
-                .children(excerpt.map(|excerpt| {
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(excerpt))
-                }))
+                .children(excerpt.map(|excerpt| div().min_w_0().truncate().child(excerpt)))
                 .child(div().flex_1())
                 .child(
                     Button::new("cancel-compose-state")
@@ -1877,6 +1937,14 @@ impl Shell {
         cx.notify();
     }
 
+    /// Opens a group of the emoji picker by its place in the table, as a click on its tab
+    /// does.
+    pub fn open_emoji_group(&mut self, group: usize, cx: &mut Context<Self>) {
+        self.composer.emoji_group = group;
+        self.composer.emoji_scroll = ScrollHandle::new();
+        cx.notify();
+    }
+
     /// Puts text into the composer, as typing does.
     pub fn type_message(
         &mut self,
@@ -1980,8 +2048,9 @@ mod tests {
 
     #[test]
     fn the_emoji_of_the_picker_are_ones_that_the_server_takes() {
-        for (index, _) in emojis::Group::iter().enumerate() {
-            let shown = emoji_shown(index, "");
+        let drawings = crate::emoji::Drawings::default();
+        for (index, _) in groups_offered(&drawings) {
+            let shown = emoji_shown(index, "", &drawings);
             assert!(!shown.is_empty());
             for emoji in shown {
                 assert_eq!(
@@ -1990,8 +2059,49 @@ mod tests {
                 );
             }
         }
-        let found = emoji_shown(0, "thumbs up");
+        let found = emoji_shown(0, "thumbs up", &drawings);
         assert!(found.iter().any(|emoji| emoji.as_str() == "\u{1f44d}"));
-        assert!(emoji_shown(0, "no such emoji name").is_empty());
+        assert!(emoji_shown(0, "no such emoji name", &drawings).is_empty());
+    }
+
+    #[test]
+    fn the_picker_offers_the_table_without_the_emoji_that_are_not_drawn() {
+        // Every flag is broken, and so is the first face; the others are drawn.
+        let mut table: HashMap<&'static str, Drawing> = crate::emoji::table()
+            .map(|emoji| {
+                let broken = emoji.group() == emojis::Group::Flags || emoji.as_str() == "\u{1f600}";
+                (
+                    emoji.as_str(),
+                    if broken {
+                        Drawing::Broken
+                    } else {
+                        Drawing::Colour
+                    },
+                )
+            })
+            .collect();
+        table.insert("\u{1f603}", Drawing::Text);
+        let drawings = Drawings::given(table);
+        let groups: Vec<emojis::Group> = groups_offered(&drawings)
+            .into_iter()
+            .map(|(_, group)| group)
+            .collect();
+        assert!(!groups.contains(&emojis::Group::Flags));
+        assert_eq!(groups.len(), 8);
+        let expected: Vec<&str> = emojis::Group::SmileysAndEmotion
+            .emojis()
+            .filter(|emoji| drawings.drawing(emoji) != Drawing::Broken)
+            .take(MOST_EMOJI)
+            .map(|emoji| emoji.as_str())
+            .collect();
+        let shown: Vec<&str> = emoji_shown(0, "", &drawings)
+            .into_iter()
+            .map(|emoji| emoji.as_str())
+            .collect();
+        assert_eq!(shown, expected);
+        assert!(!shown.contains(&"\u{1f600}"));
+        // A sign of a font without colour is drawn whole, so it is offered.
+        assert!(shown.contains(&"\u{1f603}"));
+        assert!(emoji_shown(0, "brazil", &drawings).is_empty());
     }
 }

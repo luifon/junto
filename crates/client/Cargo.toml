@@ -27,6 +27,13 @@ name = "app"
 path = "tests/app/main.rs"
 required-features = ["test-support"]
 
+# The emoji as the text system of the system draws them (ADR 0758). Its own main on the
+# main thread, which the text system of macOS needs.
+[[test]]
+name = "emoji_fonts"
+path = "tests/emoji_fonts/main.rs"
+harness = false
+
 # Native windows against an installed deployment, on the main thread (ADR 0902). It does
 # nothing unless its variables name the deployment.
 [[test]]
@@ -102,6 +109,9 @@ dirs = "5"
 # The table of the standard emoji, in the version of the server: a reaction that the
 # picker offers is one that the server accepts (ADR 0408).
 emojis = "0.8"
+# The signs that a reader sees as one character, to find the emoji of a text. In the
+# version of the lock file.
+unicode-segmentation = "1"
 # The tokens of a code block, for its syntax colours (ADR 0740).
 synoptic = "2.2"
 # The identifiers of notices and of the scopes of notification settings (ADR 0409).
