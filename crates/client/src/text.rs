@@ -939,6 +939,8 @@ pub const NOISE_SUPPRESSION: &str = "Noise suppression";
 pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
+pub const CALL_SOUNDS: &str = "Call sounds";
+pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or leaves your call, when your microphone or sound turns on or off, when a share starts, and when you leave.";
 
 pub fn talk_key(key: TalkKey) -> &'static str {
     match key {

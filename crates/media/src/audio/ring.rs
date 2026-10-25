@@ -105,9 +105,8 @@ fn tone() -> impl FnMut(&mut [f32], super::Format) + Send + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::host::{Deliver, Failed, Fill};
     use crate::audio::synthetic::{SyntheticHost, tone_level};
-    use crate::audio::{AudioError, Devices};
+    use crate::audio::test_output::TestOutput;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
@@ -125,53 +124,6 @@ mod tests {
                 "ring did not reach the injected output"
             );
             std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    /// Reports when the stream that holds it is dropped.
-    struct Closed(Sender<()>);
-
-    impl Drop for Closed {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-
-    /// The outputs of a synthetic host. An output opens only when the test lets it, as a
-    /// sound system that waits for another stream does, and tells when it closes.
-    struct TestOutput {
-        host: SyntheticHost,
-        release: Option<Mutex<Receiver<()>>>,
-        closed: Sender<()>,
-    }
-
-    impl AudioHost for TestOutput {
-        fn devices(&self) -> Result<Devices, AudioError> {
-            self.host.devices()
-        }
-        fn open_input(
-            &self,
-            device: Option<&DeviceId>,
-            deliver: Deliver,
-            failed: Failed,
-        ) -> Result<OpenStream, AudioError> {
-            self.host.open_input(device, deliver, failed)
-        }
-        fn open_output(
-            &self,
-            device: Option<&DeviceId>,
-            fill: Fill,
-            failed: Failed,
-        ) -> Result<OpenStream, AudioError> {
-            if let Some(release) = &self.release {
-                let _ = release.lock().unwrap().recv();
-            }
-            let stream = self.host.open_output(device, fill, failed)?;
-            let device = stream.device.clone();
-            Ok(OpenStream::new(
-                device,
-                (stream, Closed(self.closed.clone())),
-            ))
         }
     }
 
