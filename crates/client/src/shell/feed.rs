@@ -1739,7 +1739,7 @@ impl Shell {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
                             }))
-                            .child(icon(Icon::Smile, 14.0, colors.ink_2)),
+                            .child(icon(Icon::SmilePlus, 14.0, colors.ink_2)),
                     )
                 })
                 .into_any_element(),
@@ -2097,7 +2097,7 @@ impl Shell {
                     "show-file",
                     Button::new(("show-file", index))
                         .kind(ButtonKind::Ghost)
-                        .icon(Icon::Open)
+                        .icon(Icon::FolderOpen)
                         .tooltip(text::SHOW_IN_FOLDER)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state
@@ -2164,7 +2164,7 @@ impl Shell {
             .shadow(ledge(colors.rule))
             .when(row.can_react, |bar| {
                 bar.child(
-                    action("react", Icon::Smile, text::REACT).on_click(cx.listener(
+                    action("react", Icon::SmilePlus, text::REACT).on_click(cx.listener(
                         move |this, _, window, cx| {
                             this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
                         },
@@ -2894,7 +2894,7 @@ impl Shell {
         if row.can_react {
             items.push(
                 MenuItem::new("message-react", text::REACT)
-                    .icon(Icon::Smile)
+                    .icon(Icon::SmilePlus)
                     .selector("message-react")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_layer(window, cx);

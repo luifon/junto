@@ -41,7 +41,7 @@ pub(crate) fn place_icon(place: &Whereabouts) -> Icon {
             ..
         } => Icon::Speaker,
         Whereabouts::Channel { .. } | Whereabouts::Unknown => Icon::Hash,
-        Whereabouts::Direct { .. } => Icon::People,
+        Whereabouts::Direct { .. } => Icon::Person,
     }
 }
 
@@ -374,7 +374,7 @@ impl Shell {
                 .border_color(Hsla::from(colors.rule))
                 .child(
                     Button::new("mark-all-read")
-                        .icon(Icon::Check)
+                        .icon(Icon::CheckDouble)
                         .label(if panel.marking {
                             text::MARKING_ALL_READ
                         } else {

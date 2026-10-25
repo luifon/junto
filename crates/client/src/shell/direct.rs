@@ -54,7 +54,7 @@ impl Shell {
         } else {
             Button::new("start-direct-call")
                 .label(text::DIRECT_CALL)
-                .icon(Icon::Phones)
+                .icon(Icon::Phone)
                 .kind(ButtonKind::Primary)
                 .selector("start-direct-call")
                 .on_click(cx.listener(move |this, _, _, cx| {

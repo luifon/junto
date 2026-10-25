@@ -476,7 +476,7 @@ impl Shell {
         let surface = Surface {
             id: "account",
             title: text::account::TITLE,
-            icon: Icon::People,
+            icon: Icon::Account,
             note: view.server_name.clone().into(),
             close_selector: "account-close",
             nav: Some((nav, text::account::PAGES, self.account.nav_scroll.clone())),

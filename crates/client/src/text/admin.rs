@@ -83,18 +83,19 @@ pub const fn page_name(page: AdminPage) -> &'static str {
 
 pub const fn page_icon(page: AdminPage) -> Icon {
     match page {
-        AdminPage::Workspaces => Icon::List,
+        AdminPage::Workspaces => Icon::Layers,
         AdminPage::Server => Icon::Gear,
         AdminPage::People | AdminPage::Members => Icon::People,
         AdminPage::Invites => Icon::Invite,
-        AdminPage::JoinRequests => Icon::Hand,
-        AdminPage::Tokens | AdminPage::ServerRoles | AdminPage::Roles => Icon::Key,
-        AdminPage::AuditLog => Icon::Clock,
+        AdminPage::JoinRequests => Icon::UserCheck,
+        AdminPage::Tokens => Icon::Key,
+        AdminPage::ServerRoles | AdminPage::Roles => Icon::Shield,
+        AdminPage::AuditLog => Icon::Scroll,
         AdminPage::Channels => Icon::Hash,
-        AdminPage::Archive => Icon::Lock,
-        AdminPage::Notifications => Icon::Chat,
+        AdminPage::Archive => Icon::Archive,
+        AdminPage::Notifications => Icon::Bell,
         AdminPage::Recordings => Icon::Record,
-        AdminPage::Glossary => Icon::List,
+        AdminPage::Glossary => Icon::Book,
         AdminPage::Exports => Icon::Download,
     }
 }
@@ -132,8 +133,8 @@ pub const fn channel_page_name(page: ChannelPage) -> &'static str {
 pub const fn channel_page_icon(page: ChannelPage) -> Icon {
     match page {
         ChannelPage::Overview => Icon::Gear,
-        ChannelPage::Permissions => Icon::Key,
-        ChannelPage::Archive => Icon::Lock,
+        ChannelPage::Permissions => Icon::ShieldCheck,
+        ChannelPage::Archive => Icon::Archive,
     }
 }
 

@@ -656,7 +656,7 @@ impl Shell {
                             .on_drag(RoleDrag { server_id, role }, move |_, _, _, cx| {
                                 cx.new(|_| DragLabel(label.clone()))
                             })
-                            .child(icon(Icon::List, 14.0, colors.ink_2))
+                            .child(icon(Icon::Grip, 14.0, colors.ink_2))
                     })
                     .debug_selector({
                         let selector = format!("role-handle-{written}");
@@ -815,7 +815,7 @@ impl Shell {
             column = column.child(
                 div().flex_none().mt(u(8.0)).child(
                     Notice::new(txt::standing(standing, level))
-                        .icon(Icon::Key)
+                        .icon(Icon::Shield)
                         .selector("role-standing"),
                 ),
             );

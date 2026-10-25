@@ -169,18 +169,19 @@ impl Shell {
             (
                 Button::new(id("direct-call-accept"))
                     .label(text::ACCEPT_CALL)
-                    .icon(Icon::Phones)
+                    .icon(Icon::Phone)
                     .kind(ButtonKind::Primary)
                     .selector("direct-call-accept"),
                 Button::new(id("direct-call-decline"))
                     .label(text::DECLINE)
+                    .icon(Icon::PhoneOff)
                     .selector("direct-call-decline"),
             )
         } else {
             (
                 Button::new(id("invitation-join"))
                     .label(text::JOIN)
-                    .icon(Icon::Phones)
+                    .icon(Icon::Speaker)
                     .kind(ButtonKind::Primary)
                     .selector("invitation-join"),
                 Button::new(id("invitation-decline"))
@@ -239,7 +240,15 @@ impl Shell {
                                     .gap(u(6.0))
                                     .typeface(theme.types.control_strong, &theme)
                                     .ink(colors.terracotta_deep)
-                                    .child(icon(Icon::Invite, 14.0, colors.terracotta_deep))
+                                    .child(icon(
+                                        if direct {
+                                            Icon::PhoneIncoming
+                                        } else {
+                                            Icon::Invite
+                                        },
+                                        14.0,
+                                        colors.terracotta_deep,
+                                    ))
                                     .child(title),
                             )
                             .child(

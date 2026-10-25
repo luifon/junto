@@ -1008,7 +1008,7 @@ impl Shell {
         if moving {
             items.push(
                 MenuItem::new("menu-back", text::BACK)
-                    .icon(Icon::ChevronDown)
+                    .icon(Icon::ChevronLeft)
                     .selector("menu-back")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Layer::PersonMenu(open) = &mut this.layer {
@@ -1057,9 +1057,9 @@ impl Shell {
             if !menu.destinations.is_empty() {
                 items.push(
                     MenuItem::new("menu-move", text::MOVE_TO)
-                        .icon(Icon::Leave)
+                        .icon(Icon::ArrowLeftRight)
                         .detail(text::PERMISSION_MOVE)
-                        .detail_icon(Icon::Key)
+                        .detail_icon(Icon::ShieldCheck)
                         .end_icon(Icon::ChevronRight)
                         .selector("menu-move")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1137,7 +1137,7 @@ impl Shell {
                         Icon::MicrophoneOff
                     })
                     .detail(text::PERMISSION_MUTE)
-                    .detail_icon(Icon::Key)
+                    .detail_icon(Icon::ShieldCheck)
                     .selector("menu-mute")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.state.update(cx, |state, cx| {
@@ -1186,7 +1186,7 @@ impl Shell {
                         Icon::PhonesOff
                     })
                     .detail(text::PERMISSION_DEAFEN)
-                    .detail_icon(Icon::Key)
+                    .detail_icon(Icon::ShieldCheck)
                     .selector("menu-block-sound")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.state.update(cx, |state, cx| {
@@ -1202,7 +1202,7 @@ impl Shell {
                     MenuItem::new("menu-disconnect", text::DISCONNECT)
                         .icon(Icon::X)
                         .detail(text::PERMISSION_DISCONNECT)
-                        .detail_icon(Icon::Key)
+                        .detail_icon(Icon::ShieldCheck)
                         .selector("menu-disconnect")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.state

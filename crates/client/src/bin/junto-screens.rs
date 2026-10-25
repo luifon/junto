@@ -2638,7 +2638,7 @@ impl gpui::Render for Components {
                     .child(
                         Button::new("call-3")
                             .kind(ButtonKind::CallLeave)
-                            .icon(Icon::Leave)
+                            .icon(Icon::PhoneOff)
                             .label("Leave"),
                     ),
             );

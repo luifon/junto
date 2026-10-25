@@ -278,7 +278,7 @@ impl Shell {
                             .child(
                                 Button::new(("show-recorded", index))
                                     .kind(ButtonKind::Ghost)
-                                    .icon(Icon::Open)
+                                    .icon(Icon::FolderOpen)
                                     .tooltip(text::SHOW_IN_FOLDER)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.state.update(cx, |state, cx| {
@@ -351,7 +351,7 @@ impl Shell {
             let (held, stem) = (card.clone(), detail.text_stem.clone());
             items.push(
                 MenuItem::new("recorded-text", text::RECORDING_TRANSCRIPT_TEXT)
-                    .icon(Icon::List)
+                    .icon(Icon::Document)
                     .selector("recorded-text")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.save_recorded(&held, RecordedFile::Text, stem.clone(), false, cx);
@@ -1569,7 +1569,7 @@ impl Shell {
         let recording_id = panel.recording_id;
         let header = SideHeader::new(text::TRANSCRIPT)
             .title_bar()
-            .icon(Icon::List)
+            .icon(Icon::Document)
             .note(panel.channel.clone())
             .trailing(
                 Button::new("close-transcript")

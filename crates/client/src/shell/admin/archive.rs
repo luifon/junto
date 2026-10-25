@@ -97,7 +97,7 @@ impl Shell {
             .border_t_1()
             .border_color(gpui::Hsla::from(colors.rule))
             .bg(gpui::Hsla::from(colors.limestone))
-            .child(icon(Icon::Lock, 16.0, colors.bronze))
+            .child(icon(Icon::Archive, 16.0, colors.bronze))
             .child(
                 div()
                     .flex_1()

@@ -33,10 +33,10 @@ pub const fn page_name(page: AccountPage) -> &'static str {
 
 pub const fn page_icon(page: AccountPage) -> Icon {
     match page {
-        AccountPage::Profile => Icon::People,
-        AccountPage::Devices => Icon::Key,
-        AccountPage::Recoveries => Icon::Clock,
-        AccountPage::Departure => Icon::Trash,
+        AccountPage::Profile => Icon::Account,
+        AccountPage::Devices => Icon::Devices,
+        AccountPage::Recoveries => Icon::History,
+        AccountPage::Departure => Icon::Leave,
     }
 }
 

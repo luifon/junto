@@ -148,6 +148,7 @@ impl Shell {
                     .child(header)
                     .child(
                         MenuItem::new("keep-connected", text::KEEP_CONNECTED)
+                            .icon(Icon::Plug)
                             .detail(text::KEEP_CONNECTED_HELP)
                             .trailing(if keep { text::ON } else { text::OFF })
                             .selector("keep-connected")
@@ -179,7 +180,7 @@ impl Shell {
                     .when(has_content, |menu| {
                         menu.child(
                             MenuItem::new("your-account", text::account::OPEN_ACCOUNT)
-                                .icon(Icon::People)
+                                .icon(Icon::Account)
                                 .detail(text::account::OPEN_ACCOUNT_HELP)
                                 .selector("menu-account")
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -198,7 +199,7 @@ impl Shell {
                         |menu, workspace_id| {
                             menu.child(
                                 MenuItem::new("leave-workspace", text::account::LEAVE_WORKSPACE)
-                                    .icon(Icon::Trash)
+                                    .icon(Icon::Leave)
                                     .detail(text::account::LEAVE_WORKSPACE_HELP)
                                     .selector("menu-leave-workspace")
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -212,6 +213,7 @@ impl Shell {
                     // open moves no item under the pointer (ADR 0730).
                     .child(
                         MenuItem::new("log-out", text::LOG_OUT)
+                            .icon(Icon::Leave)
                             .detail(if can_log_out {
                                 text::LOG_OUT_HELP
                             } else {

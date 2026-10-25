@@ -148,7 +148,7 @@ impl Shell {
     }
     pub(crate) fn return_call_button(&self, cx: &mut Context<Self>) -> Button {
         Button::new("return-call")
-            .icon(crate::assets::Icon::Collapse)
+            .icon(crate::assets::Icon::Shrink)
             .tooltip(text::RETURN_CALL)
             .selector("return-call")
             .on_click(cx.listener(|this, _, window, cx| {
@@ -237,7 +237,7 @@ impl Shell {
             .child(
                 Button::new("call-fullscreen")
                     .selector("call-fullscreen")
-                    .icon(crate::assets::Icon::Expand)
+                    .icon(crate::assets::Icon::FullScreen)
                     .tooltip(text::FULLSCREEN)
                     .on_click(cx.listener(|_, _, window, _| window.toggle_fullscreen())),
             );

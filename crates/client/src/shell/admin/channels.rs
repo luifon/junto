@@ -706,7 +706,7 @@ impl Shell {
                                     cx.new(|_| super::roles::DragLabel(label.clone()))
                                 },
                             )
-                            .child(icon(Icon::List, 14.0, theme.colors.ink_2))
+                            .child(icon(Icon::Grip, 14.0, theme.colors.ink_2))
                     })
                     .debug_selector(move || format!("channel-handle-{channel_id}"));
                 // Up and Down send the moves of the place before and after, as the page
