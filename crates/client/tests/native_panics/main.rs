@@ -11,8 +11,9 @@
 //! 3. on macOS, a second press reaches the handler without a panic.
 //!
 //! After each panic the application must continue, the report must be in the data
-//! directory, and the state must hold the notice; at the end the window must draw a frame.
-//! Before ADR 0757 the process ended at the first panic.
+//! directory, and the window must paint the notice with the count of the panics in a frame
+//! that ends: the paint is recorded during the draw, and the next frame starts only after the
+//! draw and its presentation. Before ADR 0757 the process ended at the first panic.
 //!
 //! It runs on the main thread, which the windows of the system need, so it is a test
 //! without the test runner. It does nothing unless `JUNTO_TEST_NATIVE_PANICS` is `1`:
@@ -128,6 +129,7 @@ async fn stages(
     })
     .await?;
     check_reports(data_dir, 1)?;
+    wait_for_a_drawn_notice(window, 1, cx).await?;
 
     #[cfg(target_os = "macos")]
     {
@@ -139,6 +141,7 @@ async fn stages(
         })
         .await?;
         check_reports(data_dir, 2)?;
+        wait_for_a_drawn_notice(window, 2, cx).await?;
 
         println!("native_panics: a second press, without a panic");
         let press_ends = test_support::press_ends();
@@ -149,8 +152,8 @@ async fn stages(
         .await?;
     }
 
-    wait_for_a_frame(window, cx).await?;
     let expected = if cfg!(target_os = "macos") { 2 } else { 1 };
+    wait_for_a_drawn_notice(window, expected, cx).await?;
     let panics = panics::panics_in_this_process() - at_start;
     if panics != expected {
         return Err(format!(
@@ -171,6 +174,45 @@ async fn wait_for_a_frame(window: WindowHandle<Root>, cx: &mut AsyncApp) -> Resu
         })
         .map_err(|error| error.to_string())?;
     until("a frame of the window", cx, |_| drawn.get()).await
+}
+
+/// Waits until a frame of the window painted the notice of `panics` panics and the frame
+/// after it started. The first frame callback runs before the draw of its frame and the
+/// second before the draw of the next frame, which starts after the first frame was drawn
+/// and presented; the count of paints of the notice must grow between the two.
+async fn wait_for_a_drawn_notice(
+    window: WindowHandle<Root>,
+    panics: usize,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let proved = Rc::new(Cell::new(None::<bool>));
+        let seen = proved.clone();
+        window
+            .update(cx, |_, window, _| {
+                window.on_next_frame(move |window, _| {
+                    let before = test_support::notice_paints().0;
+                    window.on_next_frame(move |_, _| {
+                        let (paints, stated) = test_support::notice_paints();
+                        seen.set(Some(paints > before && stated == panics));
+                    });
+                    window.refresh();
+                });
+                window.refresh();
+            })
+            .map_err(|error| error.to_string())?;
+        until("two frames of the window", cx, |_| proved.get().is_some()).await?;
+        if proved.get() == Some(true) {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "after {PATIENCE:?} no frame painted the notice of {panics} panics: {:?}",
+                test_support::notice_paints()
+            ));
+        }
+    }
 }
 
 async fn until(

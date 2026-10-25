@@ -185,7 +185,7 @@ fn open_file(data_dir: &Path, limit: u64) -> io::Result<(Open, File)> {
             file,
             size,
             limit,
-            rotate_at: limit,
+            rotation_waits_until: None,
         },
         lock,
     ))
@@ -195,10 +195,13 @@ fn write_lines(mut open: Open, receiver: &Receiver<Message>, dropped: &AtomicUsi
     while let Ok(message) = receiver.recv() {
         match message {
             Message::Line(line) => {
-                let lost = dropped.swap(0, Ordering::Relaxed);
+                // The note waits, with its count, until the file takes lines again.
+                let lost = dropped.load(Ordering::Relaxed);
                 if lost > 0 {
                     let note = format!("{lost} lines of the log were dropped here\n");
-                    let _ = open.write(note.as_bytes());
+                    if open.write(note.as_bytes()).is_ok() {
+                        dropped.fetch_sub(lost, Ordering::Relaxed);
+                    }
                 }
                 // A line that cannot be written is lost and counted; the application
                 // continues.
@@ -218,21 +221,27 @@ struct Open {
     file: File,
     size: u64,
     limit: u64,
-    /// The size at which the next rotation is tried: one limit after the last failed one.
-    rotate_at: u64,
+    /// After a failed rotation: the time before which no rotation is tried again.
+    rotation_waits_until: Option<std::time::Instant>,
 }
 
 // These run on the thread of the log only.
 #[allow(clippy::disallowed_methods)]
 impl Open {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if self.size > 0 && self.size + bytes.len() as u64 > self.rotate_at {
+        if self.size > 0 && self.size + bytes.len() as u64 > self.limit {
             // A rotation that fails, for example while another program holds an earlier file
-            // open, is tried again after a further limit; the line goes into the current file.
-            self.rotate_at = match self.rotate() {
-                Ok(()) => self.limit,
-                Err(_) => self.size + self.limit,
-            };
+            // open, is tried again after a pause. Until then the file stays at its limit and
+            // the line is refused; the caller counts it as dropped.
+            let now = std::time::Instant::now();
+            if self.rotation_waits_until.is_some_and(|until| now < until) {
+                return Err(io::Error::other("the log is full and its rotation waits"));
+            }
+            if let Err(error) = self.rotate() {
+                self.rotation_waits_until = Some(now + ROTATION_PAUSE);
+                return Err(error);
+            }
+            self.rotation_waits_until = None;
         }
         self.file.write_all(bytes)?;
         self.size += bytes.len() as u64;
@@ -256,6 +265,9 @@ impl Open {
         Ok(())
     }
 }
+
+/// The time after a failed rotation before the next one is tried.
+const ROTATION_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn numbered(path: &Path, number: u32) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -355,6 +367,45 @@ mod tests {
             assert!(!text.contains("second"), "{name}: {text}");
             assert!(text.len() <= 16, "{name}: {text}");
         }
+    }
+
+    /// A rotation fails while a directory has the name of the oldest file. The file of the log
+    /// stays within its limit, and after the rotation works again the next file states how
+    /// many lines were dropped.
+    #[test]
+    fn a_failed_rotation_keeps_the_file_within_its_limit_and_counts_the_dropped_lines() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let log = LogFile::new();
+        let path = log.open_with_limit(data_dir.path(), 20).unwrap();
+        for number in 0..6 {
+            write_line(&log, &format!("line {number}\n"));
+        }
+        log.written();
+        let blocker = numbered(&path, 2);
+        std::fs::remove_file(&blocker).unwrap();
+        std::fs::create_dir(&blocker).unwrap();
+        std::fs::write(blocker.join("held"), b"held").unwrap();
+        for number in 6..40 {
+            write_line(&log, &format!("line {number}\n"));
+        }
+        log.written();
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            size <= 20,
+            "the file grew to {size} bytes during the failed rotation"
+        );
+        std::fs::remove_dir_all(&blocker).unwrap();
+        std::thread::sleep(ROTATION_PAUSE + std::time::Duration::from_millis(100));
+        write_line(&log, "after\n");
+        log.written();
+        // The note is longer than the limit of this test, so "after" opens the next file.
+        let text = std::fs::read_to_string(numbered(&path, 1)).unwrap()
+            + &std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("lines of the log were dropped here"),
+            "{text}"
+        );
+        assert!(text.ends_with("after\n"), "{text}");
     }
 
     #[test]

@@ -429,6 +429,17 @@ pub mod test_support {
         /// The handler that panics, and whether it panics at every run.
         static NEXT: Cell<Option<(Handler, bool)>> = const { Cell::new(None) };
         static PRESS_ENDS: Cell<usize> = const { Cell::new(0) };
+        static NOTICE_PAINTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    /// How often the notice of a panic was painted on this thread, and the count of panics
+    /// that the latest paint stated.
+    pub fn notice_paints() -> (usize, usize) {
+        NOTICE_PAINTS.with(Cell::get)
+    }
+
+    pub(crate) fn notice_painted(count: usize) {
+        NOTICE_PAINTS.with(|paints| paints.set((paints.get().0 + 1, count)));
     }
 
     /// The next run of `handler` on this thread panics.
