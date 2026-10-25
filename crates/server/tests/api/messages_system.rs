@@ -816,10 +816,10 @@ async fn repeated_changes_of_the_settings_by_one_person_write_one_line() {
         ]
     );
 
-    // A change later than the time of joining after the latest line has a line of its own.
+    // A change at the time of joining after the latest line, or later, has a line of its own.
     server
         .clock
-        .advance(junto_server::messages::JOINED_LINES_WITHIN + Duration::seconds(1));
+        .advance(junto_server::messages::JOINED_LINES_WITHIN);
     set_user_limit(&server, &owner, &voice, 3).await;
     // The line of another person comes between: the next change has a line of its own.
     let mut transaction = server.db.begin().await.unwrap();
@@ -848,5 +848,147 @@ async fn repeated_changes_of_the_settings_by_one_person_write_one_line() {
             settings(&other),
             settings(&owner)
         ]
+    );
+}
+
+/// Two changes of one person that reach the server at the same time write one line. The first
+/// is held before its commit; the second waits for a lock that the first holds, and after the
+/// commit finds the line of the first (ADR 0408).
+#[tokio::test]
+async fn two_changes_of_the_settings_at_the_same_time_write_one_line() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let voice = channel(&server, &owner, "voice").await;
+    let path = format!("/api/v1/channels/{}/call/settings", voice.id);
+    let three = serde_json::json!({ "user_limit": 3 });
+    let four = serde_json::json!({ "user_limit": 4 });
+    server.gate().arm(0);
+    let mut first = Box::pin(server.patch(&owner, &path, &three));
+    crate::support::drive_until(&mut first, server.gate().arrived()).await;
+    let mut second = Box::pin(server.patch(&owner, &path, &four));
+    crate::support::drive_until(&mut second, server.until_blocked()).await;
+    server.gate().release();
+    let (first, second) = tokio::join!(first, second);
+    first.ok::<serde_json::Value>(StatusCode::OK);
+    second.ok::<serde_json::Value>(StatusCode::OK);
+    assert_eq!(
+        line_actions(&server, &owner, &voice).await,
+        [
+            ("channel_created".to_owned(), Some(owner.account_id)),
+            (
+                "channel_call_settings_updated".to_owned(),
+                Some(owner.account_id)
+            )
+        ]
+    );
+    let entries: i64 = sqlx::query_scalar(
+        "select count(*) from audit_entries
+         where channel_id=$1 and action='channel_call_settings_updated'",
+    )
+    .bind(voice.id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(entries, 2);
+}
+
+/// Each of the three actions joins its own repeats, and only in its own channel.
+#[tokio::test]
+async fn the_changes_of_one_person_join_per_action_and_per_channel() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let first = channel(&server, &owner, "voice").await;
+    let second: junto_protocol::structure::Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels", first.workspace_id),
+            &serde_json::json!({ "name": "second", "kind": "voice" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let roles: Vec<junto_protocol::roles::WorkspaceRole> = server
+        .get(
+            &owner,
+            &format!("/api/v1/workspaces/{}/roles", first.workspace_id),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let everyone = roles.into_iter().find(|role| role.is_everyone).unwrap();
+    let line = |action: &str| (action.to_owned(), Some(owner.account_id));
+
+    // A change in the second channel comes between two changes in the first.
+    set_user_limit(&server, &owner, &first, 3).await;
+    set_user_limit(&server, &owner, &second, 3).await;
+    set_user_limit(&server, &owner, &first, 4).await;
+    for name in ["renamed", "renamed again"] {
+        server
+            .patch(
+                &owner,
+                &format!("/api/v1/channels/{}", first.id),
+                &serde_json::json!({ "name": name }),
+            )
+            .await
+            .ok::<junto_protocol::structure::Channel>(StatusCode::OK);
+    }
+    for deny in ["manage_messages", "mention_everyone"] {
+        server
+            .put(
+                &owner,
+                &format!("/api/v1/channels/{}/overrides/{}", first.id, everyone.id),
+                &serde_json::json!({ "deny": [deny] }),
+            )
+            .await
+            .ok::<serde_json::Value>(StatusCode::OK);
+    }
+    assert_eq!(
+        line_actions(&server, &owner, &first).await,
+        [
+            line("channel_created"),
+            line("channel_call_settings_updated"),
+            line("channel_updated"),
+            line("channel_override_set")
+        ]
+    );
+    assert_eq!(
+        line_actions(&server, &owner, &second).await,
+        [
+            line("channel_created"),
+            line("channel_call_settings_updated")
+        ]
+    );
+}
+
+/// A line of a call that hides who is inside is not "the latest line" for the people outside:
+/// a change after it joins the public line before it, so that they do not read two equal
+/// lines one after the other.
+#[tokio::test]
+async fn a_hidden_call_line_between_two_changes_does_not_repeat_the_line() {
+    let scene = crate::calls_support::Scene::start().await;
+    let server = &scene.server;
+    server
+        .call_settings(
+            &scene.owner,
+            scene.voice.id,
+            serde_json::json!({"hides_occupants":true}),
+        )
+        .await;
+    server.enter_call(&scene.ann, scene.voice.id).await;
+    server
+        .call_settings(
+            &scene.owner,
+            scene.voice.id,
+            serde_json::json!({"user_limit":3}),
+        )
+        .await;
+    let outside = line_actions(server, &scene.owner, &scene.voice).await;
+    let changes = outside
+        .iter()
+        .filter(|(action, _)| action == "channel_call_settings_updated")
+        .count();
+    assert_eq!(changes, 1, "{outside:?}");
+    let inside = line_actions(server, &scene.ann, &scene.voice).await;
+    assert!(
+        inside.iter().any(|(action, _)| action == "call_started"),
+        "{inside:?}"
     );
 }

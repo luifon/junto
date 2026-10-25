@@ -136,7 +136,13 @@ impl super::Shell {
             .iter()
             .filter(|person| hidden.contains(&person.account_id))
             .take(3)
-            .map(|person| super::people::avatar(&faces, person.account_id, 20.0).radius(2.0));
+            .map(|person| {
+                let account_id = person.account_id;
+                div()
+                    .debug_selector(move || format!("hidden-avatar:{account_id}"))
+                    .child(super::people::avatar(&faces, account_id, 20.0).radius(2.0))
+            });
+        let selector = format!("people-hidden-text:{line}");
         Some(
             div()
                 .id("people-hidden")
@@ -155,6 +161,7 @@ impl super::Shell {
                 .child(div().flex().gap(u(3.0)).children(avatars))
                 .child(
                     div()
+                        .debug_selector(move || selector.clone())
                         .child(StyledText::new(line).with_highlights([(
                             0..strong.len(),
                             gpui::HighlightStyle {

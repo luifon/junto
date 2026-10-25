@@ -22,6 +22,14 @@ fn types(events: &[(u64, Event)]) -> Vec<&'static str> {
     events.iter().map(|(_, event)| event.name()).collect()
 }
 
+/// Moves the clock past the time in which the setting lines of one person are joined, so
+/// that each change of a test has its own system line (ADR 0408).
+fn apart(server: &TestServer) {
+    server
+        .clock
+        .advance(junto_server::messages::JOINED_LINES_WITHIN);
+}
+
 async fn rename_channel(server: &TestServer, member: &Member, channel_id: ChannelId, name: &str) {
     server
         .patch(
@@ -229,6 +237,7 @@ async fn a_permission_removed_while_events_wait_hides_them() {
     server.state.streams.hold();
     for name in ["secret-1", "secret-2", "secret-3"] {
         rename_channel(server, owner, world.channel.id, name).await;
+        apart(server);
     }
     assert_eq!(losing.within(Duration::from_millis(200)).await, None);
     set_roles(
@@ -248,14 +257,15 @@ async fn a_permission_removed_while_events_wait_hides_them() {
         ["workspace_member_roles_changed", "permissions_changed"]
     );
     assert!(!losing.raw.join("\n").contains("secret-"));
-    // The three renames by one person in a short time have one system line (ADR 0408).
     let kept = server.traffic(&second, &mut keeping).await;
     assert_eq!(
         types(&kept),
         [
             "message_changed",
             "channel_updated",
+            "message_changed",
             "channel_updated",
+            "message_changed",
             "channel_updated",
             "workspace_member_roles_changed"
         ]
@@ -412,6 +422,7 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
     let mut managing = server.subscribed(owner, Level::Full).await;
 
     rename_channel(server, owner, channel_id, "secret-renamed").await;
+    apart(server);
     server
         .patch(
             owner,
@@ -428,11 +439,10 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         )
         .await
         .ok::<Value>(StatusCode::OK);
-    // The second change records the line of the permanent messages that it turns on
-    // (ADR 0402). Its change of the position follows the rename by the same person, so it
-    // has no line of its own (ADR 0408).
-    let mut to_manager = managing.events(6).await;
-    let mut to_insider = inside.events(5).await;
+    // The second change records two system lines: the change of the position and the
+    // permanent messages that it turns on (ADR 0402).
+    let mut to_manager = managing.events(7).await;
+    let mut to_insider = inside.events(6).await;
     server
         .delete(owner, &format!("/api/v1/channels/{channel_id}"))
         .await
@@ -445,6 +455,7 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
             "message_changed",
             "channel_updated",
             "message_changed",
+            "message_changed",
             "channel_updated",
             "message_changed",
             "channel_deleted"
@@ -456,6 +467,7 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         [
             "message_changed",
             "channel_updated",
+            "message_changed",
             "message_changed",
             "channel_updated",
             "message_changed",

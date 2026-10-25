@@ -1114,6 +1114,7 @@ impl Shell {
                 let today = feed.today;
                 let line = || div().flex_1().h(px(1.0)).bg(Hsla::from(colors.rule_soft));
                 div()
+                    .debug_selector(|| "day-separator".to_owned())
                     .flex()
                     .items_center()
                     .gap(u(10.0))

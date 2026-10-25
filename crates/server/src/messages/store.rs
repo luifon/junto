@@ -272,9 +272,10 @@ pub async fn snapshot(
     states(connection, access, &places, now).await
 }
 
-/// The actions whose line states only that a person changed settings of the channel. The
-/// line is not written again while the latest line of the channel is the same action by the
-/// same person, written less than [`JOINED_LINES_WITHIN`] earlier (ADR 0408).
+/// The actions whose line states only that a person changed settings of the channel. These
+/// lines are public. The line is not written again while the latest public line of the
+/// channel is the same action by the same person, written less than [`JOINED_LINES_WITHIN`]
+/// earlier (ADR 0408).
 const JOINED_ACTIONS: [&str; 3] = [
     "channel_updated",
     "channel_override_set",
@@ -303,8 +304,8 @@ async fn repeats_latest(
         .await?;
     Ok(sqlx::query_scalar(
         "select coalesce((select system->>'action'=$2 and (system->>'actor_id')::uuid=$3
-             and created_at>=$4
-             from messages where place_id=$1 and thread_root is null
+             and created_at>$4
+             from messages where place_id=$1 and thread_root is null and readers is null
              order by position desc,created_at desc,id desc limit 1),false)",
     )
     .bind(place.id)
