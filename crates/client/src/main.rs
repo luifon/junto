@@ -4,7 +4,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use junto_client::app::{self, WindowStart};
@@ -184,10 +184,34 @@ fn start_log() -> LogFile {
 /// failed before it had a data directory (ADR 0757).
 const START_FAILURE_FILE: &str = "junto-start-failure.txt";
 
-/// Writes why the start failed to [`START_FAILURE_FILE`], replacing an earlier one.
+/// Tells why the start failed: on standard error, in the log, and, when nothing reads
+/// standard error (a Windows program started from Explorer), in a message box of the system
+/// that names the file that keeps the reason (ADR 0757).
+fn start_failed(problem: &str, kept_in: Option<&Path>) {
+    let read = junto_client_core::console::attach_to_parent();
+    eprintln!("junto cannot start: {problem}");
+    tracing::error!("junto cannot start: {problem}");
+    if !read {
+        junto_client_core::console::show_error(
+            junto_client::text::APP_NAME,
+            &start_failure_message(problem, kept_in),
+        );
+    }
+}
+
+fn start_failure_message(problem: &str, kept_in: Option<&Path>) -> String {
+    let mut text = format!("Junto cannot start.\n\n{problem}");
+    if let Some(path) = kept_in {
+        text.push_str(&format!("\n\nThe reason is also in {}.", path.display()));
+    }
+    text
+}
+
+/// Writes why the start failed to [`START_FAILURE_FILE`], replacing an earlier one, and
+/// returns its path.
 // The start writes it before any window (ADR 0730).
 #[allow(clippy::disallowed_methods)]
-fn write_start_failure(problem: &str) {
+fn write_start_failure(problem: &str) -> Option<PathBuf> {
     // The temporary directory of the account on macOS and Windows; on Linux `/tmp` is shared
     // by every account, so the runtime directory of the account, or its cache directory.
     #[cfg(target_os = "linux")]
@@ -211,8 +235,12 @@ fn write_start_failure(problem: &str) {
         .create_new(true)
         .open(&path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()));
-    if let Err(error) = written {
-        eprintln!("{} cannot be written: {error}", path.display());
+    match written {
+        Ok(()) => Some(path),
+        Err(error) => {
+            eprintln!("{} cannot be written: {error}", path.display());
+            None
+        }
     }
 }
 
@@ -271,19 +299,18 @@ fn main() -> ExitCode {
             // The files of the data directory are not changed by a start that fails
             // (ADR 0710). The person reads why and decides; the file of the temporary
             // directory keeps the reason also without a console (ADR 0757).
-            junto_client_core::console::attach_to_parent();
-            eprintln!("junto cannot start: {problem}");
-            tracing::error!("junto cannot start: {problem}");
-            write_start_failure(&problem);
+            let kept_in = write_start_failure(&problem);
+            start_failed(&problem, kept_in.as_deref());
             return ExitCode::FAILURE;
         }
     };
     // The client made the data directory. The log of the directory is written by one
     // instance only: the one that holds `logs/lock` (ADR 0757).
     junto_client::panics::record_into(client.data_dir().root());
-    if let Err(error) = log_file.open(client.data_dir().root()) {
-        tracing::warn!(%error, "the log file was not opened");
-    }
+    let log_path = log_file
+        .open(client.data_dir().root())
+        .inspect_err(|error| tracing::warn!(%error, "the log file was not opened"))
+        .ok();
     let start = arguments.start;
     let check_startup = arguments.check_startup;
     let started = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -292,9 +319,7 @@ fn main() -> ExitCode {
         .with_assets(Assets)
         .run(move |cx| {
             if let Err(error) = app::init(cx) {
-                junto_client_core::console::attach_to_parent();
-                eprintln!("junto cannot start: {error:#}");
-                tracing::error!("junto cannot start: {error:#}");
+                start_failed(&format!("{error:#}"), log_path.as_deref());
                 log_file.written();
                 cx.quit();
                 return;
@@ -316,9 +341,10 @@ fn main() -> ExitCode {
                 }
                 Ok(_) => reached.set(true),
                 Err(error) => {
-                    junto_client_core::console::attach_to_parent();
-                    eprintln!("junto cannot open its window: {error:#}");
-                    tracing::error!("junto cannot open its window: {error:#}");
+                    start_failed(
+                        &format!("its window cannot open: {error:#}"),
+                        log_path.as_deref(),
+                    );
                     log_file.written();
                     cx.quit();
                 }
@@ -387,6 +413,22 @@ mod tests {
         assert!(parsed(&["--code", "ABCD"]).is_err());
         assert!(matches!(parsed(&["--help"]), Ok(Parsed::Print(text)) if text == USAGE));
         assert!(matches!(parsed(&["--version"]), Ok(Parsed::Print(_))));
+    }
+
+    #[test]
+    fn the_message_of_a_failed_start_names_the_reason_and_the_file_that_keeps_it() {
+        let file = Path::new("/tmp/junto-start-failure.txt");
+        assert_eq!(
+            start_failure_message("the data directory is in use", Some(file)),
+            format!(
+                "Junto cannot start.\n\nthe data directory is in use\n\nThe reason is also in {}.",
+                file.display()
+            )
+        );
+        assert_eq!(
+            start_failure_message("no file", None),
+            "Junto cannot start.\n\nno file"
+        );
     }
 
     #[test]
