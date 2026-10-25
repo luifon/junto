@@ -581,6 +581,8 @@ pub struct AppState {
     call_window_notices: bool,
     /// The main area showed the view of the call of this device at the last change.
     call_shown: bool,
+    /// The shown server and place and the call of this device at the last change.
+    shown_with_call: (Option<ServerId>, Option<PlaceId>, Option<CallTarget>),
     /// What was seen of the notices and the invitations of each server.
     seen: HashMap<ServerId, notices::Seen>,
     /// The number of the last read of the message of a search result. The answer of an
@@ -830,6 +832,7 @@ impl AppState {
             call_window_active: false,
             call_window_notices: false,
             call_shown: false,
+            shown_with_call: (None, None, None),
             seen: HashMap::new(),
             result_asks: 0,
             result_answers: 0,
@@ -2249,13 +2252,21 @@ impl AppState {
             self.known.conversation_refused = None;
         }
         // The notices that were open beside a place close when the main area changes to
-        // the view of the call of this device, so that its panel shows the chat; in the
-        // view of a call the row of the notices opens them again (ADR 0742).
+        // the view of the call of this device because another place is shown or the call
+        // began, so that its panel shows the chat; in the view of a call the row of the
+        // notices opens them again. A call that returns from the call window to the place
+        // that the main area shows keeps them (ADR 0742).
         let call_shown = view.lists().is_some_and(|lists| lists.call.is_some());
-        if call_shown && !self.call_shown {
+        let shown_with_call = (
+            shown.server,
+            shown.place(),
+            self.media_calls().call.as_ref().map(|call| call.target),
+        );
+        if call_shown && !self.call_shown && shown_with_call != self.shown_with_call {
             self.selection.notices = None;
         }
         self.call_shown = call_shown;
+        self.shown_with_call = shown_with_call;
         // The notices belong to a server: they close when another server is shown. They
         // stay under a thread and under the pinned messages.
         if self.selection.notices.is_some() && self.selection.notices != shown.server {

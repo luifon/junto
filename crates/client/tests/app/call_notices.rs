@@ -9,7 +9,7 @@ use junto_media::engine::{MicrophoneState, OutputState, ShareState};
 use junto_media::share::CaptureError;
 
 use crate::calls::voice_channel;
-use crate::harness::{Window, World, member};
+use crate::harness::{Window, World, member, selector};
 
 /// A connected call of this device in the voice channel with this name, with this state of
 /// the own share, as the media engine states it.
@@ -326,14 +326,14 @@ fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppCo
     let five: Vec<CallInvitation> = (1..=5).map(invitation).collect();
     show(&mut window, five.clone());
 
-    // The three newest are drawn, and a line states the two others.
+    // The three that arrived first are drawn, and a line states the two others.
     let one = bounds_of(&mut window, "call-invitation");
     let all = bounds_of(&mut window, "invitation-cards");
     assert!(all.size.height < one.size.height * 4.0, "{all:?} {one:?}");
     for (index, held) in five.iter().enumerate() {
         assert_eq!(
             window.shows_named(format!("invitation-card:{}", held.id)),
-            index >= 2,
+            index < 3,
             "card {index}"
         );
     }
@@ -369,22 +369,50 @@ fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppCo
     window.press("escape");
     assert!(!window.shows("settings-dialog"));
 
-    // A press that began on another control and ends on a card that appeared meanwhile
-    // answers nothing, and the control under it gets no click either.
-    show(&mut window, Vec::new());
-    assert!(!window.shows("invitation-cards"));
-    let row = bounds_of(&mut window, "notices-row").center();
-    let (down, _) = press_events(row);
-    window.dispatch(down);
+    // At the largest scale in a window of the least width the main area is narrower than
+    // a card: the card lies over the whole window, with both buttons whole.
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_scale(junto_client::theme::SCALE_MAX, cx);
+    });
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0))));
+    let card = bounds_of(&mut window, "call-invitation");
+    let size = window.cx.update(|window, _| window.viewport_size());
+    assert!(
+        card.left() >= gpui::px(0.0) && card.right() <= size.width,
+        "{card:?}"
+    );
+    for button in ["invitation-join", "invitation-decline"] {
+        let drawn = bounds_of(&mut window, button);
+        assert!(
+            drawn.left() >= card.left() && drawn.right() <= card.right(),
+            "{button} {drawn:?} {card:?}"
+        );
+    }
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.set_scale(100, cx));
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1440.0), gpui::px(900.0))));
+
+    // A press that began under the place where a card then appears, on the settings dialog
+    // or on its cover, and ends at the same place on the card, answers nothing, and what lay
+    // under the card stays as the press left it.
     show(&mut window, vec![invitation(6)]);
-    let join = bounds_of(&mut window, "invitation-join").center();
-    let (_, up) = press_events(join);
+    window.click("app-settings");
+    let place = bounds_of(&mut window, "invitation-join").center();
+    show(&mut window, Vec::new());
+    assert!(window.shows("settings-dialog") && !window.shows("invitation-cards"));
+    let (down, up) = press_events(place);
+    window.dispatch(down);
+    let dialog = window.shows("settings-dialog");
+    show(&mut window, vec![invitation(6)]);
+    assert_eq!(bounds_of(&mut window, "invitation-join").center(), place);
     window.dispatch(up);
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().view());
-    assert!(calls.joining.is_none());
-    assert!(window.shows("call-invitation") && window.notices().is_none());
+    assert!(calls.joining.is_none() && calls.outcome.is_none());
+    assert!(window.shows("call-invitation"));
+    assert_eq!(window.shows("settings-dialog"), dialog);
 }
 
 fn press_events(position: gpui::Point<gpui::Pixels>) -> (gpui::MouseDownEvent, gpui::MouseUpEvent) {
@@ -404,4 +432,74 @@ fn press_events(position: gpui::Point<gpui::Pixels>) -> (gpui::MouseDownEvent, g
             click_count: 1,
         },
     )
+}
+
+/// A press on "Join" of one invitation that ends after a newer invitation arrived answers
+/// the first invitation: the cards keep the order of arrival, and the ids of a card and of
+/// its buttons are made from its invitation (ADR 0739).
+#[gpui::test]
+fn a_press_on_a_card_answers_its_own_invitation_when_another_arrives(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    voice_channel(&world, &admin, &mut window, "Focus");
+    let view = window.view();
+    let (server_id, workspace_id) = (
+        view.selected.as_ref().unwrap().id,
+        view.workspace().unwrap().id,
+    );
+    let channel = |window: &mut Window, name: &str| {
+        (window.channels().into_iter())
+            .find(|row| row.name == name)
+            .unwrap()
+            .id
+    };
+    let (daily, focus) = (channel(&mut window, "Daily"), channel(&mut window, "Focus"));
+    let (own, ada) = (window.own_account(), admin.handle.account().unwrap());
+    let start = time::OffsetDateTime::now_utc();
+    let invitation = |channel_id, minute: i64| CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id,
+        },
+        account_id: own,
+        invited_by: ada,
+        created_at: start + time::Duration::minutes(minute),
+        expires_at: start + time::Duration::hours(1),
+    };
+    let (first, second) = (invitation(daily, 1), invitation(focus, 2));
+    let show = |window: &mut Window, invitations: Vec<CallInvitation>| {
+        let state = window.state.clone();
+        state.update(&mut window.cx, |state, cx| {
+            state.show_invitations_fixture(server_id, invitations, cx);
+        });
+        window.settle();
+    };
+
+    show(&mut window, vec![first.clone()]);
+    let place = bounds_of(&mut window, "invitation-join").center();
+    let (down, up) = press_events(place);
+    window.dispatch(down);
+    show(&mut window, vec![first.clone(), second.clone()]);
+    window.dispatch(up);
+
+    // The join of the first invitation is asked for. The server does not know the
+    // invented invitation and refuses it.
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let failed = window.until_value("the join that the press asked for ends", |_| {
+        match calls.view().outcome {
+            Some(junto_media::calls::Outcome::JoinFailed { target, .. }) => Some(target),
+            _ => None,
+        }
+    });
+    assert_eq!(failed.place, first.place);
+    // The drawn card stayed in its place; the new one follows it.
+    let join = selector(format!("invitation-accept:{}", first.id));
+    assert_eq!(bounds_of(&mut window, join).center(), place);
 }
