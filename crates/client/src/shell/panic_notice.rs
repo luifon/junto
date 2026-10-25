@@ -12,6 +12,9 @@ impl Shell {
     pub(crate) fn render_panic_notice(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let notice = self.state.read(cx).panic_notice()?;
         let sentence = text::panic_notice(notice.count, notice.latest.file.as_deref());
+        // A native test requires the notice painted in a frame after a panic (ADR 0757).
+        #[cfg(feature = "test-support")]
+        let count = notice.count;
         Some(
             div()
                 .absolute()
@@ -33,6 +36,16 @@ impl Shell {
                         ),
                     ),
                 )
+                .children({
+                    #[cfg(feature = "test-support")]
+                    let painted = Some(gpui::canvas(
+                        |_, _, _| {},
+                        move |_, _, _, _| crate::panics::test_support::notice_painted(count),
+                    ));
+                    #[cfg(not(feature = "test-support"))]
+                    let painted: Option<gpui::Empty> = None;
+                    painted
+                })
                 .into_any_element(),
         )
     }
