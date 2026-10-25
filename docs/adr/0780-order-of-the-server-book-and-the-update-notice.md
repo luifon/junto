@@ -10,6 +10,8 @@ The server book lists the servers in the order in which they were added, and a p
 
 ADR 0704 decides that the client checks for a new version at start and periodically and shows a notice. The project has no release page and no signing keys yet, so nothing can be downloaded or verified. A server can require a newer client (ADR 0713); the window stated that without naming a version.
 
+A server states its release version in the `hello` of each event stream connection, but the window did not show it, so a person could not see which version a server runs or whether a newer release of the server exists. The release information of the client (ADR 0724) names no server version.
+
 ## Decision
 
 Order of the server book, in the client core:
@@ -39,7 +41,8 @@ Update check, in the client core (`updates`):
 - The states are: not checked, current, available with the release, and failed. A release that is not newer than the build is "current". A check that fails after one that succeeded keeps the answer of that one; "failed" means that no check has succeeded.
 - The client checks once when its event streams start and every 6 hours after the end of the check before. One request runs at a time: a check that is asked for while one runs takes its answer. A source that has not answered after 60 seconds has failed. A check runs to its end when its caller is gone, and the periodic check ends with the client.
 - The page of a release is kept only when it is an `https` address of at most 512 bytes with a host, without a user name or a password, and without a control character or a space. It is held in the form that a URL parser writes. Every other page is left out.
-- A change of the state is a change of the client, so a reader of the client draws again.
+- The check also keeps the version of the newest release that the last trusted answer named, also when that release is not newer than the build (`UpdateCheck::newest`). An answer that has expired or that no trusted key signed leaves no version; a check that fails in another way keeps the version of the check before it. Without a source there is no version.
+- A change of the state or of the newest version is a change of the client, so a reader of the client draws again.
 - No real source exists in this version. The application passes no source. Tests pass a source that answers with a fixed release and counts its checks.
 
 Update notice, in the window:
@@ -55,6 +58,21 @@ Update notice, in the window:
 - The version is drawn from its three numbers. The address is the only text of the source that the window shows: it has a field of its own of one line, so it cannot move a control, and it is in no sentence.
 - Nothing is downloaded and nothing is installed.
 
+Version of a server, in the client core:
+
+- The stream client keeps the release version that the server states in the `hello` of a connection (ADR 0718) and gives it to the readers in the view of the server (`LiveView::server_version`). The `hello` is the first message of every connection, so no request is added. The route `GET /api/server` states no version.
+- The version is read as a semantic version of at most 64 bytes, with its pre-release and its build metadata, by the crate `semver` (`ServerVersion`). Other text gives no version, so the window shows only text of a known form.
+- The version of the last `hello` stays while a connection is lost and is replaced by the `hello` of the next connection. It is forgotten with the state of the server: at the level `off` and for another account.
+- One release has one workspace version for the server images and for the client packages (`docs/release.md`). The release information names no server version, so the newest release that the source of the client names is the newest release of the server. The client reads the release information of the target of its own build.
+- A newer release of a server is that newest version when it comes after the version of the server in the order of semantic versions: a pre-release such as `0.1.0-test.2` comes before `0.1.0`, and build metadata has no place in the order. Without a source there is no newest version, and only the version of the server is known.
+
+Version of a server, in the window:
+
+- The header of the menu of the selected server states "Server version <version>" under the name and the address of the server, in the small type and the secondary ink. While the server has stated no version, the line is not drawn.
+- When a newer release is known, a second line states "Version <version> is available" in cypress, with the download icon.
+- The lines only state facts. They are not items of the menu: the keyboard does not stop on them, and a click does nothing. The client installs nothing on a server; an operator upgrades it with `docs/install.md`.
+- Tests: `version::tests::a_server_states_a_semantic_version_and_a_release_after_it_is_newer`, `stream::tests::the_view_states_the_version_of_the_last_hello_until_the_state_is_forgotten` and `updates::tests::the_newest_version_follows_each_trusted_answer_and_is_told` in `junto-client-core`; `state::book::tests::a_newer_release_of_a_server_is_the_newest_release_after_its_version`, `state::view::book_tests::the_selected_server_states_its_version_and_a_newer_release_of_the_source` and the window test `servers::the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_source` in `junto-client`. The screens `server-menu` and `server-menu-newer-release` of `junto-screens` draw both lines.
+
 ## Consequences
 
 - A person orders the servers with the pointer or the keyboard, and a second start shows the same order, because the order is the file.
@@ -64,3 +82,6 @@ Update notice, in the window:
 - With a source, the client makes at most one request every 6 hours by itself, and one per press of "Check now" while no check runs.
 - A person sees the notice in every state of the window while a newer release is known, also in a narrow window, where the server book is collapsed. A person cannot put it away. The line takes 38 logical pixels of the height of the channel list.
 - A person copies the address of a release and opens it in a browser by hand.
+- The menu of a server states the version that the server runs and a newer release of the server without a request beyond those of the event stream and of the update check.
+- The comparison knows only the newest release that the source of this build names. When the client packages of a release are published before its server images, the menu names that release before an operator can install it on the server.
+- A server that states no semantic version has no version line.

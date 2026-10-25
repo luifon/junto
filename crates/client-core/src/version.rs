@@ -1,6 +1,10 @@
-//! Which API version the client uses with one server (ADR 0201, ADR 0713).
+//! Which API version the client uses with one server (ADR 0201, ADR 0713), and the release
+//! version that a server states (ADR 0780).
 
 use std::fmt;
+use std::sync::Arc;
+
+use crate::updates::Version;
 
 /// The API version that the client uses with one server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -92,6 +96,46 @@ const fn version_before(version: u32) -> Option<u32> {
     if version > 1 { Some(version - 1) } else { None }
 }
 
+/// The longest release version of a server that the client keeps, in bytes.
+const LONGEST_SERVER_VERSION: usize = 64;
+
+/// The release version that a server states in the `hello` of its event stream: a semantic
+/// version, such as `0.1.0` or `0.1.0-test.2`. A clone copies a pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerVersion(Arc<semver::Version>);
+
+impl ServerVersion {
+    /// `None` for a text of more than 64 bytes and for a text that is no semantic version.
+    pub fn parse(text: &str) -> Option<Self> {
+        if text.len() > LONGEST_SERVER_VERSION {
+            return None;
+        }
+        semver::Version::parse(text)
+            .ok()
+            .map(|version| Self(Arc::new(version)))
+    }
+
+    /// Whether a release of the version `release` comes after the version of the server
+    /// in the order of semantic versions: a pre-release comes before the release of its
+    /// three numbers, and build metadata has no place in the order.
+    pub fn is_older_than(&self, release: Version) -> bool {
+        let server = &*self.0;
+        let release = semver::Version::new(
+            u64::from(release.major()),
+            u64::from(release.minor()),
+            u64::from(release.patch()),
+        );
+        (server.major, server.minor, server.patch, &server.pre)
+            < (release.major, release.minor, release.patch, &release.pre)
+    }
+}
+
+impl fmt::Display for ServerVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +161,40 @@ mod tests {
         assert_eq!(client.negotiate(&[1]).unwrap().number(), 1);
         assert_eq!(client.negotiate(&[1]).unwrap().prefix(), "/api/v1");
         assert_eq!(client.negotiate(&[2, 1, 2]).unwrap().to_string(), "v2");
+    }
+
+    #[test]
+    fn a_server_states_a_semantic_version_and_a_release_after_it_is_newer() {
+        let version = |text: &str| ServerVersion::parse(text).unwrap();
+        assert_eq!(version("0.1.0").to_string(), "0.1.0");
+        assert_eq!(version("0.1.0-test.2").to_string(), "0.1.0-test.2");
+        assert_eq!(version("1.2.3+build.5").to_string(), "1.2.3+build.5");
+        let longest = format!("0.1.0-{}", "a".repeat(LONGEST_SERVER_VERSION - 6));
+        assert_eq!(version(&longest).to_string(), longest);
+        let too_long = format!("{longest}a");
+        for text in [
+            "",
+            "0.1",
+            "0.1.0.0",
+            "v0.1.0",
+            "01.1.0",
+            "0.1.0-",
+            "0.1.0 ",
+            "Junto",
+            too_long.as_str(),
+        ] {
+            assert_eq!(ServerVersion::parse(text), None, "{text:?}");
+        }
+
+        let release = Version::new(0, 1, 0);
+        for older in ["0.0.9", "0.1.0-test.2", "0.1.0-alpha", "0.1.0-0"] {
+            assert!(version(older).is_older_than(release), "{older}");
+        }
+        for not_older in ["0.1.0", "0.1.0+build.7", "0.1.1-test.1", "0.1.1", "1.0.0"] {
+            assert!(!version(not_older).is_older_than(release), "{not_older}");
+        }
+        assert!(version("0.1.0-test.10").is_older_than(Version::new(0, 1, 1)));
+        assert!(version("0.9.9").is_older_than(Version::new(0, 10, 0)));
     }
 
     #[test]

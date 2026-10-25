@@ -1,7 +1,7 @@
 //! Several servers in one window against the real server (ADR 0107, ADR 0780, ADR 0784):
 //! a second server that is joined by approval, a notice from a server in the background,
-//! the order of the server book, the notice of a newer build, and the page of the
-//! recordings of a workspace.
+//! the order of the server book, the notice of a newer build, the version of a server in its
+//! menu, and the page of the recordings of a workspace.
 
 use std::time::{Duration, Instant};
 
@@ -9,13 +9,14 @@ use gpui::TestAppContext;
 use junto_client::state::admin::view::recordings::RecordingsRead;
 use junto_client::state::admin::view::{Scope, ServerPage};
 use junto_client::state::book::CheckShown;
-use junto_client::state::view::ServerStatus;
+use junto_client::state::view::{ServerRelease, ServerStatus};
 use junto_client::text;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ids::{AccountId, ConversationId};
 use junto_client_core::protocol::invite::ApproveJoinRequest;
 use junto_client_core::protocol::message::SendMessage;
 use junto_client_core::updates::{FakeSource, Release, UpdateError, Version};
+use junto_client_core::version::ServerVersion;
 
 use crate::harness::{Admin, Window, World, member, named, open, open_with_updates};
 use crate::messages::document;
@@ -673,6 +674,102 @@ fn a_newer_version_is_told_above_the_profile_strip_and_the_line_opens_the_versio
     again.until("the line is shown after a start", |window| {
         window.shows("update-notice")
     });
+}
+
+/// The texts that the window paints in one frame.
+fn painted_texts(window: &mut Window) -> Vec<String> {
+    let _record = junto_client::ui::record_painted_text();
+    window.cx.update(|window, _| window.refresh());
+    window.settle();
+    junto_client::ui::take_painted_text()
+        .into_iter()
+        .map(|painted| painted.text.to_string())
+        .collect()
+}
+
+#[gpui::test]
+fn the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_source(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    // The server of the tests is built from this checkout, with its version.
+    let stated = ServerVersion::parse(env!("CARGO_PKG_VERSION")).unwrap();
+    let release = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+    let version_line = text::book::server_version(&stated);
+    let shown = |window: &mut Window| {
+        window
+            .view()
+            .selected
+            .and_then(|selected| selected.release)
+    };
+
+    // Without a source of releases the menu states the version only.
+    let (_plain_directory, mut plain) = member(cx, &world, &server.address(), &admin, "Ana");
+    plain.until("the server states its version", |window| {
+        shown(window).is_some()
+    });
+    assert_eq!(
+        shown(&mut plain),
+        Some(ServerRelease {
+            version: stated.clone(),
+            newer: None
+        })
+    );
+    plain.open_server_menu();
+    assert!(plain.shows("server-version"));
+    assert!(!plain.shows("server-release-available"));
+    let painted = painted_texts(&mut plain);
+    assert!(painted.contains(&version_line), "{painted:?}");
+    plain.close();
+
+    // The source names the release of the server: no newer release is told.
+    let source = FakeSource::new(Ok(Release::new(release, None)));
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = open_with_updates(cx, directory.path(), source.clone(), release);
+    window.choose_name("Luca");
+    let code = admin.invite(&world, 1);
+    window.find_server(&server.address());
+    window.join_with_code(code.expose());
+    window.until_ready();
+    window.until("the first check has ended", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.version_view().check)
+            == CheckShown::Current
+    });
+    window.until("the server states its version", |window| {
+        shown(window).is_some()
+    });
+    assert_eq!(
+        shown(&mut window),
+        Some(ServerRelease {
+            version: stated.clone(),
+            newer: None
+        })
+    );
+    window.open_server_menu();
+    assert!(window.shows("server-version"));
+    assert!(!window.shows("server-release-available"));
+    window.press("escape");
+
+    // The source names a newer release: the menu tells it under the version.
+    let newer = Version::new(release.major(), release.minor(), release.patch() + 1);
+    source.set(Ok(Release::new(newer, None)));
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.check_for_update(cx));
+    window.until("the newer release is known", |window| {
+        shown(window).and_then(|release| release.newer) == Some(newer)
+    });
+    window.open_server_menu();
+    assert!(window.shows("server-version"));
+    assert!(window.shows("server-release-available"));
+    let painted = painted_texts(&mut window);
+    assert!(painted.contains(&version_line), "{painted:?}");
+    let available = text::book::server_release_available(newer);
+    assert!(painted.contains(&available), "{painted:?}");
 }
 
 #[gpui::test]

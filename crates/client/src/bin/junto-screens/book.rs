@@ -106,6 +106,7 @@ fn available(page: Option<&str>) -> UpdatesKnown {
         build: BUILD,
         has_source: true,
         state: UpdateState::Available(Release::new(NEWER, page)),
+        newest: Some(NEWER),
         checking: false,
     }
 }
@@ -114,6 +115,7 @@ fn checked(state: UpdateState) -> UpdatesKnown {
     UpdatesKnown {
         build: BUILD,
         has_source: true,
+        newest: (state == UpdateState::Current).then_some(BUILD),
         state,
         checking: false,
     }
@@ -194,6 +196,14 @@ fn draw_book(studio: &mut Studio) -> Result<(), String> {
             shell.state().clone().update(cx, |state, cx| {
                 state.show_move_failure_fixture(id(HARBOR), text::book::MOVE_SERVER_GONE, cx);
             });
+        },
+    )?;
+    // The version of the server under its name, and a newer release of the source.
+    studio.draw(
+        Screen::new("server-menu-newer-release", three_servers(0)),
+        |shell, window, cx| {
+            show_updates(shell, available(Some(PAGE)), cx);
+            shell.open(Open::ServerMenu, window, cx);
         },
     )?;
     Ok(())

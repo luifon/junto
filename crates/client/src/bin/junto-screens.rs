@@ -60,7 +60,7 @@ use junto_client_core::protocol::structure::{
 use junto_client_core::protocol::transcript::TranscriptState;
 use junto_client_core::secret::SecretBytes;
 use junto_client_core::settings::ThemeChoice;
-use junto_client_core::version::{Incompatibility, SupportedVersions};
+use junto_client_core::version::{Incompatibility, ServerVersion, SupportedVersions};
 use junto_client_core::voice::{InputMode, VoiceSettings};
 use junto_client_core::{Client, ClientOptions, Reach};
 use junto_media::audio::synthetic::SyntheticHost;
@@ -410,6 +410,7 @@ fn acme() -> ServerSnapshot {
         error: None,
         stream: StreamStatus::Live,
         model: Some(acme_model(|_| {})),
+        server_version: ServerVersion::parse("0.3.1"),
     }
 }
 
@@ -428,6 +429,7 @@ fn harbor() -> ServerSnapshot {
             "Luca",
             vec![workspace(13, "Lounge", true)],
         ))))),
+        server_version: ServerVersion::parse("0.3.0"),
     }
 }
 
@@ -439,6 +441,7 @@ fn harbor_as(access: AccessState, reach: Reach, error: Option<FlowError>) -> Ser
         error,
         stream: StreamStatus::Off,
         model: None,
+        server_version: None,
         ..harbor()
     }
 }

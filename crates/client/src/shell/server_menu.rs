@@ -4,7 +4,8 @@
 use std::ops::Not as _;
 
 use gpui::{
-    Context, Hsla, IntoElement, ParentElement, Styled, Window, div, prelude::FluentBuilder,
+    Context, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
+    prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::ServerId;
 
@@ -15,7 +16,7 @@ use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
     Button, ButtonKind, Dialog, Menu, MenuItem, Mosaic, MosaicKind, StyleExt, dialog_footer,
-    menu_separator,
+    icon, menu_separator, paint_text,
 };
 
 impl Shell {
@@ -95,7 +96,44 @@ impl Shell {
                             .ink(colors.ink_2)
                             .truncate()
                             .child(server.address.clone()),
-                    ),
+                    )
+                    // The version that the server states, and a newer release of the server
+                    // (ADR 0780): lines of text, not items of the menu.
+                    .when_some(server.release.clone(), |column, release| {
+                        column
+                            .child(
+                                div()
+                                    .debug_selector(|| "server-version".to_owned())
+                                    .mt(u(2.0))
+                                    .typeface(theme.types.small, &theme)
+                                    .line_height(u(16.0))
+                                    .ink(colors.ink_2)
+                                    .truncate()
+                                    .child(paint_text(
+                                        text::book::server_version(&release.version).into(),
+                                        None,
+                                    )),
+                            )
+                            .when_some(release.newer, |column, newer| {
+                                column.child(
+                                    div()
+                                        .debug_selector(|| "server-release-available".to_owned())
+                                        .flex()
+                                        .items_center()
+                                        .gap(u(5.0))
+                                        .typeface(theme.types.small_strong, &theme)
+                                        .line_height(u(16.0))
+                                        .ink(colors.cypress)
+                                        .child(icon(Icon::Download, 12.0, colors.cypress))
+                                        .child(div().flex_1().min_w_0().truncate().child(
+                                            paint_text(
+                                                text::book::server_release_available(newer).into(),
+                                                None,
+                                            ),
+                                        )),
+                                )
+                            })
+                    }),
             );
         // The notification settings of the server and of the shown workspace, for a
         // server that shows its lists.

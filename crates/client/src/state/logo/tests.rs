@@ -112,6 +112,7 @@ fn server(id: ServerId) -> ServerSnapshot {
         error: None,
         stream: StreamStatus::Off,
         model: None,
+        server_version: None,
     }
 }
 

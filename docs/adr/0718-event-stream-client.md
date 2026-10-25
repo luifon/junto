@@ -35,7 +35,7 @@ Levels:
 Steps of a connection:
 
 - Without a state, or with a state that must be replaced, the client reads `GET /snapshot`.
-- The first message of a connection is `hello`, within 10 seconds of the upgrade. A ping does not move that time. When the epoch of the `hello` differs from the epoch of the cursor, the state must be replaced.
+- The first message of a connection is `hello`, within 10 seconds of the upgrade. A ping does not move that time. When the epoch of the `hello` differs from the epoch of the cursor, the state must be replaced. The view of the server states the release version of the last `hello` until the state is forgotten (ADR 0780).
 - The client sends `subscribe` with the level and the cursor of its state. It applies no event before the server has answered `subscribed` with that level and that cursor. The answer must arrive within 30 seconds.
 - The events of one change arrive in one `change` message (ADR 0011). An event with an `id` at or below the position of the cursor is a repeat and is not applied. Every other event is applied in the order of the message, the cursor moves to its `id`, and after the last event to the `position` of the message.
 - An event of a type that this version does not know moves the cursor and changes nothing; the other events of its change are applied. A message of an unknown type is skipped (ADR 0206).

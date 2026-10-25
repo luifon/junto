@@ -240,6 +240,7 @@ pub(super) fn server(
             StreamStatus::Off
         },
         model: model.map(Arc::new),
+        server_version: None,
     }
 }
 
