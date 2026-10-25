@@ -644,6 +644,24 @@ fn an_answer_to_the_name_of_a_device_in_a_narrow_window_moves_no_row_under_it(
         !window.shows("device-name-field")
     });
     assert_eq!(window.cx.debug_bounds(below).unwrap(), before);
+
+    // The pointer moves inside the space of the closed form: the row under it stays.
+    let upper_row = window.cx.debug_bounds(row).unwrap();
+    window.move_pointer(gpui::point(
+        upper_row.center().x,
+        before.top() - gpui::px(2.0),
+    ));
+    assert_eq!(window.cx.debug_bounds(below).unwrap(), before);
+    // The pointer moves above the row, where no control under the row is under it: the
+    // space of the form is released and the row under it moves up (finding 11 of the
+    // live test: the empty space stayed after the action).
+    window.move_pointer(gpui::point(
+        upper_row.center().x,
+        upper_row.top() - gpui::px(4.0),
+    ));
+    window.until("the space of the form is released", |window| {
+        window.cx.debug_bounds(below).unwrap().top() < before.top()
+    });
 }
 
 #[gpui::test]

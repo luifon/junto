@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{Div, IntoElement, ParentElement, Pixels, Styled, canvas, div};
+use gpui::{
+    DispatchPhase, Div, IntoElement, MouseMoveEvent, ParentElement, Pixels, Styled, canvas, div,
+};
 
 /// The space of the rows that show a form or a question in place of their content (ADR
 /// 0730). `M` names the form or question of one row.
@@ -10,21 +12,22 @@ use gpui::{Div, IntoElement, ParentElement, Pixels, Styled, canvas, div};
 /// row without its form has less height than the row with it. While a form is open its row
 /// is measured; when the server did the request of the form, or a change of the state puts
 /// the form away, the row keeps that height at least, with its content at the top. The
-/// owner of the space releases it only when the person opens or puts away a form or
-/// question of the page, when the page changes and when the layer closes. The answer
-/// therefore moves no control under the row.
+/// owner of the space releases it when the person opens or puts away a form or question of
+/// the page, when the page changes and when the layer closes. The space releases itself
+/// when the pointer moves above the row or beside it, where no control under the row is
+/// under the pointer. The answer therefore moves no control under the pointer.
 pub struct FormSpace<M> {
     /// The open form and the height of its row as it was drawn last.
     drawn: Rc<Cell<Option<(M, Pixels)>>>,
     /// The form whose request the server did, and the height that its row had then.
-    kept: Option<(M, Pixels)>,
+    kept: Rc<Cell<Option<(M, Pixels)>>>,
 }
 
 impl<M> Default for FormSpace<M> {
     fn default() -> Self {
         Self {
             drawn: Rc::default(),
-            kept: None,
+            kept: Rc::default(),
         }
     }
 }
@@ -51,8 +54,32 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
                 .size_full(),
             );
         }
-        match self.kept {
-            Some((kept, height)) if modes.contains(&kept) => space.min_h(height),
+        match self.kept.get() {
+            Some((kept, height)) if modes.contains(&kept) => {
+                let held = self.kept.clone();
+                space.min_h(height).relative().child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, (), window, _| {
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, phase, window, _| {
+                                    let at = event.position;
+                                    let beside = at.x < bounds.left() || at.x > bounds.right();
+                                    if phase == DispatchPhase::Bubble
+                                        && (at.y < bounds.top() || beside)
+                                        && held.get().is_some()
+                                    {
+                                        held.set(None);
+                                        window.refresh();
+                                    }
+                                },
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            }
             _ => space,
         }
     }
@@ -60,13 +87,14 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
     /// The server did the request of the open form `open`, which closes now: its row keeps
     /// the height that it was drawn with.
     pub fn keep(&mut self, open: M) {
-        self.kept = self.drawn.get().filter(|(drawn, _)| *drawn == open);
+        self.kept
+            .set(self.drawn.get().filter(|(drawn, _)| *drawn == open));
     }
 
     /// The person opened or put away a form or question, the page changed or the layer
     /// closed: no row keeps a height.
     pub fn release(&mut self) {
-        self.kept = None;
+        self.kept.set(None);
     }
 }
 

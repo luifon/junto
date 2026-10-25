@@ -206,6 +206,7 @@ impl Shell {
         }
         rows.push(
             crate::ui::notice_slot("picture-notice-slot")
+                .at_end()
                 .children(notices)
                 .into_any_element(),
         );

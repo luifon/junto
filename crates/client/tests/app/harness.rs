@@ -682,6 +682,16 @@ impl Window {
         self.settle();
     }
 
+    /// Moves the pointer to a point of the window, without a press.
+    pub fn move_pointer(&mut self, position: gpui::Point<gpui::Pixels>) {
+        self.settle();
+        self.holding(|this| {
+            this.cx
+                .simulate_mouse_move(position, None::<gpui::MouseButton>, Modifiers::none());
+        });
+        self.settle();
+    }
+
     /// Moves the pointer to the middle of the element with a name that the test builds, as
     /// a person does before the actions of a message are drawn.
     #[track_caller]
