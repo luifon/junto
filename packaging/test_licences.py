@@ -71,7 +71,7 @@ class ClientLicenceTests(unittest.TestCase):
             triple = "aarch64-apple-darwin"
             document = licences.document("1.2.3", triple, fixtures.build_directory(temporary, triple))
         found = texts(document)
-        for name in ["livekit", "webrtc-sys", "webrtc-sys-build"]:
+        for name in ["cpal", "livekit", "webrtc-sys", "webrtc-sys-build"]:
             self.assertIn("| changed copy in vendor/", crate_line(document, name))
         [webrtc] = [labels for text, labels in found.items() if text == fixtures.WEBRTC_LICENCE.decode().strip()]
         self.assertTrue(webrtc[0].startswith("libwebrtc webrtc-"), webrtc)

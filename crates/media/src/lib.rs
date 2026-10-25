@@ -6,6 +6,9 @@ pub mod audio;
 mod callback;
 pub mod calls;
 pub mod camera;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub mod com;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod condition_wait;

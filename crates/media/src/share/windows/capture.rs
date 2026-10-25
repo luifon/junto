@@ -2,15 +2,14 @@
 //! sound, and the delivery of both (ADR 0706).
 
 use std::ffi::c_void;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
 use windows::Graphics::Capture::GraphicsCaptureSession;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Com::CoIncrementMTAUsage;
 
 use super::graphics::{Gpu, Session, Target};
 use super::rules::{self, Creators};
@@ -27,21 +26,11 @@ use crate::share::{
 /// an answer the share does not start, and nothing keeps running.
 const ANSWER_LIMIT: Duration = Duration::from_secs(10);
 
-/// Keeps the multithreaded apartment of COM for the life of the process. The threads of a
-/// capture use it without entering it themselves: a thread that left the apartment at its
-/// end would end it while the system still holds objects of the capture, and their release
-/// would then fail.
+/// The threads of a capture use the multithreaded apartment of the process without entering
+/// it: a thread that left the apartment at its end would end it while the system still holds
+/// objects of the capture, and their release would then fail (ADR 0706).
 fn apartment() -> Result<(), CaptureError> {
-    static KEPT: OnceLock<Result<(), String>> = OnceLock::new();
-    KEPT.get_or_init(|| {
-        // SAFETY: the cookie is never given back, so the apartment lasts as long as the
-        // process.
-        unsafe { CoIncrementMTAUsage() }
-            .map(|_| ())
-            .map_err(|error| error.message())
-    })
-    .clone()
-    .map_err(CaptureError::Failed)
+    crate::com::keep_multithreaded().map_err(CaptureError::Failed)
 }
 
 /// Whether this system has Windows Graphics Capture, asked on a thread of its own in the

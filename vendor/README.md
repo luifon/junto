@@ -1,6 +1,6 @@
 # Corrected copies of dependencies
 
-The copies of the call library (`webrtc-sys`, `webrtc-sys-build`, `livekit`; ADR 0733) and of the window library (`gpui-pre`, `gpui-pre-scheduler`; ADR 0757).
+The copies of the sound library (`cpal`; ADR 0733), of the call library (`webrtc-sys`, `webrtc-sys-build`, `livekit`; ADR 0733) and of the window library (`gpui-pre`, `gpui-pre-scheduler`; ADR 0757).
 
 ## `webrtc-sys` 0.3.48
 
@@ -51,3 +51,13 @@ Every file and every dependency version not named below are unchanged. Each chan
 - `gpui-pre-scheduler`: `src/executor.rs` builds every task with `propagate_panic`, so that a panic of a task stops in `Runnable::run`.
 
 Remove both copies when a pinned upstream version stops a panic in each callback that it gives the platform and in each task, and puts its state back after the panic. When replacing them, apply the corrections to the new version, then run the window tests (`cargo test -p junto-client --test app`, which include `panics::` and `gpui_panics::`), `JUNTO_TEST_NATIVE_PANICS=1 cargo test -p junto-client --test native_panics` on macOS and Windows, the window live tier and the start check of the macOS bundle.
+
+## `cpal` 0.18.2
+
+`cpal-0.18.2` contains the build inputs of the published `cpal` 0.18.2 crate, the sound devices of the media engine (ADR 0733). The source archive has SHA-256 `6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1`, the checksum that the lockfile held for the registry version. The archive was made from commit `e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7` of the upstream repository (its `.cargo_vcs_info.json`). Cargo uses this copy through the workspace patch.
+
+The retained inputs are `Cargo.toml`, `build.rs`, `src/`, `examples/` (the manifest names each example), `README.md` and `LICENSE`. The archive's changelog, nested lockfile, original unnormalized manifest, `.cargo_vcs_info.json`, `.github/`, `.gitignore`, container and cross-build files, formatting settings and contribution, conduct, security and upgrade notes are not required by this build and are omitted. The copyright and licence notices in the retained inputs are unchanged.
+
+Only `src/host/com.rs` differs from the published version; it states that in its header and carries `Modified:` comments. The published `com_initialized` entered the single-threaded apartment of COM on each Windows thread that called it and left it only when the thread ended, also on threads that `cpal` does not own: the threads of the default pool of the system, on which the window lists the devices, and the threads of the device notifications. A share with sound then failed to start with `RPC_E_CHANGED_MODE`. The copy enters no apartment: it keeps the multithreaded apartment of the process with `CoIncrementMTAUsage` and leaves the apartment of each thread as it is. ADR 0733 explains the correction and its tests.
+
+Remove this copy when a pinned upstream version enters no apartment on threads that it does not own. Run `audio::cpal_host::tests::a_call_leaves_the_apartment_of_the_calling_thread_as_it_was` of `junto-media` and the test target `windows_capture` on Windows against a new version first, then the media live tier.

@@ -533,6 +533,113 @@ fn a_share_with_the_sound_of_one_application_or_of_the_system_starts_and_gives_s
     }
 }
 
+/// The window of the client lists the sound devices on its background threads, which are
+/// threads of the default pool of the system. A listing must leave them outside the
+/// single-threaded apartment of COM: the activation of the sound of a share runs on a thread of
+/// that pool, and fails with "Cannot change thread mode after it is set" on a thread in that
+/// apartment (ADR 0706, ADR 0733).
+#[test]
+fn a_share_with_sound_starts_after_the_sound_devices_were_listed_on_the_threads_of_the_system_pool()
+{
+    use junto_media::audio::AudioHost;
+    use junto_media::audio::cpal_host::CpalHost;
+    use junto_media::com::apartment;
+
+    let fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    let application = sources
+        .windows
+        .iter()
+        .find(|window| window.id == fixture.window)
+        .unwrap()
+        .application
+        .clone();
+    static HOST: std::sync::OnceLock<CpalHost> = std::sync::OnceLock::new();
+    let after = pool::run(128, || {
+        let _ = HOST.get_or_init(CpalHost::new).devices();
+        apartment()
+    });
+    let mut failed = Vec::new();
+    for sound in [SoundChoice::System, SoundChoice::Application(application)] {
+        let started = runtime.block_on(capture.start(
+            CaptureRequest {
+                picture: PictureSource::Window(fixture.window),
+                sound: sound.clone(),
+                quality: ShareQuality::default(),
+            },
+            Arc::new(Pictures::default()),
+        ));
+        if let Err(error) = started {
+            failed.push(format!("{sound:?}: {error:?}"));
+        }
+    }
+    let entered: Vec<_> = after
+        .iter()
+        .filter(|apartment| apartment.entered())
+        .collect();
+    assert!(
+        failed.is_empty() && entered.is_empty(),
+        "shares that did not start: {failed:?}; pool threads left in an apartment: {} of {}, {:?}",
+        entered.len(),
+        after.len(),
+        entered.first()
+    );
+}
+
+/// Work on the threads of the default pool of the system, which gpui uses for the background
+/// tasks of the window on Windows.
+#[allow(unsafe_code)]
+mod pool {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Sender, channel};
+    use std::time::Duration;
+
+    use junto_media::com::Apartment;
+    use windows::Win32::System::Threading::{PTP_CALLBACK_INSTANCE, TrySubmitThreadpoolCallback};
+
+    struct Task {
+        work: fn() -> Apartment,
+        done: Sender<Apartment>,
+    }
+
+    unsafe extern "system" fn call(_: PTP_CALLBACK_INSTANCE, context: *mut c_void) {
+        // SAFETY: `run` gave the box of a task, and each callback takes its own once.
+        let task = unsafe { Box::from_raw(context.cast::<Task>()) };
+        let apartment = (task.work)();
+        // The thread stays busy for a moment, so that the pool runs the other tasks on
+        // other threads.
+        std::thread::sleep(Duration::from_millis(40));
+        let _ = task.done.send(apartment);
+    }
+
+    /// Runs `work` `count` times on the pool and gives the apartment that each call returned.
+    pub fn run(count: usize, work: fn() -> Apartment) -> Vec<Apartment> {
+        static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+        let _one = ONE_AT_A_TIME.lock().unwrap();
+        let (done, results) = channel();
+        for _ in 0..count {
+            let task = Box::into_raw(Box::new(Task {
+                work,
+                done: done.clone(),
+            }));
+            // SAFETY: the callback takes the box back; when the submission fails, it is
+            // freed here.
+            unsafe {
+                if let Err(error) = TrySubmitThreadpoolCallback(Some(call), Some(task.cast()), None)
+                {
+                    drop(Box::from_raw(task));
+                    panic!("the pool took no task: {error}");
+                }
+            }
+        }
+        drop(done);
+        results.iter().collect()
+    }
+}
+
 #[test]
 fn a_source_that_is_not_there_does_not_start() {
     let capture = junto_media::share::system();

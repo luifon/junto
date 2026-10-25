@@ -364,6 +364,31 @@ mod tests {
         }
     }
 
+    /// The calls of the host leave the thread of their caller in the apartment of COM that it
+    /// had, and the objects that `cpal` keeps serve a later call from another thread, after
+    /// the thread that made them has ended (ADR 0733).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_call_leaves_the_apartment_of_the_calling_thread_as_it_was() {
+        use crate::com::apartment;
+        let host = std::sync::Arc::new(CpalHost::new());
+        let mut lists = Vec::new();
+        for _ in 0..2 {
+            let host = host.clone();
+            lists.push(
+                std::thread::spawn(move || {
+                    assert!(!apartment().entered());
+                    let devices = host.devices();
+                    assert!(!apartment().entered(), "the thread is in {:?}", apartment());
+                    devices
+                })
+                .join()
+                .unwrap(),
+            );
+        }
+        assert_eq!(lists[0], lists[1]);
+    }
+
     #[test]
     fn a_changed_default_output_is_not_a_failure_of_the_stream() {
         let changed = cpal::Error::new(cpal::ErrorKind::DeviceChanged);

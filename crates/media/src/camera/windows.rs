@@ -2,7 +2,7 @@
 use ::windows::Devices::Enumeration::{DeviceAccessInformation, DeviceAccessStatus, DeviceClass};
 use ::windows::Win32::Foundation::E_ACCESSDENIED;
 use ::windows::Win32::Media::MediaFoundation::*;
-use ::windows::Win32::System::Com::{CoIncrementMTAUsage, CoTaskMemFree};
+use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::{GUID, HRESULT, Interface, Ref, implement};
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
@@ -27,11 +27,10 @@ fn initialize() -> Result<(), CameraError> {
     static READY: OnceLock<Result<(), CameraError>> = OnceLock::new();
     READY
         .get_or_init(|| {
-            // SAFETY: COM and MF stay initialized until process exit, including late callbacks.
-            unsafe {
-                CoIncrementMTAUsage().map_err(error)?;
-                MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(error)
-            }
+            crate::com::keep_multithreaded().map_err(CameraError::Failed)?;
+            // SAFETY: Media Foundation stays started until the process ends, also for late
+            // callbacks.
+            unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(error) }
         })
         .clone()
 }
