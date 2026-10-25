@@ -275,22 +275,20 @@ struct BookFile {
     kept_keys: Vec<KeptKey>,
 }
 
-/// How long the key of a removed server whose join request may still wait is kept: the
-/// lifetime of a join request on the server (7 days, ADR 0111) and one day for a clock that
-/// differs.
-pub const KEPT_KEY_DAYS: i64 = 8;
 /// How many kept keys the book records at most.
 const MOST_KEPT_KEYS: usize = 64;
 
 /// The key file of a server that was removed while a join request of this device could
 /// still wait and the server did not confirm its withdrawal (ADR 0712). The key stays so
-/// that an approval cannot make an account for a key that the device no longer holds; it
-/// is deleted when its time ends and the server was not added again.
+/// that an approval cannot make an account for a key that the device no longer holds. The
+/// key is not deleted by time: an approval while it is kept makes an account that only this
+/// key reaches. It goes when the server confirms that no request of it waits and no account
+/// has it, or when the same server is added again and uses it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeptKey {
     pub server_id: ServerId,
-    /// The moment after which the key is deleted, in seconds since 1970.
-    pub until_unix: i64,
+    /// When the removal kept the key, in seconds since 1970.
+    pub kept_unix: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -428,13 +426,13 @@ impl ServerBook {
         Ok(removed)
     }
 
-    /// Like [`ServerBook::remove`], and records that the key of the server stays until
-    /// `until_unix` (ADR 0712). The oldest record gives way when the book holds
-    /// [`MOST_KEPT_KEYS`]; its key then stays without an end, as before the record existed.
+    /// Like [`ServerBook::remove`], and records that the key of the server was kept at
+    /// `kept_unix` (ADR 0712). The oldest record gives way when the book holds
+    /// [`MOST_KEPT_KEYS`]; its key stays.
     pub fn remove_keeping_key(
         &self,
         key: EntryKey,
-        until_unix: i64,
+        kept_unix: i64,
     ) -> Result<ServerEntry, BookError> {
         self.change_file(|file| {
             let index = position(&file.servers, key)?;
@@ -446,42 +444,9 @@ impl ServerBook {
             }
             file.kept_keys.push(KeptKey {
                 server_id: key.server_id,
-                until_unix,
+                kept_unix,
             });
             Ok(removed)
-        })
-    }
-
-    /// Deletes each kept key whose time ended at `now_unix` with `delete`, and its record,
-    /// under the lock of the book. A key of a server that the book holds again is not
-    /// deleted. A record whose deletion failed stays, for the next start. Returns the
-    /// servers whose keys were deleted.
-    pub fn discard_ended_kept_keys(
-        &self,
-        now_unix: i64,
-        mut delete: impl FnMut(ServerId) -> bool,
-    ) -> Result<Vec<ServerId>, BookError> {
-        self.change_file(|file| {
-            let mut deleted = Vec::new();
-            let servers = &file.servers;
-            file.kept_keys.retain(|kept| {
-                if servers
-                    .iter()
-                    .any(|entry| entry.server_id == kept.server_id)
-                {
-                    return false;
-                }
-                if kept.until_unix > now_unix {
-                    return true;
-                }
-                if delete(kept.server_id) {
-                    deleted.push(kept.server_id);
-                    false
-                } else {
-                    true
-                }
-            });
-            Ok(deleted)
         })
     }
 

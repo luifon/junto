@@ -70,7 +70,7 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
-    assert_eq!(shown(&mut window), TrayState { call: None });
+    assert_eq!(shown(&mut window).call, None);
 
     // The calls state a call of this device, as a session does.
     let active = call(&mut window, "Daily");
@@ -90,8 +90,9 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
             deafened: false,
             seat: seat.clone(),
         }),
+        generation: 0,
     };
-    assert_eq!(shown(&mut window), in_call);
+    assert_eq!(shown(&mut window).call, in_call.call);
     assert_eq!(shown(&mut window).tooltip(), text::IN_A_CALL);
 
     // The entry "Mute microphone" closes the microphone of the call, as the button does.
@@ -146,7 +147,7 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
     // The call ends: the icon shows no call, and the menu has no call entries.
     calls.show_view_for_test(CallsView::default());
     window.settle();
-    assert_eq!(shown(&mut window), TrayState { call: None });
+    assert_eq!(shown(&mut window).call, None);
     let tray = tray(&mut window);
     let state = window.state.clone();
     assert!(

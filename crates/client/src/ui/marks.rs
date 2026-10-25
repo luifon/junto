@@ -52,7 +52,7 @@ impl RenderOnce for Badge {
             .when_some(self.icon, |badge, shown| {
                 badge.child(icon(shown, 12.0, theme.colors.on_terracotta))
             })
-            .child(self.text)
+            .child(super::paint_text(self.text, None))
     }
 }
 

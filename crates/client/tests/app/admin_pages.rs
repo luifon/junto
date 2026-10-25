@@ -1207,8 +1207,19 @@ fn two_waiting_requests_with_one_name_are_marked_in_the_window(cx: &mut TestAppC
     });
 }
 
+/// The number that a badge draws inside the bounds of the element with this selector.
+fn drawn_count(window: &mut Window, selector: &'static str) -> Option<String> {
+    let text = drawn_text(window);
+    let bounds = window.cx.debug_bounds(selector)?;
+    text.into_iter()
+        .filter(|text| bounds.contains(&text.bounds.center()))
+        .map(|text| text.text.to_string())
+        .find(|text| !text.is_empty() && text.chars().all(|letter| letter.is_ascii_digit()))
+}
+
 /// Finding 14: the join requests that wait are counted on the server in the server book and
-/// beside the page in the navigation, without the page being open first (ADR 0761).
+/// beside the page in the navigation, without the page being open first, and an approval
+/// lowers both drawn counts (ADR 0761).
 #[gpui::test]
 fn the_waiting_join_requests_are_counted_on_the_server_and_in_the_navigation(
     cx: &mut TestAppContext,
@@ -1216,37 +1227,32 @@ fn the_waiting_join_requests_are_counted_on_the_server_and_in_the_navigation(
     let world = World::new();
     let server = world.server("Harbor");
     let (_directory, mut window, _owner) = owner_window(cx, &server);
-    let waiting = |window: &mut Window| {
-        window
-            .view()
-            .servers
-            .first()
-            .map_or(0, |row| row.waiting_join_requests)
-    };
-    assert_eq!(waiting(&mut window), 0);
     assert!(!window.shows("server-waiting-0"));
 
     let (_first, _linus, first) = asks_to_join(&world, &server, "Linus");
     let (_second, _marta, _) = asks_to_join(&world, &server, "Marta");
-    window.until("the server book counts the two requests", |window| {
-        waiting(window) == 2 && window.shows("server-waiting-0")
+    window.until("the server book draws two requests", |window| {
+        drawn_count(window, "server-waiting-0").as_deref() == Some("2")
     });
 
     // A press on the count opens the page of the join requests; its row in the navigation
-    // carries the count too.
+    // draws the count too.
     window.click("server-waiting-0");
     awaited(
         &mut window,
         "the page of the join requests is open",
         |window| server_page!(window, JoinRequests),
     );
-    window.until("the navigation counts the requests", |window| {
-        window.shows("admin-nav-requests-count")
+    window.until("the navigation draws two requests", |window| {
+        drawn_count(window, "admin-nav-requests").as_deref() == Some("2")
     });
 
-    // An approval takes the request out of both counts.
+    // An approval lowers both drawn counts.
     click_in_page(&mut window, sel("request-approve", first));
-    window.until("one request is counted", |window| waiting(window) == 1);
+    window.until("both places draw one request", |window| {
+        drawn_count(window, "admin-nav-requests").as_deref() == Some("1")
+            && drawn_count(window, "server-waiting-0").as_deref() == Some("1")
+    });
 }
 
 #[gpui::test]

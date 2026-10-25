@@ -1184,6 +1184,10 @@ impl AppState {
 
     /// Turns the short tones of the events of a call on or off (ADR 0707).
     pub fn set_call_sounds(&mut self, on: bool, cx: &mut Context<Self>) {
+        // The tones that wait or play end with the switch.
+        if !on {
+            self.sounds.cancel();
+        }
         self.change_voice(cx, move |voice| voice.call_sounds = on);
     }
 

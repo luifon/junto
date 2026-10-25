@@ -45,7 +45,7 @@ impl SystemTray for MenuBarTray {
             .iter()
             .map(|entry| Entry {
                 label: entry.label,
-                code: entry.action.code(),
+                code: entry.code,
                 enabled: entry.enabled,
                 separated: entry.separated,
             })

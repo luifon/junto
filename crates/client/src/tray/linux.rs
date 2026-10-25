@@ -328,15 +328,15 @@ type Layout = (i32, Properties, Vec<OwnedValue>);
 /// The identifier of the menu itself.
 const ROOT: i32 = 0;
 
-/// One entry of the menu as the desktop shows it. The identifier of an entry is the code of
-/// its action (`TrayAction::code`); a separator has an identifier above the codes.
+/// One entry of the menu as the desktop shows it. The identifier of an entry is its code
+/// (`MenuEntry::code`); a separator has an identifier that no entry code has.
 struct Shown {
     id: i32,
     properties: Properties,
 }
 
-/// The identifier of the separator before the entry with this identifier.
-const SEPARATOR: i32 = 100;
+/// The kind of action in the code of a separator: no action has it.
+const SEPARATOR: u32 = 7;
 
 fn text(value: &'static str) -> OwnedValue {
     OwnedValue::from(Str::from(value))
@@ -345,10 +345,10 @@ fn text(value: &'static str) -> OwnedValue {
 fn shown(state: &TrayState) -> Vec<Shown> {
     let mut entries = Vec::new();
     for entry in state.menu() {
-        let id = entry.action.code() as i32;
+        let id = entry.code as i32;
         if entry.separated {
             entries.push(Shown {
-                id: SEPARATOR + id,
+                id: crate::tray::entry_code(state.generation, SEPARATOR) as i32,
                 properties: HashMap::from([("type".to_owned(), text("separator"))]),
             });
         }
