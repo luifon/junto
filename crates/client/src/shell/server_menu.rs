@@ -15,8 +15,8 @@ use crate::state::view::{ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Menu, MenuItem, Mosaic, MosaicKind, StyleExt, dialog_footer,
-    icon, menu_separator, paint_text,
+    Button, ButtonKind, Dialog, Menu, MenuItem, Mosaic, MosaicKind, StyleExt, dialog_footer, icon,
+    menu_separator, paint_text,
 };
 
 impl Shell {
@@ -123,8 +123,8 @@ impl Shell {
                                         .gap(u(5.0))
                                         .typeface(theme.types.small_strong, &theme)
                                         .line_height(u(16.0))
-                                        .ink(colors.cypress)
-                                        .child(icon(Icon::Download, 12.0, colors.cypress))
+                                        .ink(colors.cypress_ink)
+                                        .child(icon(Icon::Download, 12.0, colors.cypress_ink))
                                         .child(div().flex_1().min_w_0().truncate().child(
                                             paint_text(
                                                 text::book::server_release_available(newer).into(),

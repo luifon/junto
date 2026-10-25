@@ -484,7 +484,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     // in its row, with a download that runs and one that ended.
     studio.draw(
         Screen::new("admin-recording-files", acme(Some(ready()), |_| {})),
-        |shell, window, cx| {
+        move |shell, window, cx| {
             show(
                 shell,
                 |known| {

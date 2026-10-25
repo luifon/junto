@@ -86,7 +86,7 @@ impl Shell {
                     format!("recording-download-{recording_id}"),
                     Button::new(("recording-download", index))
                         .icon(Icon::Download)
-                        .icon_colour(colors.cypress)
+                        .icon_colour(colors.cypress_ink)
                         .label(text::DOWNLOAD)
                         .tooltip(text::RECORDING_FILES)
                         .h(u(28.0))

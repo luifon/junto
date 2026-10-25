@@ -698,12 +698,7 @@ fn the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_s
     let stated = ServerVersion::parse(env!("CARGO_PKG_VERSION")).unwrap();
     let release = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
     let version_line = text::book::server_version(&stated);
-    let shown = |window: &mut Window| {
-        window
-            .view()
-            .selected
-            .and_then(|selected| selected.release)
-    };
+    let shown = |window: &mut Window| window.view().selected.and_then(|selected| selected.release);
 
     // Without a source of releases the menu states the version only.
     let (_plain_directory, mut plain) = member(cx, &world, &server.address(), &admin, "Ana");

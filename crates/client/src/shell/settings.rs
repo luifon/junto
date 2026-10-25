@@ -66,12 +66,12 @@ impl SettingsSection {
         match self {
             Self::Profile => Icon::Person,
             Self::Picture => Icon::Picture,
-            Self::Interface => Icon::Screen,
+            Self::Interface => Icon::AppWindow,
             Self::Voice => Icon::Microphone,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
-            Self::Devices => Icon::Link,
-            Self::About => Icon::List,
+            Self::Devices => Icon::Devices,
+            Self::About => Icon::Document,
         }
     }
 
