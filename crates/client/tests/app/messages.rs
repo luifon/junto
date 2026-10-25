@@ -129,7 +129,11 @@ impl Window {
 }
 
 /// The position of the list of a place, as the client core holds it.
-fn core_anchor(window: &mut Window, server_id: ServerId, place: PlaceId) -> Option<Option<u64>> {
+pub(crate) fn core_anchor(
+    window: &mut Window,
+    server_id: ServerId,
+    place: PlaceId,
+) -> Option<Option<u64>> {
     window.state.read_with(&window.cx, |state, _| {
         state
             .server(server_id)?

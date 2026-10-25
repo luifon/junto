@@ -250,7 +250,14 @@ impl AppState {
             PlaceId::Thread { .. } => return,
         }
         self.jump = Some(jump);
-        self.known.target = Some((server_id, jump.message_id, self.navigations));
+        self.known.target = Some(super::view::JumpTarget {
+            server_id,
+            place: Self::jump_place(&jump),
+            message_id: jump.message_id,
+            position: jump.position,
+            number: self.navigations,
+            waiting: true,
+        });
         self.changed(cx);
     }
 

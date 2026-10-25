@@ -632,6 +632,13 @@ impl AppState {
     /// Replaces the loaded messages of a place by the end of its history. The client core
     /// then follows the end of the place, and the record of the window says so.
     pub fn read_latest(&mut self, server_id: ServerId, place: PlaceId) {
+        // The person goes to the end: the list does not wait for the message of a jump.
+        if let Some(target) = &mut self.known.target
+            && target.server_id == server_id
+            && target.place == place
+        {
+            target.waiting = false;
+        }
         if let Some(server) = self.client.server(server_id) {
             self.anchors.insert((server_id, place), None);
             server.live().read_latest_messages(place);
