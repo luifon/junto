@@ -1996,12 +1996,11 @@ mod events {
     fn a_move_and_a_removal_by_a_moderator_are_told_to_the_device_in_the_call() {
         let mut scene = scene();
         let room = ChannelId::generate();
-        let mut workspace = scene.model.workspaces[0].clone();
+        let workspace = Arc::make_mut(&mut scene.model.workspaces[0]);
         let mut channel = workspace.channels[1].clone();
         channel.channel.id = room;
         channel.channel.name = "Room 2".to_owned();
         workspace.channels.push(channel);
-        scene.model.workspaces[0] = workspace;
         let moved = |account_id| Event::CallMoveRequested {
             call_move: CallMove {
                 id: CallMoveId::generate(),

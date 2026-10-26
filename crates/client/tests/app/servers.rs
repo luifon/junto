@@ -709,7 +709,8 @@ fn the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_s
         shown(&mut plain),
         Some(ServerRelease {
             version: stated.clone(),
-            newer: None
+            newer: None,
+            newer_events: false,
         })
     );
     plain.open_server_menu();
@@ -741,7 +742,8 @@ fn the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_s
         shown(&mut window),
         Some(ServerRelease {
             version: stated.clone(),
-            newer: None
+            newer: None,
+            newer_events: false,
         })
     );
     window.open_server_menu();
