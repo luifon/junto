@@ -302,7 +302,18 @@ impl RenderOnce for MenuItem {
                                 .when_some(self.detail_icon, |line, shown| {
                                     line.child(icon(shown, 12.0, colors.bronze))
                                 })
-                                .child(detail),
+                                // A detail longer than the menu is wide wraps.
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .when_some(self.selector, |text, selector| {
+                                            text.debug_selector(move || {
+                                                format!("{selector}-detail")
+                                            })
+                                        })
+                                        .child(detail),
+                                ),
                         )
                     }),
             )
