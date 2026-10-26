@@ -283,6 +283,9 @@ pub struct CallsView {
     /// Why the calls closed the microphone setting last. It stays until
     /// [`Calls::dismiss_closed`].
     pub closed: Option<MicrophoneClosed>,
+    /// Why the level test of the sound settings could not open the microphone. It stays
+    /// until a test opens one or the test stops.
+    pub input_test_failed: Option<AudioError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -639,12 +642,33 @@ impl Calls {
                 inner.levels.clone(),
                 &inner.runtime,
             );
-            let Ok(test) = opened else {
-                return;
+            let test = match opened {
+                Ok(test) => test,
+                Err(error) => {
+                    // The device of the earlier test is not the chosen one any more: that
+                    // test ends, and the settings state why no level shows.
+                    let ended = {
+                        let mut shared = inner.shared();
+                        if shared.input_tests != generation || shared.active.is_some() {
+                            return;
+                        }
+                        shared.input_test.take()
+                    };
+                    tracing::warn!(%error, "the microphone of the level test did not open");
+                    drop(ended);
+                    inner.levels.send_modify(|levels| levels.input = 0.0);
+                    inner
+                        .view
+                        .send_modify(|view| view.input_test_failed = Some(error));
+                    return;
+                }
             };
             let replaced = {
                 let mut shared = inner.shared();
                 if shared.input_tests == generation && shared.active.is_none() {
+                    inner
+                        .view
+                        .send_if_modified(|view| view.input_test_failed.take().is_some());
                     shared.input_test.replace(test)
                 } else {
                     Some(test)
@@ -665,6 +689,9 @@ impl Calls {
             self.inner.runtime.spawn_blocking(move || drop(test));
             self.inner.levels.send_modify(|levels| levels.input = 0.0);
         }
+        self.inner
+            .view
+            .send_if_modified(|view| view.input_test_failed.take().is_some());
     }
 
     /// The microphone of the sound settings is open.
@@ -3633,6 +3660,50 @@ mod tests {
         assert!(!calls.input_test_runs());
         assert!(host.opened_inputs().is_empty());
         assert_eq!(permission.asked(), 0);
+    }
+
+    /// A change of the device of the level test opens the new device before it closes the
+    /// earlier one. When the new one does not open, the earlier test ends, its level goes, and
+    /// the view states why; a later test that opens puts the statement away.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_device_of_the_level_test_that_does_not_open_ends_the_earlier_test_and_says_why() {
+        use crate::audio::AudioError;
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-input-replaced-")
+            .tempdir()
+            .unwrap();
+        let wait = |what: &str, done: &dyn Fn() -> bool| {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(started.elapsed() < Duration::from_secs(20), "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let host = crate::audio::synthetic::SyntheticHost::with_tone(440.0);
+        let (client, _) = client_with_a_silent_server(&directory.path().join("client"));
+        let calls = Calls::new(
+            client,
+            MediaOptions {
+                host: Arc::new(host.clone()),
+                ..options_with(Arc::new(crate::share::NoCapture))
+            },
+        );
+        let levels = calls.levels();
+        calls.start_input_test();
+        wait("the level of the first device arrives", &|| {
+            calls.input_test_runs() && levels.borrow().input > 0.0
+        });
+        let failure = AudioError::Failed("unplugged".to_owned());
+        host.fail_next_input(failure.clone());
+        calls.start_input_test();
+        wait("the earlier test ends", &|| !calls.input_test_runs());
+        assert_eq!(levels.borrow().input, 0.0);
+        assert_eq!(calls.view().input_test_failed, Some(failure));
+        calls.start_input_test();
+        wait("a later test opens", &|| calls.input_test_runs());
+        assert_eq!(calls.view().input_test_failed, None);
+        calls.stop_input_test();
     }
 
     /// The dialog of a share shows a still picture of each listed screen and window. The

@@ -598,16 +598,22 @@ impl Shell {
                     .level(level)
                     .selector("voice-threshold-slider"),
                 )
-                .child(
+                .child({
+                    let failed = self.state.read(cx).calls().view().input_test_failed;
                     div()
                         .typeface(theme.types.small, theme)
-                        .ink(colors.ink_2)
-                        .child(if level.is_some() {
-                            text::SENSITIVITY_LEVEL_HELP
+                        .ink(if failed.is_some() && level.is_none() {
+                            colors.cinnabar_ink
                         } else {
-                            text::SENSITIVITY_NO_LEVEL
-                        }),
-                );
+                            colors.ink_2
+                        })
+                        .debug_selector(|| "sensitivity-level-help".to_owned())
+                        .child(match (level, failed) {
+                            (Some(_), _) => text::SENSITIVITY_LEVEL_HELP.to_owned(),
+                            (None, Some(error)) => text::microphone_test_failed(&error),
+                            (None, None) => text::SENSITIVITY_NO_LEVEL.to_owned(),
+                        })
+                });
         }
         column.into_any_element()
     }

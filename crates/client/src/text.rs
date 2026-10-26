@@ -1088,6 +1088,15 @@ pub const SENSITIVITY_LEVEL_HELP: &str =
     "The bar is your microphone now. It is bright while it reaches the mark and is sent.";
 pub const SENSITIVITY_NO_LEVEL: &str = "Your microphone level shows on the bar when Junto may \
      use the microphone and it opens.";
+/// Why the level test of the sound settings shows no level: the chosen microphone did not
+/// open.
+pub fn microphone_test_failed(error: &junto_media::audio::AudioError) -> String {
+    format!(
+        "Your microphone did not open, so no level shows: {}. Choose another input device, or \
+         connect this one again.",
+        error
+    )
+}
 pub const USE_PUSH_TO_TALK: &str = "Use push to talk";
 pub const KEEP_VOICE_ACTIVATION: &str = "Keep voice activation";
 
