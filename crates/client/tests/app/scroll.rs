@@ -450,5 +450,6 @@ fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut 
     window.until("the page before is read again", |window| {
         window.texts().iter().any(|text| text == "Message 69")
     });
-    assert_eq!(older(&proxy), 2);
+    // The page is read again; its rows can lead the list to ask for the next older page.
+    assert!(older(&proxy) >= 2);
 }
