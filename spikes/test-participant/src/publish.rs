@@ -8,7 +8,7 @@ use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use serde_json::json;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, sleep_until, Instant};
@@ -48,6 +48,7 @@ struct Session {
     mic: Option<Published>,
     _camera: Option<Published>,
     screen: Vec<Published>,
+    second_screen: Vec<Published>,
 }
 
 /// The files that replace the tones, and the signal that starts them.
@@ -57,17 +58,22 @@ struct Files {
 }
 
 impl Files {
-    fn load(args: &PublishArgs) -> Result<Self> {
+    /// Also reads the lines of standard input: `play` starts the files, `second-screen` is
+    /// sent to `second`.
+    fn load(args: &PublishArgs, second: UnboundedSender<()>) -> Result<Self> {
         if args.screen_audio_file.is_some() && !args.screen {
             return Err(anyhow!("--screen-audio-file needs --screen"));
         }
         let (start, play) = watch::channel(!args.play_on_stdin);
-        if args.play_on_stdin {
+        if args.play_on_stdin || args.second_screen {
             std::thread::spawn(move || {
                 for line in std::io::stdin().lines() {
                     match line {
                         Ok(line) if line.trim() == "play" => {
                             let _ = start.send(true);
+                        }
+                        Ok(line) if line.trim() == "second-screen" => {
+                            let _ = second.send(());
                         }
                         Ok(_) => {}
                         Err(_) => break,
@@ -86,7 +92,8 @@ impl Files {
 
 pub async fn run(args: PublishArgs) -> Result<()> {
     let started = Instant::now();
-    let files = Files::load(&args)?;
+    let (second_screen, mut second_asked) = mpsc::unbounded_channel();
+    let files = Files::load(&args, second_screen)?;
     let mut timeline: Vec<(f64, Action)> = Vec::new();
     if args.screen && args.screen_after > 0.0 {
         timeline.push((args.screen_after, Action::StartScreen));
@@ -102,12 +109,23 @@ pub async fn run(args: PublishArgs) -> Result<()> {
     timeline.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let mut sharing = args.screen && args.screen_after <= 0.0;
+    let mut second = false;
     let mut muted = false;
-    let mut session = join(&args, &files, sharing, muted).await?;
+    let mut session = join(&args, &files, sharing, second, muted).await?;
 
+    timeline.push((86_400.0 * 365.0, Action::Leave));
     for (at, action) in timeline {
-        if !wait_until(started + Duration::from_secs_f64(at), &mut session).await {
-            return leave(session).await;
+        loop {
+            match wait_until(started + Duration::from_secs_f64(at), &mut session, &mut second_asked).await {
+                Wake::Due => break,
+                Wake::Ended => return leave(session).await,
+                Wake::SecondScreen if args.second_screen && !second => {
+                    emit("action", json!({ "action": "StartSecondScreen", "t": started.elapsed().as_secs_f64() }));
+                    second = true;
+                    session.second_screen = publish_second_screen(&session.room, &args).await?;
+                }
+                Wake::SecondScreen => {}
+            }
         }
         emit("action", json!({ "action": format!("{action:?}"), "t": started.elapsed().as_secs_f64() }));
         match action {
@@ -134,30 +152,38 @@ pub async fn run(args: PublishArgs) -> Result<()> {
             Action::Reconnect => {
                 leave(session).await?;
                 sleep(Duration::from_secs_f64(args.reconnect_gap)).await;
-                session = join(&args, &files, sharing, muted).await?;
+                session = join(&args, &files, sharing, second, muted).await?;
             }
             Action::Leave => return leave(session).await,
         }
     }
-    wait_until(started + Duration::from_secs(86_400 * 365), &mut session).await;
     leave(session).await
 }
 
-/// Returns false when the process was interrupted or the server closed the connection.
-async fn wait_until(deadline: Instant, session: &mut Session) -> bool {
+/// Why a wait ended.
+enum Wake {
+    Due,
+    /// The process was interrupted or the server closed the connection.
+    Ended,
+    /// Standard input asked for the second screen share.
+    SecondScreen,
+}
+
+async fn wait_until(deadline: Instant, session: &mut Session, second: &mut UnboundedReceiver<()>) -> Wake {
     loop {
         tokio::select! {
-            _ = sleep_until(deadline) => return true,
-            _ = tokio::signal::ctrl_c() => return false,
+            _ = sleep_until(deadline) => return Wake::Due,
+            _ = tokio::signal::ctrl_c() => return Wake::Ended,
+            Some(()) = second.recv() => return Wake::SecondScreen,
             event = session.events.recv() => match event {
                 Some(RoomEvent::Disconnected { reason }) => {
                     emit("disconnected", json!({ "reason": format!("{reason:?}") }));
-                    return false;
+                    return Wake::Ended;
                 }
                 Some(RoomEvent::Reconnecting) => emit("reconnecting", json!({})),
                 Some(RoomEvent::Reconnected) => emit("reconnected", json!({})),
                 Some(_) => {}
-                None => return false,
+                None => return Wake::Ended,
             },
         }
     }
@@ -165,14 +191,14 @@ async fn wait_until(deadline: Instant, session: &mut Session) -> bool {
 
 async fn leave(session: Session) -> Result<()> {
     let identity = session.room.local_participant().identity().to_string();
-    let Session { room, mic, _camera, screen, .. } = session;
-    drop((mic, _camera, screen));
+    let Session { room, mic, _camera, screen, second_screen, .. } = session;
+    drop((mic, _camera, screen, second_screen));
     room.close().await?;
     emit("left", json!({ "identity": identity }));
     Ok(())
 }
 
-async fn join(args: &PublishArgs, files: &Files, sharing: bool, muted: bool) -> Result<Session> {
+async fn join(args: &PublishArgs, files: &Files, sharing: bool, second: bool, muted: bool) -> Result<Session> {
     let (room, events) = session::connect(&args.connect, false).await?;
     let local = room.local_participant();
     emit(
@@ -208,7 +234,8 @@ async fn join(args: &PublishArgs, files: &Files, sharing: bool, muted: bool) -> 
     };
 
     let screen = if sharing { publish_screen(&room, args, files).await? } else { Vec::new() };
-    Ok(Session { room, events, mic, _camera: camera, screen })
+    let second_screen = if second { publish_second_screen(&room, args).await? } else { Vec::new() };
+    Ok(Session { room, events, mic, _camera: camera, screen, second_screen })
 }
 
 async fn publish_screen(room: &Room, args: &PublishArgs, files: &Files) -> Result<Vec<Published>> {
@@ -229,6 +256,32 @@ async fn publish_screen(room: &Room, args: &PublishArgs, files: &Files) -> Resul
         };
         let spec = ToneSpec { hz, level: args.level, marker: None };
         tracks.push(publish_tone(room, "screen-audio", spec, files.screen_audio.clone(), options).await?);
+    }
+    Ok(tracks)
+}
+
+/// The second share of the person, in slot 1. The names of its tracks state the slot, as
+/// the tracks of a client state it (ADR 0737).
+async fn publish_second_screen(room: &Room, args: &PublishArgs) -> Result<Vec<Published>> {
+    let (width, height) = pattern::parse_size(&args.screen_size)?;
+    let colour = match &args.second_screen_color {
+        Some(text) => pattern::parse_color(text).map_err(|e| anyhow!("--second-screen-color: {e}"))?,
+        None => color(args)?,
+    };
+    let pattern = Pattern::new(PatternKind::Screen, (width, height), &label(args), colour, marker(args));
+    let options = video_options(TrackSource::Screenshare, args);
+    let name = format!("screen/{}/1", args.screen_fps);
+    let mut tracks = vec![publish_pattern(room, &name, pattern, (width, height), args.screen_fps, options).await?];
+    if let Some(hz) = args.second_screen_audio_hz {
+        let options = TrackPublishOptions {
+            source: TrackSource::ScreenshareAudio,
+            dtx: false,
+            red: false,
+            audio_encoding: Some(AudioEncoding { max_bitrate: SHARE_AUDIO_BITRATE }),
+            ..Default::default()
+        };
+        let spec = ToneSpec { hz, level: args.level, marker: None };
+        tracks.push(publish_tone(room, "share-sound/1", spec, None, options).await?);
     }
     Ok(tracks)
 }

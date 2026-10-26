@@ -71,6 +71,12 @@ tone (the share audio: silence, without `--screen-audio-hz`) until the line
 track is silent. Without that option a file starts with its track. The output
 has a `file_started` line with the length of the file and a `file_ended` line.
 
+A second share in slot 1 of the shares of one person: with `--second-screen`, the
+line `second-screen` on standard input publishes a second screen share of the
+same size and frame rate, named `screen/<fps>/1`, in the colour of
+`--second-screen-color RRGGBB`, and with `--second-screen-audio-hz` its sound
+track `share-sound/1`. The names state the slot, as the tracks of a client do.
+
 Other options: `--level` (tone peak, 0 to 1, default 0.25, which is -12 dBFS),
 `--label` (default: the identity), `--simulcast` (off by default). Video is
 VP8. Echo cancellation, noise suppression and gain control are off for every

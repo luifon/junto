@@ -29,6 +29,7 @@ import tarfile
 import threading
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,9 +54,12 @@ TILES_SHARE = 0.24
 GAP = 8.0
 
 TONE_A, TONE_B, TONE_SHARE = 440, 880, 1000
+# The second share of one person (ADR 0502).
+TONE_SECOND = 1250
 CONTROL_BANDS = (620, 1500)
 # Colours of the test pictures, bright so that the dark label of the page stands out.
 COLOUR_A, COLOUR_B, COLOUR_SHARE = (0xE0, 0xC0, 0x20), (0x40, 0xD0, 0xA0), (0x30, 0xA0, 0xE0)
+COLOUR_SECOND = (0xE0, 0x50, 0x90)
 CAMERA_BARS = [
     (192, 192, 192),
     (192, 192, 0),
@@ -346,8 +350,11 @@ class Participant:
         wait_for(f"the participant {self.name} reports {count} x {event}", holds, seconds, 0.1)
 
     def play(self) -> None:
+        self.tell("play")
+
+    def tell(self, line: str) -> None:
         assert self.process.stdin is not None
-        self.process.stdin.write("play\n")
+        self.process.stdin.write(f"{line}\n")
         self.process.stdin.flush()
 
     def leave(self) -> None:
@@ -713,7 +720,7 @@ def start_call(scene: Scene, arguments: argparse.Namespace) -> None:
 
 
 def check_tones(scene: Scene, what: str, path: str, present: tuple[int, ...], start: float = 1.0, length: float = 5.0) -> None:
-    bands = (TONE_A, TONE_B, TONE_SHARE, *CONTROL_BANDS)
+    bands = (TONE_A, TONE_B, TONE_SHARE, TONE_SECOND, *CONTROL_BANDS)
     levels = scene.media.band_levels(path, start, length, bands)
     if len(levels) != len(bands):
         report.fail(f"{what}: the sound could not be measured", levels)
@@ -1161,6 +1168,90 @@ def phase_recording(scene: Scene, arguments: argparse.Namespace) -> None:
     scene.everybody_leaves()
     check_transcript(scene, recording_id, arguments)
     scene.remove_and_check_nothing_is_left(recording_id, "recording")
+
+
+def share_colours(scene: Scene, path: str, at: float) -> tuple[int, int]:
+    """How many of four fields of the main area of the frame at `at` show the colour of the
+    first and of the second share."""
+    main_x, main_y, main_width, _ = Layout(cameras=1).main
+    scale = main_width / 1280
+    crops = {
+        f"share-{index}": (main_x + (column * 80 + 22) * scale, main_y + (row * 80 + 22) * scale, 36 * scale, 36 * scale)
+        for index, (column, row) in enumerate(((12, 2), (12, 6), (3, 6), (8, 7)))
+    }
+    measured = scene.media.regions(path, at, crops)
+    first = sum(same_colour(value, COLOUR_SHARE) for value in measured.values())
+    second = sum(same_colour(value, COLOUR_SECOND) for value in measured.values())
+    return first, second
+
+
+def phase_two_shares(scene: Scene, arguments: argparse.Namespace) -> None:
+    """One person runs two shares, each with its sound (ADR 0502, ADR 0602): the recording
+    keeps the sound of each share in a file of its own, and the composite shows the share that
+    started last with its sound and without the sound of the other share."""
+    member_c = scene.members[1]
+    colour = lambda value: "%02x%02x%02x" % value  # noqa: E731
+    a = scene.enter(scene.owner, "A", ["--mic-hz", str(TONE_A), "--label", "A"])
+    c = scene.enter(
+        member_c,
+        "C",
+        [
+            "--no-mic", "--screen", "--screen-audio-hz", str(TONE_SHARE), "--screen-color", colour(COLOUR_SHARE),
+            "--second-screen", "--second-screen-audio-hz", str(TONE_SECOND), "--second-screen-color", colour(COLOUR_SECOND),
+            "--label", "C",
+        ],
+    )
+    a.wait("published", 1)
+    c.wait("published", 2)
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    share = lambda slot, share_id: {"audio": "application", "slot": slot, "kind": "screen", "share_id": share_id}  # noqa: E731
+    member_c.call("PUT", "/api/v1/call/screen-share", share(0, first), expect=(200, 204))
+    everybody = {scene.owner.account_id, member_c.account_id}
+    wait_for("the server lists the two people in the call", lambda: scene.people_in_call() == everybody, 30)
+
+    recording_id = scene.start_recording()
+    scene.wait_recording(recording_id, ["composite", "microphone", "screen_share_audio"])
+    recorded = time.time()
+    time.sleep(8)
+    c.tell("second-screen")
+    c.wait("published", 4)
+    member_c.call("PUT", "/api/v1/call/screen-share", share(1, second), expect=(200, 204))
+    reported = time.time()
+    scene.wait_recording(recording_id, ["composite", "microphone", "screen_share_audio", "screen_share_audio"])
+    time.sleep(10)
+    scene.stop_recording()
+    detail = scene.wait_final(recording_id)
+    report.check("the recording of two shares of one person is ready", detail["recording"]["state"] == "ready", json.dumps(detail)[:1500])
+    segments = detail["segments"]
+    shared = [segment for segment in segments if segment["source"] == "screen_share_audio"]
+    report.check(
+        "the recording has the composite, the microphone and one sound segment for each of the two shares of C",
+        sorted(segment["source"] for segment in segments) == ["composite", "microphone", "screen_share_audio", "screen_share_audio"]
+        and all(segment["account_id"] == member_c.account_id for segment in shared),
+        [(segment["source"], segment.get("account_id")) for segment in segments],
+    )
+    if any(not segment.get("file") for segment in segments) or len(shared) != 2:
+        raise Failed("a segment of the two shares has no file; the files cannot be examined")
+    tones = []
+    for segment in shared:
+        path = f"{RECORDINGS}/{recording_id}/{segment['id']}.ogg"
+        levels = scene.media.band_levels(path, 1.0, 4.0, (TONE_SHARE, TONE_SECOND))
+        tones.append(max(levels, key=lambda band: levels[band]) if len(levels) == 2 else None)
+        check_tones(scene, f"the sound file of a share of C ({tones[-1]} Hz)", path, (tones[-1] or TONE_SHARE,))
+    report.check("the two sound files hold the sounds of the two shares", sorted(tone or 0 for tone in tones) == [TONE_SHARE, TONE_SECOND], tones)
+
+    composite = next(segment for segment in segments if segment["source"] == "composite")
+    video = f"{RECORDINGS}/{recording_id}/{composite['id']}.mp4"
+    length = float(scene.media.probe(video)["format"]["duration"])
+    switch = reported - recorded
+    before = share_colours(scene, video, max(1.0, switch - 3.0))
+    report.check("before the second share, the main area of the composite shows the first share", before[0] >= 3, before)
+    check_tones(scene, "the composite before the second share", video, (TONE_A, TONE_SHARE), start=max(1.0, switch - 6.0), length=4.0)
+    after = share_colours(scene, video, length - 3.0)
+    report.check("after the second share started, the main area of the composite shows it", after[1] >= 3, after)
+    check_tones(scene, "the composite with the second share as the main share", video, (TONE_A, TONE_SECOND), start=length - 6.0, length=4.0)
+    scene.everybody_leaves()
+    scene.remove_and_check_nothing_is_left(recording_id, "two shares")
 
 
 def phase_everybody_leaves(scene: Scene, arguments: argparse.Namespace) -> None:
@@ -1889,6 +1980,7 @@ def main() -> int:
             scene = Scene(arguments, deployment, members=3)
             for step in (
                 phase_recording,
+                phase_two_shares,
                 phase_everybody_leaves,
                 phase_recorder_lost,
                 phase_server_restart,
