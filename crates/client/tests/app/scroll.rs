@@ -396,3 +396,48 @@ fn a_wheel_up_over_a_list_that_fits_leaves_no_button_to_the_end(cx: &mut TestApp
         "the button to the end is drawn over a list at its end"
     );
 }
+
+/// A page of older messages whose read failed and that the client core does not try again
+/// is asked for again when the person moves the list again, at the same number of rows
+/// (open item RP1 of the release round). Before, the list asked once per number of rows and
+/// never again.
+#[gpui::test]
+fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut TestAppContext) {
+    use crate::support::{Fault, FaultProxy};
+    let world = World::new();
+    let server = world.server("Pages");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Member");
+    let channel = window.selected_channel();
+    for index in 0..120 {
+        admin.send(&world, channel, document(&format!("Message {index}")));
+    }
+    window.until_message("Message 119");
+    let older = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.path.contains("/messages?") && seen.path.contains("before"))
+            .count()
+    };
+    assert_eq!(older(&proxy), 0);
+    // The server refuses the next page before the loaded messages, a refusal that the
+    // client core does not try again.
+    proxy.fail_ending("&limit=50", [Fault::Refused]);
+    window.in_shell(|shell, _, cx| shell.show_feed_row(Pane::Main, 0, cx));
+    window.until("the page before is refused", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.reading.older_failed == 1 && !feed.reading.older)
+    });
+    assert_eq!(older(&proxy), 1);
+    // The person moves the list at the same number of rows.
+    window.in_shell(|shell, _, cx| shell.show_feed_row(Pane::Main, 2, cx));
+    window.settle();
+    window.in_shell(|shell, _, cx| shell.show_feed_row(Pane::Main, 0, cx));
+    window.until("the page before is read again", |window| {
+        window.texts().iter().any(|text| text == "Message 69")
+    });
+    assert_eq!(older(&proxy), 2);
+}

@@ -80,6 +80,9 @@ pub(crate) struct FeedList {
     /// them. The state can show a read as not running after it ended and before its rows
     /// arrive; the list asks again only when its rows changed.
     asked: (Option<usize>, Option<usize>),
+    /// The counts of the failed reads of the page before and of the page after at the
+    /// last drawing.
+    failed: (u32, u32),
 }
 
 /// Gives a list aligned to its end that stands at the bottom of its rows a row position just
@@ -180,6 +183,7 @@ impl FeedList {
             to_latest: false,
             more_after: false,
             asked: (None, None),
+            failed: (0, 0),
         }
     }
 
@@ -1224,6 +1228,17 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let pane = Pane::of(feed.place);
+        // A read of a page that ended with a failure is asked for again at the next move of
+        // the list, also at the same number of rows; otherwise the list would stay without
+        // the page after the client core stopped its tries (ADR 0740).
+        let shown = self.list_mut(pane);
+        if shown.failed.0 != feed.reading.older_failed {
+            shown.asked.0 = None;
+        }
+        if shown.failed.1 != feed.reading.newer_failed {
+            shown.asked.1 = None;
+        }
+        shown.failed = (feed.reading.older_failed, feed.reading.newer_failed);
         let state = self.list(pane).list.clone();
         let rows = feed.rows.clone();
         let feed_of_rows = feed.clone();
