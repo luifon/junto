@@ -759,6 +759,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         picture: PictureSource::Window(11),
         sound: SoundChoice::Application(SyntheticCapture::player()),
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("two shares are shown", |window| {
         window.shows("shares-bar")

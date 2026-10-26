@@ -1175,6 +1175,7 @@ fn a_share() -> CaptureRequest {
         picture: crate::share::PictureSource::Display(1),
         sound: crate::share::SoundChoice::System,
         quality: crate::share::ShareQuality::default(),
+        dialog_parent: None,
     }
 }
 

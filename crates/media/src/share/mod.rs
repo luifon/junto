@@ -208,6 +208,11 @@ pub struct CaptureRequest {
     pub picture: PictureSource,
     pub sound: SoundChoice,
     pub quality: ShareQuality,
+    /// The window of the client over which a system that shows its own dialog of the share
+    /// shows it, as a window identifier of the desktop portal: `x11:` with the XID in
+    /// hexadecimal, or `wayland:` with a handle that the window exported. Only the portal of
+    /// Linux reads it (ADR 0751).
+    pub dialog_parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

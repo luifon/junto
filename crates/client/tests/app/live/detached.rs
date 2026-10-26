@@ -463,6 +463,7 @@ fn the_detached_call_draws_the_notices_and_the_bars_of_its_call(cx: &mut TestApp
         picture: PictureSource::Display(1),
         sound: SoundChoice::None,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     let started = std::time::Instant::now();
     while let Err(error) = world.run(api.start_meeting(voice.id)) {

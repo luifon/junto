@@ -219,6 +219,7 @@ impl Scene {
             picture: PictureSource::Display(1),
             sound: SoundChoice::None,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         });
         let api = self.admin.handle.api();
         let started = Instant::now();

@@ -1134,12 +1134,20 @@ impl AppState {
 
     /// Starts a share of this device at the seat for which the person chose it, with the
     /// stored resolution and frame rate; the shares that run go on. The result is in the
-    /// view.
-    pub fn start_share(&mut self, seat: &Seat, picture: PictureSource, sound: SoundChoice) {
+    /// view. `dialog_parent` names the window over which the portal of Linux shows its
+    /// dialog.
+    pub fn start_share(
+        &mut self,
+        seat: &Seat,
+        picture: PictureSource,
+        sound: SoundChoice,
+        dialog_parent: Option<String>,
+    ) {
         let request = CaptureRequest {
             picture,
             sound,
             quality: share_quality(&self.known.media.voice),
+            dialog_parent,
         };
         self.calls.start_share_in(seat, request);
     }

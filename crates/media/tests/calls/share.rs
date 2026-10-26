@@ -40,6 +40,7 @@ fn screen(sound: SoundChoice) -> CaptureRequest {
         picture: PictureSource::Display(1),
         sound,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn window(sound: SoundChoice) -> CaptureRequest {
         picture: PictureSource::Window(11),
         sound,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     }
 }
 
@@ -1525,6 +1527,7 @@ async fn a_share_larger_than_the_levels_of_h264_arrives_at_its_size_in_vp8() {
                 resolution: Resolution::Source,
                 frame_rate: 15,
             },
+            dialog_parent: None,
         });
         assert_eq!(ann.until_sharing().await.size, (5120, 2880));
         let picture = ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;

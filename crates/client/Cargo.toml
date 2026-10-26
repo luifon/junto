@@ -152,6 +152,9 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 # above other windows (ADR 0507). gpui uses the same crates.
 raw-window-handle = "0.6"
 x11rb = "0.13"
+# The window identifier of the desktop portal for the dialog of a share: the XID of an X11
+# window, or the xdg-foreign export of a Wayland surface (ADR 0751). gpui uses the same crate.
+ashpd = { version = "0.13", default-features = false, features = ["raw_handle", "wayland"] }
 
 [target.'cfg(windows)'.dependencies]
 # The handle of the main window, for its taskbar properties (ADR 0755). gpui uses the same crate.

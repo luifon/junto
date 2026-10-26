@@ -846,6 +846,7 @@ fn enter_call(
                 &seat,
                 junto_media::share::PictureSource::Display(1),
                 junto_media::share::SoundChoice::None,
+                None,
             );
         });
         window.until("the own share runs", |window| {

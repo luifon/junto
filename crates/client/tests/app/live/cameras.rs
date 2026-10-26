@@ -498,6 +498,7 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
         picture: PictureSource::Display(1),
         sound: SoundChoice::None,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("the strip of the share leaves Ada out", |window| {
         window.shows("share-viewport") && only_own(window)

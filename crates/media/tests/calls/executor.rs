@@ -58,6 +58,7 @@ async fn the_futures_of_the_calls_end_on_an_executor_without_a_tokio_runtime() {
             picture: PictureSource::Display(display),
             sound: SoundChoice::None,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         });
         ben.until("the own share runs", |view| {
             view.call

@@ -755,6 +755,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             picture: PictureSource::Display(1),
             sound: SoundChoice::System,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         }]
     );
     window.until("the own share is shown", |window| {
@@ -786,6 +787,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         picture: PictureSource::Window(11),
         sound: SoundChoice::Application(SyntheticCapture::player()),
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("two shares are shown", |window| {
         window.shows("shares-bar")
@@ -1024,6 +1026,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
         picture: PictureSource::Display(1),
         sound: SoundChoice::System,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     // The window receives the screen before the window starts: the shares are kept in the
     // order in which their tracks arrive.
@@ -1034,6 +1037,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
         picture: PictureSource::Window(11),
         sound: SoundChoice::Application(SyntheticCapture::player()),
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("the two shares of the administrator are shown", |window| {
         window.shows("shares-bar")

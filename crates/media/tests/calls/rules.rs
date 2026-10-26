@@ -90,6 +90,7 @@ async fn a_person_whom_the_presenter_allows_to_speak_opens_the_own_microphone() 
             picture: PictureSource::Display(1),
             sound: SoundChoice::None,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         });
         ann.until("the share runs", |view| {
             view.call
@@ -262,6 +263,7 @@ async fn a_share_asked_for_in_one_call_does_not_start_in_the_next() {
             picture: PictureSource::Display(1),
             sound: SoundChoice::System,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         };
 
         // Ann moves Ben. The share that Ben chose in the first call is confirmed after it.

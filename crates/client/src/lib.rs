@@ -7,6 +7,7 @@
 pub mod app;
 pub mod assets;
 pub mod compose;
+pub mod dialog_parent;
 pub mod emoji;
 pub mod highlight;
 pub mod images;

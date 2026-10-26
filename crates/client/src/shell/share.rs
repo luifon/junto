@@ -903,9 +903,43 @@ impl Shell {
             return;
         };
         let seat = picker.seat.clone();
-        self.state
-            .update(cx, |state, _| state.start_share(&seat, picture, sound));
+        // The portal of Linux shows its own dialog, over the window that asked for it.
+        let parent = match picture {
+            PictureSource::Portal(_) => crate::dialog_parent::DialogParent::of(window),
+            _ => crate::dialog_parent::Pending::Ready(None),
+        };
+        match parent {
+            crate::dialog_parent::Pending::Ready(parent) => {
+                self.start_share_over(&seat, picture, sound, parent, cx);
+            }
+            crate::dialog_parent::Pending::Waiting(parent) => {
+                cx.spawn(async move |this, cx| {
+                    let parent = parent.await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.start_share_over(&seat, picture, sound, parent, cx);
+                    });
+                })
+                .detach();
+            }
+        }
         self.close_layer(window, cx);
+    }
+
+    fn start_share_over(
+        &mut self,
+        seat: &Seat,
+        picture: PictureSource,
+        sound: SoundChoice,
+        parent: Option<crate::dialog_parent::DialogParent>,
+        cx: &mut Context<Self>,
+    ) {
+        let identifier = parent
+            .as_ref()
+            .map(crate::dialog_parent::DialogParent::identifier);
+        self.share_dialog_parent = parent;
+        self.state.update(cx, |state, _| {
+            state.start_share(seat, picture, sound, identifier);
+        });
     }
 
     /// Closes the dialog of a share when the device is not in the call, at the seat, that

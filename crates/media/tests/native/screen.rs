@@ -231,6 +231,7 @@ pub async fn capture(audio_only: bool) {
                 picture,
                 sound: SoundChoice::None,
                 quality,
+                dialog_parent: None,
             });
             super::calls::state(&local, |v| {
                 v.call
@@ -333,6 +334,7 @@ pub async fn capture(audio_only: bool) {
                 picture: PictureSource::Window(window.id),
                 sound,
                 quality,
+                dialog_parent: None,
             });
             super::calls::state(&local, |v| {
                 v.call.as_ref().is_some_and(

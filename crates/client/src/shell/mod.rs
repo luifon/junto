@@ -46,8 +46,8 @@ use gpui::{
 };
 use gpui_base::input::InputState;
 use junto_client_core::flow::add_server::AddServerFlow;
-use junto_client_core::protocol::ids::{AccountId, ServerId};
 use junto_client_core::global_keys::{Key, KeyCombo};
+use junto_client_core::protocol::ids::{AccountId, ServerId};
 use junto_client_core::voice::{InputMode, TalkKey};
 
 use call::{CallTab, DeviceKind, VolumeControl};
@@ -212,6 +212,9 @@ pub struct Shell {
     push_to_talk_question: bool,
     /// The settings wait for the keys of a new key that mutes (ADR 0776).
     recording_mute_key: bool,
+    /// The window of the last share that the desktop portal asked for, kept while its dialog
+    /// can show: on Wayland it holds the export of the window (ADR 0751).
+    share_dialog_parent: Option<crate::dialog_parent::DialogParent>,
     pub(crate) state: Entity<AppState>,
     focus: FocusHandle,
     /// The focus of the layer that is open.
@@ -667,6 +670,7 @@ impl Shell {
             stage_area: std::rc::Rc::default(),
             push_to_talk_question: false,
             recording_mute_key: false,
+            share_dialog_parent: None,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
             drawing_call: false,
