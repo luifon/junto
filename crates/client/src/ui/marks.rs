@@ -86,7 +86,7 @@ impl RenderOnce for CornerCount {
             .text_size(u(11.0))
             .line_height(u(16.0))
             .ink(theme.colors.on_terracotta)
-            .child(self.text)
+            .child(super::paint_text(self.text, None))
     }
 }
 

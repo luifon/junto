@@ -374,6 +374,7 @@ pub struct Tab {
     icon: Icon,
     label: SharedString,
     on: bool,
+    count: Option<SharedString>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
 }
@@ -385,9 +386,16 @@ impl Tab {
             icon,
             label: label.into(),
             on: false,
+            count: None,
             selector: None,
             on_click: None,
         }
+    }
+
+    /// The count of what waits in the pane of the tab, drawn after its name.
+    pub fn count(mut self, count: Option<String>) -> Self {
+        self.count = count.map(Into::into);
+        self
     }
 
     /// The tab whose pane is shown.
@@ -419,7 +427,10 @@ impl RenderOnce for Tab {
         div()
             .id(self.id)
             .role(Role::Tab)
-            .aria_label(self.label.clone())
+            .aria_label(match &self.count {
+                Some(count) => SharedString::from(format!("{}, {count}", self.label)),
+                None => self.label.clone(),
+            })
             .aria_selected(self.on)
             .when_some(self.selector, |tab, selector| {
                 tab.debug_selector(|| selector.to_owned())
@@ -475,6 +486,9 @@ impl RenderOnce for Tab {
                 },
             ))
             .child(self.label)
+            .when_some(self.count, |tab, count| {
+                tab.child(super::CornerCount::new(count))
+            })
     }
 }
 

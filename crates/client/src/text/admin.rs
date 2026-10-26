@@ -128,6 +128,10 @@ pub fn waiting(page: AdminPage, count: usize) -> String {
     match (page, count) {
         (AdminPage::JoinRequests, 1) => "1 join request waits".to_owned(),
         (AdminPage::JoinRequests, _) => format!("{count} join requests wait"),
+        (AdminPage::Exports, 1) => "1 export is ready to save".to_owned(),
+        (AdminPage::Exports, _) => format!("{count} exports are ready to save"),
+        (AdminPage::Archive, 1) => "1 archived channel is deleted within 7 days".to_owned(),
+        (AdminPage::Archive, _) => format!("{count} archived channels are deleted within 7 days"),
         (_, 1) => "1 item waits".to_owned(),
         (_, _) => format!("{count} items wait"),
     }

@@ -15,7 +15,8 @@ pub mod server;
 mod tests;
 
 use junto_client_core::model::{AdminPart, Collection, LoadFailure, ServerModel, WorkspaceModel};
-use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, WorkspaceId};
+use junto_client_core::protocol::export::ExportState;
+use junto_client_core::protocol::ids::{CategoryId, ChannelId, ExportId, ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::{
     ArchivedChannel, ChannelKind, ChannelMove, ChannelPlace, MOST_CHANNEL_MOVES,
 };
@@ -500,17 +501,88 @@ pub fn waiting_join_requests(model: &ServerModel) -> usize {
     model.admin.join_requests.loaded().map_or(0, Vec::len)
 }
 
+/// The time before its deletion from which an archived channel waits for a decision: the
+/// server tells that the deletion is due 7 days before it (ADR 0410).
+pub const DELETION_DUE: time::Duration = time::Duration::days(7);
+
+/// The work beside the join requests that waits for the person (ADR 0761): the exports of
+/// the account that are ready and that this device has not saved in this run, and in each
+/// workspace the archived channels whose deletion is due, for a person who may restore
+/// them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Waiting {
+    pub exports: usize,
+    pub archive: Vec<(WorkspaceId, usize)>,
+}
+
+/// What waits for the person on a server, from the lists that the window holds.
+pub fn waiting(
+    server_id: ServerId,
+    model: &ServerModel,
+    saved: &dyn Fn(ServerId, ExportId) -> bool,
+    now: Option<OffsetDateTime>,
+) -> Waiting {
+    let exports = model.admin.exports.loaded().map_or(0, |exports| {
+        exports
+            .iter()
+            .filter(|export| export.state == ExportState::Ready && !saved(server_id, export.id))
+            .count()
+    });
+    let archive = now.map_or_else(Vec::new, |now| {
+        model
+            .admin
+            .archived
+            .iter()
+            .filter(|(workspace_id, _)| {
+                model.workspace(*workspace_id).is_some_and(|workspace| {
+                    holds_workspace(workspace, WorkspacePermission::ManageChannel)
+                })
+            })
+            .filter_map(|(workspace_id, list)| {
+                let due = list
+                    .loaded()?
+                    .iter()
+                    .filter(|channel| {
+                        channel
+                            .deletes_at
+                            .is_some_and(|deletes_at| deletes_at - now <= DELETION_DUE)
+                    })
+                    .count();
+                (due > 0).then_some((*workspace_id, due))
+            })
+            .collect()
+    });
+    Waiting { exports, archive }
+}
+
 /// The count of the work that waits for the person on a page of the administration.
-pub fn waiting_on(page: AdminPage, model: &ServerModel) -> usize {
+pub fn waiting_on(
+    page: AdminPage,
+    model: &ServerModel,
+    workspace: Option<&WorkspaceModel>,
+    waiting: &Waiting,
+) -> usize {
     match page {
         AdminPage::JoinRequests => waiting_join_requests(model),
+        AdminPage::Exports => waiting.exports,
+        AdminPage::Archive => workspace.map_or(0, |workspace| {
+            waiting
+                .archive
+                .iter()
+                .find(|(workspace_id, _)| *workspace_id == workspace.workspace.id)
+                .map_or(0, |(_, due)| *due)
+        }),
         _ => 0,
     }
 }
 
 /// The pages that the person may use, in their groups. A page that the person may not
 /// use is absent.
-pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGroup> {
+pub fn nav(
+    model: &ServerModel,
+    workspace: Option<&WorkspaceModel>,
+    waiting: &Waiting,
+) -> Vec<NavGroup> {
     let mut server = vec![AdminPage::Workspaces];
     // Only an administrator sets or removes the logo of the server (ADR 0101).
     if model.is_administrator() {
@@ -538,7 +610,7 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
     }
     let mut groups = vec![NavGroup {
         title: NavTitle::Server,
-        waiting: waiting_of(&server, model),
+        waiting: waiting_of(&server, model, workspace, waiting),
         pages: server,
     }];
     if let Some(workspace) = workspace {
@@ -561,7 +633,7 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
         pages.push(AdminPage::Glossary);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
-            waiting: waiting_of(&pages, model),
+            waiting: waiting_of(&pages, model, Some(workspace), waiting),
             pages,
         });
     }
@@ -574,16 +646,21 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
     own.push(AdminPage::Exports);
     groups.push(NavGroup {
         title: NavTitle::Own,
-        waiting: waiting_of(&own, model),
+        waiting: waiting_of(&own, model, workspace, waiting),
         pages: own,
     });
     groups
 }
 
-fn waiting_of(pages: &[AdminPage], model: &ServerModel) -> Vec<(AdminPage, usize)> {
+fn waiting_of(
+    pages: &[AdminPage],
+    model: &ServerModel,
+    workspace: Option<&WorkspaceModel>,
+    waiting: &Waiting,
+) -> Vec<(AdminPage, usize)> {
     pages
         .iter()
-        .map(|page| (*page, waiting_on(*page, model)))
+        .map(|page| (*page, waiting_on(*page, model, workspace, waiting)))
         .filter(|(_, count)| *count > 0)
         .collect()
 }
@@ -982,7 +1059,14 @@ pub fn derive(
             known,
         )?)),
         AdminOpen::Server { page, .. } => {
-            let nav = nav(model, workspace);
+            let saved = |server_id, export_id| {
+                matches!(
+                    admin.exports.files.get(&(server_id, export_id)),
+                    Some(records::ExportSave::Saved(_))
+                )
+            };
+            let waiting = waiting(server_id, model, &saved, known.clock);
+            let nav = nav(model, workspace, &waiting);
             // A page that the person may not use any more gives way to the first one.
             let selected = if nav.iter().any(|group| group.pages.contains(&page)) {
                 page

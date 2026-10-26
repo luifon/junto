@@ -378,6 +378,20 @@ impl Unreads {
         self.0.get(&place).copied().unwrap_or_default()
     }
 
+    /// The unread messages for the person alone in the places that `counted` names: the
+    /// mentions of a channel, and every unread message of a direct conversation that shows
+    /// its sign. A muted place counts nothing.
+    fn for_person(&self, counted: impl Fn(PlaceId) -> bool) -> u64 {
+        self.0
+            .iter()
+            .filter(|(place, unread)| counted(**place) && unread.any() && !unread.muted)
+            .map(|(place, unread)| match place {
+                PlaceId::Direct(_) => unread.messages.max(unread.mentions),
+                _ => unread.mentions,
+            })
+            .fold(0, u64::saturating_add)
+    }
+
     /// Every place of the server together.
     fn total(&self) -> Unread {
         let mut unread = Unread::default();
@@ -635,6 +649,13 @@ pub struct ServerRow {
     /// What of it no listed workspace shows: the direct conversations, and every place
     /// of a server without a listed workspace. The head of the server shows its sign.
     pub head_unread: Unread,
+    /// The unread messages for the person alone: the mentions, and the messages of the
+    /// direct conversations (ADR 0741). The collapsed server book and the badge of the
+    /// application count them.
+    pub for_person: u64,
+    /// The part of `for_person` that no listed workspace shows: the direct conversations,
+    /// and every mention of a server without a listed workspace.
+    pub head_for_person: u64,
     /// The join requests that wait for a decision of the person (ADR 0761).
     pub waiting_join_requests: usize,
     pub workspaces: Vec<WorkspaceRow>,
@@ -3588,6 +3609,15 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     .as_ref()
                     .map(|(model, unreads)| head_unread(model, unreads))
                     .unwrap_or_default(),
+                for_person: unreads
+                    .as_ref()
+                    .map_or(0, |(_, unreads)| unreads.for_person(|_| true)),
+                head_for_person: unreads.as_ref().map_or(0, |(model, unreads)| {
+                    let without_workspace = model.workspaces.is_empty();
+                    unreads.for_person(|place| {
+                        without_workspace || matches!(place, PlaceId::Direct(_))
+                    })
+                }),
                 waiting_join_requests: unreads.as_ref().map_or(0, |(model, _)| {
                     super::admin::view::waiting_join_requests(model)
                 }),

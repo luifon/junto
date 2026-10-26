@@ -584,7 +584,23 @@ impl Shell {
             Layer::DirectMenu(conversation_id) => Some(*conversation_id),
             _ => None,
         };
-        let mut rows = vec![CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element()];
+        // The heading counts the unread messages of the conversations that are not muted,
+        // as Discord and Slack count them (ADR 0741).
+        let waiting: u64 = lists
+            .directs
+            .iter()
+            .filter(|direct| direct.unread.any() && !direct.mute.is_on())
+            .map(|direct| direct.unread.messages.max(direct.unread.mentions))
+            .sum();
+        let mut rows = vec![
+            div()
+                .debug_selector(|| "directs-heading".to_owned())
+                .child(
+                    CategoryHeader::new(text::DIRECT_MESSAGES)
+                        .count((waiting > 0).then(|| text::unread_count(waiting).into())),
+                )
+                .into_any_element(),
+        ];
         // A new conversation, with an account that the server lists for the person
         // (ADR 0307). It stands before the conversations, so that a conversation that
         // arrives does not move it.
@@ -608,7 +624,7 @@ impl Shell {
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .picture(faces.image(direct.account_id))
                 .selected(direct.selected)
-                .unread(unread_sign(direct.unread))
+                .unread(direct_sign(direct.unread))
                 .muted(direct.unread.muted || direct.mute.is_on())
                 .open(direct_menu == Some(conversation_id))
                 .on_menu(Self::handler(cx, move |this, window, cx| {
@@ -772,6 +788,17 @@ pub(crate) fn name_seed(name: &str) -> u128 {
 }
 
 /// The sign of a channel, a workspace or a server that holds what the person has not read.
+/// The sign of a direct conversation: the count of its unread messages, each of which is
+/// for the person alone, as Discord and Slack count them.
+pub(crate) fn direct_sign(unread: crate::state::view::Unread) -> Option<crate::ui::UnreadSign> {
+    unread.any().then(|| crate::ui::UnreadSign {
+        mentions: Some(
+            text::unread_count(unread.messages.max(unread.mentions).max(1)).into(),
+        ),
+        label: text::unread_tooltip(unread.messages, unread.mentions).into(),
+    })
+}
+
 pub(crate) fn unread_sign(unread: crate::state::view::Unread) -> Option<crate::ui::UnreadSign> {
     unread.any().then(|| crate::ui::UnreadSign {
         mentions: (unread.mentions > 0).then(|| text::mention_badge(unread.mentions).into()),

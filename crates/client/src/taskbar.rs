@@ -4,7 +4,7 @@
 
 use gpui::Window;
 
-fn handle(window: &Window) -> Option<isize> {
+pub(crate) fn handle(window: &Window) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
         Ok(RawWindowHandle::Win32(handle)) => Some(handle.hwnd.get()),

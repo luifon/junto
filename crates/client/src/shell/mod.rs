@@ -317,6 +317,9 @@ pub struct Shell {
     pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
     pub(crate) notice_list: notices::NoticeList,
+    /// The count of the messages for the person that the icon of the application and the
+    /// title of the main window show (ADR 0741).
+    badge: Option<u64>,
     pub(crate) search_scroll: ScrollHandle,
     pub(crate) transcript_list: recorded::TranscriptList,
     /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
@@ -695,6 +698,7 @@ impl Shell {
             contact_part,
             contacts_scroll: ScrollHandle::new(),
             notice_list: notices::NoticeList::new(),
+            badge: None,
             search_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
@@ -828,6 +832,11 @@ impl Shell {
     /// dialog was open then.
     pub fn join_results(&self) -> u64 {
         self.join_results
+    }
+
+    /// The count that the icon of the application and the title of the main window show.
+    pub fn badge(&self) -> Option<u64> {
+        self.badge
     }
 
     /// What the window drew last.
@@ -1208,6 +1217,18 @@ impl Render for Shell {
             self.drawn = Some(view.clone());
         }
         window.set_rem_size(theme::rem_size(settings.scale_percent));
+        // The icon of the application and the title count the messages for the person on
+        // every server (ADR 0741).
+        let for_person = view
+            .servers
+            .iter()
+            .map(|row| row.for_person)
+            .fold(0, u64::saturating_add);
+        if self.badge != Some(for_person) {
+            self.badge = Some(for_person);
+            window.set_window_title(&crate::app_badge::title(for_person));
+            crate::app_badge::show(for_person, window);
+        }
         self.refresh_picture_owner(cx);
         self.sync_camera_visibility(cx);
         // The frame sets this again when it draws the list of messages.

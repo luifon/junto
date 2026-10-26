@@ -5,6 +5,7 @@
 //! components, the state that follows the client core, and the main window.
 
 pub mod app;
+pub mod app_badge;
 pub mod assets;
 pub mod compose;
 pub mod emoji;

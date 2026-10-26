@@ -6,6 +6,7 @@
 
 pub mod address;
 pub mod api;
+pub mod app_badge;
 pub mod app_identity;
 pub mod book;
 pub mod console;

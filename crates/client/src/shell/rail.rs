@@ -499,10 +499,15 @@ impl Shell {
             focus_ring(colors.basalt_edge, 1.0)
         };
         let focused_ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+        let label = if row.for_person > 0 {
+            format!("{}, {}", row.name, text::for_person(row.for_person))
+        } else {
+            row.name.clone()
+        };
         let icon = div()
             .id(("server", index))
             .role(Role::ListItem)
-            .aria_label(row.name.clone())
+            .aria_label(label)
             .aria_selected(row.selected)
             .aria_expanded(open)
             .debug_selector(move || format!("server-{index}"))
@@ -547,9 +552,17 @@ impl Shell {
                 4.0,
             )))
             .when(row.unread.any() && status_line(row).is_none(), |icon| {
-                // The server holds messages that the person has not read: the terracotta
-                // sign of the channel list, at the corner of the avatar.
-                icon.child(
+                // The server holds messages that the person has not read: the count of the
+                // messages for the person alone at the upper corner of the avatar, as
+                // Discord counts mentions on a server, or the terracotta sign of the
+                // channel list without a count.
+                let sign = if row.for_person > 0 {
+                    div()
+                        .absolute()
+                        .right(u(4.0))
+                        .top(u(0.0))
+                        .child(CornerCount::new(text::unread_count(row.for_person)))
+                } else {
                     div()
                         .absolute()
                         .right(u(10.0))
@@ -559,8 +572,8 @@ impl Shell {
                         .border_1()
                         .border_color(Hsla::from(colors.basalt))
                         .bg(Hsla::from(colors.terracotta))
-                        .debug_selector(move || format!("server-unread-{index}")),
-                )
+                };
+                icon.child(sign.debug_selector(move || format!("server-unread-{index}")))
             })
             .when(row.waiting_join_requests > 0, |icon| {
                 // The join requests that wait for the person: their count at the lower

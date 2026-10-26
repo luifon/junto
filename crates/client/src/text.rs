@@ -1869,6 +1869,16 @@ pub fn mention_badge(mentions: u64) -> String {
     format!("@ {}", unread_count(mentions))
 }
 
+/// The messages for the person alone that a count states: the mentions and the direct
+/// messages.
+pub fn for_person(count: u64) -> String {
+    if count == 1 {
+        "1 mention or direct message".to_owned()
+    } else {
+        format!("{} mentions and direct messages", unread_count(count))
+    }
+}
+
 pub fn unread_tooltip(messages: u64, mentions: u64) -> String {
     let plural = |count: u64, one: &str, many: &str| {
         if count == 1 {

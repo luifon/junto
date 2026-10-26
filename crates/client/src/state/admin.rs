@@ -26,7 +26,7 @@ use junto_client_core::protocol::ids::{
     WorkspaceId, WorkspaceRoleId,
 };
 
-use junto_client_core::protocol::ServerPermission;
+use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
 pub use recordings::RecordingList;
@@ -582,10 +582,19 @@ impl AppState {
             }
         };
         for server in snapshots {
-            if view::shown(server).is_some_and(|model| {
-                view::holds_server(model, ServerPermission::ApproveJoinRequests)
-            }) {
+            let Some(model) = view::shown(server) else {
+                continue;
+            };
+            if view::holds_server(model, ServerPermission::ApproveJoinRequests) {
                 want((server.id, AdminPart::JoinRequests));
+            }
+            // The counts of the navigation (ADR 0761): the exports of the account, and the
+            // archived channels of each workspace whose channels the person may restore.
+            want((server.id, AdminPart::Exports));
+            for workspace in &model.workspaces {
+                if view::holds_workspace(workspace, WorkspacePermission::ManageChannel) {
+                    want((server.id, AdminPart::Archived(workspace.workspace.id)));
+                }
             }
         }
         let call_notices = self

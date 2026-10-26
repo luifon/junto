@@ -83,12 +83,15 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The status item of the menu bar (ADR 0759), in the versions that gpui and the client use.
+# The status item of the menu bar (ADR 0759) and the badge of the Dock (ADR 0741), in the
+# versions that gpui and the client use.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSApplication",
     "NSButton",
     "NSControl",
+    "NSDockTile",
     "NSImage",
     "NSMenu",
     "NSMenuItem",
