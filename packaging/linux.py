@@ -95,6 +95,87 @@ echo "Junto is in the application menu: $data/applications/{APPLICATION_ID}.desk
 """
 
 
+# The Debian package (ADR 0728). The program and its bundled libraries are in /usr/lib/junto,
+# /usr/bin/junto leads to it, and the menu entry and the icons are in /usr/share. Its
+# dependencies are the libraries of HOST, by the names of their packages in Debian 12 and, after
+# a bar, the names of the packages that replaced them in later releases (the 64-bit time
+# transition).
+DEB_ARCHITECTURES = {"x86_64": "amd64", "aarch64": "arm64"}
+DEB_DEPENDS = [
+    "libc6 (>= 2.35)",
+    "libgcc-s1",
+    "libxcb1",
+    "libxau6",
+    "libxdmcp6",
+    "libbsd0",
+    "libmd0",
+    "libpipewire-0.3-0 | libpipewire-0.3-0t64",
+    "libasound2 | libasound2t64",
+]
+# Loaded at run time: the Vulkan driver of the window, the portal of a screen share, and the
+# sound server.
+DEB_RECOMMENDS = ["mesa-vulkan-drivers | vulkan-icd", "xdg-desktop-portal", "pipewire"]
+DEB_PROGRAM = pathlib.PurePosixPath("usr/lib/junto")
+
+
+def deb_name(version, architecture):
+    return f"junto_{version}_{DEB_ARCHITECTURES[architecture]}.deb"
+
+
+def deb_control(version, architecture, installed_kib):
+    """The control file of the Debian package."""
+    return (f"Package: junto\n"
+            f"Version: {version}\n"
+            f"Architecture: {DEB_ARCHITECTURES[architecture]}\n"
+            f"Maintainer: The Junto project <releases@example.invalid>\n"
+            f"Installed-Size: {installed_kib}\n"
+            f"Depends: {', '.join(DEB_DEPENDS)}\n"
+            f"Recommends: {', '.join(DEB_RECOMMENDS)}\n"
+            f"Section: net\n"
+            f"Priority: optional\n"
+            f"Description: Junto desktop client for self-hosted team chat and calls\n"
+            f" Text chat, voice and video calls, screen sharing and call recordings with\n"
+            f" transcripts on a server that you run. The package manager of the system\n"
+            f" installs a newer version from its .deb file; the application does not\n"
+            f" update itself.\n")
+
+
+def debian(directory, version, architecture, output, epoch):
+    """The Debian package of the program directory `directory` (the directory package) as
+    `output`, built by dpkg-deb with root as the owner of every file."""
+    root = output.with_name(output.name + ".root")
+    root.mkdir()
+    try:
+        program = root / DEB_PROGRAM
+        program.mkdir(parents=True)
+        for name in ["junto", "lib", "licences"]:
+            if (directory / name).is_dir():
+                shutil.copytree(directory / name, program / name)
+            else:
+                copy(directory / name, program / name, 0o755)
+        write(program / "junto-package.json", description(version, "deb", architecture))
+        (root / "usr/bin").mkdir(parents=True)
+        (root / "usr/bin/junto").symlink_to("../lib/junto/junto")
+        shutil.copytree(directory / "share", root / "usr/share")
+        documents = root / "usr/share/doc/junto"
+        documents.mkdir(parents=True)
+        copy(directory / "licences/Junto-LICENSE.txt", documents / "copyright", 0o644)
+        for path in [root, *root.rglob("*")]:
+            if path.is_symlink():
+                continue
+            if path.is_dir() or path.stat().st_mode & 0o111:
+                path.chmod(0o755)
+            else:
+                path.chmod(0o644)
+        size = sum(path.stat().st_size for path in root.rglob("*") if path.is_file() and not path.is_symlink())
+        write(root / "DEBIAN/control", deb_control(version, architecture, (size + 1023) // 1024))
+        (root / "DEBIAN").chmod(0o755)
+        subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", "--build", str(root), str(output)], check=True,
+                       env=dict(os.environ, SOURCE_DATE_EPOCH=str(epoch)), stdout=subprocess.DEVNULL)
+    finally:
+        shutil.rmtree(root)
+
+
 def libraries(binary):
     """The shared libraries that the loader resolves for `binary`, with their paths."""
     result = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, check=True,
@@ -279,6 +360,7 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, i
         write(directory / "junto-package.json", description(version, "directory", architecture))
         write(directory / "install-menu-entry", INSTALL_ENTRY, 0o755)
         tarball(directory, output / f"junto-{version}-linux-{architecture}.tar.gz", epoch)
+        debian(directory, version, architecture, output / deb_name(version, architecture), epoch)
         image = output / "package-appimage"
         image.mkdir()
         appimage_tree = output / ".appimage-tree"

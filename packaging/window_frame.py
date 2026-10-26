@@ -271,3 +271,38 @@ def kept_identity():
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, IDENTITY_KEY) as key:
                 for name, (value, kind) in saved.items():
                     winreg.SetValueEx(key, name, 0, kind, value)
+
+
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Junto"
+
+
+def uninstall_entry():
+    """The values of the entry of Junto in the list of installed programs, or None (ADR 0728)."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+            values, index = {}, 0
+            while True:
+                try:
+                    name, value, kind = winreg.EnumValue(key, index)
+                except OSError:
+                    return values
+                values[name] = (value, kind)
+                index += 1
+    except FileNotFoundError:
+        return None
+
+
+@contextlib.contextmanager
+def kept_uninstall_entry():
+    """Restores the entry of Junto in the list of installed programs as it was, also after a
+    failure: the setup program writes it, and a check leaves no key of its own behind (ADR 0915)."""
+    saved = uninstall_entry()
+    try:
+        yield saved
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY)
+        if saved is not None:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+                for name, (value, kind) in saved.items():
+                    winreg.SetValueEx(key, name, 0, kind, value)

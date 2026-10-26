@@ -1,7 +1,9 @@
 """The parts of the Linux packaging that need no Linux build image."""
 import io
+import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -73,6 +75,59 @@ class LinuxPackageTests(unittest.TestCase):
             self.assertTrue(all(member.uid == 0 and member.uname == "root" for member in members))
             self.assertTrue(all(member.mtime == 1_700_000_000 for member in members))
             self.assertEqual(members[1].mode & 0o777, 0o755)
+
+    def test_the_debian_package_names_each_host_library_and_states_how_it_updates(self):
+        control = linux.deb_control("1.2.3", "x86_64", 4096)
+        fields = dict(line.split(": ", 1) for line in control.splitlines() if not line.startswith(" "))
+        self.assertEqual(fields["Package"], "junto")
+        self.assertEqual(fields["Version"], "1.2.3")
+        self.assertEqual(fields["Architecture"], "amd64")
+        self.assertEqual(fields["Installed-Size"], "4096")
+        depends = fields["Depends"]
+        # Each library of the host has the package that holds it.
+        for package in ["libc6", "libgcc-s1", "libxcb1", "libxau6", "libxdmcp6", "libbsd0", "libmd0",
+                        "libpipewire-0.3-0", "libasound2"]:
+            self.assertIn(package, depends)
+        self.assertIn("update itself", control)
+        self.assertEqual(linux.deb_name("1.2.3", "x86_64"), "junto_1.2.3_amd64.deb")
+
+    @unittest.skipUnless(shutil.which("dpkg-deb"), "dpkg-deb is in the Linux build image")
+    def test_the_debian_package_holds_the_program_its_link_its_menu_entry_and_icons(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            directory = root / "junto"
+            (directory / "lib").mkdir(parents=True)
+            (directory / "licences").mkdir()
+            (directory / "share/applications").mkdir(parents=True)
+            (directory / "share/icons/hicolor/48x48/apps").mkdir(parents=True)
+            (directory / "junto").write_bytes(b"program")
+            (directory / "junto").chmod(0o755)
+            (directory / "junto-recover").write_bytes(b"recover")
+            (directory / "install-menu-entry").write_bytes(b"script")
+            (directory / "lib/libxkbcommon.so.0").write_bytes(b"library")
+            (directory / "licences/Junto-LICENSE.txt").write_text("licence")
+            (directory / f"share/applications/{linux.APPLICATION_ID}.desktop").write_text(linux.DESKTOP)
+            (directory / f"share/icons/hicolor/48x48/apps/{linux.APPLICATION_ID}.png").write_bytes(b"png")
+            output = root / "junto_1.2.3_amd64.deb"
+            linux.debian(directory, "1.2.3", "x86_64", output, 1_700_000_000)
+            listed = subprocess.run(["dpkg-deb", "--contents", str(output)], capture_output=True, text=True,
+                                    check=True).stdout
+            names = {line.split()[5] for line in listed.splitlines()}
+            self.assertIn("./usr/lib/junto/junto", names)
+            self.assertIn("./usr/lib/junto/lib/libxkbcommon.so.0", names)
+            self.assertIn(f"./usr/share/applications/{linux.APPLICATION_ID}.desktop", names)
+            self.assertIn(f"./usr/share/icons/hicolor/48x48/apps/{linux.APPLICATION_ID}.png", names)
+            self.assertIn("./usr/share/doc/junto/copyright", names)
+            # The package manager updates it: no recovery program and no menu script.
+            self.assertNotIn("./usr/lib/junto/junto-recover", names)
+            self.assertNotIn("./usr/lib/junto/install-menu-entry", names)
+            self.assertTrue(all(" root/root " in line for line in listed.splitlines()), listed)
+            self.assertIn("./usr/bin/junto -> ../lib/junto/junto", listed)
+            extracted = root / "extracted"
+            subprocess.run(["dpkg-deb", "-x", str(output), str(extracted)], check=True)
+            self.assertEqual(json.loads((extracted / "usr/lib/junto/junto-package.json").read_text())["package"],
+                             "deb")
+            self.assertFalse((root / "junto_1.2.3_amd64.deb.root").exists())
 
     def test_the_description_names_the_package_and_its_target(self):
         self.assertEqual(linux.description("1.2.3", "appimage", "x86_64"),

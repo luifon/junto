@@ -328,6 +328,13 @@ async fn execute(args: &[String]) -> Result<(), Error> {
                 &target.architecture,
             )
         }
+        // The Windows setup program: the installer program followed by the archive of the
+        // folder of a package directory (ADR 0728).
+        ["setup", installer, package, output] => releases::setup::write(
+            Path::new(installer),
+            Path::new(package),
+            Path::new(output),
+        ),
         ["update", source, application] => update(source, application).await,
         ["update-compiled", application] => {
             let source = option_env!("JUNTO_UPDATE_SOURCE")
@@ -336,7 +343,7 @@ async fn execute(args: &[String]) -> Result<(), Error> {
             update(source, application).await
         }
         _ => Err(Error::Invalid(
-            "usage: junto-release [--test-configuration] keygen SECRET PUBLIC | package SOURCE NEW-OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM PACKAGE ARCH [RELEASE-SECRET...] | publish SYSTEM PACKAGE ARCH SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET [RELEASE-SECRET...] | update SOURCE APPLICATION | update-compiled APPLICATION | refresh METADATA ARCHIVE VERSION FRESHNESS-SECRET...",
+            "usage: junto-release [--test-configuration] keygen SECRET PUBLIC | package SOURCE NEW-OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM PACKAGE ARCH [RELEASE-SECRET...] | publish SYSTEM PACKAGE ARCH SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET [RELEASE-SECRET...] | setup INSTALLER PACKAGE-DIRECTORY NEW-SETUP | update SOURCE APPLICATION | update-compiled APPLICATION | refresh METADATA ARCHIVE VERSION FRESHNESS-SECRET...",
         )),
     }
 }

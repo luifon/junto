@@ -217,7 +217,7 @@ impl AppState {
     pub fn version_line(&self) -> VersionLine {
         let install = &self.update_install;
         let failure = (!install.working && !install.installed)
-            .then(|| install.status.as_deref())
+            .then_some(install.status.as_deref())
             .flatten()
             .filter(|_| install.action.is_some());
         version_line(

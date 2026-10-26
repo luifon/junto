@@ -53,4 +53,4 @@ Checks (`packaging/check_linux.py`, in the build image):
 - A person extracts the tarball into a directory of their account, or makes the AppImage executable, and keeps the directory writable for updates.
 - A new shared library of the client stops the package build until it is added to one of the two lists and to this record.
 - The AppImage runs only where `fusermount` exists, or with `--appimage-extract-and-run`. A desktop with Mesa older than 25 under X11 gets the start rule of ADR 0705; the bundled libraries do not change it.
-- An RPM or Debian package is not made (`docs/scope.md`).
+- A Debian package is made beside the tarball and the AppImage, from the same directory (ADR 0728). An RPM package is not made (`docs/scope.md`).

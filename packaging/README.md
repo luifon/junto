@@ -54,7 +54,7 @@ JUNTO_CODESIGN_KEYCHAIN='/absolute/private/code-signing/signing.keychain-db' \
     packaging/release.sh /absolute/new-release-directory
 ```
 
-Use a new absolute output directory. The command builds the version, assembles and signs the bundle, checks its identity, compiled trust and version, and writes the archive, both release informations and the first-install ZIP, which holds `Junto.app` alone. No Python is needed on the installed machine. The internal `release_locked.sh` entry point requires its caller to hold the shared lock.
+Use a new absolute output directory. The command builds the version, assembles and signs the bundle, checks its identity, compiled trust and version, and writes the archive, both release informations, the first-install ZIP, which holds `Junto.app` alone, and the disk image `Junto-<version>-macos-<architecture>.dmg` with `Junto.app` and a link to Applications, signed with the same identity (`dmg.py`, ADR 0728). No Python is needed on the installed machine. The internal `release_locked.sh` entry point requires its caller to hold the shared lock.
 
 ## Linux
 
@@ -65,7 +65,7 @@ JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
     packaging/release_linux.sh target/linux-release
 ```
 
-The output directory holds the tarball, the AppImage, and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it (ADR 0756). `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
+The output directory holds the tarball, the AppImage, the Debian package `junto_<version>_amd64.deb` (ADR 0728), and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it (ADR 0756). `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish linux directory x86_64 target/linux-release/package-directory \
@@ -79,11 +79,12 @@ target/release/junto-release publish linux appimage x86_64 target/linux-release/
 On a Windows machine with the Rust toolchain of `rust-toolchain.toml` and the MSVC build tools, with `JUNTO_UPDATE_SOURCE` set:
 
 ```sh
-CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover
-python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory>
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover --bin junto-installer --bin junto-release
+python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory> \
+    --installer target/release/junto-installer.exe --release-tool target/release/junto-release.exe
 ```
 
-The output directory holds the ZIP, the source directory `package-directory`, and `Junto-<version>-windows-x86_64.pdb`, the symbols of `junto.exe` with the line tables of every crate. The package does not carry them; publish the file with the release (ADR 0755, ADR 0757). `windows.py` refuses a build without symbols. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
+The output directory holds the ZIP, the setup program `Junto-<version>-windows-x86_64-setup.exe` (ADR 0728), the source directory `package-directory`, and `Junto-<version>-windows-x86_64.pdb`, the symbols of `junto.exe` with the line tables of every crate. The package does not carry them; publish the file with the release (ADR 0755, ADR 0757). `windows.py` refuses a build without symbols. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish windows directory x86_64 <output>/package-directory \

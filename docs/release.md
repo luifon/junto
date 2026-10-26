@@ -45,12 +45,12 @@ variable may be set. Run heavy commands through the machine lock; the Linux rele
 wrapper takes that lock itself.
 
 - On macOS, `packaging/release.sh` builds and signs the bundle and prepares its first-install
-  ZIP and signed update files. Follow [the macOS commands](../packaging/README.md#macos).
-- On x86-64 Linux, `packaging/release_linux.sh` prepares the tarball, AppImage and their
-  package directories. Use `junto-release publish` for both package kinds, as described
+  ZIP, its signed disk image and signed update files. Follow [the macOS commands](../packaging/README.md#macos).
+- On x86-64 Linux, `packaging/release_linux.sh` prepares the tarball, AppImage, Debian
+  package and the package directories of the first two. Use `junto-release publish` for both package kinds, as described
   in [the Linux commands](../packaging/README.md#linux).
-- On x86-64 Windows, build with line tables and assemble with `packaging/windows.py`, then
-  use `junto-release publish` for the directory package. The output also holds
+- On x86-64 Windows, build with line tables and assemble with `packaging/windows.py`, which
+  also writes the setup program, then use `junto-release publish` for the directory package. The output also holds
   `Junto-<version>-windows-x86_64.pdb`, the symbols of the program, which the package does
   not carry. Publish it as a file of the release with the ZIP, in the checksums: a panic
   report of a Windows client is resolved with it (ADR 0757). Follow

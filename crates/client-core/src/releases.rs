@@ -14,6 +14,9 @@ use crate::updates::{NewestFuture, Release, UpdateError, UpdateSource, Version};
 
 pub mod archive;
 pub mod install;
+pub mod setup;
+#[cfg(windows)]
+pub mod setup_windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "macos")]

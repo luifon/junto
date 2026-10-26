@@ -348,7 +348,7 @@ fn information(path: &Path) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn random_name(prefix: &str) -> Result<String, Error> {
+pub(super) fn random_name(prefix: &str) -> Result<String, Error> {
     let mut random = [0; 16];
     getrandom::fill(&mut random).map_err(|_| Error::Invalid("random source"))?;
     Ok(format!("{prefix}{}", super::hex(&random)))

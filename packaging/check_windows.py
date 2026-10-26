@@ -62,7 +62,8 @@ class Check:
     @step("build the client and the release tools")
     def build(self):
         release_tools.run("cargo", "build", "--locked", "-p", "junto-client", "--bin", "junto", "-p",
-                          "junto-client-core", "--bin", "junto-release", "-p", "junto-icon", "--bin", "junto-icon",
+                          "junto-client-core", "--bin", "junto-release", "--bin", "junto-installer",
+                          "-p", "junto-icon", "--bin", "junto-icon",
                           cwd=release_tools.REPOSITORY, timeout=7200)
         self.files = release_tools.keys(TARGET / "junto-release.exe", self.root)
         self.tool, self.recover = release_tools.build(self.files)
@@ -79,13 +80,16 @@ class Check:
     @step("assemble the ZIP of the client build")
     def assemble(self):
         self.packages = windows.assemble(TARGET / "junto.exe", self.recover, "1.0.0", self.root / "packages",
-                                         build=TARGET)
+                                         build=TARGET, installer=TARGET / "junto-installer.exe",
+                                         release_tool=TARGET / "junto-release.exe")
+        self.setup = self.packages / "Junto-1.0.0-windows-x86_64-setup.exe"
+        expect(self.setup.is_file(), "the release tool wrote no setup program")
         self.zip = self.packages / "Junto-1.0.0-windows-x86_64.zip"
         with zipfile.ZipFile(self.zip) as archive:
             names = sorted(archive.namelist())
         expect(not any(name.endswith(".pdb") for name in names), f"the ZIP holds symbols: {names}")
         expect((self.packages / "Junto-1.0.0-windows-x86_64.pdb").is_file(), "no file of the symbols")
-        expect({"Junto/junto.exe", "Junto/junto-recover.exe", "Junto/junto-package.json",
+        expect({"Junto/junto.exe", "Junto/junto-recover.exe", "Junto/uninstall.exe", "Junto/junto-package.json",
                 "Junto/licences/Junto-LICENSE.txt", f"Junto/licences/{licences.NAME}"} <= set(names),
                f"ZIP entries: {names}")
         with zipfile.ZipFile(self.zip) as archive:
@@ -99,7 +103,7 @@ class Check:
 
     @step("each program holds the icon group 1 with the rendering of the source at each size")
     def program_icon(self):
-        for program in ["junto.exe", "junto-recover.exe"]:
+        for program in ["junto.exe", "junto-recover.exe", "uninstall.exe"]:
             with zipfile.ZipFile(self.zip) as archive:
                 pictures = icons.program_icon(archive.read(f"Junto/{program}"))
             expect(sorted(pictures) == [16, 24, 32, 48, 64, 256],
@@ -112,7 +116,8 @@ class Check:
     def subsystems(self):
         # Windows opens a console beside a program of the console subsystem that Explorer starts.
         for program, expected in [("junto.exe", windows.WINDOWS_SUBSYSTEM),
-                                  ("junto-recover.exe", windows.CONSOLE_SUBSYSTEM)]:
+                                  ("junto-recover.exe", windows.CONSOLE_SUBSYSTEM),
+                                  ("uninstall.exe", windows.WINDOWS_SUBSYSTEM)]:
             with zipfile.ZipFile(self.zip) as archive:
                 found = windows.subsystem(archive.read(f"Junto/{program}"))
             expect(found == expected, f"{program} has the subsystem {found}, not {expected}")
@@ -237,6 +242,58 @@ class Check:
         update = self.place / ".Junto.junto-update"
         left = [path.name for path in update.iterdir() if path.name.startswith(("stage-", "finished-"))]
         expect(not left, f"staging directories were left: {left}")
+
+    @step("the setup program installs for the account, and its uninstall program removes it (ADR 0728)")
+    def setup_program(self):
+        expect(windows.subsystem(self.setup.read_bytes()) == windows.WINDOWS_SUBSYSTEM,
+               "the setup program is not a program of the Windows subsystem")
+        pictures = icons.program_icon(self.setup.read_bytes())
+        expect(sorted(pictures) == [16, 24, 32, 48, 64, 256], f"the icon of the setup program: {sorted(pictures)}")
+        local, roaming, temporary = (self.root / "setup-local", self.root / "setup-roaming", self.root / "setup-temp")
+        for directory in (local, roaming, temporary):
+            directory.mkdir()
+        environment = dict(os.environ, LOCALAPPDATA=str(local), APPDATA=str(roaming), TEMP=str(temporary),
+                           TMP=str(temporary))
+        folder = local / "Programs/Junto"
+        shortcut = roaming / "Microsoft/Windows/Start Menu/Programs/Junto.lnk"
+        expected = self.packages / "package-directory/Junto"
+        with window_frame.kept_uninstall_entry():
+            for remove_data in (False, True):
+                result = ran([self.setup, "--quiet", "--no-start"], env=environment, timeout=300)
+                expect(result.returncode == 0 and "installed version 1.0.0" in result.stdout,
+                       "the setup program did not install", result)
+                check_lifecycle.compare(folder.parent, folder, expected)
+                expect(shortcut.is_file(), "the setup program made no Start menu entry")
+                entry = window_frame.uninstall_entry()
+                expect(entry is not None, "the setup program wrote no entry of the installed programs")
+                expect(entry["DisplayVersion"][0] == "1.0.0", f"the entry states {entry}")
+                expect(entry["UninstallString"][0] == f'"{folder / "uninstall.exe"}"', f"the entry states {entry}")
+                expect(entry["InstallLocation"][0] == str(folder), f"the entry states {entry}")
+                result = ran([folder / "junto.exe", "--version"], env=environment)
+                expect(result.returncode == 0 and "1.0.0" in result.stdout, "the installed program did not start",
+                       result)
+                # A second run of the setup program replaces the folder.
+                result = ran([self.setup, "--quiet", "--no-start"], env=environment, timeout=300)
+                expect(result.returncode == 0, "a second run of the setup program failed", result)
+                check_lifecycle.compare(folder.parent, folder, expected)
+                data = local / "Junto"
+                data.mkdir(exist_ok=True)
+                (data / "kept.txt").write_text("data")
+                arguments = [folder / "uninstall.exe", "--quiet"] + (["--remove-data"] if remove_data else [])
+                result = ran(arguments, env=environment, timeout=60)
+                expect(result.returncode == 0, "the uninstall program failed", result)
+                # A copy outside the folder removes it after the uninstall program ended, then
+                # removes itself.
+                removed = check_lifecycle.wait_until(
+                    lambda: not folder.exists() and window_frame.uninstall_entry() is None
+                    and not any(temporary.iterdir()), 60)
+                expect(removed, f"the removal did not end: folder {folder.exists()}, entry "
+                                f"{window_frame.uninstall_entry()}, left {listing(temporary)}")
+                expect(not shortcut.exists(), "the Start menu entry is still there")
+                expect(not (local / "Programs/.Junto.junto-update").exists(), "the update directory is still there")
+                expect((data / "kept.txt").exists() != remove_data,
+                       f"the data directory {'was not' if remove_data else 'was'} removed")
+        print("    the setup program installed and the uninstall program removed Junto twice", flush=True)
 
     @step("real client packages: install, first frame, update, first frame, rollback, first frame")
     def real_client_lifecycle(self):

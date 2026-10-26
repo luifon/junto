@@ -211,7 +211,7 @@ fn check_update_through_the_window(
             .timer(std::time::Duration::from_secs(300))
             .await;
         eprintln!("no update was installed in 300 seconds");
-        let _ = cx.update(|cx| cx.quit());
+        cx.update(|cx| cx.quit());
     })
     .detach();
 }
@@ -374,6 +374,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The entry of the list of installed programs states the version of this folder, which
+    // an update from inside the application replaced (ADR 0728).
+    #[cfg(windows)]
+    if let Some(folder) = std::env::current_exe()
+        .ok()
+        .and_then(|program| program.parent().map(std::path::Path::to_owned))
+        && let Err(error) = junto_client_core::releases::setup_windows::refresh_uninstall_version(
+            &folder,
+            &junto_client_core::updates::Version::THIS_BUILD.to_string(),
+        )
+    {
+        tracing::warn!(%error, "the entry of the installed programs was not updated");
+    }
     // The client made the data directory. The log of the directory is written by one
     // instance only: the one that holds `logs/lock` (ADR 0757).
     junto_client::panics::record_into(client.data_dir().root());

@@ -257,6 +257,17 @@ def remove_tree(path, attempts=10, interval=3):
             time.sleep(interval)
 
 
+def wait_until(condition, seconds, interval=0.5):
+    """Whether `condition` holds within `seconds`, read every `interval` seconds."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if condition():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
 def start(arguments, version, data, *, display=(), environment=None):
     """Checks the version of the client, then starts it with an empty profile until its first
     frame; `display` is the command that runs the start on a virtual display."""
@@ -394,7 +405,8 @@ def check(parent, system, files, *, signing=None):
         environment["JUNTO_TEST_BUILD_VERSION"] = version
         command(["cargo", "build", "--locked", "-p", "junto-client", "--bin", "junto", "-p",
                  "junto-client-core", "--bin", "junto-release", "--bin", "junto-recover",
-                 "-p", "junto-icon", "--bin", "junto-icon"], cwd=ROOT, env=environment, timeout=7200)
+                 "--bin", "junto-installer", "-p", "junto-icon", "--bin", "junto-icon"],
+                cwd=ROOT, env=environment, timeout=7200)
         output = root / f"build-{index}"
         if system == "macos":
             from bundle import assemble
@@ -405,7 +417,8 @@ def check(parent, system, files, *, signing=None):
                      output / "Junto.zip"])
         elif system == "windows":
             import windows
-            windows.assemble(build / "junto.exe", build / "junto-recover.exe", version, output, build=build)
+            windows.assemble(build / "junto.exe", build / "junto-recover.exe", version, output, build=build,
+                             installer=build / "junto-installer.exe")
         else:
             import linux
             linux.assemble(build / "junto", build / "junto-recover", version, output,
