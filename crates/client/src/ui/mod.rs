@@ -50,7 +50,7 @@ pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_pai
 pub use rows::{
     CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
 };
-pub use scroll::ScrollArea;
+pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
 pub use tile::{PersonTile, TileMark};
 pub use tooltip::tooltip;

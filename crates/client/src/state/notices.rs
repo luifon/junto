@@ -103,7 +103,7 @@ pub struct NoticesPanel {
     /// The notices of the state that the person has not read, also those that the list
     /// does not show while their messages are read.
     pub unread: usize,
-    /// The server may hold more notices after the listed ones.
+    /// The server may hold notices older than the listed ones.
     pub more: bool,
     /// The messages of some notices are not read yet.
     pub reading: bool,
@@ -293,12 +293,13 @@ fn author_of(
         .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
 }
 
-/// The notices of a server as the side panel lists them, the newest first. A notice whose
-/// message the server no longer has for the account is not listed, and a notice whose
-/// place the state does not hold is not listed either. A notice of a channel that is in no
-/// channel list waits for the archived list of its workspace, and so do the notices after
-/// it: they are added at the end when the list answers, and no listed row moves. A list
-/// that failed is named in the panel, and its notices are not listed.
+/// The notices of a server as the side panel lists them: the oldest first and the newest
+/// last, as a message list orders its messages. A notice whose message the server no longer
+/// has for the account is not listed, and a notice whose place the state does not hold is
+/// not listed either. A notice of a channel that is in no channel list waits for the
+/// archived list of its workspace, and so do the older notices: they are added before the
+/// listed rows when the list answers. A list that failed is named in the panel, and its
+/// notices are not listed.
 pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) -> NoticesPanel {
     let accounts = account_names(server_id, model, known);
     let departed = known.people.departures(server_id);
@@ -376,6 +377,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
         };
         rows.push(row);
     }
+    rows.reverse();
     NoticesPanel {
         // The notices of the state count, also those whose messages are being read: the
         // panel offers "Mark all as read" for them (ADR 0742).

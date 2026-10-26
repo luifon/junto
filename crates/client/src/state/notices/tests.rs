@@ -279,14 +279,15 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
         vec![(scene.studio, Collection::Loaded(Vec::new()))];
 
     let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    // The oldest first, as a message list orders its messages.
     let ids: Vec<Uuid> = panel.rows.iter().map(|row| row.id).collect();
     assert_eq!(
         ids,
         [
-            failed,
-            reply_id.as_uuid(),
+            mention_id.as_uuid(),
             direct_id.as_uuid(),
-            mention_id.as_uuid()
+            reply_id.as_uuid(),
+            failed,
         ]
     );
     assert!(panel.reading && !panel.more && !panel.marking);
@@ -294,21 +295,21 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
     // while their messages are read; a notice whose message is gone does not.
     assert_eq!(panel.unread, 5);
 
-    let unreadable = &panel.rows[0];
+    let unreadable = &panel.rows[3];
     assert_eq!(unreadable.text, text::NOTICE_NOT_READ);
     assert_eq!(
         (&unreadable.place, unreadable.jump),
         (&Whereabouts::Unknown, None)
     );
 
-    let in_thread = &panel.rows[1];
+    let in_thread = &panel.rows[2];
     assert_eq!(in_thread.kind, NotificationKind::Thread);
     let jump = in_thread.jump.unwrap();
     assert_eq!(jump.thread_root, Some(root_id));
     assert_eq!(jump.place, PlaceId::Channel(scene.general));
     assert_eq!(jump.workspace_id, Some(scene.studio));
 
-    let written = &panel.rows[2];
+    let written = &panel.rows[1];
     assert!(written.read);
     assert_eq!(
         written.place,
@@ -322,7 +323,7 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
         (PlaceId::Direct(scene.conversation.id), None, 3)
     );
 
-    let named = &panel.rows[3];
+    let named = &panel.rows[0];
     assert_eq!(
         named.place,
         Whereabouts::Channel {

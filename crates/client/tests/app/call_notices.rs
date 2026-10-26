@@ -194,13 +194,23 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     let texts: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
     assert_eq!(
         texts,
-        ["last, @Luca", "in the old channel, @Luca", "first, @Luca"]
+        ["first, @Luca", "in the old channel, @Luca", "last, @Luca"]
     );
+    // The call window draws the newest notice at the bottom, as the main window does.
+    let oldest = bounds_of(
+        &mut detached,
+        selector(format!("notice:{}", panel.rows[0].id)),
+    );
+    let newest = bounds_of(
+        &mut detached,
+        selector(format!("notice:{}", panel.rows[2].id)),
+    );
+    assert!(oldest.bottom() <= newest.top() + gpui::px(1.0));
     assert!(!window.shows("notices-panel"));
 
     // A press on the newest row: the main window shows the message in its channel, comes
     // to the front, and the notice is read.
-    detached.click_named(format!("notice:{}", panel.rows[0].id));
+    detached.click_named(format!("notice:{}", panel.rows[2].id));
     window.until("the main window shows the message", |window| {
         window.selected_channel() == general
             && window
@@ -212,7 +222,7 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     detached.until("the notice is read", |window| {
         window
             .notices()
-            .is_some_and(|panel| panel.rows.first().is_some_and(|row| row.read))
+            .is_some_and(|panel| panel.rows.last().is_some_and(|row| row.read))
     });
     // Both windows count the notices that stay unread: the notice of the archived channel
     // at least, and fewer than before.

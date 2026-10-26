@@ -715,12 +715,12 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
             panel.rows.len() == 50
                 && panel.more
                 && !panel.reading
-                && panel.rows[0].text == "number 54, @Luca"
+                && panel.rows.last().is_some_and(|row| row.text == "number 54, @Luca")
         })
     });
 
-    // The person scrolls to the end of the list, where "Show older" is.
-    window.wheel_to("notice-list", "more-notices");
+    // The person scrolls to the start of the list, where "Show older" is.
+    window.wheel_up_to("notice-list", "more-notices");
     window.click("more-notices");
     window.until("every notice", |window| {
         window
@@ -729,7 +729,7 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
     });
     assert!(!window.shows("more-notices"));
     let texts = window.notice_texts();
-    assert_eq!(texts.last().map(String::as_str), Some("number 0, @Luca"));
+    assert_eq!(texts.first().map(String::as_str), Some("number 0, @Luca"));
     let listed: Vec<uuid::Uuid> = window
         .notices()
         .unwrap()
@@ -743,6 +743,7 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
         .notifications
         .iter()
         .map(|notice| notice.id)
+        .rev()
         .collect();
     assert_eq!(listed, stored);
 }

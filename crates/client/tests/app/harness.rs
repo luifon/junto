@@ -772,9 +772,21 @@ impl Window {
     }
 
     /// Turns the wheel over the list with the name `list` until the element with the name
-    /// `target` is drawn whole inside the list, as a person scrolls to a control.
+    /// `target` is drawn whole inside the list, as a person scrolls down to a control.
     #[track_caller]
     pub fn wheel_to(&mut self, list: &'static str, target: &'static str) {
+        self.wheel_until(list, target, -300.0);
+    }
+
+    /// Turns the wheel over a list until the element is drawn whole inside it, as a person
+    /// scrolls up to a control.
+    #[track_caller]
+    pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
+        self.wheel_until(list, target, 300.0);
+    }
+
+    #[track_caller]
+    fn wheel_until(&mut self, list: &'static str, target: &'static str, step: f32) {
         use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
         self.settle();
         let area = self
@@ -789,7 +801,7 @@ impl Window {
             if !inside {
                 window.dispatch(ScrollWheelEvent {
                     position: area.center(),
-                    delta: ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(step))),
                     ..Default::default()
                 });
             }

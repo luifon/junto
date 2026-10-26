@@ -232,6 +232,8 @@ pub struct Shell {
     /// The invitations beyond the first ones are shown (ADR 0739).
     pub(crate) invitations_open: bool,
     pub(crate) invitations_scroll: ScrollHandle,
+    /// The newest invitation that the cards drew.
+    pub(crate) invitations_newest: Option<junto_client_core::protocol::ids::CallInvitationId>,
     /// The panel of the call lies over the content of a narrow window.
     pub(crate) call_panel_open: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
@@ -314,7 +316,7 @@ pub struct Shell {
     pub(crate) contact_part: Entity<InputState>,
     pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
-    pub(crate) notices_scroll: ScrollHandle,
+    pub(crate) notice_list: notices::NoticeList,
     pub(crate) search_scroll: ScrollHandle,
     pub(crate) transcript_list: recorded::TranscriptList,
     /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
@@ -630,6 +632,7 @@ impl Shell {
             call_panel_open: false,
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
+            invitations_newest: None,
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
             detached,
@@ -685,7 +688,7 @@ impl Shell {
             fork_name,
             contact_part,
             contacts_scroll: ScrollHandle::new(),
-            notices_scroll: ScrollHandle::new(),
+            notice_list: notices::NoticeList::new(),
             search_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
@@ -1181,6 +1184,7 @@ impl Render for Shell {
             crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
+        self.notice_list.frame_starts();
         if self.detached {
             return self.render_detached(window, cx);
         }

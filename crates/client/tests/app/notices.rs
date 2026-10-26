@@ -18,7 +18,7 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message};
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, SetChannelOverride};
 
-use crate::harness::{Admin, Window, World, member};
+use crate::harness::{Admin, Window, World, member, selector};
 use crate::messages::document;
 
 /// A text that names an account.
@@ -1091,7 +1091,7 @@ fn a_notice_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
     });
 
     // The list of the notices names the archived channel at the notice of its message,
-    // in the order of the notices.
+    // in the order of the notices: the oldest first.
     window.open_notices();
     window.until("the notice of the archived channel is listed", |window| {
         window.notices().is_some_and(|panel| panel.rows.len() == 3)
@@ -1100,7 +1100,7 @@ fn a_notice_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
     let texts: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
     assert_eq!(
         texts,
-        ["last, @Luca", "in the old channel, @Luca", "first, @Luca"]
+        ["first, @Luca", "in the old channel, @Luca", "last, @Luca"]
     );
     assert_eq!(
         panel.rows[1].place,
@@ -1180,4 +1180,98 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
         })
     });
     assert!(!window.shows("no-notices"));
+}
+
+/// The notices are ordered as the messages of a list are (ADR 0742): the oldest at the top
+/// and the newest at the bottom. The list opens at its end, a new notice is drawn at the
+/// bottom while the list stands at its end, and a list that the person moved away from its
+/// end keeps the rows in view.
+#[gpui::test]
+fn the_notices_are_ordered_as_messages_with_the_newest_at_the_bottom(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let mut sent = Vec::new();
+    for number in 0..16 {
+        sent.push(admin.mention(&world, general, &format!("number {number}, "), own));
+    }
+    window.until("the notices are counted", |window| {
+        window.unread_notices() == 16
+    });
+    window.open_notices();
+    window.until("every notice is listed", |window| {
+        window
+            .notices()
+            .is_some_and(|panel| panel.rows.len() == 16 && !panel.reading)
+    });
+    let texts: Vec<String> = window
+        .notices()
+        .unwrap()
+        .rows
+        .iter()
+        .map(|row| row.text.clone())
+        .collect();
+    let expected: Vec<String> = (0..16).map(|number| format!("number {number}, @Luca")).collect();
+    assert_eq!(texts, expected);
+
+    // The list opens at its end: the newest notice is drawn whole at the bottom, and each
+    // drawn notice lies above the next newer one.
+    let row = |message: &Message| selector(format!("notice:{}", message.id.as_uuid()));
+    let list = notice_bounds(&mut window, "notice-list");
+    let newest = notice_bounds(&mut window, row(&sent[15]));
+    assert!(
+        newest.bottom() <= list.bottom() && newest.bottom() >= list.bottom() - gpui::px(12.0),
+        "the newest notice {newest:?} is not at the bottom of the list {list:?}"
+    );
+    let older = notice_bounds(&mut window, row(&sent[14]));
+    assert!(older.bottom() <= newest.top() + gpui::px(1.0));
+    assert!(
+        window
+            .cx
+            .debug_bounds(row(&sent[0]))
+            .is_none_or(|oldest| oldest.bottom() <= list.top()),
+        "the oldest notice is in view of a list that opened at its end"
+    );
+
+    // A new notice while the list stands at its end is drawn at the bottom, in view.
+    let next = admin.mention(&world, general, "number 16, ", own);
+    window.until("the new notice is drawn at the bottom", |window| {
+        window
+            .cx
+            .debug_bounds(row(&next))
+            .is_some_and(|shown| {
+                shown.bottom() <= list.bottom() && shown.bottom() >= list.bottom() - gpui::px(12.0)
+            })
+    });
+
+    // The person scrolls up: a new notice is added below and the rows in view stay.
+    window.dispatch(gpui::ScrollWheelEvent {
+        position: list.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(300.0))),
+        ..Default::default()
+    });
+    window.settle();
+    let kept = notice_bounds(&mut window, row(&sent[12]));
+    let last = admin.mention(&world, general, "number 17, ", own);
+    window.until("the newest notice is listed", |window| {
+        window
+            .notices()
+            .is_some_and(|panel| panel.rows.last().is_some_and(|newest| newest.id == last.id.as_uuid()))
+    });
+    assert_eq!(notice_bounds(&mut window, row(&sent[12])), kept);
+    assert!(
+        window
+            .cx
+            .debug_bounds(row(&last))
+            .is_none_or(|shown| shown.top() >= list.bottom())
+    );
+}
+
+/// The bounds of an element that the window draws now.
+fn notice_bounds(window: &mut Window, selector: &'static str) -> gpui::Bounds<gpui::Pixels> {
+    window.settle();
+    window
+        .cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is not drawn"))
 }

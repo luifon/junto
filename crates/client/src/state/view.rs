@@ -1484,7 +1484,7 @@ pub struct Invited {
     pub by: Option<String>,
     /// The name of the voice channel. Absent for a direct-message call.
     pub channel: Option<String>,
-    /// When the invitation was made: the window shows the newest ones first.
+    /// When the invitation was made: the window orders the cards by it, the newest last.
     pub created_at: OffsetDateTime,
 }
 
