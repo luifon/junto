@@ -652,7 +652,9 @@ enum Updated<R> {
 /// panic in the update, such as one in an observer that the update notifies, ends this
 /// update only; without the stop the panic would end the task, and the state would no longer
 /// follow its source (ADR 0757).
+/// `source` names the task for the tests of ADR 0757, which read which tasks paused.
 fn update_once<R>(
+    source: &'static str,
     this: &gpui::WeakEntity<AppState>,
     cx: &mut gpui::AsyncApp,
     update: impl FnOnce(&mut AppState, &mut Context<AppState>) -> R,
@@ -660,7 +662,13 @@ fn update_once<R>(
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.update(cx, update))) {
         Ok(Ok(value)) => Updated::Done(value),
         Ok(Err(_)) => Updated::Gone,
-        Err(_) => Updated::Panicked,
+        Err(_) => {
+            #[cfg(feature = "test-support")]
+            crate::panics::test_support::task_paused(source);
+            #[cfg(not(feature = "test-support"))]
+            let _ = source;
+            Updated::Panicked
+        }
     }
 }
 
@@ -724,7 +732,7 @@ impl AppState {
         let mut calls_watch = calls.watch();
         let follow_calls = cx.spawn(async move |this, cx| {
             while calls_watch.changed().await.is_ok() {
-                match update_once(&this, cx, |this, cx| this.calls_changed(cx)) {
+                match update_once("calls", &this, cx, |this, cx| this.calls_changed(cx)) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -738,7 +746,7 @@ impl AppState {
         let follow_levels = cx.spawn(async move |this, cx| {
             while levels.changed().await.is_ok() {
                 let shown = shown_levels(&levels.borrow_and_update());
-                let told = update_once(&this, cx, |this, cx| {
+                let told = update_once("levels", &this, cx, |this, cx| {
                     if this.known.media.levels != shown {
                         this.known.media.levels = shown;
                         cx.emit(LevelsChanged);
@@ -757,7 +765,7 @@ impl AppState {
         let clock = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let told = update_once(&this, cx, |this, cx| {
+                let told = update_once("clock", &this, cx, |this, cx| {
                     let was_ringing = this.direct.ringing();
                     this.reconcile_direct(cx);
                     if was_ringing || this.direct.ringing() {
@@ -787,7 +795,7 @@ impl AppState {
             let mut again = false;
             while again || changes.changed().await {
                 again = false;
-                match update_once(&this, cx, |this, cx| this.changed(cx)) {
+                match update_once("changes", &this, cx, |this, cx| this.changed(cx)) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -810,7 +818,7 @@ impl AppState {
                 // starts, is recorded by the hook and ends this update only. The task then waits
                 // before it takes the next reports, so that an update that panics at each run
                 // returns to the event loop between two runs (ADR 0757).
-                match update_once(&this, cx, |this, cx| this.panics_recorded(batch, cx)) {
+                match update_once("reports", &this, cx, |this, cx| this.panics_recorded(batch, cx)) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -823,7 +831,7 @@ impl AppState {
         let retry = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(retry_interval).await;
-                if let Updated::Gone = update_once(&this, cx, |this, cx| this.retry_unreached(cx)) {
+                if let Updated::Gone = update_once("retry", &this, cx, |this, cx| this.retry_unreached(cx)) {
                     break;
                 }
             }

@@ -428,6 +428,9 @@ pub mod test_support {
     thread_local! {
         /// The handler that panics, and whether it panics at every run.
         static NEXT: Cell<Option<(Handler, bool)>> = const { Cell::new(None) };
+        /// The tasks of the state that paused after a panic in their update, in order.
+        static PAUSED: std::cell::RefCell<Vec<&'static str>> =
+            const { std::cell::RefCell::new(Vec::new()) };
         static PRESS_ENDS: Cell<usize> = const { Cell::new(0) };
         static NOTICE_PAINTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     }
@@ -447,9 +450,22 @@ pub mod test_support {
         NEXT.with(|next| next.set(Some((handler, false))));
     }
 
-    /// Every run of `handler` on this thread panics until [`stop_panicking`].
+    /// Every run of `handler` on this thread panics until [`stop_panicking`]. The list of
+    /// the tasks that paused starts empty.
     pub fn panic_in_every(handler: Handler) {
+        PAUSED.with_borrow_mut(Vec::clear);
         NEXT.with(|next| next.set(Some((handler, true))));
+    }
+
+    /// The tasks of the state that follow a source, such as the panic reports or the changes
+    /// of the client core, that paused after a panic in their update since
+    /// [`panic_in_every`], in order (ADR 0757).
+    pub fn paused_tasks() -> Vec<&'static str> {
+        PAUSED.with_borrow(Clone::clone)
+    }
+
+    pub(crate) fn task_paused(task: &'static str) {
+        PAUSED.with_borrow_mut(|paused| paused.push(task));
     }
 
     pub fn stop_panicking() {
