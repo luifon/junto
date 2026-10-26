@@ -107,20 +107,28 @@ Notifications:
   read position marks its notices read in the same transaction. Maintenance keeps at most
   500 notices per account and removes notices older than 90 days in bounded batches.
   Inserts queue their recipients for cap maintenance; unchanged accounts are not scanned.
-  The queue is filled by a trigger that runs once for each inserted notice. Measured for
-  one channel message whose workspace default gives a notice to every member, five
-  messages for each size, on the Linux build image (PostgreSQL 17 with 0.75 processor,
-  a debug build of the server), with the statistics of the trigger read when they hold
-  every call: the statement that inserts the notices takes 54 ms with 100 members, 741 ms
-  with 1,000, 3,445 ms with 5,000 and 7,758 ms with 10,000; the trigger takes 4.1 ms,
-  62.9 ms, 323.8 ms and 763.0 ms of it (7.4%, 8.5%, 9.4% and 9.8%). A trigger that runs
-  once for each statement and reads the inserted notices from a transition table takes
-  2.8 ms, 39.1 ms, 195.5 ms and 471.3 ms at the same sizes: it would save 2.4%, 3.2%, 3.7%
-  and 3.8% of the statement, less than the statement varies between two runs of the same
-  size, so the trigger runs for each notice. With 10,000 members the statement takes 7.8 s
-  of the statement time limit of 10 seconds (ADR 0009), and the request 10.6 s. The
-  measurement is the ignored test
-  `notice_fan_out::measure_the_queue_of_the_notice_cap_at_large_fan_out`.
+  The notices of a message are inserted by one statement that joins the notification
+  policy of every recipient (its level, its mute and its two mention switches), whether the
+  message mentions the recipient, and the read boundary once for all recipients. The earlier
+  statement called the policy and the mention check as functions for each recipient, about
+  0.6 ms each, so a message to about 19,000 members passed the statement time limit of 10
+  seconds (ADR 0009). The queue is filled by a trigger that runs once for each statement and
+  reads the inserted notices from a transition table. Measured for one channel message whose
+  workspace default gives a notice to every member, five messages for each size, on the Linux
+  build image (PostgreSQL 17 with 0.75 processor, a debug build of the server), with the
+  statistics of the trigger read when they hold every call: the earlier statement with a
+  trigger for each notice took 63.5 ms with 100 members, 808 ms with 1,000, 3,021 ms with
+  5,000 and 6,415 ms with 10,000 (requests 188 ms, 1,174 ms, 4,229 ms and 8,760 ms). The
+  joined statement with a trigger for each notice takes 21.8 ms, 201 ms, 1,102 ms, 2,313 ms,
+  and 4,536 ms with 20,000; with the trigger for each statement 15.7 ms, 178 ms, 925 ms,
+  1,978 ms and 3,736 ms (requests 119 ms, 455 ms, 2,017 ms, 4,191 ms and 7,775 ms). The
+  trigger for each notice takes 23% to 36% of the joined statement and the trigger for each
+  statement 18% to 19%, so the statement is 11% to 28% shorter with the trigger for each
+  statement; with the earlier statement the saving was 4% or less of a longer statement, and
+  the trigger ran for each notice. With 20,000 members the statement takes 3.7 s of the
+  limit. The measurement is
+  the ignored test `notice_fan_out::measure_the_queue_of_the_notice_cap_at_large_fan_out`,
+  which compares the trigger for each statement with the earlier trigger for each notice.
   The ordered account index serves the cap, and the age index serves lifetime removal.
   Unknown and foreign notification cursors are invalid requests.
 - Each event records the recipients newly notified by that change. An edit adding a
