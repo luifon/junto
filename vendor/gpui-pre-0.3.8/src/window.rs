@@ -1,7 +1,7 @@
 // Modified: this file differs from the published gpui-pre 0.3.8. Each callback that a window
 // gives the platform stops a panic of its body, and a draw, a layout and the mouse listeners
 // put back what they took out of the window when a panic passes through them (see
-// `unwind.rs`).
+// `unwind.rs`). `Window::activate_with_token` is added.
 #[cfg(feature = "profiler")]
 use crate::DebugFrameOverlayMode;
 #[cfg(any(feature = "inspector", debug_assertions))]
@@ -6631,6 +6631,13 @@ impl Window {
     /// Focus the current window and bring it to the foreground at the platform level.
     pub fn activate_window(&self) {
         self.platform_window.activate();
+    }
+
+    // Modified: added.
+    /// Focus the window with an activation token of the system, such as the token of a press
+    /// on a notification of the application. Without such tokens it is `activate_window`.
+    pub fn activate_with_token(&self, token: &str) {
+        self.platform_window.activate_with_token(token);
     }
 
     /// Requests that the operating system draw attention to this window.

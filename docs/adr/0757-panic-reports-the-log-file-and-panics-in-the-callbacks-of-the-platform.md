@@ -39,7 +39,7 @@ gpui takes values out of the state of the application while it calls the code of
 
 ### A panic in a callback of the platform does not end the application
 
-The workspace uses corrected copies of `gpui-pre` 0.3.8 and `gpui-pre-scheduler` 0.3.8 under `vendor/` (`[patch.crates-io]` of `Cargo.toml`; `vendor/README.md` lists each change). The platform crates are unchanged.
+The workspace uses corrected copies of `gpui-pre` 0.3.8 and `gpui-pre-scheduler` 0.3.8 under `vendor/` (`[patch.crates-io]` of `Cargo.toml`; `vendor/README.md` lists each change). Of the platform crates only `gpui-pre-linux` is copied, for the activation of a window with a token (below).
 
 1. **Stops at the entries.** Every callback that gpui gives the platform runs its body through `unwind::catch`, which stops a panic and gives the platform a fixed result: the callbacks of a window (frame request, input, resize, move, activation, visibility, hover, appearance, button layout, visual viewport, insets, close, the hit test of the window controls, the tab callbacks, should-close), of the application (open addresses, reopen, keyboard layout, thermal state, sleep, wake, quit, the response to a system notification) and of the menus. The results after a panic: an input event is not handled; the hit test finds no window control; should-close and quit return true, as when the application is gone; a menu command is not available. The methods of the text input handler, which the platform calls for typing and the input methods of the system, return an error, as for a window that is closed.
 2. **Tasks.** The scheduler builds every task with `propagate_panic`. A panic of a task stops in `Runnable::run`, inside the function of the platform that runs the task; the code that awaits the task receives the panic, and the panic of a detached task is dropped. This covers the dispatch queue functions of macOS, the window procedure and the thread pool callbacks of Windows, and the event loop of Linux.
@@ -64,6 +64,10 @@ The stops are in gpui and not in the platform crates, because the platform reach
   - `pthread_cond_wait` and `pthread_cond_timedwait` of the media crate on macOS (ADR 0786), which end the process when the functions of the system are missing, by design.
 - A panic on a thread that gpui does not run and that no C code called (the tokio threads of the client core and of the media engine) ends its task or thread as before.
 
+### Activation of a window with a token of the system
+
+A Wayland compositor gives the focus to a window only for an activation token that it issued, such as the token that a notification service obtains for a press on a notification. gpui 0.3.8 activates a window on Wayland only with a token that the window asks for itself, with the serial of its last press; without a recent press of the window the compositor does not honour it. The copies add `Window::activate_with_token` and `PlatformWindow::activate_with_token` in `gpui-pre`, whose default activates the window as before, and the Wayland window of the copy of `gpui-pre-linux` 0.3.8 gives the token to `xdg_activation_v1::activate` for its surface, or activates the window as before when the compositor has no activation. X11, macOS, Windows and the test platform keep the default. ADR 0752 states how the client takes the token of a press and the tests.
+
 ### Tests
 
 - The panics of the window tests no longer reach the test. The harness of `crates/client/tests/app` counts the panics of the thread of the windows (`panics::panics_on_this_thread`, from the hook) and fails the test when its last window is dropped after more panics than the test expected (`Window::expect_panics`).
@@ -80,6 +84,6 @@ The stops are in gpui and not in the platform crates, because the platform reach
 
 ## Consequences
 
-- The workspace keeps two more corrected copies. A new version of gpui replaces them only after the tests above pass with it; the copies are removed when a pinned upstream version stops a panic in each callback of the platform and puts its state back.
+- The workspace keeps three more corrected copies. A new version of gpui replaces them only after the tests above pass with it; the copies are removed when a pinned upstream version stops a panic in each callback of the platform and puts its state back.
 - A panic in a handler no longer ends the application, so a defect can stay unseen; the notice and the report file make it visible to the person, who can send the report to whoever runs the server.
 - The paths of the log and of the reports are in `docs/client-macos.md`, `docs/client-linux.md` and `docs/client-windows.md`.

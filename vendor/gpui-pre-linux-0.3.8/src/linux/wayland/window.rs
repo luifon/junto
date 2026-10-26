@@ -1,3 +1,5 @@
+// Modified: this file differs from the published gpui-pre-linux 0.3.8. A window is activated
+// with an activation token of the system (`activate_with_token`).
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
     ffi::c_void,
@@ -1825,6 +1827,18 @@ impl PlatformWindow for WaylandWindow {
             token.set_surface(&state.surface);
             token.commit();
         }
+    }
+
+    // Modified: added. The compositor gives the focus for a token that it issued for this
+    // application, such as the token of a press on a notification.
+    fn activate_with_token(&self, token: &str) {
+        let state = self.borrow();
+        let Some(activation) = &state.globals.activation else {
+            drop(state);
+            self.activate();
+            return;
+        };
+        activation.activate(token.to_owned(), &state.surface);
     }
 
     fn request_attention(&self) {}

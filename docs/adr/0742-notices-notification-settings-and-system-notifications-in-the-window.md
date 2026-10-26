@@ -80,7 +80,7 @@ Windows:
 - At each start, before the first window, the program writes the picture of 256 pixels (ADR 0756) as `notification-icon.png` into the data directory when the file differs, writes the key of `chat.junto.Junto` with the name `Junto` and the path of that file, and names that identifier for the process (`App::set_app_identity`, which calls `SetCurrentProcessExplicitAppUserModelID`). The code of the key is in `junto-client-core` (`app_identity`), so that the recovery program removes it: `junto-recover unregister` (ADR 0755). A failure to write the key is logged, and the notifications then depend on the key that gpui writes.
 - The identifier of the process also groups the taskbar button of the window; ADR 0755 states what the main window gives a pin of the taskbar.
 - The key names the picture of the data directory of the last start. A second installation or a second data directory of the same account uses the same identifier.
-- gpui activates no application on Windows and on Linux: a press on a notification asks the main window to come to the front, which restores it when it is minimized.
+- gpui activates no application on Windows and on Linux: a press on a notification asks the main window to come to the front, which restores it when it is minimized. On Linux the press carries the activation token that the notification service sends with it, and the window is activated with that token, so that a Wayland compositor gives it the focus (ADR 0752, ADR 0757).
 
 ## Consequences
 

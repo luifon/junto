@@ -73,16 +73,23 @@ impl SystemNotifier for PlatformNotifier {
     }
 }
 
-/// Brings the application to the front after a press on one of its notifications.
-pub fn bring_to_front(cx: &mut App) {
+/// Brings the application to the front after a press on one of its notifications or on the
+/// tray. `token`: the activation token that the system gave for the press.
+pub fn bring_to_front(token: Option<&str>, cx: &mut App) {
     cx.activate(true);
     // gpui activates no application on Linux and on Windows. The main window, which is the
-    // first one, is asked instead: it is restored when it is minimized, X11 and Windows give
-    // it the focus, and a Wayland compositor decides by itself.
+    // first one, is asked instead: it is restored when it is minimized, and X11 and Windows
+    // give it the focus. A Wayland compositor gives the focus only for a token that it
+    // issued, such as the token of the press (ADR 0742).
     #[cfg(any(target_os = "linux", windows))]
     if let Some(window) = cx.windows().first() {
-        let _ = window.update(cx, |_, window, _| window.activate_window());
+        let _ = window.update(cx, |_, window, _| match token {
+            Some(token) => window.activate_with_token(token),
+            None => window.activate_window(),
+        });
     }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = token;
 }
 
 /// Installs the system backend and its activation route only for the real application.
@@ -90,7 +97,7 @@ pub fn bring_to_front(cx: &mut App) {
 pub fn platform(
     cx: &mut App,
     data_dir: &std::path::Path,
-    pressed: impl Fn(&str, &mut App) + 'static,
+    pressed: impl Fn(&str, Option<&str>, &mut App) + 'static,
 ) -> std::rc::Rc<dyn SystemNotifier> {
     #[cfg(windows)]
     windows_identity(cx, data_dir);
@@ -105,7 +112,9 @@ pub fn platform(
         // Without an application bundle macOS has no notifications of the application,
         // and nothing is asked of the system.
         if PlatformNotifier::available() {
-            cx.on_system_notification_response(move |response, cx| pressed(&response.tag, cx));
+            cx.on_system_notification_response(move |response, cx| {
+                pressed(&response.tag, None, cx)
+            });
         }
         std::rc::Rc::new(PlatformNotifier)
     }

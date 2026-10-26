@@ -21,6 +21,15 @@ const RETRY: Duration = Duration::from_secs(5);
 /// An alert that waited longer than this for the service is not shown any more.
 const STALE: Duration = Duration::from_secs(30);
 
+/// A press on a notification: its tag, and the activation token that the service gave for
+/// the press (version 1.2 of the specification). A Wayland compositor gives the focus to a
+/// window only with such a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Press {
+    pub(super) tag: String,
+    pub(super) token: Option<String>,
+}
+
 pub(super) struct DesktopNotifier {
     commands: mpsc::UnboundedSender<Command>,
 }
@@ -69,12 +78,15 @@ impl Queue {
 }
 
 impl DesktopNotifier {
-    pub(super) fn new(cx: &mut App, pressed: impl Fn(&str, &mut App) + 'static) -> Self {
+    pub(super) fn new(
+        cx: &mut App,
+        pressed: impl Fn(&str, Option<&str>, &mut App) + 'static,
+    ) -> Self {
         let (commands, receive) = mpsc::unbounded_channel();
-        let (actions, mut take_actions) = futures_channel::mpsc::unbounded::<String>();
+        let (actions, mut take_actions) = futures_channel::mpsc::unbounded::<Press>();
         cx.spawn(async move |cx| {
-            while let Some(tag) = take_actions.next().await {
-                cx.update(|cx| pressed(&tag, cx));
+            while let Some(press) = take_actions.next().await {
+                cx.update(|cx| pressed(&press.tag, press.token.as_deref(), cx));
             }
         })
         .detach();
@@ -140,7 +152,7 @@ async fn body_markup(service: &Proxy<'_>) -> bool {
 async fn worker<F>(
     connect: impl Fn() -> F,
     commands: mpsc::UnboundedReceiver<Command>,
-    actions: futures_channel::mpsc::UnboundedSender<String>,
+    actions: futures_channel::mpsc::UnboundedSender<Press>,
 ) where
     F: Future<Output = zbus::Result<Connection>>,
 {
@@ -213,7 +225,7 @@ async fn serve(
     connection: Connection,
     queue: &mut Queue,
     known: &mut Known,
-    actions: &futures_channel::mpsc::UnboundedSender<String>,
+    actions: &futures_channel::mpsc::UnboundedSender<Press>,
 ) -> zbus::Result<()> {
     let proxy = Proxy::new(&connection, SERVICE, OBJECT, SERVICE).await?;
     let mut signals = proxy.receive_all_signals().await?;
@@ -227,6 +239,8 @@ async fn serve(
         };
     }
     known.owned_by(name_owner(&bus).await?);
+    // The service sends the token of a press before the action of the press.
+    let mut tokens: HashMap<u32, String> = HashMap::new();
     loop {
         tokio::select! {
             biased;
@@ -241,16 +255,25 @@ async fn serve(
                 let header = signal.header();
                 if header.sender().map(|name| name.as_str()) != known.owner.as_deref() { continue; }
                 match header.member().map(|member| member.as_str()) {
+                    Some("ActivationToken") => {
+                        if let Ok((id, token)) = signal.body().deserialize::<(u32, String)>()
+                            && known.shown.values().any(|held| *held == id) {
+                            tokens.insert(id, token);
+                        }
+                    }
                     Some("ActionInvoked") => {
-                        if let Ok((id, action)) = signal.body().deserialize::<(u32, String)>()
-                            && action == "default"
-                            && let Some((tag, _)) = known.shown.iter().find(|(_, held)| **held == id) {
-                            let _ = actions.unbounded_send(tag.clone());
+                        if let Ok((id, action)) = signal.body().deserialize::<(u32, String)>() {
+                            let token = tokens.remove(&id);
+                            if action == "default"
+                                && let Some((tag, _)) = known.shown.iter().find(|(_, held)| **held == id) {
+                                let _ = actions.unbounded_send(Press { tag: tag.clone(), token });
+                            }
                         }
                     }
                     Some("NotificationClosed") => {
                         if let Ok((id, _reason)) = signal.body().deserialize::<(u32, u32)>() {
                             known.shown.retain(|_, held| *held != id);
+                            tokens.remove(&id);
                         }
                     }
                     _ => {}

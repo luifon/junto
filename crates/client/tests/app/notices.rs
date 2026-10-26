@@ -936,17 +936,24 @@ fn two_marks_asked_for_one_after_the_other_are_both_sent(cx: &mut TestAppContext
     });
 }
 
-/// gpui has no activation of the application on Linux, so the press asks the window.
+/// gpui has no activation of the application on Linux, so the press asks the window, with
+/// the activation token of the press when the system gave one. The window of the test
+/// platform is activated with or without a token; the Wayland compositor is checked by the
+/// test target `notification_focus`.
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn a_pressed_notification_brings_the_window_to_the_front(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let mut window = crate::harness::open(cx, directory.path());
-    window.simulate(|cx| cx.deactivate_window());
-    assert!(!window.cx.update(|window, _| window.is_window_active()));
-    TestAppContext::update(&window.cx, junto_client::notify::bring_to_front);
-    window.run_tasks();
-    assert!(window.cx.update(|window, _| window.is_window_active()));
+    for token in [None, Some("a token of the press")] {
+        window.simulate(|cx| cx.deactivate_window());
+        assert!(!window.cx.update(|window, _| window.is_window_active()));
+        TestAppContext::update(&window.cx, |cx| {
+            junto_client::notify::bring_to_front(token, cx)
+        });
+        window.run_tasks();
+        assert!(window.cx.update(|window, _| window.is_window_active()));
+    }
     window.close();
 }
 
