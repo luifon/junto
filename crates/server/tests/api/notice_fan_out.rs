@@ -99,7 +99,7 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
     let (calls, insert_total): (i64, f64) = sqlx::query_as(
         "select coalesce(sum(calls), 0)::bigint, coalesce(sum(total_exec_time), 0)::float8
          from pg_stat_statements
-         where query like 'insert into notifications(id,account_id,message_id,kind%'",
+         where query like '%insert into notifications(id,account_id,message_id,kind%'",
     )
     .fetch_one(&server.db)
     .await
