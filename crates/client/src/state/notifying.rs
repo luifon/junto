@@ -815,10 +815,11 @@ impl AppState {
             self.window_active = active;
             self.changed(cx);
         }
-        // A person who changed the zone of the system did it in another application, and
-        // comes back to this window.
+        // A person who changed the zone of the system or a permission did it in another
+        // application, and comes back to this window.
         if active {
             self.read_system_zone(cx);
+            self.read_permissions(cx);
         }
     }
 

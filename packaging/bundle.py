@@ -44,6 +44,8 @@ def assemble(binary, destination, version, recovery=None, *, icon_tool, build):
             "NSMicrophoneUsageDescription": "Junto uses the microphone when you join a voice call.",
             "NSCameraUsageDescription": "Junto uses the camera when you turn on video in a call.",
             "NSScreenCaptureUsageDescription": "Junto shares the screen or window you choose in a call.",
+            "NSDownloadsFolderUsageDescription": "Junto saves the files of messages and recordings into Downloads.",
+            "NSLocalNetworkUsageDescription": "Junto connects to servers on your local network.",
         }
         (contents / "Info.plist").write_bytes(plistlib.dumps(info))
         icons.run(icon_tool, "icns", contents / "Resources/Junto.icns")

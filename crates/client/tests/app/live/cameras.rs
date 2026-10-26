@@ -530,3 +530,38 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     window.click("leave-call");
     world.run(caller.calls.leave());
 }
+
+/// A camera that the system refused: the notice of the call has the button of the page of
+/// the settings of the system (ADR 0708).
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_camera_that_the_system_refused_opens_the_page_of_its_settings(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Camera refused");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
+    });
+    voice_channel(&world, &admin, &mut window, ROOM);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    window
+        .camera
+        .set_access(junto_media::camera::CameraAccess::Refused);
+    window.click("call-camera");
+    window.until("failure shown", |window| window.shows("camera-failed"));
+    window.click("camera-permission-action");
+    assert_eq!(
+        window.cx.opened_url().as_deref(),
+        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+    );
+    window.click("camera-dismiss");
+    window.click("leave-call");
+}

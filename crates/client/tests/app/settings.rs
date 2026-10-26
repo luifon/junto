@@ -35,6 +35,7 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
         (SettingsSection::Quiet, "quiet-no-server"),
         (SettingsSection::Notifications, "notifications-state"),
         (SettingsSection::Devices, "settings-link-first"),
+        (SettingsSection::Permissions, "check-permissions"),
         (SettingsSection::About, "version-section"),
     ];
     for (section, control) in shown {

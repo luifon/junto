@@ -1389,6 +1389,12 @@ impl Shell {
             MicrophoneLine::NoPermission | MicrophoneLine::Failed
         ) || audio.access == MicrophoneAccess::Refused;
         let seat = self.drawn_seat();
+        // The question of the system, or the page of its settings (ADR 0708).
+        let microphone_permission = self.permission_button(
+            "microphone-permission-action",
+            crate::permissions::Permission::Microphone,
+            cx,
+        );
         ScrollArea::new("call-settings", &self.call_settings_scroll, text::SETTINGS)
             .selector("call-settings")
             .child(camera)
@@ -1426,6 +1432,9 @@ impl Shell {
                     .pt(u(6.0))
                     .px(u(14.0))
                     .child(small(text::microphone_access(audio.access).into()))
+                    .when_some(microphone_permission, |column, button| {
+                        column.child(div().flex().child(button))
+                    })
                     .when(unusable, |column| {
                         column.child(
                             div().flex().child(
@@ -1842,8 +1851,28 @@ impl Shell {
             .read(cx)
             .media_calls()
             .call
-            .and_then(|call| super::camera::failure(&call.camera))
-            .map(|line| {
+            .and_then(|call| {
+                super::camera::failure(&call.camera).map(|line| {
+                    let refused = matches!(
+                        call.camera,
+                        junto_media::camera::CameraState::Failed(
+                            junto_media::camera::CameraError::NoPermission(_)
+                        )
+                    );
+                    (line, refused)
+                })
+            })
+            .map(|(line, refused)| {
+                // A refusal of the system has the page of its settings (ADR 0708).
+                let permission = if refused {
+                    self.permission_button(
+                        "camera-permission-action",
+                        crate::permissions::Permission::Camera,
+                        cx,
+                    )
+                } else {
+                    None
+                };
                 crate::ui::Notice::new(line)
                     .selector("camera-failed")
                     .stacked()
@@ -1851,6 +1880,7 @@ impl Shell {
                         div()
                             .flex()
                             .gap(u(6.0))
+                            .children(permission)
                             .child(
                                 Button::new("camera-settings")
                                     .label(text::SETTINGS)
@@ -1894,6 +1924,15 @@ impl Shell {
             }
             SoundWarning::SoundHeld { .. } | SoundWarning::OutputFailed => Icon::PhonesOff,
         };
+        let permission = if matches!(warning, SoundWarning::NoMicrophoneAccess) {
+            self.permission_button(
+                "warning-microphone-permission-action",
+                crate::permissions::Permission::Microphone,
+                cx,
+            )
+        } else {
+            None
+        };
         div()
             .id("sound-warning")
             .role(Role::Status)
@@ -1932,7 +1971,7 @@ impl Shell {
                     )]))
                     .when(retry, |column| {
                         column.child(
-                            div().flex().mt(u(6.0)).child(
+                            div().flex().gap(u(6.0)).mt(u(6.0)).children(permission).child(
                                 Button::new("warning-retry-microphone")
                                     .label(text::TRY_AGAIN)
                                     .icon(Icon::Retry)

@@ -1097,11 +1097,42 @@ impl Shell {
                 StatePanel::new(text::CONNECTING_TITLE, text::CONNECTING).selector("connecting")
             }
             ServerStatus::Unreachable => {
-                StatePanel::new(text::UNREACHABLE_TITLE, text::UNREACHABLE)
+                // macOS refused the connection to a server on the local network (ADR 0708).
+                let local = self
+                    .state
+                    .read(cx)
+                    .client()
+                    .server(server_id)
+                    .is_some_and(|handle| handle.local_network_refused());
+                let permission = if local {
+                    self.permission_button(
+                        "server-local-network-permission-action",
+                        crate::permissions::Permission::LocalNetwork,
+                        cx,
+                    )
+                } else {
+                    None
+                };
+                let sentence: SharedString = if local {
+                    let system = self.state.read(cx).permission_system();
+                    crate::text::permissions::state(
+                        system,
+                        crate::permissions::Permission::LocalNetwork,
+                        crate::permissions::Access::Refused,
+                    )
+                    .into()
+                } else {
+                    text::UNREACHABLE.into()
+                };
+                let panel = StatePanel::new(text::UNREACHABLE_TITLE, sentence)
                     .icon(Icon::Warning)
-                    .selector("unreachable")
-                    .action(check(text::TRY_AGAIN, cx))
-                    .action(remove(cx))
+                    .selector("unreachable");
+                match permission {
+                    Some(button) => panel.action(button),
+                    None => panel,
+                }
+                .action(check(text::TRY_AGAIN, cx))
+                .action(remove(cx))
             }
             ServerStatus::LoggedOut => StatePanel::new(text::LOGGED_OUT_TITLE, text::LOGGED_OUT)
                 .icon(Icon::Warning)

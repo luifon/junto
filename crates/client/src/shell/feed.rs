@@ -2107,15 +2107,38 @@ impl Shell {
                         })),
                 ))
                 .into_any_element(),
-            Some((DownloadStage::Failed(failure), _)) => row
-                .child(
+            Some((DownloadStage::Failed(failure), _)) => {
+                // The system did not let Junto write into the download directory: macOS
+                // asks for Downloads at the first write (ADR 0708).
+                let refused = failure
+                    == junto_client_core::transfers::TransferFailure::File(
+                        std::io::ErrorKind::PermissionDenied,
+                    );
+                let system = self.state.read(cx).permission_system();
+                let sentence = if refused {
+                    crate::text::permissions::download_refused(system)
+                } else {
+                    text::transfer_failure(failure)
+                };
+                let permission = if refused {
+                    self.permission_button(
+                        "download-permission-action",
+                        crate::permissions::Permission::Downloads,
+                        cx,
+                    )
+                } else {
+                    None
+                };
+                row.child(
                     div()
                         .id(("download-failed", index))
-                        .tooltip(tooltip(text::transfer_failure(failure)))
+                        .tooltip(tooltip(sentence))
                         .child(icon(Icon::Warning, 14.0, colors.cinnabar)),
                 )
+                .children(permission)
                 .child(forget("retry-download", text::TRY_AGAIN, cx))
-                .into_any_element(),
+                .into_any_element()
+            }
             Some((DownloadStage::Cancelled, _)) => row.child(start(cx)).into_any_element(),
         }
     }

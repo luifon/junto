@@ -21,6 +21,7 @@ pub mod moderation;
 pub mod notices;
 mod notifying;
 pub mod people;
+mod permissions;
 pub mod person_drop;
 mod progress;
 pub mod receipts;
@@ -583,6 +584,8 @@ pub struct AppState {
     lines_asked_around: Option<(ServerId, RecordingId, u32, u64)>,
     /// The number of the last read of moderation notices with a proof of the key.
     moderation_asks: u64,
+    /// The permissions of the operating system (ADR 0708).
+    permissions: permissions::PermissionsState,
     /// The notifications of the system.
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
@@ -931,6 +934,7 @@ impl AppState {
             result_jump: None,
             lines_asked_around: None,
             moderation_asks: 0,
+            permissions: permissions::PermissionsState::new(),
             notifier: std::rc::Rc::new(kept.clone()),
             kept,
             tray: std::rc::Rc::new(kept_tray.clone()),

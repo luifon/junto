@@ -36,11 +36,12 @@ pub enum SettingsSection {
     Quiet,
     Notifications,
     Devices,
+    Permissions,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
@@ -48,6 +49,7 @@ impl SettingsSection {
         Self::Quiet,
         Self::Notifications,
         Self::Devices,
+        Self::Permissions,
         Self::About,
     ];
 
@@ -60,6 +62,7 @@ impl SettingsSection {
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
             Self::Devices => text::account::DEVICES_SECTION,
+            Self::Permissions => text::permissions::PERMISSIONS,
             Self::About => text::ABOUT,
         }
     }
@@ -73,6 +76,7 @@ impl SettingsSection {
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
             Self::Devices => Icon::Devices,
+            Self::Permissions => Icon::Lock,
             Self::About => Icon::Document,
         }
     }
@@ -87,6 +91,7 @@ impl SettingsSection {
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
             Self::Devices => "settings-section-devices",
+            Self::Permissions => "settings-section-permissions",
             Self::About => "settings-section-about",
         }
     }
@@ -215,8 +220,15 @@ impl Shell {
             self.settings_scroll().set_offset(gpui::Point::default());
         }
         // The microphone is open for its level while the Voice section is shown (ADR 0733).
-        self.state.update(cx, |state, _| {
-            state.set_input_test(section == SettingsSection::Voice)
+        // The permissions are read again when a section shows them (ADR 0708).
+        self.state.update(cx, |state, cx| {
+            state.set_input_test(section == SettingsSection::Voice);
+            if matches!(
+                section,
+                SettingsSection::Permissions | SettingsSection::Notifications
+            ) {
+                state.read_permissions(cx);
+            }
         });
         cx.notify();
     }
@@ -269,6 +281,7 @@ impl Shell {
             }
             SettingsSection::Notifications => self.render_notifications_section(&theme, cx),
             SettingsSection::Devices => self.render_devices_settings(&theme, cx),
+            SettingsSection::Permissions => self.render_permissions_section(&theme, cx),
             SettingsSection::About => self.render_about_section(&theme, window, cx),
         };
         let page = div()
@@ -423,19 +436,27 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let unavailable = self.state.read(cx).notifications_unavailable();
+        let refused = self
+            .state
+            .read(cx)
+            .permission_access(crate::permissions::Permission::Notifications)
+            == crate::permissions::Access::Refused;
         vec![
             group_label(text::NOTIFICATIONS, theme).into_any_element(),
             div()
                 .typeface(theme.types.control, theme)
                 .ink(theme.colors.ink)
                 .debug_selector(|| "notifications-state".to_owned())
-                .child(if unavailable.is_some() {
+                .child(if unavailable.is_some() || refused {
                     text::NOTIFICATIONS_OFF_BY_SYSTEM
                 } else {
                     text::NOTIFICATIONS_SHOWN
                 })
                 .into_any_element(),
             help(text::NOTIFICATIONS_HELP, theme).into_any_element(),
+            div()
+                .children(self.render_notification_permission(theme, cx))
+                .into_any_element(),
             crate::ui::notice_slot("notifications-unavailable-slot")
                 .at_end()
                 .children(unavailable.map(|reason| {

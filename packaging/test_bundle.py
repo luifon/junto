@@ -40,7 +40,8 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(info["CFBundleVersion"], "0.2.3")
             self.assertEqual(info["CFBundleShortVersionString"], "0.2.3")
             self.assertEqual(info["CFBundleExecutable"], "junto")
-            for item in ["NSMicrophoneUsageDescription", "NSCameraUsageDescription", "NSScreenCaptureUsageDescription"]:
+            for item in ["NSMicrophoneUsageDescription", "NSCameraUsageDescription", "NSScreenCaptureUsageDescription",
+                         "NSDownloadsFolderUsageDescription", "NSLocalNetworkUsageDescription"]:
                 self.assertTrue(info[item])
             self.assertTrue((bundle / "Contents/Resources/Junto.icns").is_file())
             self.assertEqual((bundle / "Contents/MacOS/junto").read_bytes(), binary.read_bytes())

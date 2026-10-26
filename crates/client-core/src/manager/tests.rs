@@ -32,6 +32,9 @@ type Suspension = (Option<String>, watch::Sender<bool>);
 struct Network {
     hosts: Mutex<BTreeMap<String, Arc<FakeServer>>>,
     suspended: Mutex<BTreeMap<String, Suspension>>,
+    /// Hosts to which macOS refuses a connection because the local network is not
+    /// allowed.
+    local_refused: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Network {
@@ -78,6 +81,11 @@ impl Network {
 impl Transport for Network {
     fn send(&self, request: HttpRequest) -> TransportFuture {
         let host = request.url.host_str().unwrap_or_default().to_owned();
+        if self.local_refused.lock().unwrap().contains(&host) {
+            return Box::pin(async {
+                Err(TransportError::local_network_refused("No route to host"))
+            });
+        }
         let server = self.hosts.lock().unwrap().get(&host).cloned();
         let gate = self
             .suspended
@@ -1070,6 +1078,28 @@ async fn an_ended_session_is_renewed_once_without_an_action_of_the_user() {
     ));
     handle.dispatch(AccessAction::LogIn).await.unwrap();
     assert_eq!(logged_in(&handle), account_id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_tells_a_refused_local_network_until_it_answers_again() {
+    let network = Arc::new(Network::default());
+    network.host("lan");
+    let device = device(&network);
+    let handle = device.add("lan").await;
+    handle.dispatch(claim()).await.unwrap();
+    assert!(!handle.local_network_refused());
+
+    let host = "lan.example.test".to_owned();
+    network.local_refused.lock().unwrap().insert(host.clone());
+    let error = handle.api().own_account().await.unwrap_err();
+    assert!(matches!(error, ApiError::Unreachable(_)), "{error}");
+    assert_eq!(handle.reach(), Reach::Unreachable);
+    assert!(handle.local_network_refused());
+
+    // The person allowed the local network: the next answer clears it.
+    network.local_refused.lock().unwrap().remove(&host);
+    handle.api().own_account().await.unwrap();
+    assert!(!handle.local_network_refused());
 }
 
 #[tokio::test(start_paused = true)]

@@ -2374,6 +2374,72 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
             },
         )?;
     }
+    // The permissions of the system with the rules of each system (ADR 0708).
+    {
+        use junto_client::permissions::{Access, System};
+        use junto_media::permission::MicrophoneAccess;
+        for (name, system, microphone, camera, screen, notifications) in [
+            (
+                "settings-permissions-macos",
+                System::MacOs,
+                MicrophoneAccess::Allowed,
+                Access::Refused,
+                Access::Refused,
+                Access::NotAsked,
+            ),
+            (
+                "settings-permissions-windows",
+                System::Windows,
+                MicrophoneAccess::Refused,
+                Access::Allowed,
+                Access::Allowed,
+                Access::Refused,
+            ),
+            (
+                "settings-permissions-linux",
+                System::Linux,
+                MicrophoneAccess::Allowed,
+                Access::Restricted,
+                Access::AskedAtEachUse,
+                Access::Allowed,
+            ),
+        ] {
+            studio.draw(
+                Screen::new(name, two_servers()),
+                move |shell, window, cx| {
+                    shell.open(Open::Settings, window, cx);
+                    shell.open_settings_section(SettingsSection::Permissions, window, cx);
+                    shell.state().update(cx, |state, cx| {
+                        state.show_permissions_fixture(
+                            system,
+                            microphone,
+                            camera,
+                            screen,
+                            notifications,
+                            cx,
+                        );
+                    });
+                },
+            )?;
+        }
+        studio.draw(
+            Screen::new("settings-notifications-refused-macos", two_servers()),
+            |shell, window, cx| {
+                shell.open(Open::Settings, window, cx);
+                shell.open_settings_section(SettingsSection::Notifications, window, cx);
+                shell.state().update(cx, |state, cx| {
+                    state.show_permissions_fixture(
+                        System::MacOs,
+                        MicrophoneAccess::Allowed,
+                        Access::Allowed,
+                        Access::Allowed,
+                        Access::Refused,
+                        cx,
+                    );
+                });
+            },
+        )?;
+    }
     studio.draw(
         Screen::new(
             "main-meeting-mode-full-room-categories",
