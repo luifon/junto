@@ -298,8 +298,10 @@ fn a_recording_an_export_and_a_device_are_told_and_lead_to_their_place(cx: &mut 
             .is_some_and(|open| open.page == AccountPage::Devices)
     });
 
-    // While the window is active, nothing is told.
+    // While the window is active, nothing is told. The activation reaches the state in a
+    // task of the window.
     window.cx.update(|window, _| window.activate_window());
+    window.settle();
     window.event(
         server_id,
         Event::AccountRecovered {
