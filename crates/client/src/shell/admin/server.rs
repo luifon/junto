@@ -218,7 +218,10 @@ impl Shell {
         };
         // The refusal belongs to the row whose form asked: the form stays open with it.
         let refused = view.refused(AskKind::AttachmentLimits).filter(|_| open);
+        // Each limit has an element id of its own, so the places of their refusals keep
+        // their own heights (ADR 0730).
         div()
+            .id(selector)
             .flex()
             .flex_col()
             .flex_none()

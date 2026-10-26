@@ -707,6 +707,7 @@ impl Studio {
         // The first frame lays the layers out, the second draws what they opened, and a
         // part that takes the height of a late content draws it in the frame after its
         // measure (ADR 0730). The screen is drawn until two frames lay out the same areas.
+        junto_client::ui::take_unsettled();
         let mut areas = None;
         let mut settled = false;
         for _ in 0..SETTLE_FRAMES {
@@ -727,6 +728,13 @@ impl Studio {
             return Err(format!(
                 "{name}: the screen did not settle: its areas changed in each of \
                  {SETTLE_FRAMES} frames"
+            ));
+        }
+        let unsettled = junto_client::ui::take_unsettled();
+        if !unsettled.is_empty() {
+            return Err(format!(
+                "{name}: the height of these parts changed in each frame, which two parts \
+                 with one element id do: {unsettled:?}"
             ));
         }
         let image = self

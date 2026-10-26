@@ -39,7 +39,14 @@ struct Heights {
     content: Pixels,
     /// The size of the window at the last drawing.
     window: Option<Size<Pixels>>,
+    /// The frames in a row in which the height changed.
+    changes: u8,
 }
+
+/// The most frames in a row in which a part asks for a new frame to change its height. Two
+/// parts with one element id share their heights and would change them in turn at each
+/// frame; the part then stops asking, and a build for the tests records it.
+const MOST_CHANGES: u8 = 3;
 
 /// A part whose content arrives at a time that the person does not choose, such as a notice
 /// or the result of a request: it has the height of its content, up to `most`, and scrolls
@@ -155,6 +162,8 @@ impl RenderOnce for Held {
             Some(most) => heights.content.min(most.to_pixels(rem)),
             None => heights.content,
         };
+        #[cfg(feature = "test-support")]
+        let id = self.id.clone();
         let decided = heights.clone();
         let waiting = heights.clone();
         let mut frame = div()
@@ -187,15 +196,22 @@ impl RenderOnce for Held {
                         let size = window.viewport_size();
                         let resized = now.window.is_some_and(|before| before != size);
                         now.window = Some(size);
-                        if now.shown != Some(target)
-                            && (now.shown.is_none()
-                                || resized
-                                || !moves.covers(bounds, window.mouse_position()))
+                        if now.shown == Some(target) {
+                            now.changes = 0;
+                        } else if now.shown.is_none()
+                            || resized
+                            || !moves.covers(bounds, window.mouse_position())
                         {
                             now.shown = Some(target);
-                            // A refresh during the drawing is lost; the next frame draws the
-                            // new height.
-                            window.defer(cx, |window, _| window.refresh());
+                            now.changes = now.changes.saturating_add(1);
+                            if now.changes <= MOST_CHANGES {
+                                // A refresh during the drawing is lost; the next frame draws
+                                // the new height.
+                                window.defer(cx, |window, _| window.refresh());
+                            } else {
+                                #[cfg(feature = "test-support")]
+                                record::unsettled(&id);
+                            }
                         }
                         decided.set(now);
                         bounds
@@ -227,3 +243,27 @@ impl RenderOnce for Held {
         frame
     }
 }
+
+#[cfg(feature = "test-support")]
+mod record {
+    use std::cell::RefCell;
+
+    use gpui::ElementId;
+
+    thread_local! {
+        static UNSETTLED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn unsettled(id: &ElementId) {
+        UNSETTLED.with(|unsettled| unsettled.borrow_mut().push(format!("{id}")));
+    }
+
+    /// The element ids of the parts whose height changed in too many frames in a row since
+    /// the last call: two parts that share an id.
+    pub fn take_unsettled() -> Vec<String> {
+        UNSETTLED.with(|unsettled| std::mem::take(&mut *unsettled.borrow_mut()))
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub use record::take_unsettled;

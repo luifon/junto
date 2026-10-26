@@ -41,6 +41,8 @@ pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use form_space::{FormSpace, NewRow};
 pub use held::{Held, Moves, held};
+#[cfg(feature = "test-support")]
+pub use held::take_unsettled;
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
