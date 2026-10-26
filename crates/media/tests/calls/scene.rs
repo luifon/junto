@@ -694,7 +694,12 @@ impl Room {
     /// (ADR 0520).
     pub fn renew_path(target: &CallTarget, identity: &str) -> String {
         let named: String = url::form_urlencoded::byte_serialize(identity.as_bytes()).collect();
-        format!("{}?renews={named}", Self::join_path(target))
+        // A renewal states the shares of one person that the client shows (ADR 0510).
+        format!(
+            "{}?renews={named}&shares={}",
+            Self::join_path(target),
+            junto_client_core::protocol::call::MAX_SHARES
+        )
     }
 
     /// The path of the request for a place in a voice channel.

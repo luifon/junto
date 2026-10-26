@@ -339,10 +339,9 @@ fn a_colour_tray_picture_is_a_disc_of_its_state_with_a_white_sign() {
         ] {
             let picture = tray(state, false, TrayStyle::Colour, side).unwrap();
             let disc = hex(state.disc().unwrap());
-            // Near the lower left edge of the disc, away from the sign: the colour of the
-            // state, opaque. A corner is outside the disc.
-            let at = side * 5 / 24;
-            let edge = picture.pixel(at, side - 1 - at);
+            // Near the left edge of the disc, between the edge and the sign: the colour of
+            // the state, opaque. A corner is outside the disc.
+            let edge = picture.pixel(side * 3 / 48, side / 2);
             assert!(
                 edge[3] == 255 && near(edge, disc, 2),
                 "{state:?} {side}: {edge:?}"
