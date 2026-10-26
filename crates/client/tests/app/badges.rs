@@ -125,13 +125,20 @@ fn the_administration_counts_the_ready_exports_and_the_channels_deleted_soon(
     world
         .run(api.set_archive_period(workspace_id, ArchivePeriod { days: Some(7) }))
         .unwrap();
-    let doomed = window.channels().into_iter().find(|row| row.id != general).unwrap();
+    let doomed = window
+        .channels()
+        .into_iter()
+        .find(|row| row.id != general)
+        .unwrap();
     world.run(api.archive_channel(doomed.id)).unwrap();
     window.open_administration();
-    window.until("the navigation counts the export and the archived channel", |window| {
-        window.drawn_number("admin-nav-exports").as_deref() == Some("1")
-            && window.drawn_number("admin-nav-archive").as_deref() == Some("1")
-    });
+    window.until(
+        "the navigation counts the export and the archived channel",
+        |window| {
+            window.drawn_number("admin-nav-exports").as_deref() == Some("1")
+                && window.drawn_number("admin-nav-archive").as_deref() == Some("1")
+        },
+    );
     // The channel is restored: its count goes.
     world.run(api.restore_channel(doomed.id)).unwrap();
     window.until("the restored channel is not counted", |window| {

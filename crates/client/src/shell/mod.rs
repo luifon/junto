@@ -566,11 +566,15 @@ impl Shell {
                 }
             }),
             // Only the main window shows the account.
-            cx.subscribe_in(&state, window, |this, _, event: &OpenAccount, window, cx| {
-                if !this.detached {
-                    this.open_account(event.0, window, cx);
-                }
-            }),
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, _, event: &OpenAccount, window, cx| {
+                    if !this.detached {
+                        this.open_account(event.0, window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {
                     view.show_levels(state.read(cx).shown_levels());

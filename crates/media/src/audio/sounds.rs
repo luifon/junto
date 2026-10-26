@@ -536,14 +536,28 @@ mod tests {
     #[test]
     fn the_four_sounds_of_the_microphone_and_the_sound_differ_in_count_register_and_direction() {
         let of = |sound| tones(&render(sound, 48_000), 48_000);
-        let falls = |tones: &[Tone]| tones.windows(2).all(|pair| pair[1].pitch() < pair[0].pitch() * 0.9);
-        let rises = |tones: &[Tone]| tones.windows(2).all(|pair| pair[1].pitch() > pair[0].pitch() * 1.1);
+        let falls = |tones: &[Tone]| {
+            tones
+                .windows(2)
+                .all(|pair| pair[1].pitch() < pair[0].pitch() * 0.9)
+        };
+        let rises = |tones: &[Tone]| {
+            tones
+                .windows(2)
+                .all(|pair| pair[1].pitch() > pair[0].pitch() * 1.1)
+        };
         let (microphone_off, microphone_on) = (of(Sound::MicrophoneOff), of(Sound::MicrophoneOn));
         let (sound_off, sound_on) = (of(Sound::SoundOff), of(Sound::SoundOn));
         assert_eq!((microphone_off.len(), microphone_on.len()), (2, 2));
         assert_eq!((sound_off.len(), sound_on.len()), (3, 3));
-        assert!(falls(&microphone_off) && rises(&microphone_on), "{microphone_off:?} {microphone_on:?}");
-        assert!(falls(&sound_off) && rises(&sound_on), "{sound_off:?} {sound_on:?}");
+        assert!(
+            falls(&microphone_off) && rises(&microphone_on),
+            "{microphone_off:?} {microphone_on:?}"
+        );
+        assert!(
+            falls(&sound_off) && rises(&sound_on),
+            "{sound_off:?} {sound_on:?}"
+        );
         let lowest_of_microphone = microphone_off
             .iter()
             .chain(&microphone_on)
@@ -558,7 +572,10 @@ mod tests {
             lowest_of_microphone > highest_of_sound * 1.1,
             "the microphone at {lowest_of_microphone} Hz is not above the sound at {highest_of_sound} Hz"
         );
-        for (index, one) in [&microphone_off, &microphone_on, &sound_off, &sound_on].iter().enumerate() {
+        for (index, one) in [&microphone_off, &microphone_on, &sound_off, &sound_on]
+            .iter()
+            .enumerate()
+        {
             for other in &[&microphone_off, &microphone_on, &sound_off, &sound_on][index + 1..] {
                 assert!(!alike(one, other));
             }

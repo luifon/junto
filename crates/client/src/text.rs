@@ -985,7 +985,8 @@ pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
 /// The section of the settings with the switches of the sounds (ADR 0707).
 pub const SOUNDS: &str = "Sounds";
 pub const ALL_SOUNDS: &str = "All sounds";
-pub const ALL_SOUNDS_HELP: &str = "Turns every sound of Junto off, the ring of a call too. The switches below keep their choice.";
+pub const ALL_SOUNDS_HELP: &str =
+    "Turns every sound of Junto off, the ring of a call too. The switches below keep their choice.";
 pub const ALL_SOUNDS_ARE_OFF: &str = "All sounds are off.";
 
 /// The name and the sentence of the switch of a kind of sounds.
@@ -1954,7 +1955,10 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         ),
         "transcript_failed" => (Recording, "The transcript of the recording failed"),
         "message_pinned" => (Plain, "{actor} pinned a message"),
-        "channel_renamed" => (Plain, "{actor} renamed this channel from {previous_name} to {name}"),
+        "channel_renamed" => (
+            Plain,
+            "{actor} renamed this channel from {previous_name} to {name}",
+        ),
         "channel_created" => (Plain, "{actor} created this channel"),
         "channel_updated" => (Plain, "{actor} changed this channel"),
         "permanent_messages_turned_on" => (Plain, "{actor} turned on permanent messages"),
@@ -2305,7 +2309,10 @@ pub fn removed_alert(channel: &str) -> String {
 }
 
 pub fn recording_started_alert(by: Option<&str>, channel: &str) -> String {
-    format!("{} started recording {channel}", by.unwrap_or(UNKNOWN_PERSON))
+    format!(
+        "{} started recording {channel}",
+        by.unwrap_or(UNKNOWN_PERSON)
+    )
 }
 
 pub fn recording_done_alert(

@@ -22,7 +22,9 @@ pub fn show(count: u64, window: &gpui::Window) {
     #[cfg(target_os = "macos")]
     {
         let _ = window;
-        junto_client_core::app_badge::set_dock(junto_client_core::app_badge::label(count).as_deref());
+        junto_client_core::app_badge::set_dock(
+            junto_client_core::app_badge::label(count).as_deref(),
+        );
     }
     #[cfg(windows)]
     if let Some(handle) = crate::taskbar::handle(window)

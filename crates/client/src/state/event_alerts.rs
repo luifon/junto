@@ -22,8 +22,8 @@ use uuid::Uuid;
 use super::account::AccountPage;
 use super::admin::AdminPage;
 use super::notices::{
-    ALERT_TITLE_CHARACTERS, Alert, AlertTarget, Alerts, EXCERPT_CHARACTERS,
-    MOST_ALERTS, Mute, Seen, account_names, channel_level, one_line, quiet_at,
+    ALERT_TITLE_CHARACTERS, Alert, AlertTarget, Alerts, EXCERPT_CHARACTERS, Mute, Seen,
+    account_names, channel_level, one_line, quiet_at,
 };
 use super::view::Known;
 use crate::text;
@@ -234,9 +234,9 @@ pub fn fact_of(event: &Event, scene: &EventScene<'_>) -> Option<Fact> {
         }
         Event::DeviceAdded {
             device_id, name, ..
-        } => (Some(*device_id) != scene.own_device).then(|| Fact::DeviceAdded {
-            name: name.clone(),
-        }),
+        } => {
+            (Some(*device_id) != scene.own_device).then(|| Fact::DeviceAdded { name: name.clone() })
+        }
         Event::AccountRecovered { .. } => Some(Fact::Recovered),
         Event::WorkspaceMemberAdded {
             workspace_id,
@@ -295,7 +295,10 @@ fn key_of(fact: &Fact, event: &Event) -> Option<String> {
 
 /// The title and the target of a fact.
 fn told(fact: &Fact, server_id: ServerId) -> (String, String, AlertTarget) {
-    let channel = |name: &Option<String>| name.clone().unwrap_or_else(|| text::A_VOICE_CHANNEL.to_owned());
+    let channel = |name: &Option<String>| {
+        name.clone()
+            .unwrap_or_else(|| text::A_VOICE_CHANNEL.to_owned())
+    };
     let place = |workspace_id, channel_id| AlertTarget::Channel {
         server_id,
         workspace_id,
@@ -404,9 +407,9 @@ pub fn event_tag(server_id: ServerId, id: Uuid) -> String {
 
 /// The system notification of a fact, under the rules of ADR 0742: none in the quiet time
 /// of the account or while a window of the application is active, at most
-/// [`MOST_ALERTS`] of one server within [`super::notices::ALERT_SPAN`], and a fact with a
-/// key at most once. The application remembers a bounded number of them; one that it
-/// forgets is taken away.
+/// [`super::notices::MOST_ALERTS`] of one server within [`super::notices::ALERT_SPAN`], and
+/// a fact with a key at most once. The application remembers a bounded number of them; one
+/// that it forgets is taken away.
 pub fn event_alert(
     seen: &mut Seen,
     scene: &TellScene<'_>,
@@ -471,6 +474,3 @@ fn notifies_all(
     channel_level(server_id, channel_id, model, known) == NotificationLevel::All
         && !Mute::of_channel(channel_id, model, known).is_on()
 }
-
-#[cfg(test)]
-mod tests;

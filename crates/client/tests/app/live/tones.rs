@@ -53,18 +53,43 @@ fn the_person_in_the_call_hears_a_tone_for_each_event_and_none_for_the_people_pr
             .is_some_and(|call| call.phase == Phase::Connected)
             && occupants(window).len() == 2
     });
-    until_sound(&mut window, "the sound of the own entry", 1, Sound::CallJoined);
+    until_sound(
+        &mut window,
+        "the sound of the own entry",
+        1,
+        Sound::CallJoined,
+    );
     world.run(async { tokio::time::sleep(Duration::from_millis(500)).await });
     window.settle();
     assert_eq!(window.tones.opened_outputs().len(), 1);
 
     window.click("microphone");
-    until_sound(&mut window, "the sound of a closed microphone", 2, Sound::MicrophoneOff);
+    until_sound(
+        &mut window,
+        "the sound of a closed microphone",
+        2,
+        Sound::MicrophoneOff,
+    );
     world.run(caller.calls.leave());
-    until_sound(&mut window, "the sound of a person who leaves", 3, Sound::PersonLeft);
+    until_sound(
+        &mut window,
+        "the sound of a person who leaves",
+        3,
+        Sound::PersonLeft,
+    );
     enter(&world, &caller, target);
-    until_sound(&mut window, "the sound of a person who joins", 4, Sound::PersonJoined);
+    until_sound(
+        &mut window,
+        "the sound of a person who joins",
+        4,
+        Sound::PersonJoined,
+    );
     window.click("leave-call");
-    until_sound(&mut window, "the sound of the end of the call", 5, Sound::CallLeft);
+    until_sound(
+        &mut window,
+        "the sound of the end of the call",
+        5,
+        Sound::CallLeft,
+    );
     world.run(caller.calls.leave());
 }

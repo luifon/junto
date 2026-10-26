@@ -186,7 +186,8 @@ pub fn event_revisions_document(committed: &str) -> Result<String, String> {
             });
         }
     }
-    let mut document = serde_json::to_string_pretty(&revisions).map_err(|error| error.to_string())?;
+    let mut document =
+        serde_json::to_string_pretty(&revisions).map_err(|error| error.to_string())?;
     document.push('\n');
     Ok(document)
 }

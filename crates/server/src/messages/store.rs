@@ -334,7 +334,13 @@ pub async fn rename_line(
     previous: &str,
     name: &str,
 ) -> ApiResult<()> {
-    type Latest = (MessageId, i64, Option<Json<SystemMessage>>, Uuid, OffsetDateTime);
+    type Latest = (
+        MessageId,
+        i64,
+        Option<Json<SystemMessage>>,
+        Uuid,
+        OffsetDateTime,
+    );
     let latest: Option<Latest> = sqlx::query_as(
         "select m.id, m.position, m.system, c.workspace_id, m.created_at from messages m
          join channels c on c.id = m.place_id
@@ -345,7 +351,7 @@ pub async fn rename_line(
     .fetch_optional(&mut *connection)
     .await?;
     let latest = latest.and_then(|(id, position, line, workspace, created_at)| {
-        Some((id, position, line?, workspace)).filter(|_| created_at > now - JOINED_LINES_WITHIN)
+        (created_at > now - JOINED_LINES_WITHIN).then_some((id, position, line?, workspace))
     });
     if let Some((id, position, Json(mut line), workspace)) = latest
         && line.action == "channel_renamed"

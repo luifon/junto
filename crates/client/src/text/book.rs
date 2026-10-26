@@ -57,7 +57,8 @@ pub fn server_release_available(version: Version) -> String {
 }
 
 /// The server is newer than this build: it sends changes that this build does not show.
-pub const NEWER_EVENTS: &str = "This server is newer than this Junto: update Junto to see every change.";
+pub const NEWER_EVENTS: &str =
+    "This server is newer than this Junto: update Junto to see every change.";
 
 // The section "Version" of the settings.
 pub const VERSION: &str = "Version";

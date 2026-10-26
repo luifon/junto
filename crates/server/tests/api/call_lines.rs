@@ -61,7 +61,11 @@ async fn a_share_a_lock_an_answer_to_a_request_and_the_end_of_a_call_have_their_
     server.enter_call(ann, voice).await;
     server.enter_call(ben, voice).await;
     server
-        .put(ben, "/api/v1/call/screen-share", &json!({ "audio": "none" }))
+        .put(
+            ben,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
         .await
         .empty(StatusCode::NO_CONTENT);
     server
@@ -69,7 +73,10 @@ async fn a_share_a_lock_an_answer_to_a_request_and_the_end_of_a_call_have_their_
         .await
         .empty(StatusCode::NO_CONTENT);
     let lock = format!("/api/v1/channels/{voice}/call/lock");
-    server.put_empty(ann, &lock).await.empty(StatusCode::NO_CONTENT);
+    server
+        .put_empty(ann, &lock)
+        .await
+        .empty(StatusCode::NO_CONTENT);
     let ask = format!("/api/v1/channels/{voice}/call/entry-requests");
     for accept in [false, true] {
         let request: junto_protocol::call::EntryRequest = server
@@ -85,7 +92,10 @@ async fn a_share_a_lock_an_answer_to_a_request_and_the_end_of_a_call_have_their_
             .await
             .empty(StatusCode::NO_CONTENT);
     }
-    server.delete(ann, &lock).await.empty(StatusCode::NO_CONTENT);
+    server
+        .delete(ann, &lock)
+        .await
+        .empty(StatusCode::NO_CONTENT);
     server.clock.advance(Duration::seconds(125));
     server.leave_call(ben).await;
     server.leave_call(ann).await;
@@ -113,7 +123,10 @@ async fn a_share_a_lock_an_answer_to_a_request_and_the_end_of_a_call_have_their_
     );
     // The end of the call states its length, from the first person in the room.
     let page: MessagePage = server
-        .get(ann, &format!("/api/v1/channels/{voice}/messages?after={start}"))
+        .get(
+            ann,
+            &format!("/api/v1/channels/{voice}/messages?after={start}"),
+        )
         .await
         .ok(StatusCode::OK);
     let ended = page
@@ -150,11 +163,17 @@ async fn the_end_of_meeting_mode_states_who_ended_it_or_why() {
             TrackSource::ScreenShare
         ));
         server.check().await;
-        server.put_empty(ann, &meeting).await.empty(StatusCode::NO_CONTENT);
+        server
+            .put_empty(ann, &meeting)
+            .await
+            .empty(StatusCode::NO_CONTENT);
     };
     // The presenter turns it off; then the share of the presenter ends it.
     start_meeting().await;
-    server.delete(ann, &meeting).await.empty(StatusCode::NO_CONTENT);
+    server
+        .delete(ann, &meeting)
+        .await
+        .empty(StatusCode::NO_CONTENT);
     server
         .delete(ann, "/api/v1/call/screen-share")
         .await

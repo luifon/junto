@@ -630,7 +630,9 @@ mod tests {
         let written = store
             .update(|settings| settings.sounds.set(SoundKind::People, false))
             .unwrap();
-        assert!(!written.sounds.plays(SoundKind::People) && written.sounds.plays(SoundKind::Messages));
+        assert!(
+            !written.sounds.plays(SoundKind::People) && written.sounds.plays(SoundKind::Messages)
+        );
         assert_eq!(store.load().unwrap(), written);
         let text = fs::read_to_string(&file).unwrap();
         assert!(text.contains("\"people\""), "{text}");
@@ -656,7 +658,10 @@ mod tests {
             .into_iter()
             .filter(|kind| read.sounds.plays(*kind))
             .collect();
-        assert_eq!(on, [SoundKind::Messages, SoundKind::Mentions, SoundKind::Ring]);
+        assert_eq!(
+            on,
+            [SoundKind::Messages, SoundKind::Mentions, SoundKind::Ring]
+        );
 
         fs::write(&file, fourth(true)).unwrap();
         assert_eq!(store.load().unwrap().sounds, Sounds::default());
@@ -668,8 +673,14 @@ mod tests {
                 settings.sounds.all = false;
             })
             .unwrap();
-        assert!(SoundKind::ALL.into_iter().all(|kind| !written.sounds.plays(kind)));
-        assert!(!written.sounds.kind_on(SoundKind::Hands) && written.sounds.kind_on(SoundKind::Ring));
+        assert!(
+            SoundKind::ALL
+                .into_iter()
+                .all(|kind| !written.sounds.plays(kind))
+        );
+        assert!(
+            !written.sounds.kind_on(SoundKind::Hands) && written.sounds.kind_on(SoundKind::Ring)
+        );
         assert_eq!(store.load().unwrap(), written);
         let text = fs::read_to_string(&file).unwrap();
         assert!(!text.contains("call_sounds"), "{text}");

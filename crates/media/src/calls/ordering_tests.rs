@@ -221,6 +221,7 @@ fn fixture() -> Fixture {
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_report: Reporter::holding(timing.share_spacing, None),
+        watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
         speaking: false,

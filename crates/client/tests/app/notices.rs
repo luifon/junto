@@ -1211,7 +1211,9 @@ fn the_notices_are_ordered_as_messages_with_the_newest_at_the_bottom(cx: &mut Te
         .iter()
         .map(|row| row.text.clone())
         .collect();
-    let expected: Vec<String> = (0..16).map(|number| format!("number {number}, @Luca")).collect();
+    let expected: Vec<String> = (0..16)
+        .map(|number| format!("number {number}, @Luca"))
+        .collect();
     assert_eq!(texts, expected);
 
     // The list opens at its end: the newest notice is drawn whole at the bottom, and each
@@ -1236,12 +1238,9 @@ fn the_notices_are_ordered_as_messages_with_the_newest_at_the_bottom(cx: &mut Te
     // A new notice while the list stands at its end is drawn at the bottom, in view.
     let next = admin.mention(&world, general, "number 16, ", own);
     window.until("the new notice is drawn at the bottom", |window| {
-        window
-            .cx
-            .debug_bounds(row(&next))
-            .is_some_and(|shown| {
-                shown.bottom() <= list.bottom() && shown.bottom() >= list.bottom() - gpui::px(12.0)
-            })
+        window.cx.debug_bounds(row(&next)).is_some_and(|shown| {
+            shown.bottom() <= list.bottom() && shown.bottom() >= list.bottom() - gpui::px(12.0)
+        })
     });
 
     // The person scrolls up: a new notice is added below and the rows in view stay.
@@ -1254,9 +1253,12 @@ fn the_notices_are_ordered_as_messages_with_the_newest_at_the_bottom(cx: &mut Te
     let kept = notice_bounds(&mut window, row(&sent[12]));
     let last = admin.mention(&world, general, "number 17, ", own);
     window.until("the newest notice is listed", |window| {
-        window
-            .notices()
-            .is_some_and(|panel| panel.rows.last().is_some_and(|newest| newest.id == last.id.as_uuid()))
+        window.notices().is_some_and(|panel| {
+            panel
+                .rows
+                .last()
+                .is_some_and(|newest| newest.id == last.id.as_uuid())
+        })
     });
     assert_eq!(notice_bounds(&mut window, row(&sent[12])), kept);
     assert!(

@@ -1817,7 +1817,10 @@ fn a_change_with_new_notices_has_one_sound_under_the_rules_of_a_system_notificat
     // The active window shows the place of the message: no sound.
     let shown = scene.message(scene.in_channel(scene.general), 12, "seen");
     scene.notice(NotificationKind::Mention, shown, 7);
-    let told = alerts(&mut seen, &scene.alert_scene(true, scene.showing(scene.general)));
+    let told = alerts(
+        &mut seen,
+        &scene.alert_scene(true, scene.showing(scene.general)),
+    );
     assert!(told.sounds.is_empty());
     // A muted place, and a quiet time: no sound.
     scene.settings(
@@ -2020,7 +2023,10 @@ mod events {
             })
         );
         // Another person is moved, or this device is in no call there.
-        assert_eq!(scene.fact(&moved(scene.ana), Some(scene.daily_place())), None);
+        assert_eq!(
+            scene.fact(&moved(scene.ana), Some(scene.daily_place())),
+            None
+        );
         assert_eq!(scene.fact(&moved(scene.own), None), None);
 
         let left = |reason| Event::OwnCallChanged {
@@ -2034,8 +2040,14 @@ mod events {
             &removed.unwrap(),
             None,
         );
-        assert_eq!(told.show[0].0.title, "You were removed from the call in Daily");
-        assert_eq!(scene.fact(&left(LeaveReason::Left), Some(scene.daily_place())), None);
+        assert_eq!(
+            told.show[0].0.title,
+            "You were removed from the call in Daily"
+        );
+        assert_eq!(
+            scene.fact(&left(LeaveReason::Left), Some(scene.daily_place())),
+            None
+        );
         assert_eq!(scene.fact(&left(LeaveReason::Disconnected), None), None);
     }
 
@@ -2052,7 +2064,10 @@ mod events {
                 channel: Some("Daily".to_owned()),
             })
         );
-        assert_eq!(scene.fact(&started(scene.own), Some(scene.daily_place())), None);
+        assert_eq!(
+            scene.fact(&started(scene.own), Some(scene.daily_place())),
+            None
+        );
         assert_eq!(scene.fact(&started(scene.ana), None), None);
 
         // The own recording is ready: told once, whatever later changes of it arrive.
@@ -2214,12 +2229,20 @@ mod events {
             quiet: true,
             ..tell(scene.server_id)
         };
-        assert!(event_alert(&mut Seen::default(), &quiet, &fact, None).show.is_empty());
+        assert!(
+            event_alert(&mut Seen::default(), &quiet, &fact, None)
+                .show
+                .is_empty()
+        );
         let active = TellScene {
             active: true,
             ..tell(scene.server_id)
         };
-        assert!(event_alert(&mut Seen::default(), &active, &fact, None).show.is_empty());
+        assert!(
+            event_alert(&mut Seen::default(), &active, &fact, None)
+                .show
+                .is_empty()
+        );
         // Three in ten seconds at most; a press leads to the target while it is shown.
         let mut seen = Seen::default();
         for _ in 0..3 {

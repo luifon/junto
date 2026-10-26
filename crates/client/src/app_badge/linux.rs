@@ -100,7 +100,10 @@ async fn worker(
 
 async fn send(connection: &zbus::Connection, count: u64) -> zbus::Result<()> {
     let properties: HashMap<&str, Value<'_>> = HashMap::from([
-        ("count", Value::from(i64::try_from(count).unwrap_or(i64::MAX))),
+        (
+            "count",
+            Value::from(i64::try_from(count).unwrap_or(i64::MAX)),
+        ),
         ("count-visible", Value::from(count > 0)),
     ]);
     connection

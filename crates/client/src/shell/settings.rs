@@ -115,6 +115,9 @@ pub fn sound_kind_selector(kind: junto_client_core::voice::SoundKind) -> &'stati
     }
 }
 
+/// What a press on a switch of the sounds does.
+type SwitchPress = Box<dyn Fn(&mut Shell, &mut Context<Shell>)>;
+
 fn row_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .flex_none()
@@ -451,7 +454,7 @@ impl Shell {
                       sentence: &'static str,
                       on: bool,
                       held: Option<&'static str>,
-                      press: Box<dyn Fn(&mut Shell, &mut Context<Shell>)>,
+                      press: SwitchPress,
                       cx: &mut Context<Shell>| {
             div()
                 .debug_selector(move || format!("{selector}-row"))
@@ -494,7 +497,8 @@ impl Shell {
             all,
             None,
             Box::new(move |this, cx| {
-                this.state.update(cx, |state, cx| state.set_all_sounds(!all, cx));
+                this.state
+                    .update(cx, |state, cx| state.set_all_sounds(!all, cx));
             }),
             cx,
         ));

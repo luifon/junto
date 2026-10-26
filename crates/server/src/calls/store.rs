@@ -1537,7 +1537,14 @@ pub async fn end_if_empty(
         return Ok(false);
     };
     if ending.meeting.is_some() {
-        end_meeting(&mut *connection, now, &ending, MeetingEnd::PresenterLeft, None).await?;
+        end_meeting(
+            &mut *connection,
+            now,
+            &ending,
+            MeetingEnd::PresenterLeft,
+            None,
+        )
+        .await?;
     }
     let all = "($2::uuid is null and $3::timestamptz is null)";
     let cancelled = InvitationOutcome::Cancelled;
@@ -1573,7 +1580,15 @@ pub async fn end_if_empty(
     if let Some(started_at) = ending.started_at {
         // The length runs from the first person in the room to the end of the call.
         let seconds = u64::try_from((now - started_at).whole_seconds()).unwrap_or_default();
-        note_with(&mut *connection, now, &ending, Note::CallEnded, None, Some(seconds)).await?;
+        note_with(
+            &mut *connection,
+            now,
+            &ending,
+            Note::CallEnded,
+            None,
+            Some(seconds),
+        )
+        .await?;
         let ended = Event::CallEnded {
             call_id,
             place: ending.place,

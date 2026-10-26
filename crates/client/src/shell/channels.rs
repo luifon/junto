@@ -792,9 +792,7 @@ pub(crate) fn name_seed(name: &str) -> u128 {
 /// for the person alone, as Discord and Slack count them.
 pub(crate) fn direct_sign(unread: crate::state::view::Unread) -> Option<crate::ui::UnreadSign> {
     unread.any().then(|| crate::ui::UnreadSign {
-        mentions: Some(
-            text::unread_count(unread.messages.max(unread.mentions).max(1)).into(),
-        ),
+        mentions: Some(text::unread_count(unread.messages.max(unread.mentions).max(1)).into()),
         label: text::unread_tooltip(unread.messages, unread.mentions).into(),
     })
 }

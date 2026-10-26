@@ -783,7 +783,11 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the window states the viewer of its share", |window| {
         window.shows("share-viewers")
             && stage(window).is_some_and(|stage| {
-                stage.shares[0].viewers.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+                stage.shares[0]
+                    .viewers
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>()
                     == [admin.handle.account().unwrap()]
             })
     });

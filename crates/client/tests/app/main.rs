@@ -53,7 +53,6 @@ mod live;
 mod logo;
 mod logout;
 mod messages;
-mod system_lines;
 mod notice_settings;
 mod notices;
 mod panics;
@@ -61,6 +60,7 @@ mod people;
 mod permissions;
 mod recordings;
 mod recovery;
+mod system_lines;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.
 #[allow(dead_code)]

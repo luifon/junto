@@ -3268,10 +3268,12 @@ impl Session {
         // The sharer hears and sees who watches a share: the share of another person that
         // the person watches is reported (ADR 0502).
         let watching = match state.watched {
-            Some(ShareId::Of(account_id)) => Some(junto_client_core::protocol::call::WatchedShare {
-                account_id,
-                slot: 0,
-            }),
+            Some(ShareId::Of(account_id)) => {
+                Some(junto_client_core::protocol::call::WatchedShare {
+                    account_id,
+                    slot: 0,
+                })
+            }
             Some(ShareId::Own) | None => None,
         };
         match self.watch_report.step(&watching, false, now) {

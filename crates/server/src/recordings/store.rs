@@ -1404,8 +1404,15 @@ pub async fn processed(
     if state != RecordingState::Failed {
         // The card of the recording counts as unread for the person who started it.
         let starter = Some(recording.started_by);
-        note_notifying(&mut *connection, now, recording, "recording_ready", None, starter)
-            .await?;
+        note_notifying(
+            &mut *connection,
+            now,
+            recording,
+            "recording_ready",
+            None,
+            starter,
+        )
+        .await?;
     }
     // The directory of a lost job is deleted when the server has what it held: the audio
     // file of the segment. The directory of a composite holds nothing that the server uses.

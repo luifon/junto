@@ -91,7 +91,9 @@ pub(crate) fn heard(calls: &CallsView, listed: Option<Listed<'_>>, before: &Hear
                 listed
                     .participants
                     .iter()
-                    .filter(|participant| participant.hand_raised && participant.account_id != listed.own)
+                    .filter(|participant| {
+                        participant.hand_raised && participant.account_id != listed.own
+                    })
                     .map(|participant| participant.account_id)
                     .collect()
             }),
@@ -450,7 +452,10 @@ mod tests {
         let other_shares = scene.in_call(&[scene.own, other], &[other]);
         let both_share = scene.in_call(&[scene.own, other], &[other, scene.own]);
         assert_eq!(sounds(&none, &other_shares), vec![Sound::ShareStarted]);
-        assert_eq!(sounds(&other_shares, &both_share), vec![Sound::ShareStarted]);
+        assert_eq!(
+            sounds(&other_shares, &both_share),
+            vec![Sound::ShareStarted]
+        );
         assert!(sounds(&both_share, &both_share).is_empty());
         assert_eq!(sounds(&other_shares, &none), vec![Sound::ShareEnded]);
         // A person who leaves while sharing is heard leaving.
@@ -691,7 +696,10 @@ mod tests {
         assert_eq!(sounds(&after, &before), vec![Sound::ViewerLeft]);
         // A viewer who leaves the call is heard leaving.
         let alone = [participant(scene.own, true)];
-        assert_eq!(sounds(&after, &listed(&alone, &after)), vec![Sound::PersonLeft]);
+        assert_eq!(
+            sounds(&after, &listed(&alone, &after)),
+            vec![Sound::PersonLeft]
+        );
     }
 
     #[test]

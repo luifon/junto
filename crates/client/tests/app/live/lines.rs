@@ -217,12 +217,16 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
             // The length of the call is measured: the test reads that it is stated.
             let now: Vec<(String, SystemKind)> = system_lines(window)
                 .into_iter()
-                .map(|(text, kind)| match text.strip_prefix("Call ended after ") {
-                    Some(length) if length.ends_with("seconds") || length.ends_with("second") => {
-                        ("Call ended after …".to_owned(), kind)
-                    }
-                    _ => (text, kind),
-                })
+                .map(
+                    |(text, kind)| match text.strip_prefix("Call ended after ") {
+                        Some(length)
+                            if length.ends_with("seconds") || length.ends_with("second") =>
+                        {
+                            ("Call ended after …".to_owned(), kind)
+                        }
+                        _ => (text, kind),
+                    },
+                )
                 .collect();
             if now != seen {
                 eprintln!("the lines of the chat: {now:?}");

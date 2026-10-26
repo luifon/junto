@@ -541,8 +541,13 @@ impl Client {
 
     /// Logs the first message or event of each type that this build does not read.
     fn unread_type(&mut self, kind: &'static str, name: &str) {
-        if self.unread_types.len() < MOST_UNREAD_TYPES && self.unread_types.insert(name.to_owned()) {
-            tracing::info!(kind, name, "the server sent a type that this client does not read");
+        if self.unread_types.len() < MOST_UNREAD_TYPES && self.unread_types.insert(name.to_owned())
+        {
+            tracing::info!(
+                kind,
+                name,
+                "the server sent a type that this client does not read"
+            );
         }
     }
 

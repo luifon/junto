@@ -7,7 +7,7 @@ use std::sync::Arc;
 use gpui::TestAppContext;
 use junto_client::state::account::AccountPage;
 use junto_client::state::admin::{AdminOpen, AdminPage};
-use junto_client_core::api::ApproveJoinRequest;
+use junto_client::state::view::ServerStatus;
 use junto_client_core::live::Notice;
 use junto_client_core::protocol::account::{DeviceOrigin, RecoveryNotice};
 use junto_client_core::protocol::events::Event;
@@ -15,11 +15,11 @@ use junto_client_core::protocol::export::{Export, ExportState};
 use junto_client_core::protocol::ids::{
     CallId, DeviceId, ExportId, RecordingId, RecoveryId, ServerId,
 };
+use junto_client_core::protocol::invite::ApproveJoinRequest;
 use junto_client_core::protocol::keys::PublicKey;
 use junto_client_core::protocol::message::MessagePlace;
 use junto_client_core::protocol::recording::{Recording, RecordingState};
 use junto_client_core::protocol::transcript::TranscriptState;
-use junto_client::state::view::ServerStatus;
 
 use crate::calls::voice_channel;
 use crate::harness::{Window, World, member, named};
@@ -32,8 +32,9 @@ impl Window {
             at: time::OffsetDateTime::now_utc(),
             event: Arc::new(event),
         };
-        self.state
-            .update(&mut self.cx, |state, cx| state.notice_fixture(server_id, &notice, cx));
+        self.state.update(&mut self.cx, |state, cx| {
+            state.notice_fixture(server_id, &notice, cx)
+        });
         self.settle();
     }
 
@@ -134,7 +135,10 @@ fn an_addition_to_a_workspace_is_told_and_leads_to_the_workspace(cx: &mut TestAp
     });
     window.press_alert("You were added to Lab");
     window.until("the workspace is shown", |window| {
-        window.view().workspace().is_some_and(|workspace| workspace.id == lab.id)
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.id == lab.id)
     });
 }
 
@@ -190,7 +194,11 @@ fn a_recording_an_export_and_a_device_are_told_and_lead_to_their_place(cx: &mut 
     }
     let ready = "The recording of Daily is ready";
     assert_eq!(
-        window.shown_titles().iter().filter(|title| *title == ready).count(),
+        window
+            .shown_titles()
+            .iter()
+            .filter(|title| *title == ready)
+            .count(),
         1
     );
     window.press_alert(ready);
@@ -232,10 +240,14 @@ fn a_recording_an_export_and_a_device_are_told_and_lead_to_their_place(cx: &mut 
     );
     let general_name = window.channel_names()[0].clone();
     let export = format!("Your export of #{general_name} is ready");
-    window.until("the export is told", |window| window.shown_titles().contains(&export));
+    window.until("the export is told", |window| {
+        window.shown_titles().contains(&export)
+    });
     window.press_alert(&export);
     window.until("the page of the exports opens", |window| {
-        window.state.read_with(&window.cx, |state, _| state.admin_open())
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.admin_open())
             == Some(AdminOpen::Server {
                 server_id,
                 page: AdminPage::Exports,
@@ -270,7 +282,10 @@ fn a_recording_an_export_and_a_device_are_told_and_lead_to_their_place(cx: &mut 
         },
     );
     let titles = window.shown_titles();
-    assert!(titles.contains(&"A device was added to your account".to_owned()), "{titles:?}");
+    assert!(
+        titles.contains(&"A device was added to your account".to_owned()),
+        "{titles:?}"
+    );
     assert!(
         titles.contains(&"The owner gave a new device access to your account".to_owned()),
         "{titles:?}"

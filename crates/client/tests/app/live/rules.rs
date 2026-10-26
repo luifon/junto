@@ -1675,17 +1675,22 @@ fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
                 .is_some_and(|settings| settings.level == Some(NotificationLevel::All))
         })
     });
-    let told = |window: &mut Window, title: &str| window.shown_titles().iter().any(|shown| shown == title);
+    let told =
+        |window: &mut Window, title: &str| window.shown_titles().iter().any(|shown| shown == title);
 
     // Ada starts a call in the room.
     enter(&scene.world, &scene.caller, scene.target);
-    scene.window.until("the start of the call is told", |window| {
-        told(window, &format!("A call started in {ROOM}"))
-    });
+    scene
+        .window
+        .until("the start of the call is told", |window| {
+            told(window, &format!("A call started in {ROOM}"))
+        });
 
     // The room is locked; the people inside deny the request of Luca, then let Luca in.
     scene.world.run(api.lock_call(voice)).unwrap();
-    scene.window.until("the lock is shown", |window| voice_of(window).locked);
+    scene
+        .window
+        .until("the lock is shown", |window| voice_of(window).locked);
     scene.window.click_channel(ROOM);
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();

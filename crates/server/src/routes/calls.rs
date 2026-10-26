@@ -1040,16 +1040,14 @@ pub async fn answer_entry_request(
             .bind(admits_until)
             .execute(&mut *connection)
             .await?;
-            store::entry_line(connection, now, &call, true, access.account_id, account_id)
-                .await?;
+            store::entry_line(connection, now, &call, true, access.account_id, account_id).await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Accepted, by).await
         } else {
             sqlx::query("delete from call_entry_requests where id = $1")
                 .bind(request_id)
                 .execute(&mut *connection)
                 .await?;
-            store::entry_line(connection, now, &call, false, access.account_id, account_id)
-                .await?;
+            store::entry_line(connection, now, &call, false, access.account_id, account_id).await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Denied, by).await
         }
     })?;
@@ -1980,7 +1978,14 @@ pub async fn disconnect_participant(
         app.calls.mark(call.room.as_str());
         store::remove_member(connection, now, &call, &member, disconnected).await?;
         // A later entry of the person into this call is a join (ADR 0408).
-        store::note(connection, now, &call, store::Note::PersonOut, Some(account_id)).await?;
+        store::note(
+            connection,
+            now,
+            &call,
+            store::Note::PersonOut,
+            Some(account_id),
+        )
+        .await?;
         let removed = AuditEvent::CallMemberDisconnected { account_id };
         let actor = Some(access.account_id);
         audit::record(connection, now, actor, voice.about(), &removed).await?;

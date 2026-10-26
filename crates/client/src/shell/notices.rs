@@ -31,9 +31,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice,
-    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
-    menu_separator, scroll_bar, unread_dot,
+    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice, Segmented,
+    SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label, menu_separator,
+    scroll_bar, unread_dot,
 };
 
 /// The icon of the place of a message.
@@ -241,7 +241,7 @@ pub(crate) fn side_panel(
 pub(crate) enum NoticeItem {
     /// The control that reads the notices older than the listed ones.
     Older,
-    Notice(NoticeRow),
+    Notice(Box<NoticeRow>),
 }
 
 /// The list of the notices in a side panel (ADR 0742). It orders its entries as a message
@@ -283,7 +283,12 @@ impl NoticeList {
             .more
             .then_some(NoticeItem::Older)
             .into_iter()
-            .chain(panel.rows.iter().cloned().map(NoticeItem::Notice))
+            .chain(
+                panel
+                    .rows
+                    .iter()
+                    .map(|row| NoticeItem::Notice(Box::new(row.clone()))),
+            )
             .collect();
         let opened = !self.was_drawn || self.server_id != Some(server_id);
         self.drawn = true;
@@ -521,19 +526,20 @@ impl Shell {
             let items = Rc::clone(&self.notice_list.items);
             // The list lays out each entry as a root: the block gives it the width of the
             // list, so that its text wraps.
-            let render = cx.processor(
-                move |this: &mut Self, index: usize, _window, cx| match items.get(index) {
-                    Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
-                    Some(NoticeItem::Notice(row)) => {
-                        let below_a_notice = index
-                            .checked_sub(1)
-                            .and_then(|above| items.get(above))
-                            .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
-                        this.render_notice_row(server_id, index, below_a_notice, row, cx)
+            let render =
+                cx.processor(move |this: &mut Self, index: usize, _window, cx| {
+                    match items.get(index) {
+                        Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
+                        Some(NoticeItem::Notice(row)) => {
+                            let below_a_notice = index
+                                .checked_sub(1)
+                                .and_then(|above| items.get(above))
+                                .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
+                            this.render_notice_row(server_id, index, below_a_notice, row, cx)
+                        }
+                        None => div().into_any_element(),
                     }
-                    None => div().into_any_element(),
-                },
-            );
+                });
             div()
                 .relative()
                 .flex()

@@ -50,9 +50,9 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState};
 use junto_client_core::live::Notice;
 use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::call::{EntryOutcome, InvitationOutcome, UpdateCallSettings};
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecordingId,
@@ -1262,7 +1262,9 @@ impl AppState {
                 model
                     .entry_requests
                     .iter()
-                    .filter(|request| request.place == place && request.account_id != model.account.id)
+                    .filter(|request| {
+                        request.place == place && request.account_id != model.account.id
+                    })
                     .map(|request| request.id)
                     .collect()
             })
@@ -1277,7 +1279,9 @@ impl AppState {
             });
             call_sounds::Listed {
                 own,
-                participants: call.map(|call| call.participants.as_slice()).unwrap_or_default(),
+                participants: call
+                    .map(|call| call.participants.as_slice())
+                    .unwrap_or_default(),
                 lowers_hands: moderates
                     || call
                         .and_then(|call| call.meeting.as_ref())

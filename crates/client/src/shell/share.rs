@@ -1554,7 +1554,10 @@ impl Shell {
                     let names: Vec<String> = share
                         .viewers
                         .iter()
-                        .map(|(_, name)| name.clone().unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()))
+                        .map(|(_, name)| {
+                            name.clone()
+                                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                        })
                         .collect();
                     let named: SharedString = text::share_viewer_names(&names).into();
                     header.child(

@@ -73,8 +73,12 @@ impl Peer {
     }
 
     async fn hello_as(&self, epoch: StreamEpoch, server_version: &str) {
-        self.hello_of(epoch, server_version, junto_protocol::events::EVENT_REVISION)
-            .await;
+        self.hello_of(
+            epoch,
+            server_version,
+            junto_protocol::events::EVENT_REVISION,
+        )
+        .await;
     }
 
     async fn hello_of(&self, epoch: StreamEpoch, server_version: &str, event_revision: u32) {
@@ -803,7 +807,8 @@ async fn the_view_states_the_revision_of_the_events_of_the_server() {
     assert_eq!(rig.live.view().server_events, Some(EVENT_REVISION));
     peer.close(4003).await;
     let mut peer = rig.peer().await;
-    peer.hello_of(rig.epoch(), "0.2.0", EVENT_REVISION + 1).await;
+    peer.hello_of(rig.epoch(), "0.2.0", EVENT_REVISION + 1)
+        .await;
     rig.when("the newer revision", |view| {
         view.server_events == Some(EVENT_REVISION + 1)
     })

@@ -715,7 +715,10 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
             panel.rows.len() == 50
                 && panel.more
                 && !panel.reading
-                && panel.rows.last().is_some_and(|row| row.text == "number 54, @Luca")
+                && panel
+                    .rows
+                    .last()
+                    .is_some_and(|row| row.text == "number 54, @Luca")
         })
     });
 

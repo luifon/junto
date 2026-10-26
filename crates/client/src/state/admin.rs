@@ -26,8 +26,8 @@ use junto_client_core::protocol::ids::{
     WorkspaceId, WorkspaceRoleId,
 };
 
-use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
+use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 pub use recordings::RecordingList;
 pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, AuditTarget, ExportFiles};

@@ -663,7 +663,11 @@ const REJOINED_WITHIN: time::Duration = time::Duration::seconds(60);
 
 /// How a system line is drawn with the lines before it: on its own, joined to the line
 /// before it with more people, or as a person who left and joined again.
-fn joined_line(rows: &[FeedRow], message: &Message, system: &SystemMessage) -> Option<Vec<AccountId>> {
+fn joined_line(
+    rows: &[FeedRow],
+    message: &Message,
+    system: &SystemMessage,
+) -> Option<Vec<AccountId>> {
     let actor = system.actor_id?;
     let Some(FeedRow::System(before)) = rows.last() else {
         return None;
@@ -709,7 +713,11 @@ fn people_parts(people: &[String]) -> Vec<Part> {
     for (index, name) in people[..shown].iter().enumerate() {
         if index > 0 {
             let last = index + 1 == shown && others == 0;
-            parts.push(plain(if last { " and ".to_owned() } else { ", ".to_owned() }));
+            parts.push(plain(if last {
+                " and ".to_owned()
+            } else {
+                ", ".to_owned()
+            }));
         }
         parts.push(strong(name));
     }
@@ -755,7 +763,9 @@ fn system_parts_of(
         match &rest[at..end] {
             "{actor}" if people.len() > 1 => {
                 let named: Vec<String> = people.iter().filter_map(|id| name(Some(*id))).collect();
-                parts.extend(people_parts(&named));
+                for part in people_parts(&named) {
+                    push(&part.text, part.strong);
+                }
             }
             "{actor}" => push(
                 actor.as_deref().unwrap_or(crate::text::SOMEBODY),
@@ -766,7 +776,10 @@ fn system_parts_of(
                 subject.is_some(),
             ),
             "{duration}" => push(&crate::text::call_length(system.duration_seconds), false),
-            "{name}" => push(&crate::text::label(system.name.as_deref().unwrap_or_default()), true),
+            "{name}" => push(
+                &crate::text::label(system.name.as_deref().unwrap_or_default()),
+                true,
+            ),
             "{previous_name}" => push(
                 &crate::text::label(system.previous_name.as_deref().unwrap_or_default()),
                 true,

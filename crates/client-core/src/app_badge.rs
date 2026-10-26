@@ -127,7 +127,11 @@ pub fn set_overlay(window: isize, count: u64, description: &str) -> windows::cor
     // SAFETY: the class is the system taskbar list; the call creates a COM object on a
     // thread on which the window has started COM.
     let taskbar: ITaskbarList3 = unsafe {
-        CoCreateInstance(&TaskbarList, None::<&windows::core::IUnknown>, CLSCTX_INPROC_SERVER)?
+        CoCreateInstance(
+            &TaskbarList,
+            None::<&windows::core::IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )?
     };
     // SAFETY: the list is initialised before its first use, as its documentation asks.
     unsafe { taskbar.HrInit()? };
@@ -139,7 +143,7 @@ pub fn set_overlay(window: isize, count: u64, description: &str) -> windows::cor
     let side = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as u32;
     // Windows reads a bitmap of 32 bits per pixel as blue, green, red and alpha.
     let mut pixels = picture(count, side);
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let mask = vec![0u8; (side * side / 8) as usize];
@@ -175,7 +179,9 @@ mod tests {
 
     fn white(pixels: &[u8], side: u32) -> usize {
         pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[..3] == INK && pixel[3] == 255)
             .count()
             .min((side * side) as usize)
