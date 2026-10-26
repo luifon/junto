@@ -1,5 +1,6 @@
 """Bundle construction tests; no application is started and no identity is imported."""
 import importlib.util
+import json
 import pathlib
 import plistlib
 import shutil
@@ -27,6 +28,33 @@ def load():
 
 
 class BundleTests(unittest.TestCase):
+    def test_the_bundle_holds_the_compiled_icon_composer_icon_and_names_it(self):
+        module = load()
+        with tempfile.TemporaryDirectory(prefix="junto-bundle-") as temporary:
+            root = pathlib.Path(temporary)
+            binary = root / "junto"
+            binary.write_bytes(b"program")
+            compiled = []
+
+            def compiler(document, resources):
+                compiled.append(document)
+                (resources / "Assets.car").write_bytes(b"catalog")
+
+            bundle = module.assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL,
+                                     build=fixtures.build_directory(root / "build", TRIPLE), icon_compiler=compiler)
+            info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+            self.assertEqual(info["CFBundleIconName"], "Junto")
+            self.assertEqual(info["CFBundleIconFile"], "Junto.icns")
+            self.assertEqual((bundle / "Contents/Resources/Assets.car").read_bytes(), b"catalog")
+            self.assertEqual(compiled, [module.ICON_DOCUMENT])
+        # The document names its layer, which is in its assets.
+        document = json.loads((module.ICON_DOCUMENT / "icon.json").read_text())
+        names = [layer["image-name"] for group in document["groups"] for layer in group["layers"]]
+        self.assertEqual(names, ["discs.svg"])
+        for name in names:
+            self.assertTrue((module.ICON_DOCUMENT / "Assets" / name).is_file())
+
+
     def test_bundle_uses_the_requested_workspace_version_and_permission_texts(self):
         module = load()
         with tempfile.TemporaryDirectory(prefix="junto-bundle-") as temporary:
