@@ -593,7 +593,7 @@ pub struct Seen {
 #[derive(Default)]
 struct ProxyState {
     faults: Vec<(String, Vec<Fault>)>,
-    /// Faults for the requests whose path ends with a text.
+    /// Faults for the requests whose path without its query ends with a text.
     faults_ending: Vec<(String, Vec<Fault>)>,
     seen: Vec<Seen>,
     /// An upgrade request is not passed on: its connection is closed.
@@ -820,7 +820,8 @@ impl FaultProxy {
             .push((path.to_owned(), faults));
     }
 
-    /// The next requests whose path ends with `end` fail in the given ways, in order.
+    /// The next requests whose path without its query ends with `end` fail in the given
+    /// ways, in order.
     pub fn fail_ending(&self, end: &str, faults: impl IntoIterator<Item = Fault>) {
         let mut faults: Vec<Fault> = faults.into_iter().collect();
         faults.reverse();
@@ -951,6 +952,7 @@ async fn serve(
         });
         let index = state.seen.len() - 1;
         let state = &mut *state;
+        let bare = path.split('?').next().unwrap_or_default();
         let fault = state
             .faults
             .iter_mut()
@@ -959,7 +961,7 @@ async fn serve(
                 state
                     .faults_ending
                     .iter_mut()
-                    .find(|(end, faults)| path.ends_with(end.as_str()) && !faults.is_empty())
+                    .find(|(end, faults)| bare.ends_with(end.as_str()) && !faults.is_empty())
             })
             .and_then(|(_, faults)| faults.pop());
         (index, fault)
