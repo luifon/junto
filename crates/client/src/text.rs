@@ -1032,8 +1032,7 @@ pub const NO_MUTE_KEY: &str = "None";
 pub const SET_MUTE_KEY: &str = "Set key";
 pub const CHANGE_MUTE_KEY: &str = "Change key";
 pub const REMOVE_MUTE_KEY: &str = "Remove";
-pub const PRESS_MUTE_KEY: &str =
-    "Press the keys: Control, Alt, Shift or the system key, with a letter, a digit or a function \
+pub const PRESS_MUTE_KEY: &str = "Press the keys: Control, Alt, Shift or the system key, with a letter, a digit or a function \
      key. Escape stops.";
 pub const MUTE_KEY_HELP: &str = "Mutes and unmutes your microphone in a call.";
 pub const KEYS_EVERYWHERE: &str =

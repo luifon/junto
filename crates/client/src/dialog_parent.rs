@@ -36,8 +36,12 @@ impl DialogParent {
     /// window of the tests, and a system other than Linux have none.
     #[cfg(target_os = "linux")]
     pub fn of(window: &Window) -> Pending {
-        use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _};
-        let (Ok(handle), Ok(display)) = (window.window_handle(), window.display_handle()) else {
+        use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+        let handles = (
+            HasWindowHandle::window_handle(window),
+            HasDisplayHandle::display_handle(window),
+        );
+        let (Ok(handle), Ok(display)) = handles else {
             return Pending::Ready(None);
         };
         let (handle, display) = (handle.as_raw(), display.as_raw());
