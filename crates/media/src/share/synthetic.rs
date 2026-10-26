@@ -83,7 +83,14 @@ struct State {
     settings_opened: u32,
     previewed: Vec<PictureSource>,
     started: Vec<CaptureRequest>,
-    live: Vec<(Weak<AtomicBool>, Arc<dyn CaptureSink>)>,
+    live: Vec<Live>,
+}
+
+/// A capture that runs: its stop, its sink and the source that it shows.
+struct Live {
+    stop: Weak<AtomicBool>,
+    sink: Arc<dyn CaptureSink>,
+    source: PictureSource,
 }
 
 /// The capture of the tests. Every clone is the same object.
@@ -225,19 +232,39 @@ impl SyntheticCapture {
     /// The number of captures that run now.
     pub fn running(&self) -> usize {
         let mut state = self.lock();
-        state.live.retain(|(stop, _)| stop.strong_count() > 0);
+        state.live.retain(|live| live.stop.strong_count() > 0);
         state.live.len()
     }
 
     /// Ends every capture that runs, as the system does when a shared window is closed.
     pub fn end_all(&self, error: &CaptureError) {
         let live = std::mem::take(&mut self.lock().live);
-        for (stop, sink) in live {
-            if let Some(stop) = stop.upgrade() {
-                stop.store(true, Ordering::Relaxed);
-                sink.ended(error.clone());
-            }
+        for live in live {
+            end(live, error);
         }
+    }
+
+    /// Ends the captures of one source, as the system does when that shared window is
+    /// closed. The other captures go on.
+    pub fn end_source(&self, source: PictureSource, error: &CaptureError) {
+        let ended: Vec<Live> = {
+            let mut state = self.lock();
+            let (ended, kept) = std::mem::take(&mut state.live)
+                .into_iter()
+                .partition(|live| live.source == source);
+            state.live = kept;
+            ended
+        };
+        for live in ended {
+            end(live, error);
+        }
+    }
+}
+
+fn end(live: Live, error: &CaptureError) {
+    if let Some(stop) = live.stop.upgrade() {
+        stop.store(true, Ordering::Relaxed);
+        live.sink.ended(error.clone());
     }
 }
 
@@ -383,7 +410,11 @@ impl ScreenCapture for SyntheticCapture {
             let picture = request.picture;
             state.started.push(request);
             let stop = Arc::new(AtomicBool::new(false));
-            state.live.push((Arc::downgrade(&stop), sink.clone()));
+            state.live.push(Live {
+                stop: Arc::downgrade(&stop),
+                sink: sink.clone(),
+                source: picture,
+            });
             drop(state);
             let stopped = stop.clone();
             let thread = std::thread::spawn(move || {

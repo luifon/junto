@@ -1102,6 +1102,144 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     window.until("no share is left", |window| stage(window).is_none());
 }
 
+/// One of two shares of the person ends by itself, as when the shared screen is gone: the
+/// window tells it, and the close of that notice leaves the other share running, with its
+/// capture, its tracks, its picture and sound at the other person, and its record at the
+/// server. A third share that the system refuses also leaves the two that run (ADR 0737).
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn one_of_two_shares_ends_by_itself_and_its_notice_leaves_the_other_running(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let voice = room(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: voice.id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    turn_processing_off(&mut window);
+    let own_id = window.own_account();
+    let own_slots = |window: &mut Window| -> Vec<u8> {
+        window.view().call.map_or_else(Vec::new, |call| {
+            call.own_shares.iter().map(|share| share.slot).collect()
+        })
+    };
+    let recorded_slots = || -> Vec<u8> {
+        caller
+            .handle
+            .live()
+            .view()
+            .model
+            .and_then(|model| {
+                model.call_at(&target.place).and_then(|call| {
+                    call.participant(own_id)
+                        .map(|own| own.shares().iter().map(|share| share.slot).collect())
+                })
+            })
+            .unwrap_or_default()
+    };
+
+    // The screen with all system sound, and the window with the sound of its application.
+    window.click("call-share");
+    window.until("the screens and windows are listed", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-display:1");
+    window.click("share-sound-1");
+    window.click("start-share");
+    window.until("the share of the screen runs", |window| {
+        own_share(window) == OwnShare::Running
+    });
+    window.click("call-share");
+    window.click("share-another");
+    window.until("the dialog lists the sources again", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-window:11");
+    window.click("share-sound-2");
+    window.click("start-share");
+    window.until("two own shares run", |window| own_slots(window) == [0, 1]);
+    window.until("the server records the two shares", |_| {
+        recorded_slots() == [0, 1]
+    });
+
+    // The system refuses a third share: the two go on.
+    window.capture.fail_next(CaptureError::SourceGone);
+    window.click("call-share");
+    window.click("share-another");
+    window.until("the dialog lists the sources again", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-display:1");
+    window.click("share-sound-0");
+    window.click("start-share");
+    window.until("the refusal is told", |window| window.shows("share-notice"));
+    window.click("dismiss-share-notice");
+    assert!(!window.shows("share-notice"));
+    assert_eq!(own_slots(&mut window), [0, 1]);
+    assert_eq!(window.capture.running(), 2);
+
+    // The shared screen is gone: its share ends by itself, and the window tells it.
+    window
+        .capture
+        .end_source(PictureSource::Display(1), &CaptureError::SourceGone);
+    window.until("the end of the screen is told", |window| {
+        window.shows("share-notice") && own_slots(window) == [1]
+    });
+    window.click("dismiss-share-notice");
+    window.until("the notice is closed", |window| {
+        !window.shows("share-notice")
+    });
+
+    // The window goes on: its capture, its share at this device, at the other person with
+    // its picture and its sound, and at the server.
+    let shared_window = ShareId::of(own_id, 1);
+    window.until("the share of the window goes on everywhere", |window| {
+        own_slots(window) == [1]
+            && window.capture.running() == 1
+            && recorded_slots() == [1]
+            && caller.calls.view().call.is_some_and(|call| {
+                call.shares
+                    .iter()
+                    .map(|share| (share.account_id, share.slot))
+                    .eq([(own_id, 1)])
+            })
+            && caller
+                .calls
+                .main_picture()
+                .borrow()
+                .as_ref()
+                .is_some_and(|picture| picture.share == shared_window)
+    });
+    window.until("the other person hears the sound of the window", |_| {
+        heard(&caller.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+            && heard(&caller.sound, SYSTEM_TONE_HZ) < ABSENT_DBFS
+    });
+    window.click("call-share");
+    window.click("share-stop-all");
+    window.until("no own share is left", |window| {
+        own_share(window) == OwnShare::Off && window.capture.running() == 0
+    });
+}
+
 /// A microphone that the call cannot use is opened again by "Try again": in the warning of
 /// the call after the system refused the permission, and in the settings of the call after
 /// the device failed.
