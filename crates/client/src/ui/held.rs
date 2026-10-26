@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, ElementId, InteractiveElement, IntoElement,
-    MouseMoveEvent, ParentElement, Pixels, Point, Refineable, Rems, RenderOnce, ScrollHandle, Size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Refineable, Rems, RenderOnce, ScrollHandle, Size,
     StyleRefinement, Styled, Window, canvas, div, prelude::FluentBuilder,
 };
 
@@ -41,8 +41,8 @@ struct Heights {
     window: Option<Size<Pixels>>,
     /// The frames in a row in which the height changed.
     changes: u8,
-    /// A change waits for the pointer to leave the part of the window that it moves.
-    holding: bool,
+    /// A button of the pointer is pressed: a change waits until it is released.
+    pressed: bool,
 }
 
 /// The most frames in a row in which a part asks for a new frame to change its height. Two
@@ -198,17 +198,14 @@ impl RenderOnce for Held {
                         let size = window.viewport_size();
                         let resized = now.window.is_some_and(|before| before != size);
                         now.window = Some(size);
-                        // A change that waits is made by a move of the pointer without a
-                        // pressed button: a press that started while it waited ends on the
-                        // control where it started.
+                        // A change waits while a button of the pointer is pressed: a press
+                        // ends on the control where it started.
                         if now.shown == Some(target) {
                             now.changes = 0;
-                            now.holding = false;
                         } else if now.shown.is_none()
                             || resized
-                            || (!now.holding && !moves.covers(bounds, window.mouse_position()))
+                            || (!now.pressed && !moves.covers(bounds, window.mouse_position()))
                         {
-                            now.holding = false;
                             now.shown = Some(target);
                             now.changes = now.changes.saturating_add(1);
                             // At its first drawing the part was laid out at the height of
@@ -223,13 +220,28 @@ impl RenderOnce for Held {
                                 #[cfg(feature = "test-support")]
                                 record::unsettled(&id);
                             }
-                        } else {
-                            now.holding = true;
                         }
                         decided.set(now);
                         bounds
                     },
                     move |_, bounds, window, _| {
+                        let pressing = waiting.clone();
+                        window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
+                            if phase == DispatchPhase::Capture {
+                                let mut now = pressing.get();
+                                now.pressed = true;
+                                pressing.set(now);
+                            }
+                        });
+                        let releasing = waiting.clone();
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _| {
+                            if phase == DispatchPhase::Capture {
+                                let mut now = releasing.get();
+                                now.pressed = false;
+                                releasing.set(now);
+                                window.refresh();
+                            }
+                        });
                         let now = waiting.get();
                         if now.shown == Some(wanted(now, window.rem_size())) {
                             return;
@@ -244,7 +256,6 @@ impl RenderOnce for Held {
                                 && !moves.covers(bounds, event.position)
                             {
                                 now.shown = Some(target);
-                                now.holding = false;
                                 waiting.set(now);
                                 window.refresh();
                             }
