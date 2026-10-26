@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gpui::{
     App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement, Pixels,
-    RenderOnce, SharedString, Styled, Window, canvas, div,
+    RenderOnce, SharedString, Styled, Window, canvas, div, prelude::FluentBuilder,
 };
 
 use super::{StyleExt, icon};
@@ -32,7 +32,14 @@ pub struct FormSpace<M> {
     kept: Rc<Cell<Option<(M, Pixels)>>>,
     /// The sentence of the result of the kept form.
     result: Rc<RefCell<SharedString>>,
+    /// The height of the rows without their form as they were drawn last, by the first
+    /// form of each row: a form is never lower than its row, so the row does not grow
+    /// when the answer closes the form.
+    closed: Rc<RefCell<Vec<(M, Pixels)>>>,
 }
+
+/// The most rows whose height without a form is kept.
+const MOST_CLOSED: usize = 256;
 
 impl<M> Default for FormSpace<M> {
     fn default() -> Self {
@@ -40,6 +47,7 @@ impl<M> Default for FormSpace<M> {
             drawn: Rc::default(),
             kept: Rc::default(),
             result: Rc::default(),
+            closed: Rc::default(),
         }
     }
 }
@@ -55,9 +63,17 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
             .flex_col()
             .flex_none()
             .child(div().flex().flex_col().flex_none().child(row));
+        let key = modes.first().copied();
         if let Some(open) = open.filter(|open| modes.contains(open)) {
             let drawn = self.drawn.clone();
-            return space.relative().child(
+            let closed = key.and_then(|key| {
+                self.closed
+                    .borrow()
+                    .iter()
+                    .find(|(row, _)| *row == key)
+                    .map(|(_, height)| *height)
+            });
+            return space.relative().when_some(closed, |space, height| space.min_h(height)).child(
                 canvas(
                     move |bounds, _, _| drawn.set(Some((open, bounds.size.height))),
                     |_, (), _, _| {},
@@ -109,7 +125,27 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
                     .size_full(),
                 )
             }
-            _ => space,
+            _ => match key {
+                Some(key) => {
+                    let closed = self.closed.clone();
+                    space.relative().child(
+                        canvas(
+                            move |bounds, _, _| {
+                                let mut rows = closed.borrow_mut();
+                                rows.retain(|(row, _)| *row != key);
+                                if rows.len() >= MOST_CLOSED {
+                                    rows.remove(0);
+                                }
+                                rows.push((key, bounds.size.height));
+                            },
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                }
+                None => space,
+            },
         }
     }
 
