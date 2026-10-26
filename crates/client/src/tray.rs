@@ -32,6 +32,9 @@ pub struct TrayState {
     /// code of an entry holds it, so a press on a menu that was drawn before a change is
     /// refused (ADR 0788).
     pub generation: u32,
+    /// The unread mentions that the application counts for the mark of the icon; the icon
+    /// shows the mark while there is one ([`AppState::set_tray_mentions`]).
+    pub mentions: u64,
 }
 
 /// The state of the call of this device that the icon and the menu show.
@@ -53,6 +56,8 @@ pub enum Picture {
     Plain,
     Call,
     Muted,
+    /// A moderator or meeting mode holds the microphone closed.
+    Held,
     SoundOff,
 }
 
@@ -63,7 +68,26 @@ impl Picture {
             Picture::Plain => "plain",
             Picture::Call => "call",
             Picture::Muted => "muted",
+            Picture::Held => "held",
             Picture::SoundOff => "sound-off",
+        }
+    }
+}
+
+/// What the icon shows: the picture of a state, with the mention mark or without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconPicture {
+    pub picture: Picture,
+    pub mention: bool,
+}
+
+impl IconPicture {
+    /// The name of the rendering in the files of the build script.
+    pub fn name(self) -> String {
+        if self.mention {
+            format!("{}-mention", self.picture.name())
+        } else {
+            self.picture.name().to_owned()
         }
     }
 }
@@ -117,6 +141,7 @@ pub fn derive(calls: &CallsView) -> TrayState {
             seat: call.seat(),
         }),
         generation: 0,
+        mentions: 0,
     }
 }
 
@@ -127,22 +152,38 @@ pub fn entry_code(generation: u32, kind: u32) -> u32 {
 }
 
 impl TrayState {
+    /// The picture of the call state. The sound off takes precedence, then a microphone that
+    /// the server holds closed, then a microphone that the person closed.
     pub fn picture(&self) -> Picture {
         match &self.call {
             None => Picture::Plain,
             Some(call) if call.deafened => Picture::SoundOff,
-            Some(call) if call.muted || call.held => Picture::Muted,
+            Some(call) if call.held => Picture::Held,
+            Some(call) if call.muted => Picture::Muted,
             Some(_) => Picture::Call,
         }
     }
 
+    /// The picture with the mention mark while the application counts a mention.
+    pub fn icon(&self) -> IconPicture {
+        IconPicture {
+            picture: self.picture(),
+            mention: self.mentions > 0,
+        }
+    }
+
     /// The text that the system shows when the pointer rests on the icon.
-    pub fn tooltip(&self) -> &'static str {
-        match self.picture() {
+    pub fn tooltip(&self) -> String {
+        let state = match self.picture() {
             Picture::Plain => text::NOT_IN_A_CALL,
             Picture::Call => text::IN_A_CALL,
             Picture::Muted => text::IN_A_CALL_MUTED,
+            Picture::Held => text::IN_A_CALL_HELD,
             Picture::SoundOff => text::IN_A_CALL_SOUND_OFF,
+        };
+        match self.mentions {
+            0 => state.to_owned(),
+            count => format!("{state}, {}", text::mentions(count)),
         }
     }
 
@@ -289,10 +330,11 @@ const PICTURES: &[(&str, u32, &[u8])] = include!(concat!(env!("OUT_DIR"), "/tray
 
 /// The renderings of a picture, as `(side, bytes)`, the smallest first.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn renderings(picture: Picture) -> impl Iterator<Item = (u32, &'static [u8])> {
+fn renderings(shown: IconPicture) -> impl Iterator<Item = (u32, &'static [u8])> {
+    let name = shown.name();
     PICTURES
         .iter()
-        .filter(move |(name, _, _)| *name == picture.name())
+        .filter(move |(held, _, _)| *held == name)
         .map(|(_, side, bytes)| (*side, *bytes))
 }
 

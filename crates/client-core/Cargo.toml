@@ -87,9 +87,11 @@ windows-sys = { version = "0.61", features = [
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSBitmapImageRep",
     "NSButton",
     "NSControl",
     "NSImage",
+    "NSImageRep",
     "NSMenu",
     "NSMenuItem",
     "NSResponder",

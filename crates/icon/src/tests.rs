@@ -308,40 +308,125 @@ fn the_windows_resource_holds_the_pictures_and_the_group_that_lists_them() {
     assert_eq!(resources.len(), ICO.len() + 2);
 }
 
+fn hex(colour: &str) -> [u8; 3] {
+    let value = u32::from_str_radix(colour.trim_start_matches('#'), 16).unwrap();
+    [(value >> 16) as u8, (value >> 8) as u8, value as u8]
+}
+
+/// True when two colours differ by at most `by` in each channel.
+fn near(seen: [u8; 4], wanted: [u8; 3], by: u8) -> bool {
+    seen[..3]
+        .iter()
+        .zip(wanted)
+        .all(|(seen, wanted)| seen.abs_diff(wanted) <= by)
+}
+
 #[test]
-fn a_tray_picture_is_the_body_of_the_icon_with_the_mark_of_its_state() {
-    for side in TRAY.into_iter().chain([MENU_BAR]) {
-        let plain = tray(None, side).unwrap();
+fn a_colour_tray_picture_is_a_disc_of_its_state_with_a_white_sign() {
+    for side in TRAY {
+        // Outside a call: the body of the icon fills the picture. The middle of each edge
+        // is opaque, a corner outside the rounded body is transparent.
+        let plain = tray(TrayState::Plain, false, TrayStyle::Colour, side).unwrap();
         assert_eq!(plain.rgba.len(), (side * side * 4) as usize);
-        // The body fills the picture: the middle of each edge is opaque, a corner outside the
-        // rounded body is transparent.
         assert_eq!(plain.pixel(0, side / 2)[3], 255, "{side}");
         assert_eq!(plain.pixel(side - 1, side / 2)[3], 255, "{side}");
         assert_eq!(plain.pixel(0, 0)[3], 0, "{side}");
-        // The centre of the mark: green in a call, a glyph on red otherwise, and the icon
-        // without a mark.
-        let centre = side * 752 / 1024;
-        let at = |mark| tray(Some(mark), side).unwrap().pixel(centre, centre);
-        assert_eq!(at(Mark::Call), [0x2e, 0x9e, 0x5b, 255], "{side}");
-        assert_ne!(at(Mark::Muted), at(Mark::Call), "{side}");
-        assert_ne!(plain.pixel(centre, centre), at(Mark::Call), "{side}");
-        assert_ne!(plain.pixel(centre, centre), at(Mark::Muted), "{side}");
-        // The red disc between its white edge and the glyph. At 16 pixels the edge of the
-        // glyph is a small part of the pixel.
-        let left = side * 600 / 1024;
-        let [red, green, blue, alpha] = tray(Some(Mark::SoundOff), side)
-            .unwrap()
-            .pixel(left, centre);
-        assert!(
-            alpha == 255 && green == blue && red >= 0xc9 && green <= 0x50,
-            "{side}: {:?}",
-            [red, green, blue, alpha]
-        );
+        for state in [
+            TrayState::Call,
+            TrayState::Muted,
+            TrayState::Held,
+            TrayState::SoundOff,
+        ] {
+            let picture = tray(state, false, TrayStyle::Colour, side).unwrap();
+            let disc = hex(state.disc().unwrap());
+            // Near the lower left edge of the disc, away from the sign: the colour of the
+            // state, opaque. A corner is outside the disc.
+            let at = side * 5 / 24;
+            let edge = picture.pixel(at, side - 1 - at);
+            assert!(
+                edge[3] == 255 && near(edge, disc, 2),
+                "{state:?} {side}: {edge:?}"
+            );
+            assert_eq!(picture.pixel(0, 0)[3], 0, "{state:?} {side}");
+            // Some pixel of the middle half is near white: the sign.
+            let white = (side / 4..side * 3 / 4).any(|y| {
+                (side / 4..side * 3 / 4).any(|x| near(picture.pixel(x, y), [255, 255, 255], 40))
+            });
+            assert!(white, "{state:?} {side}: no white sign");
+        }
     }
-    assert!(matches!(tray(None, 0), Err(Error::Size(0))));
+    // The states differ from each other in the middle of the picture.
+    let middle = |state| {
+        let picture = tray(state, false, TrayStyle::Colour, 48).unwrap();
+        (0..48)
+            .flat_map(|y| (0..48).map(move |x| (x, y)))
+            .map(|(x, y)| picture.pixel(x, y))
+            .collect::<Vec<_>>()
+    };
+    let all: Vec<Vec<[u8; 4]>> = TrayState::ALL.into_iter().map(middle).collect();
+    for (index, one) in all.iter().enumerate() {
+        for other in &all[index + 1..] {
+            assert_ne!(one, other);
+        }
+    }
+    assert!(matches!(
+        tray(TrayState::Call, false, TrayStyle::Colour, 0),
+        Err(Error::Size(0))
+    ));
+}
+
+#[test]
+fn a_template_tray_picture_is_its_sign_in_black_on_transparent() {
+    for side in MENU_BAR {
+        for state in TrayState::ALL {
+            let picture = tray(state, false, TrayStyle::Template, side).unwrap();
+            let mut drawn = 0;
+            for y in 0..side {
+                for x in 0..side {
+                    let [red, green, blue, alpha] = picture.pixel(x, y);
+                    if alpha > 0 {
+                        drawn += 1;
+                        // A template picture has no colour: the system takes its alpha.
+                        assert_eq!([red, green, blue], [0, 0, 0], "{state:?} {side}");
+                    }
+                }
+            }
+            assert!(
+                drawn > (side * side / 16) as usize,
+                "{state:?} {side}: {drawn}"
+            );
+            assert_eq!(picture.pixel(0, side - 1)[3], 0, "{state:?} {side}");
+        }
+    }
     assert!(
-        tray_png(Some(Mark::Call), MENU_BAR)
+        tray_png(TrayState::Call, false, TrayStyle::Template, MENU_BAR[1])
             .unwrap()
             .starts_with(PNG_SIGNATURE)
     );
+}
+
+#[test]
+fn the_mention_mark_is_a_dot_at_the_upper_right_corner_in_each_state_and_style() {
+    for state in TrayState::ALL {
+        for side in [MENU_BAR[0], MENU_BAR[1], 16, 32] {
+            let dot = (side * 19 / 24, side * 5 / 24);
+            // The template: the dot is drawn, and a ring around it is cut out of the sign.
+            let marked = tray(state, true, TrayStyle::Template, side).unwrap();
+            assert_eq!(marked.pixel(dot.0, dot.1)[3], 255, "{state:?} {side}");
+            // A pixel whose centre is between the dot (radius 4) and the edge of the cut
+            // (radius 6), below the dot.
+            let ring = (side * 19 / 24, side * 10 / 24);
+            let cut = marked.pixel(ring.0, ring.1)[3];
+            assert!(cut < 32, "{state:?} {side}: the cut {cut}");
+            // The colour style: the red dot.
+            let marked = tray(state, true, TrayStyle::Colour, side).unwrap();
+            let seen = marked.pixel(dot.0, dot.1);
+            assert!(
+                seen[3] == 255 && near(seen, hex(MENTION_RED), 30),
+                "{state:?} {side}: {seen:?}"
+            );
+            let plain = tray(state, false, TrayStyle::Colour, side).unwrap();
+            assert_ne!(plain.pixel(dot.0, dot.1), seen, "{state:?} {side}");
+        }
+    }
 }

@@ -61,32 +61,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The pictures of the tray icon (ADR 0759), one for each call state: on macOS a PNG picture
-/// for the menu bar, elsewhere straight RGBA pixels in each size of `junto_icon::TRAY`. The
-/// file `tray-pictures.rs` lists them as `(mark, side, bytes)`, with the mark `plain` outside
-/// a call.
+/// The pictures of the tray icon (ADR 0759), one for each call state with and without the
+/// mention mark: on macOS template PNG pictures for the menu bar at 1x and 2x, elsewhere
+/// straight RGBA pixels of the colour style in each size of `junto_icon::TRAY`. The file
+/// `tray-pictures.rs` lists them as `(name, side, bytes)`, with the name of the state and
+/// `-mention` after it for a picture with the mark.
 #[allow(clippy::disallowed_methods)]
 fn tray_pictures(target: &str, output: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let marks = std::iter::once(None).chain(junto_icon::Mark::ALL.map(Some));
     let mut list = String::from("&[\n");
-    for mark in marks {
-        let name = mark.map_or("plain", junto_icon::Mark::name);
-        let pictures: Vec<(u32, Vec<u8>)> = if target == "macos" {
-            let side = junto_icon::MENU_BAR;
-            vec![(side, junto_icon::tray_png(mark, side)?)]
-        } else {
-            junto_icon::TRAY
-                .iter()
-                .map(|&side| junto_icon::tray(mark, side).map(|picture| (side, picture.rgba)))
-                .collect::<Result<_, _>>()?
-        };
-        for (side, bytes) in pictures {
-            let file = output.join(format!("tray-{name}-{side}"));
-            std::fs::write(&file, bytes)?;
-            list.push_str(&format!(
-                "    ({name:?}, {side}, include_bytes!({:?}) as &[u8]),\n",
-                file.display().to_string()
-            ));
+    for state in junto_icon::TrayState::ALL {
+        for mention in [false, true] {
+            let name = if mention {
+                format!("{}-mention", state.name())
+            } else {
+                state.name().to_owned()
+            };
+            let pictures: Vec<(u32, Vec<u8>)> = if target == "macos" {
+                junto_icon::MENU_BAR
+                    .iter()
+                    .map(|&side| {
+                        let style = junto_icon::TrayStyle::Template;
+                        junto_icon::tray_png(state, mention, style, side).map(|png| (side, png))
+                    })
+                    .collect::<Result<_, _>>()?
+            } else {
+                junto_icon::TRAY
+                    .iter()
+                    .map(|&side| {
+                        let style = junto_icon::TrayStyle::Colour;
+                        junto_icon::tray(state, mention, style, side)
+                            .map(|picture| (side, picture.rgba))
+                    })
+                    .collect::<Result<_, _>>()?
+            };
+            for (side, bytes) in pictures {
+                let file = output.join(format!("tray-{name}-{side}"));
+                std::fs::write(&file, bytes)?;
+                list.push_str(&format!(
+                    "    ({name:?}, {side}, include_bytes!({:?}) as &[u8]),\n",
+                    file.display().to_string()
+                ));
+            }
         }
     }
     list.push_str("]\n");

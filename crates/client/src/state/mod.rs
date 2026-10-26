@@ -593,6 +593,8 @@ pub struct AppState {
     kept_tray: crate::tray::KeptTray,
     /// The state that the tray was told last.
     tray_shown: Option<crate::tray::TrayState>,
+    /// The unread mentions that the tray icon shows with its mark (ADR 0759).
+    tray_mentions: u64,
     /// The main window is the active window of the system.
     window_active: bool,
     /// The call window is the active window of the system.
@@ -936,6 +938,7 @@ impl AppState {
             tray: std::rc::Rc::new(kept_tray.clone()),
             kept_tray,
             tray_shown: None,
+            tray_mentions: 0,
             window_active: false,
             call_window_active: false,
             call_window_notices: false,

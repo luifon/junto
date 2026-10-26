@@ -42,45 +42,147 @@ pub const WINDOW: u32 = 64;
 /// The side of the picture that a notification of the client shows on Windows.
 pub const NOTIFICATION: u32 = 256;
 
-/// The mark of a call state that a tray picture draws over the application icon (ADR 0759).
-/// Each source is a picture of 1024 by 1024 with the mark in the lower right corner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mark {
-    /// In a call: a green disc.
+/// The state that a tray picture shows (ADR 0759).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TrayState {
+    /// Not in a call.
+    Plain,
+    /// In a call with the microphone open.
     Call,
-    /// In a call with the microphone closed: a red disc with a crossed microphone.
+    /// In a call with the microphone closed by the person.
     Muted,
-    /// In a call with the sound off: a red disc with crossed headphones.
+    /// In a call with the microphone held closed by a moderator or meeting mode.
+    Held,
+    /// In a call with the sound off.
     SoundOff,
 }
 
-impl Mark {
-    pub const ALL: [Mark; 3] = [Mark::Call, Mark::Muted, Mark::SoundOff];
+impl TrayState {
+    pub const ALL: [TrayState; 5] = [
+        TrayState::Plain,
+        TrayState::Call,
+        TrayState::Muted,
+        TrayState::Held,
+        TrayState::SoundOff,
+    ];
 
-    pub fn svg(self) -> &'static str {
+    /// The name of the state in the names of files.
+    pub fn name(self) -> &'static str {
         match self {
-            Mark::Call => include_str!("../../../packaging/icon/marks/call.svg"),
-            Mark::Muted => include_str!("../../../packaging/icon/marks/muted.svg"),
-            Mark::SoundOff => include_str!("../../../packaging/icon/marks/sound-off.svg"),
+            TrayState::Plain => "plain",
+            TrayState::Call => "call",
+            TrayState::Muted => "muted",
+            TrayState::Held => "held",
+            TrayState::SoundOff => "sound-off",
         }
     }
 
-    /// The name of the mark in the names of files.
-    pub fn name(self) -> &'static str {
+    /// The sign of the state: 24 by 24 with its strokes in `currentColor`.
+    pub fn sign(self) -> &'static str {
         match self {
-            Mark::Call => "call",
-            Mark::Muted => "muted",
-            Mark::SoundOff => "sound-off",
+            TrayState::Plain => include_str!("../../../packaging/icon/tray/junto.svg"),
+            TrayState::Call => include_str!("../../../packaging/icon/tray/microphone.svg"),
+            TrayState::Muted => include_str!("../../../packaging/icon/tray/microphone-off.svg"),
+            TrayState::Held => include_str!("../../../packaging/icon/tray/microphone-held.svg"),
+            TrayState::SoundOff => include_str!("../../../packaging/icon/tray/headphones-off.svg"),
+        }
+    }
+
+    /// The colour of the disc of the state in the colour style. Outside a call the picture
+    /// is the body of the application icon.
+    pub fn disc(self) -> Option<&'static str> {
+        match self {
+            TrayState::Plain => None,
+            TrayState::Call => Some(CALL_GREEN),
+            TrayState::Muted | TrayState::SoundOff => Some(CLOSED_RED),
+            TrayState::Held => Some(HELD_OCHRE),
         }
     }
 }
 
-/// The sides of the tray pictures of Windows and Linux: the small icon of Windows at 100, 125,
-/// 150, 200 and 300 % of scale, and the sizes that Linux status areas ask for.
-pub const TRAY: [u32; 6] = [16, 20, 22, 24, 32, 48];
+/// The colours of the discs of the colour style: a lighter cypress than the one of the window,
+/// so that the disc stands out on a dark task bar, the cinnabar of the window, and a darker
+/// ochre that holds a white sign.
+pub const CALL_GREEN: &str = "#3B8A5A";
+pub const CLOSED_RED: &str = "#C5311F";
+pub const HELD_OCHRE: &str = "#A8782B";
+/// The colour of the mention mark of the colour style.
+pub const MENTION_RED: &str = "#E23D28";
 
-/// The side of the tray picture of macOS: 18 points of the menu bar at 2x.
-pub const MENU_BAR: u32 = 36;
+/// How a tray picture is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TrayStyle {
+    /// The sign in black on transparent: the template picture of the macOS menu bar, which
+    /// the system draws in the colour of the bar, light or dark.
+    Template,
+    /// The sign in white on a disc of the colour of the state, for the notification area of
+    /// Windows and the status area of Linux; outside a call the body of the application
+    /// icon.
+    Colour,
+}
+
+/// The sides of the tray pictures of Windows and Linux: the small icon of Windows at 100,
+/// 125, 150, 175, 200, 225, 250 and 300 % of scale, and the sizes that Linux status areas
+/// ask for.
+pub const TRAY: [u32; 10] = [16, 20, 22, 24, 28, 32, 36, 40, 48, 64];
+
+/// The sides of the tray picture of macOS: 18 points of the menu bar at 1x and at 2x.
+pub const MENU_BAR: [u32; 2] = [18, 36];
+
+/// The points of the menu bar that a tray picture of macOS takes.
+pub const MENU_BAR_POINTS: f64 = 18.0;
+
+/// The SVG of a tray picture with the sign of `state` in a picture of 24 by 24. The mention
+/// mark is a dot at the upper right corner: in the template style the sign is cut away
+/// around it, in the colour style it has a white ring.
+pub fn tray_svg(state: TrayState, mention: bool, style: TrayStyle) -> String {
+    let sign = inner(state.sign());
+    let mut body = String::new();
+    match style {
+        TrayStyle::Template => {
+            let sign = sign.replace("currentColor", "#000000");
+            if mention {
+                body.push_str(
+                    "<mask id=\"cut\"><rect width=\"24\" height=\"24\" fill=\"#FFFFFF\"/>\
+                     <circle cx=\"19\" cy=\"5\" r=\"6\" fill=\"#000000\"/></mask>",
+                );
+                body.push_str(&format!("<g mask=\"url(#cut)\">{sign}</g>"));
+                body.push_str("<circle cx=\"19\" cy=\"5\" r=\"4\" fill=\"#000000\"/>");
+            } else {
+                body.push_str(&sign);
+            }
+        }
+        TrayStyle::Colour => {
+            if let Some(disc) = state.disc() {
+                let sign = sign.replace("currentColor", "#FFFFFF");
+                body.push_str(&format!(
+                    "<circle cx=\"12\" cy=\"12\" r=\"12\" fill=\"{disc}\"/>\
+                     <g transform=\"translate(4.2 4.2) scale(0.65)\">{sign}</g>"
+                ));
+            }
+            if mention {
+                body.push_str(&format!(
+                    "<circle cx=\"19\" cy=\"5\" r=\"5\" fill=\"#FFFFFF\"/>\
+                     <circle cx=\"19\" cy=\"5\" r=\"3.6\" fill=\"{MENTION_RED}\"/>"
+                ));
+            }
+        }
+    }
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" \
+         viewBox=\"0 0 24 24\">{body}</svg>"
+    )
+}
+
+/// The content of an SVG source between its root element tags.
+fn inner(svg: &str) -> &str {
+    let start = svg
+        .find("<svg")
+        .and_then(|open| svg[open..].find('>').map(|end| open + end + 1))
+        .unwrap_or(0);
+    let end = svg.rfind("</svg>").unwrap_or(svg.len());
+    &svg[start..end]
+}
 
 /// The side of the body of the icon in the source, and the margin of the macOS icon grid
 /// around it.
@@ -149,30 +251,37 @@ mod renderer {
         Ok(pixmap)
     }
 
-    /// The body of the icon fills the picture without the margin and the shadow of the macOS
-    /// icon grid, and the mark is drawn over it.
-    fn tray_pixmap(mark: Option<super::Mark>, size: u32) -> Result<Pixmap, Error> {
+    /// The tray picture of a state (ADR 0759). In the colour style outside a call, the body of
+    /// the icon fills the picture without the margin and the shadow of the macOS icon grid,
+    /// and the mention mark is drawn over it.
+    fn tray_pixmap(
+        state: super::TrayState,
+        mention: bool,
+        style: super::TrayStyle,
+        size: u32,
+    ) -> Result<Pixmap, Error> {
         if !(1..=LARGEST).contains(&size) {
             return Err(Error::Size(size));
         }
-        let tree = usvg::Tree::from_str(super::SVG, &usvg::Options::default())?;
         let mut pixmap = Pixmap::new(size, size).ok_or(Error::Size(size))?;
-        let scale = size as f32 / super::BODY;
-        let shift = -super::MARGIN * scale;
-        resvg::render(
-            &tree,
-            Transform::from_row(scale, 0.0, 0.0, scale, shift, shift),
-            &mut pixmap.as_mut(),
-        );
-        if let Some(mark) = mark {
-            let tree = usvg::Tree::from_str(mark.svg(), &usvg::Options::default())?;
-            let scale = size as f32 / tree.size().width();
+        if style == super::TrayStyle::Colour && state.disc().is_none() {
+            let tree = usvg::Tree::from_str(super::SVG, &usvg::Options::default())?;
+            let scale = size as f32 / super::BODY;
+            let shift = -super::MARGIN * scale;
             resvg::render(
                 &tree,
-                Transform::from_scale(scale, scale),
+                Transform::from_row(scale, 0.0, 0.0, scale, shift, shift),
                 &mut pixmap.as_mut(),
             );
         }
+        let svg = super::tray_svg(state, mention, style);
+        let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())?;
+        let scale = size as f32 / tree.size().width();
+        resvg::render(
+            &tree,
+            Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
         Ok(pixmap)
     }
 
@@ -192,12 +301,22 @@ mod renderer {
         Ok(straight(&pixmap(size)?, size))
     }
 
-    pub fn tray(mark: Option<super::Mark>, size: u32) -> Result<Picture, Error> {
-        Ok(straight(&tray_pixmap(mark, size)?, size))
+    pub fn tray(
+        state: super::TrayState,
+        mention: bool,
+        style: super::TrayStyle,
+        size: u32,
+    ) -> Result<Picture, Error> {
+        Ok(straight(&tray_pixmap(state, mention, style, size)?, size))
     }
 
-    pub fn tray_png(mark: Option<super::Mark>, size: u32) -> Result<Vec<u8>, Error> {
-        tray_pixmap(mark, size)?
+    pub fn tray_png(
+        state: super::TrayState,
+        mention: bool,
+        style: super::TrayStyle,
+        size: u32,
+    ) -> Result<Vec<u8>, Error> {
+        tray_pixmap(state, mention, style, size)?
             .encode_png()
             .map_err(|error| Error::Png(size, error.to_string()))
     }
@@ -225,11 +344,21 @@ mod renderer {
         Err(Error::NoRenderer)
     }
 
-    pub fn tray(_: Option<super::Mark>, _: u32) -> Result<Picture, Error> {
+    pub fn tray(
+        _: super::TrayState,
+        _: bool,
+        _: super::TrayStyle,
+        _: u32,
+    ) -> Result<Picture, Error> {
         Err(Error::NoRenderer)
     }
 
-    pub fn tray_png(_: Option<super::Mark>, _: u32) -> Result<Vec<u8>, Error> {
+    pub fn tray_png(
+        _: super::TrayState,
+        _: bool,
+        _: super::TrayStyle,
+        _: u32,
+    ) -> Result<Vec<u8>, Error> {
         Err(Error::NoRenderer)
     }
 
@@ -248,15 +377,25 @@ pub fn png(size: u32) -> Result<Vec<u8>, Error> {
     renderer::png(size)
 }
 
-/// The tray picture of `size` by `size` pixels: the body of the icon, with the mark of a call
-/// state in a call (ADR 0759).
-pub fn tray(mark: Option<Mark>, size: u32) -> Result<Picture, Error> {
-    renderer::tray(mark, size)
+/// The tray picture of `size` by `size` pixels of a call state, with the mention mark or
+/// without it, in a style (ADR 0759).
+pub fn tray(
+    state: TrayState,
+    mention: bool,
+    style: TrayStyle,
+    size: u32,
+) -> Result<Picture, Error> {
+    renderer::tray(state, mention, style, size)
 }
 
 /// The tray picture of [`tray`] as a PNG picture.
-pub fn tray_png(mark: Option<Mark>, size: u32) -> Result<Vec<u8>, Error> {
-    renderer::tray_png(mark, size)
+pub fn tray_png(
+    state: TrayState,
+    mention: bool,
+    style: TrayStyle,
+    size: u32,
+) -> Result<Vec<u8>, Error> {
+    renderer::tray_png(state, mention, style, size)
 }
 
 /// The macOS icon file: an entry for each line of [`ICNS`].

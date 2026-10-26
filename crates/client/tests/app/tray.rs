@@ -93,6 +93,7 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
             seat: seat.clone(),
         }),
         generation: 0,
+        mentions: 0,
     };
     assert_eq!(shown(&mut window).call, in_call.call);
     assert_eq!(shown(&mut window).tooltip(), text::IN_A_CALL);
@@ -157,4 +158,40 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
             .cx
             .update(|_, cx| tray.press(text::LEAVE_THE_CALL, &state, cx))
     );
+}
+
+/// The application tells the tray its unread mentions: every picture shows the mention mark
+/// while there is one, the tooltip states the number, and the menu stays the same menu
+/// (ADR 0759).
+#[gpui::test]
+fn the_unread_mentions_add_the_mark_and_keep_the_menu(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let before = shown(&mut window);
+    assert!(!before.icon().mention);
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.set_tray_mentions(2, cx));
+    window.settle();
+    let marked = shown(&mut window);
+    assert!(marked.icon().mention);
+    assert_eq!(
+        marked.tooltip(),
+        format!("{}, 2 unread mentions", text::NOT_IN_A_CALL)
+    );
+    assert_eq!(marked.generation, before.generation);
+    // The same number again tells the tray nothing.
+    let told = tray(&mut window).told().len();
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.set_tray_mentions(2, cx));
+    window.settle();
+    assert_eq!(tray(&mut window).told().len(), told);
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.set_tray_mentions(0, cx));
+    window.settle();
+    assert!(!shown(&mut window).icon().mention);
 }
