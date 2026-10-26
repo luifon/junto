@@ -8,23 +8,27 @@ use junto_protocol::server::ServerInfo;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::address::ServerAddress;
+use crate::arrangement::{ArrangeError, Arrangement, Change};
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 6;
+pub const BOOK_FORMAT_VERSION: u32 = 7;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
-    migrations: &[unchanged, unchanged, unchanged, unchanged, unchanged],
+    migrations: &[
+        unchanged, unchanged, unchanged, unchanged, unchanged, unchanged,
+    ],
     limit: 4 * 1024 * 1024,
 };
 
 /// Version 2 added the state `refused` of the profile preset, version 3 the moderation
 /// notices that the person put away, version 4 the logout of the person, and version 5 the
 /// memberships `inactive` and `deleted` (ADR 0121), version 6 the kept keys of removed
-/// servers (ADR 0712). Every book of an earlier version is a
+/// servers (ADR 0712), version 7 the arrangement of the person (ADR 0775). Every book of an
+/// earlier version is a
 /// book of the next one, with no notice put away and no logout; the version tells an older
 /// client that it cannot read the file, so that it does not drop the field or the entry
 /// when it writes the book.
@@ -273,6 +277,14 @@ struct BookFile {
     servers: Vec<ServerEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     kept_keys: Vec<KeptKey>,
+    #[serde(default, skip_serializing_if = "Arrangement::is_empty")]
+    arrangement: Arrangement,
+}
+
+impl BookFile {
+    fn order(&self) -> Vec<ServerId> {
+        self.servers.iter().map(|entry| entry.server_id).collect()
+    }
 }
 
 /// How many kept keys the book records at most.
@@ -307,6 +319,8 @@ pub enum BookError {
     },
     #[error("the server {server_id} is not saved")]
     NotSaved { server_id: ServerId },
+    #[error(transparent)]
+    Arrange(#[from] ArrangeError),
 }
 
 /// The server book of one data directory. Every change reads the file again under the lock
@@ -325,6 +339,11 @@ impl ServerBook {
         Ok(self.file()?.servers)
     }
 
+    /// The arrangement of the person for the servers of the book (ADR 0775).
+    pub fn arrangement(&self) -> Result<Arrangement, StorageError> {
+        Ok(self.file()?.arrangement)
+    }
+
     /// The kept keys of removed servers (ADR 0712).
     pub fn kept_keys(&self) -> Result<Vec<KeptKey>, StorageError> {
         Ok(self.file()?.kept_keys)
@@ -337,6 +356,7 @@ impl ServerBook {
                 format_version: BOOK_FORMAT_VERSION,
                 servers: Vec::new(),
                 kept_keys: Vec::new(),
+                arrangement: Arrangement::default(),
             });
         };
         let corrupted = |detail: String| BOOK.corrupted(files, detail);
@@ -354,6 +374,9 @@ impl ServerBook {
         if file.kept_keys.len() > MOST_KEPT_KEYS {
             return Err(corrupted("too many kept keys".to_owned()));
         }
+        file.arrangement.check().map_err(corrupted)?;
+        let mut file = file;
+        file.arrangement = file.arrangement.normalised(&file.order());
         Ok(file)
     }
 
@@ -507,6 +530,29 @@ impl ServerBook {
         })
     }
 
+    /// Makes one change of the arrangement under the lock of the book and returns the keys
+    /// of all entries in the new order with the new arrangement. A change that names a
+    /// server or a group that the file does not hold changes nothing.
+    pub(crate) fn arrange(
+        &self,
+        change: Change,
+    ) -> Result<(Vec<EntryKey>, Arrangement), BookError> {
+        self.change_file(|file| {
+            let mut order = file.order();
+            file.arrangement.apply(&mut order, change)?;
+            file.servers.sort_by_key(|entry| {
+                order
+                    .iter()
+                    .position(|server| *server == entry.server_id)
+                    .unwrap_or(usize::MAX)
+            });
+            Ok::<_, BookError>((
+                file.servers.iter().map(ServerEntry::key).collect(),
+                file.arrangement.clone(),
+            ))
+        })
+    }
+
     /// True while the book has the entry that `key` names. The caller holds the lock.
     pub(crate) fn has(&self, key: EntryKey) -> Result<bool, StorageError> {
         Ok(self.entries()?.iter().any(|entry| entry.key() == key))
@@ -529,9 +575,16 @@ impl ServerBook {
     ) -> Result<R, E> {
         let _lock = self.data_dir.lock().map_err(BookError::from)?;
         let mut file = self.file().map_err(BookError::from)?;
-        let (servers, kept_keys) = (file.servers.clone(), file.kept_keys.clone());
+        let (servers, kept_keys, arrangement) = (
+            file.servers.clone(),
+            file.kept_keys.clone(),
+            file.arrangement.clone(),
+        );
         let result = change(&mut file)?;
-        if file.servers == servers && file.kept_keys == kept_keys {
+        // A removed server takes its place in the arrangement with it.
+        file.arrangement = file.arrangement.normalised(&file.order());
+        if file.servers == servers && file.kept_keys == kept_keys && file.arrangement == arrangement
+        {
             return Ok(result);
         }
         let files = self.data_dir.files();
@@ -1018,6 +1071,137 @@ mod tests {
     }
 
     #[test]
+    fn the_arrangement_is_written_with_the_order_and_a_book_of_version_6_has_none() {
+        use crate::arrangement::{GroupColour, Item, Spot};
+        use junto_protocol::ids::WorkspaceId;
+
+        let (_directory, data_dir, book) = book();
+        let written = br#"{"format_version":6,"servers":[
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","generation":7,
+             "address":"https://acme.example.test","name":"Acme","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"none"},"last_cursor":null},
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000002","generation":8,
+             "address":"https://globex.example.test","name":"Globex","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"none"},"last_cursor":null},
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000003","generation":9,
+             "address":"https://initech.example.test","name":"Initech","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"none"},"last_cursor":null}],
+            "kept_keys":[]}"#;
+        fs::write(data_dir.book_file(), written).unwrap();
+        assert!(book.arrangement().unwrap().is_empty());
+        let [first, second, third] = <[ServerEntry; 3]>::try_from(book.entries().unwrap())
+            .unwrap_or_else(|_| panic!("three entries"));
+
+        // The third server dropped on the first: a group of the two at the first place.
+        let (order, arrangement) = book
+            .arrange(Change::GroupWith {
+                server: third.server_id,
+                target: first.server_id,
+            })
+            .unwrap();
+        assert_eq!(order, [first.key(), third.key(), second.key()]);
+        assert_eq!(stored_order(&data_dir), ids(&[&first, &third, &second]));
+        let group = arrangement.group_of(first.server_id).unwrap();
+        book.arrange(Change::RenameGroup {
+            group,
+            name: "Work".to_owned(),
+        })
+        .unwrap();
+        book.arrange(Change::ColourGroup {
+            group,
+            colour: GroupColour::Olive,
+        })
+        .unwrap();
+        book.arrange(Change::CollapseGroup {
+            group,
+            collapsed: true,
+        })
+        .unwrap();
+        book.arrange(Change::CollapseWorkspaces {
+            server: second.server_id,
+            collapsed: true,
+        })
+        .unwrap();
+        let workspaces = [WorkspaceId::generate(), WorkspaceId::generate()];
+        book.arrange(Change::MoveWorkspace {
+            server: second.server_id,
+            workspace: workspaces[1],
+            to: crate::arrangement::WorkspaceSpot::Before(workspaces[0]),
+            shown: workspaces.to_vec(),
+        })
+        .unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
+        assert_eq!(stored["arrangement"]["groups"][0]["name"], "Work");
+        assert_eq!(stored["arrangement"]["groups"][0]["colour"], "olive");
+        assert_eq!(stored["arrangement"]["groups"][0]["collapsed"], true);
+
+        // A second reader of the file finds the same arrangement.
+        let again = ServerBook::new(DataDir::open(data_dir.root()).unwrap());
+        let read = again.arrangement().unwrap();
+        let held = read.group(group).unwrap();
+        assert_eq!(
+            (held.name.as_str(), held.colour, held.collapsed),
+            ("Work", GroupColour::Olive, true)
+        );
+        assert_eq!(read.group_of(third.server_id), Some(group));
+        assert_eq!(read.group_of(second.server_id), None);
+        assert!(read.workspaces_collapsed(second.server_id));
+        assert_eq!(
+            read.place(second.server_id).unwrap().workspace_order,
+            [workspaces[1], workspaces[0]]
+        );
+
+        // A server that leaves the book takes its place in a group with it; the group
+        // that it leaves empty goes.
+        book.arrange(Change::MoveServer {
+            server: third.server_id,
+            to: Spot::After(Item::Server(second.server_id)),
+        })
+        .unwrap();
+        book.remove(first.key(), || Ok::<(), BookError>(()))
+            .unwrap();
+        let read = book.arrangement().unwrap();
+        assert!(read.groups.is_empty());
+        assert_eq!(read.group_of(first.server_id), None);
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert!(stored["arrangement"]["groups"].is_null());
+
+        // A change that names a server that the book does not hold changes nothing.
+        assert!(matches!(
+            book.arrange(Change::NewGroup {
+                server: first.server_id,
+                name: String::new(),
+            }),
+            Err(BookError::Arrange(_))
+        ));
+    }
+
+    #[test]
+    fn an_arrangement_outside_its_bounds_is_a_corrupted_book() {
+        let (_directory, data_dir, book) = book();
+        let written = br#"{"format_version":7,"servers":[
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","generation":7,
+             "address":"https://acme.example.test","name":"Acme","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"none"},"last_cursor":null}],
+            "arrangement":{"servers":[
+              {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","workspaces_collapsed":true},
+              {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001"}]}}"#;
+        fs::write(data_dir.book_file(), written).unwrap();
+        assert!(matches!(
+            book.entries(),
+            Err(StorageError::Corrupted { .. })
+        ));
+    }
+
+    #[test]
     fn a_position_past_the_end_is_the_end() {
         let (_directory, data_dir, book) = book();
         let [first, second, third] = three(&book);
@@ -1217,13 +1401,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":7,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":8,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 7,
-                supported: 6,
+                found: 8,
+                supported: 7,
                 ..
             })
         ));

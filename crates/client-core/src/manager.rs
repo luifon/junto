@@ -26,6 +26,7 @@ use crate::api::{
     RetryPolicy, ServerApi, Session, Transport, TransportError, TransportErrorKind, logo_at,
     server_info,
 };
+use crate::arrangement::{Arrangement, Change};
 use crate::book::{
     BookError, ConnectionMode, EntryKey, Membership, Owner, ProfileSync, ServerBook, ServerEntry,
 };
@@ -158,6 +159,9 @@ pub(crate) struct Inner {
     /// Held from the move of an entry in the book to the new order of `servers`, so that
     /// two moves give `servers` the order of the later one.
     moving: Mutex<()>,
+    /// The arrangement of the person as the book held it at the start and after each
+    /// change of this client (ADR 0775).
+    arrangement: Mutex<Arrangement>,
 }
 
 impl Inner {
@@ -183,6 +187,7 @@ impl Client {
         let data_dir = DataDir::open(options.data_dir)?;
         let book = ServerBook::new(data_dir.clone());
         let entries = book.entries()?;
+        let arrangement = book.arrangement()?;
         let profile = ProfileStore::new(data_dir.clone());
         profile.load()?;
         let transport = match options.transport {
@@ -233,6 +238,7 @@ impl Client {
                 core,
                 servers: Mutex::new(servers),
                 moving: Mutex::new(()),
+                arrangement: Mutex::new(arrangement),
             }),
         })
     }
@@ -439,6 +445,35 @@ impl Client {
                 .unwrap_or(usize::MAX)
         };
         lock(&self.inner.servers).sort_by_key(place);
+        self.inner.core.notify();
+        Ok(())
+    }
+
+    /// The arrangement of the person for the servers of [`Client::servers`]: the groups,
+    /// the order of the workspaces and what is collapsed (ADR 0775).
+    pub fn arrangement(&self) -> Arrangement {
+        let order: Vec<ServerId> = lock(&self.inner.servers)
+            .iter()
+            .map(|server| server.id)
+            .collect();
+        lock(&self.inner.arrangement).normalised(&order)
+    }
+
+    /// Makes one change of the arrangement in the server book, and takes the order of the
+    /// servers and the arrangement that the book holds after it. A change that names a
+    /// server or a group that the book does not hold changes nothing. The client tells a
+    /// change after it.
+    pub fn arrange(&self, change: Change) -> Result<(), BookError> {
+        let _moving = lock(&self.inner.moving);
+        let (order, arrangement) = self.inner.core.book.arrange(change)?;
+        let place = |server: &Arc<Server>| {
+            order
+                .iter()
+                .position(|key| *key == server.key)
+                .unwrap_or(usize::MAX)
+        };
+        lock(&self.inner.servers).sort_by_key(place);
+        *lock(&self.inner.arrangement) = arrangement;
         self.inner.core.notify();
         Ok(())
     }

@@ -7,6 +7,7 @@
 pub mod address;
 pub mod api;
 pub mod app_identity;
+pub mod arrangement;
 pub mod book;
 pub mod console;
 pub mod events;
