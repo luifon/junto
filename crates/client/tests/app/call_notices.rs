@@ -196,16 +196,17 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
         texts,
         ["first, @Luca", "in the old channel, @Luca", "last, @Luca"]
     );
-    // The call window draws the newest notice at the bottom, as the main window does.
-    let oldest = bounds_of(
+    // The call window draws the newest notice at the bottom, as the main window does. The
+    // list opens at its end, so the older of the two newest rows is drawn above it.
+    let older = bounds_of(
         &mut detached,
-        selector(format!("notice:{}", panel.rows[0].id)),
+        selector(format!("notice:{}", panel.rows[1].id)),
     );
     let newest = bounds_of(
         &mut detached,
         selector(format!("notice:{}", panel.rows[2].id)),
     );
-    assert!(oldest.bottom() <= newest.top() + gpui::px(1.0));
+    assert!(older.bottom() <= newest.top() + gpui::px(1.0));
     assert!(!window.shows("notices-panel"));
 
     // A press on the newest row: the main window shows the message in its channel, comes

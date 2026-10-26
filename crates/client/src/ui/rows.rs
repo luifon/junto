@@ -217,7 +217,18 @@ impl RenderOnce for CategoryHeader {
                     .truncate()
                     .child(self.name),
             )
-            .when_some(self.count, |header, count| header.child(Badge::new(count)))
+            // The count, taller than the name, keeps the height of the header: the rows
+            // under it do not move when a count appears (ADR 0730).
+            .when_some(self.count, |header, count| {
+                header.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h(gpui::px(0.0))
+                        .child(Badge::new(count)),
+                )
+            })
             .child(
                 div()
                     .flex_1()

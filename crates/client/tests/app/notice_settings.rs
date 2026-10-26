@@ -230,9 +230,9 @@ fn a_person_sets_the_level_of_a_workspace_and_gives_a_channel_back_to_it(cx: &mu
     window.until("the three notices", |window| {
         window.notice_texts()
             == [
-                "only this, @Luca",
-                "for the workspace again",
                 "for the workspace",
+                "for the workspace again",
+                "only this, @Luca",
             ]
     });
 }
@@ -346,11 +346,11 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
     window.until("the five notices", |window| {
         window.notice_texts()
             == [
-                "third step, @Luca",
-                "second step, @Luca",
-                "all of you, @everyone",
-                "first step, @Luca",
                 "editors, @Editors",
+                "first step, @Luca",
+                "all of you, @everyone",
+                "second step, @Luca",
+                "third step, @Luca",
             ]
     });
     // Every message arrived and counts as a message.
