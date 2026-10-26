@@ -79,7 +79,9 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
                         div()
                             .flex()
                             .flex_col()
-                            .flex_1()
+                            .flex_grow(1.0)
+                            .flex_shrink_0()
+                            .flex_basis(gpui::px(0.0))
                             .min_h_0()
                             .overflow_hidden()
                             .child(KeptResult { sentence: result }),

@@ -811,7 +811,13 @@ impl Shell {
                 let mut column = column
                     .child(step_title(text::account::REQUEST_TEXT_TITLE, theme))
                     .child(sentence(text::account::REQUEST_TEXT_HELP, theme));
-                let result = crate::ui::notice_slot("link-request-result").most(256.0);
+                // The request text is the content of this step, which the press of "Request
+                // links" opened: it is drawn in place, as the step itself is.
+                let result = div()
+                    .id("link-request-result")
+                    .flex()
+                    .flex_col()
+                    .flex_none();
                 let result = match (request, fingerprint) {
                     (Some(request), Some(fingerprint)) => result
                         .child(div().flex_none().mt(u(8.0)).child(text_box(

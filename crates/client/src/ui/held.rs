@@ -204,7 +204,11 @@ impl RenderOnce for Held {
                         {
                             now.shown = Some(target);
                             now.changes = now.changes.saturating_add(1);
-                            if now.changes <= MOST_CHANGES {
+                            // At its first drawing the part was laid out at the height of
+                            // its content, which needs no further frame.
+                            if bounds.size.height == target {
+                                now.changes = 0;
+                            } else if now.changes <= MOST_CHANGES {
                                 // A refresh during the drawing is lost; the next frame draws
                                 // the new height.
                                 window.defer(cx, |window, _| window.refresh());
