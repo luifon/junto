@@ -383,6 +383,7 @@ impl Person {
         &self,
         width: u32,
         since: tokio::time::Instant,
+        sender: &Person,
     ) -> Duration {
         let mut before: Option<(tokio::time::Instant, u32)> = None;
         loop {
@@ -416,9 +417,12 @@ impl Person {
                 }
                 _ => 0.0,
             };
+            // What the sender states of its encoding: a rate that its processor limits shows
+            // the cause of a slow case.
+            let sent = sender.encoding(width).await;
             crate::limit::step(format!(
                 "the picture of {width} pixels arrives at the full rate: {rate:.1} per second; \
-                 the received streams (width, decoded): {streams:?}"
+                 the received streams (width, decoded): {streams:?}; the sender: {sent}"
             ));
             if rate >= 25.0 {
                 return since.elapsed();
@@ -507,8 +511,16 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         }
         ben.capture.set_colours(GREEN, YELLOW);
 
-        // Ann shares her screen with all system sound. Cal watches it.
-        ann.calls.start_share(screen(SoundChoice::System));
+        // Ann shares her screen with all system sound, at the lowest frame rate: the test
+        // measures the rate of the share of Ben, and three engines that encode and decode
+        // share the processors of the run. Cal watches it.
+        ann.calls.start_share(CaptureRequest {
+            quality: ShareQuality {
+                frame_rate: junto_media::share::FRAME_RATES[0],
+                ..ShareQuality::default()
+            },
+            ..screen(SoundChoice::System)
+        });
         ann.until_sharing().await;
         cal.until("Cal watches the share of Ann", |view| {
             view.call
@@ -587,7 +599,7 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         let picture = cal.until_shown(ShareId::of(ben_id, 0), GREEN, YELLOW).await;
         assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
         let at_switch = ben.encoding(800).await;
-        let forwarded = cal.until_received_at_full_rate(800, switched).await;
+        let forwarded = cal.until_received_at_full_rate(800, switched, &ben).await;
         let seconds = cal.pictures_in_three_seconds(ben_id, (800, 600)).await;
         eprintln!(
             "the full rate arrived {forwarded:?} after the change of the watched share; \
