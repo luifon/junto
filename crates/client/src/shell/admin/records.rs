@@ -398,7 +398,7 @@ impl Shell {
         if ui.token_form {
             ui.token_form = false;
             ui.token_sent = false;
-            ui.space.keep(Open::NewToken);
+            ui.space.keep(Open::NewToken, text::admin::done::TOKEN_MADE);
         }
     }
 
@@ -430,7 +430,7 @@ impl Shell {
                 ui.removing = None;
                 // The row of the export stays until the state of the server removes it:
                 // until then it keeps the height of its question.
-                ui.space.keep(Open::RemoveExport(export_id));
+                ui.space.keep(Open::RemoveExport(export_id), text::admin::done::EXPORT_REMOVED);
             }
         }
     }

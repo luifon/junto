@@ -383,3 +383,4 @@ mod tests {
         assert_eq!(language_name("xx"), None);
     }
 }
+pub const CHANGE_SAVED: &str = "The change is saved.";

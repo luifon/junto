@@ -788,6 +788,11 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
         (banned.remove, banned.ban, banned.unban),
         (Ok(()), Err(Blocked::Banned), Ok(()))
     );
+    // The row keeps the height of the question while the pointer is on the confirmation,
+    // and that space states the result instead of staying empty (open item UP2).
+    assert!(window.shows("kept-result"), "the kept space of the row is empty");
+    let kept = window.cx.debug_bounds("kept-result").unwrap();
+    assert!(kept.size.height > px(20.0), "{kept:?}");
     assert!(!window.shows(sel("account-ban", bruno)) && !window.shows("account-confirm"));
     let entry_of = |action: &str| {
         let query = AuditFilterQuery {

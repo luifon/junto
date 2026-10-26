@@ -240,7 +240,7 @@ impl Shell {
         // row keeps its height, as after an answer (ADR 0730).
         if !page.has_logo && self.admin.mode == Some(Mode::RemoveLogo) {
             self.admin.mode = None;
-            self.admin.space.keep(Mode::RemoveLogo);
+            self.admin.space.keep(Mode::RemoveLogo, text::admin::done::NO_LOGO);
         }
         // Only an image has a name for a screen reader and for a test. Without the image
         // the page states in a sentence what the server has.

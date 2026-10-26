@@ -1,9 +1,14 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    DispatchPhase, Div, IntoElement, MouseMoveEvent, ParentElement, Pixels, Styled, canvas, div,
+    App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement, Pixels,
+    RenderOnce, SharedString, Styled, Window, canvas, div,
 };
+
+use super::{StyleExt, icon};
+use crate::assets::Icon;
+use crate::theme::{theme, u};
 
 /// The space of the rows that show a form or a question in place of their content (ADR
 /// 0730). `M` names the form or question of one row.
@@ -16,11 +21,17 @@ use gpui::{
 /// the page, when the page changes and when the layer closes. The space releases itself
 /// when the pointer moves above the row or beside it, where no control under the row is
 /// under the pointer. The answer therefore moves no control under the pointer.
+///
+/// The kept space under the content of the row states the result of the request, in a
+/// frame of the colour of a result that fills it, so that it is no empty band (finding of
+/// the live tests: a large empty space stayed after an action in an expanded row).
 pub struct FormSpace<M> {
     /// The open form and the height of its row as it was drawn last.
     drawn: Rc<Cell<Option<(M, Pixels)>>>,
     /// The form whose request the server did, and the height that its row had then.
     kept: Rc<Cell<Option<(M, Pixels)>>>,
+    /// The sentence of the result of the kept form.
+    result: Rc<RefCell<SharedString>>,
 }
 
 impl<M> Default for FormSpace<M> {
@@ -28,6 +39,7 @@ impl<M> Default for FormSpace<M> {
         Self {
             drawn: Rc::default(),
             kept: Rc::default(),
+            result: Rc::default(),
         }
     }
 }
@@ -57,7 +69,22 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
         match self.kept.get() {
             Some((kept, height)) if modes.contains(&kept) => {
                 let held = self.kept.clone();
-                space.min_h(height).relative().child(
+                let result = self.result.borrow().clone();
+                space
+                    .min_h(height)
+                    .relative()
+                    // The result fills the space under the content and never makes the row
+                    // taller than the kept height.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(KeptResult { sentence: result }),
+                    )
+                    .child(
                     canvas(
                         |_, _, _| {},
                         move |bounds, (), window, _| {
@@ -85,16 +112,50 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
     }
 
     /// The server did the request of the open form `open`, which closes now: its row keeps
-    /// the height that it was drawn with.
-    pub fn keep(&mut self, open: M) {
+    /// the height that it was drawn with, and states `result` in the space under its
+    /// content.
+    pub fn keep(&mut self, open: M, result: impl Into<SharedString>) {
         self.kept
             .set(self.drawn.get().filter(|(drawn, _)| *drawn == open));
+        *self.result.borrow_mut() = result.into();
     }
 
     /// The person opened or put away a form or question, the page changed or the layer
     /// closed: no row keeps a height.
     pub fn release(&mut self) {
         self.kept.set(None);
+    }
+}
+
+/// The result of a request in the space that its row keeps.
+#[derive(gpui::IntoElement)]
+struct KeptResult {
+    sentence: SharedString,
+}
+
+impl RenderOnce for KeptResult {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        div()
+            .debug_selector(|| "kept-result".to_owned())
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .items_start()
+            .gap(u(8.0))
+            .mt(u(6.0))
+            .mb(u(6.0))
+            .px(u(10.0))
+            .py(u(8.0))
+            .rounded(u(theme.metrics.radius))
+            .border_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.cypress_wash))
+            .typeface(theme.types.notice, &theme)
+            .ink(colors.ink)
+            .child(icon(Icon::Check, 15.0, colors.cypress_ink))
+            .child(div().flex_1().min_w_0().child(self.sentence))
     }
 }
 

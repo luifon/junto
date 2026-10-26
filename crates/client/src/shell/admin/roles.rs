@@ -41,6 +41,17 @@ pub enum Open {
     Delete(RoleRef),
 }
 
+impl Open {
+    /// The result of the request of the form or question (ADR 0730).
+    pub(crate) fn done(self) -> &'static str {
+        match self {
+            Self::Create => text::admin::done::ROLE_CREATED,
+            Self::Rename(_) => text::admin::done::NAME_SAVED,
+            Self::Delete(_) => text::admin::done::ROLE_DELETED,
+        }
+    }
+}
+
 /// What the pages of the roles hold of the window itself.
 pub(crate) struct Ui {
     /// The name of a new role, or the new name of a role.
@@ -250,7 +261,7 @@ impl Shell {
                 // The answer arrives while the person can be pointing at a control under
                 // the row: the row keeps the height of its form.
                 if let Some(open) = self.admin.roles.open.take() {
-                    self.admin.roles.space.keep(open);
+                    self.admin.roles.space.keep(open, open.done());
                 }
                 self.admin.roles.invalid = None;
                 let field = self.admin.roles.name.clone();
@@ -574,7 +585,7 @@ impl Shell {
             // A change of the state closes the form: the row keeps its height, as after
             // an answer.
             if let Some(open) = self.admin.roles.open.take() {
-                self.admin.roles.space.keep(open);
+                self.admin.roles.space.keep(open, text::admin::done::ROLE_CHANGED_ELSEWHERE);
             }
             self.admin.roles.sent = None;
         }

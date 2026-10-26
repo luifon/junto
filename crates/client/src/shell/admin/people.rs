@@ -64,6 +64,54 @@ pub enum Open {
     NewInvite,
 }
 
+impl Open {
+    /// The result of the request of the question or form (ADR 0730), with the name of the
+    /// account as the page lists it.
+    pub(crate) fn done(self, view: &AdminView) -> String {
+        let name = |account_id: AccountId| {
+            person_name(view, account_id).unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+        };
+        match self {
+            Self::RemoveAccount(account_id) => {
+                text::admin::done::removed_from_server(&name(account_id))
+            }
+            Self::BanAccount(account_id) => text::admin::done::banned(&name(account_id)),
+            Self::RemoveMember(account_id) => {
+                text::admin::done::removed_from_workspace(&name(account_id))
+            }
+            Self::RecoverAccount(account_id) => text::admin::done::recovered(&name(account_id)),
+            Self::NewInvite => text::admin::done::INVITE_MADE.to_owned(),
+        }
+    }
+}
+
+/// The name of an account on the page of the people or of the members.
+fn person_name(view: &AdminView, account_id: AccountId) -> Option<String> {
+    match &view.scope {
+        Scope::Server {
+            page: ServerPage::People(page),
+            ..
+        } => match &page.accounts {
+            Listed::Loaded(accounts) => accounts
+                .iter()
+                .find(|account| account.id == account_id)
+                .map(|account| account.name.clone()),
+            _ => None,
+        },
+        Scope::Server {
+            page: ServerPage::Members(page),
+            ..
+        } => match &page.members {
+            MemberList::Loaded(members) => members
+                .iter()
+                .find(|member| member.account_id == account_id)
+                .map(|member| member.name.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The number of uses of a new invite: one of the offered numbers, or the typed one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Uses {
@@ -612,7 +660,8 @@ impl Shell {
                 // The answer arrives while the person can be pointing at a control under
                 // the row: the row keeps the height of its question or form.
                 if let Some(open) = self.admin.people.open.take() {
-                    self.admin.people.space.keep(open);
+                    let done = open.done(view);
+                    self.admin.people.space.keep(open, done);
                 }
                 self.admin.people.invalid = None;
                 self.reset_invite_form(window, cx);
@@ -624,7 +673,7 @@ impl Shell {
     /// after an answer.
     fn put_away_people_open(&mut self) {
         if let Some(open) = self.admin.people.open.take() {
-            self.admin.people.space.keep(open);
+            self.admin.people.space.keep(open, text::admin::done::ACCOUNT_CHANGED_ELSEWHERE);
         }
         self.admin.people.sent = None;
     }

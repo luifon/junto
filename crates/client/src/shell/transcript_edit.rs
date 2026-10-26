@@ -252,7 +252,7 @@ impl Shell {
                 edit.invalid = None;
                 edit.incoming = None;
                 edit.read = None;
-                edit.space.keep(key);
+                edit.space.keep(key, txt::CHANGE_SAVED);
                 let field = edit.field.clone();
                 field.update(cx, |field, cx| field.set_value("", window, cx));
             }

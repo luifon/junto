@@ -753,3 +753,10 @@ mod tests {
         );
     }
 }
+
+/// The results of the forms and questions of the account layer, drawn in the space that a
+/// row keeps after the answer (ADR 0730).
+pub const DEVICE_NAME_SAVED: &str = "The new name of the device is saved.";
+pub const DEVICE_REMOVED: &str = "The device is removed.";
+pub const WORKSPACE_LEFT: &str = "You left the workspace.";
+pub const ACCOUNT_DELETED: &str = "The account is deleted.";

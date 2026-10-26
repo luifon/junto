@@ -1893,7 +1893,190 @@ fn draw_glossary(studio: &mut Studio) -> Result<(), String> {
     )
 }
 
+/// The pages of the administration with one row, and after the answer to a form or a
+/// question that a row showed while the pointer stays on it: the row keeps the height of
+/// the form and states the result there (ADR 0730).
+fn draw_page_states(studio: &mut Studio) -> Result<(), String> {
+    let answer = |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+        shell.answer_open_admin_form(cx);
+    };
+    studio.draw(
+        Screen::new(
+            "admin-workspaces-one",
+            servers(|model| {
+                owner(model);
+                model.workspaces.truncate(1);
+            }),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Workspaces, window, cx),
+    )?;
+    studio.draw_answered(
+        Screen::new("admin-workspace-renamed", servers(owner)),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Workspaces, window, cx);
+            let mode = Mode::RenameWorkspace(id(CLIENT_ALPHA));
+            shell.set_admin_mode(Some(mode), "Client Alpha", window, cx);
+            shell.type_admin_name("Alpha Partners", window, cx);
+        },
+        answer,
+    )?;
+    let only_self = || {
+        with_accounts(Collection::Loaded(
+            accounts("Luca")
+                .into_iter()
+                .filter(|account| account.name == "Luca")
+                .collect(),
+        ))
+    };
+    studio.draw(Screen::new("admin-people-one", only_self()), |shell, window, cx| {
+        open_page(shell, AdminPage::People, window, cx)
+    })?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-people-banned",
+            with_accounts(Collection::Loaded(accounts("Ana"))),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::People, window, cx);
+            let open = PeopleOpen::BanAccount(person("Carla"));
+            shell.set_people_open(Some(open), window, cx);
+            shell.type_reason("Advertisements in every channel.", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-members-one",
+            servers(|model| {
+                let workspace = Arc::make_mut(&mut model.workspaces[0]);
+                if let Loadable::Loaded(members) = &mut workspace.members {
+                    members.retain(|member| member.account_id == person("Luca"));
+                }
+            }),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Members, window, cx),
+    )?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-members-removed",
+            servers(|model| {
+                administrator(model);
+                collections(model).accounts = Collection::Loaded(accounts("Ana"));
+            }),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Members, window, cx);
+            let open = PeopleOpen::RemoveMember(person("Carla"));
+            shell.set_people_open(Some(open), window, cx);
+        },
+        answer,
+    )?;
+    fn first<T>(mut all: Vec<T>) -> Vec<T> {
+        all.truncate(1);
+        all
+    }
+    studio.draw(
+        Screen::new(
+            "admin-invites-one",
+            with_invites(Collection::Loaded(first(invites()))),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Invites, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-requests-one",
+            with_requests(Collection::Loaded(first(join_requests()))),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::JoinRequests, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-tokens-one",
+            with_tokens(Collection::Loaded(first(access_tokens()))),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Tokens, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-exports-one",
+            with_exports(Collection::Loaded(first(exports()))),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Exports, window, cx);
+            show_records(shell, AuditLog::default(), export_files(), cx);
+        },
+    )?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-export-removed",
+            with_exports(Collection::Loaded(exports())),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Exports, window, cx);
+            show_records(shell, AuditLog::default(), export_files(), cx);
+            shell.set_export_removing(Some(id(EXPORT + 3)), cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new("admin-channel-created", with_structure()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Channels, window, cx);
+            shell.set_admin_mode(Some(Mode::CreateChannel(None)), "", window, cx);
+            shell.type_admin_name("release-notes", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-archive-days-saved",
+            servers(|model| {
+                administrator(model);
+                read_archived(model, archived());
+                read_retention(model);
+            }),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Archive, window, cx);
+            let mode = Mode::Days(AskKind::ArchivePeriod);
+            shell.set_admin_mode(Some(mode), "", window, cx);
+            shell.type_admin_value("120", window, cx);
+        },
+        answer,
+    )?;
+    let one_term = |terms: &[&str]| {
+        let terms: Vec<String> = terms.iter().map(|term| (*term).to_owned()).collect();
+        servers(move |model| {
+            lead(model, &[WorkspacePermission::ManageGlossary]);
+            collections(model).glossaries = vec![(
+                id(STUDIO),
+                Collection::Loaded(GlossaryList { terms, cut: false }),
+            )];
+        })
+    };
+    studio.draw(
+        Screen::new("admin-glossary-one", one_term(&["mixdown"])),
+        |shell, window, cx| open_page(shell, AdminPage::Glossary, window, cx),
+    )?;
+    studio.draw(
+        Screen::new("admin-glossary-empty", one_term(&[])),
+        |shell, window, cx| open_page(shell, AdminPage::Glossary, window, cx),
+    )?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-glossary-term-saved",
+            one_term(&["Marta Lindqvist", "mixdown", "staging"]),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Glossary, window, cx);
+            shell.open_term_mode(Mode::ChangeTerm(1), "mixdown", window, cx);
+        },
+        answer,
+    )
+}
+
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
+    draw_page_states(studio)?;
     draw_glossary(studio)?;
     draw_notifications(studio)?;
     draw_workspaces(studio)?;
