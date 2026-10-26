@@ -1423,7 +1423,9 @@ async fn on_macos_the_own_share_and_camera_are_encoded_by_the_hardware_of_the_sy
         let mut cameras = ben.calls.camera_pictures();
         let camera = tokio::time::timeout(
             PATIENCE,
-            cameras.wait_for(|pictures| pictures.contains_key(&ShareId::of(ann_id, 0))),
+            cameras.wait_for(|pictures| {
+                pictures.contains_key(&junto_media::engine::Person::Of(ann_id))
+            }),
         )
         .await;
         assert!(camera.is_ok(), "no camera picture of Ann arrived");
