@@ -2455,6 +2455,17 @@
             "schema": {
               "$ref": "#/components/schemas/CallInvitationId"
             }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -2599,6 +2610,17 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CallMoveId"
+            }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
             }
           }
         ],
@@ -3226,6 +3248,17 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
             }
           }
         ],
@@ -5281,6 +5314,17 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
             }
           }
         ],
@@ -13696,6 +13740,15 @@
               }
             ]
           },
+          "shares": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many shares one person can run at once in this call (ADR 0502). A server from\nbefore several shares sends none: one share, which its end of a share without a\nslot ends.",
+            "minimum": 0
+          },
           "sound_block": {
             "oneOf": [
               {
@@ -17068,6 +17121,14 @@
                 "type": "null"
               }
             ]
+          },
+          "share_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The share that the device started in the slot: a new identifier for each start. A\nreport with another identifier than the share that the slot holds is a new share,\nwhich starts at the report; a report with the same identifier changes the sound and\nthe kind of the share and keeps its start. Absent from a client from before it: a\nreport changes the share of the slot."
           },
           "slot": {
             "type": "integer",
