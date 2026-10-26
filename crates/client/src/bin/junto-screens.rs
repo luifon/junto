@@ -2959,6 +2959,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("book") => book::draw(&mut studio),
         Some("logo") => logo::draw(&mut studio),
         Some("permissions") => draw_permissions(&mut studio),
+        Some("calls") => draw_calls(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
