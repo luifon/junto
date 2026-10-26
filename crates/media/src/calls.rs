@@ -2382,7 +2382,7 @@ impl Session {
                     call_id,
                     participant,
                     ..
-                } = event
+                } = &**event
                     && *call_id == self.grants.call_id
                     && participant.identity == self.place.identity()
                 {
