@@ -66,6 +66,7 @@ impl SetupSystem for WindowsSetup {
 /// identifier, so that the window of a start from the Start menu groups with its taskbar
 /// button (ADR 0755).
 fn shortcut(link: &Path, target: &Path, identifier: &str) -> std::io::Result<()> {
+    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -73,7 +74,6 @@ fn shortcut(link: &Path, target: &Path, identifier: &str) -> std::io::Result<()>
     };
     use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PSCoerceToCanonicalValue};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
     use windows::core::{HSTRING, Interface as _};
     let directory = target.parent().unwrap_or(target);
     // SAFETY: COM is used on this thread between its initialisation and its end; every
@@ -136,8 +136,7 @@ pub fn ask(title: &str, text: &str, buttons: Buttons, warning: bool) -> Answer {
         MB_ICONINFORMATION
     } | MB_SETFOREGROUND;
     // SAFETY: the strings outlive the call, which has no owner window.
-    let answer =
-        unsafe { MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), style) };
+    let answer = unsafe { MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), style) };
     if answer == IDOK || answer == IDYES || answer == IDRETRY {
         Answer::Yes
     } else if buttons == Buttons::YesNo {
@@ -152,10 +151,9 @@ pub fn runs(program: &Path) -> bool {
     let Ok(program) = program.canonicalize() else {
         return false;
     };
-    processes().into_iter().any(|path| {
-        path.canonicalize()
-            .is_ok_and(|running| running == program)
-    })
+    processes()
+        .into_iter()
+        .any(|path| path.canonicalize().is_ok_and(|running| running == program))
 }
 
 /// The program files of the processes that the account can read.
@@ -183,9 +181,11 @@ fn processes() -> Vec<PathBuf> {
         };
         let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
         while more {
-            if let Ok(process) =
-                OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, entry.th32ProcessID)
-            {
+            if let Ok(process) = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                entry.th32ProcessID,
+            ) {
                 let mut name = vec![0u16; 32768];
                 let mut length = name.len() as u32;
                 if QueryFullProcessImageNameW(
@@ -215,7 +215,10 @@ pub fn start(program: &Path, arguments: &[&std::ffi::OsStr]) -> std::io::Result<
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = std::process::Command::new(program);
     command.args(arguments).creation_flags(CREATE_NO_WINDOW);
-    if let Some(folder) = program.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+    if let Some(folder) = program
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+    {
         command.current_dir(folder);
     }
     command.spawn().map(|_| ())

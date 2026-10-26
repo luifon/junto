@@ -72,9 +72,9 @@ impl System {
             (Self::MacOs, Permission::Camera) => {
                 Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
             }
-            (Self::MacOs, Permission::Screen) => {
-                Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-            }
+            (Self::MacOs, Permission::Screen) => Some(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            ),
             (Self::MacOs, Permission::Notifications) => Some(
                 "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=org.junto.app",
             ),

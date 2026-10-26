@@ -195,7 +195,10 @@ fn linux_states_the_camera_devices_and_the_question_of_the_desktop_without_a_pag
 
     assert!(window.shows("permission-camera") && window.shows("permission-screen"));
     assert!(!window.shows("permission-microphone"));
-    assert_eq!(access(&mut window, Permission::Screen), Access::AskedAtEachUse);
+    assert_eq!(
+        access(&mut window, Permission::Screen),
+        Access::AskedAtEachUse
+    );
     // Linux has no page of settings for a program outside a sandbox: the sentence says
     // what to do, and no button opens anything.
     assert!(!window.shows("permission-action-camera"));

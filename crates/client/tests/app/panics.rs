@@ -235,7 +235,11 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
     let mut distinct = paused.clone();
     distinct.sort_unstable();
     distinct.dedup();
-    assert_eq!(distinct.len(), paused.len(), "a task panicked twice: {paused:?}");
+    assert_eq!(
+        distinct.len(),
+        paused.len(),
+        "a task panicked twice: {paused:?}"
+    );
     assert_eq!(
         panics::panics_on_this_thread(),
         before + 1 + paused.len(),

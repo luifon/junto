@@ -105,7 +105,10 @@ impl Shell {
             let button = self.permission_button(action_selector(permission), permission, cx);
             parts.push(
                 div()
-                    .id(gpui::SharedString::from(format!("permission-{}", key(permission))))
+                    .id(gpui::SharedString::from(format!(
+                        "permission-{}",
+                        key(permission)
+                    )))
                     .role(Role::Group)
                     .aria_label(format!("{name}: {sentence}"))
                     .debug_selector(move || format!("permission-{}", key(permission)))
@@ -161,7 +164,8 @@ impl Shell {
                         .h(u(30.0))
                         .px(u(12.0))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.read_permissions(cx));
+                            this.state
+                                .update(cx, |state, cx| state.read_permissions(cx));
                         })),
                 )
                 .into_any_element(),

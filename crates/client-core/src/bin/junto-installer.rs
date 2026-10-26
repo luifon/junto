@@ -30,7 +30,8 @@ mod windows_main {
     };
 
     const TITLE: &str = "Junto";
-    const USAGE: &str = "usage: Junto-<version>-windows-x86_64-setup.exe [--quiet] [--no-start] [--allow-older]
+    const USAGE: &str =
+        "usage: Junto-<version>-windows-x86_64-setup.exe [--quiet] [--no-start] [--allow-older]
        uninstall.exe [--quiet] [--remove-data]";
 
     struct Options {
@@ -98,7 +99,11 @@ mod windows_main {
         let program = match std::env::current_exe() {
             Ok(program) => program,
             Err(error) => {
-                tell(&options, &format!("Junto cannot find this program: {error}"), true);
+                tell(
+                    &options,
+                    &format!("Junto cannot find this program: {error}"),
+                    true,
+                );
                 return ExitCode::FAILURE;
             }
         };
@@ -124,7 +129,8 @@ mod windows_main {
             if options.quiet {
                 return Err(format!("Junto is running; quit it before {doing}."));
             }
-            let text = format!("Junto is running. Quit Junto, then choose Retry to continue {doing}.");
+            let text =
+                format!("Junto is running. Quit Junto, then choose Retry to continue {doing}.");
             if ask(TITLE, &text, Buttons::RetryCancel, true) != Answer::Yes {
                 return Err(format!("Junto was not changed: {doing} was cancelled."));
             }
@@ -171,11 +177,9 @@ mod windows_main {
         wait_for_quit(options, &places.program(), "the removal")?;
         // The folder holds this program, which Windows does not let a running process
         // delete: a copy outside the folder removes it after this process ended.
-        let copy = std::env::temp_dir().join(format!(
-            "junto-uninstall-{}.exe",
-            std::process::id()
-        ));
-        std::fs::copy(program, &copy).map_err(|error| format!("Junto was not removed: {error}."))?;
+        let copy = std::env::temp_dir().join(format!("junto-uninstall-{}.exe", std::process::id()));
+        std::fs::copy(program, &copy)
+            .map_err(|error| format!("Junto was not removed: {error}."))?;
         let process = std::process::id().to_string();
         let mut arguments: Vec<&OsStr> = vec![
             OsStr::new("--from-copy"),
@@ -214,7 +218,10 @@ mod windows_main {
             "ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"",
             copy.display()
         );
-        let _ = start(Path::new("cmd.exe"), &[OsStr::new("/c"), OsStr::new(&script)]);
+        let _ = start(
+            Path::new("cmd.exe"),
+            &[OsStr::new("/c"), OsStr::new(&script)],
+        );
         match last {
             Ok(()) => {
                 if !options.quiet {

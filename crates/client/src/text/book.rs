@@ -113,7 +113,10 @@ pub fn available_way(version: Version, way: &crate::state::update_install::Updat
 
 /// The steps of a newer version for a copy that does not install it itself, in the
 /// section "Version" of the settings.
-pub fn update_steps(version: Version, way: &crate::state::update_install::UpdateWay) -> Option<String> {
+pub fn update_steps(
+    version: Version,
+    way: &crate::state::update_install::UpdateWay,
+) -> Option<String> {
     use crate::state::update_install::UpdateWay;
     match way {
         UpdateWay::SystemPackage => Some(format!(

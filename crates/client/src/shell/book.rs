@@ -624,9 +624,8 @@ impl Shell {
             ),
             // A build without a source of its own installs nothing, also when the update
             // check of a test names a newer version.
-            (UpdateWay::NoSource, _) => parts.push(
-                sentence(txt::NO_INSTALL.into(), "version-no-install").into_any_element(),
-            ),
+            (UpdateWay::NoSource, _) => parts
+                .push(sentence(txt::NO_INSTALL.into(), "version-no-install").into_any_element()),
             (way, Some(newer)) => {
                 if let Some(steps) = txt::update_steps(newer, way) {
                     parts.push(sentence(steps.into(), "update-steps").into_any_element());
@@ -650,12 +649,13 @@ impl Shell {
                             )
                             .child(
                                 Button::new("copy-update-command")
-                                    .label(if self.book.copied.as_deref() == Some(command.as_str())
-                                    {
-                                        txt::ADDRESS_COPIED
-                                    } else {
-                                        txt::COPY_COMMAND
-                                    })
+                                    .label(
+                                        if self.book.copied.as_deref() == Some(command.as_str()) {
+                                            txt::ADDRESS_COPIED
+                                        } else {
+                                            txt::COPY_COMMAND
+                                        },
+                                    )
                                     .accessible_label(txt::COPY_COMMAND)
                                     .selector("copy-update-command")
                                     .h(u(30.0))
@@ -710,12 +710,9 @@ impl Shell {
                 .items_center()
                 .gap(u(8.0))
                 .mt(u(8.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(Field::new(&self.book.site, txt::DOWNLOAD_PAGE).selector("download-page")),
-                )
+                .child(div().flex_1().min_w_0().child(
+                    Field::new(&self.book.site, txt::DOWNLOAD_PAGE).selector("download-page"),
+                ))
                 .child(
                     Button::new("copy-download-page")
                         .label(if copied {

@@ -92,7 +92,9 @@ pub fn payload(setup: &Path) -> Result<Vec<u8>, Error> {
     let mut archive = vec![0; length as usize];
     file.read_exact(&mut archive)?;
     if Sha256::digest(&archive).as_slice() != digest {
-        return Err(Error::Invalid("the archive of the setup program is damaged"));
+        return Err(Error::Invalid(
+            "the archive of the setup program is damaged",
+        ));
     }
     Ok(archive)
 }

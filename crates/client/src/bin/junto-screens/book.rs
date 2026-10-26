@@ -317,8 +317,18 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
                 UpdateWay::InApp,
                 false,
             ),
-            ("book-version-available", available(Some(PAGE)), UpdateWay::InApp, false),
-            ("book-version-installed", available(Some(PAGE)), UpdateWay::InApp, true),
+            (
+                "book-version-available",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-installed",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                true,
+            ),
             (
                 "book-version-deb",
                 available(Some(PAGE)),
@@ -346,23 +356,24 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
         ];
         for (name, updates, way, installed) in ways {
             let collapsed = name.ends_with("-collapsed");
-            studio.draw(
-                Screen::new(name, three_servers(0)),
-                move |shell, _, cx| {
-                    show_updates(shell, updates, cx);
-                    shell.state().clone().update(cx, |state, cx| {
-                        state.show_update_way_fixture(way, Some(SITE), installed, cx);
-                        if collapsed {
-                            state.set_server_book_collapsed(true, cx);
-                        }
-                    });
-                },
-            )?;
+            studio.draw(Screen::new(name, three_servers(0)), move |shell, _, cx| {
+                show_updates(shell, updates, cx);
+                shell.state().clone().update(cx, |state, cx| {
+                    state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                    if collapsed {
+                        state.set_server_book_collapsed(true, cx);
+                    }
+                });
+            })?;
         }
         for (name, way, installed) in [
             ("settings-version-deb", UpdateWay::SystemPackage, false),
             ("settings-version-move-first", UpdateWay::MoveFirst, false),
-            ("settings-version-not-a-package", UpdateWay::NotAPackage, false),
+            (
+                "settings-version-not-a-package",
+                UpdateWay::NotAPackage,
+                false,
+            ),
             ("settings-version-installed", UpdateWay::InApp, true),
         ] {
             studio.draw(

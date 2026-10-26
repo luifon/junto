@@ -731,9 +731,11 @@ impl Calls {
     /// returns the state after the answer.
     pub fn request_microphone_access(&self) -> Pending<MicrophoneAccess> {
         let permission = self.inner.options.permission.clone();
-        let asking = crate::executor::on_runtime(&self.inner.runtime, async move {
-            permission.request().await
-        });
+        let asking =
+            crate::executor::on_runtime(
+                &self.inner.runtime,
+                async move { permission.request().await },
+            );
         let now = self.inner.options.permission.clone();
         Box::pin(async move { asking.await.unwrap_or_else(|_| now.state()) })
     }

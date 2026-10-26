@@ -102,8 +102,7 @@ pub fn state(system: System, permission: Permission, access: Access) -> String {
                 "macOS asks when Junto first saves a file into Downloads.".to_owned()
             }
             Permission::LocalNetwork => {
-                "macOS asks when Junto first connects to a server on your local network."
-                    .to_owned()
+                "macOS asks when Junto first connects to a server on your local network.".to_owned()
             }
             _ => "Not read yet.".to_owned(),
         },
@@ -165,18 +164,30 @@ mod tests {
                     Access::Unread,
                 ] {
                     let sentence = state(system, *permission, access);
-                    assert!(sentence.ends_with('.'), "{system:?} {permission:?} {access:?}");
+                    assert!(
+                        sentence.ends_with('.'),
+                        "{system:?} {permission:?} {access:?}"
+                    );
                 }
             }
         }
         // A refusal on macOS names the page and the step for a copy whose entry macOS
         // keeps from an earlier signature.
         let refused = state(System::MacOs, Permission::Screen, Access::Refused);
-        assert!(refused.contains("Screen & System Audio Recording"), "{refused}");
+        assert!(
+            refused.contains("Screen & System Audio Recording"),
+            "{refused}"
+        );
         assert!(refused.contains("minus button"), "{refused}");
         let windows = state(System::Windows, Permission::Microphone, Access::Refused);
-        assert!(windows.contains("Let desktop apps access your microphone"), "{windows}");
-        assert_eq!(action_label(System::Windows, Action::OpenSettings), "Open Settings");
+        assert!(
+            windows.contains("Let desktop apps access your microphone"),
+            "{windows}"
+        );
+        assert_eq!(
+            action_label(System::Windows, Action::OpenSettings),
+            "Open Settings"
+        );
         assert_eq!(
             action_label(System::MacOs, Action::OpenSettings),
             "Open System Settings"

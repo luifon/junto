@@ -203,7 +203,8 @@ fn check_update_through_the_window(
     // The check of the start of the event streams finds the newer version: one request.
     // The state can hold its answer before the observer exists, so the step runs once now.
     let observed = step.clone();
-    cx.observe(state, move |state, cx| observed(state, cx)).detach();
+    cx.observe(state, move |state, cx| observed(state, cx))
+        .detach();
     let first = state.clone();
     cx.defer(move |cx| step(first, cx));
     cx.spawn(async move |cx| {
@@ -400,7 +401,10 @@ fn main() -> ExitCode {
     let update_source = arguments.update_source;
     // A restart after an update starts the same data directory (ADR 0780).
     let restart_arguments: Vec<std::ffi::OsString> = if chosen_dir {
-        vec!["--data-dir".into(), client.data_dir().root().as_os_str().to_owned()]
+        vec![
+            "--data-dir".into(),
+            client.data_dir().root().as_os_str().to_owned(),
+        ]
     } else {
         Vec::new()
     };
@@ -418,7 +422,9 @@ fn main() -> ExitCode {
             }
             let state = app::state(client, start, cx);
             if update_source.is_some() {
-                state.update(cx, |state, _| state.use_update_source(update_source.clone()));
+                state.update(cx, |state, _| {
+                    state.use_update_source(update_source.clone())
+                });
             }
             if check_update {
                 check_update_through_the_window(&state, reached.clone(), cx);
@@ -469,9 +475,8 @@ mod tests {
 
     #[test]
     fn only_a_test_configuration_takes_another_update_source_and_checks_the_update() {
-        let arguments = || {
-            ["--update-source", "http://127.0.0.1:1/", "--check-update"].map(str::to_owned)
-        };
+        let arguments =
+            || ["--update-source", "http://127.0.0.1:1/", "--check-update"].map(str::to_owned);
         assert!(matches!(
             parse(arguments().into_iter(), true),
             Ok(Parsed::Run(Arguments { update_source: Some(source), check_update: true, .. }))

@@ -818,7 +818,9 @@ impl AppState {
                 // starts, is recorded by the hook and ends this update only. The task then waits
                 // before it takes the next reports, so that an update that panics at each run
                 // returns to the event loop between two runs (ADR 0757).
-                match update_once("reports", &this, cx, |this, cx| this.panics_recorded(batch, cx)) {
+                match update_once("reports", &this, cx, |this, cx| {
+                    this.panics_recorded(batch, cx)
+                }) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -831,7 +833,9 @@ impl AppState {
         let retry = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(retry_interval).await;
-                if let Updated::Gone = update_once("retry", &this, cx, |this, cx| this.retry_unreached(cx)) {
+                if let Updated::Gone =
+                    update_once("retry", &this, cx, |this, cx| this.retry_unreached(cx))
+                {
                     break;
                 }
             }

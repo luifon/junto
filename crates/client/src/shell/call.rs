@@ -1971,20 +1971,25 @@ impl Shell {
                     )]))
                     .when(retry, |column| {
                         column.child(
-                            div().flex().gap(u(6.0)).mt(u(6.0)).children(permission).child(
-                                Button::new("warning-retry-microphone")
-                                    .label(text::TRY_AGAIN)
-                                    .icon(Icon::Retry)
-                                    .selector("warning-retry-microphone")
-                                    .on_click({
-                                        let seat = seat.clone();
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.state.update(cx, |state, cx| {
-                                                state.retry_microphone(seat.as_ref(), cx);
-                                            });
-                                        })
-                                    }),
-                            ),
+                            div()
+                                .flex()
+                                .gap(u(6.0))
+                                .mt(u(6.0))
+                                .children(permission)
+                                .child(
+                                    Button::new("warning-retry-microphone")
+                                        .label(text::TRY_AGAIN)
+                                        .icon(Icon::Retry)
+                                        .selector("warning-retry-microphone")
+                                        .on_click({
+                                            let seat = seat.clone();
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.state.update(cx, |state, cx| {
+                                                    state.retry_microphone(seat.as_ref(), cx);
+                                                });
+                                            })
+                                        }),
+                                ),
                         )
                     }),
             )

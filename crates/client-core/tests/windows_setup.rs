@@ -88,7 +88,9 @@ fn a_setup_program_holds_the_archive_of_the_folder_and_refuses_a_damaged_one() {
     let root = tempfile::tempdir().unwrap();
     let setup_file = setup_program(root.path(), "0.1.0");
     assert!(setup::holds_payload(&setup_file));
-    assert!(!setup::holds_payload(&root.path().join("junto-installer.exe")));
+    assert!(!setup::holds_payload(
+        &root.path().join("junto-installer.exe")
+    ));
     let bytes = fs::read(&setup_file).unwrap();
     assert!(bytes.starts_with(b"MZ the installer program"));
     assert!(!setup::payload(&setup_file).unwrap().is_empty());
@@ -129,7 +131,10 @@ fn the_setup_installs_for_the_account_and_a_second_setup_replaces_the_folder() {
     assert_eq!(installed.replaced, None);
     let folder = root.path().join("Local/Programs/Junto");
     assert_eq!(places.folder(), folder);
-    assert_eq!(fs::read_to_string(folder.join("junto.exe")).unwrap(), "program 0.1.0");
+    assert_eq!(
+        fs::read_to_string(folder.join("junto.exe")).unwrap(),
+        "program 0.1.0"
+    );
     assert!(folder.join("uninstall.exe").is_file());
     assert_eq!(
         system.shortcuts.borrow().as_slice(),
@@ -167,14 +172,20 @@ fn the_setup_installs_for_the_account_and_a_second_setup_replaces_the_folder() {
             .flatten()
             .all(|entry| entry.file_name() == "lock"),
         "{:?}",
-        fs::read_dir(&updates).unwrap().flatten().collect::<Vec<_>>()
+        fs::read_dir(&updates)
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>()
     );
 
     // A newer setup replaces the entries of the folder, as an update does.
     let second = setup::payload(&setup_program(root.path(), "0.1.1")).unwrap();
     let installed = setup::install(&second, &places, false, &system).unwrap();
     assert_eq!(installed.replaced, Some(Version::new(0, 1, 0)));
-    assert_eq!(fs::read_to_string(folder.join("junto.exe")).unwrap(), "program 0.1.1");
+    assert_eq!(
+        fs::read_to_string(folder.join("junto.exe")).unwrap(),
+        "program 0.1.1"
+    );
     assert_eq!(places.installed(), Some(Version::new(0, 1, 1)));
     // An older setup keeps the newer installation unless the person allows it.
     assert!(setup::install(&first, &places, false, &system).is_err());

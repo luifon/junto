@@ -14,13 +14,13 @@ use crate::updates::{NewestFuture, Release, UpdateError, UpdateSource, Version};
 
 pub mod archive;
 pub mod install;
-pub mod setup;
-#[cfg(windows)]
-pub mod setup_windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod setup;
+#[cfg(windows)]
+pub mod setup_windows;
 // Compiled on every system: its replacement by entries uses portable file operations only,
 // and the tests of the other systems check it.
 pub mod windows;
@@ -970,10 +970,7 @@ impl UpdateSource for HttpSource {
                 Ok(manifest) => {
                     let version =
                         Version::parse(&manifest.version).map_err(|_| UpdateError::Invalid)?;
-                    Ok(Release::new(
-                        version,
-                        source.notes_page(version).as_deref(),
-                    ))
+                    Ok(Release::new(version, source.notes_page(version).as_deref()))
                 }
                 Err(Error::NotNewer) => Ok(Release::new(source.current, None)),
                 Err(Error::Expired) => Err(UpdateError::Expired),

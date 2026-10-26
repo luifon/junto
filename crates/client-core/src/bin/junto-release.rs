@@ -350,11 +350,9 @@ async fn execute(args: &[String]) -> Result<(), Error> {
         }
         // The Windows setup program: the installer program followed by the archive of the
         // folder of a package directory (ADR 0728).
-        ["setup", installer, package, output] => releases::setup::write(
-            Path::new(installer),
-            Path::new(package),
-            Path::new(output),
-        ),
+        ["setup", installer, package, output] => {
+            releases::setup::write(Path::new(installer), Path::new(package), Path::new(output))
+        }
         ["update", source, application] => update(source, application).await,
         ["update-compiled", application] => {
             let source = option_env!("JUNTO_UPDATE_SOURCE")
@@ -386,7 +384,13 @@ mod tests {
         let publish = |output: &Path| {
             let created = output_directory(output)?;
             let result = package(
-                &source, output, &[key.clone()], &freshness, "0.1.0", "linux", "directory",
+                &source,
+                output,
+                &[key.clone()],
+                &freshness,
+                "0.1.0",
+                "linux",
+                "directory",
                 "x86_64",
             );
             if result.is_err() && created {
@@ -396,15 +400,25 @@ mod tests {
         };
         let new = root.path().join("new-release-directory");
         publish(&new).unwrap();
-        assert!(new.join("junto-0.1.0-linux-directory-x86_64.junto").is_file());
+        assert!(
+            new.join("junto-0.1.0-linux-directory-x86_64.junto")
+                .is_file()
+        );
         assert!(new.join("latest-linux-directory-x86_64.json").is_file());
-        assert!(new.join("release-0.1.0-linux-directory-x86_64.json").is_file());
+        assert!(
+            new.join("release-0.1.0-linux-directory-x86_64.json")
+                .is_file()
+        );
         // The macOS release command publishes into its release directory, which holds the
         // bundle already.
         let existing = root.path().join("release");
         std::fs::create_dir_all(existing.join(".bundle")).unwrap();
         publish(&existing).unwrap();
-        assert!(existing.join("latest-linux-directory-x86_64.json").is_file());
+        assert!(
+            existing
+                .join("latest-linux-directory-x86_64.json")
+                .is_file()
+        );
         // A file at the place of the directory is refused, and nothing is written.
         let file = root.path().join("a-file");
         std::fs::write(&file, b"").unwrap();

@@ -448,7 +448,9 @@ pub(crate) fn failure(error: reqwest::Error) -> TransportError {
             == Some(NO_ROUTE_TO_HOST);
         source = cause.source();
     }
-    let host = error.url().and_then(|url| url.host().map(|host| host.to_owned()));
+    let host = error
+        .url()
+        .and_then(|url| url.host().map(|host| host.to_owned()));
     if kind == TransportErrorKind::Connect
         && cfg!(target_os = "macos")
         && unreachable_host
@@ -475,8 +477,7 @@ pub(crate) fn may_be_local(host: &url::Host<String>) -> bool {
                 || (address.octets()[0] == 100 && address.octets()[1] & 0xc0 == 64)
         }
         url::Host::Ipv6(address) => {
-            (address.segments()[0] & 0xfe00) == 0xfc00
-                || (address.segments()[0] & 0xffc0) == 0xfe80
+            (address.segments()[0] & 0xfe00) == 0xfc00 || (address.segments()[0] & 0xffc0) == 0xfe80
         }
     }
 }
@@ -507,13 +508,21 @@ mod tests {
         ] {
             assert!(local(host), "{host}");
         }
-        for host in ["203.0.113.7", "127.0.0.1", "[::1]", "[2001:db8::1]", "100.128.0.1"] {
+        for host in [
+            "203.0.113.7",
+            "127.0.0.1",
+            "[::1]",
+            "[2001:db8::1]",
+            "100.128.0.1",
+        ] {
             assert!(!local(host), "{host}");
         }
         let refused = TransportError::local_network_refused("No route to host");
         assert!(refused.is_local_network_refusal());
         assert_eq!(refused.kind, TransportErrorKind::Connect);
-        assert!(!TransportError::new(TransportErrorKind::Connect, "refused").is_local_network_refusal());
+        assert!(
+            !TransportError::new(TransportErrorKind::Connect, "refused").is_local_network_refusal()
+        );
     }
 
     #[test]

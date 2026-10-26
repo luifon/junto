@@ -142,7 +142,9 @@ fn the_server_book_states_the_version_of_this_copy_below_add_server(cx: &mut Tes
     let root = tempfile::tempdir().unwrap();
     let mut window = open_with_updates(cx, root.path(), source, Version::new(1, 0, 0));
     window.choose_name("Luca");
-    window.until("the check answered", |window| line(window).sentence == "Up to date.");
+    window.until("the check answered", |window| {
+        line(window).sentence == "Up to date."
+    });
     assert!(window.shows("client-version"));
     assert!(!window.shows("client-version-action"));
     let add = window.cx.debug_bounds("address-field").unwrap();

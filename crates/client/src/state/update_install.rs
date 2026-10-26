@@ -339,7 +339,13 @@ mod tests {
             version: Version::new(0, 1, 1),
             page: None,
         };
-        let line = version_line(&view(CheckShown::Current), &UpdateWay::InApp, false, false, None);
+        let line = version_line(
+            &view(CheckShown::Current),
+            &UpdateWay::InApp,
+            false,
+            false,
+            None,
+        );
         assert_eq!(line.version, "Junto 0.1.0");
         assert_eq!(
             (line.sentence.as_str(), line.action, line.newer),
@@ -352,7 +358,10 @@ mod tests {
         let line = version_line(&view(newer()), &UpdateWay::InApp, true, false, None);
         assert_eq!(line.action, None);
         let line = version_line(&view(newer()), &UpdateWay::InApp, false, true, None);
-        assert_eq!(line.sentence, "Junto 0.1.1 is installed. Restart Junto to use it.");
+        assert_eq!(
+            line.sentence,
+            "Junto 0.1.1 is installed. Restart Junto to use it."
+        );
         assert_eq!(line.action, Some(VersionAction::Restart));
         let line = version_line(
             &view(newer()),
@@ -365,8 +374,18 @@ mod tests {
         assert_eq!(line.action, Some(VersionAction::Update));
         // A copy that does not install the update itself names its step and opens the
         // section "Version", which holds the whole steps.
-        let line = version_line(&view(newer()), &UpdateWay::SystemPackage, false, false, None);
-        assert!(line.sentence.contains("junto_0.1.1_amd64.deb"), "{}", line.sentence);
+        let line = version_line(
+            &view(newer()),
+            &UpdateWay::SystemPackage,
+            false,
+            false,
+            None,
+        );
+        assert!(
+            line.sentence.contains("junto_0.1.1_amd64.deb"),
+            "{}",
+            line.sentence
+        );
         assert_eq!(line.action, Some(VersionAction::Details));
         for way in [UpdateWay::MoveFirst, UpdateWay::NotAPackage] {
             let line = version_line(&view(newer()), &way, false, false, None);
@@ -380,7 +399,10 @@ mod tests {
             false,
             None,
         );
-        assert_eq!(line.sentence, "This build does not look for newer versions.");
+        assert_eq!(
+            line.sentence,
+            "This build does not look for newer versions."
+        );
         assert_eq!(line.action, None);
         assert_eq!(
             crate::text::book::deb_command(Version::new(0, 1, 1)),

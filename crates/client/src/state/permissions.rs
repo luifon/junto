@@ -165,9 +165,7 @@ impl AppState {
         self.known.downloads.values().any(|progress| {
             matches!(
                 progress.stage,
-                DownloadStage::Failed(TransferFailure::File(
-                    std::io::ErrorKind::PermissionDenied
-                ))
+                DownloadStage::Failed(TransferFailure::File(std::io::ErrorKind::PermissionDenied))
             )
         })
     }
@@ -295,8 +293,7 @@ impl AppState {
             let access = reading.await;
             let _ = this.update(cx, |this, cx| {
                 this.permissions.notification = Some(access.into());
-                if access == junto_client_core::notification_access::NotificationAccess::NotAsked
-                {
+                if access == junto_client_core::notification_access::NotificationAccess::NotAsked {
                     this.ask_permission(Permission::Notifications, cx);
                 }
                 cx.notify();
