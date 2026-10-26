@@ -91,6 +91,15 @@ only after its referenced archive is present, using an atomic replacement suppor
 the host. Retain the previous versioned files; overwriting a latest pointer does not
 replace those files. Do not upload a private key, keychain, signing password or test key.
 
+Write the release site with `packaging/site.py` from the retained release directories of
+every published version and the notes in `docs/releases/`, as described in
+[the release site](../packaging/README.md#the-release-site) and ADR 0727. Its `updates/`
+directory is the update source, `<base>updates/`, that the builds compile. Upload the site
+in the order that the command prints: every file except `updates/latest-*.json`, then the
+latest files. The GitHub release of the tag gets the files of `download/<version>/` of the
+site (the first-install files, the symbols file and `SHA256SUMS`), and the notes file
+`docs/releases/<version>.md` as its text.
+
 Test a first install and an update from the preceding supported release through the
 public source on every system. Check signature verification, the displayed version,
 first frame and recovery to the previous version. Publish the release notes, supported
