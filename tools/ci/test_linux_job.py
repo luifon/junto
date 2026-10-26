@@ -16,6 +16,8 @@ case "$*" in *"$FAIL_ON"*) [ -z "$FAIL_ON" ] || exit 17 ;; esac
 exit 0
 """
 DEVICE_TESTS = "cargo test --locked -p junto-media --test linux_audio --test tls_trust -- --ignored"
+SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support "
+           "--bin junto-screens -- /tmp/junto-screens")
 
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
@@ -43,6 +45,14 @@ class LinuxSteps(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn(DEVICE_TESTS, commands)
         self.assertLess(commands.index("cargo build --workspace --locked"), commands.index(DEVICE_TESTS))
+
+    def test_the_linux_job_measures_the_empty_bands_of_every_screen(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        self.assertIn(SCREENS, commands)
+        status, commands, _ = self.run_job(fail_on="--bin junto-screens")
+        self.assertEqual(status, 17)
+        self.assertEqual(commands[-1], SCREENS)
 
     def test_a_failed_test_of_sound_devices_fails_the_linux_job(self):
         status, commands, _ = self.run_job(fail_on="--test linux_audio")

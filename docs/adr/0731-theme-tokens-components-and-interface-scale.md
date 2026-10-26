@@ -47,7 +47,7 @@ Scale and narrow window:
 
 Pictures of the screens:
 
-- The tool `junto-screens` draws each screen and state with the real window code on gpui's test platform and its headless renderer, and writes PNG files. It opens no window and takes no keyboard focus. A developer compares the files with the layout and component rules of this record and the screen records.
+- The tool `junto-screens` draws each screen and state with the real window code on gpui's test platform and its headless renderer, and writes PNG files. It opens no window and takes no keyboard focus. A developer compares the files with the layout and component rules of this record and the screen records. Each run also measures every screen: the components of the window name the areas whose parts start at their top and follow each other (each scrolled list, the content of a dialog, a state panel; `ui::area`), the drawing records their bounds under `test-support`, and in the picture of the screen no band of the ground colour of an area is taller than 40 design pixels above its first part or between two parts, and an area has at least one part (`gaps::empty_bands`, ADR 0730). A screen is drawn until two frames in a row lay out the same areas, at most 8 frames, and a screen whose drawing takes longer than 120 seconds ends the program with the name of the screen (a task that never ends kept `run_until_parked` from returning, and a run once drew for 34 minutes without an end). The run ends with an error that lists every empty band. `JUNTO_SCREENS_FILES=0` measures without writing the pictures; the Linux CI job runs it (ADR 0905).
 
 ## Consequences
 
