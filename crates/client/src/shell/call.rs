@@ -526,14 +526,15 @@ impl Shell {
                     crate::ui::tile::TILE_SIZE.0 * 2.0 + crate::ui::tile::TILE_GAP,
                     crate::ui::tile::TILE_SIZE.1,
                 ));
-                // The focused tile fills the stage above one row of the size of the strip.
+                // The focused tile fills the stage above the rows of the strip: the strip
+                // wraps when its tiles do not fit across the stage.
                 let others = shown.len().saturating_sub(usize::from(focus.is_some()));
                 let (columns, size) = match focus {
                     Some(_) if others > 0 => crate::ui::tile::grid(
                         1,
                         (
                             area.0,
-                            area.1 - crate::ui::tile::STRIP_TILE_SIZE.1 - crate::ui::tile::TILE_GAP,
+                            area.1 - crate::ui::tile::strip_height(others, area.0),
                         ),
                     ),
                     Some(_) => crate::ui::tile::grid(1, area),
