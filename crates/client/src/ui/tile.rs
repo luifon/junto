@@ -67,7 +67,7 @@ pub fn grid(count: usize, stage: (f32, f32)) -> (usize, (f32, f32)) {
 #[derive(IntoElement)]
 pub struct PersonTile {
     camera_picture: Option<DrawnPicture>,
-    camera_view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
+    camera_view: Option<(junto_media::calls::Calls, junto_media::engine::Person)>,
     id: ElementId,
     name: SharedString,
     seed: u128,
@@ -110,7 +110,7 @@ impl PersonTile {
 
     pub fn camera_view(
         mut self,
-        view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
+        view: Option<(junto_media::calls::Calls, junto_media::engine::Person)>,
     ) -> Self {
         self.camera_view = view;
         self

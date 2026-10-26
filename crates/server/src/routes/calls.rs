@@ -8,9 +8,10 @@ use junto_authz::{ChannelScope, Participation, Request, WorkspacePermission};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallJoinQuery, CallMove, CallPlace, ChannelCall,
-    DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery,
-    LeaveReason, MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState,
-    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
+    DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
+    LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
+    MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
+    ReportSpeaking, UpdateCallSettings,
 };
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
@@ -284,8 +285,9 @@ pub async fn report_call_state(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Reports that the person shares a screen, and which sound the share sends. The server
-/// shows the share for as long as the media server lists a screen track of the person.
+/// Reports that the person shares a screen or a window in one slot, and which sound the
+/// share sends. A person runs up to `MAX_SHARES` shares. The server shows a share for as
+/// long as the media server lists its picture track (ADR 0510).
 #[utoipa::path(
     put,
     path = "/api/v1/call/screen-share",
@@ -301,23 +303,46 @@ pub async fn report_screen_share(
 ) -> ApiResult<StatusCode> {
     let now = app.now();
     proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    if body.slot >= MAX_SHARES {
+        return Err(ApiError::invalid(format!(
+            "a person runs at most {MAX_SHARES} shares: the slot is below {MAX_SHARES}"
+        )));
+    }
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (call, member) = own(connection, &access).await?;
-        if member.share_audio.as_deref() != Some(body.audio.stored()) {
+        let (call, _) = own(connection, &access).await?;
+        let held: Option<(String, Option<String>)> = sqlx::query_as(
+            "select audio, kind from call_shares
+             where call_id = $1 and account_id = $2 and slot = $3
+             for update",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(i16::from(body.slot))
+        .fetch_optional(&mut *connection)
+        .await?;
+        let audio = body.audio.stored();
+        let kind = body.kind.map(StoredText::stored);
+        let same = held.as_ref().is_some_and(|(held_audio, held_kind)| {
+            held_audio == audio && held_kind.as_deref() == kind
+        });
+        if !same {
             sqlx::query(
-                "update call_members
-                 set share_audio = $3, share_started_at = coalesce(share_started_at, $4)
-                 where call_id = $1 and account_id = $2",
+                "insert into call_shares (call_id, account_id, slot, kind, audio, started_at)
+                 values ($1, $2, $3, $4, $5, $6)
+                 on conflict (call_id, account_id, slot)
+                 do update set audio = excluded.audio, kind = excluded.kind",
             )
             .bind(call.id)
             .bind(access.account_id)
-            .bind(body.audio.stored())
+            .bind(i16::from(body.slot))
+            .bind(kind)
+            .bind(audio)
             .bind(now)
             .execute(&mut *connection)
             .await?;
-            if member.share_audio.is_none() {
+            if held.is_none() {
                 let started = store::Note::ScreenShareStarted;
                 store::note(connection, now, &call, started, Some(access.account_id)).await?;
             }
@@ -329,44 +354,41 @@ pub async fn report_screen_share(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Reports that the person no longer shares a screen. Meeting mode that the person runs ends.
+/// Reports that a share of the person ended, or every share without a slot. Meeting mode
+/// that the person runs ends with the last share of the person.
 #[utoipa::path(
     delete,
     path = "/api/v1/call/screen-share",
     tag = "calls",
+    params(EndScreenShareQuery),
     security(("session" = [])),
     responses((status = 204), ApiError)
 )]
 pub async fn end_screen_share(
     State(app): State<AppState>,
     bearer: Bearer,
+    ApiQuery(query): ApiQuery<EndScreenShareQuery>,
 ) -> ApiResult<StatusCode> {
     let now = app.now();
     proof::limit(&app.calls.state_reports, bearer.0, now)?;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (call, member) = own(connection, &access).await?;
-        if member.share_audio.is_some() {
+        let (call, _) = own(connection, &access).await?;
+        let ended = sqlx::query(
+            "delete from call_shares
+             where call_id = $1 and account_id = $2 and ($3::smallint is null or slot = $3)",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(query.slot.map(i16::from))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if ended > 0 {
             app.calls.mark(call.room.as_str());
-            sqlx::query(
-                "update call_members
-                 set share_audio = null, share_started_at = null, share_seen_at = null,
-                     share_missing_since = null
-                 where call_id = $1 and account_id = $2",
-            )
-            .bind(call.id)
-            .bind(access.account_id)
-            .execute(&mut *connection)
-            .await?;
             store::announce_participant(connection, now, &call, access.account_id).await?;
-            let presents = call
-                .meeting
-                .as_ref()
-                .is_some_and(|meeting| meeting.presenter == access.account_id);
-            if presents {
-                store::end_meeting(connection, now, &call, MeetingEnd::ShareStopped).await?;
-            }
+            store::end_meeting_without_share(connection, now, &call, access.account_id).await?;
         }
         Ok(())
     })?;
@@ -1520,7 +1542,7 @@ pub async fn start_meeting(
             scope: &voice.scope,
             permission: WorkspacePermission::RunMeetingMode,
         })?;
-        let (call, member) = inside(connection, &access, &voice).await?;
+        let (call, _) = inside(connection, &access, &voice).await?;
         match &call.meeting {
             Some(meeting) if meeting.presenter == access.account_id => return Ok(()),
             Some(_) => {
@@ -1530,7 +1552,8 @@ pub async fn start_meeting(
             }
             None => {}
         }
-        if member.share_seen_at.is_none() || member.share_missing_since.is_some() {
+        let shares = store::share_rows(connection, call.id, Some(access.account_id)).await?;
+        if !shares.iter().any(store::ShareRow::listed) {
             return Err(ApiError::conflict(
                 "meeting mode is turned on by a person whose screen share the media server \
                  lists",

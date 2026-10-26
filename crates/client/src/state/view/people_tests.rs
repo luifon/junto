@@ -74,6 +74,7 @@ fn call(scene: &mut Scene, people: &[AccountId]) {
                     sound_block: None,
                     hand_raised: false,
                     screen_share: None,
+                    screen_shares: Vec::new(),
                 })
                 .collect(),
             recording: None,

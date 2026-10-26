@@ -915,6 +915,9 @@ pub struct ShareCard {
     pub name: Option<String>,
     /// What is shared. Absent for a share whose track does not state it.
     pub kind: Option<ShareKind>,
+    /// The number of the share among the shares of its person of the same kind, from 1,
+    /// while the person runs two or more of that kind: "Carla's screen 2".
+    pub number: Option<usize>,
     /// The sound that the sharer chose. Absent until the server has told it.
     pub sound: Option<ShareAudio>,
     /// The share of this device has a sound that the server holds closed (ADR 0510).
@@ -943,13 +946,24 @@ impl ShareStage {
     }
 }
 
-/// The share of this device, as its button shows it.
+/// The shares of this device, as their button shows them: none, only shares that start, or
+/// at least one share that runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OwnShare {
     #[default]
     Off,
     Starting,
     Running,
+}
+
+/// One share of this device, as the menu of the share button lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnShareItem {
+    pub slot: u8,
+    /// Absent while the share starts.
+    pub kind: Option<ShareKind>,
+    /// As [`ShareCard::number`].
+    pub number: Option<usize>,
 }
 
 /// Why the last recording of the call ended without the person asking for it.
@@ -1465,6 +1479,8 @@ pub struct CallStrip {
     /// The main area shows this call.
     pub shown: bool,
     pub share: OwnShare,
+    /// The shares of this device in the order of their slots.
+    pub own_shares: Vec<OwnShareItem>,
     /// This build can capture a screen on the system that it runs on.
     pub can_share: bool,
     /// The hand of the person is raised. Absent in a direct-message call, which has no
@@ -1808,7 +1824,10 @@ fn call_people(
                 None => Microphone::Closed,
             },
             held_by: held.and_then(|block| name_of(block.by)),
-            sharing: matches!(active.share, ShareState::Running(_)),
+            sharing: active
+                .own_shares
+                .values()
+                .any(|share| matches!(share, ShareState::Running(_))),
             hand_raised: listed.is_some_and(|listed| listed.hand_raised),
             sound_off: media.calls.deafened || sound_blocked,
             sound_blocked,
@@ -1858,7 +1877,7 @@ fn call_people(
                     .microphone_block
                     .as_ref()
                     .and_then(|block| name_of(block.by)),
-                sharing: participant.screen_share.is_some(),
+                sharing: !participant.shares().is_empty(),
                 hand_raised: participant.hand_raised,
                 sound_off: participant.deafened || participant.sound_block.is_some(),
                 sound_blocked: participant.sound_block.is_some(),
@@ -2927,8 +2946,23 @@ fn device_choices(connected: &[DeviceInfo], chosen: Option<&str>) -> Vec<DeviceC
     choices
 }
 
+/// The numbers of shares of one kind of one person, while the person runs two or more of
+/// that kind: `keys` holds the person and the kind of each share, in the order of the
+/// shares.
+fn share_numbers<K: PartialEq>(keys: &[K]) -> Vec<Option<usize>> {
+    keys.iter()
+        .enumerate()
+        .map(|(index, key)| {
+            let same = keys.iter().filter(|other| *other == key).count();
+            let before = keys[..index].iter().filter(|other| *other == key).count();
+            (same > 1).then_some(before + 1)
+        })
+        .collect()
+}
+
 /// The shares of a call: the ones of the other people as the media connection shows them,
-/// with the sound that the server tells of each, and the one of this device.
+/// with the sound that the server tells of each, and the ones of this device in the order
+/// of their slots.
 fn share_stage(
     server_id: ServerId,
     active: &ActiveCall,
@@ -2941,38 +2975,82 @@ fn share_stage(
     let mut shares: Vec<ShareCard> = active
         .shares
         .iter()
-        .map(|seen| ShareCard {
-            id: ShareId::Of(seen.account_id),
-            account_id: seen.account_id,
-            name: name_of(seen.account_id),
-            kind: seen.kind,
-            sound: call
-                .and_then(|call| call.participant(seen.account_id))
-                .and_then(|participant| participant.screen_share.as_ref())
-                .map(|share| share.audio),
-            sound_held: false,
-            size: seen.size,
-            frame_rate: seen.frame_rate,
-            watched: active.watched == Some(ShareId::Of(seen.account_id)),
+        .map(|seen| {
+            let id = ShareId::of(seen.account_id, seen.slot);
+            ShareCard {
+                id,
+                account_id: seen.account_id,
+                name: name_of(seen.account_id),
+                kind: seen.kind,
+                number: None,
+                sound: call
+                    .and_then(|call| call.participant(seen.account_id))
+                    .and_then(|participant| {
+                        participant
+                            .shares()
+                            .iter()
+                            .find(|share| share.slot == seen.slot)
+                    })
+                    .map(|share| share.audio),
+                sound_held: false,
+                size: seen.size,
+                frame_rate: seen.frame_rate,
+                watched: active.watched == Some(id),
+            }
         })
         .collect();
-    if let ShareState::Running(info) = &active.share {
-        shares.push(ShareCard {
-            id: ShareId::Own,
-            account_id: model.account.id,
-            name: name_of(model.account.id),
-            kind: Some(info.kind),
-            sound: Some(info.sound),
-            sound_held: info.sound_held,
-            size: Some(info.size),
-            frame_rate: Some(info.frame_rate),
-            watched: active.watched == Some(ShareId::Own),
-        });
+    for (slot, share) in &active.own_shares {
+        if let ShareState::Running(info) = share {
+            let id = ShareId::own(*slot);
+            shares.push(ShareCard {
+                id,
+                account_id: model.account.id,
+                name: name_of(model.account.id),
+                kind: Some(info.kind),
+                number: None,
+                sound: Some(info.sound),
+                sound_held: info.sound_held,
+                size: Some(info.size),
+                frame_rate: Some(info.frame_rate),
+                watched: active.watched == Some(id),
+            });
+        }
+    }
+    let keys: Vec<(junto_media::engine::Person, Option<ShareKind>)> = shares
+        .iter()
+        .map(|share| (share.id.person, share.kind))
+        .collect();
+    for (share, number) in shares.iter_mut().zip(share_numbers(&keys)) {
+        share.number = number;
     }
     (!shares.is_empty()).then_some(ShareStage {
         shares,
         volume: known.media.voice.share_volume,
     })
+}
+
+/// The shares of this device for the menu of the share button, in the order of their slots.
+fn own_share_items(active: &ActiveCall) -> Vec<OwnShareItem> {
+    let kinds: Vec<Option<ShareKind>> = active
+        .own_shares
+        .values()
+        .map(|share| match share {
+            ShareState::Running(info) => Some(info.kind),
+            ShareState::Starting => None,
+        })
+        .collect();
+    let numbers = share_numbers(&kinds);
+    active
+        .own_shares
+        .keys()
+        .zip(kinds)
+        .zip(numbers)
+        .map(|((slot, kind), number)| OwnShareItem {
+            slot: *slot,
+            kind,
+            number: number.filter(|_| kind.is_some()),
+        })
+        .collect()
 }
 
 /// What a recording that ended with a problem tells the people of its call.
@@ -3282,7 +3360,11 @@ fn room_view(
             MeetingStart::NoPermission
         } else if active.microphone_block.is_some() {
             MeetingStart::MicrophoneBlocked
-        } else if !matches!(active.share, ShareState::Running(_)) {
+        } else if !active
+            .own_shares
+            .values()
+            .any(|share| matches!(share, ShareState::Running(_)))
+        {
             MeetingStart::NotSharing
         } else {
             MeetingStart::Possible
@@ -3502,11 +3584,18 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
         shown: shown.server == Some(active.target.server_id)
             && channel_id.is_some()
             && shown.channel == channel_id,
-        share: match active.share {
-            ShareState::Off | ShareState::Ended(_) => OwnShare::Off,
-            ShareState::Starting => OwnShare::Starting,
-            ShareState::Running(_) => OwnShare::Running,
+        share: if active
+            .own_shares
+            .values()
+            .any(|share| matches!(share, ShareState::Running(_)))
+        {
+            OwnShare::Running
+        } else if active.own_shares.is_empty() {
+            OwnShare::Off
+        } else {
+            OwnShare::Starting
         },
+        own_shares: own_share_items(active),
         can_share: known.media.can_share,
         hand_raised: channel_id
             .zip(model)
@@ -3709,10 +3798,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .call
             .as_ref()
             .filter(|_| !known.share_notice_dismissed)
-            .and_then(|call| match &call.share {
-                ShareState::Ended(error) => Some(error.clone()),
-                _ => None,
-            }),
+            .and_then(|call| call.share_ended.clone()),
     };
     view.call = call_strip(servers, known, view.shown());
     view.faces = people::faces(servers, &known.people);

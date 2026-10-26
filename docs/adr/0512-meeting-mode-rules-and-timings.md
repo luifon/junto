@@ -13,7 +13,7 @@ ADR 0505 decides meeting mode: the person who shares a screen turns it on, one p
 Start:
 
 - A person turns meeting mode on in the voice channel that the person is in, with the permission "run meeting mode".
-- The person shares a screen: the person's device has reported the share, and the media server lists the screen track (ADR 0510).
+- The person shares a screen: the person's device has reported a share, and the media server lists the picture track of that share (ADR 0510). With several shares, one listed share is enough.
 - A person whose microphone is blocked cannot turn meeting mode on. The end of meeting mode removes every microphone block of the call (ADR 0505), so a blocked person who could start it could end it at once and remove the block that a moderator set.
 - A second person who tries while meeting mode is on gets `conflict`.
 
@@ -28,8 +28,8 @@ While it is on:
 End:
 
 - The presenter turns meeting mode off from inside the call.
-- Meeting mode ends at once when the presenter's device reports the end of the share, and when the admission check ends the share because the media server has listed no screen track for 10 seconds.
-- Meeting mode ends when the presenter has not been in the call with a listed screen share for 60 seconds. The time starts when the presenter leaves the call. A presenter who returns has the rest of the 60 seconds to share again.
+- Meeting mode ends at once when the presenter's device reports the end of the presenter's last share, and when the admission check ends the last share because the media server has listed no picture track of it for 10 seconds. While another share of the presenter remains, meeting mode goes on. A client that replaces one share by another reports the new share before the end of the old one (ADR 0737), so meeting mode does not end in between.
+- Meeting mode ends when the presenter has not been in the call with a listed share for 60 seconds. The time starts when the presenter leaves the call. A presenter who returns has the rest of the 60 seconds to share again.
 - Meeting mode ends with its call: when the last person leaves a call in which it is on, the server records `call_meeting_ended` with `presenter_left` and the note of the end before it ends the call.
 - The end removes every microphone block of the call, and records `call_meeting_ended` with the reason: `turned_off`, `share_stopped` or `presenter_left`.
 

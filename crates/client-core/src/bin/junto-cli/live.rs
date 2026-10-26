@@ -272,14 +272,16 @@ async fn perform(api: &ServerApi, action: CallAction) -> Result<Vec<String>, Fai
             )])
         }
         CallAction::Share(audio) => {
-            api.report_screen_share(audio).await.map_err(failed)?;
+            api.report_screen_share(0, None, audio)
+                .await
+                .map_err(failed)?;
             Ok(vec![format!(
                 "reported: screen share, sound {}",
                 word(&audio)
             )])
         }
         CallAction::Unshare => {
-            api.end_screen_share().await.map_err(failed)?;
+            api.end_screen_share(None).await.map_err(failed)?;
             done("reported: no screen share")
         }
         CallAction::Hand(true) => {
@@ -456,9 +458,21 @@ fn participant_line(participant: &CallParticipant, speaking: Option<bool>, inden
         Some(block) => format!("by {}", block.by),
         None => "none".to_owned(),
     };
-    let screen_share = match &participant.screen_share {
-        Some(share) => format!("sound {}", word(&share.audio)),
-        None => "none".to_owned(),
+    let screen_share = if participant.shares().is_empty() {
+        "none".to_owned()
+    } else {
+        participant
+            .shares()
+            .iter()
+            .map(|share| {
+                let kind = share
+                    .kind
+                    .as_ref()
+                    .map_or_else(|| "unknown".to_owned(), word);
+                format!("slot {} {kind} sound {}", share.slot, word(&share.audio))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     let hand = if participant.hand_raised {
         "up"

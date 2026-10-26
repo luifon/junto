@@ -7,7 +7,7 @@
 //! server: who is in a call, who is blocked and when a call ends is told to it
 //! (see [`crate::calls`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -51,9 +51,10 @@ mod share;
 pub(crate) mod statistics;
 
 pub use share::{
-    DEFAULT_VIEW, MainPicture, SMALL_PICTURE, SeenShare, ShareId, ShareInfo, ShareState, watched,
+    DEFAULT_VIEW, MainPicture, Person, SMALL_PICTURE, SeenShare, ShareId, ShareInfo, ShareState,
+    watched,
 };
-use share::{OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
+use share::{MAX_SLOTS, OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
 #[cfg(feature = "test-support")]
 pub use statistics::{CameraCheck, CameraPublication, HeldEngine};
 
@@ -183,8 +184,11 @@ pub struct EngineState {
     pub input_replaced: bool,
     pub output: OutputState,
     pub output_device: Option<DeviceInfo>,
-    /// The share of this device.
-    pub share: ShareState,
+    /// The shares of this device by their slots.
+    pub own_shares: BTreeMap<u8, ShareState>,
+    /// Why the last share of this device that ended by itself ended. It stays until the
+    /// person starts a share, stops one, or puts the statement away.
+    pub share_ended: Option<CaptureError>,
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets now.
@@ -248,14 +252,17 @@ enum Command {
     Config(VoiceConfig),
     Reconnect(MediaJoin),
     RetryMicrophone,
-    /// The number is the count of share stops when the start was asked for.
-    StartShare(CaptureRequest, u64),
-    /// Ends the own share, and puts away the statement that a share ended by itself.
-    StopShare,
+    /// The numbers are the counts of the stops of each slot when the start was asked for.
+    StartShare(CaptureRequest, [u64; MAX_SLOTS]),
+    /// Ends the own share of a slot, or every own share, and puts away the statement that
+    /// a share ended by itself.
+    StopShare(Option<u8>),
+    /// Puts away the statement that a share ended by itself.
+    ForgetShareEnd,
     Watch(Option<ShareId>),
     ShareVolume(f32),
     ViewSize(u32, u32),
-    CameraViews(HashMap<ShareId, (u32, u32)>),
+    CameraViews(HashMap<Person, (u32, u32)>),
     /// Makes the call library connect anew and publish its tracks again, as it does by
     /// itself after some interruptions.
     #[cfg(feature = "test-support")]
@@ -329,7 +336,24 @@ fn replaces(used: Option<&DeviceId>, opened: &DeviceId, chosen: Option<&DeviceId
 #[derive(Debug, Default)]
 pub(crate) struct Stops {
     pub(crate) camera: AtomicU64,
-    pub(crate) share: AtomicU64,
+    /// The stops of the own share of each slot.
+    pub(crate) shares: [AtomicU64; MAX_SLOTS],
+}
+
+impl Stops {
+    pub(crate) fn share(&self, slot: u8) -> u64 {
+        self.shares
+            .get(usize::from(slot))
+            .map_or(0, |stops| stops.load(Ordering::Relaxed))
+    }
+
+    fn stop_shares(&self, slot: Option<u8>) {
+        for (index, stops) in self.shares.iter().enumerate() {
+            if slot.is_none_or(|slot| usize::from(slot) == index) {
+                stops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// The media connection of one call. Dropping it ends the connection.
@@ -338,7 +362,7 @@ pub struct Engine {
     stops: Arc<Stops>,
     #[cfg(test)]
     asked: Arc<Mutex<Vec<Asked>>>,
-    camera_pictures: watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>>,
+    camera_pictures: watch::Receiver<HashMap<Person, Arc<VideoPicture>>>,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<EngineState>,
     levels: watch::Receiver<Levels>,
@@ -379,7 +403,7 @@ impl Engine {
     pub(crate) fn gate(&self) -> Arc<CaptureLink> {
         self.link.clone()
     }
-    pub fn camera_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>> {
+    pub fn camera_pictures(&self) -> watch::Receiver<HashMap<Person, Arc<VideoPicture>>> {
         self.camera_pictures.clone()
     }
     /// Starts the connection on `runtime`. The result is in [`Engine::state`].
@@ -405,7 +429,8 @@ impl Engine {
             input_replaced: false,
             output: OutputState::Closed,
             output_device: None,
-            share: ShareState::Off,
+            own_shares: BTreeMap::new(),
+            share_ended: None,
             shares: Vec::new(),
             watched: None,
         });
@@ -470,7 +495,8 @@ impl Engine {
             publish_generation: 0,
             microphone_returns: None,
             remotes: HashMap::new(),
-            share: None,
+            own_shares: BTreeMap::new(),
+            share_ended: None,
             share_generation: 0,
             remote_pictures: HashMap::new(),
             remote_sounds: HashMap::new(),
@@ -509,19 +535,28 @@ impl Engine {
         self.small_pictures.clone()
     }
 
-    /// Starts the share of this device. The result is in [`EngineState::share`].
+    /// Starts a share of this device in its lowest free slot; the shares that run go on.
+    /// The result is in [`EngineState::own_shares`], or in [`EngineState::share_ended`]
+    /// when the person runs `MAX_SHARES` shares already.
     pub fn start_share(&self, request: CaptureRequest) {
         #[cfg(test)]
         self.asked_for(Asked::Share);
-        let stops = self.stops.share.load(Ordering::Relaxed);
+        let stops =
+            std::array::from_fn(|slot| u8::try_from(slot).map_or(0, |slot| self.stops.share(slot)));
         let _ = self.commands.send(Command::StartShare(request, stops));
     }
 
-    /// Ends the share of this device, and puts away the statement that one ended. Its
-    /// pictures and its sound are dropped from now on.
-    pub fn stop_share(&self) {
-        self.stops.share.fetch_add(1, Ordering::Relaxed);
-        let _ = self.commands.send(Command::StopShare);
+    /// Ends the share of this device in `slot`, or every share without a slot, and puts
+    /// away the statement that one ended. Its pictures and its sound are dropped from now
+    /// on.
+    pub fn stop_share(&self, slot: Option<u8>) {
+        self.stops.stop_shares(slot);
+        let _ = self.commands.send(Command::StopShare(slot));
+    }
+
+    /// Puts away the statement that a share ended by itself. The shares that run go on.
+    pub fn forget_share_end(&self) {
+        let _ = self.commands.send(Command::ForgetShareEnd);
     }
 
     /// The share that the person chose to watch.
@@ -534,8 +569,8 @@ impl Engine {
         let _ = self.commands.send(Command::ShareVolume(gain));
     }
 
-    /// The size in pixels inside which the interface draws the watched share.
-    pub fn set_camera_views(&self, views: HashMap<ShareId, (u32, u32)>) {
+    /// The size in pixels inside which the interface draws the camera of each person.
+    pub fn set_camera_views(&self, views: HashMap<Person, (u32, u32)>) {
         let _ = self.commands.send(Command::CameraViews(views));
     }
 
@@ -623,7 +658,7 @@ impl Engine {
     pub fn close(self) -> impl Future<Output = ()> + Send + 'static {
         self.link.stop_now();
         self.stops.camera.fetch_add(1, Ordering::Relaxed);
-        self.stops.share.fetch_add(1, Ordering::Relaxed);
+        self.stops.stop_shares(None);
         let (done, closed) = oneshot::channel();
         let _ = self.commands.send(Command::Close(done));
         async move {
@@ -687,9 +722,9 @@ struct Actor {
     id: u64,
     camera: Option<OwnCamera>,
     camera_generation: u64,
-    camera_views: Option<HashMap<ShareId, (u32, u32)>>,
+    camera_views: Option<HashMap<Person, (u32, u32)>>,
     remote_cameras: HashMap<TrackSid, RemoteCamera>,
-    camera_pictures: watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>,
+    camera_pictures: watch::Sender<HashMap<Person, Arc<VideoPicture>>>,
     runtime: tokio::runtime::Handle,
     options: EngineOptions,
     config: VoiceConfig,
@@ -737,8 +772,10 @@ struct Actor {
     /// publishes again.
     microphone_returns: Option<TrackSid>,
     remotes: HashMap<TrackSid, Remote>,
-    /// The share of this device.
-    share: Option<OwnShare>,
+    /// The shares of this device by their slots.
+    own_shares: BTreeMap<u8, OwnShare>,
+    /// Why the last own share that ended by itself ended, until the person acts.
+    share_ended: Option<CaptureError>,
     /// Counts the shares that were started. The result of an earlier one is not used.
     share_generation: u64,
     remote_pictures: HashMap<TrackSid, RemotePicture>,
@@ -985,7 +1022,8 @@ impl Actor {
                 }
             }
             Command::StartShare(request, stops) => self.start_share(request, stops),
-            Command::StopShare => self.end_share(None),
+            Command::StopShare(slot) => self.end_share(slot, None),
+            Command::ForgetShareEnd => self.forget_share_end(),
             Command::Watch(choice) => self.set_watch(choice),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
             Command::ViewSize(width, height) => self.set_view_size(width, height),
@@ -1335,8 +1373,8 @@ impl Actor {
         self.connected_at = None;
         self.attempt += 1;
         // A share does not outlive the connection that carried it (ADR 0737).
-        if self.share.is_some() {
-            self.end_share(Some(CaptureError::Interrupted));
+        if !self.own_shares.is_empty() {
+            self.end_share(None, Some(CaptureError::Interrupted));
         }
         self.remote_cameras.clear();
         self.camera_pictures.send_replace(HashMap::new());

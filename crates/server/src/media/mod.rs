@@ -126,6 +126,30 @@ pub struct Track {
     /// The identifier of the track on the media server. A track that is published again has
     /// a new one (ADR 0601).
     pub id: String,
+    /// The name that the publishing client gave the track. A picture track of a share names
+    /// its slot (ADR 0737).
+    pub name: String,
+}
+
+impl Track {
+    /// The slot of the share whose picture this track is, for a track of a screen share:
+    /// `screen/30/1` and `window/15/2` name slots 1 and 2. Every other name, as `screen/30`
+    /// of a client of one share or the name of another client, is slot 0 (ADR 0510).
+    pub fn share_slot(&self) -> Option<u8> {
+        (self.source == TrackSource::ScreenShare).then(|| share_slot(&self.name))
+    }
+}
+
+fn share_slot(name: &str) -> u8 {
+    let mut parts = name.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("screen" | "window"), Some(_), Some(slot), None) => slot
+            .parse::<u8>()
+            .ok()
+            .filter(|slot| *slot < junto_protocol::call::MAX_SHARES)
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// The sources that a participant may publish. The list is always explicit, so a track of an
@@ -185,6 +209,13 @@ pub struct Participant {
 impl Participant {
     pub fn publishes(&self, source: TrackSource) -> bool {
         self.tracks.iter().any(|track| track.source == source)
+    }
+
+    /// Whether the participant publishes the picture track of the share in `slot`.
+    pub fn publishes_share(&self, slot: u8) -> bool {
+        self.tracks
+            .iter()
+            .any(|track| track.share_slot() == Some(slot))
     }
 }
 
@@ -324,6 +355,28 @@ mod tests {
         let (account, seat) = first.split_once(':').unwrap();
         assert_eq!(account, account_id.to_string());
         assert_eq!(seat.len(), 32);
+    }
+
+    #[test]
+    fn the_name_of_a_picture_track_of_a_share_names_its_slot() {
+        let track = |source, name: &str| Track {
+            kind: TrackKind::Video,
+            source,
+            muted: false,
+            id: "TR_1".to_owned(),
+            name: name.to_owned(),
+        };
+        let share = |name| track(TrackSource::ScreenShare, name).share_slot();
+        assert_eq!(share("screen/30/1"), Some(1));
+        assert_eq!(share("window/15/2"), Some(2));
+        // A client of one share names no slot; another client names its track otherwise.
+        assert_eq!(share("screen/30"), Some(0));
+        assert_eq!(share(""), Some(0));
+        assert_eq!(share("my screen"), Some(0));
+        // A slot beyond the limit, or a name of another form, is slot 0.
+        assert_eq!(share("screen/30/3"), Some(0));
+        assert_eq!(share("screen/30/1/4"), Some(0));
+        assert_eq!(track(TrackSource::Camera, "screen/30/1").share_slot(), None);
     }
 
     #[test]

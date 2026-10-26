@@ -23,9 +23,9 @@ Video:
 - A recording has one MP4 file, the composite.
 - The project provides its own layout page, which the server serves and the recorder loads (ADR 0001).
 - The layout page shows the most recently started share as the main picture, with the sound of that share and all microphones. Cameras and other shares are small tiles.
-- The layout page subscribes only to the tracks that it plays or shows: the cameras, the shares, the microphones and the audio of the main share. It does not subscribe to the audio of a share that is not the main one.
+- The layout page subscribes only to the tracks that it plays or shows: the cameras, the shares, the microphones and the audio of the main share. It does not subscribe to the audio of a share that is not the main one, also when that share belongs to the person of the main share: a person can run several shares (ADR 0502), and the page takes the sound track of the main person whose name states the slot of the main share (`share-sound` is slot 0, `share-sound/1` slot 1; ADR 0737). Test: the browser scenario "two shares of one person: the main share plays the sound of its own slot".
 - The layout page requests the lowest quality layer for the small tiles. A page that subscribed to every camera at full quality made every publisher of a call with 16 cameras send its highest layer, and the recorder used its whole CPU limit.
-- The server names the main share: in the start request, and with a layout update of the running job whenever the main share changes. It sends the current value again after the recorder reconnects and after a restart of the LiveKit server. The page's own order of shares is used only when no share is named.
+- The server names the main share: in the start request, and with a layout update of the running job whenever the main share changes. The main share is the share that started last among the shares of `call_shares` whose picture track the media server lists, found by the slot in the name of the track (ADR 0510). It sends the current value again after the recorder reconnects and after a restart of the LiveKit server. The page's own order of shares is used only when no share is named.
 
 How the composite is written:
 

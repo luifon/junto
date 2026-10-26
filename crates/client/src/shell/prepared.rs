@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::RenderImage;
-use junto_media::engine::{MainPicture, ShareId};
+use junto_media::engine::{MainPicture, Person, ShareId};
 use junto_media::share::picture::VideoPicture;
 
 use super::share::render_image;
@@ -17,7 +17,7 @@ use crate::ui::DrawnPicture;
 pub(crate) struct Wanted {
     pub main: Option<Option<MainPicture>>,
     pub small: Option<HashMap<ShareId, Arc<VideoPicture>>>,
-    pub cameras: Option<HashMap<ShareId, Arc<VideoPicture>>>,
+    pub cameras: Option<HashMap<Person, Arc<VideoPicture>>>,
 }
 
 /// The pictures that the window holds when a conversion starts.
@@ -25,7 +25,7 @@ pub(crate) struct Wanted {
 pub(crate) struct Held {
     pub main: Option<Arc<VideoPicture>>,
     pub small: HashMap<ShareId, Arc<VideoPicture>>,
-    pub cameras: HashMap<ShareId, Arc<VideoPicture>>,
+    pub cameras: HashMap<Person, Arc<VideoPicture>>,
 }
 
 /// The watched share after a conversion: its newest picture, and the form that the window
@@ -38,7 +38,9 @@ pub(crate) struct ConvertedMain {
 
 /// The small pictures of the shares or the camera pictures after a conversion, each in the
 /// form that the window draws.
-pub(crate) type ConvertedPictures = HashMap<ShareId, (Arc<VideoPicture>, Option<ConvertedPicture>)>;
+/// The key is a share for the small pictures and a person for the cameras.
+pub(crate) type ConvertedPictures<K = ShareId> =
+    HashMap<K, (Arc<VideoPicture>, Option<ConvertedPicture>)>;
 
 /// The pictures of the sources that had a newer one, converted. An entry without an image
 /// is a picture that the window held when the conversion started; it was not converted
@@ -47,7 +49,7 @@ pub(crate) type ConvertedPictures = HashMap<ShareId, (Arc<VideoPicture>, Option<
 pub(crate) struct Converted {
     pub main: Option<ConvertedMain>,
     pub small: Option<ConvertedPictures>,
-    pub cameras: Option<ConvertedPictures>,
+    pub cameras: Option<ConvertedPictures<Person>>,
 }
 
 /// A picture of a camera or of the watched share in the form that the window draws.
@@ -82,15 +84,15 @@ impl ConvertedPicture {
 
 /// The pictures of the cameras or the small pictures of the shares that a window holds, each
 /// in the form that it draws.
-pub(crate) type Shown = HashMap<ShareId, (Arc<VideoPicture>, DrawnPicture)>;
+pub(crate) type Shown<K = ShareId> = HashMap<K, (Arc<VideoPicture>, DrawnPicture)>;
 
 /// Puts converted pictures in place of the ones that the window holds: a picture that the
 /// window holds is kept, and a converted one is taken; the image of a replaced picture is
 /// released from the GPU (ADR 0774). Returns whether the window holds other pictures than
 /// before, and is drawn for them.
-pub(crate) fn take<V: 'static>(
-    shown: &mut Shown,
-    pictures: ConvertedPictures,
+pub(crate) fn take<K: Eq + std::hash::Hash, V: 'static>(
+    shown: &mut Shown<K>,
+    pictures: ConvertedPictures<K>,
     cx: &mut gpui::Context<V>,
 ) -> bool {
     let mut released = Vec::new();
@@ -123,10 +125,10 @@ pub(crate) fn take<V: 'static>(
 }
 
 /// Converts each picture that the window does not hold.
-fn convert_new(
-    pictures: HashMap<ShareId, Arc<VideoPicture>>,
-    held: &HashMap<ShareId, Arc<VideoPicture>>,
-) -> ConvertedPictures {
+fn convert_new<K: Eq + std::hash::Hash>(
+    pictures: HashMap<K, Arc<VideoPicture>>,
+    held: &HashMap<K, Arc<VideoPicture>>,
+) -> ConvertedPictures<K> {
     pictures
         .into_iter()
         .map(|(id, frame)| {
@@ -189,8 +191,8 @@ mod tests {
     #[test]
     fn a_conversion_converts_the_pictures_that_the_window_does_not_hold() {
         let (one, two) = (
-            ShareId::Of(AccountId::generate()),
-            ShareId::Of(AccountId::generate()),
+            ShareId::of(AccountId::generate(), 0),
+            ShareId::of(AccountId::generate(), 1),
         );
         let (held_small, new_small, watched) = (video(2), video(3), video(4));
         let held = Held {
@@ -251,7 +253,7 @@ mod tests {
     /// systems into an image that holds the converted pixels.
     #[test]
     fn the_watched_share_is_converted_in_the_form_of_a_camera_picture() {
-        let share = ShareId::Of(AccountId::generate());
+        let share = ShareId::of(AccountId::generate(), 0);
         let converted = Wanted {
             main: Some(Some(MainPicture {
                 share,

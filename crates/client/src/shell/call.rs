@@ -1715,6 +1715,13 @@ impl Shell {
             }
             .selector("call-share")
             .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
+            let share_menu = matches!(self.layer, Layer::ShareMenu)
+                .then(|| self.render_share_menu(&strip.own_shares, cx));
+            let share = div()
+                .relative()
+                .flex_none()
+                .child(share)
+                .children(share_menu);
             // One reading of the calls gives the look of the camera control and what it
             // does: the control does what it shows, also when the call is another one at
             // the click (ADR 0788).

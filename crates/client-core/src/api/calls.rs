@@ -5,7 +5,7 @@
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
     InviteToCall, MoveParticipant, MuteDirectConversation, OwnCallView, ReportCallState,
-    ReportScreenShare, ReportSpeaking, ShareAudio, UpdateCallSettings,
+    ReportScreenShare, ReportSpeaking, ShareAudio, ShareKind, UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};
@@ -65,14 +65,25 @@ impl ServerApi {
         self.put("/call/state".to_owned(), &report).await
     }
 
-    pub async fn report_screen_share(&self, audio: ShareAudio) -> Result<(), ApiError> {
-        let report = ReportScreenShare { audio };
+    /// Reports the share of this device in `slot`, with what it shows and its sound
+    /// (ADR 0510).
+    pub async fn report_screen_share(
+        &self,
+        slot: u8,
+        kind: Option<ShareKind>,
+        audio: ShareAudio,
+    ) -> Result<(), ApiError> {
+        let report = ReportScreenShare { audio, slot, kind };
         self.put("/call/screen-share".to_owned(), &report).await
     }
 
-    pub async fn end_screen_share(&self) -> Result<(), ApiError> {
-        self.act(Method::Delete, "/call/screen-share".to_owned())
-            .await
+    /// Reports the end of the share in `slot`, or of every share of the person without one.
+    pub async fn end_screen_share(&self, slot: Option<u8>) -> Result<(), ApiError> {
+        let path = match slot {
+            Some(slot) => format!("/call/screen-share?slot={slot}"),
+            None => "/call/screen-share".to_owned(),
+        };
+        self.act(Method::Delete, path).await
     }
 
     pub async fn raise_hand(&self) -> Result<(), ApiError> {

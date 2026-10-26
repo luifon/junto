@@ -766,14 +766,14 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
                 .and_then(|panel| panel.stage)
                 .is_some_and(|stage| stage.shares.len() == 2)
     });
-    window.click_named(format!("share-card:{other}"));
+    window.click_named(format!("share-card:{other}:0"));
     window.until(
         "the share of the other person is watched and heard",
         |window| {
             direct_panel(window)
                 .and_then(|panel| panel.stage)
                 .and_then(|stage| stage.watched().map(|share| share.id))
-                == Some(ShareId::Of(other))
+                == Some(ShareId::of(other, 0))
                 && heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
         },
     );

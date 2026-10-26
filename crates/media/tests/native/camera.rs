@@ -113,7 +113,7 @@ pub async fn capture() {
     room.member(&owner, &peer, "Peer").await;
     local.enter(room.target).await;
     peer.enter(room.target).await;
-    let remote_id = junto_media::engine::ShareId::Of(account(&owner));
+    let remote_id = junto_media::engine::Person::Of(account(&owner));
     peer.calls.set_camera_view(remote_id, (640, 480));
     for session in 1..=2 {
         let before = *observed.borrow();

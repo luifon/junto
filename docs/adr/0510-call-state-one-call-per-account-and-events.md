@@ -55,9 +55,13 @@ Own state and blocks:
 
 Screen share:
 
-- The device reports that the person shares a screen and which sound the share sends: `application`, `system` or `none`. Another value is refused.
-- The share is shown from the report. The admission check ends a share when the media server has listed no screen track of the person for 10 seconds.
-- The server cannot verify the sound choice. It verifies that the screen track exists.
+- A person runs up to three shares (`MAX_SHARES`, ADR 0502). Each share has a slot from 0 to 2 that the sharing device chooses. The table `call_shares` holds one row per share: the call, the account, the slot, what it shows (`screen` or `window`, absent from a device that does not state it), its sound, its start, when the admission check first saw its picture track, and since when it misses. A row ends with its member.
+- The device reports a share with `PUT /api/v1/call/screen-share`: its slot, what it shows, and which sound it sends: `application`, `system` or `none`. Another sound, and a slot of 3 or more, are refused. A report without a slot is slot 0. A report of a slot that the server holds with the same sound and kind changes nothing; another sound or kind changes the row and keeps its start.
+- `DELETE /api/v1/call/screen-share?slot=N` ends one share; without a slot every share of the person ends.
+- The share is shown from the report. The picture track of a share names its slot (ADR 0737): `screen/30` or `window/15` is slot 0, `screen/30/1` and `window/30/2` are slots 1 and 2, and every other name counts as slot 0. The admission check ends a share when the media server has listed no picture track with the slot of that share for 10 seconds; the other shares of the person are not touched.
+- The server cannot verify the sound choice. It verifies that the picture track of each share exists.
+- A participant carries the list `screen_shares` in the order of the slots, and `screen_share`, the share of the lowest slot. A client of v0.1.0-test.1 or test.2 reads only `screen_share`, reports without a slot, ends without a slot and names its track `screen/30`: it keeps working with one share. A client of several shares that talks to a server from before reads `screen_share` alone when `screen_shares` is absent.
+- Each report or end of a share that changes the record, and each end by the admission check, publishes `call_participant_updated` with the whole participant, so the event of a change of one share carries every share of the person. Each share that starts in a voice channel writes the line `screen_share_started`; two shares of one person write two lines.
 
 Events:
 
@@ -93,7 +97,7 @@ When an account loses a place:
 
 Kept for the text chat:
 
-- The server keeps a row for each of these in the call of a voice channel: the start and the end of the call, the start of a screen share, a request to enter, a person who entered by invitation, and the start and the end of meeting mode. The text unit shows them as system lines (ADR 0501).
+- The server keeps a row for each of these in the call of a voice channel: the start and the end of the call, the start of each screen share, a request to enter, a person who entered by invitation, and the start and the end of meeting mode. The text unit shows them as system lines (ADR 0501).
 
 Limits of requests:
 
