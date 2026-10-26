@@ -13,8 +13,9 @@
 //! [`watch`] for its whole run.
 //!
 //! A test that waits for a lock that other tests hold, such as the media server of the
-//! tests of calls, calls [`restart_limit`] when it holds the lock: its limit starts again,
-//! because the holders have limits of their own, and a test fails for its own steps only.
+//! tests of calls, calls [`wait_for_others`] before the wait and [`restart_limit`] when it
+//! holds the lock: the wait does not count, because the holders have limits of their own, so
+//! a test fails for its own steps only.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -24,7 +25,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// The longest time that the body of one live test may take. A wait for a lock that other
-/// tests hold under their own limits does not count ([`restart_limit`]). All 40 tests of
+/// tests hold under their own limits does not count ([`wait_for_others`]). All 40 tests of
 /// calls of the media engine take about three minutes together.
 pub const TEST_LIMIT: Duration = Duration::from_secs(300);
 
@@ -56,27 +57,39 @@ thread_local! {
 static CHILDREN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// When the limit of a body ends, on the clock of the runtime, which a test of a limit
-/// pauses. A restart moves it on.
+/// pauses. While the body waits for others it has no end; a restart gives it its whole limit
+/// again.
 struct Deadline {
-    at: Mutex<tokio::time::Instant>,
+    /// The end, and whether the body waits for others.
+    state: Mutex<(tokio::time::Instant, bool)>,
     limit: Duration,
 }
 
 impl Deadline {
     fn new(limit: Duration) -> Arc<Self> {
         Arc::new(Self {
-            at: Mutex::new(tokio::time::Instant::now() + limit),
+            state: Mutex::new((tokio::time::Instant::now() + limit, false)),
             limit,
         })
     }
 
+    /// The end as it stands now; while the body waits for others, a whole limit from now.
     fn at(&self) -> tokio::time::Instant {
-        *self.at.lock().unwrap_or_else(PoisonError::into_inner)
+        let (at, waits) = *self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if waits {
+            tokio::time::Instant::now() + self.limit
+        } else {
+            at
+        }
+    }
+
+    fn wait_for_others(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).1 = true;
     }
 
     fn restart(&self) {
-        *self.at.lock().unwrap_or_else(PoisonError::into_inner) =
-            tokio::time::Instant::now() + self.limit;
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
+            (tokio::time::Instant::now() + self.limit, false);
     }
 }
 
@@ -86,8 +99,14 @@ tokio::task_local! {
     static RUNNING: Arc<Deadline>;
 }
 
-/// The test of this body holds a lock that other tests held under their own limits: its
-/// limit starts again, so that the time that it waited counts against the holders only.
+/// The test of this body waits for a lock that other tests hold under their own limits: the
+/// time until [`restart_limit`] does not count, because the holders end within their limits.
+/// Outside a limited body it does nothing.
+pub fn wait_for_others() {
+    let _ = RUNNING.try_with(|deadline| deadline.wait_for_others());
+}
+
+/// The test of this body holds the lock that it waited for: its whole limit starts again.
 /// Outside a limited body it does nothing.
 pub fn restart_limit() {
     let _ = RUNNING.try_with(|deadline| deadline.restart());

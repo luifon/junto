@@ -42,15 +42,16 @@ async fn a_body_that_does_not_end_is_dropped_and_fails_with_its_last_steps() {
     );
 }
 
-/// A body that waited for a lock that other tests held restarts its limit when it holds the
-/// lock: it ends after more than its limit in all, and its steps after the restart have the
-/// whole limit.
+/// A body that waits for a lock that other tests hold has no end until it holds the lock, and
+/// then its whole limit: it ends after more than its limit in all. A body that restarts its
+/// limit and then does not end still fails at the limit.
 #[tokio::test(start_paused = true)]
-async fn a_restarted_limit_does_not_count_the_time_before_the_restart() {
+async fn the_wait_for_a_lock_of_other_tests_does_not_count() {
     let limit = Duration::from_secs(300);
     let output = limited_for(limit, async {
         step("waits for a lock that another test holds");
-        tokio::time::sleep(Duration::from_secs(250)).await;
+        crate::limit::wait_for_others();
+        tokio::time::sleep(Duration::from_secs(900)).await;
         crate::limit::restart_limit();
         tokio::time::sleep(Duration::from_secs(250)).await;
         7

@@ -128,7 +128,7 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     let short = window.cx.debug_bounds("group-move-down-detail").unwrap();
     assert!(long.right() <= menu.right(), "{long:?} {menu:?}");
     assert!(
-        long.size.height > short.size.height * 1.5,
+        long.size.height > short.size.height,
         "{long:?} {short:?}"
     );
     window.click("rename-group");

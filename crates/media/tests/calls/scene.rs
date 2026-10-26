@@ -68,7 +68,6 @@ fn holding(
     let test = this_test();
     HOLDERS.lock().unwrap().push(test.clone());
     step("holds the media server");
-    // The holders before it had limits of their own.
     crate::limit::restart_limit();
     MediaServer {
         _shared: shared,
@@ -207,6 +206,8 @@ fn a_check_of_a_media_server_that_does_not_answer_ends_within_its_waits() {
 }
 
 fn note_wait(how: &str) {
+    // The holders end within their own limits.
+    crate::limit::wait_for_others();
     let holders = HOLDERS.lock().unwrap().join(", ");
     step(format!(
         "waits for the media server, {how}; it is held by: {holders}"

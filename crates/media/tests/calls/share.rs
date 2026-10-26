@@ -374,6 +374,11 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
 /// none, ADR 0773).
 const FULL_RATE_IN_THREE_SECONDS: usize = 66;
 
+/// After this time of a wait for the full rate, a sender that its processor holds below it
+/// ends the wait with that cause. Before it, the sender can still be raising its rate after
+/// the change of the watched share.
+const PROCESSOR_LIMITED_AFTER: Duration = Duration::from_secs(20);
+
 impl Person {
     /// Waits until the media connection of this person receives the picture of a share with
     /// this width at its full rate, and returns the time from `since`. The receiver of the
@@ -422,6 +427,17 @@ impl Person {
             // What the sender states of its encoding: a rate that its processor limits shows
             // the cause of a slow case.
             let sent = sender.encoding(width).await;
+            // A sender that its processor holds below the full rate cannot show what the
+            // test measures: the run has too few processors for the engines of the test.
+            if since.elapsed() > PROCESSOR_LIMITED_AFTER
+                && let Some(rate) = sender.limited_by_processor(width).await
+            {
+                panic!(
+                    "the processor of the sender limits the picture of {width} pixels to \
+                     {rate:.1} per second, so the full rate cannot arrive; the run has too few \
+                     processors for three call engines (the sender: {sent})"
+                );
+            }
             crate::limit::step(format!(
                 "the picture of {width} pixels arrives at the full rate: {rate:.1} per second; \
                  the received streams (width, decoded): {streams:?}; the sender: {sent}"
@@ -432,6 +448,26 @@ impl Person {
             before = decoded.map(|decoded| (now, decoded));
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+    }
+
+    /// The frame rate of the encoding of a picture of this width while the processor of this
+    /// person's device limits it below the full rate.
+    async fn limited_by_processor(&self, width: u32) -> Option<f64> {
+        let stats = self.calls.statistics().await.ok()?;
+        (stats.publisher_stats.iter())
+            .chain(&stats.subscriber_stats)
+            .find_map(|stat| match stat {
+                RtcStats::OutboundRtp(stat)
+                    if stat.stream.kind == "video"
+                        && stat.outbound.frame_width == width
+                        && stat.outbound.quality_limitation_reason
+                            == livekit::webrtc::stats::QualityLimitationReason::Cpu
+                        && stat.outbound.frames_per_second < 25.0 =>
+                {
+                    Some(stat.outbound.frames_per_second)
+                }
+                _ => None,
+            })
     }
 
     /// What the sender of the media connection of this person states of the encoding of a
@@ -861,6 +897,28 @@ fn received_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec
     (pictures, sounds)
 }
 
+/// Waits until a room connection of the call library receives the shares `expected` of
+/// `of`, as [`received_slots`] states them; a failure names what it received last.
+async fn until_received(
+    room: &livekit::prelude::Room,
+    of: AccountId,
+    expected: (Vec<u8>, Vec<u8>),
+    what: &str,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        let received = received_slots(room, of);
+        if received == expected {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "after 60s this did not hold: {what}; received (pictures, sounds): {received:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Two shares of one person reach a client from before several shares as one share: the
 /// share of the lowest slot with its sound, as long as two run. A client that shows several
 /// shares gets both (ADR 0510). When the person leaves the call, each of the shares ends
@@ -894,9 +952,12 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
 
         ann.calls.start_share(screen(SoundChoice::System));
         ann.until_sharing_in(0).await;
-        crate::scene::until("Cara receives the screen of Ann with its sound", || {
-            received_slots(&old, ann_id) == (vec![0], vec![0])
-        })
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            "Cara receives the screen of Ann with its sound",
+        )
         .await;
         ann.calls.start_share(window(player()));
         ann.until_sharing_in(1).await;
@@ -916,9 +977,12 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
 
         // Ann ends the screen: one share is left, and Cara receives it.
         ann.calls.stop_share(Some(0));
-        crate::scene::until("Cara receives the window of Ann", || {
-            received_slots(&old, ann_id) == (vec![1], vec![1])
-        })
+        until_received(
+            &old,
+            ann_id,
+            (vec![1], vec![1]),
+            "Cara receives the window of Ann",
+        )
         .await;
         // A second share again: Cara keeps the window, which is now the lowest slot.
         ann.calls.start_share(screen(SoundChoice::None));
@@ -929,9 +993,12 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
                 .is_some_and(|call| call.shares.len() == 2)
         })
         .await;
-        crate::scene::until("Cara receives the share of the lowest slot", || {
-            received_slots(&old, ann_id) == (vec![0], vec![])
-        })
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![]),
+            "Cara receives the share of the lowest slot",
+        )
         .await;
 
         // Ann leaves the call: each of her shares ends at Ben and at the server.
@@ -949,9 +1016,12 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
                 .is_some_and(|call| call.participant(ann_id).is_none())
         })
         .await;
-        crate::scene::until("Cara receives no share of Ann", || {
-            received_slots(&old, ann_id) == (vec![], vec![])
-        })
+        until_received(
+            &old,
+            ann_id,
+            (vec![], vec![]),
+            "Cara receives no share of Ann",
+        )
         .await;
         let _ = tokio::time::timeout(Duration::from_secs(10), old.close()).await;
     })
