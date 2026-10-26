@@ -5,6 +5,7 @@ exclude = [
     "spikes",
     "vendor/cpal-0.18.2",
     "vendor/gpui-pre-0.3.8",
+    "vendor/gpui-pre-linux-0.3.8",
     "vendor/gpui-pre-scheduler-0.3.8",
     "vendor/livekit-0.9.4",
     "vendor/webrtc-sys-0.3.48",
@@ -17,6 +18,8 @@ cpal = { path = "vendor/cpal-0.18.2" }
 # A panic in a callback of the platform stops in gpui, and gpui puts its state back (ADR 0757).
 gpui-pre = { path = "vendor/gpui-pre-0.3.8" }
 gpui-pre-scheduler = { path = "vendor/gpui-pre-scheduler-0.3.8" }
+# A press on a notification gives the window the focus on Wayland with the token of the press (ADR 0757).
+gpui-pre-linux = { path = "vendor/gpui-pre-linux-0.3.8" }
 livekit = { path = "vendor/livekit-0.9.4" }
 webrtc-sys = { path = "vendor/webrtc-sys-0.3.48" }
 webrtc-sys-build = { path = "vendor/webrtc-sys-build-0.3.19" }
