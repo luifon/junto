@@ -89,6 +89,7 @@ fn fixture() -> Fixture {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: None,
         }],
     };

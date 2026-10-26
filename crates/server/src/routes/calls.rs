@@ -10,7 +10,8 @@ use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallJoinQuery, CallMove, CallPlace, ChannelCall,
     DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery,
     LeaveReason, MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState,
-    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
+    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, ReportWatching,
+    UpdateCallSettings,
 };
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
@@ -369,6 +370,57 @@ pub async fn end_screen_share(
             if presents {
                 store::end_meeting(connection, now, &call, MeetingEnd::ShareStopped, None).await?;
             }
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reports which share of another person in the call the person watches now, or none. The
+/// sharer and the people who see the call read it on the participant (ADR 0502). A share of a
+/// person who is not in the call, and the own share, are refused.
+#[utoipa::path(
+    put,
+    path = "/api/v1/call/watching",
+    tag = "calls",
+    request_body = ReportWatching,
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn report_watching(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<ReportWatching>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let (call, _) = own(connection, &access).await?;
+        if let Some(watched) = body.watching {
+            let sharer_inside = watched.account_id != access.account_id
+                && store::is_inside(connection, call.id, watched.account_id).await?;
+            if !sharer_inside || watched.slot >= 16 {
+                return Err(ApiError::invalid(
+                    "the watched share belongs to another person in the call",
+                ));
+            }
+        }
+        let changed = sqlx::query(
+            "update call_members set watching_account_id = $3, watching_slot = $4
+             where call_id = $1 and account_id = $2
+               and (watching_account_id is distinct from $3 or watching_slot <> $4)",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(body.watching.map(|watched| watched.account_id))
+        .bind(body.watching.map_or(0, |watched| i16::from(watched.slot)))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if changed > 0 {
+            store::announce_participant(connection, now, &call, access.account_id).await?;
         }
         Ok(())
     })?;

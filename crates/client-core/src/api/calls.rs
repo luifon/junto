@@ -75,6 +75,15 @@ impl ServerApi {
             .await
     }
 
+    /// Reports which share of another person the person watches now, or none (ADR 0502).
+    pub async fn report_watching(
+        &self,
+        watching: Option<junto_protocol::call::WatchedShare>,
+    ) -> Result<(), ApiError> {
+        let report = junto_protocol::call::ReportWatching { watching };
+        self.put("/call/watching".to_owned(), &report).await
+    }
+
     pub async fn raise_hand(&self) -> Result<(), ApiError> {
         self.act(Method::Put, "/call/hand".to_owned()).await
     }

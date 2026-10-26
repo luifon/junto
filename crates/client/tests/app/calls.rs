@@ -1257,6 +1257,7 @@ fn the_tiles_of_the_people_fill_the_stage(cx: &mut TestAppContext) {
         microphone_block: None,
         sound_block: None,
         hand_raised: false,
+        watching: None,
         screen_share: None,
     };
     // Two windows whose stages are wider than high, so two people are side by side.

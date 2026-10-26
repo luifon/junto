@@ -581,6 +581,8 @@ struct ParticipantRecord {
     microphone_blocked_by: Option<AccountId>,
     microphone_block_reason: Option<String>,
     sound_blocked_by: Option<AccountId>,
+    watching_account_id: Option<AccountId>,
+    watching_slot: i16,
 }
 
 fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
@@ -609,6 +611,12 @@ fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
         sound_block: record.sound_blocked_by.map(|by| SoundBlock { by }),
         hand_raised: record.hand_raised,
         screen_share,
+        watching: record
+            .watching_account_id
+            .map(|account_id| junto_protocol::call::WatchedShare {
+                account_id,
+                slot: u8::try_from(record.watching_slot).unwrap_or_default(),
+            }),
     })
 }
 
@@ -620,7 +628,7 @@ pub const PARTICIPANTS: &str =
     "select m.account_id, m.identity, m.connected_at, m.self_muted, m.self_deafened,
                 m.hand_raised_at is not null as hand_raised, m.share_audio, m.share_started_at,
                 mb.blocked_by as microphone_blocked_by, mb.reason as microphone_block_reason,
-                sb.blocked_by as sound_blocked_by,
+                sb.blocked_by as sound_blocked_by, m.watching_account_id, m.watching_slot,
                 (select jsonb_build_object(
                     'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
                     'bytes', octet_length(av.content), 'width', av.width, 'height', av.height)

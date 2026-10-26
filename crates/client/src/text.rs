@@ -497,6 +497,16 @@ pub fn call_refused(reason: &str) -> String {
 pub const SHARE_SCREEN: &str = "Share screen";
 pub const SHARE_STARTING: &str = "Your share starts";
 pub const SHARE_RUNS: &str = "You are sharing your screen. Press to stop.";
+
+/// The people who watch the share of the person: "watched by 2", and their names for the
+/// tooltip (ADR 0502).
+pub fn share_viewers(count: usize) -> String {
+    format!("watched by {count}")
+}
+
+pub fn share_viewer_names(names: &[String]) -> String {
+    format!("Watching: {}", names.join(", "))
+}
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
     "Share screen. Screen sharing is not available on this system in this version.";
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
@@ -3234,6 +3244,7 @@ mod tests {
             size: Some((1920, 1200)),
             frame_rate: Some(30),
             watched: true,
+            viewers: Vec::new(),
         };
         assert_eq!(share_title(&share, false), "Carla's screen");
         assert_eq!(share_title(&share, true), "Your screen");

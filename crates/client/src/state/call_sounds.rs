@@ -49,6 +49,8 @@ pub(crate) struct Heard {
     entry_requests: BTreeSet<EntryRequestId>,
     /// The recording that runs, with no stop asked for.
     recording: Option<RecordingId>,
+    /// The people who watch the share of this device, while it runs (ADR 0502).
+    viewers: Option<BTreeSet<AccountId>>,
     /// The output device of the call, on which its sounds play.
     pub(crate) output: Option<DeviceId>,
 }
@@ -100,6 +102,25 @@ pub(crate) fn heard(calls: &CallsView, listed: Option<Listed<'_>>, before: &Hear
             .and_then(|listed| listed.recording)
             .filter(|(_, stopping)| !stopping)
             .map(|(id, _)| id),
+        viewers: listed
+            .filter(|listed| {
+                listed.participants.iter().any(|participant| {
+                    participant.account_id == listed.own && participant.screen_share.is_some()
+                })
+            })
+            .map(|listed| {
+                listed
+                    .participants
+                    .iter()
+                    .filter(|participant| {
+                        participant.account_id != listed.own
+                            && participant
+                                .watching
+                                .is_some_and(|watched| watched.account_id == listed.own)
+                    })
+                    .map(|participant| participant.account_id)
+                    .collect()
+            }),
         present,
         seat,
         output: call
@@ -178,6 +199,19 @@ pub(crate) fn sounds(before: &Heard, after: &Heard) -> Vec<Sound> {
         .any(|(id, shared)| *shared && listed_after.get(id) == Some(&false))
     {
         sounds.push(Sound::ShareEnded);
+    }
+    // A person who starts or stops watching the share of this device; a person who leaves
+    // the call is heard leaving.
+    if let (Some(viewers_before), Some(viewers_after)) = (&before.viewers, &after.viewers) {
+        if viewers_after.iter().any(|id| !viewers_before.contains(id)) {
+            sounds.push(Sound::ViewerJoined);
+        }
+        if viewers_before
+            .iter()
+            .any(|id| !viewers_after.contains(id) && listed_after.contains_key(id))
+        {
+            sounds.push(Sound::ViewerLeft);
+        }
     }
     if let (Some(hands_before), Some(hands_after)) = (&before.hands, &after.hands)
         && hands_after.iter().any(|id| !hands_before.contains(id))
@@ -324,6 +358,7 @@ mod tests {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: shares.then_some(ScreenShare {
                 audio: ShareAudio::None,
                 started_at: at,
@@ -618,6 +653,45 @@ mod tests {
             sounds(&entering, &entered),
             vec![Sound::CallJoined, Sound::RecordingStarted]
         );
+    }
+
+    #[test]
+    fn a_person_who_starts_or_stops_watching_the_own_share_plays_a_sound() {
+        let scene = Scene::new();
+        let other = AccountId::generate();
+        let calls = scene.calls("seat");
+        let watching = |watches: bool| {
+            let mut own = participant(scene.own, true);
+            own.watching = None;
+            let mut viewer = participant(other, false);
+            viewer.watching = watches.then_some(junto_client_core::protocol::call::WatchedShare {
+                account_id: scene.own,
+                slot: 0,
+            });
+            vec![own, viewer]
+        };
+        let listed = |participants: &[CallParticipant], before: &Heard| {
+            heard(
+                &calls,
+                Some(Listed {
+                    own: scene.own,
+                    participants,
+                    lowers_hands: false,
+                    entry_requests: &[],
+                    recording: None,
+                    moved_here: false,
+                }),
+                before,
+            )
+        };
+        let (off, on) = (watching(false), watching(true));
+        let before = listed(&off, &Heard::default());
+        let after = listed(&on, &before);
+        assert_eq!(sounds(&before, &after), vec![Sound::ViewerJoined]);
+        assert_eq!(sounds(&after, &before), vec![Sound::ViewerLeft]);
+        // A viewer who leaves the call is heard leaving.
+        let alone = [participant(scene.own, true)];
+        assert_eq!(sounds(&after, &listed(&alone, &after)), vec![Sound::PersonLeft]);
     }
 
     #[test]

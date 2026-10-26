@@ -1806,3 +1806,44 @@ async fn rule_64_a_join_token_carries_the_display_name_of_the_account() {
     let direct = server.enter_direct(&scene.ben, ann).await;
     assert_eq!(claims(&direct.join)["name"], "Ben");
 }
+
+/// A person reports the share that the person watches; the participant states it to the
+/// people who see the call, and an end of the watch takes it away (ADR 0502). The own share
+/// and a person outside the call are refused.
+#[tokio::test]
+async fn the_share_that_a_person_watches_is_stated_on_the_participant() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    let watch = |account_id| json!({ "watching": { "account_id": account_id, "slot": 0 } });
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ann.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let watching = participant(server, ann, voice, ben.account_id)
+        .await
+        .watching
+        .unwrap();
+    assert_eq!((watching.account_id, watching.slot), (ann.account_id, 0));
+    // The own share and a person who is not in the call are refused.
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ben.account_id))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .put(ben, "/api/v1/call/watching", &watch(owner.account_id))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .put(ben, "/api/v1/call/watching", &json!({ "watching": null }))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
+}

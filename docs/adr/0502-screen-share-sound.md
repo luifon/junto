@@ -32,6 +32,7 @@ Several shares:
 - Several people can share at once.
 - Each viewer picks which share to watch and hears the sound of that share.
 - A viewer can mute the sound of a share, or change its volume, and keep the picture.
+- The sharer sees and hears who watches, as in Discord: the device of a person reports the share of another person that it watches (`PUT /api/v1/call/watching` with the account and the slot of the share, or none; the own share and a person outside the call are refused), the server keeps it on the member of the call and states it on the participant (`watching`), and the header of the own share draws "watched by N" with the names in its tooltip; a person who starts or stops watching plays the viewer sounds of ADR 0707 for the sharer, and a viewer who leaves the call plays the sound of a person who leaves. The media engine reports the watched share as it reports the state of the person, again after a new seat. Tests: `calls_state::the_share_that_a_person_watches_is_stated_on_the_participant`, `state::call_sounds::tests::a_person_who_starts_or_stops_watching_the_own_share_plays_a_sound`, and the live test of a share in the window, in which the device of the administrator watches the share of the window: the window states the viewer and plays the sound of a viewer.
 
 Track:
 

@@ -948,6 +948,9 @@ pub struct ShareCard {
     pub frame_rate: Option<u32>,
     /// The person of this device gets the picture and the sound of this share.
     pub watched: bool,
+    /// For the share of this device: the people in the call who watch it, with their names
+    /// (ADR 0502). Empty for the share of another person.
+    pub viewers: Vec<(AccountId, Option<String>)>,
 }
 
 /// The shares of the call of this device. Present while at least one share runs.
@@ -2981,6 +2984,7 @@ fn share_stage(
             size: seen.size,
             frame_rate: seen.frame_rate,
             watched: active.watched == Some(ShareId::Of(seen.account_id)),
+            viewers: Vec::new(),
         })
         .collect();
     if let ShareState::Running(info) = &active.share {
@@ -2994,6 +2998,18 @@ fn share_stage(
             size: Some(info.size),
             frame_rate: Some(info.frame_rate),
             watched: active.watched == Some(ShareId::Own),
+            viewers: call
+                .map(|call| call.participants.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|participant| {
+                    participant.account_id != model.account.id
+                        && participant
+                            .watching
+                            .is_some_and(|watched| watched.account_id == model.account.id)
+                })
+                .map(|participant| (participant.account_id, name_of(participant.account_id)))
+                .collect(),
         });
     }
     (!shares.is_empty()).then_some(ShareStage {

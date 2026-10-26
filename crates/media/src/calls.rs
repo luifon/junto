@@ -1362,6 +1362,7 @@ fn start(
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_report: Reporter::holding(timing.share_spacing, None),
+        watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
         speaking: false,
@@ -1865,6 +1866,7 @@ enum Done {
     State(bool),
     Speaking(bool),
     Share(bool),
+    Watch(bool),
     /// The answer to a request for a new token. The session confirms that it took the
     /// answer; an answer that no session takes gives a place that nobody uses.
     Rejoined(Box<Result<CallJoin, ApiError>>, oneshot::Sender<()>),
@@ -2133,6 +2135,8 @@ struct Session {
     speaking_report: Reporter<bool>,
     /// The sound of the share that the server was told. Absent: no share.
     share_report: Reporter<Option<ShareAudio>>,
+    /// The share of another person that the server was told the person watches (ADR 0502).
+    watch_report: Reporter<Option<junto_client_core::protocol::call::WatchedShare>>,
     /// The move of the person of this device that waits (ADR 0511).
     moving: Option<Moving>,
     /// The work of moves that have ended. Each closes the connection that it made.
@@ -3028,6 +3032,7 @@ impl Session {
             Done::State(taken) => self.state_report.done(taken, REPORT_RETRY, now),
             Done::Speaking(taken) => self.speaking_report.done(taken, REPORT_RETRY, now),
             Done::Share(taken) => self.share_report.done(taken, REPORT_RETRY, now),
+            Done::Watch(taken) => self.watch_report.done(taken, REPORT_RETRY, now),
             Done::Rejoined(answer, taken) => {
                 let _ = taken.send(());
                 self.rejoining = false;
@@ -3051,6 +3056,7 @@ impl Session {
                             }
                             self.state_report = Reporter::new(self.timing.state_spacing, None);
                             self.share_report = Reporter::holding(self.timing.share_spacing, None);
+                            self.watch_report = Reporter::holding(self.timing.share_spacing, None);
                         }
                         // The answer states that the seat exists at its cursor. The newest
                         // such answer is the membership until a state is as new.
@@ -3254,6 +3260,27 @@ impl Session {
                         None => api.end_screen_share().await,
                     };
                     let _ = done.send(Done::Share(told.is_ok()));
+                });
+            }
+            Step::Wait(at) => wake = wake.min(at),
+            Step::Idle => {}
+        }
+        // The sharer hears and sees who watches a share: the share of another person that
+        // the person watches is reported (ADR 0502).
+        let watching = match state.watched {
+            Some(ShareId::Of(account_id)) => Some(junto_client_core::protocol::call::WatchedShare {
+                account_id,
+                slot: 0,
+            }),
+            Some(ShareId::Own) | None => None,
+        };
+        match self.watch_report.step(&watching, false, now) {
+            Step::Send => {
+                self.watch_report.sending(watching, now);
+                let (api, done) = (self.server.api(), done.clone());
+                self.inner.runtime.spawn(async move {
+                    let taken = api.report_watching(watching).await.is_ok();
+                    let _ = done.send(Done::Watch(taken));
                 });
             }
             Step::Wait(at) => wake = wake.min(at),
@@ -3906,6 +3933,7 @@ mod tests {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: None,
         };
         let call = |hides_occupants, participants| Call {
