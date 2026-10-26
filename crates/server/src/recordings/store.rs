@@ -1324,6 +1324,21 @@ pub async fn retry_removal(
     Ok(())
 }
 
+/// The worker that read the files at `place` has ended: their removal, which waited for it,
+/// is due now (ADR 0608).
+pub async fn removal_due(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    place: &crate::recordings::files::Place,
+) -> ApiResult<()> {
+    sqlx::query("update file_removals set retry_at = null where path = $1 and retry_at > $2")
+        .bind(place.stored())
+        .bind(now)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
 pub async fn removal_done(connection: &mut PgConnection, id: Uuid) -> ApiResult<()> {
     sqlx::query("delete from file_removals where id = $1")
         .bind(id)

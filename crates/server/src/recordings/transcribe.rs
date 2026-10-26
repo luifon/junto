@@ -423,6 +423,15 @@ async fn transcribe(
         }
         Err(error) => Run::NotStarted(error),
     };
+    // The worker has ended: the files of a recording that was removed while it ran do not
+    // wait for the lease of the job any more (ADR 0608).
+    if matches!(run, Run::Abandoned) {
+        let (now, place) = (app.now(), Place::recording(id));
+        transact!(app.background(), |connection| {
+            store::removal_due(connection, now, &place).await
+        })?;
+        app.recordings.process_now();
+    }
     let outcome = match run {
         Run::Abandoned => Ok(None),
         Run::NotStarted(error) => {
