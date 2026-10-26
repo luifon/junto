@@ -628,6 +628,10 @@ pub struct AppState {
     shown_with_call: (Option<ServerId>, Option<PlaceId>, Option<CallTarget>),
     /// What was seen of the notices and the invitations of each server.
     seen: HashMap<ServerId, notices::Seen>,
+    /// The system notifications of the answers to the join requests of this device. They
+    /// come before the first session of the server or in place of one, so they are kept
+    /// apart from what was seen of a session and go only with the server (ADR 0742).
+    join_seen: HashMap<ServerId, notices::Seen>,
     /// The number of the last read of the message of a search result. The answer of an
     /// earlier read leads nowhere.
     result_asks: u64,
@@ -970,6 +974,7 @@ impl AppState {
             call_shown: false,
             shown_with_call: (None, None, None),
             seen: HashMap::new(),
+            join_seen: HashMap::new(),
             result_asks: 0,
             result_answers: 0,
             reloads: HashMap::new(),

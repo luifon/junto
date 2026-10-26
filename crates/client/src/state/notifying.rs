@@ -920,6 +920,20 @@ impl AppState {
                 self.notifier.dismiss(&tag, cx);
             }
         }
+        // The answer to a join request goes only with its server.
+        let removed: Vec<ServerId> = self
+            .join_seen
+            .keys()
+            .filter(|server_id| !servers.iter().any(|server| server.id == **server_id))
+            .copied()
+            .collect();
+        for server_id in removed {
+            if let Some(seen) = self.join_seen.remove(&server_id) {
+                for tag in seen.tags(server_id) {
+                    self.notifier.dismiss(&tag, cx);
+                }
+            }
+        }
         let mut sounds: Vec<junto_media::audio::sounds::Sound> = Vec::new();
         for server in servers {
             let Some(model) = super::view::shown_model(server) else {
@@ -1144,7 +1158,7 @@ impl AppState {
                 continue;
             };
             let quiet = quiet_now(server.live().view().model.as_deref(), now);
-            let seen = self.seen.entry(server.id()).or_default();
+            let seen = self.join_seen.entry(server.id()).or_default();
             let told = event_alert(
                 seen,
                 &TellScene {
@@ -1158,6 +1172,9 @@ impl AppState {
                 &fact,
                 None,
             );
+            for tag in told.dismiss {
+                self.notifier.dismiss(&tag, cx);
+            }
             for (alert, _) in told.show {
                 self.notifier.show(&alert, cx);
             }
@@ -1170,6 +1187,7 @@ impl AppState {
         let target = self
             .seen
             .iter()
+            .chain(&self.join_seen)
             .find_map(|(server_id, seen)| seen.target(*server_id, tag));
         let Some(target) = target else {
             return;
