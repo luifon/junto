@@ -184,16 +184,19 @@ fn format_hash_and_compiled_configuration_are_checked() {
             .is_err()
         );
     }
-    assert_eq!(
-        include_str!("../../../packaging/update-keys.json").trim(),
-        "[]"
-    );
-    assert_eq!(
-        include_str!("../../../packaging/freshness-keys.json").trim(),
-        "[]"
-    );
+    // The tracked public keys of the project: one release key and one freshness key, which
+    // differ (ADR 0724).
+    let release: Vec<String> =
+        serde_json::from_str(include_str!("../../../packaging/update-keys.json")).unwrap();
+    let freshness: Vec<String> =
+        serde_json::from_str(include_str!("../../../packaging/freshness-keys.json")).unwrap();
+    assert_eq!((release.len(), freshness.len()), (1, 1));
+    assert_ne!(release, freshness);
     if option_env!("JUNTO_TEST_UPDATE_KEYS_FILE").is_none() {
-        assert!(TrustedKeys::compiled().unwrap().is_empty());
+        assert!(!TrustedKeys::compiled().unwrap().is_empty());
+    }
+    // A build without a source makes no update request, whatever keys it trusts.
+    if option_env!("JUNTO_UPDATE_SOURCE").is_none() {
         assert!(releases::HttpSource::compiled().unwrap().is_none());
     }
 }
