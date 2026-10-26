@@ -18,7 +18,8 @@ fn file(value: Value) -> StructureFile {
 }
 
 /// A server with a default workspace 1, its everyone role 10, a role 11, a category 20, a
-/// text channel 30 in the category and a voice channel 31 with an override of role 11.
+/// text channel 30 in the category, a voice channel 31 with an override of role 11, and a
+/// glossary of two terms.
 fn server() -> StructureFile {
     file(json!({
         "format": 1,
@@ -39,6 +40,7 @@ fn server() -> StructureFile {
                   "hides_occupants": false,
                   "overrides": [{ "role": id(11), "allow": ["mute_members"], "deny": [] }] },
             ],
+            "glossary": ["Quorvex", "Lumitrax"],
         }],
     }))
 }
@@ -196,7 +198,8 @@ fn rule_51_every_change_names_only_entries_that_exist_before_it() {
               "channels": [{ "id": id(33), "name": "room", "kind": "voice", "category": id(22),
                              "user_limit": 5, "hides_occupants": true,
                              "overrides": [{ "role": id(13), "deny": ["view_channel"] },
-                                           { "role": id(14), "allow": ["view_channel"] }] }] },
+                                           { "role": id(14), "allow": ["view_channel"] }] }],
+              "glossary": ["Tarnwick"] },
         ],
         "delete": { "channels": [id(30)] },
     }));
@@ -222,6 +225,7 @@ fn rule_51_every_change_names_only_entries_that_exist_before_it() {
             "update_call_settings",
             "set_channel_override",
             "set_channel_override",
+            "replace_glossary",
             "delete_channel",
         ]
     );
@@ -312,7 +316,7 @@ fn rule_43_the_file_of_another_server_uses_the_default_workspace_and_its_everyon
 fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
     let current = server();
     let cases = [
-        (json!({ "format": 3 }), "the file has the format 3"),
+        (json!({ "format": 4 }), "the file has the format 4"),
         (
             json!({ "format": 1, "workspaces": [
                 { "id": id(1), "name": "Main" }, { "id": id(1), "name": "Again" }] }),
@@ -390,7 +394,7 @@ fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
         assert!(found.contains(stated), "{desired}: {found}");
     }
     let several = problems(
-        json!({ "format": 3, "workspaces": [{ "id": id(1), "name": "" },
+        json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "" },
                                              { "id": id(1), "name": "x" }] }),
         &current,
     );
@@ -609,5 +613,104 @@ fn role_order_positions_are_atomic_and_unchanged_roles_are_omitted() {
             &mut junto_protocol::ids::StructureId::generate
         )
         .is_err()
+    );
+}
+
+#[test]
+fn a_glossary_that_differs_replaces_the_whole_glossary_after_the_channels_of_its_workspace() {
+    let current = server();
+    let desired = file(json!({
+        "format": 3,
+        "workspaces": [
+            { "id": id(1), "name": "Main",
+              "channels": [{ "id": id(34), "name": "notes", "kind": "text" }],
+              "glossary": [" Lumitrax ", "Ysolde Varkonen"] },
+            { "id": id(2), "name": "Team", "glossary": ["Tarnwick", "Quorvex"] },
+        ],
+    }));
+    assert_eq!(
+        changes(&desired, &current),
+        [
+            json!({ "change": "create_channel", "id": id(34), "workspace": id(1),
+                    "kind": "text", "name": "notes" }),
+            json!({ "change": "replace_glossary", "workspace": id(1),
+                    "terms": ["Lumitrax", "Ysolde Varkonen"] }),
+            json!({ "change": "create_workspace", "id": id(2), "name": "Team",
+                    "everyone_role": id(901) }),
+            json!({ "change": "replace_glossary", "workspace": id(2),
+                    "terms": ["Tarnwick", "Quorvex"] }),
+        ]
+    );
+    let lines: Vec<String> = planned(&desired, &current)
+        .into_iter()
+        .map(|planned| planned.line)
+        .collect();
+    assert_eq!(
+        lines[1],
+        format!(
+            "~ glossary of the workspace \"Main\" ({}): add \"Ysolde Varkonen\"; remove \
+             \"Quorvex\"; terms in order of priority: \"Lumitrax\", \"Ysolde Varkonen\"",
+            id(1)
+        )
+    );
+    assert_eq!(
+        lines[3],
+        format!(
+            "~ glossary of the workspace \"Team\" ({}): add \"Tarnwick\", \"Quorvex\"; remove \
+             none; terms in order of priority: \"Tarnwick\", \"Quorvex\"",
+            id(2)
+        )
+    );
+
+    // A new order of priority is a change; the same terms with space around them are not.
+    let reordered = file(json!({ "format": 3, "workspaces": [
+        { "id": id(1), "name": "Main", "glossary": ["Lumitrax", "Quorvex"] }] }));
+    assert_eq!(
+        changes(&reordered, &current),
+        [json!({ "change": "replace_glossary", "workspace": id(1),
+                 "terms": ["Lumitrax", "Quorvex"] })]
+    );
+    let lines: Vec<String> = planned(&reordered, &current)
+        .into_iter()
+        .map(|planned| planned.line)
+        .collect();
+    assert!(
+        lines[0].contains("add none; remove none; terms in order of priority"),
+        "{lines:?}"
+    );
+    let spaced = file(json!({ "format": 3, "workspaces": [
+        { "id": id(1), "name": "Main", "glossary": [" Quorvex", "Lumitrax "] }] }));
+    assert_eq!(changes(&spaced, &current), Vec::<Value>::new());
+}
+
+#[test]
+fn an_absent_glossary_is_kept_and_an_empty_one_removes_every_term() {
+    let current = server();
+    let absent = file(json!({ "format": 3, "workspaces": [
+        { "id": id(1), "name": "Main" }, { "id": id(2), "name": "Team" }] }));
+    assert_eq!(
+        changes(&absent, &current),
+        [
+            json!({ "change": "create_workspace", "id": id(2), "name": "Team",
+                 "everyone_role": id(901) })
+        ]
+    );
+    let empty = file(json!({ "format": 3, "workspaces": [
+        { "id": id(1), "name": "Main", "glossary": [] },
+        { "id": id(2), "name": "Team", "glossary": [] }] }));
+    assert_eq!(
+        changes(&empty, &current),
+        [
+            json!({ "change": "replace_glossary", "workspace": id(1), "terms": [] }),
+            json!({ "change": "create_workspace", "id": id(2), "name": "Team",
+                    "everyone_role": id(901) }),
+        ]
+    );
+    // The file of another server sets the glossary of the default workspace of this one.
+    let foreign = file(json!({ "format": 3, "workspaces": [
+        { "id": id(501), "name": "Main", "default": true, "glossary": ["Tarnwick"] }] }));
+    assert_eq!(
+        changes(&foreign, &current),
+        [json!({ "change": "replace_glossary", "workspace": id(1), "terms": ["Tarnwick"] })]
     );
 }

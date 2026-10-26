@@ -99,6 +99,7 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
                            "position": 1, "permanent_messages": true, "user_limit": 2,
                            "hides_occupants": true,
                            "overrides": [{ "role": id, "allow": [], "deny": [] }] }],
+            "glossary": ["t"],
         }],
         "delete": { "channels": [id], "categories": [id], "roles": [id],
                     "server_roles": [id], "workspaces": [id] },

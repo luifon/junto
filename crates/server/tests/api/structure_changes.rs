@@ -11,6 +11,7 @@ use junto_protocol::structure::{Channel, ChannelKind, ChannelList, Workspace};
 use junto_protocol::structure_file::{
     ChannelEntry, StructureApplied, StructureExport, StructureKind, WorkspaceEntry,
 };
+use junto_protocol::transcript::Glossary;
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -60,6 +61,7 @@ async fn state(server: &TestServer) -> String {
         "channel_overrides",
         "structure_identifiers",
         "workspace_members",
+        "glossary_terms",
         "audit_entries",
         "events",
     ] {
@@ -143,7 +145,7 @@ async fn rule_20_the_export_holds_the_whole_structure_for_an_administrator() {
     assert_eq!(export.revision.len(), 32);
     assert_eq!(server.structure(&owner).await, export);
     let file = &export.structure;
-    assert_eq!(file.format, 2);
+    assert_eq!(file.format, 3);
     assert!(file.delete.is_empty());
     assert_eq!(file.server_roles.len(), 1);
     assert_eq!(file.server_roles[0].id.as_uuid(), server_role.as_uuid());
@@ -1447,4 +1449,255 @@ async fn review_3_a_change_beside_a_request_is_ordered_after_it_or_makes_it_stal
         reply.error(ErrorCode::Conflict);
         assert!(!created);
     }
+}
+
+fn glossary_path(workspace: impl std::fmt::Display) -> String {
+    format!("/api/v1/workspaces/{workspace}/glossary")
+}
+
+#[tokio::test]
+async fn rule_33_a_glossary_is_exported_and_replaced_with_its_audit_entry_and_event() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let main = server.default_workspace(&owner).await;
+    let path = glossary_path(main.id);
+    let before = server.structure(&owner).await;
+    assert_eq!(default_of(&before).glossary, Some(Vec::new()));
+    server
+        .put(&owner, &path, &json!({ "terms": ["Quorvex", "Lumitrax"] }))
+        .await
+        .ok::<Glossary>(StatusCode::OK);
+    // The glossary is part of the document, so its route changes the revision.
+    let export = server.structure(&owner).await;
+    assert_ne!(export.revision, before.revision);
+    assert_eq!(
+        default_of(&export).glossary,
+        Some(vec!["Quorvex".to_owned(), "Lumitrax".to_owned()])
+    );
+
+    let cursor = server.snapshot(&owner).await.cursor;
+    let (team, team_everyone) = (new_id(), new_id());
+    let applied: StructureApplied = server
+        .change_structure(
+            &owner,
+            &export.revision,
+            json!([
+                { "change": "replace_glossary", "workspace": default_of(&export).id,
+                  "terms": [" Lumitrax ", "Ysolde Varkonen"] },
+                { "change": "create_workspace", "id": team, "name": "Team",
+                  "everyone_role": team_everyone },
+                { "change": "replace_glossary", "workspace": team, "terms": ["Tarnwick"] },
+            ]),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let team_id = junto_protocol::ids::WorkspaceId::from_uuid(applied.created[0].id);
+    let read: Glossary = server.get(&owner, &path).await.ok(StatusCode::OK);
+    assert_eq!(read.terms, ["Lumitrax", "Ysolde Varkonen"]);
+    let read: Glossary = server
+        .get(&owner, &glossary_path(team_id))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(read.terms, ["Tarnwick"]);
+    let after = server.structure(&owner).await;
+    assert_eq!(applied.revision, after.revision);
+    assert_eq!(
+        default_of(&after).glossary,
+        Some(vec!["Lumitrax".to_owned(), "Ysolde Varkonen".to_owned()])
+    );
+    let team_entry = after
+        .structure
+        .workspaces
+        .iter()
+        .find(|entry| entry.id == team)
+        .unwrap();
+    assert_eq!(team_entry.glossary, Some(vec!["Tarnwick".to_owned()]));
+
+    let replaced: Vec<Event> = events(&server, &owner, cursor, Level::Full)
+        .await
+        .into_iter()
+        .filter(|event| matches!(event, Event::GlossaryReplaced { .. }))
+        .collect();
+    assert_eq!(
+        replaced,
+        [
+            Event::GlossaryReplaced {
+                workspace_id: main.id
+            },
+            Event::GlossaryReplaced {
+                workspace_id: team_id
+            },
+        ]
+    );
+    let entries = server.audit_actions(&owner, main.id).await;
+    let last = entries.last().unwrap();
+    assert_eq!(last.event, AuditEvent::GlossaryReplaced { terms: 2 });
+    assert_eq!(last.actor_id, Some(owner.account_id));
+    let entries = server.audit_actions(&owner, team_id).await;
+    assert_eq!(
+        entries.last().unwrap().event,
+        AuditEvent::GlossaryReplaced { terms: 1 }
+    );
+
+    // A token with `manage_structure` replaces a glossary through this route, and its audit
+    // entry names the token.
+    let token = server
+        .access_token(&owner, &[TokenAction::ManageStructure])
+        .await;
+    let body = json!({ "revision": after.revision, "changes": [
+        { "change": "replace_glossary", "workspace": team, "terms": [] }] });
+    server
+        .with_token(Method::POST, CHANGES, &token, Some(&body))
+        .await
+        .ok::<StructureApplied>(StatusCode::OK);
+    let read: Glossary = server
+        .get(&owner, &glossary_path(team_id))
+        .await
+        .ok(StatusCode::OK);
+    assert!(read.terms.is_empty());
+    let entries = server.audit_actions(&owner, team_id).await;
+    let last = entries.last().unwrap();
+    assert_eq!(last.event, AuditEvent::GlossaryReplaced { terms: 0 });
+    assert_eq!(last.access_token_id, Some(token.access_token.id));
+
+    // The limits of the glossary route apply, and a refused glossary changes nothing.
+    let revision = server.structure(&owner).await.revision;
+    let many: Vec<String> = (0..201).map(|number| format!("term {number}")).collect();
+    let state_before = state(&server).await;
+    for terms in [
+        json!(many),
+        json!(["Quorvex", " Quorvex "]),
+        json!(["fine", ""]),
+        json!(["<|notimestamps|>"]),
+        json!([&"a".repeat(201)]),
+    ] {
+        let reply = server
+            .change_structure(
+                &owner,
+                &revision,
+                json!([
+                    { "change": "create_category", "id": new_id(), "workspace": team,
+                      "name": "kept out" },
+                    { "change": "replace_glossary", "workspace": team, "terms": terms },
+                ]),
+            )
+            .await;
+        assert_eq!(reply.code(), ErrorCode::InvalidRequest, "{}", reply.text());
+        assert!(
+            reply.text().contains("change 2 (replace_glossary)"),
+            "{}",
+            reply.text()
+        );
+        assert_eq!(state(&server).await, state_before, "{terms}");
+    }
+    let reply = server
+        .change_structure(
+            &owner,
+            &revision,
+            json!([{ "change": "replace_glossary", "workspace": new_id(), "terms": [] }]),
+        )
+        .await;
+    reply.error(ErrorCode::InvalidRequest);
+    assert!(reply.text().contains("does not exist"), "{}", reply.text());
+    assert_eq!(state(&server).await, state_before);
+}
+
+#[tokio::test]
+async fn rule_34_a_glossary_change_needs_the_rights_of_the_route_and_of_the_glossary() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let editor = server.join(&owner, "Editor").await;
+    let main = server.default_workspace(&owner).await;
+    server
+        .grant_workspace(
+            &owner,
+            &editor,
+            main.id,
+            &[WorkspacePermission::ManageGlossary],
+        )
+        .await;
+    let path = glossary_path(main.id);
+    server
+        .put(&owner, &path, &json!({ "terms": ["Quorvex"] }))
+        .await
+        .ok::<Glossary>(StatusCode::OK);
+    let export = server.structure(&owner).await;
+    let changes = json!([{ "change": "replace_glossary", "workspace": default_of(&export).id,
+                           "terms": ["Lumitrax"] }]);
+    let body = json!({ "revision": export.revision, "changes": changes });
+
+    // A token without `manage_structure` does not reach the changes route, and no token
+    // reaches the glossary route itself (ADR 0210, ADR 0213).
+    let reader = server
+        .access_token(&owner, &[TokenAction::ReadStructure])
+        .await;
+    let every = server
+        .access_token(
+            &owner,
+            &[
+                TokenAction::ReadStructure,
+                TokenAction::ManageStructure,
+                TokenAction::ManageMembers,
+                TokenAction::ReadAuditLog,
+            ],
+        )
+        .await;
+    let exported: StructureExport = server
+        .with_token(Method::GET, EXPORT, &reader, None)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        default_of(&exported).glossary,
+        Some(vec!["Quorvex".to_owned()])
+    );
+    let before = state(&server).await;
+    server
+        .with_token(Method::POST, CHANGES, &reader, Some(&body))
+        .await
+        .error(ErrorCode::Forbidden);
+    server
+        .with_token(
+            Method::PUT,
+            &path,
+            &every,
+            Some(&json!({ "terms": ["Lumitrax"] })),
+        )
+        .await
+        .error(ErrorCode::Forbidden);
+    // A person with "manage glossary" and without the administrator permission replaces the
+    // glossary on its route only.
+    server
+        .change_structure(&editor, &export.revision, changes.clone())
+        .await
+        .error(ErrorCode::Forbidden);
+    assert_eq!(state(&server).await, before);
+
+    // A token whose creator lost the administrator permission loses the change as well.
+    let administrator = server.join(&owner, "Administrator").await;
+    let role = server
+        .grant_server(&owner, &administrator, &[ServerPermission::Administrator])
+        .await;
+    let held = server
+        .access_token(&administrator, &[TokenAction::ManageStructure])
+        .await;
+    server
+        .delete(
+            &owner,
+            &format!(
+                "/api/v1/accounts/{}/server-roles/{role}",
+                administrator.account_id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let revision = server.structure(&owner).await.revision;
+    let body = json!({ "revision": revision, "changes": changes });
+    let before = state(&server).await;
+    server
+        .with_token(Method::POST, CHANGES, &held, Some(&body))
+        .await
+        .error(ErrorCode::Forbidden);
+    assert_eq!(state(&server).await, before);
+    let kept: Glossary = server.get(&owner, &path).await.ok(StatusCode::OK);
+    assert_eq!(kept.terms, ["Quorvex"]);
 }

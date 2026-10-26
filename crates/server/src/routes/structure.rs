@@ -14,8 +14,8 @@ use crate::state::AppState;
 use crate::structure;
 use crate::{read, transact};
 
-/// The workspaces, roles, categories, channels and overrides of the server, with the
-/// revision of that structure. The caller needs the administrator permission.
+/// The workspaces, roles, categories, channels, overrides and glossaries of the server,
+/// with the revision of that structure. The caller needs the administrator permission.
 #[utoipa::path(
     get,
     path = "/api/v1/structure",

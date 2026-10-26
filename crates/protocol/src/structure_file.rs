@@ -24,7 +24,7 @@ use crate::structure::{ChannelKind, present};
 
 /// The format version that this build writes. It reads every format from
 /// [`OLDEST_STRUCTURE_FORMAT`] to this one (ADR 0212).
-pub const STRUCTURE_FORMAT: u32 = 2;
+pub const STRUCTURE_FORMAT: u32 = 3;
 
 /// The oldest format version that this build reads.
 pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
@@ -34,7 +34,7 @@ pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
 pub const MOST_CHANGES: usize = 200;
 
 /// The structure of a server: its server roles and its workspaces with their roles,
-/// categories, channels and overrides.
+/// categories, channels, overrides and glossaries.
 ///
 /// An entry is matched by its identifier. An entry that is absent is kept as it is. In an
 /// entry, an absent optional field keeps its value. A file contains no member, no message
@@ -43,7 +43,7 @@ pub const MOST_CHANGES: usize = 200;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StructureFile {
-    /// The version of the file format: 2. This tool also reads format 1.
+    /// The version of the file format: 3. This tool also reads the formats 1 and 2.
     pub format: u32,
     #[serde(default)]
     pub server_roles: Vec<ServerRoleEntry>,
@@ -116,6 +116,11 @@ pub struct WorkspaceEntry {
     pub categories: Vec<CategoryEntry>,
     #[serde(default)]
     pub channels: Vec<ChannelEntry>,
+    /// The terms of the glossary, most important first (ADR 0603). The list replaces the
+    /// whole glossary; an empty list removes every term. Absent: a new workspace has no
+    /// term, an existing workspace keeps its glossary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glossary: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,6 +332,13 @@ pub enum StructureChange {
         #[serde(default)]
         deny: Vec<WorkspacePermission>,
     },
+    /// Replaces the whole glossary of a workspace with `terms`, most important first. The
+    /// change has the checks, the limits, the audit entry and the event of the glossary
+    /// route (ADR 0603).
+    ReplaceGlossary {
+        workspace: StructureId,
+        terms: Vec<String>,
+    },
     DeleteChannel {
         id: StructureId,
     },
@@ -363,6 +375,7 @@ impl StructureChange {
             Self::UpdateChannel { .. } => "update_channel",
             Self::UpdateCallSettings { .. } => "update_call_settings",
             Self::SetChannelOverride { .. } => "set_channel_override",
+            Self::ReplaceGlossary { .. } => "replace_glossary",
             Self::DeleteChannel { .. } => "delete_channel",
             Self::DeleteCategory { .. } => "delete_category",
             Self::DeleteWorkspaceRole { .. } => "delete_workspace_role",
@@ -434,6 +447,38 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_entry_tells_an_absent_glossary_from_an_empty_one() {
+        let entry = |fields: &str| -> WorkspaceEntry {
+            serde_json::from_str(&format!(
+                r#"{{"id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","name":"Main"{fields}}}"#
+            ))
+            .unwrap()
+        };
+        let absent = entry("");
+        assert_eq!(absent.glossary, None);
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("glossary")
+                .is_none()
+        );
+        let empty = entry(r#","glossary":[]"#);
+        assert_eq!(empty.glossary, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["glossary"],
+            serde_json::json!([])
+        );
+        let terms = entry(r#","glossary":["Ysolde Varkonen","Quorvex"]"#);
+        assert_eq!(
+            terms.glossary,
+            Some(vec!["Ysolde Varkonen".to_owned(), "Quorvex".to_owned()])
+        );
+        let other =
+            r#"{"id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","name":"Main","glossary":"Quorvex"}"#;
+        assert!(serde_json::from_str::<WorkspaceEntry>(other).is_err());
+    }
+
+    #[test]
     fn a_channel_entry_tells_an_absent_field_from_a_cleared_one() {
         let entry = |fields: &str| -> ChannelEntry {
             serde_json::from_str(&format!(
@@ -477,6 +522,10 @@ mod tests {
                 category: Some(None),
                 position: None,
                 permanent_messages: None,
+            },
+            StructureChange::ReplaceGlossary {
+                workspace: id,
+                terms: vec!["Quorvex".to_owned()],
             },
         ];
         for change in changes {

@@ -15,15 +15,16 @@ Crate:
 - The tool is the crate `junto-setup` with the binary `junto-setup`. It depends on `junto-protocol` for the types of the file and of the two routes, and not on the server. Its HTTP client is the one of the client library (ADR 0714): TLS with the trust store of the operating system.
 - The function that computes a plan reads two documents and contacts nothing.
 
-File format 2 (format 1 remains readable):
+File format 3 (formats 1 and 2 remain readable):
 
-- A file is one JSON object with `format`, `server_roles`, `workspaces` and `delete`. A workspace holds `roles`, `categories` and `channels`; a channel holds `overrides`. The types are in `junto-protocol`, and the JSON Schema is generated into `docs/api/structure-file.json` and compared by a test (ADR 0202).
+- A file is one JSON object with `format`, `server_roles`, `workspaces` and `delete`. A workspace holds `roles`, `categories`, `channels` and `glossary`; a channel holds `overrides`. The types are in `junto-protocol`, and the JSON Schema is generated into `docs/api/structure-file.json` and compared by a test (ADR 0202).
 - An object of a file with a field that the format does not name is refused, so that a misspelled field is not ignored.
 - An entry has `id` and `name`; a channel also has `kind`. Every other field is optional. An absent field keeps the value of an existing object and takes the default of the server for a new one. `category: null` and `user_limit: null` remove the value.
 - An entry that a file does not hold is kept. An override that a channel entry does not state is kept; an override with two empty sets removes the override.
 - `delete` lists the identifiers of the entries to delete, per kind: `channels`, `categories`, `roles` (workspace roles), `server_roles` and `workspaces`. Nothing else is deleted. A listed entry that the server does not have is no change. The channels of a deleted category stay; a deleted workspace is deleted with everything that it holds (ADR 0308).
 - An exported file states every field, and no deletion.
 - Format 2 adds optional role `position` keys expressing relative order, with larger keys higher and everyone at zero. Numeric gaps and shifts do not request changes. Only explicitly positioned roles exchange their existing slots; other roles keep their places. A new unpositioned role stays at the bottom (ADR 0309).
+- Format 3 adds the optional `glossary` of a workspace: the list of its terms in their order of priority (ADR 0603). The list replaces the whole glossary, and `[]` removes every term. As for every optional field, an absent `glossary` keeps the glossary of an existing workspace, and a new workspace has an empty glossary.
 
 Matching:
 
@@ -34,7 +35,8 @@ Matching:
 Plan:
 
 - `plan` reads the structure document and prints one line for each change, with the fields that differ. It sends only the fields that differ.
-- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, categories and channels with their overrides, then the deletions: channels, categories, workspace roles, workspaces, server roles; atomic role reorders come last.
+- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, categories and channels with their overrides, and then its glossary, then the deletions: channels, categories, workspace roles, workspaces, server roles; atomic role reorders come last.
+- A glossary of a file that differs from the glossary of the server, in a term or in the order, is one change `replace_glossary` with the whole list (ADR 0211). Its line states the added terms, the removed terms and the new list in its order of priority. The tool removes the space around each term, as the server does, so that a file that was applied plans no change. The tool does not check the terms in another way: the server checks them with the rules of the glossary route and refuses the request with the number of the change.
 - The tool refuses, against the server, a file that lists an "everyone" role or the default workspace for deletion: the server deletes neither.
 - `plan --out` writes the plan: the format, the address of the server, the revision and the changes.
 - A plan with more than 200 changes is not sent.
@@ -51,11 +53,12 @@ Commands:
 
 ## Consequences
 
-- `plan` changes nothing: it sends one reading request. A token with `read_structure` alone can export and plan.
+- `plan` changes nothing: it sends one reading request. A token with `read_structure` alone can export and plan. The export holds the glossary of each workspace, which every member of the workspace reads (ADR 0603).
 - A second `apply` of the same file plans no change and sends no request that changes the server.
 - The export of one server, applied to an empty server, renames the default workspace of that server, changes its "everyone" role, and adds the other entries. The two first channels of the empty server stay, because the file does not list them for deletion.
 - A person who writes a new entry by hand gives it a new UUID.
-- The tool reads file formats 1 and 2 and writes format 2. Saved plans use format 2; older saved plans must be recomputed. A later format has another number.
+- The tool reads file formats 1 to 3 and writes format 3. Saved plans use format 3; older saved plans must be recomputed. A later format has another number.
+- A tool that reads format 2 at most refuses an exported file of format 3, because each workspace entry holds `glossary`.
 - The protocol crate states the format that is written and the oldest format that is read as two constants. The description of the generated schema and the refusal of a file of another format are written from them, so they name the current formats.
 - A structure with more than 200 differences is applied in several files, each with a part of the entries.
 - The plan file contains no credential.
