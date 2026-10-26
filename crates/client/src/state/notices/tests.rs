@@ -1760,7 +1760,7 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
         told.show[0].0.tag,
         entry_request_tag(scene.server_id, new.id)
     );
-    assert_eq!(told.show[0].0.title, "Ana asks to enter Daily");
+    assert_eq!(told.show[0].0.title, "Ana asks to join Daily");
     assert_eq!(told.show[0].1, AlertTarget::Call(scene.server_id));
     assert_eq!(scene.alerts(&mut seen), Alerts::default());
 

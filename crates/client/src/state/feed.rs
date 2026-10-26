@@ -1655,7 +1655,7 @@ mod tests {
             [
                 (
                     SystemKind::Plain,
-                    "[Ana] closed the microphone of [Luca]".to_owned()
+                    "[Ana] blocked the microphone of [Luca]".to_owned()
                 ),
                 (
                     SystemKind::Plain,

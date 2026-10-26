@@ -1469,13 +1469,13 @@ impl Shell {
             // The sentence about the share, with its strong part.
             let (line, strong) = if several {
                 let title = title_of(share);
-                let line = format!("You watch {title}");
+                let line = text::watching_share(&title);
                 let range = line.len() - title.len()..line.len();
                 (line, range)
             } else if own {
-                ("You are sharing".to_owned(), 0..3)
+                (text::YOU_ARE_SHARING.to_owned(), 0..3)
             } else {
-                (format!("{name} is sharing"), 0..name.len())
+                (text::is_sharing(&name), 0..name.len())
             };
             let muted = !own && stage.volume == 0 && share.sound != Some(ShareAudio::None);
             let sound: Option<(SharedString, bool)> = if share.sound_held {

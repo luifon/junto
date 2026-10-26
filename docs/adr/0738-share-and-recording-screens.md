@@ -20,8 +20,8 @@ Starting a share:
 
 The stage with a share:
 
-- A line names the sharer and the sound ("with system audio", "with the sound of one application", "without sound"), and at its end what is shared, its size and its frame rate. The sharer reads "You are sharing".
-- With two or more shares a bar lists them as cards with a small picture, the name ("Carla's screen", "Bruno's window") and "Watching" or "Watch". A press on a card watches that share. The line then reads "You watch …" with what the person hears, and "The sound follows the share you watch."
+- A line names the sharer and the sound ("with system sound", "with the sound of one application", "without sound"), and at its end what is shared, its size and its frame rate. The sharer reads "You are sharing".
+- With two or more shares a bar lists them as cards with a small picture, the name ("Carla's screen", "Bruno's window") and "Watching" or "Watch". A press on a card watches that share. The line then reads "You are watching …" with what the person hears, and "You hear only the share you are watching."
 - The line tells when the sound of the own share is closed by a microphone block, and when the viewer turned the sound of the share off.
 - The picture is drawn inside the stage with its proportions. Until the first picture has arrived the stage says so.
 - Under the picture, a strip shows the people as tiles using the call layout constants. "Hide people without video" applies to it as to the stage without a share (ADR 0735).
@@ -35,7 +35,7 @@ Settings tab of the call:
 
 Recording:
 
-- The header of the voice channel of the call shows, after its title: "Record" when no recording runs; the mark "REC" with "starting…" while the server asks the recorder; the mark with the time since the recorder started, "visible to everyone", and "Stop" while it runs; "The recording stops" on that button after its end was asked for.
+- The header of the voice channel of the call shows, after its title: "Record" when no recording runs; the mark "REC" with "starting…" while the server asks the recorder; the mark with the time since the recorder started, "visible to everyone", and "Stop" while it runs; "Stopping…" on that button, described as "The recording is stopping…", after its end was asked for.
 - A person whose roles do not hold "record calls" sees "Record" disabled with the statement of the missing permission, and the mark of a recording without "Stop". The server decides each request, because an override of the channel can differ from the roles; a refusal is told by a notice.
 - "Record" opens the languages of the speech, and the choice starts the recording with `auto` or with one language. While the recorder starts it, "Cancel" stands after the mark at the place of "Stop" (ADR 0616).
 - When a recording of the call ends without a person asking for it, or with a part or all of it not saved, the header shows "Recording failed" or "Recording stopped", "Details" with what happened, the time range that the server has, and what the person can do, and "Record" for a new one. The application reads this from the events of the server, for the call of this device, and keeps it until the person asks for a new recording, a new recording starts, or the call ends. The answer to a request changes only the statement about that request: the event of a failure can arrive before the answer to the request that started the recording. An answer that arrives after its call has ended tells nothing.

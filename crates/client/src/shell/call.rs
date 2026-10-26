@@ -1003,7 +1003,7 @@ impl Shell {
                         div()
                             .id(format!("member-camera:{account}"))
                             .debug_selector(move || format!("member-camera:{account}"))
-                            .tooltip(tooltip(text::CAMERA))
+                            .tooltip(tooltip(text::CAMERA_ON))
                             .child(icon(Icon::Camera, 14.0, colors.ink_2)),
                     )
                 })
@@ -1742,8 +1742,16 @@ impl Shell {
                         } else {
                             Icon::CameraOff
                         })
-                        .tooltip(text::CAMERA)
-                        .accessible_label(text::CAMERA)
+                        .tooltip(if camera_on {
+                            text::TURN_OFF_CAMERA
+                        } else {
+                            text::TURN_ON_CAMERA
+                        })
+                        .accessible_label(if camera_on {
+                            text::TURN_OFF_CAMERA
+                        } else {
+                            text::TURN_ON_CAMERA
+                        })
                         .selector("call-camera")
                         .disabled(!camera_usable)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1763,12 +1771,12 @@ impl Shell {
                         .icon(Icon::LayoutGrid)
                         .selector("camera-focus")
                         .tooltip(if self.camera_focus {
-                            "Show camera grid"
+                            text::SHOW_GRID
                         } else {
                             text::FOCUS_SPEAKER
                         })
                         .accessible_label(if self.camera_focus {
-                            "Show camera grid"
+                            text::SHOW_GRID
                         } else {
                             text::FOCUS_SPEAKER
                         })

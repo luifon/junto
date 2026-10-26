@@ -1487,7 +1487,7 @@ fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
 /// tooltip and accessible label. While the recording is stopping, the disabled action states it.
 fn stop_action(stopping: bool) -> (&'static str, &'static str) {
     if stopping {
-        (text::RECORDING_STOPS, text::RECORDING_STOPS)
+        (text::STOPPING, text::RECORDING_STOPS)
     } else {
         (text::STOP, text::STOP_RECORDING)
     }
@@ -1754,9 +1754,6 @@ mod tests {
     #[test]
     fn the_stop_action_of_a_stopping_recording_states_that_it_stops() {
         assert_eq!(stop_action(false), (text::STOP, text::STOP_RECORDING));
-        assert_eq!(
-            stop_action(true),
-            (text::RECORDING_STOPS, text::RECORDING_STOPS)
-        );
+        assert_eq!(stop_action(true), (text::STOPPING, text::RECORDING_STOPS));
     }
 }

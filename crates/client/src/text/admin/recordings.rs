@@ -74,9 +74,11 @@ pub fn when(line: &RecordingLine) -> String {
 /// The state of a recording as words.
 pub fn state(line: &RecordingLine) -> String {
     match line.state {
-        RecordingState::Starting => "Starting: the server asks the recorder.".to_owned(),
+        RecordingState::Starting => {
+            "Starting: the server is asking the recorder to start.".to_owned()
+        }
         RecordingState::Recording => "Recording now.".to_owned(),
-        RecordingState::Processing => "Ended. The server checks the files.".to_owned(),
+        RecordingState::Processing => "Ended. The server is checking the files.".to_owned(),
         RecordingState::Ready => "Ready.".to_owned(),
         RecordingState::PartlyFailed => {
             if line.failed_segments > 0 && line.segments > 0 {
@@ -91,7 +93,7 @@ pub fn state(line: &RecordingLine) -> String {
         }
         RecordingState::Failed => match line.failure {
             Some(RecordingFailure::RecorderUnavailable) => {
-                "Failed: no recorder took the recording. Nothing was saved.".to_owned()
+                "Failed: no recorder was available. Nothing was saved.".to_owned()
             }
             Some(RecordingFailure::NothingRecorded) => {
                 "Failed: the recorder ended without a file. Nothing was saved.".to_owned()
@@ -125,7 +127,7 @@ fn lines(count: u32) -> String {
 pub fn transcript(state: TranscriptState, count: u32) -> String {
     match state {
         TranscriptState::None => "No transcript".to_owned(),
-        TranscriptState::Waiting => "Transcript: waits for the transcription".to_owned(),
+        TranscriptState::Waiting => "Transcript: waiting for the transcription worker".to_owned(),
         TranscriptState::Running => "Transcript: in progress".to_owned(),
         TranscriptState::Ready => format!("Transcript: {}", lines(count)),
         TranscriptState::Partial => {
