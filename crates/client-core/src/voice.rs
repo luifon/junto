@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 4"), "{text}");
+        assert!(text.contains("\"format_version\": 5"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 4"), "{text}");
+        assert!(text.contains("\"format_version\": 5"), "{text}");
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
     }
 
