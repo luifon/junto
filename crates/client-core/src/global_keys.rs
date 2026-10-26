@@ -579,11 +579,15 @@ impl GlobalKeys {
     }
 }
 
+/// What a reader of the tests finds at its next readings.
+#[cfg(any(test, feature = "test-support"))]
+type Reading = Option<Result<Vec<Key>, ReadError>>;
+
 /// A reader whose held keys a test sets, and which counts its readings.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
 pub struct HeldKeys {
-    held: std::sync::Arc<std::sync::Mutex<Option<Result<Vec<Key>, ReadError>>>>,
+    held: std::sync::Arc<std::sync::Mutex<Reading>>,
     readings: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
