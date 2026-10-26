@@ -200,6 +200,30 @@ pub fn running() -> Result<(Package, PathBuf), Error> {
     }
 }
 
+/// The package name that a Debian package writes into the description of its directory
+/// (ADR 0728). The system package manager installs and updates it; the client does not.
+pub const SYSTEM_PACKAGE: &str = "deb";
+
+/// Whether the description file of a directory names the Debian package.
+pub fn is_system_package(directory: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Named {
+        package: String,
+    }
+    information(&directory.join(DESCRIPTION))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Named>(&bytes).ok())
+        .is_some_and(|named| named.package == SYSTEM_PACKAGE)
+}
+
+/// Whether this process runs from a directory that the Debian package installed.
+pub fn running_from_system_package() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_owned))
+        .is_some_and(|directory| is_system_package(&directory))
+}
+
 /// The package of the installation at a path that a person names.
 pub fn package_at(application: &Path) -> Result<Package, Error> {
     let metadata = fs::symlink_metadata(application)?;

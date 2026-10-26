@@ -305,11 +305,27 @@ def versions(manifest):
     return [current, f"{major}.{minor}.{patch + 1}"]
 
 
+def update_lines(output, versions):
+    """Requires the lines of `--check-update`: the notice of the newer version, the version
+    line of the server book, the installed version and the offered restart."""
+    current, new = versions
+    lines = output.splitlines()
+    expected = [f"Junto update notice: {new}",
+                f"Junto version line: Junto {current} (test configuration) Junto {new} is available.",
+                f"installed version {new}",
+                f"Junto restart offered: Junto {new} is installed. Restart Junto to use it."]
+    missing = [line for line in expected if line not in lines]
+    if missing:
+        raise AssertionError(f"the window did not report the update {missing}: {output}")
+
+
 def requests(system, kind, arch, versions):
-    """The requests of an update from the first version to the second: the latest metadata, the
-    new archive, then the metadata and archive of the installed version for the rollback."""
+    """The requests of an update from the first version to the second, as the window makes
+    them: the latest metadata of the check, the latest metadata of the update action, the new
+    archive, then the metadata and archive of the installed version for the rollback."""
     current, new = versions
     return [f"/latest-{system}-{kind}-{arch}.json",
+            f"/latest-{system}-{kind}-{arch}.json",
             f"/junto-{new}-{system}-{kind}-{arch}.junto",
             f"/release-{current}-{system}-{kind}-{arch}.json",
             f"/junto-{current}-{system}-{kind}-{arch}.junto"]
@@ -450,12 +466,19 @@ def check(parent, system, files, *, signing=None):
 
         started("installed", 0)
         with release_tools.source(source) as (server, address):
-            # The installed client updates itself, as the update action of its window does.
+            # The window of the installed client finds the newer version, shows its notice,
+            # installs it with its update action and offers the restart (ADR 0780).
             began = time.monotonic()
-            output = command([binary, "--update-from", address], env=runtime, timeout=UPDATE_BOUND)
-            if f"installed version {built[1]}" not in output.splitlines():
-                raise AssertionError("the client did not report the update: " + output)
-            print(f"    updated to {built[1]} by the installed client in {time.monotonic() - began:.1f} s", flush=True)
+            display = [ROOT / "tools/linux/display.sh", "x11"] if system == "linux" else []
+            data = work / "data-update"
+            if os.name != "nt":
+                data.mkdir(mode=0o700)
+            output = command([*display, binary, "--data-dir", data, "--no-activate",
+                              "--update-source", address, "--check-update"],
+                             env=runtime, timeout=UPDATE_BOUND)
+            update_lines(output, built)
+            print(f"    updated to {built[1]} by the window of the installed client in "
+                  f"{time.monotonic() - began:.1f} s", flush=True)
             if server.paths != requests(system, kind, arch, built):
                 raise AssertionError(f"unexpected release requests: {server.paths}")
         started("updated", 1)

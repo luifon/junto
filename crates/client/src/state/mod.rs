@@ -33,7 +33,7 @@ mod searching;
 mod threads;
 pub mod transcript_work;
 mod tray;
-mod update_install;
+pub mod update_install;
 pub mod view;
 
 pub use messages::{AttachRefusal, Measured, measure};

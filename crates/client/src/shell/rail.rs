@@ -281,6 +281,7 @@ impl Shell {
                 .children(servers)
                 .into_any_element(),
             add.into_any_element(),
+            self.render_client_version(false, theme, cx),
         ]
     }
 
@@ -479,6 +480,7 @@ impl Shell {
                             this.show_address_field(narrow, window, cx);
                         })),
                 )
+                .child(self.render_client_version(true, theme, cx))
                 .into_any_element(),
         ]
     }

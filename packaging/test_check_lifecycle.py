@@ -220,8 +220,19 @@ class LifecycleTests(unittest.TestCase):
 
     def test_an_update_asks_for_the_new_release_then_the_installed_one(self):
         self.assertEqual(check_lifecycle.requests("linux", "appimage", "x86_64", ["0.1.0", "0.1.1"]), [
-            "/latest-linux-appimage-x86_64.json", "/junto-0.1.1-linux-appimage-x86_64.junto",
+            "/latest-linux-appimage-x86_64.json", "/latest-linux-appimage-x86_64.json",
+            "/junto-0.1.1-linux-appimage-x86_64.junto",
             "/release-0.1.0-linux-appimage-x86_64.json", "/junto-0.1.0-linux-appimage-x86_64.junto"])
+
+    def test_the_window_reports_the_notice_the_installed_version_and_the_restart(self):
+        output = "\n".join([
+            "Junto update notice: 0.1.1",
+            "Junto version line: Junto 0.1.0 (test configuration) Junto 0.1.1 is available.",
+            "installed version 0.1.1",
+            "Junto restart offered: Junto 0.1.1 is installed. Restart Junto to use it."])
+        check_lifecycle.update_lines(output, ["0.1.0", "0.1.1"])
+        with self.assertRaises(AssertionError):
+            check_lifecycle.update_lines(output.replace("restart offered", "restart"), ["0.1.0", "0.1.1"])
 
     def test_the_appimage_uses_fuse_only_when_its_device_and_fusermount_can_be_used(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch("sys.stdout"):

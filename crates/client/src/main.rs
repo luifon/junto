@@ -43,17 +43,21 @@ struct Arguments {
     data_dir: Option<PathBuf>,
     start: WindowStart,
     check_startup: bool,
+    /// The release source of the update check and of the update action, in place of the
+    /// compiled one. Only a test configuration accepts it.
+    update_source: Option<String>,
+    /// Check for an update, install it with the update action of the window, then exit.
+    check_update: bool,
 }
 
 enum Parsed {
     Run(Arguments),
     Print(String),
     Rollback,
-    Update(String),
 }
 
 /// `test_configuration`: whether this build is a test configuration, the only one that
-/// accepts `--update-from`.
+/// accepts `--update-source` and `--check-update`.
 fn parse(
     mut values: impl Iterator<Item = String>,
     test_configuration: bool,
@@ -62,6 +66,8 @@ fn parse(
         data_dir: None,
         start: WindowStart::default(),
         check_startup: false,
+        update_source: None,
+        check_update: false,
     };
     while let Some(flag) = values.next() {
         match flag.as_str() {
@@ -82,14 +88,17 @@ fn parse(
                 arguments.start.activate = false;
             }
             "--rollback-update" => return Ok(Parsed::Rollback),
-            // The package checks update an installed test build from a local source, through
-            // the path of the update action of the window.
-            "--update-from" if test_configuration => {
-                let source = values.next().ok_or("--update-from needs an address")?;
-                return Ok(Parsed::Update(source));
+            // The package checks show the update notice of the window and install from it.
+            "--update-source" if test_configuration => {
+                let source = values.next().ok_or("--update-source needs an address")?;
+                arguments.update_source = Some(source);
             }
-            "--update-from" => {
-                return Err("--update-from is accepted only by a test configuration".into());
+            "--check-update" if test_configuration => {
+                arguments.check_update = true;
+                arguments.start.activate = false;
+            }
+            "--update-source" | "--check-update" => {
+                return Err(format!("{flag} is accepted only by a test configuration"));
             }
             "--version" => {
                 return Ok(Parsed::Print(junto_client_core::releases::build_label()));
@@ -122,27 +131,89 @@ fn data_dir(chosen: Option<PathBuf>) -> Result<PathBuf, String> {
     data_dir_of_this_user().map_err(|error| error.to_string())
 }
 
-fn update_from(source: &str) -> ExitCode {
-    use junto_client_core::releases::{self, install::Previous};
-    let result = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(releases::Error::from)
-        .and_then(|runtime| runtime.block_on(releases::update_running_from(Some(source))));
-    match result {
-        Ok(installed) => {
-            println!("installed version {}", installed.version);
-            match installed.previous {
-                Previous::Kept(version) => println!("version {version} is kept for a rollback"),
-                Previous::Missing(reason) => println!("no previous version is kept: {reason}"),
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
+/// The update source of this start: the compiled one, or the one of `--update-source`.
+fn update_source_of(
+    base: Option<&str>,
+) -> Result<Option<junto_client_core::releases::HttpSource>, String> {
+    use junto_client_core::releases::{HttpSource, Target, TrustedKeys, install::Package};
+    match base {
+        None => HttpSource::compiled().map_err(|error| error.to_string()),
+        Some(base) => {
+            let keys = TrustedKeys::compiled().map_err(|error| error.to_string())?;
+            HttpSource::new(
+                base,
+                keys,
+                junto_client_core::updates::Version::THIS_BUILD,
+                Target::this_build(Package::running()),
+            )
+            .map(Some)
+            .map_err(|error| error.to_string())
         }
     }
+}
+
+/// `--check-update`: the window checks its source, shows the notice, and installs the newer
+/// version with its update action; the start then ends. The lines that it prints are what
+/// the package checks read. It fails when no newer version is found in 300 seconds.
+fn check_update_through_the_window(
+    state: &gpui::Entity<junto_client::state::AppState>,
+    reached: std::rc::Rc<std::cell::Cell<bool>>,
+    cx: &mut gpui::App,
+) {
+    use junto_client::state::update_install::VersionAction;
+    let told = std::rc::Rc::new(std::cell::Cell::new(false));
+    let installing = std::rc::Rc::new(std::cell::Cell::new(false));
+    let step = std::rc::Rc::new(
+        move |state: gpui::Entity<junto_client::state::AppState>, cx: &mut gpui::App| {
+            if told.get() {
+                return;
+            }
+            let read = state.read(cx);
+            let Some(update) = read.available_update() else {
+                return;
+            };
+            if !installing.get() {
+                installing.set(true);
+                println!("Junto update notice: {}", update.version);
+                let line = read.version_line();
+                println!("Junto version line: {} {}", line.version, line.sentence);
+                state.update(cx, |state, cx| {
+                    state.act_on_version_line(cx);
+                });
+                return;
+            }
+            if read.update_installing() {
+                return;
+            }
+            told.set(true);
+            let line = read.version_line();
+            if read.update_installed() && line.action == Some(VersionAction::Restart) {
+                println!("installed version {}", update.version);
+                println!("Junto restart offered: {}", line.sentence);
+                reached.set(true);
+            } else {
+                eprintln!(
+                    "the update was not installed: {}",
+                    read.update_install_status().unwrap_or("no result")
+                );
+            }
+            cx.quit();
+        },
+    );
+    // The check of the start of the event streams finds the newer version: one request.
+    // The state can hold its answer before the observer exists, so the step runs once now.
+    let observed = step.clone();
+    cx.observe(state, move |state, cx| observed(state, cx)).detach();
+    let first = state.clone();
+    cx.defer(move |cx| step(first, cx));
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs(300))
+            .await;
+        eprintln!("no update was installed in 300 seconds");
+        let _ = cx.update(|cx| cx.quit());
+    })
+    .detach();
 }
 
 /// The log on standard error and, once [`LogFile::open`] is called, in the log file of the
@@ -270,7 +341,6 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Ok(Parsed::Update(source)) => return update_from(&source),
         Ok(Parsed::Print(text)) => {
             println!("{text}");
             return ExitCode::SUCCESS;
@@ -283,14 +353,14 @@ fn main() -> ExitCode {
     let log_file = start_log();
     #[cfg(target_os = "linux")]
     junto_client::renderer::choose_before_the_first_window();
+    let chosen_dir = arguments.data_dir.is_some();
+    let update_source = arguments.update_source.clone();
     let client = data_dir(arguments.data_dir).and_then(|directory| {
         let mut options = ClientOptions::new(directory);
-        options.update_source = junto_client_core::releases::HttpSource::compiled()
-            .map_err(|error| error.to_string())?
-            .map(|source| {
-                std::sync::Arc::new(source)
-                    as std::sync::Arc<dyn junto_client_core::updates::UpdateSource>
-            });
+        options.update_source = update_source_of(update_source.as_deref())?.map(|source| {
+            std::sync::Arc::new(source)
+                as std::sync::Arc<dyn junto_client_core::updates::UpdateSource>
+        });
         Client::open(options).map_err(|error| error.to_string())
     });
     let client = match client {
@@ -313,10 +383,19 @@ fn main() -> ExitCode {
         .ok();
     let start = arguments.start;
     let check_startup = arguments.check_startup;
+    let check_update = arguments.check_update;
+    let update_source = arguments.update_source;
+    // A restart after an update starts the same data directory (ADR 0780).
+    let restart_arguments: Vec<std::ffi::OsString> = if chosen_dir {
+        vec!["--data-dir".into(), client.data_dir().root().as_os_str().to_owned()]
+    } else {
+        Vec::new()
+    };
     let started = std::rc::Rc::new(std::cell::Cell::new(false));
     let reached = started.clone();
     gpui_platform::application()
         .with_assets(Assets)
+        .with_restart_arguments(restart_arguments)
         .run(move |cx| {
             if let Err(error) = app::init(cx) {
                 start_failed(&format!("{error:#}"), log_path.as_deref());
@@ -325,6 +404,12 @@ fn main() -> ExitCode {
                 return;
             }
             let state = app::state(client, start, cx);
+            if update_source.is_some() {
+                state.update(cx, |state, _| state.use_update_source(update_source.clone()));
+            }
+            if check_update {
+                check_update_through_the_window(&state, reached.clone(), cx);
+            }
             match app::open_main_window(state, start, cx) {
                 Ok(window) if check_startup => {
                     let _ = window.update(cx, |_, window, _| {
@@ -339,6 +424,7 @@ fn main() -> ExitCode {
                         });
                     });
                 }
+                Ok(_) if check_update => {}
                 Ok(_) => reached.set(true),
                 Err(error) => {
                     start_failed(
@@ -369,16 +455,21 @@ mod tests {
     }
 
     #[test]
-    fn only_a_test_configuration_updates_from_a_named_source() {
-        let arguments = || ["--update-from", "http://127.0.0.1:1/"].map(str::to_owned);
+    fn only_a_test_configuration_takes_another_update_source_and_checks_the_update() {
+        let arguments = || {
+            ["--update-source", "http://127.0.0.1:1/", "--check-update"].map(str::to_owned)
+        };
         assert!(matches!(
             parse(arguments().into_iter(), true),
-            Ok(Parsed::Update(source)) if source == "http://127.0.0.1:1/"
+            Ok(Parsed::Run(Arguments { update_source: Some(source), check_update: true, .. }))
+                if source == "http://127.0.0.1:1/"
         ));
         assert!(matches!(
             parse(arguments().into_iter(), false),
             Err(problem) if problem.contains("test configuration")
         ));
+        assert!(parse(["--check-update".to_owned()].into_iter(), false).is_err());
+        assert!(parse(["--update-source".to_owned()].into_iter(), true).is_err());
         assert!(parse(["--update-from".to_owned()].into_iter(), true).is_err());
     }
 

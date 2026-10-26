@@ -18,7 +18,8 @@ use crate::state::view::{ServerRow, ShellView};
 use crate::text::book as txt;
 use crate::theme::{Theme, u};
 use crate::ui::{
-    Badge, Button, Field, MenuItem, Notice, StyleExt, focus_ring, icon, tooltip, unread_dot,
+    Badge, Button, ButtonKind, Field, MenuItem, Notice, StyleExt, focus_ring, icon, tooltip,
+    unread_dot,
 };
 
 /// What the window holds of the update notice.
@@ -28,6 +29,10 @@ pub(crate) struct BookUi {
     page: Entity<InputState>,
     /// The address that the field holds.
     page_shown: Option<String>,
+    /// The address of the download page of the release site, as text that a person can
+    /// select.
+    site: Entity<InputState>,
+    site_shown: Option<String>,
     /// The address that was given to the clipboard while the settings are open.
     copied: Option<String>,
     /// The position of the open section of the settings.
@@ -42,9 +47,13 @@ impl BookUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let page = Field::state("", window, cx);
         page.update(cx, |field, cx| field.set_readonly(true, cx));
+        let site = Field::state("", window, cx);
+        site.update(cx, |field, cx| field.set_readonly(true, cx));
         Self {
             page,
             page_shown: None,
+            site,
+            site_shown: None,
             copied: None,
             settings_scroll: ScrollHandle::new(),
             settings_nav_scroll: ScrollHandle::new(),
@@ -229,6 +238,7 @@ impl Shell {
         self.settings_closed();
         let update = view.update?;
         let install = self.state.read(cx).supports_update_install();
+        let installed = self.state.read(cx).update_installed();
         let colors = theme.colors;
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
         // The sentence of the line names no version: the name and the tooltip do.
@@ -258,7 +268,13 @@ impl Shell {
                 .ink(colors.cypress_ink)
                 .cursor_pointer()
                 .focus_visible(move |style| style.shadow(ring))
-                .on_click(cx.listener(|this, _, window, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    // After an installed update the line restarts Junto.
+                    if installed {
+                        this.state
+                            .update(cx, |state, cx| state.restart_after_update(cx));
+                        return;
+                    }
                     this.state.update(cx, |state, cx| state.install_update(cx));
                     this.open_version_settings(window, cx);
                 }))
@@ -269,10 +285,128 @@ impl Shell {
                         .flex_none()
                         .font_weight(FontWeight::BOLD)
                         .underline()
-                        .child(if install { txt::UPDATE } else { txt::DETAILS }),
+                        .child(if installed {
+                            txt::RESTART
+                        } else if install {
+                            txt::UPDATE
+                        } else {
+                            txt::DETAILS
+                        }),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The version of this copy below "Add server": the version, where its update stands,
+    /// and the button of the next step (ADR 0780). Collapsed, the server book shows the
+    /// version number and, while a newer version waits, the button alone.
+    pub(crate) fn render_client_version(
+        &mut self,
+        collapsed: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::state::update_install::VersionAction;
+        let colors = theme.colors;
+        let line = self.state.read(cx).version_line();
+        let label = |action: VersionAction| match action {
+            VersionAction::Update => txt::UPDATE,
+            VersionAction::Restart => txt::RESTART,
+            VersionAction::Details => txt::DETAILS,
+        };
+        let button = line.action.map(|action| {
+            let button = Button::new("client-version-action")
+                .kind(ButtonKind::Rail)
+                .selector("client-version-action")
+                .tooltip(line.sentence.clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let acted = this
+                        .state
+                        .update(cx, |state, cx| state.act_on_version_line(cx));
+                    if acted == Some(crate::state::update_install::VersionAction::Details) {
+                        this.open_version_settings(window, cx);
+                    }
+                }));
+            if collapsed {
+                button
+                    .icon(match action {
+                        VersionAction::Restart => Icon::Retry,
+                        _ => Icon::Download,
+                    })
+                    .accessible_label(label(action))
+                    .w(u(36.0))
+                    .h(u(26.0))
+            } else {
+                button
+                    .icon(match action {
+                        VersionAction::Update => Icon::Download,
+                        VersionAction::Restart => Icon::Retry,
+                        VersionAction::Details => Icon::Document,
+                    })
+                    .label(label(action))
+                    .h(u(26.0))
+                    .px(u(10.0))
+            }
+        });
+        let name: SharedString = format!("{}. {}", line.version, line.sentence).into();
+        if collapsed {
+            return div()
+                .id("client-version")
+                .role(Role::Status)
+                .aria_label(name.clone())
+                .debug_selector(|| "client-version".to_owned())
+                .tooltip(tooltip(name))
+                .flex()
+                .flex_col()
+                .flex_none()
+                .items_center()
+                .gap(u(6.0))
+                .mb(u(10.0))
+                .children(button.filter(|_| line.newer))
+                .child(
+                    div()
+                        .typeface(theme.types.small, theme)
+                        .text_size(u(11.0))
+                        .ink(colors.bone_3)
+                        .child(crate::text::book::client_version_number(
+                            self.state.read(cx).version_view().build,
+                        )),
+                )
+                .into_any_element();
+        }
+        div()
+            .id("client-version")
+            .role(Role::Status)
+            .aria_label(name)
+            .debug_selector(|| "client-version".to_owned())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(u(4.0))
+            .mx(u(12.0))
+            .mb(u(12.0))
+            .pt(u(9.0))
+            .border_t_1()
+            .border_color(Hsla::from(colors.basalt_rule))
+            .typeface(theme.types.small, theme)
+            .child(
+                div()
+                    .ink(colors.bone_2)
+                    .debug_selector(|| "client-version-number".to_owned())
+                    .child(line.version.clone()),
+            )
+            .child(
+                div()
+                    .ink(if line.newer {
+                        colors.bone
+                    } else {
+                        colors.bone_3
+                    })
+                    .debug_selector(|| "client-version-state".to_owned())
+                    .child(line.sentence.clone()),
+            )
+            .children(button.map(|button| div().flex().mt(u(2.0)).child(button)))
+            .into_any_element()
     }
 
     /// The sentence of a server that this build cannot use, with the newer version of
@@ -412,56 +546,194 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if self.state.read(cx).supports_update_install()
-            && matches!(
-                version.check,
-                crate::state::book::CheckShown::Available { .. }
-            )
-        {
-            let can_install = self.state.read(cx).can_install_update();
-            parts.push(
-                Button::new("install-update")
-                    .label(txt::INSTALL_UPDATE)
-                    .disabled(!can_install)
-                    .selector("install-update")
-                    .h(u(30.0))
-                    .px(u(12.0))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.install_update(cx));
-                    }))
-                    .into_any_element(),
-            );
-            if let Some(status) = self
-                .state
-                .read(cx)
-                .update_install_status()
-                .map(str::to_owned)
-            {
+        parts.extend(self.render_update_way(&version, theme, window, cx));
+        parts
+    }
+
+    /// The part of the section "Version" that tells how this copy gets a newer version:
+    /// the update and the restart, or the steps of a copy that does not install it itself
+    /// (ADR 0780).
+    fn render_update_way(
+        &mut self,
+        version: &crate::state::book::VersionView,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        use crate::state::update_install::UpdateWay;
+        let colors = theme.colors;
+        let sentence = |text: SharedString, selector: &'static str| {
+            div()
+                .flex_none()
+                .mt(u(8.0))
+                .typeface(theme.types.small, theme)
+                .ink(colors.ink_2)
+                .debug_selector(move || selector.to_owned())
+                .child(text)
+        };
+        let state = self.state.read(cx);
+        let way = state.update_way();
+        let installed = state.update_installed();
+        let can_install = state.can_install_update();
+        let status = state.update_install_status().map(str::to_owned);
+        let site = state.release_site().map(str::to_owned);
+        let available = match &version.check {
+            CheckShown::Available { version, .. } => Some(*version),
+            _ => None,
+        };
+        let mut parts: Vec<AnyElement> = Vec::new();
+        match (&way, available) {
+            (UpdateWay::InApp, Some(_)) => {
                 parts.push(
-                    sentence(status.into(), "update-install-status")
+                    div()
+                        .flex()
+                        .gap(u(8.0))
                         .mt(u(8.0))
+                        .child(
+                            Button::new("install-update")
+                                .label(txt::INSTALL_UPDATE)
+                                .disabled(!can_install)
+                                .selector("install-update")
+                                .h(u(30.0))
+                                .px(u(12.0))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| state.install_update(cx));
+                                })),
+                        )
+                        .children(installed.then(|| {
+                            Button::new("restart-after-update")
+                                .kind(ButtonKind::Primary)
+                                .label(txt::RESTART_JUNTO)
+                                .icon(Icon::Retry)
+                                .selector("restart-after-update")
+                                .h(u(30.0))
+                                .px(u(12.0))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.restart_after_update(cx));
+                                }))
+                        }))
                         .into_any_element(),
                 );
+                if let Some(status) = status {
+                    parts.push(sentence(status.into(), "update-install-status").into_any_element());
+                }
             }
-        } else {
-            parts.push(
+            (UpdateWay::InApp, None) => parts.push(
+                sentence(txt::INSTALLS_ITSELF.into(), "version-no-install").into_any_element(),
+            ),
+            (UpdateWay::NoSource, _) => {}
+            (way, Some(newer)) => {
+                if let Some(steps) = txt::update_steps(newer, way) {
+                    parts.push(sentence(steps.into(), "update-steps").into_any_element());
+                }
+                if *way == UpdateWay::SystemPackage {
+                    let command = txt::deb_command(newer);
+                    parts.push(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(8.0))
+                            .mt(u(6.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .typeface(theme.types.mono_small, theme)
+                                    .ink(colors.ink)
+                                    .debug_selector(|| "update-command".to_owned())
+                                    .child(command.clone()),
+                            )
+                            .child(
+                                Button::new("copy-update-command")
+                                    .label(if self.book.copied.as_deref() == Some(command.as_str())
+                                    {
+                                        txt::ADDRESS_COPIED
+                                    } else {
+                                        txt::COPY_COMMAND
+                                    })
+                                    .accessible_label(txt::COPY_COMMAND)
+                                    .selector("copy-update-command")
+                                    .h(u(30.0))
+                                    .px(u(12.0))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            command.clone(),
+                                        ));
+                                        this.book.copied = Some(command.clone());
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                if let Some(site) = site {
+                    parts.extend(self.render_site_address(site, theme, window, cx));
+                }
+            }
+            (_, None) => parts.push(
                 sentence(
-                    self.state
-                        .read(cx)
-                        .update_install_status()
-                        .unwrap_or(txt::NO_INSTALL)
-                        .to_owned()
-                        .into(),
+                    status.unwrap_or_else(|| txt::NO_INSTALL.to_owned()).into(),
                     "version-no-install",
                 )
-                .mt(u(8.0))
                 .into_any_element(),
-            );
+            ),
         }
         parts
     }
 
-    /// The address of the release page that the settings show as text, for a test.
+    /// The address of the download page in a field that takes no change, with "Copy
+    /// address". The client opens no browser.
+    fn render_site_address(
+        &mut self,
+        site: String,
+        _theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        if self.book.site_shown.as_deref() != Some(site.as_str()) {
+            let shown = site.clone();
+            self.book
+                .site
+                .update(cx, |field, cx| field.set_value(shown, window, cx));
+            self.book.site_shown = Some(site.clone());
+        }
+        let copied = self.book.copied.as_deref() == Some(site.as_str());
+        vec![
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(u(8.0))
+                .mt(u(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Field::new(&self.book.site, txt::DOWNLOAD_PAGE).selector("download-page")),
+                )
+                .child(
+                    Button::new("copy-download-page")
+                        .label(if copied {
+                            txt::ADDRESS_COPIED
+                        } else {
+                            txt::COPY_ADDRESS
+                        })
+                        .accessible_label(txt::COPY_ADDRESS)
+                        .selector("copy-download-page")
+                        .h(u(32.0))
+                        .px(u(12.0))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(site.clone()));
+                            this.book.copied = Some(site.clone());
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        ]
+    }
+
+    /// The address of the release page that the settings show as text, for a test.    /// The address of the release page that the settings show as text, for a test.
     #[cfg(feature = "test-support")]
     pub fn release_page_shown(&self, cx: &App) -> String {
         self.book.page.read(cx).value().to_string()

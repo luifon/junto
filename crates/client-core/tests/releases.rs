@@ -459,3 +459,57 @@ async fn a_product_build_refuses_another_release_source_before_it_reads_the_inst
         refused.err()
     );
 }
+
+/// The update source is the directory `updates/` of the release site (ADR 0727): the client
+/// takes the download page and the notes page of a version from it.
+#[test]
+fn a_source_in_the_updates_directory_names_the_site_and_the_notes_of_a_version() {
+    let keys = trust(vec![key().verifying_key()]);
+    let source = HttpSource::new(
+        "https://releases.example.test/junto/updates/",
+        keys.clone(),
+        Version::new(0, 1, 0),
+        target("linux", "x86_64"),
+    )
+    .unwrap();
+    assert_eq!(
+        source.site().map(String::from).as_deref(),
+        Some("https://releases.example.test/junto/")
+    );
+    assert_eq!(
+        source.notes_page(Version::new(0, 1, 1)).as_deref(),
+        Some("https://releases.example.test/junto/notes/0.1.1.html")
+    );
+    let other = HttpSource::new(
+        "https://releases.example.test/junto/",
+        keys,
+        Version::new(0, 1, 0),
+        target("linux", "x86_64"),
+    )
+    .unwrap();
+    assert_eq!(other.site(), None);
+    assert_eq!(other.notes_page(Version::new(0, 1, 1)), None);
+}
+
+/// A directory that the Debian package installed names the package `deb` in its
+/// description; the client then installs no update itself (ADR 0728).
+#[test]
+fn a_directory_of_the_debian_package_is_a_system_package() {
+    use junto_client_core::releases::install;
+    let directory = tempfile::tempdir().unwrap();
+    let described = |package: &str| {
+        std::fs::write(
+            directory.path().join(install::DESCRIPTION),
+            format!(
+                r#"{{"format":1,"version":"0.1.0","system":"linux","package":"{package}","architecture":"x86_64"}}"#
+            ),
+        )
+        .unwrap();
+    };
+    described("deb");
+    assert!(install::is_system_package(directory.path()));
+    described("directory");
+    assert!(!install::is_system_package(directory.path()));
+    std::fs::remove_file(directory.path().join(install::DESCRIPTION)).unwrap();
+    assert!(!install::is_system_package(directory.path()));
+}
