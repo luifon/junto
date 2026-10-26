@@ -20,6 +20,7 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::message::{Message, MessagePlace};
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_media::audio::sounds::Sound;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -907,6 +908,20 @@ pub struct Alerts {
     /// system notification, outside the quiet times of the account. A direct-message call
     /// rings with its tone (ADR 0515).
     pub arrived: Vec<CallInvitationId>,
+    /// The sounds of the change (ADR 0707): one for the new notices that pass the rules of
+    /// a system notification, whatever the bound of the time span, the mention sound when
+    /// one of them is for the person alone; and the request sound for a new join request.
+    pub sounds: Vec<Sound>,
+}
+
+/// The sound of a new notice: a message for the person alone has a sound of its own.
+fn notice_sound(kind: NotificationKind) -> Sound {
+    match kind {
+        NotificationKind::Mention | NotificationKind::Direct | NotificationKind::MissedCall => {
+            Sound::Mention
+        }
+        NotificationKind::Message | NotificationKind::Thread => Sound::Message,
+    }
 }
 
 /// What a press on a system notification leads to.
@@ -1193,6 +1208,10 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                 )
             }
         };
+        let sound = notice_sound(notice.kind);
+        if !alerts.sounds.contains(&sound) {
+            alerts.sounds.push(sound);
+        }
         // A notice above the bound of the time span is in the list only.
         if seen.recent.len() >= MOST_ALERTS {
             continue;
@@ -1216,6 +1235,10 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                 jump,
             },
         ));
+    }
+    // One sound for the notices of one change: the mention sound covers the others.
+    if alerts.sounds.contains(&Sound::Mention) {
+        alerts.sounds.retain(|sound| *sound != Sound::Message);
     }
     // A notice that still waits for its message when the bound of the time span is
     // reached gets no system notification later.
@@ -1328,6 +1351,11 @@ fn join_request_alerts(seen: &mut Seen, scene: &AlertScene<'_>, quiet: bool, ale
             continue;
         }
         held.push(request.id);
+        // The request sound plays also while a window is active, as the sound of a request
+        // to enter a call does (ADR 0707).
+        if !quiet && !alerts.sounds.contains(&Sound::Request) {
+            alerts.sounds.push(Sound::Request);
+        }
         if quiet || scene.active || seen.recent.len() >= MOST_ALERTS {
             continue;
         }

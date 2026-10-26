@@ -1653,6 +1653,7 @@ fn a_new_join_request_is_a_system_notification_for_a_person_who_may_decide_it() 
     set_join_requests(&mut scene, vec![waited.clone(), new.clone()]);
     let told = scene.alerts(&mut seen);
     assert_eq!(told.show.len(), 1);
+    assert_eq!(told.sounds, [Sound::Request]);
     assert_eq!(
         told.show[0].0.tag,
         join_request_tag(scene.server_id, new.id)
@@ -1685,13 +1686,14 @@ fn a_new_join_request_is_a_system_notification_for_a_person_who_may_decide_it() 
         [join_request_tag(scene.server_id, meanwhile.id)]
     );
 
-    // An active window draws the count itself.
+    // An active window draws the count itself; the request sound plays.
     let other = join_request("Theo");
     let mut list = model_requests(&scene);
     list.push(other);
     set_join_requests(&mut scene, list);
     let told = alerts(&mut seen, &scene.alert_scene(true, Shown::default()));
     assert!(told.show.is_empty());
+    assert_eq!(told.sounds, [Sound::Request]);
 }
 
 fn model_requests(scene: &Scene) -> Vec<junto_client_core::protocol::invite::JoinRequest> {
@@ -1780,4 +1782,62 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
             .show
             .is_empty()
     );
+}
+
+#[test]
+fn a_change_with_new_notices_has_one_sound_under_the_rules_of_a_system_notification() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    // A message of a channel with the level "all messages" and a reply in a thread play
+    // the message sound.
+    let plain = scene.message(scene.in_channel(scene.general), 7, "for everyone");
+    scene.notice(NotificationKind::Message, plain, 1);
+    assert_eq!(scene.alerts(&mut seen).sounds, [Sound::Message]);
+    let mut reply = scene.message(scene.in_channel(scene.general), 8, "a reply");
+    reply.thread_root = Some(MessageId::generate());
+    scene.notice(NotificationKind::Thread, reply, 2);
+    assert_eq!(scene.alerts(&mut seen).sounds, [Sound::Message]);
+    // A mention, a direct message and a message in one change: the mention sound alone.
+    let mention = scene.message(scene.in_channel(scene.general), 9, "you, look");
+    let direct = scene.message(scene.direct(), 3, "hello");
+    let plain = scene.message(scene.in_channel(scene.general), 10, "and this");
+    scene.notice(NotificationKind::Mention, mention, 3);
+    scene.notice(NotificationKind::Direct, direct, 4);
+    scene.notice(NotificationKind::Message, plain, 5);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.sounds, [Sound::Mention]);
+    assert_eq!(told.show.len(), 3);
+    // Above the bound of the system notifications the sound still plays.
+    let more = scene.message(scene.in_channel(scene.general), 11, "one more");
+    scene.notice(NotificationKind::Mention, more, 6);
+    let told = scene.alerts(&mut seen);
+    assert!(told.show.is_empty());
+    assert_eq!(told.sounds, [Sound::Mention]);
+    // The active window shows the place of the message: no sound.
+    let shown = scene.message(scene.in_channel(scene.general), 12, "seen");
+    scene.notice(NotificationKind::Mention, shown, 7);
+    let told = alerts(&mut seen, &scene.alert_scene(true, scene.showing(scene.general)));
+    assert!(told.sounds.is_empty());
+    // A muted place, and a quiet time: no sound.
+    scene.settings(
+        SettingsScope::Channel(scene.general),
+        NotificationSettings {
+            mute: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let muted = scene.message(scene.in_channel(scene.general), 13, "muted");
+    scene.notice(NotificationKind::Mention, muted, 8);
+    assert!(scene.alerts(&mut seen).sounds.is_empty());
+    scene.settings(
+        SettingsScope::Account,
+        NotificationSettings {
+            do_not_disturb: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let quiet = scene.message(scene.direct(), 4, "at night");
+    scene.notice(NotificationKind::Direct, quiet, 9);
+    assert!(scene.alerts(&mut seen).sounds.is_empty());
 }

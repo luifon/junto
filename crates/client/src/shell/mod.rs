@@ -50,7 +50,7 @@ use junto_client_core::voice::{InputMode, TalkKey};
 
 use call::{CallTab, DeviceKind, VolumeControl};
 pub use search::FilterKind;
-pub use settings::SettingsSection;
+pub use settings::{SettingsSection, sound_kind_selector};
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;

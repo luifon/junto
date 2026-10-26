@@ -52,6 +52,7 @@ use junto_client_core::live::Notice;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::call::{EntryOutcome, InvitationOutcome, UpdateCallSettings};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecordingId,
@@ -430,6 +431,8 @@ pub struct AppState {
     sounds: junto_media::audio::sounds::SoundPlayer,
     /// What the last tones of the call were decided from.
     heard: call_sounds::Heard,
+    /// When the last sound of messages played (ADR 0707).
+    message_sound_at: Option<std::time::Instant>,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
@@ -860,6 +863,7 @@ impl AppState {
             ringer,
             sounds,
             heard: call_sounds::Heard::default(),
+            message_sound_at: None,
             client,
             calls,
             voice_failed,
@@ -1182,16 +1186,50 @@ impl AppState {
         self.sounds = junto_media::audio::sounds::SoundPlayer::new(host);
     }
 
-    /// Turns the short tones of the events of a call on or off (ADR 0707).
-    pub fn set_call_sounds(&mut self, on: bool, cx: &mut Context<Self>) {
-        // The tones that wait or play end with the switch.
+    /// Turns all sounds of the application on or off (ADR 0707).
+    pub fn set_all_sounds(&mut self, on: bool, cx: &mut Context<Self>) {
+        // The sounds that wait or play end with the switch.
         if !on {
             self.sounds.cancel();
         }
-        self.change_voice(cx, move |voice| voice.call_sounds = on);
+        self.change_voice(cx, move |voice| voice.sounds.all = on);
+        self.reconcile_direct(cx);
     }
 
-    /// Plays the tones of the change of the call of this device since the last change
+    /// Turns the sounds of one kind on or off (ADR 0707).
+    pub fn set_sound_kind(
+        &mut self,
+        kind: junto_client_core::voice::SoundKind,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !on {
+            self.sounds.cancel();
+        }
+        self.change_voice(cx, move |voice| voice.sounds.set(kind, on));
+        self.reconcile_direct(cx);
+    }
+
+    /// Plays a sound on a device, or on the chosen output device, when its kind is on.
+    /// While the sound of the person is off, only the sound that turns it off or on plays
+    /// (ADR 0707).
+    pub(crate) fn play_sound(
+        &self,
+        sound: junto_media::audio::sounds::Sound,
+        device: Option<&DeviceId>,
+    ) {
+        use junto_media::audio::sounds::Sound;
+        if !self.known.media.voice.sounds.plays(sound.kind()) {
+            return;
+        }
+        if self.known.media.calls.deafened && !matches!(sound, Sound::SoundOff | Sound::SoundOn) {
+            return;
+        }
+        let device = device.cloned().or_else(|| self.chosen_output());
+        self.sounds.play(sound, device.as_ref());
+    }
+
+    /// Plays the sounds of the change of the call of this device since the last change
     /// (ADR 0707).
     fn play_call_sounds(&mut self) {
         let calls = &self.known.media.calls;
@@ -1200,32 +1238,55 @@ impl AppState {
             .as_ref()
             .and_then(|call| self.client.server(call.target.server_id))
             .and_then(|server| server.live().view().model);
-        let participants = calls
-            .call
-            .as_ref()
-            .zip(model.as_deref())
-            .map(|(call, model)| {
+        let place = calls.call.as_ref().map(|call| call.target.place);
+        let entry_requests: Vec<EntryRequestId> = model
+            .as_deref()
+            .zip(place)
+            .map(|(model, place)| {
                 model
-                    .call_at(&call.target.place)
-                    .map(|listed| listed.participants.as_slice())
-                    .unwrap_or_default()
+                    .entry_requests
+                    .iter()
+                    .filter(|request| request.place == place && request.account_id != model.account.id)
+                    .map(|request| request.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listed = model.as_deref().zip(place).map(|(model, place)| {
+            let own = model.account.id;
+            let call = model.call_at(&place);
+            let moderates = place.channel_id().is_some_and(|channel_id| {
+                model
+                    .permissions_in(channel_id)
+                    .is_some_and(|held| held.contains(&WorkspacePermission::MuteMembers))
             });
-        let next = call_sounds::heard(
-            calls,
-            participants,
-            model.as_deref().map(|model| model.account.id),
-        );
+            call_sounds::Listed {
+                own,
+                participants: call.map(|call| call.participants.as_slice()).unwrap_or_default(),
+                lowers_hands: moderates
+                    || call
+                        .and_then(|call| call.meeting.as_ref())
+                        .is_some_and(|meeting| meeting.presenter == own),
+                entry_requests: &entry_requests,
+                recording: call
+                    .and_then(|call| call.recording.as_ref())
+                    .map(|recording| (recording.id, recording.stop.is_some())),
+                moved_here: model
+                    .moves
+                    .iter()
+                    .any(|held| held.account_id == own && held.to == place),
+            }
+        });
+        let next = call_sounds::heard(calls, listed, &self.heard);
         let before = std::mem::replace(&mut self.heard, next);
-        let played = call_sounds::sounds(&before, &self.heard, self.known.media.voice.call_sounds);
+        let played = call_sounds::sounds(&before, &self.heard);
         let device = self
             .heard
             .output
             .as_ref()
             .or(before.output.as_ref())
             .cloned();
-        let device = device.or_else(|| self.chosen_output());
         for sound in played {
-            self.sounds.play(sound, device.as_ref());
+            self.play_sound(sound, device.as_ref());
         }
     }
 

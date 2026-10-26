@@ -446,6 +446,12 @@ impl super::AppState {
         self.direct.expire(Instant::now());
         self.reconcile_direct_lifetime(cx);
         let ringing = !self.calls.view().deafened
+            && self
+                .known
+                .media
+                .voice
+                .sounds
+                .plays(junto_client_core::voice::SoundKind::Ring)
             && self.direct.rings.iter().any(|((id, _), ring)| {
                 ring.incoming
                     && ring.outcome == RingOutcome::Waiting

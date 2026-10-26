@@ -4,7 +4,7 @@
 //! ADR 0701, ADR 0707, ADR 0710). They belong to no server, except the volumes, which name
 //! an account of a server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use junto_protocol::ids::{AccountId, ServerId};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 4;
+pub const VOICE_FORMAT_VERSION: u32 = 5;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -34,6 +34,7 @@ const VOICE: Versioned = Versioned {
         settings_of_shares,
         settings_of_camera,
         settings_of_call_sounds,
+        settings_of_sound_kinds,
     ],
     limit: 512 * 1024,
 };
@@ -82,6 +83,121 @@ fn settings_of_call_sounds(mut value: serde_json::Value) -> Result<serde_json::V
         .entry("call_sounds")
         .or_insert(serde_json::Value::Bool(true));
     Ok(value)
+}
+
+/// Version 4 had one switch of the sounds of call events. Version 5 has a switch for all
+/// sounds and one per kind: a file whose switch was off keeps the kinds of call events off,
+/// and the kinds that did not exist before, the messages and the ring, on.
+fn settings_of_sound_kinds(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let settings = value
+        .as_object_mut()
+        .ok_or("the sound settings are not an object")?;
+    let call_sounds = settings
+        .remove("call_sounds")
+        .and_then(|on| on.as_bool())
+        .unwrap_or(true);
+    let off: Vec<SoundKind> = if call_sounds {
+        Vec::new()
+    } else {
+        SoundKind::ALL
+            .into_iter()
+            .filter(|kind| kind.of_a_call())
+            .collect()
+    };
+    settings.insert(
+        "sounds".to_owned(),
+        serde_json::json!({ "all": true, "off": off }),
+    );
+    Ok(value)
+}
+
+/// A kind of the sounds of the application (ADR 0707). Each kind has a switch of its own,
+/// as Discord has one for each sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundKind {
+    /// A message of a place with the level "all messages", a reply in a followed thread.
+    Messages,
+    /// A mention, a direct message, a missed call.
+    Mentions,
+    /// The ring of an incoming direct-message call.
+    Ring,
+    /// Other people join and leave the call.
+    People,
+    /// The microphone and the sound of the person turn on and off.
+    OwnMicrophoneAndSound,
+    /// The person joins, leaves or is moved, and the connection of the call is lost.
+    OwnCall,
+    /// The key of push-to-talk is pressed and released.
+    PushToTalk,
+    /// A share starts or ends, and people start or stop watching the share of the person.
+    Shares,
+    /// An invitation into a call, a request to enter the call, a request to join the
+    /// server.
+    Requests,
+    /// A recording of the call starts or stops.
+    Recording,
+    /// A hand is raised in meeting mode.
+    Hands,
+}
+
+impl SoundKind {
+    pub const ALL: [Self; 11] = [
+        Self::Messages,
+        Self::Mentions,
+        Self::Ring,
+        Self::People,
+        Self::OwnMicrophoneAndSound,
+        Self::OwnCall,
+        Self::PushToTalk,
+        Self::Shares,
+        Self::Requests,
+        Self::Recording,
+        Self::Hands,
+    ];
+
+    /// The kinds that the one switch of call sounds of version 4 turned off.
+    fn of_a_call(self) -> bool {
+        !matches!(self, Self::Messages | Self::Mentions | Self::Ring)
+    }
+}
+
+/// The switches of the sounds: one for all sounds, and the kinds that the person turned
+/// off. A kind that is not named is on, so a kind that a later version adds starts on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sounds {
+    pub all: bool,
+    #[serde(default)]
+    pub off: BTreeSet<SoundKind>,
+}
+
+impl Default for Sounds {
+    fn default() -> Self {
+        Self {
+            all: true,
+            off: BTreeSet::new(),
+        }
+    }
+}
+
+impl Sounds {
+    /// The sounds of a kind play: all sounds are on, and so is the kind.
+    pub fn plays(&self, kind: SoundKind) -> bool {
+        self.all && !self.off.contains(&kind)
+    }
+
+    /// The switch of a kind, whatever the switch of all sounds is.
+    pub fn kind_on(&self, kind: SoundKind) -> bool {
+        !self.off.contains(&kind)
+    }
+
+    pub fn set(&mut self, kind: SoundKind, on: bool) {
+        if on {
+            self.off.remove(&kind);
+        } else {
+            self.off.insert(kind);
+        }
+    }
 }
 
 /// The largest picture that a share of this device sends.
@@ -140,8 +256,8 @@ pub struct VoiceSettings {
     pub share_volume: u16,
     /// The strip of a call shows only the people who send a camera picture.
     pub hide_people_without_video: bool,
-    /// The short tones of the events of a call (ADR 0707).
-    pub call_sounds: bool,
+    /// The switches of the sounds of the application (ADR 0707).
+    pub sounds: Sounds,
     /// Voice activation sends the microphone only while its level reaches this many dBFS,
     /// from [`THRESHOLD_RANGE`]. Absent: all of the open microphone is sent.
     pub voice_threshold: Option<i16>,
@@ -169,7 +285,7 @@ impl Default for VoiceSettings {
             share_frame_rate: SHARE_FRAME_RATE_DEFAULT,
             share_volume: VOLUME_DEFAULT_PERCENT,
             hide_people_without_video: false,
-            call_sounds: true,
+            sounds: Sounds::default(),
             voice_threshold: None,
         }
     }
@@ -253,7 +369,7 @@ struct VoiceFile {
     share_frame_rate: u32,
     share_volume: u16,
     hide_people_without_video: bool,
-    call_sounds: bool,
+    sounds: Sounds,
     #[serde(default)]
     voice_threshold: Option<i16>,
 }
@@ -287,7 +403,7 @@ impl VoiceStore {
             share_frame_rate: file.share_frame_rate,
             share_volume: file.share_volume,
             hide_people_without_video: file.hide_people_without_video,
-            call_sounds: file.call_sounds,
+            sounds: file.sounds,
             voice_threshold: file.voice_threshold,
         }
         .bounded())
@@ -327,7 +443,7 @@ impl VoiceStore {
                 share_frame_rate: settings.share_frame_rate,
                 share_volume: settings.share_volume,
                 hide_people_without_video: settings.hide_people_without_video,
-                call_sounds: settings.call_sounds,
+                sounds: settings.sounds.clone(),
                 voice_threshold: settings.voice_threshold,
             },
         )?;
@@ -375,7 +491,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 4"), "{text}");
+        assert!(text.contains("\"format_version\": 5"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -432,11 +548,11 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":5,"later":true}"#;
+        let newer = r#"{"format_version":6,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 5, .. })
+            Err(StorageError::NewerFormat { found: 6, .. })
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -478,7 +594,7 @@ mod tests {
             (ShareResolution::P1080, 30, 100)
         );
         assert!(!read.hide_people_without_video);
-        assert!(read.call_sounds);
+        assert_eq!(read.sounds, Sounds::default());
 
         // The next change writes the file in the present version.
         let written = store
@@ -492,7 +608,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 4"), "{text}");
+        assert!(text.contains("\"format_version\": 5"), "{text}");
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
     }
 
@@ -507,17 +623,56 @@ mod tests {
             "share_volume":100,"hide_people_without_video":true}"#;
         fs::write(&file, third).unwrap();
         let read = store.load().unwrap();
-        assert!(read.call_sounds);
+        assert_eq!(read.sounds, Sounds::default());
         assert!(read.hide_people_without_video && !read.automatic_gain);
         assert_eq!(read.output_device.as_deref(), Some("phones"));
 
         let written = store
-            .update(|settings| settings.call_sounds = false)
+            .update(|settings| settings.sounds.set(SoundKind::People, false))
             .unwrap();
-        assert!(!written.call_sounds);
+        assert!(!written.sounds.plays(SoundKind::People) && written.sounds.plays(SoundKind::Messages));
         assert_eq!(store.load().unwrap(), written);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"call_sounds\": false"), "{text}");
+        assert!(text.contains("\"people\""), "{text}");
+    }
+
+    #[test]
+    fn a_file_of_version_4_with_the_call_sounds_off_keeps_them_off_and_the_new_kinds_on() {
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(VOICE_FILE);
+        let fourth = |on: bool| {
+            format!(
+                r#"{{"format_version":4,"camera_device":null,"input_device":null,
+                "output_device":null,"echo_cancellation":true,"noise_suppression":true,
+                "automatic_gain":true,"input_mode":"voice_activation","talk_key":"alt",
+                "volumes":{{}},"share_resolution":"p1080","share_frame_rate":30,
+                "share_volume":100,"hide_people_without_video":false,"call_sounds":{on}}}"#
+            )
+        };
+        fs::write(&file, fourth(false)).unwrap();
+        let read = store.load().unwrap();
+        assert!(read.sounds.all);
+        let on: Vec<SoundKind> = SoundKind::ALL
+            .into_iter()
+            .filter(|kind| read.sounds.plays(*kind))
+            .collect();
+        assert_eq!(on, [SoundKind::Messages, SoundKind::Mentions, SoundKind::Ring]);
+
+        fs::write(&file, fourth(true)).unwrap();
+        assert_eq!(store.load().unwrap().sounds, Sounds::default());
+
+        // The switch of all sounds turns every kind off and keeps the switch of each kind.
+        let written = store
+            .update(|settings| {
+                settings.sounds.set(SoundKind::Hands, false);
+                settings.sounds.all = false;
+            })
+            .unwrap();
+        assert!(SoundKind::ALL.into_iter().all(|kind| !written.sounds.plays(kind)));
+        assert!(!written.sounds.kind_on(SoundKind::Hands) && written.sounds.kind_on(SoundKind::Ring));
+        assert_eq!(store.load().unwrap(), written);
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("call_sounds"), "{text}");
     }
 
     #[test]

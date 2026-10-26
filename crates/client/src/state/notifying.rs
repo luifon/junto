@@ -15,6 +15,9 @@ use junto_client_core::protocol::ids::{
     AccountId, CallInvitationId, ChannelId, ServerId, WorkspaceId,
 };
 use time::OffsetDateTime;
+
+/// The shortest time between two sounds of messages (ADR 0707).
+const MESSAGE_SOUND_SPAN: std::time::Duration = std::time::Duration::from_secs(2);
 use uuid::Uuid;
 
 use super::AppState;
@@ -915,6 +918,7 @@ impl AppState {
                 self.notifier.dismiss(&tag, cx);
             }
         }
+        let mut sounds: Vec<junto_media::audio::sounds::Sound> = Vec::new();
         for server in servers {
             let Some(model) = super::view::shown_model(server) else {
                 continue;
@@ -939,24 +943,48 @@ impl AppState {
             for invitation_id in told.arrived {
                 self.invitation_sound(server.id, invitation_id);
             }
+            for sound in told.sounds {
+                if !sounds.contains(&sound) {
+                    sounds.push(sound);
+                }
+            }
             // What a press leads to is kept with what was seen of the server, for as
             // long as the notification is shown.
             for (alert, _) in told.show {
                 self.notifier.show(&alert, cx);
             }
         }
+        self.notice_sounds(sounds);
     }
 
-    /// An invitation into a voice channel arrived for the person: one short tone, unless
-    /// the person turned the tones or the sound off (ADR 0707, ADR 0739).
-    fn invitation_sound(&mut self, _server_id: ServerId, _invitation_id: CallInvitationId) {
-        if self.known.media.voice.call_sounds && !self.known.media.calls.deafened {
-            let device = self.chosen_output();
-            self.sounds.play(
-                junto_media::audio::sounds::Sound::Invitation,
-                device.as_ref(),
-            );
+    /// Plays the sounds of the notices and requests of one change of every server: one
+    /// sound of messages, the mention sound when one of them is for the person alone, at
+    /// most one in [`MESSAGE_SOUND_SPAN`] (ADR 0707).
+    fn notice_sounds(&mut self, mut sounds: Vec<junto_media::audio::sounds::Sound>) {
+        use junto_media::audio::sounds::Sound;
+        if sounds.contains(&Sound::Mention) {
+            sounds.retain(|sound| *sound != Sound::Message);
         }
+        let now = std::time::Instant::now();
+        let recent = self
+            .message_sound_at
+            .is_some_and(|at| now.duration_since(at) < MESSAGE_SOUND_SPAN);
+        for sound in sounds {
+            let message = matches!(sound, Sound::Message | Sound::Mention);
+            if message && recent {
+                continue;
+            }
+            if message && self.known.media.voice.sounds.plays(sound.kind()) {
+                self.message_sound_at = Some(now);
+            }
+            self.play_sound(sound, None);
+        }
+    }
+
+    /// An invitation into a voice channel arrived for the person: one short sound, unless
+    /// the person turned the sound of requests or the own sound off (ADR 0707, ADR 0739).
+    fn invitation_sound(&mut self, _server_id: ServerId, _invitation_id: CallInvitationId) {
+        self.play_sound(junto_media::audio::sounds::Sound::Invitation, None);
     }
 
     /// The person pressed a notification of the system: the window shows what it was

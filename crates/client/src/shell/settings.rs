@@ -35,18 +35,20 @@ pub enum SettingsSection {
     Voice,
     Quiet,
     Notifications,
+    Sounds,
     Devices,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
         Self::Voice,
         Self::Quiet,
         Self::Notifications,
+        Self::Sounds,
         Self::Devices,
         Self::About,
     ];
@@ -59,6 +61,7 @@ impl SettingsSection {
             Self::Voice => text::VOICE,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
+            Self::Sounds => text::SOUNDS,
             Self::Devices => text::account::DEVICES_SECTION,
             Self::About => text::ABOUT,
         }
@@ -72,6 +75,7 @@ impl SettingsSection {
             Self::Voice => Icon::Microphone,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
+            Self::Sounds => Icon::Speaker,
             Self::Devices => Icon::Devices,
             Self::About => Icon::Document,
         }
@@ -86,9 +90,28 @@ impl SettingsSection {
             Self::Voice => "settings-section-voice",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
+            Self::Sounds => "settings-section-sounds",
             Self::Devices => "settings-section-devices",
             Self::About => "settings-section-about",
         }
+    }
+}
+
+/// The name of the switch of a kind of sounds, for a test.
+pub fn sound_kind_selector(kind: junto_client_core::voice::SoundKind) -> &'static str {
+    use junto_client_core::voice::SoundKind;
+    match kind {
+        SoundKind::Messages => "sound-kind-messages",
+        SoundKind::Mentions => "sound-kind-mentions",
+        SoundKind::Ring => "sound-kind-ring",
+        SoundKind::People => "sound-kind-people",
+        SoundKind::OwnMicrophoneAndSound => "sound-kind-own-microphone-and-sound",
+        SoundKind::OwnCall => "sound-kind-own-call",
+        SoundKind::PushToTalk => "sound-kind-push-to-talk",
+        SoundKind::Shares => "sound-kind-shares",
+        SoundKind::Requests => "sound-kind-requests",
+        SoundKind::Recording => "sound-kind-recording",
+        SoundKind::Hands => "sound-kind-hands",
     }
 }
 
@@ -268,6 +291,7 @@ impl Shell {
                 parts
             }
             SettingsSection::Notifications => self.render_notifications_section(&theme, cx),
+            SettingsSection::Sounds => self.render_sounds_section(&theme, cx),
             SettingsSection::Devices => self.render_devices_settings(&theme, cx),
             SettingsSection::About => self.render_about_section(&theme, window, cx),
         };
@@ -417,6 +441,82 @@ impl Shell {
 
     /// Whether the system shows the notifications of Junto. What a server notifies is
     /// chosen in the menu of that server.
+    /// The switch of all sounds and one switch for each kind (ADR 0707). A kind is drawn
+    /// as off while all sounds are off, and keeps its own choice.
+    fn render_sounds_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let sounds = self.state.read(cx).voice().sounds.clone();
+        let colors = theme.colors;
+        let switch = |selector: &'static str,
+                      title: &'static str,
+                      sentence: &'static str,
+                      on: bool,
+                      held: Option<&'static str>,
+                      press: Box<dyn Fn(&mut Shell, &mut Context<Shell>)>,
+                      cx: &mut Context<Shell>| {
+            div()
+                .debug_selector(move || format!("{selector}-row"))
+                .flex()
+                .items_start()
+                .gap(u(10.0))
+                .mt(u(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .typeface(theme.types.control, theme)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .ink(colors.ink)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_2)
+                                .child(sentence),
+                        ),
+                )
+                .child(
+                    Toggle::new(selector, title, on, (text::ON, text::OFF))
+                        .selector(selector)
+                        .held(held)
+                        .on_click(cx.listener(move |this, _, _, cx| press(this, cx))),
+                )
+                .into_any_element()
+        };
+        let mut parts = vec![group_label(text::SOUNDS, theme).into_any_element()];
+        let all = sounds.all;
+        parts.push(switch(
+            "all-sounds",
+            text::ALL_SOUNDS,
+            text::ALL_SOUNDS_HELP,
+            all,
+            None,
+            Box::new(move |this, cx| {
+                this.state.update(cx, |state, cx| state.set_all_sounds(!all, cx));
+            }),
+            cx,
+        ));
+        for kind in junto_client_core::voice::SoundKind::ALL {
+            let (title, sentence) = text::sound_kind(kind);
+            let on = sounds.kind_on(kind);
+            parts.push(switch(
+                sound_kind_selector(kind),
+                title,
+                sentence,
+                all && on,
+                (!all).then_some(text::ALL_SOUNDS_ARE_OFF),
+                Box::new(move |this, cx| {
+                    this.state
+                        .update(cx, |state, cx| state.set_sound_kind(kind, !on, cx));
+                }),
+                cx,
+            ));
+        }
+        parts
+    }
+
     fn render_notifications_section(
         &mut self,
         theme: &Theme,
@@ -756,32 +856,25 @@ impl Shell {
         }
         for (part, on, title, sentence, selector) in [
             (
-                Some(ProcessingPart::EchoCancellation),
+                ProcessingPart::EchoCancellation,
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                Some(ProcessingPart::NoiseSuppression),
+                ProcessingPart::NoiseSuppression,
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                Some(ProcessingPart::AutomaticGain),
+                ProcessingPart::AutomaticGain,
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
                 "automatic-gain",
-            ),
-            (
-                None,
-                voice.call_sounds,
-                text::CALL_SOUNDS,
-                text::CALL_SOUNDS_HELP,
-                "call-sounds",
             ),
         ] {
             rows.push(
@@ -813,10 +906,8 @@ impl Shell {
                         Toggle::new(selector, title, on, (text::ON, text::OFF))
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| match part {
-                                    Some(part) => state.set_processing(part, !on, cx),
-                                    None => state.set_call_sounds(!on, cx),
-                                });
+                                this.state
+                                    .update(cx, |state, cx| state.set_processing(part, !on, cx));
                             })),
                     )
                     .into_any_element(),

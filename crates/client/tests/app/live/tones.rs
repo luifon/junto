@@ -1,22 +1,23 @@
-//! The tones of call events in the window (ADR 0707).
+//! The sounds of call events in the window (ADR 0707).
 
 use std::time::Duration;
 
 use gpui::TestAppContext;
 use junto_client_core::protocol::call::CallPlace;
-use junto_media::audio::synthetic::tone_level;
+use junto_media::audio::sounds::{Sound, heard};
 use junto_media::calls::{CallTarget, Phase};
 
 use super::{ROOM, enter, occupants, room};
 use crate::calls::voice_channel;
 use crate::harness::{Window, World, member};
 
-/// Waits until the output of the tones was opened `count` times and the last tone has the
-/// frequency `hz`.
-fn until_tone(window: &mut Window, what: &str, count: usize, hz: f32) {
+/// Waits until the output of the sounds was opened `count` times and the last sound that it
+/// played is `sound`.
+fn until_sound(window: &mut Window, what: &str, count: usize, sound: Sound) {
     window.until(what, |window| {
         let (played, rate) = window.tones.played_since_clear();
-        window.tones.opened_outputs().len() == count && tone_level(&played, rate, hz) > -60.0
+        window.tones.opened_outputs().len() == count
+            && heard::recognise(&played, rate) == Some(sound)
     });
 }
 
@@ -41,7 +42,7 @@ fn the_person_in_the_call_hears_a_tone_for_each_event_and_none_for_the_people_pr
     };
 
     // The administrator is in the call before the person: the entry of the person plays
-    // nothing.
+    // the sound of the own entry and none for the person present.
     enter(&world, &caller, target);
     window.click_channel(ROOM);
     window.click("join-call");
@@ -52,17 +53,18 @@ fn the_person_in_the_call_hears_a_tone_for_each_event_and_none_for_the_people_pr
             .is_some_and(|call| call.phase == Phase::Connected)
             && occupants(window).len() == 2
     });
+    until_sound(&mut window, "the sound of the own entry", 1, Sound::CallJoined);
     world.run(async { tokio::time::sleep(Duration::from_millis(500)).await });
     window.settle();
-    assert!(window.tones.opened_outputs().is_empty());
+    assert_eq!(window.tones.opened_outputs().len(), 1);
 
     window.click("microphone");
-    until_tone(&mut window, "the tone of a closed microphone", 1, 392.0);
+    until_sound(&mut window, "the sound of a closed microphone", 2, Sound::MicrophoneOff);
     world.run(caller.calls.leave());
-    until_tone(&mut window, "the tone of a person who leaves", 2, 523.0);
+    until_sound(&mut window, "the sound of a person who leaves", 3, Sound::PersonLeft);
     enter(&world, &caller, target);
-    until_tone(&mut window, "the tone of a person who joins", 3, 392.0);
+    until_sound(&mut window, "the sound of a person who joins", 4, Sound::PersonJoined);
     window.click("leave-call");
-    until_tone(&mut window, "the tone of the end of the call", 4, 330.0);
+    until_sound(&mut window, "the sound of the end of the call", 5, Sound::CallLeft);
     world.run(caller.calls.leave());
 }

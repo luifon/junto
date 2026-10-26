@@ -1275,3 +1275,83 @@ fn notice_bounds(window: &mut Window, selector: &'static str) -> gpui::Bounds<gp
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("{selector} is not drawn"))
 }
+
+/// A new notice plays its sound under the rules of a system notification (ADR 0707): the
+/// mention sound for a mention, the message sound for a message of a channel with the level
+/// "all messages", none while the active window shows the place, and none in a muted
+/// channel. Each step waits longer than the shortest time between two sounds of messages.
+#[gpui::test]
+fn a_notice_plays_its_sound_under_the_rules_of_a_system_notification(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::discovery::NotificationSettings;
+    use junto_media::audio::sounds::{Sound, heard};
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    let pause = |world: &World| {
+        world.run(async { tokio::time::sleep(std::time::Duration::from_millis(2_200)).await });
+    };
+    let last_sound = |window: &mut Window| {
+        let (played, rate) = window.tones.played_since_clear();
+        heard::recognise(&played, rate)
+    };
+    let count = |window: &mut Window| window.tones.opened_outputs().len();
+
+    // A mention while no window is active: the mention sound.
+    admin.mention(&world, general, "first, ", own);
+    window.until("the mention sound", |window| {
+        count(window) == 1 && last_sound(window) == Some(Sound::Mention)
+    });
+
+    // The active window shows the channel: a mention there plays nothing.
+    pause(&world);
+    window.cx.update(|window, _| window.activate_window());
+    admin.mention(&world, general, "second, ", own);
+    window.until_message("second, @Luca");
+    pause(&world);
+    window.settle();
+    assert_eq!(count(&mut window), 1);
+
+    // The channel has the level "all messages" and the active window shows another
+    // channel: a message without a mention plays the message sound.
+    world
+        .run(window.handle().api().set_notification_settings(
+            SettingsScope::Channel(general),
+            &NotificationSettings {
+                level: Some(NotificationLevel::All),
+                ..NotificationSettings::default()
+            },
+        ))
+        .unwrap();
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    admin.send(&world, general, document("for everyone"));
+    window.until("the message sound", |window| {
+        count(window) == 2 && last_sound(window) == Some(Sound::Message)
+    });
+
+    // A muted channel plays nothing.
+    pause(&world);
+    world
+        .run(window.handle().api().set_notification_settings(
+            SettingsScope::Channel(general),
+            &NotificationSettings {
+                level: Some(NotificationLevel::All),
+                mute: true,
+                ..NotificationSettings::default()
+            },
+        ))
+        .unwrap();
+    window.until("the channel is muted", |window| {
+        window.channel(general).unread.muted
+    });
+    admin.mention(&world, general, "muted, ", own);
+    window.until("the message of the muted channel arrived", |window| {
+        window.channel(general).unread.messages >= 2
+    });
+    pause(&world);
+    window.settle();
+    assert_eq!(count(&mut window), 2);
+}

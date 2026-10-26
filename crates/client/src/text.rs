@@ -972,8 +972,56 @@ pub const NOISE_SUPPRESSION: &str = "Noise suppression";
 pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
-pub const CALL_SOUNDS: &str = "Call sounds";
-pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or leaves your call, when your microphone or sound turns on or off, when a share starts, and when you leave.";
+/// The section of the settings with the switches of the sounds (ADR 0707).
+pub const SOUNDS: &str = "Sounds";
+pub const ALL_SOUNDS: &str = "All sounds";
+pub const ALL_SOUNDS_HELP: &str = "Turns every sound of Junto off, the ring of a call too. The switches below keep their choice.";
+pub const ALL_SOUNDS_ARE_OFF: &str = "All sounds are off.";
+
+/// The name and the sentence of the switch of a kind of sounds.
+pub fn sound_kind(kind: junto_client_core::voice::SoundKind) -> (&'static str, &'static str) {
+    use junto_client_core::voice::SoundKind;
+    match kind {
+        SoundKind::Messages => (
+            "Messages",
+            "A new message in a place that you do not look at, when the place notifies you of all messages, and a reply in a thread that you follow.",
+        ),
+        SoundKind::Mentions => (
+            "Mentions and direct messages",
+            "A mention of you, a direct message, a call that you missed.",
+        ),
+        SoundKind::Ring => ("Incoming call", "The ring of a direct call to you."),
+        SoundKind::People => (
+            "People who join and leave",
+            "Another person joins or leaves your call.",
+        ),
+        SoundKind::OwnMicrophoneAndSound => (
+            "Your microphone and sound",
+            "Your microphone or your sound turns off or on, also by a moderator.",
+        ),
+        SoundKind::OwnCall => (
+            "Your call",
+            "You join or leave a call, a moderator moves you, or the connection of the call is lost.",
+        ),
+        SoundKind::PushToTalk => (
+            "Push to talk",
+            "You press and release the key of push to talk.",
+        ),
+        SoundKind::Shares => (
+            "Shares",
+            "A share starts or ends in your call, and a person starts or stops watching your share.",
+        ),
+        SoundKind::Requests => (
+            "Invitations and requests",
+            "An invitation into a call, a person who asks to enter your call, a request to join a server that you decide.",
+        ),
+        SoundKind::Recording => ("Recording", "A recording of your call starts or stops."),
+        SoundKind::Hands => (
+            "Raised hands",
+            "A person raises a hand in meeting mode, when you may lower it.",
+        ),
+    }
+}
 
 /// The question before the switch to push to talk.
 pub fn push_to_talk_question(key: TalkKey) -> String {
