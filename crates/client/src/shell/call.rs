@@ -1862,8 +1862,13 @@ impl Shell {
                                 Button::new("camera-settings")
                                     .label(text::SETTINGS)
                                     .selector("camera-settings")
+                                    // The camera is chosen in the Settings tab of the call.
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_settings(window, cx)
+                                        this.open(
+                                            super::Open::CallTab(CallTab::Settings),
+                                            window,
+                                            cx,
+                                        )
                                     })),
                             )
                             .child(
