@@ -89,6 +89,25 @@ async fn set(app: &AppState, bearer: &Bearer, id: MessageId, pin: bool) -> ApiRe
                 false,
             )
             .await?;
+            // A pin has a line in the chat of its channel, as in Discord and Slack; a
+            // removal of a pin has none (ADR 0408).
+            if let (true, junto_protocol::message::MessagePlace::Channel { channel_id, .. }) =
+                (pin, place.value)
+            {
+                messages::system(
+                    connection,
+                    app.now(),
+                    channel_id,
+                    MessageId::generate(),
+                    &junto_protocol::message::SystemMessage {
+                        action: "message_pinned".to_owned(),
+                        actor_id: Some(access.account_id),
+                        ..junto_protocol::message::SystemMessage::default()
+                    },
+                    None,
+                )
+                .await?;
+            }
         }
         Ok(())
     })

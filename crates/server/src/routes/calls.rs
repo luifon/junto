@@ -359,13 +359,15 @@ pub async fn end_screen_share(
             .bind(access.account_id)
             .execute(&mut *connection)
             .await?;
+            let ended = store::Note::ScreenShareEnded;
+            store::note(connection, now, &call, ended, Some(access.account_id)).await?;
             store::announce_participant(connection, now, &call, access.account_id).await?;
             let presents = call
                 .meeting
                 .as_ref()
                 .is_some_and(|meeting| meeting.presenter == access.account_id);
             if presents {
-                store::end_meeting(connection, now, &call, MeetingEnd::ShareStopped).await?;
+                store::end_meeting(connection, now, &call, MeetingEnd::ShareStopped, None).await?;
             }
         }
         Ok(())
@@ -764,6 +766,12 @@ async fn set_lock(
             .bind(lock.as_ref().map(|lock| lock.at))
             .execute(&mut *connection)
             .await?;
+        let noted = if locked {
+            store::Note::CallLocked
+        } else {
+            store::Note::CallUnlocked
+        };
+        store::note(connection, now, &call, noted, Some(access.account_id)).await?;
         let changed = Event::CallLockChanged {
             call_id: call.id,
             place: call.place,
@@ -980,11 +988,15 @@ pub async fn answer_entry_request(
             .bind(admits_until)
             .execute(&mut *connection)
             .await?;
+            store::entry_line(connection, now, &call, true, access.account_id, account_id)
+                .await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Accepted, by).await
         } else {
             sqlx::query("delete from call_entry_requests where id = $1")
                 .bind(request_id)
                 .execute(&mut *connection)
+                .await?;
+            store::entry_line(connection, now, &call, false, access.account_id, account_id)
                 .await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Denied, by).await
         }
@@ -1584,7 +1596,8 @@ pub async fn end_meeting(
             None => Ok(()),
             Some(meeting) if meeting.presenter == access.account_id => {
                 app.calls.mark(call.room.as_str());
-                store::end_meeting(connection, now, &call, MeetingEnd::TurnedOff).await
+                let by = Some(access.account_id);
+                store::end_meeting(connection, now, &call, MeetingEnd::TurnedOff, by).await
             }
             Some(_) => Err(ApiError::new(
                 junto_protocol::error::ErrorCode::Forbidden,
@@ -1914,6 +1927,8 @@ pub async fn disconnect_participant(
         let disconnected = LeaveReason::Disconnected;
         app.calls.mark(call.room.as_str());
         store::remove_member(connection, now, &call, &member, disconnected).await?;
+        // A later entry of the person into this call is a join (ADR 0408).
+        store::note(connection, now, &call, store::Note::PersonOut, Some(account_id)).await?;
         let removed = AuditEvent::CallMemberDisconnected { account_id };
         let actor = Some(access.account_id);
         audit::record(connection, now, actor, voice.about(), &removed).await?;

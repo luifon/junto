@@ -180,6 +180,9 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     world.run(api.end_meeting(voice)).unwrap();
+    caller.calls.stop_share();
+    world.run(api.lock_call(voice)).unwrap();
+    world.run(api.unlock_call(voice)).unwrap();
 
     // Luca leaves, then Ada: the call ends.
     window.click("leave-call");
@@ -197,17 +200,30 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         ("Ada started sharing", SystemKind::Start),
         ("Ada changed the settings of the room", SystemKind::Plain),
         ("Ada turned meeting mode on", SystemKind::Start),
-        ("Meeting mode ended", SystemKind::Plain),
-        // Luca leaves first, while Ada is inside; the departure of Ada ends the call.
+        ("Ada turned meeting mode off", SystemKind::Plain),
+        ("Ada stopped sharing", SystemKind::Plain),
+        ("Ada locked the room", SystemKind::Plain),
+        ("Ada unlocked the room", SystemKind::Plain),
+        // Luca leaves first, while Ada is inside; the departure of Ada ends the call, whose
+        // line states its length.
         ("Luca left the call", SystemKind::Plain),
-        ("Call ended", SystemKind::Plain),
+        ("Call ended after …", SystemKind::Plain),
     ]
     .map(|(text, kind)| (text.to_owned(), kind));
     let mut seen = Vec::new();
     window.until(
         "the chat of the channel holds the lines of the call",
         |window| {
-            let now = system_lines(window);
+            // The length of the call is measured: the test reads that it is stated.
+            let now: Vec<(String, SystemKind)> = system_lines(window)
+                .into_iter()
+                .map(|(text, kind)| match text.strip_prefix("Call ended after ") {
+                    Some(length) if length.ends_with("seconds") || length.ends_with("second") => {
+                        ("Call ended after …".to_owned(), kind)
+                    }
+                    _ => (text, kind),
+                })
+                .collect();
             if now != seen {
                 eprintln!("the lines of the chat: {now:?}");
                 seen = now;

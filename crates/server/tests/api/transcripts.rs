@@ -90,6 +90,29 @@ async fn a_processed_recording_is_handed_to_the_worker_and_its_transcript_is_sto
     assert!(server.transcribe().await);
     assert!(!server.transcribe().await);
 
+    // The end of the transcript has one line in the chat of the voice channel, and the card
+    // of the recording and that line count as unread for the person who started the
+    // recording (ADR 0408).
+    let notes = server.notes(scene.voice.id).await;
+    assert_eq!(
+        notes
+            .iter()
+            .filter(|kind| kind.as_str() == "transcript_ready")
+            .count(),
+        1,
+        "{notes:?}"
+    );
+    let counted: Vec<String> = sqlx::query_scalar(
+        "select system->>'action' from messages where notifies = $1 and place_id = $2
+         order by position",
+    )
+    .bind(done.recording.started_by.as_uuid())
+    .bind(scene.voice.id.as_uuid())
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(counted, ["recording_ready", "transcript_ready"]);
+
     // The job file (ADR 0611).
     let tracks = audio(&done);
     let timeline = done.recording.timeline_started_at.unwrap();

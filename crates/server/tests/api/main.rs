@@ -74,6 +74,7 @@ mod messages_queries;
 mod messages_rates;
 mod messages_storage;
 mod messages_support;
+mod call_lines;
 mod messages_system;
 
 mod discovery_access;

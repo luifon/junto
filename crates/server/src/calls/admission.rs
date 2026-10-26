@@ -390,6 +390,9 @@ async fn complete_move(
             audit::record(&mut *connection, now, mover, about, &entry).await?;
         }
     }
+    // A later entry of the person into the call of the source is a join (ADR 0408).
+    let out = store::Note::PersonOut;
+    store::note(&mut *connection, now, source, out, Some(account_id)).await?;
     store::end_if_empty(connection, now, source.id).await?;
     orders
         .removals
@@ -598,11 +601,14 @@ async fn apply(
                     .bind(member.account_id)
                     .execute(&mut *connection)
                     .await?;
+                    let ended = store::Note::ScreenShareEnded;
+                    store::note(&mut *connection, now, &call, ended, Some(member.account_id))
+                        .await?;
                     store::announce_participant(&mut *connection, now, &call, member.account_id)
                         .await?;
                     if presents {
                         let stopped = MeetingEnd::ShareStopped;
-                        store::end_meeting(&mut *connection, now, &call, stopped).await?;
+                        store::end_meeting(&mut *connection, now, &call, stopped, None).await?;
                         call.meeting = None;
                     }
                 } else if member.share_missing_since.is_none() {
@@ -726,7 +732,7 @@ async fn apply(
             (true, None) => {}
             (false, Some(since)) if now - since >= limits.presenter_grace => {
                 let left = MeetingEnd::PresenterLeft;
-                store::end_meeting(&mut *connection, now, &call, left).await?;
+                store::end_meeting(&mut *connection, now, &call, left, None).await?;
                 orders.again = true;
             }
             (false, Some(_)) => {}

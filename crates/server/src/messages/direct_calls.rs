@@ -83,6 +83,8 @@ pub async fn line(
             Line::Ended { seconds } => Some(seconds),
             _ => None,
         },
+        name: None,
+        previous_name: None,
     };
     let id = MessageId::generate();
     let position = place.next(&mut *connection).await?;

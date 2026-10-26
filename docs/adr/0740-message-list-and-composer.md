@@ -66,6 +66,8 @@ Places:
 - A text channel and the chat of a voice channel are the same list and composer. The chat tab of a call (ADR 0735) shows the chat of its voice channel in the panel.
 - The window holds the place of the main area open in the client core. ADR 0741 adds the thread of the side panel, with a list and a composer of its own, and direct conversations as places of the main area.
 
+- System lines that repeat are joined in the list (ADR 0408 joins some on the server): consecutive lines of one kind of a call (a person who joins, leaves, joins by invitation, starts or stops sharing) of different people within 5 minutes of the first are one line that names them all ("Ada, Ben and Cy joined the call", more than three as "and 2 others"); a person who left and joined again within a minute is one line ("Ada left the call and joined again"), which no other line joins. A line between them, such as a message or a day, keeps them apart. The line of a rename names both names, and the end of a call its length. Tests: `state::feed::tests::consecutive_lines_of_several_people_are_one_line_and_a_quick_return_is_one_line`, `state::feed::tests::a_rename_names_both_names_and_the_end_of_a_call_its_length`, the window test `system_lines::a_pin_and_a_rename_are_lines_of_the_chat_and_renames_in_a_row_are_one_line` and the live test `live::lines::the_chat_of_a_voice_channel_tells_what_happened_in_its_call`.
+
 ## Consequences
 
 - The composer shows marks while the person types, not formatted text.

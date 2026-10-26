@@ -91,12 +91,25 @@ pub enum Note {
     CallStarted,
     CallEnded,
     ScreenShareStarted,
+    ScreenShareEnded,
     EntryRequested,
     JoinedByInvitation,
     MeetingStarted,
+    /// Written by the versions before the reasons of the end; read only.
     MeetingEnded,
+    /// A person turned meeting mode off.
+    MeetingTurnedOff,
+    /// Meeting mode ended because its presenter stopped sharing.
+    MeetingEndedShareStopped,
+    /// Meeting mode ended because its presenter left the call.
+    MeetingEndedPresenterLeft,
     PersonJoined,
     PersonLeft,
+    /// A moderator removed the person, or moved the person out: a later entry of the person
+    /// is a join. The note has no line: the line of the removal or of the move tells it.
+    PersonOut,
+    CallLocked,
+    CallUnlocked,
 }
 
 impl Note {
@@ -105,12 +118,19 @@ impl Note {
             Self::CallStarted => "call_started",
             Self::CallEnded => "call_ended",
             Self::ScreenShareStarted => "screen_share_started",
+            Self::ScreenShareEnded => "screen_share_ended",
             Self::EntryRequested => "entry_requested",
             Self::JoinedByInvitation => "joined_by_invitation",
             Self::MeetingStarted => "meeting_started",
             Self::MeetingEnded => "meeting_ended",
+            Self::MeetingTurnedOff => "meeting_turned_off",
+            Self::MeetingEndedShareStopped => "meeting_ended_share_stopped",
+            Self::MeetingEndedPresenterLeft => "meeting_ended_presenter_left",
             Self::PersonJoined => "person_joined",
             Self::PersonLeft => "person_left",
+            Self::PersonOut => "person_out",
+            Self::CallLocked => "call_locked",
+            Self::CallUnlocked => "call_unlocked",
         }
     }
 }
@@ -126,17 +146,53 @@ pub async fn note_joined(
 ) -> ApiResult<()> {
     let latest: Option<String> = sqlx::query_scalar(
         "select kind from call_notes where call_id = $1 and account_id = $2
-             and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left')
+             and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left',
+                 'person_out')
          order by occurred_at desc, id desc limit 1",
     )
     .bind(call.id)
     .bind(account_id)
     .fetch_optional(&mut *connection)
     .await?;
-    if latest.is_some_and(|kind| kind != Note::PersonLeft.stored()) {
+    let out = [Note::PersonLeft.stored(), Note::PersonOut.stored()];
+    if latest.is_some_and(|kind| !out.contains(&kind.as_str())) {
         return Ok(());
     }
     note(connection, now, call, Note::PersonJoined, Some(account_id)).await
+}
+
+/// The line of the answer of a person inside to the request of another person to enter the
+/// call of a voice channel: "{actor} let {subject} in" or "{actor} did not let {subject} in".
+pub async fn entry_line(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    accepted: bool,
+    by: AccountId,
+    asked: AccountId,
+) -> ApiResult<()> {
+    let Some(channel_id) = call.place.channel_id() else {
+        return Ok(());
+    };
+    let action = if accepted {
+        "entry_accepted"
+    } else {
+        "entry_denied"
+    };
+    crate::messages::system(
+        connection,
+        now,
+        channel_id,
+        junto_protocol::ids::MessageId::generate(),
+        &junto_protocol::message::SystemMessage {
+            action: action.to_owned(),
+            actor_id: Some(by),
+            subject_id: Some(asked),
+            ..junto_protocol::message::SystemMessage::default()
+        },
+        Some(call.id),
+    )
+    .await
 }
 
 /// Notes that a person left a call that others are still in. The last person to leave is
@@ -170,6 +226,19 @@ pub async fn note(
     kind: Note,
     account_id: Option<AccountId>,
 ) -> ApiResult<()> {
+    note_with(connection, now, call, kind, account_id, None).await
+}
+
+/// As [`note`], with the length of the call in seconds for the line of its end. A note of
+/// [`Note::PersonOut`] is kept without a line.
+pub async fn note_with(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    kind: Note,
+    account_id: Option<AccountId>,
+    duration_seconds: Option<u64>,
+) -> ApiResult<()> {
     let CallPlace::Channel {
         workspace_id,
         channel_id,
@@ -192,6 +261,9 @@ pub async fn note(
     .bind(account_id)
     .execute(&mut *connection)
     .await?;
+    if kind == Note::PersonOut {
+        return Ok(());
+    }
     crate::messages::system(
         connection,
         now,
@@ -200,9 +272,8 @@ pub async fn note(
         &junto_protocol::message::SystemMessage {
             action: kind.stored().to_owned(),
             actor_id: account_id,
-            recording_id: None,
-            duration_seconds: None,
-            subject_id: None,
+            duration_seconds,
+            ..junto_protocol::message::SystemMessage::default()
         },
         Some(call.id),
     )
@@ -927,11 +998,13 @@ pub async fn start_meeting(
 
 /// Ends meeting mode and removes every microphone block of the call, the ones of moderators
 /// included (ADR 0505).
+/// Ends meeting mode. `by` is the person who turned it off, for the reason `TurnedOff`.
 pub async fn end_meeting(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     call: &CallRow,
     reason: MeetingEnd,
+    by: Option<AccountId>,
 ) -> ApiResult<()> {
     sqlx::query(
         "update calls
@@ -947,7 +1020,12 @@ pub async fn end_meeting(
         .execute(&mut *connection)
         .await?;
     let presenter = call.meeting.as_ref().map(|meeting| meeting.presenter);
-    note(&mut *connection, now, call, Note::MeetingEnded, presenter).await?;
+    let (kind, actor) = match reason {
+        MeetingEnd::TurnedOff => (Note::MeetingTurnedOff, by.or(presenter)),
+        MeetingEnd::ShareStopped => (Note::MeetingEndedShareStopped, presenter),
+        MeetingEnd::PresenterLeft => (Note::MeetingEndedPresenterLeft, presenter),
+    };
+    note(&mut *connection, now, call, kind, actor).await?;
     let ended = Event::CallMeetingEnded {
         call_id: call.id,
         place: call.place,
@@ -1451,7 +1529,7 @@ pub async fn end_if_empty(
         return Ok(false);
     };
     if ending.meeting.is_some() {
-        end_meeting(&mut *connection, now, &ending, MeetingEnd::PresenterLeft).await?;
+        end_meeting(&mut *connection, now, &ending, MeetingEnd::PresenterLeft, None).await?;
     }
     let all = "($2::uuid is null and $3::timestamptz is null)";
     let cancelled = InvitationOutcome::Cancelled;
@@ -1484,8 +1562,10 @@ pub async fn end_if_empty(
             direct_calls::line(&mut *connection, now, caller, callee, line).await?;
         }
     }
-    if ending.started_at.is_some() {
-        note(&mut *connection, now, &ending, Note::CallEnded, None).await?;
+    if let Some(started_at) = ending.started_at {
+        // The length runs from the first person in the room to the end of the call.
+        let seconds = u64::try_from((now - started_at).whole_seconds()).unwrap_or_default();
+        note_with(&mut *connection, now, &ending, Note::CallEnded, None, Some(seconds)).await?;
         let ended = Event::CallEnded {
             call_id,
             place: ending.place,

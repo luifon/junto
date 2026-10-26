@@ -375,13 +375,50 @@ async fn announce_to(
     started: bool,
     running_call: Option<CallId>,
 ) -> ApiResult<()> {
-    let recording = Box::new(summary(&mut *connection, recording).await?);
+    let summary = summary(&mut *connection, recording).await?;
+    if !started {
+        note_transcript(&mut *connection, now, recording, summary.transcript).await?;
+    }
+    let recording = Box::new(summary);
     let event = if started {
         Event::RecordingStarted { recording }
     } else {
         Event::RecordingUpdated { recording }
     };
     events::tell_of_recording(connection, now, running_call, &event).await
+}
+
+/// The line of a transcript that has ended: ready, ready in part, or failed. It is written
+/// when the latest line of the transcript of the recording states another end, so that a
+/// transcript that is asked for again after a failure has a line of its new end. The line
+/// counts as unread for the person who started the recording (ADR 0408).
+async fn note_transcript(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    recording: &RecordingRow,
+    state: TranscriptState,
+) -> ApiResult<()> {
+    let kind = match state {
+        TranscriptState::Ready => "transcript_ready",
+        TranscriptState::Partial => "transcript_partial",
+        TranscriptState::Failed => "transcript_failed",
+        TranscriptState::None | TranscriptState::Waiting | TranscriptState::Running => {
+            return Ok(());
+        }
+    };
+    let latest: Option<String> = sqlx::query_scalar(
+        "select kind from call_notes where recording_id = $1
+             and kind in ('transcript_ready', 'transcript_partial', 'transcript_failed')
+         order by occurred_at desc, id desc limit 1",
+    )
+    .bind(recording.id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if latest.as_deref() == Some(kind) {
+        return Ok(());
+    }
+    let starter = Some(recording.started_by);
+    note_notifying(connection, now, recording, kind, None, starter).await
 }
 
 /// Keeps what happened to a recording for the system lines of the text chat of its voice
@@ -392,6 +429,18 @@ async fn note(
     recording: &RecordingRow,
     kind: &'static str,
     account_id: Option<AccountId>,
+) -> ApiResult<()> {
+    note_notifying(connection, now, recording, kind, account_id, None).await
+}
+
+/// As [`note`], with an account for which the line counts as an unread message.
+async fn note_notifying(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    recording: &RecordingRow,
+    kind: &'static str,
+    account_id: Option<AccountId>,
+    notifies: Option<AccountId>,
 ) -> ApiResult<()> {
     let message_id = junto_protocol::ids::MessageId::generate();
     sqlx::query(
@@ -409,7 +458,7 @@ async fn note(
     .bind(recording.id)
     .execute(&mut *connection)
     .await?;
-    crate::messages::system(
+    crate::messages::system_notifying(
         connection,
         now,
         recording.channel_id,
@@ -418,10 +467,10 @@ async fn note(
             action: kind.to_owned(),
             actor_id: account_id,
             recording_id: Some(recording.id),
-            duration_seconds: None,
-            subject_id: None,
+            ..junto_protocol::message::SystemMessage::default()
         },
         Some(recording.call_id),
+        notifies,
     )
     .await?;
     Ok(())
@@ -1353,7 +1402,10 @@ pub async fn processed(
         note_failure(&mut *connection, now, recording).await?;
     }
     if state != RecordingState::Failed {
-        note(&mut *connection, now, recording, "recording_ready", None).await?;
+        // The card of the recording counts as unread for the person who started it.
+        let starter = Some(recording.started_by);
+        note_notifying(&mut *connection, now, recording, "recording_ready", None, starter)
+            .await?;
     }
     // The directory of a lost job is deleted when the server has what it held: the audio
     // file of the segment. The directory of a composite holds nothing that the server uses.

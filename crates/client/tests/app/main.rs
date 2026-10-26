@@ -53,6 +53,7 @@ mod live;
 mod logo;
 mod logout;
 mod messages;
+mod system_lines;
 mod notice_settings;
 mod notices;
 mod panics;

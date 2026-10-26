@@ -1912,20 +1912,39 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
     use crate::state::feed::SystemKind::{Plain, Recording, Start};
     match action {
         "call_started" => (Start, "Call started by {actor}"),
-        "call_ended" => (Plain, "Call ended"),
+        "call_ended" => (Plain, "Call ended{duration}"),
         "screen_share_started" => (Start, "{actor} started sharing"),
+        "screen_share_ended" => (Plain, "{actor} stopped sharing"),
         "entry_requested" => (Plain, "{actor} asked to enter"),
+        "entry_accepted" => (Plain, "{actor} let {subject} in"),
+        "entry_denied" => (Plain, "{actor} did not let {subject} in"),
+        "call_locked" => (Plain, "{actor} locked the room"),
+        "call_unlocked" => (Plain, "{actor} unlocked the room"),
         "joined_by_invitation" => (Plain, "{actor} joined by invitation"),
         "person_joined" => (Plain, "{actor} joined the call"),
         "person_left" => (Plain, "{actor} left the call"),
+        // A person who left and joined again within a minute, drawn as one line; no server
+        // writes this action.
+        "person_rejoined" => (Plain, "{actor} left the call and joined again"),
         "meeting_started" => (Start, "{actor} turned meeting mode on"),
         "meeting_ended" => (Plain, "Meeting mode ended"),
+        "meeting_turned_off" => (Plain, "{actor} turned meeting mode off"),
+        "meeting_ended_share_stopped" => (Plain, "Meeting mode ended: {actor} stopped sharing"),
+        "meeting_ended_presenter_left" => (Plain, "Meeting mode ended: {actor} left the call"),
         "recording_started" => (Recording, "Recording started by {actor}"),
         "recording_stopped" => (Recording, "Recording stopped"),
         "recording_failed" => (Recording, "Recording failed"),
         "recording_ready" => (Recording, "The recording of the call is ready"),
         "recording_removed" => (Recording, "{actor} removed a recording"),
         "transcript_requested" => (Plain, "{actor} asked for a transcript"),
+        "transcript_ready" => (Recording, "The transcript of the recording is ready"),
+        "transcript_partial" => (
+            Recording,
+            "The transcript of the recording is ready, with parts missing",
+        ),
+        "transcript_failed" => (Recording, "The transcript of the recording failed"),
+        "message_pinned" => (Plain, "{actor} pinned a message"),
+        "channel_renamed" => (Plain, "{actor} renamed this channel from {previous_name} to {name}"),
         "channel_created" => (Plain, "{actor} created this channel"),
         "channel_updated" => (Plain, "{actor} changed this channel"),
         "permanent_messages_turned_on" => (Plain, "{actor} turned on permanent messages"),
@@ -1951,6 +1970,15 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "direct_call_declined" => (Plain, "{actor} declined the call"),
         "direct_call_ended" => (Plain, "The call ended{duration}"),
         _ => (Plain, "An event that this version of Junto does not know"),
+    }
+}
+
+/// The people beyond the first three names of a line: " and 2 others".
+pub fn and_others(count: usize) -> String {
+    if count == 1 {
+        " and 1 other".to_owned()
+    } else {
+        format!(" and {count} others")
     }
 }
 
