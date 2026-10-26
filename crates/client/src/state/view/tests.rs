@@ -2076,6 +2076,7 @@ pub(super) mod calls {
         call.own_shares = BTreeMap::from([(
             0,
             ShareState::Running(ShareInfo {
+                id: uuid::Uuid::from_u128(7),
                 kind: ShareKind::Window,
                 sound: ShareAudio::Application,
                 sound_held: true,
@@ -2164,6 +2165,7 @@ pub(super) mod calls {
         call.watched = Some(ShareId::of(ana, 2));
         let running = |kind| {
             ShareState::Running(ShareInfo {
+                id: uuid::Uuid::from_u128(8),
                 kind,
                 sound: ShareAudio::None,
                 sound_held: false,
@@ -2545,6 +2547,7 @@ pub(super) mod calls {
 
     fn running_share() -> ShareState {
         ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(9),
             kind: ShareKind::Screen,
             sound: ShareAudio::None,
             sound_held: false,

@@ -350,6 +350,13 @@ pub struct ReportScreenShare {
     pub slot: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<ShareKind>,
+    /// The share that the device started in the slot: a new identifier for each start. A
+    /// report with another identifier than the share that the slot holds is a new share,
+    /// which starts at the report; a report with the same identifier changes the sound and
+    /// the kind of the share and keeps its start. Absent from a client from before it: a
+    /// report changes the share of the slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_id: Option<uuid::Uuid>,
 }
 
 /// The query of the request that ends a share.

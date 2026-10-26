@@ -603,6 +603,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     call.own_shares = std::collections::BTreeMap::from([(
         0,
         ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(1),
             kind: ShareKind::Window,
             sound: ShareAudio::None,
             sound_held: false,
@@ -850,6 +851,7 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
     call.own_shares = std::collections::BTreeMap::from([(
         0,
         ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(2),
             kind: ShareKind::Window,
             sound: ShareAudio::None,
             sound_held: false,
@@ -948,6 +950,7 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
     call.own_shares = std::collections::BTreeMap::from([(
         0,
         ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(3),
             kind: ShareKind::Window,
             sound: ShareAudio::None,
             sound_held: false,

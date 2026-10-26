@@ -1230,6 +1230,94 @@ async fn the_composite_is_told_the_main_share() {
     assert_eq!(request.main_share, Some(of_ann));
 }
 
+/// A share that starts in the slot of a share that ended, while the device had not told
+/// that end, is the share that started last: the main share of the composite is its track,
+/// and a second report of it changes nothing (ADR 0510, ADR 0602).
+#[tokio::test]
+async fn a_new_share_in_a_reused_slot_is_the_main_share() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, ann) = (&scene.server, &scene.ann);
+    let seat = &studio.ann_seat;
+    studio.record().await;
+    let composite = composites(&server.recorder().jobs())[0].clone();
+    let told = || {
+        let jobs = server.recorder().jobs();
+        let job = jobs.iter().find(|job| job.id == composite.id).unwrap();
+        job.main_shares.last().cloned().flatten()
+    };
+    let path = "/api/v1/call/screen-share";
+    let report = |slot: u8, share_id: uuid::Uuid| json!({ "audio": "system", "kind": "window", "slot": slot, "share_id": share_id });
+    let publish = |name: &str| {
+        assert!(server.fake().publish_named(
+            &seat.room,
+            &seat.identity,
+            TrackKind::Video,
+            TrackSource::ScreenShare,
+            name,
+        ));
+        server
+            .fake()
+            .participants(&seat.room)
+            .into_iter()
+            .find(|participant| participant.identity == seat.identity)
+            .and_then(|participant| {
+                participant
+                    .tracks
+                    .into_iter()
+                    .find(|track| track.name == name)
+            })
+            .map(|track| track.id)
+            .unwrap()
+    };
+    let (first, second, third) = (
+        uuid::Uuid::now_v7(),
+        uuid::Uuid::now_v7(),
+        uuid::Uuid::now_v7(),
+    );
+
+    server
+        .put(ann, path, &report(0, first))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let in_slot_0 = publish("window/30");
+    server.check().await;
+    server.tend().await;
+    assert_eq!(told(), Some(in_slot_0));
+
+    server.clock.advance(Duration::seconds(1));
+    server
+        .put(ann, path, &report(1, second))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let in_slot_1 = publish("window/30/1");
+    server.check().await;
+    server.tend().await;
+    assert_eq!(told(), Some(in_slot_1.clone()));
+
+    // The first share ends and a third one starts in its slot, with the same sound and
+    // kind, before the device told the end: its report names the third share.
+    server.clock.advance(Duration::seconds(1));
+    let again = publish("window/30");
+    server
+        .put(ann, path, &report(0, third))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.check().await;
+    server.tend().await;
+    assert_eq!(told(), Some(again.clone()));
+
+    // The device tells the third share again: nothing changes.
+    server.clock.advance(Duration::seconds(1));
+    server
+        .put(ann, path, &report(0, third))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.check().await;
+    server.tend().await;
+    assert_eq!(told(), Some(again));
+}
+
 /// With its task running, the controller looks at a recording at once after the request
 /// that started it and after a notification of the media server (ADR 0604). The interval of
 /// the controller is one hour here, so only those two make it run.

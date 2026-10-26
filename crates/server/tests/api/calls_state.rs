@@ -618,6 +618,89 @@ async fn a_join_states_the_shares_of_one_person_and_the_token_states_what_the_cl
     assert_eq!(attribute(&other).as_deref(), Some("3"));
 }
 
+/// A report with another share identifier than the share of the slot is a new share: it
+/// starts at the report and has its line in the chat; a report with the same identifier
+/// keeps the start (ADR 0510).
+#[tokio::test]
+async fn a_new_share_in_a_slot_starts_at_its_report_and_a_repeated_report_keeps_its_start() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let seat = server.enter_call(ann, voice).await;
+    let path = "/api/v1/call/screen-share";
+    let report = |share_id: uuid::Uuid, audio: &str| json!({ "audio": audio, "kind": "screen", "slot": 0, "share_id": share_id });
+    let lines = async || -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from call_notes
+             where kind = 'screen_share_started' and account_id = $1",
+        )
+        .bind(ann.account_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    let started = async || {
+        participant(server, ben, voice, ann.account_id)
+            .await
+            .screen_share
+            .map(|share| (share.started_at, share.audio))
+    };
+    let (first, second) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+    server
+        .put(ann, path, &report(first, "system"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish_named(
+        &seat.room,
+        &seat.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare,
+        "screen/30",
+    ));
+    server.check().await;
+    let at_first = server.clock.now();
+    assert_eq!(started().await, Some((at_first, ShareAudio::System)));
+    assert_eq!(lines().await, 1);
+
+    // The same share again, with another sound: the start stays.
+    server.clock.advance(Duration::seconds(5));
+    server
+        .put(ann, path, &report(first, "none"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_first, ShareAudio::None)));
+    assert_eq!(lines().await, 1);
+
+    // Another share in the slot starts at its report.
+    server.clock.advance(Duration::seconds(5));
+    let at_second = server.clock.now();
+    server
+        .put(ann, path, &report(second, "none"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_second, ShareAudio::None)));
+    assert_eq!(lines().await, 2);
+    server
+        .put(ann, path, &report(second, "none"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_second, ShareAudio::None)));
+    assert_eq!(lines().await, 2);
+
+    // A report without an identifier changes the share of the slot, as before.
+    server.clock.advance(Duration::seconds(5));
+    server
+        .put(
+            ann,
+            path,
+            &json!({ "audio": "system", "kind": "screen", "slot": 0 }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_second, ShareAudio::System)));
+    assert_eq!(lines().await, 2);
+}
+
 /// A client of v0.1.0-test.1 or test.2 reports its one share without a slot and names its
 /// picture track `screen/30`; a picture track of another name counts as slot 0 too.
 #[tokio::test]

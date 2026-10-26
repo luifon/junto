@@ -31,6 +31,7 @@ use livekit::prelude::{Room, RoomOptions};
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use crate::audio::capture::CaptureLink;
 use crate::audio::{AudioError, AudioHost, DeviceInfo, Devices};
@@ -1458,8 +1459,9 @@ impl<T: PartialEq + Clone> Reporter<T> {
     }
 }
 
-/// What the server holds of one share of this device: its sound and what it shows.
-type ToldShare = (ShareAudio, ReportedKind);
+/// What the server holds of one share of this device: the share, its sound and what it
+/// shows. Another share in the same slot is reported anew (ADR 0510).
+type ToldShare = (Uuid, ShareAudio, ReportedKind);
 
 fn reported_kind(kind: ShareKind) -> ReportedKind {
     match kind {
@@ -3361,7 +3363,9 @@ impl Session {
             .own_shares
             .iter()
             .filter_map(|(slot, share)| match share {
-                ShareState::Running(info) => Some((*slot, (info.sound, reported_kind(info.kind)))),
+                ShareState::Running(info) => {
+                    Some((*slot, (info.id, info.sound, reported_kind(info.kind))))
+                }
                 ShareState::Starting => None,
             })
             .collect();
@@ -3371,8 +3375,9 @@ impl Session {
                 let (api, done) = (self.server.api(), done.clone());
                 self.inner.runtime.spawn(async move {
                     let told = match request {
-                        ShareRequest::Report(slot, (audio, kind)) => {
-                            api.report_screen_share(slot, Some(kind), audio).await
+                        ShareRequest::Report(slot, (id, audio, kind)) => {
+                            api.report_screen_share(slot, Some(kind), audio, Some(id))
+                                .await
                         }
                         ShareRequest::End(slot) => api.end_screen_share(Some(slot)).await,
                     };
@@ -3788,8 +3793,8 @@ mod tests {
         use ShareRequest::{End, Report};
         let spacing = Duration::from_secs(1);
         let mut reports = ShareReports::new(spacing);
-        let screen = (ShareAudio::System, ReportedKind::Screen);
-        let window = (ShareAudio::None, ReportedKind::Window);
+        let screen = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Screen);
+        let window = (Uuid::now_v7(), ShareAudio::None, ReportedKind::Window);
         let mut now = Instant::now();
         let send = |reports: &mut ShareReports, running: &BTreeMap<u8, ToldShare>, at| {
             let ReportStep::Send(request) = reports.step(running, at) else {
@@ -3837,6 +3842,48 @@ mod tests {
         now += REPORT_RETRY;
         let running = BTreeMap::from([(1, window), (2, screen)]);
         assert_eq!(send(&mut reports, &running, now), End(0));
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+    }
+
+    /// A share ends and another one with the same sound and kind starts in its slot while
+    /// the report of a share of another slot is on its way: the new share is reported, so
+    /// that the server gives it its own start (ADR 0510).
+    #[tokio::test(start_paused = true)]
+    async fn a_new_share_in_the_slot_of_an_ended_one_is_reported_after_a_delayed_report() {
+        use ShareRequest::Report;
+        let spacing = Duration::from_secs(1);
+        let mut reports = ShareReports::new(spacing);
+        let first = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Window);
+        let second = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Window);
+        let third = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Window);
+        let mut now = Instant::now();
+        let running = BTreeMap::from([(0, first)]);
+        let ReportStep::Send(request) = reports.step(&running, now) else {
+            panic!("the first share is reported");
+        };
+        assert_eq!(request, Report(0, first));
+        reports.sending(request, now);
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        let running = BTreeMap::from([(0, first), (1, second)]);
+        let ReportStep::Send(request) = reports.step(&running, now) else {
+            panic!("the second share is reported");
+        };
+        assert_eq!(request, Report(1, second));
+        reports.sending(request, now);
+        // While the report of the second share is on its way, the first share ends and the
+        // third one starts in its slot.
+        let running = BTreeMap::from([(0, third), (1, second)]);
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(
+            reports.step(&running, now),
+            ReportStep::Send(Report(0, third))
+        );
+        reports.sending(Report(0, third), now);
         reports.done(true, REPORT_RETRY, now);
         now += spacing;
         assert_eq!(reports.step(&running, now), ReportStep::Idle);

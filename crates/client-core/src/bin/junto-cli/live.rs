@@ -272,7 +272,7 @@ async fn perform(api: &ServerApi, action: CallAction) -> Result<Vec<String>, Fai
             )])
         }
         CallAction::Share(audio) => {
-            api.report_screen_share(0, None, audio)
+            api.report_screen_share(0, None, audio, None)
                 .await
                 .map_err(failed)?;
             Ok(vec![format!(

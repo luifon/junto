@@ -27,6 +27,7 @@ use livekit::webrtc::video_stream::native::NativeVideoStream;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use super::order::in_order;
 use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, Stops, account_of};
@@ -161,6 +162,9 @@ impl ShareId {
 /// A share of this device as it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareInfo {
+    /// The identifier of the share, new at each start: the server tells a new share in a
+    /// slot from the share that ran there before (ADR 0510).
+    pub id: Uuid,
     pub kind: ShareKind,
     /// The sound that the sharer chose.
     pub sound: ShareAudio,
@@ -435,6 +439,7 @@ async fn pump_sound(
 /// A share of this device.
 pub(super) struct OwnShare {
     generation: u64,
+    id: Uuid,
     slot: u8,
     request: CaptureRequest,
     sink: Arc<ShareSink>,
@@ -625,6 +630,7 @@ impl Actor {
                     (Some(stream), Publication::Published(_)) => {
                         let sound = share.request.sound.reported();
                         ShareState::Running(ShareInfo {
+                            id: share.id,
                             kind: share.request.picture.kind(),
                             sound,
                             sound_held: sound != ShareAudio::None
@@ -924,6 +930,7 @@ impl Actor {
             slot,
             OwnShare {
                 generation,
+                id: Uuid::now_v7(),
                 slot,
                 request,
                 sink,

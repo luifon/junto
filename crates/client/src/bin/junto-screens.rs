@@ -1209,6 +1209,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
             call.own_shares = BTreeMap::from([(
                 0,
                 ShareState::Running(ShareInfo {
+                    id: uuid::Uuid::from_u128(4),
                     kind: ShareKind::Window,
                     sound: ShareAudio::Application,
                     sound_held,
@@ -1292,6 +1293,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                     (
                         *slot,
                         ShareState::Running(ShareInfo {
+                            id: uuid::Uuid::from_u128(5),
                             kind: *kind,
                             sound: ShareAudio::None,
                             sound_held: false,
@@ -1650,6 +1652,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
             call.own_shares = BTreeMap::from([(
                 0,
                 ShareState::Running(ShareInfo {
+                    id: uuid::Uuid::from_u128(6),
                     kind: ShareKind::Window,
                     sound: ShareAudio::Application,
                     sound_held: false,

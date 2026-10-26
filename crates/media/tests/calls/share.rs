@@ -256,6 +256,7 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
         assert_eq!(
             info,
             ShareInfo {
+                id: info.id,
                 kind: ShareKind::Screen,
                 sound: ShareAudio::Application,
                 sound_held: false,

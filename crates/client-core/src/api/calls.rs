@@ -12,6 +12,7 @@ use junto_protocol::recording::{Recording, StartRecording};
 use junto_protocol::snapshot::SnapshotResponse;
 use junto_protocol::structure::Channel;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::client::read_json;
 use super::error::ApiError;
@@ -77,15 +78,22 @@ impl ServerApi {
         self.put("/call/state".to_owned(), &report).await
     }
 
-    /// Reports the share of this device in `slot`, with what it shows and its sound
+    /// Reports the share of this device in `slot`, with what it shows and its sound.
+    /// `share_id` names the share that was started in the slot: another one is a new share
     /// (ADR 0510).
     pub async fn report_screen_share(
         &self,
         slot: u8,
         kind: Option<ShareKind>,
         audio: ShareAudio,
+        share_id: Option<Uuid>,
     ) -> Result<(), ApiError> {
-        let report = ReportScreenShare { audio, slot, kind };
+        let report = ReportScreenShare {
+            audio,
+            slot,
+            kind,
+            share_id,
+        };
         self.put("/call/screen-share".to_owned(), &report).await
     }
 

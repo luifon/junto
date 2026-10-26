@@ -18,6 +18,7 @@ use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, En
 use junto_protocol::structure::{Channel, ChannelKind};
 use sqlx::{AssertSqlSafe, PgConnection};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::access::{Access, ChannelRecord};
 use crate::audit::{self, About};
@@ -312,8 +313,8 @@ pub async fn report_screen_share(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         let (call, _) = own(connection, &access).await?;
-        let held: Option<(String, Option<String>)> = sqlx::query_as(
-            "select audio, kind from call_shares
+        let held: Option<(String, Option<String>, Option<Uuid>)> = sqlx::query_as(
+            "select audio, kind, share_id from call_shares
              where call_id = $1 and account_id = $2 and slot = $3
              for update",
         )
@@ -324,25 +325,40 @@ pub async fn report_screen_share(
         .await?;
         let audio = body.audio.stored();
         let kind = body.kind.map(StoredText::stored);
-        let same = held.as_ref().is_some_and(|(held_audio, held_kind)| {
-            held_audio == audio && held_kind.as_deref() == kind
+        // A share with another identifier than the one of the slot is a new share: it
+        // starts now (ADR 0510).
+        let new = match &held {
+            None => true,
+            Some((_, _, held_id)) => body.share_id.is_some() && body.share_id != *held_id,
+        };
+        let same = held.as_ref().is_some_and(|(held_audio, held_kind, _)| {
+            !new && held_audio == audio && held_kind.as_deref() == kind
         });
         if !same {
             sqlx::query(
-                "insert into call_shares (call_id, account_id, slot, kind, audio, started_at)
-                 values ($1, $2, $3, $4, $5, $6)
+                "insert into call_shares
+                     (call_id, account_id, slot, share_id, kind, audio, started_at)
+                 values ($1, $2, $3, $4, $5, $6, $7)
                  on conflict (call_id, account_id, slot)
-                 do update set audio = excluded.audio, kind = excluded.kind",
+                 do update set audio = excluded.audio, kind = excluded.kind,
+                     share_id = coalesce(excluded.share_id, call_shares.share_id),
+                     started_at = case when $8 then excluded.started_at
+                                       else call_shares.started_at end,
+                     seen_at = case when $8 then null else call_shares.seen_at end,
+                     missing_since = case when $8 then null
+                                          else call_shares.missing_since end",
             )
             .bind(call.id)
             .bind(access.account_id)
             .bind(i16::from(body.slot))
+            .bind(body.share_id)
             .bind(kind)
             .bind(audio)
             .bind(now)
+            .bind(new)
             .execute(&mut *connection)
             .await?;
-            if held.is_none() {
+            if new {
                 let started = store::Note::ScreenShareStarted;
                 store::note(connection, now, &call, started, Some(access.account_id)).await?;
             }
