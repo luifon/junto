@@ -528,10 +528,13 @@ impl Access {
         .bind(channel_id)
         .fetch_optional(&mut *connection)
         .await?;
-        let record = channel_record(row.ok_or_else(ApiError::not_found)?)?;
-        let workspace = self
-            .workspace(&mut *connection, record.channel.workspace_id)
-            .await?;
+        // An absent channel runs the same statements as one that the caller may not see,
+        // against a workspace that does not exist, so that the time of the answer does not
+        // tell an absent channel from a hidden one (ADR 0304).
+        let workspace_id = row
+            .as_ref()
+            .map_or(WorkspaceId::from_uuid(Uuid::nil()), |row| row.1);
+        let workspace = self.workspace(&mut *connection, workspace_id).await;
         let overrides: Vec<OverrideRow> = sqlx::query_as(
             "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
              from channel_overrides o
@@ -541,7 +544,8 @@ impl Access {
         .bind(channel_id)
         .fetch_all(&mut *connection)
         .await?;
-        let scope = channel_scope(workspace, &overrides)?;
+        let record = channel_record(row.ok_or_else(ApiError::not_found)?)?;
+        let scope = channel_scope(workspace?, &overrides)?;
         Ok((record, scope))
     }
 
