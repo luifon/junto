@@ -157,7 +157,7 @@ pub fn tray_svg(state: TrayState, mention: bool, style: TrayStyle) -> String {
                 let sign = sign.replace("currentColor", "#FFFFFF");
                 body.push_str(&format!(
                     "<circle cx=\"12\" cy=\"12\" r=\"12\" fill=\"{disc}\"/>\
-                     <g transform=\"translate(4.2 4.2) scale(0.65)\">{sign}</g>"
+                     <g transform=\"translate(3 3) scale(0.75)\">{sign}</g>"
                 ));
             }
             if mention {

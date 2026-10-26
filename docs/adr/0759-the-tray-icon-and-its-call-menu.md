@@ -28,7 +28,7 @@ A person in a call often has the window of Junto behind other windows. Other cha
 
 - A desktop on Linux without a StatusNotifierWatcher, such as GNOME without an extension for these icons, shows no tray icon. The application works without it.
 - The macOS pictures follow the light and the dark menu bar; the state is shown by the sign alone there.
-- At 16 pixels the sign fills two thirds of the disc of the colour style.
+- The sign fills three quarters of the disc of the colour style, so that at 16 pixels it is 12 pixels wide; the colour of the disc also states the call state there.
 - A person checks on each system at the live test:
   - The icon is visible in the menu bar of macOS, the notification area of Windows (possibly in the overflow area) and the status area of a Linux desktop with a watcher (KDE Plasma, or GNOME with an extension for these icons).
   - The picture and the tooltip change when the person joins a call, mutes, turns the sound off, turns it on, unmutes and leaves.
