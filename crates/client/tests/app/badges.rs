@@ -96,7 +96,13 @@ fn the_messages_for_the_person_are_counted_everywhere_and_a_read_takes_them_away
         window.badge() == Some(3) && window.drawn_number(row).as_deref() == Some("2")
     });
 
-    // The person reads the conversation and the channel: every count goes.
+    // The person reads the conversation and the channel: every count goes. The window
+    // shows the other channel first, so that the mention stays unread until its channel
+    // is shown.
+    window.click_channel("random");
+    window.until("the other channel is shown again", |window| {
+        window.selected_channel() == random
+    });
     window.cx.update(|window, _| window.activate_window());
     window.click_named(format!("direct-row:{}", conversation.id));
     window.until("the conversation is read", |window| {

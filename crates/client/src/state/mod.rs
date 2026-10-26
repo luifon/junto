@@ -442,6 +442,13 @@ pub struct AppState {
     /// The servers on which this device waited for the answer to its join request at the
     /// last change (ADR 0742).
     join_waiting: std::collections::HashSet<ServerId>,
+    /// The additions of the person to a workspace whose name the state does not hold yet,
+    /// with the time of the event: each is told once the workspace is known (ADR 0742).
+    added_waiting: Vec<(
+        ServerId,
+        junto_client_core::protocol::events::Event,
+        std::time::Instant,
+    )>,
     /// The place of the call that the call window shows, at the last change.
     call_window_shows: Option<(ServerId, PlaceId)>,
     /// The unread messages for the person alone on every server (ADR 0741).
@@ -878,6 +885,7 @@ impl AppState {
             heard: call_sounds::Heard::default(),
             message_sound_at: None,
             join_waiting: std::collections::HashSet::new(),
+            added_waiting: Vec::new(),
             call_window_shows: None,
             for_person: 0,
             client,
@@ -2615,6 +2623,7 @@ impl AppState {
             .fold(0, u64::saturating_add);
         self.tell_alerts(&snapshots, shown, call_window, cx);
         self.tell_join_answers(cx);
+        self.tell_added_workspaces(cx);
         self.follow_tray();
         self.follow_owners();
         self.ask_missing_quotes(shown, cx);

@@ -18,6 +18,8 @@ use time::OffsetDateTime;
 
 /// The shortest time between two sounds of messages (ADR 0707).
 const MESSAGE_SOUND_SPAN: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long an addition to a workspace waits for the workspace in the state (ADR 0742).
+const ADDED_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 use uuid::Uuid;
 
 use super::AppState;
@@ -1047,6 +1049,15 @@ impl AppState {
         ) else {
             return;
         };
+        // The workspace of an addition reaches the state after the event; the notification
+        // waits for its name.
+        if let super::event_alerts::Fact::AddedToWorkspace { workspace, .. } = &fact
+            && workspace.is_empty()
+        {
+            self.added_waiting
+                .push((server_id, event.clone(), std::time::Instant::now()));
+            return;
+        }
         let (active, _) = self.looked_at();
         let now = OffsetDateTime::now_utc();
         let several_servers = self.client.servers().len() > 1;
@@ -1070,6 +1081,34 @@ impl AppState {
         }
         for (alert, _) in told.show {
             self.notifier.show(&alert, cx);
+        }
+    }
+
+    /// Tells the additions to a workspace whose workspace the state holds now. One that is
+    /// not known after [`ADDED_WAIT`] is dropped: the person was removed again or the
+    /// workspace is gone.
+    pub(super) fn tell_added_workspaces(&mut self, cx: &mut Context<Self>) {
+        if self.added_waiting.is_empty() {
+            return;
+        }
+        for (server_id, event, since) in std::mem::take(&mut self.added_waiting) {
+            let junto_client_core::protocol::events::Event::WorkspaceMemberAdded {
+                workspace_id,
+                ..
+            } = &event
+            else {
+                continue;
+            };
+            let known = self
+                .client
+                .server(server_id)
+                .and_then(|server| server.live().view().model)
+                .is_some_and(|model| model.workspace(*workspace_id).is_some());
+            if known {
+                self.tell_event(server_id, &event, cx);
+            } else if since.elapsed() < ADDED_WAIT {
+                self.added_waiting.push((server_id, event, since));
+            }
         }
     }
 
