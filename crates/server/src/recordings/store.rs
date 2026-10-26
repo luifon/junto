@@ -1270,12 +1270,25 @@ pub async fn queue_removal(
     now: OffsetDateTime,
     place: &crate::recordings::files::Place,
 ) -> ApiResult<()> {
-    sqlx::query("insert into file_removals (id, path, requested_at) values ($1, $2, $3)")
-        .bind(Uuid::now_v7())
-        .bind(place.stored())
-        .bind(now)
-        .execute(connection)
-        .await?;
+    queue_removal_after(connection, now, place, None).await
+}
+
+/// As [`queue_removal`], with the deletion not before `not_before`.
+pub async fn queue_removal_after(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    place: &crate::recordings::files::Place,
+    not_before: Option<OffsetDateTime>,
+) -> ApiResult<()> {
+    sqlx::query(
+        "insert into file_removals (id, path, requested_at, retry_at) values ($1, $2, $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(place.stored())
+    .bind(now)
+    .bind(not_before)
+    .execute(connection)
+    .await?;
     Ok(())
 }
 
@@ -1377,11 +1390,15 @@ pub async fn processed(
 /// the queue of removals. The notes of its start and its stop stay without the recording;
 /// the note of its post goes with it. The caller has checked that the recording is in a
 /// final state.
+///
+/// `lease` is the lease of a transcription job: the files wait for it while a transcription
+/// runs, so that the worker ends before they are deleted.
 pub async fn remove(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     recording: &RecordingRow,
     by: Option<AccountId>,
+    lease: time::Duration,
 ) -> ApiResult<()> {
     let running = running_call(&mut *connection, recording.call_id).await?;
     let event = Event::RecordingRemoved {
@@ -1411,12 +1428,23 @@ pub async fn remove(
         recording_id: recording.id,
     };
     audit::record(connection, now, by, recording.about(), &entry).await?;
+    // A worker that transcribes the recording reads its audio until it ends. The files wait
+    // for the lease of the job: the process that runs the worker learns at its next look
+    // at the job that it is gone and ends the worker within that time (ADR 0608).
+    let transcribed: bool = sqlx::query_scalar(
+        "select exists (select 1 from transcripts
+                        where recording_id = $1 and state = 'running' and claimed_by is not null)",
+    )
+    .bind(recording.id)
+    .fetch_one(&mut *connection)
+    .await?;
     sqlx::query("delete from recordings where id = $1")
         .bind(recording.id)
         .execute(&mut *connection)
         .await?;
     storage::release(&mut *connection, recording.id.as_uuid()).await?;
     let place = crate::recordings::files::Place::recording(recording.id);
-    queue_removal(&mut *connection, now, &place).await?;
+    let not_before = transcribed.then(|| now + lease);
+    queue_removal_after(&mut *connection, now, &place, not_before).await?;
     Ok(())
 }

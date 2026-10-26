@@ -1092,6 +1092,63 @@ async fn the_worker_is_ended_when_its_recording_is_removed() {
     assert!(!server.recordings_dir().join(id.to_string()).exists());
 }
 
+/// The worker reads the audio of its recording until it ends. A removal of the recording
+/// while it runs ends the worker at once, and the files of the recording wait for the lease
+/// of the job: the worker never finds its audio gone, which it would answer with the exit code
+/// of a refused job (ADR 0608).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_removed_recording_keeps_its_files_until_its_worker_has_ended() {
+    let worker = FakeWorker::new();
+    let studio = Studio::on(worker.server().await).await;
+    let scene = &studio.scene;
+    let (server, owner) = (&scene.server, &scene.owner);
+    let done = studio.finished_after(length()).await;
+    let id = done.recording.id;
+    worker.give(&two_lines(&done));
+    worker.behave(
+        "touch \"$here/started\"\n\
+         while [ -d \"$6\" ]; do sleep 0.05; done\n\
+         touch \"$here/audio-gone\"\n\
+         exit 2",
+    );
+    let state = server.state.clone();
+    let run = tokio::spawn(async move {
+        junto_server::recordings::transcribe::run_once(&state)
+            .await
+            .unwrap()
+    });
+    let waited = std::time::Instant::now();
+    while worker.runs().is_empty() {
+        assert!(waited.elapsed() < std::time::Duration::from_secs(60));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    server
+        .delete(owner, &format!("/api/v1/recordings/{id}"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    // The files are not deleted while the run holds them.
+    server.process().await;
+    let directory = server.recordings_dir().join(id.to_string());
+    assert!(directory.exists());
+
+    // The run learns of the removal without waiting for its heartbeat, and ends the worker.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(60), run).await;
+    assert!(ended.unwrap().unwrap());
+    assert!(
+        !worker.path_exists("audio-gone"),
+        "the worker found the audio of its recording gone"
+    );
+    assert_eq!(server.count("transcripts").await, 0);
+    assert!(directory.exists());
+
+    // After the lease of the job the files are deleted.
+    let lease = server.state.config.limits.recordings.transcription.lease;
+    server.clock.advance(lease + Duration::seconds(1));
+    server.process().await;
+    assert!(!directory.exists());
+}
+
 /// ADR 0003: the worker must not take the CPU cores of the recorder during a recording.
 #[tokio::test]
 async fn no_job_starts_while_a_recording_runs() {

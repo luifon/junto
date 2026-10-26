@@ -306,6 +306,14 @@ async fn run_worker(
                     break Run::Abandoned;
                 }
             }
+            // A removal of a recording: the run looks at once whether its job is gone, so
+            // that the worker ends before the files of the recording are deleted.
+            () = app.recordings.asked_to_look_at_the_job() => {
+                if matches!(renew(app, id).await, Ok(false)) {
+                    group.end(&mut child, grace).await;
+                    break Run::Abandoned;
+                }
+            }
         }
     };
     group.finish();
