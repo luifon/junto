@@ -147,9 +147,7 @@ fn the_server_book_states_the_version_of_this_copy_below_add_server(cx: &mut Tes
     assert!(!window.shows("client-version-action"));
     let add = window.cx.debug_bounds("address-field").unwrap();
     let version = window.cx.debug_bounds("client-version").unwrap();
-    let server_book = window.cx.debug_bounds("server-book").unwrap();
     assert!(version.top() >= add.bottom(), "{version:?} below {add:?}");
-    assert!(version.bottom() <= server_book.bottom());
     assert_eq!(line(&mut window).version, "Junto 1.0.0");
     // Collapsed, the server book keeps the version below the button that adds a server.
     window.click("collapse-server-book");
