@@ -2992,6 +2992,7 @@ fn run(out: &Path) -> Result<(), String> {
         // Not a picture: the time of a frame with 10,000 loaded messages.
         Some("frames") => frames::measure(&mut studio),
         Some("audit-frames") => frames::measure_audit(&mut studio),
+        Some("people-frames") => frames::measure_people(&mut studio),
         Some("admin") => admin::draw(&mut studio),
         Some("people") => people::draw(&mut studio),
         Some("roles") => roles::draw(&mut studio),
