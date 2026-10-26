@@ -124,7 +124,8 @@ System messages:
   out; the recording started, stopped, failed, ready (its card), removed; a transcript asked
   for, and its end (`transcript_ready`, `transcript_partial`, `transcript_failed`, written
   when the latest line of the transcript of the recording states another end, so that a
-  transcript asked for again has a line of its new end); the end of a call with its length
+  transcript asked for again has a line of its new end; the lines of the end of a transcript
+  go with a removed recording, as its card does); the end of a call with its length
   (`call_ended` carries `duration_seconds` from the first person in the room to the end of
   the call); a pin (`message_pinned`; a removal of a pin has no line, as in Discord and
   Slack); a rename (`channel_renamed`, which carries `previous_name` and `name`). A move of

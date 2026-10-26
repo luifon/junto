@@ -1434,8 +1434,8 @@ pub async fn processed(
 
 /// Removes a recording with its segments and its transcript, and puts its directory into
 /// the queue of removals. The notes of its start and its stop stay without the recording;
-/// the note of its post goes with it. The caller has checked that the recording is in a
-/// final state.
+/// the notes of its post and of its transcript go with it. The caller has checked that the
+/// recording is in a final state.
 pub async fn remove(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -1451,7 +1451,14 @@ pub async fn remove(
     events::tell_of_recording(&mut *connection, now, running, &event).await?;
     crate::exports::recording_removed(&mut *connection, now, recording.channel_id, recording.id)
         .await?;
-    remove_notes(&mut *connection, now, recording, "recording_ready").await?;
+    for kind in [
+        "recording_ready",
+        "transcript_ready",
+        "transcript_partial",
+        "transcript_failed",
+    ] {
+        remove_notes(&mut *connection, now, recording, kind).await?;
+    }
     // Saved audio of a lost job that the server could not take is still in the directory of
     // that job. It goes with the recording.
     let lost_jobs: Vec<String> = sqlx::query_scalar(
