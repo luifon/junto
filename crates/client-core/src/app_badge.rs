@@ -187,6 +187,21 @@ mod tests {
             .min((side * side) as usize)
     }
 
+    /// The count of the columns between the first and the last white point.
+    fn ink_width(pixels: &[u8], side: u32) -> u32 {
+        let columns: Vec<u32> = (0..side * side)
+            .filter(|at| {
+                let at = (*at * 4) as usize;
+                pixels[at..at + 3] == INK && pixels[at + 3] == 255
+            })
+            .map(|at| at % side)
+            .collect();
+        match (columns.iter().min(), columns.iter().max()) {
+            (Some(first), Some(last)) => last - first + 1,
+            _ => 0,
+        }
+    }
+
     #[test]
     fn a_count_is_written_up_to_99_and_above_as_99_plus() {
         assert_eq!(label(0), None);
@@ -205,11 +220,11 @@ mod tests {
                 assert_eq!(alpha(&one, side, x, y), 0, "{side}: corner {x},{y}");
             }
             assert_eq!(alpha(&one, side, side / 2, side / 2 - 1), 255);
-            // A count has white points, more of them for more glyphs, and none without a
-            // count.
+            // A count has white points, a wider text for more glyphs (drawn smaller when
+            // they need the room), and none without a count.
             let (two, many) = (picture(28, side), picture(100, side));
             assert!(white(&one, side) > 0, "{side}");
-            assert!(white(&two, side) > white(&one, side), "{side}");
+            assert!(ink_width(&two, side) > ink_width(&one, side), "{side}");
             assert!(white(&many, side) > 0, "{side}");
             assert!(picture(0, side).iter().all(|byte| *byte == 0));
         }
