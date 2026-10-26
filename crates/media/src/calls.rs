@@ -185,6 +185,9 @@ pub struct ActiveCall {
     /// The server closed the microphone of the person (ADR 0503, ADR 0512).
     pub microphone_block: Option<MicrophoneBlock>,
     pub sound_block: Option<SoundBlock>,
+    /// How many shares this device can run at once in the call: three, or one on a server
+    /// from before several shares (ADR 0502).
+    pub share_limit: u8,
     /// The shares of this device by their slots.
     pub own_shares: BTreeMap<u8, ShareState>,
     /// Why the last own share that ended by itself ended, until the person starts or stops
@@ -1235,6 +1238,7 @@ fn media_join(answer: &CallJoin) -> MediaJoin {
     MediaJoin {
         url: answer.media_url.clone(),
         token: answer.token.clone(),
+        shares: answer.shares.unwrap_or(1),
     }
 }
 
@@ -3422,6 +3426,7 @@ impl Session {
             output_device: state.output_device.clone(),
             microphone_block: self.microphone_block.clone(),
             sound_block: self.sound_block.clone(),
+            share_limit: state.share_limit,
             own_shares: state.own_shares.clone(),
             share_ended: state.share_ended.clone(),
             shares: state.shares.clone(),

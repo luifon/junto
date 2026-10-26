@@ -257,6 +257,11 @@ pub struct CallJoin {
     /// that ADR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting_grant: Option<bool>,
+    /// How many shares one person can run at once in this call (ADR 0502). A server from
+    /// before several shares sends none: one share, which its end of a share without a
+    /// slot ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shares: Option<u8>,
 }
 
 /// The query of the request that leaves a call.

@@ -2,7 +2,7 @@
 
 use junto_protocol::call::{
     Call, CallJoin, CallPlace, EntryOutcome, EntryRequest, InvitationOutcome, LeaveReason,
-    MicrophoneBlock, SoundBlock,
+    MAX_SHARES, MicrophoneBlock, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
@@ -132,6 +132,7 @@ impl Entered {
             microphone_block: self.microphone_block,
             sound_block: self.sound_block,
             meeting_grant: self.meeting_grant,
+            shares: Some(MAX_SHARES),
         })
     }
 }

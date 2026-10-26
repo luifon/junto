@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use junto_client_core::protocol::call::MAX_SHARES;
 use junto_client_core::protocol::ids::AccountId;
 use junto_client_core::protocol::secret::CallToken;
 use livekit::DisconnectReason;
@@ -92,6 +93,9 @@ const RECOVERY_SPAN: Duration = Duration::from_secs(5);
 pub struct MediaJoin {
     pub url: String,
     pub token: CallToken,
+    /// How many shares one person can run in the call: the number of the answer, one for
+    /// a server from before several shares (ADR 0502).
+    pub shares: u8,
 }
 
 /// The sound settings of the person (ADR 0701, ADR 0507).
@@ -186,6 +190,8 @@ pub struct EngineState {
     pub output_device: Option<DeviceInfo>,
     /// The shares of this device by their slots.
     pub own_shares: BTreeMap<u8, ShareState>,
+    /// How many shares this device can run at once in the call (ADR 0502).
+    pub share_limit: u8,
     /// Why the last share of this device that ended by itself ended. It stays until the
     /// person starts a share, stops one, or puts the statement away.
     pub share_ended: Option<CaptureError>,
@@ -430,6 +436,7 @@ impl Engine {
             output: OutputState::Closed,
             output_device: None,
             own_shares: BTreeMap::new(),
+            share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             shares: Vec::new(),
             watched: None,
@@ -496,6 +503,7 @@ impl Engine {
             microphone_returns: None,
             remotes: HashMap::new(),
             own_shares: BTreeMap::new(),
+            share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             share_generation: 0,
             remote_pictures: HashMap::new(),
@@ -774,6 +782,8 @@ struct Actor {
     remotes: HashMap<TrackSid, Remote>,
     /// The shares of this device by their slots.
     own_shares: BTreeMap<u8, OwnShare>,
+    /// How many shares this device can run at once in the call.
+    share_limit: u8,
     /// Why the last own share that ended by itself ended, until the person acts.
     share_ended: Option<CaptureError>,
     /// Counts the shares that were started. The result of an earlier one is not used.
@@ -934,9 +944,12 @@ impl Actor {
     fn connect(&mut self, join: MediaJoin) {
         self.attempt += 1;
         let attempt = self.attempt;
+        self.share_limit = join.shares.clamp(1, MAX_SHARES);
+        let limit = self.share_limit;
         self.change(|state| {
             state.connection = Connection::Connecting;
             state.attempt = attempt;
+            state.share_limit = limit;
         });
         let internal = self.internal.clone();
         self.runtime.spawn(async move {

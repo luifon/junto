@@ -107,6 +107,7 @@ fn fixture() -> Fixture {
         meeting_grant: None,
         microphone_block: None,
         sound_block: None,
+        shares: None,
     };
     let model = ServerModel::from_snapshot(Snapshot {
         cursor: Cursor {

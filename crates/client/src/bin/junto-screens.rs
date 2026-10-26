@@ -778,6 +778,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
                 output_device: Some(device("phones", "Headphones", false)),
                 microphone_block: None,
                 sound_block: None,
+                share_limit: junto_client_core::protocol::call::MAX_SHARES,
                 own_shares: BTreeMap::new(),
                 share_ended: None,
                 shares: Vec::new(),

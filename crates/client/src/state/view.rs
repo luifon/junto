@@ -1481,6 +1481,8 @@ pub struct CallStrip {
     pub share: OwnShare,
     /// The shares of this device in the order of their slots.
     pub own_shares: Vec<OwnShareItem>,
+    /// How many shares this device can run at once in the call (ADR 0502).
+    pub share_limit: u8,
     /// This build can capture a screen on the system that it runs on.
     pub can_share: bool,
     /// The hand of the person is raised. Absent in a direct-message call, which has no
@@ -3596,6 +3598,7 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
             OwnShare::Starting
         },
         own_shares: own_share_items(active),
+        share_limit: active.share_limit,
         can_share: known.media.can_share,
         hand_raised: channel_id
             .zip(model)

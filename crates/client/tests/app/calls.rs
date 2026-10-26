@@ -364,6 +364,7 @@ pub(crate) fn connected_call(window: &mut Window, channel: &str) -> junto_media:
         output_device: None,
         microphone_block: None,
         sound_block: None,
+        share_limit: junto_client_core::protocol::call::MAX_SHARES,
         own_shares: std::collections::BTreeMap::new(),
         share_ended: None,
         shares: Vec::new(),

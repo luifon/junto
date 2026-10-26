@@ -511,10 +511,11 @@ impl Shell {
     pub(crate) fn render_share_menu(
         &mut self,
         shares: &[crate::state::view::OwnShareItem],
+        limit: u8,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
-        let full = shares.len() >= usize::from(junto_client_core::protocol::call::MAX_SHARES);
+        let full = shares.len() >= usize::from(limit);
         let items: Vec<AnyElement> = shares
             .iter()
             .map(|share| {
@@ -568,7 +569,7 @@ impl Shell {
                             div()
                                 .flex_none()
                                 .id("share-another-limit")
-                                .tooltip(tooltip(text::share_limit()))
+                                .tooltip(tooltip(text::share_limit(limit)))
                                 .child(another)
                                 .into_any_element()
                         } else {
@@ -1917,6 +1918,7 @@ mod tests {
                 output_device: None,
                 microphone_block: None,
                 sound_block: None,
+                share_limit: junto_client_core::protocol::call::MAX_SHARES,
                 own_shares: std::collections::BTreeMap::new(),
                 share_ended: None,
                 shares: Vec::new(),

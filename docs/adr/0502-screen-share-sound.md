@@ -33,6 +33,7 @@ Several shares:
 - Three is the limit because each share costs the sharer one capture and one encoder and costs every viewer one more received picture track; a fourth share of one person is refused by the client and by the server.
 - Each viewer picks which share to watch, as between the shares of two people, and hears the sound of that share only, also when the other share is a share of the same person.
 - A viewer can mute the sound of a share, or change its volume, and keep the picture.
+- The server states the number of shares of one person in each answer that gives a place in a call. A server from before several shares states none, and its end of a share without a slot ends every share, so the client runs one share there (ADR 0510).
 
 Track:
 

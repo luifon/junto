@@ -136,6 +136,7 @@ fn in_call(server_id: ServerId, scene: &Scene, channel_id: ChannelId) -> Known {
                     output_device: None,
                     microphone_block: None,
                     sound_block: None,
+                    share_limit: junto_client_core::protocol::call::MAX_SHARES,
                     own_shares: std::collections::BTreeMap::new(),
                     share_ended: None,
                     shares: Vec::new(),

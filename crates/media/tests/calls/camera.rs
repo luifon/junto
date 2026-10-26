@@ -455,6 +455,7 @@ async fn the_engine_publishes_the_camera_only_while_its_controls_do_not_hold_it(
             MediaJoin {
                 url: answer.media_url,
                 token: answer.token,
+                shares: answer.shares.unwrap_or(1),
             },
             crate::scene::plain_voice(),
             held,

@@ -609,10 +609,10 @@ async fn play_sound(mut stream: NativeAudioStream, source: Arc<SourceHandle>) {
     }
 }
 
-/// The slot that a start takes: the lowest one without a share.
-pub(super) fn free_slot(used: impl IntoIterator<Item = u8>) -> Option<u8> {
+/// The slot that a start takes: the lowest one without a share, below `limit`.
+pub(super) fn free_slot(used: impl IntoIterator<Item = u8>, limit: u8) -> Option<u8> {
     let used: Vec<u8> = used.into_iter().collect();
-    (0..MAX_SHARES).find(|slot| !used.contains(slot))
+    (0..limit.min(MAX_SHARES)).find(|slot| !used.contains(slot))
 }
 
 impl Actor {
@@ -867,8 +867,9 @@ impl Actor {
 
     /// Starts a share of this device in the lowest free slot; the shares that run go on.
     /// `stops`: the count of stops of each slot when the start was asked for; after a
-    /// later stop of its slot the share sends nothing. A person who runs `MAX_SHARES`
-    /// shares is told that no further one starts.
+    /// later stop of its slot the share sends nothing. A person who runs as many shares
+    /// as the call allows, `MAX_SHARES` or one on a server from before several shares, is
+    /// told that no further one starts.
     pub(super) fn start_share(&mut self, request: CaptureRequest, stops: [u64; MAX_SLOTS]) {
         self.share_ended = None;
         if !self.joined() {
@@ -876,7 +877,7 @@ impl Actor {
             self.tell_shares();
             return;
         }
-        let Some(slot) = free_slot(self.own_shares.keys().copied()) else {
+        let Some(slot) = free_slot(self.own_shares.keys().copied(), self.share_limit) else {
             self.share_ended = Some(CaptureError::TooMany);
             self.tell_shares();
             return;
@@ -1346,11 +1347,16 @@ mod tests {
 
     #[test]
     fn a_start_takes_the_lowest_free_slot_and_no_slot_beyond_the_limit() {
-        assert_eq!(free_slot([]), Some(0));
-        assert_eq!(free_slot([0, 2]), Some(1));
-        assert_eq!(free_slot([1, 2]), Some(0));
-        assert_eq!(free_slot([0, 1, 2]), None);
+        assert_eq!(free_slot([], MAX_SHARES), Some(0));
+        assert_eq!(free_slot([0, 2], MAX_SHARES), Some(1));
+        assert_eq!(free_slot([1, 2], MAX_SHARES), Some(0));
+        assert_eq!(free_slot([0, 1, 2], MAX_SHARES), None);
         assert_eq!(MAX_SLOTS, 3);
+        // A server from before several shares: one share.
+        assert_eq!(free_slot([], 1), Some(0));
+        assert_eq!(free_slot([0], 1), None);
+        assert_eq!(free_slot([], 200), Some(0));
+        assert_eq!(free_slot([0, 1, 2], 200), None);
     }
 
     #[tokio::test(start_paused = true)]

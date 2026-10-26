@@ -1236,6 +1236,7 @@ async fn the_local_admission_gate_withdraws_share_sound_with_a_permissive_token(
             MediaJoin {
                 url: answer.media_url,
                 token: answer.token,
+                shares: answer.shares.unwrap_or(1),
             },
             crate::scene::plain_voice(),
             Controls::default(),

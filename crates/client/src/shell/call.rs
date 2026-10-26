@@ -1716,7 +1716,7 @@ impl Shell {
             .selector("call-share")
             .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
             let share_menu = matches!(self.layer, Layer::ShareMenu)
-                .then(|| self.render_share_menu(&strip.own_shares, cx));
+                .then(|| self.render_share_menu(&strip.own_shares, strip.share_limit, cx));
             let share = div()
                 .relative()
                 .flex_none()

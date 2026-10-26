@@ -39,6 +39,7 @@ fn call_with_share(window: &mut Window, channel: &str, ended: Option<CaptureErro
         output_device: None,
         microphone_block: None,
         sound_block: None,
+        share_limit: junto_client_core::protocol::call::MAX_SHARES,
         own_shares: std::collections::BTreeMap::new(),
         share_ended: ended,
         shares: Vec::new(),

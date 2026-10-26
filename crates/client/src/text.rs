@@ -502,12 +502,16 @@ pub const SHARE_ANOTHER: &str = "Share another screen or window";
 pub const STOP_ALL_SHARES: &str = "Stop every share";
 pub const SHARE_STARTS: &str = "Starts…";
 
-/// Why "Share another" is disabled: the person runs as many shares as one person can.
-pub fn share_limit() -> String {
-    format!(
-        "You share {} things, the most at once. Stop one to share another.",
-        junto_client_core::protocol::call::MAX_SHARES
-    )
+/// Why "Share another" is disabled: the person runs as many shares as one person can in the
+/// call, `limit`. A server from before several shares allows one (ADR 0502).
+pub fn share_limit(limit: u8) -> String {
+    if limit <= 1 {
+        "This server lets a person run one share at a time. Stop your share to share another \
+         thing."
+            .to_owned()
+    } else {
+        format!("You share {limit} things, the most at once. Stop one to share another.")
+    }
 }
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
     "Share screen. Screen sharing is not available on this system in this version.";
@@ -610,7 +614,9 @@ pub fn capture_error(error: &CaptureError) -> String {
         CaptureError::CreatorsUnknown => SOUND_CREATORS_UNKNOWN.to_owned(),
         CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
         CaptureError::Interrupted => "The connection to the call was lost.".to_owned(),
-        CaptureError::TooMany => share_limit(),
+        CaptureError::TooMany => {
+            "You share as many things as this call allows. Stop one to share another.".to_owned()
+        }
         CaptureError::Failed(reason) => {
             format!("The system reported: {}", sentence(reason))
         }
@@ -618,10 +624,10 @@ pub fn capture_error(error: &CaptureError) -> String {
 }
 
 /// The notice about a share of this device that the person did not end, or that did not
-/// start because the person runs as many shares as one person can.
-pub fn share_ended(error: &CaptureError) -> String {
+/// start because the person runs as many shares as one person can in the call, `limit`.
+pub fn share_ended(error: &CaptureError, limit: u8) -> String {
     match error {
-        CaptureError::TooMany => format!("Your new share did not start. {}", share_limit()),
+        CaptureError::TooMany => format!("Your new share did not start. {}", share_limit(limit)),
         error => format!(
             "Your screen share ended. {} Start the share again when you want to continue.",
             capture_error(error)
@@ -3113,7 +3119,14 @@ mod tests {
             "Your screen"
         );
         assert_eq!(own_share_title(None, None), "Your new share");
-        assert!(share_ended(&CaptureError::TooMany).starts_with("Your new share did not start."));
+        assert!(
+            share_ended(&CaptureError::TooMany, 3)
+                .starts_with("Your new share did not start. You share 3 things")
+        );
+        assert!(
+            share_ended(&CaptureError::TooMany, 1)
+                .ends_with("This server lets a person run one share at a time. Stop your share to share another thing.")
+        );
         share.number = None;
         share.kind = None;
         share.name = None;
@@ -3157,7 +3170,7 @@ mod tests {
             CaptureError::Failed("the stream stopped".to_owned()),
         ] {
             assert!(capture_error(&error).ends_with('.'), "{error:?}");
-            assert!(share_ended(&error).starts_with("Your screen share ended. "));
+            assert!(share_ended(&error, 3).starts_with("Your screen share ended. "));
         }
         assert!(
             capture_error(&CaptureError::Failed("the stream stopped".to_owned()))
