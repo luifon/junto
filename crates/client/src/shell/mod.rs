@@ -13,6 +13,7 @@ mod composer;
 mod contacts;
 pub mod detached;
 mod direct;
+mod edges;
 mod feed;
 mod invited;
 mod join;
@@ -223,6 +224,12 @@ pub struct Shell {
     expanded_while_narrow: bool,
     /// The width of the server book as it was drawn last, in design pixels.
     pub(crate) rail_width: f32,
+    /// The drag of the edge of a panel that is on its way.
+    edge_drag: Option<edges::Drag>,
+    /// The width of the window as it was drawn last, in design pixels.
+    window_width: f32,
+    /// The keyboard focus of the edge of each panel.
+    edge_focus: HashMap<junto_client_core::settings::Panel, FocusHandle>,
 
     // The side panel.
     pub(crate) members_open: bool,
@@ -625,6 +632,9 @@ impl Shell {
             server_menu_closed_by_press: false,
             expanded_while_narrow: false,
             rail_width: 0.0,
+            edge_drag: None,
+            window_width: f32::MAX,
+            edge_focus: HashMap::new(),
             members_open: false,
             call_tab: CallTab::default(),
             call_panel_open: false,
@@ -1221,11 +1231,21 @@ impl Render for Shell {
                 this.keep_focus_in_window(window, cx)
             });
         }
+        self.window_width = logical_width(window);
         self.rail_width = if collapsed {
             theme.metrics.rail_collapsed_width
         } else {
-            theme.metrics.rail_width
+            self.panel_width(
+                junto_client_core::settings::Panel::ServerBook,
+                theme.metrics.rail_width,
+                cx,
+            )
         };
+        let channels_width = self.panel_width(
+            junto_client_core::settings::Panel::Channels,
+            theme.metrics.channel_column_width,
+            cx,
+        );
         let frame = title_bar::draws_frame(window, true, cx);
         // A layer covers the columns and not the strip of the window buttons, which stay
         // usable while a dialog is open.
@@ -1238,6 +1258,26 @@ impl Render for Shell {
             .child(self.render_rail(&view, collapsed, narrow, window, cx))
             .child(self.render_channel_column(&view, window, cx))
             .child(self.render_main(&view, narrow, window, cx))
+            // The edges of the two columns lie over them, after them (ADR 0703).
+            .when(!collapsed, |body| {
+                body.child(self.panel_edge(
+                    junto_client_core::settings::Panel::ServerBook,
+                    edges::Side::Right,
+                    self.rail_width,
+                    theme.metrics.rail_width,
+                    window,
+                    cx,
+                ))
+            })
+            .child(self.panel_edge(
+                junto_client_core::settings::Panel::Channels,
+                edges::Side::Right,
+                self.rail_width + channels_width,
+                theme.metrics.channel_column_width,
+                window,
+                cx,
+            ))
+            .children(self.edge_drag_tracking(cx))
             .when(!matches!(self.layer, Layer::None), |body| {
                 body.child(self.render_layer(&view, window, cx))
             });
@@ -1271,7 +1311,7 @@ impl Render for Shell {
             .children(self.render_invitation_cards(
                 &view,
                 theme.metrics.header_height + 8.0,
-                self.rail_width + theme.metrics.channel_column_width,
+                self.rail_width + channels_width,
                 window,
                 cx,
             ))

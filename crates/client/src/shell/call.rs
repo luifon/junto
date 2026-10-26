@@ -6,12 +6,13 @@
 //! be drawn in a window of its own without a change (ADR 0507).
 
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement,
     Styled, StyledText, Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::settings::Panel;
 use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
 use junto_media::permission::MicrophoneAccess;
@@ -35,7 +36,7 @@ use crate::ui::{
 
 /// The width that a panel over the content adds for its close button, in pixels of the
 /// design.
-const PANEL_CLOSE_WIDTH: f32 = 40.0;
+pub(crate) const PANEL_CLOSE_WIDTH: f32 = 40.0;
 
 /// The pane of the panel of a call that is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -828,9 +829,7 @@ impl Shell {
             .flex_col()
             .flex_none()
             // A panel over the content also holds its close button beside the tabs.
-            .w(u(
-                theme.metrics.call_panel_width + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }
-            ))
+            .w(u(self.call_panel_width(cx) + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -862,7 +861,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .flex_none()
-                .w(u(theme.metrics.call_panel_width))
+                .w(u(self.call_panel_width(cx)))
                 .h_full()
                 .bg(Hsla::from(colors.plaster))
                 .border_l_1()
@@ -1481,7 +1480,6 @@ impl Shell {
         choices: &[DeviceChoice],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = theme(cx);
         let label = match kind {
             DeviceKind::Camera => text::CAMERA,
             DeviceKind::Input => text::INPUT_DEVICE,
@@ -1532,7 +1530,7 @@ impl Shell {
             .child(deferred(
                 anchored().snap_to_window().child(
                     Menu::new("device-menu", label, self.layer_focus())
-                        .width(theme.metrics.call_panel_width - 28.0)
+                        .width(self.call_panel_width(cx) - 28.0)
                         .selector("device-menu")
                         .on_close(Self::handler(cx, |this, window, cx| {
                             this.device_menu_closed_by_press = !window.last_input_was_keyboard();
@@ -1960,7 +1958,7 @@ impl Shell {
         narrow: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (AnyElement, Option<AnyElement>) {
+    ) -> (AnyElement, Option<(Panel, AnyElement)>) {
         let theme = theme(cx);
         let stage = if self.state.read(cx).is_call_detached() && !self.detached {
             div()
@@ -1978,8 +1976,23 @@ impl Shell {
             self.render_call_stage(panel, &theme, cx)
         };
         let side = (!narrow || self.call_panel_open)
-            .then(|| self.render_call_panel(view, panel, narrow, window, cx));
+            .then(|| (Panel::Call, self.render_call_panel(view, panel, narrow, window, cx)));
         (stage, side)
+    }
+
+    /// The panel of the call of this window: the one of the main window or the one of the
+    /// separate call window, each with its own width.
+    pub(crate) fn call_panel(&self) -> Panel {
+        if self.detached {
+            Panel::CallWindow
+        } else {
+            Panel::Call
+        }
+    }
+
+    /// The width of the panel of the call in pixels of the design.
+    pub(crate) fn call_panel_width(&self, cx: &App) -> f32 {
+        self.panel_width(self.call_panel(), theme(cx).metrics.call_panel_width, cx)
     }
 
     /// The stage of a call: its shares while the call is connected and a person shares,

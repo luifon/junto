@@ -8,6 +8,8 @@ use gpui::{
 };
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 
+use junto_client_core::settings::Panel;
+
 use super::{Layer, Shell, join, window_controls_height};
 use crate::assets::Icon;
 use crate::state::view::{ServerRow, ServerStatus, ShellView};
@@ -143,10 +145,11 @@ impl Shell {
         let width = if collapsed {
             theme.metrics.rail_collapsed_width
         } else {
-            theme.metrics.rail_width
+            self.panel_width(Panel::ServerBook, theme.metrics.rail_width, cx)
         };
         let frame = div()
             .id("server-book")
+            .debug_selector(|| "server-book".to_owned())
             .role(Role::Navigation)
             .aria_label(text::SERVER_BOOK)
             .relative()

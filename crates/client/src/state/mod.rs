@@ -57,7 +57,7 @@ use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecordingId,
     RecoveryId, ServerId, WorkspaceId,
 };
-use junto_client_core::settings::{InterfaceSettings, ThemeChoice};
+use junto_client_core::settings::{InterfaceSettings, Panel, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
@@ -130,6 +130,7 @@ enum Setting {
     Scale,
     ServerBook,
     Theme,
+    PanelWidth(Panel),
 }
 
 /// A part of the processing of the microphone (ADR 0701).
@@ -2900,6 +2901,26 @@ impl AppState {
         self.write_setting(Setting::ServerBook, cx);
     }
 
+    /// The width of a panel in pixels of the design: the one that the person gave it, or
+    /// the width of the design.
+    pub fn panel_width(&self, panel: Panel, design: f32) -> f32 {
+        self.settings
+            .panel_widths
+            .get(panel)
+            .map_or(design, f32::from)
+    }
+
+    /// Keeps the width that the person gave a panel, within its bounds, also after a
+    /// restart (ADR 0703).
+    pub fn set_panel_width(&mut self, panel: Panel, width: f32, cx: &mut Context<Self>) {
+        let width = width.round().clamp(0.0, f32::from(u16::MAX)) as u16;
+        let before = self.settings.panel_widths.get(panel);
+        self.settings.panel_widths.set(panel, width);
+        if self.settings.panel_widths.get(panel) != before {
+            self.write_setting(Setting::PanelWidth(panel), cx);
+        }
+    }
+
     /// Writes one changed setting on a background thread, in the order of the changes. The
     /// window uses the new value at once. Only the changed setting is written, so that a
     /// second program that changed another one keeps its value. A setting whose write
@@ -2922,6 +2943,11 @@ impl AppState {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }
                             Setting::Theme => stored.theme = wanted.theme,
+                            Setting::PanelWidth(panel) => {
+                                if let Some(width) = wanted.panel_widths.get(*panel) {
+                                    stored.panel_widths.set(*panel, width);
+                                }
+                            }
                         }
                     }
                 })

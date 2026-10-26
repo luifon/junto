@@ -53,6 +53,7 @@ mod logout;
 mod messages;
 mod notice_settings;
 mod notices;
+mod panel_widths;
 mod panics;
 mod people;
 mod permissions;

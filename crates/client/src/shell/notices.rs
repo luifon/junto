@@ -15,6 +15,7 @@ use junto_client_core::api::SettingsScope;
 use junto_client_core::protocol::discovery::NotificationLevel;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, ServerId};
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
@@ -217,6 +218,7 @@ pub(crate) fn side_panel(
     theme: &Theme,
     label: impl Into<SharedString>,
     selector: &'static str,
+    width: f32,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id("side-panel")
@@ -226,7 +228,7 @@ pub(crate) fn side_panel(
         .flex()
         .flex_col()
         .flex_none()
-        .w(u(theme.metrics.side_panel_width))
+        .w(u(width))
         .h_full()
         .bg(Hsla::from(theme.colors.plaster))
         .border_l_1()
@@ -518,7 +520,12 @@ impl Shell {
                 .flex_1()
                 .min_h_0()
         } else {
-            side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
+            side_panel(
+                &theme,
+                text::NOTIFICATIONS,
+                "notices-panel",
+                self.panel_width(Panel::Notices, theme.metrics.side_panel_width, cx),
+            )
         };
         frame
             .child(header)

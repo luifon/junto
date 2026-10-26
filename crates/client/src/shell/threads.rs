@@ -98,7 +98,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.side_panel_width))
+            .w(u(self.panel_width(
+                junto_client_core::settings::Panel::Thread,
+                theme.metrics.side_panel_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -506,7 +510,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.side_panel_width))
+            .w(u(self.panel_width(
+                junto_client_core::settings::Panel::Pins,
+                theme.metrics.side_panel_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()

@@ -1649,7 +1649,16 @@ impl Shell {
                 self.transcript_lines(server_id, panel, transcript, open, names, *when, &theme, cx)
             }
         };
-        side_panel(&theme, text::TRANSCRIPT, "transcript-panel")
+        side_panel(
+            &theme,
+            text::TRANSCRIPT,
+            "transcript-panel",
+            self.panel_width(
+                junto_client_core::settings::Panel::Transcript,
+                theme.metrics.side_panel_width,
+                cx,
+            ),
+        )
             .child(header)
             .child(body)
             .into_any_element()

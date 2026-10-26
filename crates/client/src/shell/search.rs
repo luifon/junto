@@ -594,7 +594,16 @@ impl Shell {
                     .into_any_element()
             }
         };
-        side_panel(&theme, text::SEARCH, "search-panel")
+        side_panel(
+            &theme,
+            text::SEARCH,
+            "search-panel",
+            self.panel_width(
+                junto_client_core::settings::Panel::Search,
+                theme.metrics.side_panel_width,
+                cx,
+            ),
+        )
             .child(header)
             .child(filters)
             .child(

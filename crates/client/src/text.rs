@@ -1701,6 +1701,22 @@ pub const FILES_REMOVED_BY_RETENTION: &str =
 pub const PERMANENT_COMPOSER: &str = "Permanent messages: a sent message cannot be edited";
 pub const DIRECT_MESSAGES: &str = "Direct messages";
 pub const NO_DIRECT_CONVERSATIONS: &str = "No conversations yet";
+
+/// The name of the edge that changes the width of a panel, for the accessibility tree.
+pub fn panel_edge(panel: junto_client_core::settings::Panel) -> &'static str {
+    use junto_client_core::settings::Panel;
+    match panel {
+        Panel::ServerBook => "Width of the server book",
+        Panel::Channels => "Width of the channel list",
+        Panel::Thread => "Width of the thread",
+        Panel::Pins => "Width of the pinned messages",
+        Panel::Notices => "Width of the notifications",
+        Panel::Search => "Width of the search",
+        Panel::Members => "Width of the member list",
+        Panel::Transcript => "Width of the transcript",
+        Panel::Call | Panel::CallWindow => "Width of the call panel",
+    }
+}
 pub const MESSAGE_PERSON: &str = "Message";
 pub const NEW_DIRECT: &str = "New direct message";
 pub const NEW_DIRECT_TITLE: &str = "New direct message";

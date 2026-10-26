@@ -3,12 +3,15 @@
 //! side panel with the members of the workspace.
 
 use gpui::{
-    AnyElement, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
+    AnyElement, App, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
     SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
 use junto_client_core::protocol::ids::AccountId;
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
+
+use super::edges::Side;
 
 use super::search::SEARCH_FIELD_WIDTH;
 use super::{Layer, Shell};
@@ -66,22 +69,33 @@ impl Shell {
                     && shown.pins.is_none()
                     && let Some(transcript) = &shown.transcript
                 {
-                    return Some(this.render_transcript_panel(server_id, transcript, window, cx));
+                    return Some((
+                        Panel::Transcript,
+                        this.render_transcript_panel(server_id, transcript, window, cx),
+                    ));
                 }
                 let thread = shown.and_then(|shown| shown.thread.as_ref());
                 let pins = shown.and_then(|shown| shown.pins.as_ref());
                 let search = shown.and_then(|shown| shown.search.as_ref());
                 match (thread, pins, &lists.notices, search) {
-                    (Some(thread), ..) => Some(this.render_thread_panel(thread, window, cx)),
-                    (None, Some(pins), ..) => {
-                        Some(this.render_pins_panel(pins, lists.feed.as_ref(), window, cx))
+                    (Some(thread), ..) => {
+                        Some((Panel::Thread, this.render_thread_panel(thread, window, cx)))
                     }
-                    (None, None, Some(notices), _) => server_id
-                        .map(|server_id| this.render_notices_panel(server_id, notices, false, cx)),
+                    (None, Some(pins), ..) => Some((
+                        Panel::Pins,
+                        this.render_pins_panel(pins, lists.feed.as_ref(), window, cx),
+                    )),
+                    (None, None, Some(notices), _) => server_id.map(|server_id| {
+                        (
+                            Panel::Notices,
+                            this.render_notices_panel(server_id, notices, false, cx),
+                        )
+                    }),
                     (None, None, None, Some(search)) => {
-                        Some(this.render_search_panel(search, window, cx))
+                        Some((Panel::Search, this.render_search_panel(search, window, cx)))
                     }
-                    _ => members_open.then(|| this.render_members(lists, &theme, cx)),
+                    _ => members_open
+                        .then(|| (Panel::Members, this.render_members(lists, &theme, cx))),
                 }
             };
 
@@ -92,7 +106,7 @@ impl Shell {
                 .after_actions(notices.take().unwrap_or_default())
                 .into_any_element()
         };
-        let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, lists) {
+        let (body, side): (AnyElement, Option<(Panel, AnyElement)>) = match (&view.selected, lists) {
             (None, _) => (
                 stated(
                     StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER).selector("no-server"),
@@ -192,7 +206,20 @@ impl Shell {
                     .children(notices.take().into_iter().flatten())
                     .child(body)
             })
-            .when_some(side, |split, side| {
+            .when_some(side, |split, (panel, side)| {
+                let design = if matches!(panel, Panel::Call | Panel::CallWindow) {
+                    theme.metrics.call_panel_width
+                } else {
+                    theme.metrics.side_panel_width
+                };
+                // A call panel over the content also holds its close button.
+                let close = if narrow && panel == Panel::Call {
+                    super::call::PANEL_CLOSE_WIDTH
+                } else {
+                    0.0
+                };
+                let width = self.panel_width(panel, design, cx) + close;
+                let edge = self.panel_edge(panel, Side::Left, width, design, window, cx);
                 if narrow {
                     // The panel lies over the content, with a flat cover behind it.
                     split
@@ -215,8 +242,9 @@ impl Shell {
                             }
                         }))
                         .child(Self::side_overlay(&theme, side))
+                        .child(edge)
                 } else {
-                    split.child(side)
+                    split.child(side).child(edge)
                 }
             });
 
@@ -1275,6 +1303,7 @@ impl Shell {
                     .debug_selector(|| "no-workspace-members".to_owned())
                     .into_any_element(),
                 theme,
+                cx,
             );
         };
         let body: AnyElement = match members {
@@ -1416,12 +1445,19 @@ impl Shell {
                     .into_any_element()
             }
         };
-        self.side_panel(header, body, theme)
+        self.side_panel(header, body, theme, cx)
     }
 
     /// The side panel of the members with its header and its body.
-    fn side_panel(&self, header: SideHeader, body: AnyElement, theme: &Theme) -> AnyElement {
+    fn side_panel(
+        &self,
+        header: SideHeader,
+        body: AnyElement,
+        theme: &Theme,
+        cx: &App,
+    ) -> AnyElement {
         let colors = theme.colors;
+        let width = self.panel_width(Panel::Members, theme.metrics.side_panel_width, cx);
         div()
             .id("side-panel")
             .role(Role::Complementary)
@@ -1430,7 +1466,7 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.side_panel_width))
+            .w(u(width))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()

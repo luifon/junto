@@ -17,6 +17,8 @@ use crate::state::view::{
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
+use junto_client_core::settings::Panel;
+
 use crate::ui::{
     Avatar, Band, BandKind, Button, ButtonKind, CategoryHeader, ChannelRow, ChannelState,
     OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
@@ -188,7 +190,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.channel_column_width))
+            .w(u(self.panel_width(
+                Panel::Channels,
+                theme.metrics.channel_column_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.limestone))
             .border_r_1()

@@ -13,6 +13,7 @@ use gpui::{
 };
 use gpui_base::Root;
 use junto_client_core::call_window::CallWindowSettings;
+use junto_client_core::settings::Panel;
 
 /// On Linux the window manager takes the request to keep a window above the windows of
 /// other programs at any time, and the window kind of gpui does not make that request
@@ -185,8 +186,8 @@ impl Shell {
         let theme = theme(cx);
         let panel = view.lists().and_then(|lists| lists.call.as_ref());
         // The panel of the call lies beside the stage when both fit, and over it otherwise.
-        let beside =
-            super::logical_width(window) >= theme.metrics.call_panel_width + STAGE_BESIDE_PANEL;
+        self.window_width = super::logical_width(window);
+        let beside = self.window_width >= self.call_panel_width(cx) + STAGE_BESIDE_PANEL;
         let mut body = div()
             .relative()
             .track_focus(&self.focus)
@@ -364,17 +365,29 @@ impl Shell {
                 .min_h_0()
                 .child(column)
                 .when_some(side, |middle, side| {
+                    // The panel holds its close button beside the tabs (`PANEL_CLOSE_WIDTH`).
+                    let width = self.call_panel_width(cx) + super::call::PANEL_CLOSE_WIDTH;
+                    let edge = self.panel_edge(
+                        Panel::CallWindow,
+                        super::edges::Side::Left,
+                        width,
+                        theme.metrics.call_panel_width,
+                        window,
+                        cx,
+                    );
                     if beside {
-                        middle.child(side)
+                        middle.child(side).child(edge)
                     } else {
                         middle
                             .child(Self::side_cover(&theme, cx, |this, _| {
                                 this.call_panel_open = false;
                             }))
                             .child(Self::side_overlay(&theme, side))
+                            .child(edge)
                     }
                 }),
-        );
+        )
+        .children(self.edge_drag_tracking(cx));
         let controls = div()
             .flex()
             .flex_wrap()
