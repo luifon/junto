@@ -86,17 +86,18 @@ impl AppState {
     pub fn permission_access(&self, permission: Permission) -> Access {
         let known = &self.permissions;
         match permission {
+            // The engine reads the permission when it opens the microphone of a call.
             Permission::Microphone => self
-                .known
-                .media
-                .access
+                .media_calls()
+                .call
+                .as_ref()
+                .map(|call| call.access)
+                .or(self.known.media.access)
                 .map(Access::from)
                 .unwrap_or(Access::Unread),
             // A camera that the system refused in the call is the newest answer.
             Permission::Camera => self
-                .known
-                .media
-                .calls
+                .media_calls()
                 .call
                 .as_ref()
                 .and_then(|call| match call.camera {

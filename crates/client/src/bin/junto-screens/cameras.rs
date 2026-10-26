@@ -121,6 +121,17 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
         }
         studio.draw(Screen::call(name, media), show_daily)?;
     }
+    // A refusal of macOS: the notice has the button of the page of System Settings (ADR 0708).
+    let mut media = in_call(Phase::Connected);
+    if let Some(call) = &mut media.calls.call {
+        call.camera = CameraState::Failed(CameraError::NoPermission(CameraAccess::Refused));
+    }
+    studio.draw(Screen::call("camera-refused-macos", media), |shell, window, cx| {
+        shell.state().clone().update(cx, |state, cx| {
+            state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
+        });
+        show_daily(shell, window, cx);
+    })?;
     studio.draw(
         Screen::call("camera-settings", in_call(Phase::Connected)),
         show_daily_tab(CallTab::Settings),

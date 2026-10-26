@@ -2051,8 +2051,19 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         call.input_device = None;
     });
     studio.draw(
-        Screen::call("call-no-microphone-access", refused),
+        Screen::call("call-no-microphone-access", refused.clone()),
         show_daily_tab(CallTab::Settings),
+    )?;
+    // With the rules of macOS the settings of the call have the button of the page of System
+    // Settings (ADR 0708).
+    studio.draw(
+        Screen::call("call-no-microphone-access-macos", refused),
+        |shell, window, cx| {
+            shell.state().clone().update(cx, |state, cx| {
+                state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
+            });
+            show_daily_tab(CallTab::Settings)(shell, window, cx);
+        },
     )?;
     let asking = with_call(in_call(Phase::Connected), |call| {
         call.microphone = MicrophoneState::Asking;
@@ -2374,72 +2385,7 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
             },
         )?;
     }
-    // The permissions of the system with the rules of each system (ADR 0708).
-    {
-        use junto_client::permissions::{Access, System};
-        use junto_media::permission::MicrophoneAccess;
-        for (name, system, microphone, camera, screen, notifications) in [
-            (
-                "settings-permissions-macos",
-                System::MacOs,
-                MicrophoneAccess::Allowed,
-                Access::Refused,
-                Access::Refused,
-                Access::NotAsked,
-            ),
-            (
-                "settings-permissions-windows",
-                System::Windows,
-                MicrophoneAccess::Refused,
-                Access::Allowed,
-                Access::Allowed,
-                Access::Refused,
-            ),
-            (
-                "settings-permissions-linux",
-                System::Linux,
-                MicrophoneAccess::Allowed,
-                Access::Restricted,
-                Access::AskedAtEachUse,
-                Access::Allowed,
-            ),
-        ] {
-            studio.draw(
-                Screen::new(name, two_servers()),
-                move |shell, window, cx| {
-                    shell.open(Open::Settings, window, cx);
-                    shell.open_settings_section(SettingsSection::Permissions, window, cx);
-                    shell.state().update(cx, |state, cx| {
-                        state.show_permissions_fixture(
-                            system,
-                            microphone,
-                            camera,
-                            screen,
-                            notifications,
-                            cx,
-                        );
-                    });
-                },
-            )?;
-        }
-        studio.draw(
-            Screen::new("settings-notifications-refused-macos", two_servers()),
-            |shell, window, cx| {
-                shell.open(Open::Settings, window, cx);
-                shell.open_settings_section(SettingsSection::Notifications, window, cx);
-                shell.state().update(cx, |state, cx| {
-                    state.show_permissions_fixture(
-                        System::MacOs,
-                        MicrophoneAccess::Allowed,
-                        Access::Allowed,
-                        Access::Allowed,
-                        Access::Refused,
-                        cx,
-                    );
-                });
-            },
-        )?;
-    }
+    draw_permissions(studio)?;
     studio.draw(
         Screen::new(
             "main-meeting-mode-full-room-categories",
@@ -2920,6 +2866,76 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
+/// The section "Permissions" of the settings with the rules of each system, and the section
+/// "Notifications" with a refusal of macOS (ADR 0708).
+fn draw_permissions(studio: &mut Studio) -> Result<(), String> {
+
+        use junto_client::permissions::{Access, System};
+        use junto_media::permission::MicrophoneAccess;
+        for (name, system, microphone, camera, screen, notifications) in [
+            (
+                "settings-permissions-macos",
+                System::MacOs,
+                MicrophoneAccess::Allowed,
+                Access::Refused,
+                Access::Refused,
+                Access::NotAsked,
+            ),
+            (
+                "settings-permissions-windows",
+                System::Windows,
+                MicrophoneAccess::Refused,
+                Access::Allowed,
+                Access::Allowed,
+                Access::Refused,
+            ),
+            (
+                "settings-permissions-linux",
+                System::Linux,
+                MicrophoneAccess::Allowed,
+                Access::Restricted,
+                Access::AskedAtEachUse,
+                Access::Allowed,
+            ),
+        ] {
+            studio.draw(
+                Screen::new(name, two_servers()),
+                move |shell, window, cx| {
+                    shell.open(Open::Settings, window, cx);
+                    shell.open_settings_section(SettingsSection::Permissions, window, cx);
+                    shell.state().update(cx, |state, cx| {
+                        state.show_permissions_fixture(
+                            system,
+                            microphone,
+                            camera,
+                            screen,
+                            notifications,
+                            cx,
+                        );
+                    });
+                },
+            )?;
+        }
+        studio.draw(
+            Screen::new("settings-notifications-refused-macos", two_servers()),
+            |shell, window, cx| {
+                shell.open(Open::Settings, window, cx);
+                shell.open_settings_section(SettingsSection::Notifications, window, cx);
+                shell.state().update(cx, |state, cx| {
+                    state.show_permissions_fixture(
+                        System::MacOs,
+                        MicrophoneAccess::Allowed,
+                        Access::Allowed,
+                        Access::Allowed,
+                        Access::Refused,
+                        cx,
+                    );
+                });
+            },
+        )?;
+    Ok(())
+}
+
 fn run(out: &Path) -> Result<(), String> {
     let mut studio = Studio::new(out.to_owned())?;
     let only = std::env::var("JUNTO_SCREENS_ONLY").ok();
@@ -2942,6 +2958,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("account") => account::draw(&mut studio),
         Some("book") => book::draw(&mut studio),
         Some("logo") => logo::draw(&mut studio),
+        Some("permissions") => draw_permissions(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
