@@ -464,9 +464,10 @@ impl Shell {
                     .mt(u(10.0))
                     .child(Notice::new(text::OPERATOR_NOTICE).selector("operator-notice")),
             );
-        dialog = dialog.child(
-            crate::ui::notice_slot("join-error-slot")
-                .children(error.map(|error| Notice::error(error).selector("join-error"))),
+        // The error follows every control of the dialog, whose top stays: it moves no
+        // control (ADR 0730).
+        let error_slot = crate::ui::notice_slot("join-error-slot").children(
+            error.map(|error| div().mt(u(12.0)).child(Notice::error(error).selector("join-error"))),
         );
         let busy = running.is_some() || cancelling;
         match body {
@@ -689,7 +690,7 @@ impl Shell {
                         .into_any_element()]));
             }
         }
-        dialog.into_any_element()
+        dialog.child(error_slot).into_any_element()
     }
 }
 

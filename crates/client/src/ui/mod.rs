@@ -4,12 +4,14 @@
 //! is activated with Enter or Space. A control has a role and a label for the accessibility
 //! tree (ADR 0702).
 
+mod area;
 mod avatar;
 mod button;
 mod controls;
 mod dialog;
 mod field;
 mod form_space;
+mod held;
 mod marks;
 mod menu;
 mod mosaic;
@@ -29,12 +31,16 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
+pub use area::area;
+#[cfg(feature = "test-support")]
+pub use area::{record_areas, take_areas};
 pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
 pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use form_space::{FormSpace, NewRow};
+pub use held::{Held, Moves, held};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};

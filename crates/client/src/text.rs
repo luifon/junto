@@ -1700,6 +1700,7 @@ pub const FILES_REMOVED_BY_RETENTION: &str =
     "Files of this message were removed after the retention time of this workspace.";
 pub const PERMANENT_COMPOSER: &str = "Permanent messages: a sent message cannot be edited";
 pub const DIRECT_MESSAGES: &str = "Direct messages";
+pub const NO_DIRECT_CONVERSATIONS: &str = "No conversations yet";
 pub const MESSAGE_PERSON: &str = "Message";
 pub const NEW_DIRECT: &str = "New direct message";
 pub const NEW_DIRECT_TITLE: &str = "New direct message";

@@ -1251,6 +1251,7 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(crate::ui::area(pane.id("message-list")))
             .child(
                 div()
                     .id(pane.id("message-list"))

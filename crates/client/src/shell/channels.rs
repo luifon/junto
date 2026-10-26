@@ -633,19 +633,33 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if conversations.is_empty() {
+            conversations.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .h(u(theme.metrics.channel_row_height))
+                    .px(u(14.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_3)
+                    .debug_selector(|| "no-direct-conversations".to_owned())
+                    .child(text::NO_DIRECT_CONVERSATIONS)
+                    .into_any_element(),
+            );
+        }
+        // The list has the height of its rows up to five, and scrolls beyond them. A
+        // conversation that arrives makes it taller when the pointer is not on a control
+        // that it moves (ADR 0730).
         rows.push(
-            div()
-                .flex()
-                .flex_col()
-                .flex_grow_0()
+            crate::ui::held("direct-list-part")
+                .scroll(&self.directs_scroll)
+                .label(text::DIRECT_MESSAGES)
+                .selector("direct-list")
+                .most(u(theme.metrics.channel_row_height * DIRECT_ROWS))
                 .flex_shrink_1()
-                .flex_basis(u(theme.metrics.channel_row_height * DIRECT_ROWS))
                 .min_h(u(theme.metrics.channel_row_height))
-                .child(
-                    ScrollArea::new("direct-list", &self.directs_scroll, text::DIRECT_MESSAGES)
-                        .selector("direct-list")
-                        .children(conversations),
-                )
+                .children(conversations)
                 .into_any_element(),
         );
         rows

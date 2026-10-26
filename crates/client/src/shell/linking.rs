@@ -811,7 +811,7 @@ impl Shell {
                 let mut column = column
                     .child(step_title(text::account::REQUEST_TEXT_TITLE, theme))
                     .child(sentence(text::account::REQUEST_TEXT_HELP, theme));
-                let result = crate::ui::notice_slot("link-request-result").h(u(256.0));
+                let result = crate::ui::notice_slot("link-request-result").most(256.0);
                 let result = match (request, fingerprint) {
                     (Some(request), Some(fingerprint)) => result
                         .child(div().flex_none().mt(u(8.0)).child(text_box(

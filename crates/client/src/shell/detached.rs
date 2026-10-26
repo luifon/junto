@@ -333,7 +333,8 @@ impl Shell {
             .child(stage)
             .child(
                 crate::ui::notice_slot("call-notice-area")
-                    .h(u(128.0))
+                    .most(128.0)
+                    .centred()
                     .children(meeting)
                     .children(notices)
                     .children(

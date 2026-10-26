@@ -79,12 +79,15 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
         .cx
         .debug_bounds(crate::harness::selector(selector.clone()))
         .unwrap();
+    // The person points at the control when the notice arrives.
+    window.move_pointer(before.center());
     world
         .run(api.remove_workspace_member(other.id, own, &Statement::default()))
         .unwrap();
     window.until("the late notice is drawn", |window| {
         window.shows("moderation-notice")
     });
+    window.settle();
     assert_eq!(
         window
             .cx
@@ -94,6 +97,16 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
     );
     if let Some(viewport) = viewport {
         assert_eq!(window.cx.debug_bounds("message-list").unwrap(), viewport);
+        // The pointer leaves the list: the notice takes its place above the list, and the
+        // area has no empty place without it (ADR 0730).
+        window.move_pointer(gpui::point(px(4.0), px(4.0)));
+        let moved = window.cx.debug_bounds("message-list").unwrap();
+        let notice = window.cx.debug_bounds("moderation-notice").unwrap();
+        assert!(
+            moved.top() >= notice.bottom(),
+            "the list {moved:?} starts above the end of the notice {notice:?}"
+        );
+        assert!(moved.top() > viewport.top());
     }
 }
 

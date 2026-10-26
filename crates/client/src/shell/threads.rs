@@ -652,13 +652,6 @@ impl Shell {
                     .child(kind_name(kind)),
             )
             .child(Field::new(&self.fork_name, text::FORK_NAME).selector("fork-name"))
-            .child(
-                crate::ui::notice_slot("fork-refused-slot").children(refused.map(|reason| {
-                    div()
-                        .mt(u(10.0))
-                        .child(Notice::error(reason).selector("fork-refused"))
-                })),
-            )
             .child(dialog_footer([
                 Button::new("cancel-fork")
                     .label(text::CANCEL)
@@ -680,6 +673,13 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.submit_fork(window, cx)))
                     .into_any_element(),
             ]))
+            .child(
+                crate::ui::notice_slot("fork-refused-slot").children(refused.map(|reason| {
+                    div()
+                        .mt(u(12.0))
+                        .child(Notice::error(reason).selector("fork-refused"))
+                })),
+            )
             .into_any_element()
     }
 
