@@ -773,7 +773,13 @@ impl Calls {
     ) -> Pending<Result<crate::share::picture::PictureFrame, CaptureError>> {
         let capture = self.inner.options.capture.clone();
         let reading = crate::executor::on_runtime(&self.inner.runtime, async move {
-            capture.preview(source, bound).await
+            tokio::time::timeout(crate::share::PREVIEW_LIMIT, capture.preview(source, bound))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(CaptureError::Failed(
+                        "the system did not make the picture in time".to_owned(),
+                    ))
+                })
         });
         Box::pin(async move {
             reading
@@ -3704,6 +3710,32 @@ mod tests {
         wait("a later test opens", &|| calls.input_test_runs());
         assert_eq!(calls.view().input_test_failed, None);
         calls.stop_input_test();
+    }
+
+    /// A window of an application that does not answer makes its preview wait: the preview
+    /// fails after its time limit, and the next one is made.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_preview_that_the_system_does_not_make_in_time_fails_and_the_next_one_is_made() {
+        use crate::share::synthetic::SyntheticCapture;
+        use crate::share::{PREVIEW_BOUND, PREVIEW_LIMIT};
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-preview-late-")
+            .tempdir()
+            .unwrap();
+        let (client, _) = client_with_a_silent_server(&directory.path().join("client"));
+        let capture = SyntheticCapture::new();
+        capture.set_preview_delay(PictureSource::Window(11), Duration::from_secs(600));
+        let calls = Calls::new(client, options_with(Arc::new(capture.clone())));
+        without_runtime(move || {
+            use futures_executor::block_on;
+            let started = std::time::Instant::now();
+            let late = block_on(calls.share_preview(PictureSource::Window(11), PREVIEW_BOUND));
+            assert!(matches!(late, Err(CaptureError::Failed(_))), "{late:?}");
+            assert!(started.elapsed() < PREVIEW_LIMIT + Duration::from_secs(5));
+            let next = block_on(calls.share_preview(PictureSource::Display(1), PREVIEW_BOUND));
+            assert!(next.is_ok(), "{next:?}");
+        });
     }
 
     /// The dialog of a share shows a still picture of each listed screen and window. The

@@ -78,6 +78,9 @@ struct State {
     still: bool,
     /// A capture takes this long to start, as a system that answers late.
     start_delay: Duration,
+    /// The picture of a preview of these sources takes this long, as a window of an
+    /// application that does not answer.
+    preview_delays: HashMap<PictureSource, Duration>,
     fail_next: Option<CaptureError>,
     asked: u32,
     settings_opened: u32,
@@ -148,6 +151,7 @@ impl SyntheticCapture {
                 application_tones: HashMap::from([(player, (1_100.0, 2_700.0))]),
                 still: false,
                 start_delay: Duration::ZERO,
+                preview_delays: HashMap::new(),
                 fail_next: None,
                 asked: 0,
                 settings_opened: 0,
@@ -200,6 +204,11 @@ impl SyntheticCapture {
 
     pub fn set_still(&self, still: bool) {
         self.lock().still = still;
+    }
+
+    /// The preview of `source` takes `delay` from now on.
+    pub fn set_preview_delay(&self, source: PictureSource, delay: Duration) {
+        self.lock().preview_delays.insert(source, delay);
     }
 
     pub fn set_start_delay(&self, delay: Duration) {
@@ -318,6 +327,10 @@ impl ScreenCapture for SyntheticCapture {
         let capture = self.clone();
         Box::pin(async move {
             crate::executor::require_runtime("the preview of the synthetic capture");
+            let delay = capture.lock().preview_delays.get(&source).copied();
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
             let mut state = capture.lock();
             if state.access == ScreenAccess::NotAllowed {
                 return Err(CaptureError::NotAllowed);

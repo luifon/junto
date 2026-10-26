@@ -179,6 +179,9 @@ impl Resolution {
 
 /// The largest picture of a source in the dialog of a share.
 pub const PREVIEW_BOUND: (u32, u32) = (320, 180);
+/// A preview that the system has not made after this time fails, so that one window of an
+/// application that does not answer does not hold the previews after it.
+pub const PREVIEW_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The frame rates that a person chooses from.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];

@@ -11,7 +11,9 @@ use windows::Win32::Graphics::Gdi::{
     SetStretchBltMode, StretchBlt,
 };
 use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, PW_RENDERFULLCONTENT};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowRect, IsHungAppWindow, PW_RENDERFULLCONTENT,
+};
 
 use crate::share::CaptureError;
 use crate::share::picture::{PictureFrame, fit};
@@ -194,6 +196,12 @@ pub(super) fn picture(still: &Still, bound: (u32, u32)) -> Result<PictureFrame, 
     match still {
         Still::Monitor(_) => shown.take(screen.0, (area.left, area.top), size)?,
         Still::Window(window) => {
+            // PrintWindow waits for the application of the window. A window that the system
+            // marks as not answering gets no picture.
+            // SAFETY: the handle names a listed window; a closed one answers false.
+            if unsafe { IsHungAppWindow(*window) }.as_bool() {
+                return Err(failed("the application of the window does not answer"));
+            }
             // SAFETY: as above.
             let full = unsafe { Canvas::new(screen.0, size)? };
             // SAFETY: the window handle names a listed window; a window that has closed
