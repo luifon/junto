@@ -30,6 +30,18 @@ impl SetupSystem for WindowsSetup {
         Ok(())
     }
 
+    fn uninstall_entry_location(&self) -> std::io::Result<Option<PathBuf>> {
+        match windows_registry::CURRENT_USER
+            .options()
+            .read()
+            .open(UNINSTALL_KEY)
+        {
+            Ok(key) => Ok(key.get_string("InstallLocation").ok().map(PathBuf::from)),
+            Err(failure) if failure.code().0 == NOT_FOUND => Ok(None),
+            Err(failure) => Err(error(failure)),
+        }
+    }
+
     fn remove_uninstall_entry(&self) -> std::io::Result<()> {
         match windows_registry::CURRENT_USER.remove_tree(UNINSTALL_KEY) {
             Ok(()) => Ok(()),

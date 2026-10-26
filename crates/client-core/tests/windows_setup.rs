@@ -23,6 +23,15 @@ impl SetupSystem for Recorded {
         *self.entry.borrow_mut() = Some(entry.clone());
         Ok(())
     }
+    fn uninstall_entry_location(&self) -> std::io::Result<Option<PathBuf>> {
+        Ok(self.entry.borrow().as_ref().and_then(|entry| {
+            entry
+                .strings
+                .iter()
+                .find(|(name, _)| *name == "InstallLocation")
+                .map(|(_, value)| PathBuf::from(value))
+        }))
+    }
     fn remove_uninstall_entry(&self) -> std::io::Result<()> {
         *self.entry.borrow_mut() = None;
         Ok(())
@@ -193,6 +202,28 @@ fn the_removal_takes_away_every_part_and_keeps_the_data_unless_asked() {
     // A second removal finds nothing and succeeds; with the data it removes the data.
     setup::uninstall(&places, true, &system).unwrap();
     assert!(!places.data.exists());
+}
+
+#[test]
+fn a_copy_extracted_elsewhere_keeps_the_entries_of_the_installation_of_the_setup_program() {
+    let root = tempfile::tempdir().unwrap();
+    let installed = places(root.path());
+    let system = Recorded::default();
+    let archive = setup::payload(&setup_program(root.path(), "0.1.0")).unwrap();
+    setup::install(&archive, &installed, false, &system).unwrap();
+    // A person extracted the ZIP file into another folder and runs its uninstall program.
+    let other = Places::of_folder(
+        &root.path().join("Apps/Junto"),
+        &root.path().join("Local"),
+        &root.path().join("Roaming"),
+    );
+    fs::create_dir_all(other.folder()).unwrap();
+    fs::write(other.folder().join("junto.exe"), "copy").unwrap();
+    setup::uninstall(&other, false, &system).unwrap();
+    assert!(!other.folder().exists());
+    assert!(system.entry.borrow().is_some());
+    assert!(installed.shortcut().exists());
+    assert!(installed.folder().join("junto.exe").exists());
 }
 
 #[test]

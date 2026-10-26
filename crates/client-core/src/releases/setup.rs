@@ -244,6 +244,8 @@ pub fn uninstall_entry(places: &Places, version: Version, bytes: u64) -> Uninsta
 /// The operations of Windows that an installation and a removal use.
 pub trait SetupSystem {
     fn write_uninstall_entry(&self, entry: &UninstallEntry) -> std::io::Result<()>;
+    /// The folder that the entry of the installed programs names, when the entry exists.
+    fn uninstall_entry_location(&self) -> std::io::Result<Option<PathBuf>>;
     fn remove_uninstall_entry(&self) -> std::io::Result<()>;
     /// A shortcut at `link` that starts `target` and names the application identifier of
     /// the notifications and the taskbar (ADR 0755).
@@ -353,10 +355,12 @@ fn finish(updates: &Path, stage: &Path) {
     }
 }
 
-/// Removes Junto from the account: the registration of its notifications, the Start menu
-/// entry, the entry of the list of installed programs, the folder and the directory of its
-/// updates, and with `remove_data` the data directory. Each part is tried; the first
-/// failure is returned after the others.
+/// Removes Junto from the account: the registration of its notifications, the folder and
+/// the directory of its updates, and with `remove_data` the data directory. The Start menu
+/// entry and the entry of the list of installed programs are removed when the entry names
+/// this folder: a copy that a person extracted elsewhere does not remove those of an
+/// installation of the setup program. Each part is tried; the first failure is returned
+/// after the others.
 pub fn uninstall(
     places: &Places,
     remove_data: bool,
@@ -366,13 +370,27 @@ pub fn uninstall(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
     };
-    let mut results = vec![
-        system.unregister_notifications(),
-        absent(fs::remove_file(places.shortcut())),
-        system.remove_uninstall_entry(),
-        absent(fs::remove_dir_all(places.folder())),
-        absent(fs::remove_dir_all(places.updates())),
-    ];
+    let same = |named: &Path| {
+        named
+            .canonicalize()
+            .ok()
+            .zip(places.folder.canonicalize().ok())
+            .is_some_and(|(named, folder)| named == folder)
+    };
+    let owned = system
+        .uninstall_entry_location()
+        .map(|location| location.as_deref().is_some_and(same));
+    let mut results = vec![system.unregister_notifications()];
+    match owned {
+        Ok(true) => {
+            results.push(absent(fs::remove_file(places.shortcut())));
+            results.push(system.remove_uninstall_entry());
+        }
+        Ok(false) => {}
+        Err(error) => results.push(Err(error)),
+    }
+    results.push(absent(fs::remove_dir_all(places.folder())));
+    results.push(absent(fs::remove_dir_all(places.updates())));
     if remove_data {
         results.push(absent(fs::remove_dir_all(&places.data)));
     }
