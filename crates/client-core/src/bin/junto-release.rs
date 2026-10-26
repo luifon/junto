@@ -149,6 +149,20 @@ fn package(
     result
 }
 
+/// The output directory of a publication. The documented commands name a new directory,
+/// which is created; an existing directory is used, such as the release directory of the
+/// macOS release command, which already holds the bundle. Returns whether it was created, so
+/// that a failed publication removes it.
+fn output_directory(output: &Path) -> Result<bool, Error> {
+    match fs::create_dir(output) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && output.is_dir() => {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// A macOS bundle is published only from macOS, where its code signature can be read: it must
 /// carry the pinned project certificate and the version of this tool.
 fn verify_bundle(bundle: &Path) -> Result<(), Error> {
@@ -317,16 +331,22 @@ async fn execute(args: &[String]) -> Result<(), Error> {
                     "the freshness key is not in the compiled trust set",
                 ));
             }
-            package(
+            let output = Path::new(output);
+            let created = output_directory(output)?;
+            let result = package(
                 source,
-                Path::new(output),
+                output,
                 &keys,
                 &freshness,
                 &Version::THIS_BUILD.to_string(),
                 &target.system,
                 &target.package,
                 &target.architecture,
-            )
+            );
+            if result.is_err() && created {
+                let _ = fs::remove_dir_all(output);
+            }
+            result
         }
         // The Windows setup program: the installer program followed by the archive of the
         // folder of a package directory (ADR 0728).
@@ -351,6 +371,48 @@ async fn execute(args: &[String]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Linux and Windows commands of packaging/README.md name a new output directory:
+    /// a publication into it failed with "No such file or directory" before the tool created
+    /// it, from a clean checkout on the Linux host (2026-10-26).
+    #[test]
+    fn a_publication_writes_into_a_new_directory_and_into_the_existing_release_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("package-directory");
+        std::fs::create_dir_all(source.join("junto")).unwrap();
+        std::fs::write(source.join("junto/junto"), b"program").unwrap();
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let freshness = SigningKey::from_bytes(&[9; 32]);
+        let publish = |output: &Path| {
+            let created = output_directory(output)?;
+            let result = package(
+                &source, output, &[key.clone()], &freshness, "0.1.0", "linux", "directory",
+                "x86_64",
+            );
+            if result.is_err() && created {
+                let _ = fs::remove_dir_all(output);
+            }
+            result
+        };
+        let new = root.path().join("new-release-directory");
+        publish(&new).unwrap();
+        assert!(new.join("junto-0.1.0-linux-directory-x86_64.junto").is_file());
+        assert!(new.join("latest-linux-directory-x86_64.json").is_file());
+        assert!(new.join("release-0.1.0-linux-directory-x86_64.json").is_file());
+        // The macOS release command publishes into its release directory, which holds the
+        // bundle already.
+        let existing = root.path().join("release");
+        std::fs::create_dir_all(existing.join(".bundle")).unwrap();
+        publish(&existing).unwrap();
+        assert!(existing.join("latest-linux-directory-x86_64.json").is_file());
+        // A file at the place of the directory is refused, and nothing is written.
+        let file = root.path().join("a-file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(publish(&file).is_err());
+        // The files of a publication are never replaced.
+        assert!(publish(&new).is_err());
+        assert!(new.join("latest-linux-directory-x86_64.json").is_file());
+    }
 
     #[test]
     fn private_key_paths_inside_a_repository_are_refused_before_any_creation() {
