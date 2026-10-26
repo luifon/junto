@@ -196,7 +196,11 @@ impl AppState {
         });
         let notification = self.permissions.notifications.read();
         // The read of macOS is one call without a wait.
-        self.permissions.input = Some(self.permissions.input_source.allowed());
+        let input = Some(self.permissions.input_source.allowed());
+        if self.permissions.input != input {
+            self.permissions.input = input;
+            cx.notify();
+        }
         cx.spawn(async move |this, cx| {
             let (microphone, camera, screen) = reading.await;
             let notification = notification.await;
@@ -204,11 +208,28 @@ impl AppState {
                 if this.permissions.reads != read {
                     return;
                 }
+                let before = (
+                    this.known.media.access,
+                    this.permissions.camera,
+                    this.permissions.screen,
+                    this.permissions.notification,
+                );
                 this.known.media.access = Some(microphone);
                 this.permissions.camera = Some(camera.into());
                 this.permissions.screen = Some(permissions::screen_access(screen));
                 this.permissions.notification = Some(notification.into());
-                cx.notify();
+                // A read that finds what the state holds changes nothing, so the window is
+                // not drawn again for it.
+                if before
+                    != (
+                        this.known.media.access,
+                        this.permissions.camera,
+                        this.permissions.screen,
+                        this.permissions.notification,
+                    )
+                {
+                    cx.notify();
+                }
             });
         })
         .detach();

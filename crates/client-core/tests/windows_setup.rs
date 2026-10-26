@@ -2,6 +2,8 @@
 //! account, a second installation over the first, and the removal. The operations of
 //! Windows are replaced by a system that records them.
 
+#![allow(clippy::unwrap_used)]
+
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
