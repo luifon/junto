@@ -3,8 +3,8 @@
 //! server with a menu, and one tile per group.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
-    SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
+    AnyElement, AppContext, ClickEvent, Context, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
@@ -290,7 +290,7 @@ impl Shell {
             }
         }
         servers.push(self.render_book_end(theme, cx));
-        let failed = self.state.read(cx).arrange_failure().is_some()
+        let arrange_failed = self.state.read(cx).arrange_failure().is_some()
             && !matches!(
                 self.layer,
                 Layer::GroupMenu(_) | Layer::WorkspaceMenu(..) | Layer::ServerMenu
@@ -354,7 +354,9 @@ impl Shell {
             header.into_any_element(),
             div()
                 .flex_none()
-                .when(failed, |slot| slot.child(self.render_arrange_error(cx)))
+                .when(arrange_failed, |slot| {
+                    slot.child(self.render_arrange_error(cx))
+                })
                 .into_any_element(),
             ScrollArea::new("servers", &self.servers_scroll, text::SERVER_BOOK)
                 .dark()
