@@ -1,7 +1,7 @@
 use junto_client_core::protocol::call::{BlockReason, CallPlace, MicrophoneBlock};
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId, WorkspaceId};
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
-use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+use junto_media::engine::{MicrophoneState, OutputState};
 
 use super::*;
 
@@ -26,7 +26,8 @@ fn call() -> ActiveCall {
         output_device: None,
         microphone_block: None,
         sound_block: None,
-        share: ShareState::Off,
+        own_shares: std::collections::BTreeMap::new(),
+        share_ended: None,
         shares: Vec::new(),
         watched: None,
     }

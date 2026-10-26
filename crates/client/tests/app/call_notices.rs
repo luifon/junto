@@ -240,7 +240,7 @@ fn the_bell_of_the_call_window_opens_the_notices_before_the_conversation_exists(
     let (general, own) = (window.selected_channel(), window.own_account());
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, call.clone());
     window.click("detach-call");
     // The call of this device becomes a direct-message call with an account whose
@@ -474,7 +474,7 @@ fn a_card_of_an_invitation_fits_a_narrow_call_window(cx: &mut TestAppContext) {
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
     let daily = window.selected_channel();
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     let target = call.target;
     give_calls(&mut window, call);
     window.click("detach-call");

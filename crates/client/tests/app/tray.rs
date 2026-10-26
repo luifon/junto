@@ -6,7 +6,7 @@ use junto_client::text::tray as text;
 use junto_client::tray::{CallMarks, KeptTray, TrayState};
 use junto_client_core::protocol::call::CallPlace;
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
-use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+use junto_media::engine::{MicrophoneState, OutputState};
 
 use crate::calls::voice_channel;
 use crate::harness::{Window, World, member};
@@ -37,7 +37,8 @@ fn call(window: &mut Window, channel: &str) -> ActiveCall {
         output_device: None,
         microphone_block: None,
         sound_block: None,
-        share: ShareState::Off,
+        own_shares: std::collections::BTreeMap::new(),
+        share_ended: None,
         shares: Vec::new(),
         watched: None,
     }

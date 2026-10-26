@@ -115,7 +115,7 @@ mod tests {
     use junto_client_core::protocol::call::{CallPlace, ScreenShare, ShareAudio};
     use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceId};
     use junto_media::calls::{CallTarget, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
     use junto_media::permission::MicrophoneAccess;
 
     struct Scene {
@@ -153,7 +153,8 @@ mod tests {
                     output_device: None,
                     microphone_block: None,
                     sound_block: None,
-                    share: ShareState::Off,
+                    own_shares: BTreeMap::new(),
+                    share_ended: None,
                     shares: Vec::new(),
                     watched: None,
                 }),
