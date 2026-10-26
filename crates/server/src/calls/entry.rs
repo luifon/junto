@@ -2,7 +2,7 @@
 
 use junto_protocol::call::{
     Call, CallJoin, CallPlace, EntryOutcome, EntryRequest, InvitationOutcome, LeaveReason,
-    MAX_SHARES, MicrophoneBlock, SoundBlock,
+    MAX_SHARES, MicrophoneBlock, SoundBlock, ViewerQuery,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
@@ -109,12 +109,14 @@ impl Entered {
         media: &dyn MediaServer,
         now: OffsetDateTime,
         cursor: Option<Cursor>,
+        viewer: &ViewerQuery,
     ) -> ApiResult<CallJoin> {
         let grant = JoinGrant {
             room: &self.room,
             identity: &self.identity,
             name: &self.name,
             publishing: &self.publishing,
+            shown_shares: viewer.shares,
             now,
             lifetime: app.config.limits.calls.token_lifetime,
         };

@@ -816,6 +816,133 @@ async fn one_person_shares_two_things_and_the_viewer_hears_only_the_one_watched(
     .await;
 }
 
+/// The slots of the shares of `of` that a room connection of the call library receives:
+/// the picture tracks and the sound tracks that it has subscribed to.
+fn received_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec<u8>) {
+    use livekit::prelude::TrackSource;
+    let (mut pictures, mut sounds) = (Vec::new(), Vec::new());
+    for participant in room.remote_participants().values() {
+        if junto_media::engine::account_of(participant.identity().as_str()) != Some(of) {
+            continue;
+        }
+        for publication in participant.track_publications().values() {
+            if publication.track().is_none() {
+                continue;
+            }
+            match publication.source() {
+                TrackSource::Screenshare => pictures.push(
+                    junto_media::share::read_track_name(&publication.name())
+                        .map_or(0, |name| name.slot),
+                ),
+                TrackSource::ScreenshareAudio => {
+                    sounds.push(junto_media::share::read_sound_name(&publication.name()));
+                }
+                _ => {}
+            }
+        }
+    }
+    pictures.sort_unstable();
+    sounds.sort_unstable();
+    (pictures, sounds)
+}
+
+/// Two shares of one person reach a client from before several shares as one share: the
+/// share of the lowest slot with its sound, as long as two run. A client that shows several
+/// shares gets both (ADR 0510). When the person leaves the call, each of the shares ends
+/// at the viewer and at the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_their_sharer() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben, cara) = (Person::new(440.0), Person::new(880.0), Person::new(660.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let cara_at = room.member(&ann_at, &cara, "Cara").await;
+        let (ann_id, place) = (account(&ann_at), room.target.place);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        // Cara's device asks for its place as a client from before several shares, and
+        // connects with the call library alone.
+        let join = cara_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let (old, _events) = livekit::prelude::Room::connect(
+            &join.media_url,
+            join.token.expose(),
+            livekit::prelude::RoomOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        crate::scene::until("Cara receives the screen of Ann with its sound", || {
+            received_slots(&old, ann_id) == (vec![0], vec![0])
+        })
+        .await;
+        ann.calls.start_share(window(player()));
+        ann.until_sharing_in(1).await;
+        ben.until("Ben sees the two shares of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        ben.calls.watch_share(ShareId::of(ann_id, 1));
+        ben.until_heard_tone(PLAYER.0).await;
+        // Cara keeps the one share of the lowest slot, also some seconds later.
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(received_slots(&old, ann_id), (vec![0], vec![0]));
+        }
+
+        // Ann ends the screen: one share is left, and Cara receives it.
+        ann.calls.stop_share(Some(0));
+        crate::scene::until("Cara receives the window of Ann", || {
+            received_slots(&old, ann_id) == (vec![1], vec![1])
+        })
+        .await;
+        // A second share again: Cara keeps the window, which is now the lowest slot.
+        ann.calls.start_share(screen(SoundChoice::None));
+        ann.until_sharing_in(0).await;
+        ben.until("Ben sees the two shares of Ann again", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        crate::scene::until("Cara receives the share of the lowest slot", || {
+            received_slots(&old, ann_id) == (vec![0], vec![])
+        })
+        .await;
+
+        // Ann leaves the call: each of her shares ends at Ben and at the server.
+        ann.calls.leave().await;
+        ben.until("the shares of Ann ended with her departure", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.is_empty() && call.watched.is_none())
+        })
+        .await;
+        assert_eq!(ann.capture.running(), 0);
+        model_when(&ben_at, "the server lists no share of Ann", |model| {
+            model
+                .call_at(&place)
+                .is_some_and(|call| call.participant(ann_id).is_none())
+        })
+        .await;
+        crate::scene::until("Cara receives no share of Ann", || {
+            received_slots(&old, ann_id) == (vec![], vec![])
+        })
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), old.close()).await;
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_last_size_decides_drawing_bounds_while_the_share_keeps_full_resolution() {

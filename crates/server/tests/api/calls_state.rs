@@ -6,7 +6,8 @@ use std::time::{Duration as Wait, Instant};
 use junto_protocol::audit::{AuditEvent, AuditPage};
 use junto_protocol::call::{
     BlockReason, CallInvitation, CallJoin, CallParticipant, CallPlace, InvitationOutcome,
-    LeaveReason, MeetingEnd, MicrophoneBlock, ScreenShare, ShareAudio, ShareKind, SoundBlock,
+    LeaveReason, MAX_SHARES, MeetingEnd, MicrophoneBlock, SHOWN_SHARES_ATTRIBUTE, ScreenShare,
+    ShareAudio, ShareKind, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Event, Level};
@@ -575,6 +576,46 @@ async fn a_person_runs_up_to_three_shares_and_each_lasts_while_its_named_track_i
         (None, Vec::new())
     );
     assert_eq!(server.count("call_shares").await, 0);
+}
+
+/// Each answer that gives a place states the number of shares of one person, and a client
+/// that shows several shares has its number in the attribute of its token (ADR 0510).
+#[tokio::test]
+async fn a_join_states_the_shares_of_one_person_and_the_token_states_what_the_client_shows() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let attribute = |join: &CallJoin| {
+        claims(join)["attributes"][SHOWN_SHARES_ATTRIBUTE]
+            .as_str()
+            .map(str::to_owned)
+    };
+    // A client from before several shares states nothing.
+    let old = server.join_call(ann, voice).await;
+    assert_eq!(old.shares, Some(MAX_SHARES));
+    assert_eq!(attribute(&old), None);
+    let path = format!("/api/v1/channels/{voice}/call/join?shares=3");
+    let new: CallJoin = server
+        .post(ann, &path, &Value::Null)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(new.shares, Some(MAX_SHARES));
+    assert_eq!(attribute(&new).as_deref(), Some("3"));
+    // A renewal of the seat states it too.
+    let renewal = format!(
+        "/api/v1/channels/{voice}/call/join?renews={}&shares=2",
+        new.identity
+    );
+    let renewed: CallJoin = server
+        .post(ann, &renewal, &Value::Null)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(attribute(&renewed).as_deref(), Some("2"));
+    let other: CallJoin = server
+        .post(ben, &path, &Value::Null)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(attribute(&other).as_deref(), Some("3"));
 }
 
 /// A client of v0.1.0-test.1 or test.2 reports its one share without a slot and names its

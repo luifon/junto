@@ -264,6 +264,24 @@ pub struct CallJoin {
     pub shares: Option<u8>,
 }
 
+/// The query of each request that gives a place in a call or a token for it: what the
+/// client of the device shows of the shares of another person (ADR 0510).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct ViewerQuery {
+    /// How many shares of one person the client shows at once, each with its own picture
+    /// and sound. The join token states it to the other participants of the room, so that
+    /// a device that runs several shares sends the further ones only to the participants
+    /// that show them. Absent: a client from before several shares, which shows one.
+    #[serde(default)]
+    pub shares: Option<u8>,
+}
+
+/// The name of the attribute of a participant of the media server that states
+/// [`ViewerQuery::shares`]. Its value is the number in decimal digits.
+pub const SHOWN_SHARES_ATTRIBUTE: &str = "junto-shares";
+
 /// The query of the request that leaves a call.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]

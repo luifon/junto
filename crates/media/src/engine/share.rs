@@ -440,9 +440,9 @@ pub(super) struct OwnShare {
     sink: Arc<ShareSink>,
     /// The capture. Absent while it starts.
     stream: Option<CaptureStream>,
-    picture: Publication,
+    pub(super) picture: Publication,
     sound_source: Arc<Mutex<Option<NativeAudioSource>>>,
-    sound: Publication,
+    pub(super) sound: Publication,
     sound_generation: u64,
     /// The call library withdrew the track and publishes it again: it connects anew. The
     /// number names the wait, which has a bound.
@@ -704,6 +704,7 @@ impl Actor {
             state.shares = shares;
             state.watched = now;
         });
+        self.sync_permissions();
     }
 
     /// Asks the media server for the picture of each share at the size of its drawing: the

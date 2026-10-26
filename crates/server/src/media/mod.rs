@@ -230,6 +230,9 @@ pub struct JoinGrant<'a> {
     /// The display name of the account. The layout page of a recording shows it (ADR 0615).
     pub name: &'a str,
     pub publishing: &'a Publishing,
+    /// How many shares of one person the client of the device shows at once, as its
+    /// request stated (ADR 0510). The token states it to the other participants.
+    pub shown_shares: Option<u8>,
     pub now: OffsetDateTime,
     pub lifetime: Duration,
 }

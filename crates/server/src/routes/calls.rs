@@ -11,7 +11,7 @@ use junto_protocol::call::{
     DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
     LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
     MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
-    ReportSpeaking, UpdateCallSettings,
+    ReportSpeaking, UpdateCallSettings, ViewerQuery,
 };
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
@@ -612,7 +612,7 @@ pub(crate) async fn update_call_settings_in(
     post,
     path = "/api/v1/channels/{channel_id}/call/join",
     tag = "calls",
-    params(("channel_id" = ChannelId, Path), CallJoinQuery),
+    params(("channel_id" = ChannelId, Path), CallJoinQuery, ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -621,6 +621,7 @@ pub async fn join_channel_call(
     bearer: Bearer,
     ApiPath(channel_id): ApiPath<ChannelId>,
     ApiQuery(query): ApiQuery<CallJoinQuery>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -639,7 +640,7 @@ pub async fn join_channel_call(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(account_id, entered.key);
-    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
         .await
         .map(Json)
 }
@@ -661,6 +662,7 @@ async fn join_answer(
     media: &dyn crate::media::MediaServer,
     now: OffsetDateTime,
     shows_requests: bool,
+    viewer: &ViewerQuery,
 ) -> ApiResult<CallJoin> {
     let read: ApiResult<Option<(entry::Entered, Cursor)>> = async {
         read!(app, |connection| {
@@ -702,11 +704,11 @@ async fn join_answer(
     }
     .await;
     match read {
-        Ok(Some((answer, cursor))) => answer.join(app, media, now, Some(cursor)),
-        Ok(None) => entered.join(app, media, now, None),
+        Ok(Some((answer, cursor))) => answer.join(app, media, now, Some(cursor), viewer),
+        Ok(None) => entered.join(app, media, now, None, viewer),
         Err(error) if not_completed(&error) => {
             tracing::debug!(code = ?error.code(), "the answer of a join was not read again");
-            entered.join(app, media, now, None)
+            entered.join(app, media, now, None, viewer)
         }
         Err(error) => Err(error),
     }
@@ -1205,7 +1207,7 @@ async fn own_invitation(
     post,
     path = "/api/v1/call/invitations/{invitation_id}/acceptance",
     tag = "calls",
-    params(("invitation_id" = CallInvitationId, Path)),
+    params(("invitation_id" = CallInvitationId, Path), ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1213,6 +1215,7 @@ pub async fn accept_call_invitation(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(invitation_id): ApiPath<CallInvitationId>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -1236,7 +1239,7 @@ pub async fn accept_call_invitation(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(account_id, entered.key);
-    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
         .await
         .map(Json)
 }
@@ -1460,7 +1463,7 @@ async fn own_move(
     post,
     path = "/api/v1/call/moves/{move_id}/join",
     tag = "calls",
-    params(("move_id" = CallMoveId, Path)),
+    params(("move_id" = CallMoveId, Path), ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1468,6 +1471,7 @@ pub async fn join_move(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(move_id): ApiPath<CallMoveId>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -1485,7 +1489,7 @@ pub async fn join_move(
         entry::Entered::read(connection, now, to, account_id, pending.identity, false).await
     })?;
     let media = app.calls.admitting()?.clone();
-    join_answer(&app, &bearer, entered, media.as_ref(), now, false)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, false, &viewer)
         .await
         .map(Json)
 }
@@ -1972,7 +1976,7 @@ async fn direct_place(
     post,
     path = "/api/v1/direct-calls/{account_id}/join",
     tag = "calls",
-    params(("account_id" = AccountId, Path), CallJoinQuery),
+    params(("account_id" = AccountId, Path), CallJoinQuery, ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1981,6 +1985,7 @@ pub async fn join_direct_call(
     bearer: Bearer,
     ApiPath(account_id): ApiPath<AccountId>,
     ApiQuery(query): ApiQuery<CallJoinQuery>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -1998,7 +2003,7 @@ pub async fn join_direct_call(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(caller, entered.key);
-    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
         .await
         .map(Json)
 }

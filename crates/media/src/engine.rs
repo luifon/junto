@@ -46,6 +46,7 @@ use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
 
 mod camera;
 mod order;
+mod permissions;
 mod sent;
 use camera::{OwnCamera, RemoteCamera};
 mod share;
@@ -506,6 +507,8 @@ impl Engine {
             share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             share_generation: 0,
+            permissions: None,
+            permissions_told: None,
             remote_pictures: HashMap::new(),
             remote_sounds: HashMap::new(),
             share_order: 0,
@@ -784,6 +787,10 @@ struct Actor {
     own_shares: BTreeMap<u8, OwnShare>,
     /// How many shares this device can run at once in the call.
     share_limit: u8,
+    /// The work that applies the track permissions of the room, and the permissions that
+    /// it was sent last (ADR 0510).
+    permissions: Option<mpsc::UnboundedSender<permissions::Permissions>>,
+    permissions_told: Option<permissions::Permissions>,
     /// Why the last own share that ended by itself ended, until the person acts.
     share_ended: Option<CaptureError>,
     /// Counts the shares that were started. The result of an earlier one is not used.
@@ -1094,6 +1101,7 @@ impl Actor {
                         self.open_playout();
                         self.sync_microphone();
                         self.publish_camera();
+                        self.start_permissions();
                     }
                     Err(error) => {
                         tracing::warn!(%error, "the media connection of the call was not made");
@@ -1172,6 +1180,29 @@ impl Actor {
     }
 
     async fn event(&mut self, event: RoomEvent, events: &mut Option<Events>) {
+        // The participants of the room or the tracks of this device change: so can what
+        // each participant may receive (ADR 0510). After a new connection of the session
+        // the media server is told the permissions again.
+        let permissions = matches!(
+            &event,
+            RoomEvent::ParticipantConnected(_)
+                | RoomEvent::ParticipantDisconnected(_)
+                | RoomEvent::ParticipantAttributesChanged { .. }
+                | RoomEvent::LocalTrackPublished { .. }
+                | RoomEvent::LocalTrackUnpublished { .. }
+                | RoomEvent::LocalTrackRepublished { .. }
+                | RoomEvent::Reconnected
+        );
+        if matches!(&event, RoomEvent::Reconnected) {
+            self.permissions_told = None;
+        }
+        self.room_event(event, events).await;
+        if permissions {
+            self.sync_permissions();
+        }
+    }
+
+    async fn room_event(&mut self, event: RoomEvent, events: &mut Option<Events>) {
         match &event {
             RoomEvent::TrackPublished { publication, .. }
             | RoomEvent::TrackSubscribed { publication, .. }
@@ -1385,6 +1416,8 @@ impl Actor {
         tracing::info!(attempt = self.attempt, "the media connection is closing");
         self.connected_at = None;
         self.attempt += 1;
+        self.permissions = None;
+        self.permissions_told = None;
         // A share does not outlive the connection that carried it (ADR 0737).
         if !self.own_shares.is_empty() {
             self.end_share(None, Some(CaptureError::Interrupted));
