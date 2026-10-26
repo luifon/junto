@@ -804,6 +804,31 @@ pub async fn announce_participant(
     Ok(())
 }
 
+/// A new share of `sharer` in `slot` started: the members who watched the earlier share of
+/// that slot no longer watch, until their clients report the new share (ADR 0502).
+pub async fn end_watches(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    sharer: AccountId,
+    slot: u8,
+) -> ApiResult<()> {
+    let watchers: Vec<AccountId> = sqlx::query_scalar(
+        "update call_members set watching_account_id = null, watching_slot = 0
+         where call_id = $1 and watching_account_id = $2 and watching_slot = $3
+         returning account_id",
+    )
+    .bind(call.id)
+    .bind(sharer)
+    .bind(i16::from(slot))
+    .fetch_all(&mut *connection)
+    .await?;
+    for watcher in watchers {
+        announce_participant(&mut *connection, now, call, watcher).await?;
+    }
+    Ok(())
+}
+
 /// What an account may publish in a call: pictures only while its microphone is blocked.
 /// An account that is not a member yet, on its way into a call with meeting mode, gets the
 /// block of the meeting on its entry, so it is treated as blocked already.

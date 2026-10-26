@@ -1836,6 +1836,40 @@ async fn the_share_that_a_person_watches_is_stated_on_the_participant() {
         .put(ben, "/api/v1/call/watching", &watch(owner.account_id))
         .await
         .error(ErrorCode::InvalidRequest);
+    // A new share of the watched person ends the watch until the client reports it again.
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ann.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    // A change of the sound of the running share is no new share.
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "application" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching
+            .is_some()
+    );
     server
         .put(ben, "/api/v1/call/watching", &json!({ "watching": null }))
         .await

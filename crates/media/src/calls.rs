@@ -1442,6 +1442,21 @@ impl<T: PartialEq + Clone> Reporter<T> {
         self.in_flight = true;
     }
 
+    /// The server states that it holds `value`. A wanted value that differs is sent again;
+    /// a statement during a request is not taken, since the request can change it.
+    pub(crate) fn stated(&mut self, value: T) {
+        if !self.in_flight {
+            self.sent = Some(value);
+        }
+    }
+
+    /// The events that state the value were lost: the wanted value is sent again.
+    pub(crate) fn untold(&mut self) {
+        if !self.in_flight {
+            self.sent = None;
+        }
+    }
+
     /// The request has ended. A value that the server did not take is sent again, not
     /// before `retry` has passed.
     pub(crate) fn done(&mut self, taken: bool, retry: Duration, now: Instant) {
@@ -2356,6 +2371,23 @@ impl Session {
                 self.end_kept_block();
                 self.place.note(*id, event);
                 self.note_move(event);
+                // The server ends the watch of a share when a new share starts in its slot
+                // (ADR 0502); the client then reports the watch again.
+                if let Event::CallParticipantJoined {
+                    call_id,
+                    participant,
+                    ..
+                }
+                | Event::CallParticipantUpdated {
+                    call_id,
+                    participant,
+                    ..
+                } = event
+                    && *call_id == self.grants.call_id
+                    && participant.identity == self.place.identity()
+                {
+                    self.watch_report.stated(participant.watching);
+                }
             }
             Notice::Reloaded { cursor } => {
                 if self.grants.cursor.epoch != cursor.epoch {
@@ -2366,6 +2398,7 @@ impl Session {
                 }
                 self.place.untold();
                 self.place.reloaded(cursor.epoch);
+                self.watch_report.untold();
                 if let Some(moving) = &mut self.moving {
                     moving.reloaded = true;
                 }
@@ -3746,6 +3779,26 @@ mod tests {
             reporter.step(&true, false, start + REPORT_RETRY),
             Step::Send
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_value_that_the_server_states_otherwise_is_sent_again() {
+        let spacing = Duration::from_millis(700);
+        let mut reporter: Reporter<Option<u8>> = Reporter::holding(spacing, None);
+        let start = Instant::now();
+        reporter.sending(Some(1), start);
+        // A statement during the request is not taken.
+        reporter.stated(None);
+        reporter.done(true, REPORT_RETRY, start);
+        let later = start + spacing;
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Idle);
+        // The server ended the watch: the wanted value is sent again.
+        reporter.stated(None);
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        reporter.sending(Some(1), later);
+        reporter.done(true, REPORT_RETRY, later);
+        reporter.stated(Some(1));
+        assert_eq!(reporter.step(&Some(1), false, later + spacing), Step::Idle);
     }
 
     #[test]

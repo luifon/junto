@@ -321,6 +321,7 @@ pub async fn report_screen_share(
             if member.share_audio.is_none() {
                 let started = store::Note::ScreenShareStarted;
                 store::note(connection, now, &call, started, Some(access.account_id)).await?;
+                store::end_watches(connection, now, &call, access.account_id, 0).await?;
             }
             store::announce_participant(connection, now, &call, access.account_id).await?;
             app.calls.mark(call.room.as_str());
