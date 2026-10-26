@@ -386,7 +386,7 @@ mod tests {
             let result = package(
                 &source,
                 output,
-                &[key.clone()],
+                std::slice::from_ref(&key),
                 &freshness,
                 "0.1.0",
                 "linux",
