@@ -45,11 +45,11 @@ mod linux {
     use std::time::{Duration, Instant};
 
     use gpui::{
-        AppContext, AsyncApp, Context, IntoElement, Render, TitlebarOptions, Window,
-        WindowOptions,
+        AppContext, AsyncApp, Context, IntoElement, Render, TitlebarOptions, Window, WindowOptions,
     };
     use junto_client::app::{self, WindowStart};
     use junto_client::assets::Assets;
+    use junto_client::notify::SystemNotifier;
     use junto_client::state::notices::Alert;
     use junto_client_core::{Client, ClientOptions};
     use junto_media::calls::{CallTiming, MediaOptions};
@@ -67,8 +67,7 @@ mod linux {
     const ON_BUS: &str = "JUNTO_TEST_NOTIFICATION_FOCUS_ON_BUS";
 
     pub fn main() -> ExitCode {
-        if std::env::var_os("WAYLAND_DISPLAY").is_none() || std::env::var_os("SWAYSOCK").is_none()
-        {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() || std::env::var_os("SWAYSOCK").is_none() {
             eprintln!(
                 "notification_focus: failed: the test needs the sway of tools/linux/display.sh"
             );
@@ -208,7 +207,7 @@ mod linux {
             title: "A message".into(),
             body: "A press opens the window".into(),
         };
-        cx.update(|cx| notifier.show(&alert, cx));
+        cx.update(|cx| SystemNotifier::show(&*notifier, &alert, cx));
         until("the press reached the application", cx, || {
             Ok(!pressed.borrow().is_empty())
         })
@@ -268,7 +267,7 @@ mod linux {
             }
             ["nodes", "floating_nodes"]
                 .iter()
-                .filter_map(|key| node[key].as_array())
+                .filter_map(|key| node[*key].as_array())
                 .flatten()
                 .find_map(search)
         }
@@ -338,8 +337,7 @@ mod linux {
             _expire_timeout: i32,
         ) -> u32 {
             let id = if replaces_id == 0 {
-                self.next
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             } else {
                 replaces_id
             };
