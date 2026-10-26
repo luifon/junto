@@ -111,6 +111,7 @@ impl Shell {
         let dragged = self.edge_drag.is_some_and(|drag| drag.panel == panel);
         let focused = focus.is_focused(window);
         let width = self.panel_width(panel, design, cx);
+        let pressed = focus.clone();
         div()
             .id(selector(panel))
             .debug_selector(move || selector(panel).to_owned())
@@ -139,7 +140,9 @@ impl Shell {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    // A press gives the edge the keyboard focus, as on a control.
+                    window.focus(&pressed, cx);
                     this.edge_drag = Some(Drag {
                         panel,
                         side,

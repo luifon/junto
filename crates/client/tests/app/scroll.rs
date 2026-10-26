@@ -408,12 +408,23 @@ fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut 
     let server = world.server("Pages");
     let admin = world.owner(&server);
     let proxy = world.run(FaultProxy::start(&server));
-    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Member");
-    let channel = window.selected_channel();
+    let general = world
+        .run(admin.handle.api().snapshot())
+        .unwrap()
+        .snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.channels)
+        .find(|channel| channel.kind == ChannelKind::Text)
+        .unwrap()
+        .id;
+    // Written before the person joins, so the channel opens with its latest page.
     for index in 0..120 {
-        admin.send(&world, channel, document(&format!("Message {index}")));
+        admin.send(&world, general, document(&format!("Message {index}")));
     }
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Member");
     window.until_message("Message 119");
+    assert!(window.feed().unwrap().more_before);
     let older = |proxy: &FaultProxy| {
         proxy
             .all()
