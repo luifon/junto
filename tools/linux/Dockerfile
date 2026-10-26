@@ -112,7 +112,7 @@ ENV CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/target
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-22
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang-22
 ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld-22"
-COPY session.sh run-as-user.sh docker-control.py /opt/junto-linux/
+COPY session.sh sound.sh run-as-user.sh docker-control.py /opt/junto-linux/
 COPY docker /usr/local/bin/docker
 ARG BUILD_UID=1000
 ARG BUILD_GID=1000
