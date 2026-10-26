@@ -363,6 +363,31 @@ fn timeline_picture() -> Vec<u8> {
     }
 }
 
+/// A picture of one colour that grows lighter from top to bottom, with a dark frame.
+fn plain_picture(width: u32, height: u32, colour: [u8; 3]) -> Vec<u8> {
+    let picture = image::RgbaImage::from_fn(width, height, |x, y| {
+        if x < 6 || y < 6 || x + 6 >= width || y + 6 >= height {
+            return image::Rgba([59, 74, 82, 255]);
+        }
+        let light = (y * 60 / height.max(1)) as u8;
+        image::Rgba([
+            colour[0].saturating_add(light),
+            colour[1].saturating_add(light),
+            colour[2].saturating_add(light),
+            255,
+        ])
+    });
+    let mut bytes = Vec::new();
+    let encoded = image::DynamicImage::ImageRgba8(picture).write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    );
+    match encoded {
+        Ok(()) => bytes,
+        Err(_) => Vec::new(),
+    }
+}
+
 pub(crate) type Fixture = (
     HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
     HashMap<(ServerId, u64), UploadProgress>,
@@ -438,6 +463,46 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         )
         .scale(150),
         |shell, _, cx| prepare(shell, none(), cx),
+    )?;
+    // The viewer of the pictures of a message (ADR 0740): the one picture of a message, and
+    // the second of the three pictures of a message at the scale of 150 in a smaller window.
+    let viewed = general();
+    let carla = viewed
+        .messages
+        .iter()
+        .find(|message| !message.attachments.is_empty())
+        .map(|message| (message.id, message.attachments.clone()));
+    if let Some((message_id, pictures)) = carla {
+        studio.draw(
+            Screen::new("messages-picture-viewer", with_timeline(viewed.timeline())),
+            move |shell, window, cx| {
+                prepare(shell, none(), cx);
+                shell.open_picture_viewer(server_id, message_id, pictures, 0, window, cx);
+            },
+        )?;
+    }
+    let mut several = general();
+    let pictures = vec![
+        file(1, "mixdown-timeline.png", 1_200_000, Some((584, 144))),
+        file(11, "room-plan.png", 640_000, Some((640, 420))),
+        file(12, "levels.png", 210_000, Some((300, 500))),
+    ];
+    let shared = several.message("Ana", 100, "The pictures of the room test.");
+    shared.attachments = pictures.clone();
+    let shared_id = shared.id;
+    studio.draw(
+        Screen::new(
+            "messages-picture-viewer-several-150",
+            with_timeline(several.timeline()),
+        )
+        .scale(150)
+        .size(900.0, 640.0),
+        move |shell, window, cx| {
+            prepare(shell, none(), cx);
+            shell.show_picture(id(7011), &plain_picture(640, 420, [143, 177, 191]));
+            shell.show_picture(id(7012), &plain_picture(300, 500, [199, 154, 69]));
+            shell.open_picture_viewer(server_id, shared_id, pictures, 1, window, cx);
+        },
     )?;
     studio.draw(
         Screen::new(

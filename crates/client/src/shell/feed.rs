@@ -19,9 +19,7 @@ use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
 use junto_client_core::protocol::account::Departure;
-#[cfg(feature = "test-support")]
-use junto_client_core::protocol::ids::AttachmentId;
-use junto_client_core::protocol::ids::{MessageId, ServerId};
+use junto_client_core::protocol::ids::{AttachmentId, MessageId, ServerId};
 use junto_client_core::protocol::message::{
     Attachment, Block, Document, Inline, Mark, Message, Reaction,
 };
@@ -52,6 +50,12 @@ const AUTHOR_OVERLAP: f32 = 4.0;
 /// The widest picture of a message, and the tallest, in design pixels.
 const PICTURE_WIDTH: f32 = 292.0;
 const PICTURE_HEIGHT: f32 = 220.0;
+/// The most pixels of a picture of a message that the window decodes: 64 MiB as RGBA. The
+/// server marks no larger picture (ADR 0408).
+const MOST_PICTURE_PIXELS: u64 = 16_777_216;
+/// The longest side of the copy of a picture that a message list holds. The viewer reads a
+/// picture with a longer side again at its own size (ADR 0740).
+pub(super) const LIST_PICTURE_SIDE: u32 = 1024;
 /// The rows from an end of the list at which the next page is read.
 const PAGE_MARGIN: usize = 4;
 
@@ -347,26 +351,41 @@ fn is_picture(attachment: &Attachment) -> bool {
     matches!(
         attachment.media_type.as_str(),
         "image/png" | "image/jpeg" | "image/webp"
-    ) && attachment
-        .width
-        .is_some_and(|width| (1..=1024).contains(&width))
-        && attachment
-            .height
-            .is_some_and(|height| (1..=1024).contains(&height))
+    ) && picture_pixels(attachment).is_some_and(|(width, height)| {
+        width >= 1 && height >= 1 && u64::from(width) * u64::from(height) <= MOST_PICTURE_PIXELS
+    })
+}
+
+/// The width and the height of a picture in its pixels, as the server states them.
+pub(super) fn picture_pixels(attachment: &Attachment) -> Option<(u32, u32)> {
+    attachment.width.zip(attachment.height)
 }
 
 /// Decodes a picture that another account sent. The decoder refuses a picture that is
-/// larger than the server marks, whatever its header states.
-fn decode(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+/// larger than `stated`, the size that the server marks, whatever its header states. With
+/// `side`, a picture with a longer side is reduced to fit a square of that side, with its
+/// proportions.
+pub(super) fn decode(
+    bytes: &[u8],
+    stated: (u32, u32),
+    side: Option<u32>,
+) -> Option<Arc<RenderImage>> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(1024);
-    limits.max_image_height = Some(1024);
-    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_image_width = Some(stated.0);
+    limits.max_image_height = Some(stated.1);
+    limits.max_alloc = Some(MOST_PICTURE_PIXELS * 4);
     reader.limits(limits);
-    let mut picture = reader.decode().ok()?.into_rgba8();
+    let decoded = reader.decode().ok()?;
+    let decoded = match side {
+        Some(side) if decoded.width() > side || decoded.height() > side => {
+            decoded.thumbnail(side, side)
+        }
+        _ => decoded,
+    };
+    let mut picture = decoded.into_rgba8();
     // The window takes the colours in the order blue, green, red.
     for pixel in picture.pixels_mut() {
         pixel.0.swap(0, 2);
@@ -1767,8 +1786,42 @@ impl Shell {
     /// Draws these bytes as the picture of a file of a message. The screen tool uses it.
     #[cfg(feature = "test-support")]
     pub fn show_picture(&mut self, attachment_id: AttachmentId, bytes: &[u8]) {
-        let picture = decode(bytes).map_or(Picture::Failed, Picture::Ready);
+        let picture = decode(bytes, (16_384, 16_384), Some(LIST_PICTURE_SIDE))
+            .map_or(Picture::Failed, Picture::Ready);
         self.message_pictures.shown.insert(attachment_id, picture);
+    }
+
+    /// True when the screen tool gave the bytes of this picture.
+    #[cfg(feature = "test-support")]
+    pub(super) fn picture_of_screen_tool(&self, attachment_id: AttachmentId) -> bool {
+        self.message_pictures.shown.contains_key(&attachment_id)
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(super) fn picture_of_screen_tool(&self, _: AttachmentId) -> bool {
+        false
+    }
+
+    /// The copy of a picture that the message lists hold, for a drawing of the viewer: the
+    /// image once it is read, and whether its read failed. A picture that is not held is
+    /// read after the drawing, as for a list.
+    pub(super) fn listed_picture(
+        &mut self,
+        server_id: ServerId,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> (Option<Arc<RenderImage>>, bool) {
+        let key = self.want_picture(server_id, attachment, cx);
+        let held = key
+            .as_ref()
+            .and_then(|key| self.message_pictures.held.get(key));
+        #[cfg(feature = "test-support")]
+        let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
+        match held {
+            Some(Picture::Ready(image)) => (Some(image.clone()), false),
+            Some(Picture::Failed | Picture::Unanswered { .. }) => (None, true),
+            _ => (None, false),
+        }
     }
 
     /// The owners for which the window holds the read picture of a file. A test uses it.
@@ -1837,10 +1890,13 @@ impl Shell {
                 continue;
             };
             let reading = self.state.read(cx).picture(key.owner, &attachment);
+            let stated = picture_pixels(&attachment).unwrap_or_default();
             cx.spawn(async move |this, cx| {
                 let outcome = match reading.await {
                     Ok(bytes) => cx
-                        .background_spawn(async move { decode(&bytes) })
+                        .background_spawn(
+                            async move { decode(&bytes, stated, Some(LIST_PICTURE_SIDE)) },
+                        )
                         .await
                         .map_or(Outcome::Refused, Outcome::Read),
                     Err(failure) if failure.is_transient() => Outcome::Unanswered,
@@ -1887,13 +1943,25 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let server_id = feed.server_id;
+        let message_id = message.id;
         let _ = workspace;
+        // The pictures of the message, which the viewer shows one after the other.
+        let pictures: Rc<Vec<Attachment>> = Rc::new(
+            message
+                .attachments
+                .iter()
+                .filter(|attachment| is_picture(attachment))
+                .cloned()
+                .collect(),
+        );
+        let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         message
             .attachments
             .iter()
             .enumerate()
             .map(|(index, attachment)| {
-                let download = self.download_control(server_id, attachment, index, theme, cx);
+                let download =
+                    self.download_control(server_id, attachment, index, "", theme, cx);
                 let name: SharedString = text::label(&attachment.name).into();
                 let size: SharedString = text::file_size(attachment.bytes).into();
                 if is_picture(attachment) {
@@ -1922,6 +1990,26 @@ impl Shell {
                             .child(text::PICTURE_LOADING)
                             .into_any_element(),
                     };
+                    let place = pictures
+                        .iter()
+                        .position(|picture| picture.id == attachment_id)
+                        .unwrap_or_default();
+                    let open = {
+                        let pictures = Rc::clone(&pictures);
+                        move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                            this.open_picture_viewer(
+                                server_id,
+                                message_id,
+                                pictures.as_ref().clone(),
+                                place,
+                                window,
+                                cx,
+                            );
+                        }
+                    };
+                    let by_key = open.clone();
+                    let ring = ring.clone();
+                    let label: SharedString = format!("{}: {name}", text::OPEN_PICTURE).into();
                     // The card takes the width of the list up to the size of the picture,
                     // and the picture keeps its proportions in the width that it gets.
                     return div()
@@ -1944,6 +2032,9 @@ impl Shell {
                                 .bg(Hsla::from(colors.plaster))
                                 .child(
                                     div()
+                                        .id(("open-picture", index))
+                                        .role(Role::Button)
+                                        .aria_label(label)
                                         .debug_selector(move || format!("picture:{attachment_id}"))
                                         .flex()
                                         .items_center()
@@ -1952,6 +2043,25 @@ impl Shell {
                                         .max_w(u(width))
                                         .aspect_ratio(width / height)
                                         .overflow_hidden()
+                                        .cursor_pointer()
+                                        .focusable()
+                                        .tab_stop(true)
+                                        .focus_visible(move |style| style.shadow(ring))
+                                        .tooltip(tooltip(text::OPEN_PICTURE))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            open(this, window, cx);
+                                        }))
+                                        .on_key_down(cx.listener(
+                                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                ) {
+                                                    by_key(this, window, cx);
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ))
                                         .child(picture),
                                 ),
                         )
@@ -2045,12 +2155,14 @@ impl Shell {
     }
 
     /// The control at the end of a file: it starts the download, shows how far it is, and
-    /// then where the file is.
-    fn download_control(
+    /// then where the file is. The names of its parts start with `prefix`, so that a second
+    /// control of the same file has names of its own.
+    pub(super) fn download_control(
         &mut self,
         server_id: ServerId,
         attachment: &Attachment,
         index: usize,
+        prefix: &'static str,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2073,7 +2185,7 @@ impl Shell {
         let named = |id: &'static str, button: Button| {
             div()
                 .flex_none()
-                .debug_selector(move || format!("{id}:{attachment_id}"))
+                .debug_selector(move || format!("{prefix}{id}:{attachment_id}"))
                 .child(button)
         };
         let forget = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
@@ -3156,6 +3268,58 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let picture = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
+        let mut bytes = Vec::new();
+        picture
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn side(image: &RenderImage) -> (i32, i32) {
+        let size = image.size(0);
+        (size.width.0, size.height.0)
+    }
+
+    #[test]
+    fn a_picture_with_a_side_above_the_copy_of_the_lists_is_reduced_with_its_proportions() {
+        let bytes = png(2000, 1000);
+        let listed = decode(&bytes, (2000, 1000), Some(LIST_PICTURE_SIDE)).unwrap();
+        assert_eq!(side(&listed), (1024, 512));
+        let whole = decode(&bytes, (2000, 1000), None).unwrap();
+        assert_eq!(side(&whole), (2000, 1000));
+        let small = decode(&png(300, 200), (300, 200), Some(LIST_PICTURE_SIDE)).unwrap();
+        assert_eq!(side(&small), (300, 200));
+        // A picture larger than the size that the server states is refused.
+        assert!(decode(&bytes, (1999, 1000), None).is_none());
+        assert!(decode(&bytes, (2000, 999), Some(LIST_PICTURE_SIDE)).is_none());
+    }
+
+    #[test]
+    fn a_picture_is_shown_up_to_the_most_pixels_that_the_window_decodes() {
+        let file = |width, height| Attachment {
+            id: AttachmentId::generate(),
+            name: "photo.png".to_owned(),
+            bytes: 1000,
+            sha256: String::new(),
+            media_type: "image/png".to_owned(),
+            width: Some(width),
+            height: Some(height),
+        };
+        assert!(is_picture(&file(4096, 4096)));
+        assert!(is_picture(&file(16_384, 1)));
+        assert!(is_picture(&file(2560, 1440)));
+        assert!(!is_picture(&file(4097, 4096)));
+        assert!(!is_picture(&file(0, 10)));
+        let mut other = file(10, 10);
+        other.media_type = "application/octet-stream".to_owned();
+        assert!(!is_picture(&other));
+    }
 
     #[test]
     fn a_full_store_of_code_tokens_lets_go_of_the_block_drawn_longest_ago() {

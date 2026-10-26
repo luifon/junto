@@ -21,6 +21,10 @@ use std::{
 use time::OffsetDateTime;
 
 pub const CHUNK: usize = 1024 * 1024;
+/// The largest picture that gets preview metadata: 64 MiB of pixels as RGBA, which a client
+/// can decode (ADR 0408), and the longest side of a WebP file.
+pub const MOST_PICTURE_PIXELS: u64 = 16_777_216;
+pub const LONGEST_PICTURE_SIDE: u32 = 16_384;
 pub fn root(app: &AppState) -> ApiResult<&Path> {
     app.config.attachments_directory.as_deref().ok_or_else(|| {
         ApiError::new(
@@ -221,7 +225,10 @@ pub fn check(
         }
     }
     let image = if preview_fits {
-        crate::image::inspect(&preview).filter(|im| im.width <= 1024 && im.height <= 1024)
+        crate::image::inspect(&preview).filter(|im| {
+            u64::from(im.width) * u64::from(im.height) <= MOST_PICTURE_PIXELS
+                && im.width.max(im.height) <= LONGEST_PICTURE_SIDE
+        })
     } else {
         None
     };

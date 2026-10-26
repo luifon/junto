@@ -1663,6 +1663,16 @@ pub const NO_DOWNLOAD_DIRECTORY: &str =
     "This system names no download directory. The file was not saved.";
 pub const PICTURE_LOADING: &str = "The picture arrives…";
 pub const PICTURE_FAILED: &str = "The picture could not be shown. You can download the file.";
+// The viewer of the pictures of a message (ADR 0740).
+pub const OPEN_PICTURE: &str = "Open the picture";
+pub const CLOSE_PICTURE: &str = "Close the picture";
+pub const PREVIOUS_PICTURE: &str = "Previous picture";
+pub const NEXT_PICTURE: &str = "Next picture";
+
+/// The place of the shown picture among the pictures of its message.
+pub fn picture_position(shown: usize, count: usize) -> String {
+    format!("{shown} of {count}")
+}
 pub const OPENS_IN_BROWSER: &str = "Opens in your browser";
 
 // Threads, pins, permanent messages and direct conversations (ADR 0741).

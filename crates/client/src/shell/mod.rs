@@ -35,6 +35,7 @@ pub mod share;
 mod threads;
 pub mod title_bar;
 mod transcript_edit;
+mod viewer;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -113,6 +114,8 @@ pub(crate) enum Layer {
     /// The chooser of a new direct conversation (ADR 0307). The state of the application
     /// holds the accounts that it lists.
     NewDirect,
+    /// The viewer of the pictures of a message (ADR 0740).
+    Picture(Box<viewer::PictureViewer>),
 }
 
 /// What the emoji of the picker is for.
@@ -983,6 +986,7 @@ impl Shell {
             self.state
                 .update(cx, |state, _| state.set_input_test(false));
         }
+        self.release_viewer_picture(cx);
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
@@ -1017,6 +1021,7 @@ impl Shell {
             self.state
                 .update(cx, |state, _| state.set_input_test(false));
         }
+        self.release_viewer_picture(cx);
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
         cx.notify();
@@ -1455,6 +1460,7 @@ impl Shell {
             // device without a recording shows to a person who may record.
             Layer::RecordLanguage => !self.records_now(view),
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
+            Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1503,6 +1509,7 @@ impl Shell {
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::NewDirect => self.render_new_direct(cx),
+            Layer::Picture(_) => self.render_picture_viewer(window, cx),
         }
     }
 }

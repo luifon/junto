@@ -302,11 +302,35 @@ async fn previews_refuse_large_or_animated_images() {
     let mut large = junto_server::image::samples::png(2, 2);
     large.resize(8 * 1024 * 1024 + 1, 0);
     let animated = junto_server::image::samples::animated_png(2, 2);
-    for bytes in [large, animated, junto_server::image::samples::png(8193, 1)] {
+    // Above 16,777,216 pixels, and a side above 16,384 pixels.
+    for bytes in [
+        large,
+        animated,
+        junto_server::image::samples::png(4097, 4096),
+        junto_server::image::samples::png(16_385, 1),
+    ] {
         let upload = files.upload(&bytes).await;
         let sent = files.attach(&[upload.id]).await;
         assert_eq!(sent.attachments[0].width, None);
         assert_eq!(sent.attachments[0].media_type, "application/octet-stream");
+    }
+}
+
+/// A picture larger than 1,024 pixels per side gets its size, up to 16,777,216 pixels: a
+/// client shows a reduced copy in its lists and the picture at its own size in its viewer.
+#[tokio::test]
+async fn previews_state_the_size_of_a_picture_larger_than_1024_pixels() {
+    let files = Files::open().await;
+    for (width, height) in [(4096, 4096), (2560, 1440), (16_384, 1)] {
+        let upload = files
+            .upload(&junto_server::image::samples::png(width, height))
+            .await;
+        let sent = files.attach(&[upload.id]).await;
+        assert_eq!(
+            (sent.attachments[0].width, sent.attachments[0].height),
+            (Some(width), Some(height))
+        );
+        assert_eq!(sent.attachments[0].media_type, "image/png");
     }
 }
 

@@ -200,8 +200,12 @@ Attachments:
   result after that response, so the response never promises an unchanged upload.
   A hash mismatch is recorded durably and releases the reservation; later completion
   attempts return that failure without reading or hashing the file again.
-  Still PNG, JPEG and WebP files up to 8 MiB with dimensions up to 1,024 per side get
-  preview metadata using the avatar header checker. Other files remain downloads with
+  Still PNG, JPEG and WebP files up to 8 MiB with at most 16,777,216 pixels and at most
+  16,384 pixels per side get preview metadata using the avatar header checker. The pixel
+  bound is the 64 MiB that a client decodes as RGBA, and the side bound is the longest
+  side of a WebP file. The bound was 1,024 per side; a client now shows a larger picture
+  reduced in a list and at its own size in its viewer (ADR 0740). A file uploaded before
+  the change keeps the metadata it got. Other files remain downloads with
   `application/octet-stream`. The server does not decode images. Clients treat attachments
   as untrusted files.
 - Sending claims complete uploads once, in the message transaction. Upload ownership,
