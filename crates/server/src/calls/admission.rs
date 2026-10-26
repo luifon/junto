@@ -392,7 +392,7 @@ async fn complete_move(
     }
     // A later entry of the person into the call of the source is a join (ADR 0408).
     let out = store::Note::PersonOut;
-    store::note(&mut *connection, now, source, out, Some(account_id)).await?;
+    store::note(&mut *connection, now, &source, out, Some(account_id)).await?;
     store::end_if_empty(connection, now, source.id).await?;
     orders
         .removals

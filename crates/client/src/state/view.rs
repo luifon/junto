@@ -67,6 +67,8 @@ pub struct ServerSnapshot {
     pub model: Option<Arc<ServerModel>>,
     /// The release version that the server stated on its event stream (ADR 0780).
     pub server_version: Option<ServerVersion>,
+    /// The revision of the messages and events that the server stated (ADR 0206).
+    pub server_events: Option<u32>,
 }
 
 impl ServerSnapshot {
@@ -87,6 +89,7 @@ impl ServerSnapshot {
             stream: live.status,
             model: live.model,
             server_version: live.server_version,
+            server_events: live.server_events,
         }
     }
 }
@@ -1411,6 +1414,9 @@ pub struct ServerRelease {
     pub version: ServerVersion,
     /// The newest release, when it comes after `version`. Absent without a source.
     pub newer: Option<Version>,
+    /// The server sends messages and events of a newer revision than this build reads
+    /// (ADR 0206): the person updates Junto to see them.
+    pub newer_events: bool,
 }
 
 /// The person as the profile strip shows them.
@@ -3682,6 +3688,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             release: server.server_version.as_ref().map(|version| ServerRelease {
                 version: version.clone(),
                 newer: super::book::newer_server_release(&known.updates, version),
+                newer_events: server.server_events.is_some_and(|revision| {
+                    revision > junto_client_core::protocol::events::EVENT_REVISION
+                }),
             }),
             content,
         }

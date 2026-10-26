@@ -411,6 +411,7 @@ fn acme() -> ServerSnapshot {
         stream: StreamStatus::Live,
         model: Some(acme_model(|_| {})),
         server_version: ServerVersion::parse("0.3.1"),
+        server_events: None,
     }
 }
 
@@ -430,6 +431,7 @@ fn harbor() -> ServerSnapshot {
             vec![workspace(13, "Lounge", true)],
         ))))),
         server_version: ServerVersion::parse("0.3.0"),
+        server_events: None,
     }
 }
 
@@ -442,6 +444,7 @@ fn harbor_as(access: AccessState, reach: Reach, error: Option<FlowError>) -> Ser
         stream: StreamStatus::Off,
         model: None,
         server_version: None,
+        server_events: None,
         ..harbor()
     }
 }

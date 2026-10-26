@@ -75,6 +75,9 @@ pub struct LiveView {
     /// (ADR 0780). Absent until a `hello` arrives, after a `hello` without a semantic
     /// version, and while the status is `Off`.
     pub server_version: Option<ServerVersion>,
+    /// The revision of the messages and events that the server stated (ADR 0206). Absent
+    /// while the stream has not greeted.
+    pub server_events: Option<u32>,
 }
 
 /// One step of the event stream, for a reader that shows each change by itself. The state
@@ -532,6 +535,7 @@ impl LiveServer {
             level: None,
             model: model.map(Arc::new),
             server_version: None,
+            server_events: None,
         });
     }
 

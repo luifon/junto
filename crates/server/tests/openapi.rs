@@ -41,6 +41,33 @@ fn committed_event_stream_document_matches_the_event_types() {
     );
 }
 
+/// The committed digests name the present event document under the present revision: a
+/// change of the messages or the events without a new revision fails (ADR 0206).
+#[test]
+fn the_event_document_has_the_digest_of_its_revision() {
+    let path = package_directory()
+        .join("../..")
+        .join(junto_server::EVENT_REVISIONS_PATH);
+    let committed = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let generated = junto_server::event_revisions_document(&committed)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        committed == generated,
+        "{} lacks the present revision. Run `cargo run -p junto-server --bin junto-openapi` \
+         and commit the result.",
+        path.display()
+    );
+    let revisions: Vec<junto_server::EventRevision> = serde_json::from_str(&committed).unwrap();
+    assert_eq!(
+        revisions.last().map(|held| held.revision),
+        Some(junto_protocol::events::EVENT_REVISION)
+    );
+    // A changed event document under a revision that has a digest is refused.
+    let changed = committed.replace(&revisions[revisions.len() - 1].sha256, &"0".repeat(64));
+    assert!(junto_server::event_revisions_document(&changed).is_err());
+}
+
 #[test]
 fn committed_structure_file_schema_matches_the_file_types() {
     let path = package_directory()

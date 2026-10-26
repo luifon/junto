@@ -1266,6 +1266,7 @@ pub(crate) mod tests {
                 crate::state::fixtures::from_roles(snapshot),
             ))),
             server_version: None,
+            server_events: None,
         }
     }
 

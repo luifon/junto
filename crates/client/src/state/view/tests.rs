@@ -241,6 +241,7 @@ pub(super) fn server(
         },
         model: model.map(Arc::new),
         server_version: None,
+        server_events: None,
     }
 }
 

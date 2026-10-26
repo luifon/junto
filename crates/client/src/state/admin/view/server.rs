@@ -136,6 +136,7 @@ mod tests {
             stream: StreamStatus::Live,
             model: Some(Arc::new(model)),
             server_version: None,
+            server_events: None,
         }
     }
 

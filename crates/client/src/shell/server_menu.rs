@@ -133,6 +133,17 @@ impl Shell {
                                         )),
                                 )
                             })
+                            // The server sends what this build does not read (ADR 0206).
+                            .when(release.newer_events, |column| {
+                                column.child(
+                                    div()
+                                        .debug_selector(|| "server-events-newer".to_owned())
+                                        .typeface(theme.types.small_strong, &theme)
+                                        .line_height(u(16.0))
+                                        .ink(colors.cinnabar_ink)
+                                        .child(paint_text(text::book::NEWER_EVENTS.into(), None)),
+                                )
+                            })
                     }),
             );
         // The notification settings of the server and of the shown workspace, for a

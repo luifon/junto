@@ -156,6 +156,7 @@ pub async fn run<S>(
         epoch,
         heartbeat_seconds: seconds(limits.heartbeat),
         idle_seconds: seconds(limits.idle_timeout),
+        event_revision: junto_protocol::events::EVENT_REVISION,
     };
     let mut connection = Connection {
         who,

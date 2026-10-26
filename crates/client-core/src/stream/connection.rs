@@ -17,8 +17,8 @@ use junto_protocol::call::OwnCallView;
 use junto_protocol::discovery::NotificationPage;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{
-    ClientMessage, CloseCode, Cursor, EndReason, Event, Level, ReadEvent, Received, ServerMessage,
-    decode,
+    ClientMessage, CloseCode, Cursor, EVENT_REVISION, EndReason, Event, Level, ReadEvent, Received,
+    ServerMessage, decode,
 };
 use junto_protocol::ids::WorkspaceId;
 use junto_protocol::message::{AttachmentLimits, Message, MessageState, ThreadPage, UnreadThreads};
@@ -42,6 +42,8 @@ use crate::model::{Follow, LinesRead, Loadable, Part, ServerModel};
 use crate::version::ServerVersion;
 
 const MINUTE: Duration = Duration::from_secs(60);
+/// The most types of messages and events that a connection logs as not read.
+const MOST_UNREAD_TYPES: usize = 64;
 /// How many frames that wait are applied before the readers get the new state.
 const FRAMES_PER_VIEW: usize = 256;
 /// How many events, and how many bytes of their messages, are kept for a part that is
@@ -274,6 +276,11 @@ struct Client {
     /// The release version of the last `hello`. It stays while the connection is lost,
     /// and is forgotten with the state.
     server_version: Option<ServerVersion>,
+    /// The revision of the messages and events that the server stated in its `hello`.
+    server_events: Option<u32>,
+    /// The types of messages and events of the server that this build does not read and that
+    /// were logged.
+    unread_types: std::collections::HashSet<String>,
     version_changed: bool,
     in_call: bool,
     /// The notices of the changes that the readers do not have yet. A reader gets a
@@ -337,6 +344,8 @@ pub(crate) async fn run(
         shown: None,
         model_changed: false,
         server_version: None,
+        server_events: None,
+        unread_types: std::collections::HashSet::new(),
         version_changed: false,
         in_call: false,
         untold: Vec::new(),
@@ -503,12 +512,37 @@ impl Client {
         self.quick_reloads = 0;
         self.reload_backoff.reset();
         self.set_server_version(None);
+        self.set_server_events(None);
     }
 
     fn set_server_version(&mut self, version: Option<ServerVersion>) {
         if self.server_version != version {
             self.server_version = version;
             self.version_changed = true;
+        }
+    }
+
+    /// The revision of the messages and events that the server stated (ADR 0206). A server
+    /// of a higher revision than this build sends what this build does not read: the first
+    /// such message and event of each type is logged, and the window states it.
+    fn set_server_events(&mut self, revision: Option<u32>) {
+        if self.server_events != revision {
+            self.server_events = revision;
+            self.version_changed = true;
+            if let Some(revision) = revision.filter(|revision| *revision > EVENT_REVISION) {
+                tracing::warn!(
+                    server = revision,
+                    client = EVENT_REVISION,
+                    "the server sends events of a newer revision than this client reads"
+                );
+            }
+        }
+    }
+
+    /// Logs the first message or event of each type that this build does not read.
+    fn unread_type(&mut self, kind: &'static str, name: &str) {
+        if self.unread_types.len() < MOST_UNREAD_TYPES && self.unread_types.insert(name.to_owned()) {
+            tracing::info!(kind, name, "the server sent a type that this client does not read");
         }
     }
 
@@ -795,7 +829,9 @@ impl Client {
         match decode(&text) {
             Ok(Received::Message(message)) => self.message(message, text.len()),
             Ok(Received::Change { position, events }) => self.change(position, events),
-            Ok(Received::UnknownMessage) => {}
+            Ok(Received::UnknownMessage { message_type }) => {
+                self.unread_type("message", &message_type);
+            }
             Err(error) => {
                 // A new connection with the same cursor would get the same frame again.
                 // The cursor of a snapshot lies after it.
@@ -815,6 +851,7 @@ impl Client {
                 server_version,
                 epoch,
                 heartbeat_seconds,
+                event_revision,
                 ..
             } = message
             else {
@@ -826,6 +863,7 @@ impl Client {
                 + self.environment.policy.silence_grace;
             link.deadline = Instant::now() + link.silence;
             self.set_server_version(ServerVersion::parse(&server_version));
+            self.set_server_events(Some(event_revision));
             if self
                 .model
                 .as_ref()
@@ -934,7 +972,10 @@ impl Client {
                 ReadEvent::Known { event, bytes } => {
                     self.event(event.id, event.at, Arc::new(event.event), bytes);
                 }
-                ReadEvent::Unknown { id } => self.move_cursor(id),
+                ReadEvent::Unknown { id, event_type } => {
+                    self.unread_type("event", &event_type);
+                    self.move_cursor(id);
+                }
             }
         }
         self.move_cursor(position);
@@ -1549,6 +1590,7 @@ impl Client {
                 level,
                 model,
                 server_version: self.server_version.clone(),
+                server_events: self.server_events,
             });
             self.shown = Some((status, level));
             self.model_changed = false;
