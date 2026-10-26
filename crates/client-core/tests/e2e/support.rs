@@ -820,6 +820,17 @@ impl FaultProxy {
             .push((path.to_owned(), faults));
     }
 
+    /// The requests to `path` are passed on again: the faults that wait for it are taken
+    /// away.
+    #[allow(dead_code)]
+    pub fn clear_faults(&self, path: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .faults
+            .retain(|(planned, _)| planned != path);
+    }
+
     /// The next requests whose path ends with `end` fail in the given ways, in order.
     pub fn fail_ending(&self, end: &str, faults: impl IntoIterator<Item = Fault>) {
         let mut faults: Vec<Fault> = faults.into_iter().collect();

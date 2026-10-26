@@ -702,13 +702,16 @@ fn a_read_of_the_devices_that_failed_is_read_again_with_try_again(cx: &mut TestA
         window.devices().len() == 2
     });
 
-    // The phone takes another name, and the read of the page that follows fails: the page
-    // keeps the devices that it listed and states the failure under them.
+    // The phone takes another name, and the reads of the page that follow fail: the page
+    // keeps the devices that it listed and states the failure under them. Every read fails
+    // until the faults are taken away, so a read that another event of the second device
+    // starts after the list was shown fails too, and no read clears the failure before it is
+    // seen.
     let phone_id = match phone.access().state {
         AccessState::LoggedIn { device_id, .. } => device_id,
         other => panic!("the phone is not logged in: {other:?}"),
     };
-    proxy.fail(devices, [Fault::Cut]);
+    proxy.fail(devices, std::iter::repeat_n(Fault::Cut, 64));
     world
         .run(phone.api().rename_device(phone_id, "Tablet".to_owned()))
         .unwrap();
@@ -727,6 +730,7 @@ fn a_read_of_the_devices_that_failed_is_read_again_with_try_again(cx: &mut TestA
     ));
     assert_eq!(window.devices().len(), 2);
     assert!(window.devices().iter().all(|row| row.name != "Tablet"));
+    proxy.clear_faults(devices);
     window.click("devices-read-again");
     window.until("the new name is listed", |window| {
         window.devices().iter().any(|row| row.name == "Tablet")
