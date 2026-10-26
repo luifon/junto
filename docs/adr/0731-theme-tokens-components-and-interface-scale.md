@@ -52,7 +52,7 @@ Pictures of the screens:
 
 ## Consequences
 
-- The dark theme is a second value of the theme (`Theme::broadcast`) with other colours and the measures, fonts and text styles of the light theme. A colour that a screen needs and the theme lacks is added to the theme. `junto-screens` draws every screen in one theme per run: the light theme, or the dark theme with `JUNTO_SCREENS_THEME=dark`. The parts of a switch have a contrast of at least 3 to 1 with what is next to them, and a button filled with an accent has another ground under the pointer, in both themes; a unit test holds both.
+- The dark theme is a second value of the theme (`Theme::broadcast`) with other colours and the measures, fonts and text styles of the light theme. A colour that a screen needs and the theme lacks is added to the theme. `junto-screens` draws every screen in one theme per run: the light theme, or the dark theme with `JUNTO_SCREENS_THEME=dark`. The parts of a switch have a contrast of at least 3 to 1 with what is next to them, and a button filled with an accent has another ground under the pointer, in both themes; a unit test holds both. The chosen part of a segmented control has another ground and a mark of 2 pixels in the accent colour at its foot, with a contrast of at least 3 to 1 to both grounds in both themes (open item RP8: in the dark theme only a slightly lighter ground and bold text showed the choice).
 - At 150% in a window of 1440 pixels the layout has 960 logical pixels and is narrow.
 - A window of 1320 pixels at 100% is wide and gives the content 544 pixels while the side panel is open.
 - The width of the scroll bar and of a border does not follow the scale.

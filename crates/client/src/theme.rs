@@ -751,6 +751,13 @@ mod tests {
                     c.toggle_off,
                     c.travertine,
                 ),
+                // The mark under the chosen part of a segmented control (`ui::Segmented`).
+                ("mark of a chosen segment", c.terracotta, c.limestone_lo),
+                (
+                    "mark of a chosen segment beside the others",
+                    c.terracotta,
+                    c.travertine_hi,
+                ),
             ];
             for (name, part, ground) in pairs {
                 let ratio = contrast(part, ground);
