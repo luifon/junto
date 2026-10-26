@@ -1807,7 +1807,8 @@ fn a_change_with_new_notices_has_one_sound_under_the_rules_of_a_system_notificat
     scene.notice(NotificationKind::Message, plain, 5);
     let told = scene.alerts(&mut seen);
     assert_eq!(told.sounds, [Sound::Mention]);
-    assert_eq!(told.show.len(), 3);
+    // Two notifications were shown before in the span of the bound of three.
+    assert_eq!(told.show.len(), 1);
     // Above the bound of the system notifications the sound still plays.
     let more = scene.message(scene.in_channel(scene.general), 11, "one more");
     scene.notice(NotificationKind::Mention, more, 6);
