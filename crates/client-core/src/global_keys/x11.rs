@@ -129,7 +129,9 @@ mod tests {
             reader.held(&keys).unwrap(),
             [Key::Alt, Key::Control, Key::Shift, Key::Letter('M')]
         );
-        xdotool(&["keyup", "m", "keyup", "shift", "keyup", "ctrl", "keyup", "alt"]);
+        xdotool(&[
+            "keyup", "m", "keyup", "shift", "keyup", "ctrl", "keyup", "alt",
+        ]);
         assert_eq!(reader.held(&keys).unwrap(), []);
         xdotool(&["keydown", "F13", "keydown", "7"]);
         assert_eq!(

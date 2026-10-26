@@ -3,9 +3,10 @@
 //! give the keyboard each action of a drag (ADR 0702).
 
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Role, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Window, deferred, div, prelude::FluentBuilder, px,
+    AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Role,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Window, deferred, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::input::InputState;
 use junto_client_core::arrangement::{Change, GroupColour, GroupId};

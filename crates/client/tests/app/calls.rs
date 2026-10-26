@@ -1479,5 +1479,8 @@ fn the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window(cx: &mu
     window.settle();
     assert!(!muted(&mut window));
     window.press("ctrl-shift-m");
-    window.until("the key that mutes in the window closed the microphone", muted);
+    window.until(
+        "the key that mutes in the window closed the microphone",
+        muted,
+    );
 }

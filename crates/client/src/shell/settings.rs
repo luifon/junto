@@ -653,7 +653,11 @@ impl Shell {
                     .flex_1()
                     .min_w_0()
                     .typeface(theme.types.control, theme)
-                    .ink(if recording { colors.terracotta_deep } else { colors.ink })
+                    .ink(if recording {
+                        colors.terracotta_deep
+                    } else {
+                        colors.ink
+                    })
                     .debug_selector(|| "mute-key".to_owned())
                     .child(shown),
             );
@@ -694,13 +698,21 @@ impl Shell {
         let state = self.state.read(cx).global_keys_state();
         let permission = junto_client_core::global_keys::input_monitoring();
         let (reach, asks): (String, bool) = match state {
-            KeysState::Reading if cfg!(target_os = "macos") => (text::KEYS_ALLOWED.to_owned(), false),
+            KeysState::Reading if cfg!(target_os = "macos") => {
+                (text::KEYS_ALLOWED.to_owned(), false)
+            }
             KeysState::Reading => (text::KEYS_EVERYWHERE.to_owned(), false),
-            KeysState::Failed(ReadError::NotAllowed) => (text::KEYS_NEED_PERMISSION.to_owned(), true),
-            KeysState::Failed(ReadError::Failed(reason)) => (text::keys_portal_failed(&reason), false),
+            KeysState::Failed(ReadError::NotAllowed) => {
+                (text::KEYS_NEED_PERMISSION.to_owned(), true)
+            }
+            KeysState::Failed(ReadError::Failed(reason)) => {
+                (text::keys_portal_failed(&reason), false)
+            }
             KeysState::Portal => (text::KEYS_PORTAL.to_owned(), false),
             KeysState::PortalFailed(reason) => (text::keys_portal_failed(&reason), false),
-            KeysState::WindowOnly if cfg!(target_os = "macos") && permission == Permission::NotGranted => {
+            KeysState::WindowOnly
+                if cfg!(target_os = "macos") && permission == Permission::NotGranted =>
+            {
                 (text::KEYS_NEED_PERMISSION.to_owned(), true)
             }
             KeysState::WindowOnly => (text::KEYS_WINDOW_ONLY.to_owned(), false),
@@ -735,7 +747,9 @@ impl Shell {
                             .h(u(28.0))
                             .px(u(10.0))
                             .on_click(cx.listener(|_, _, _, cx| {
-                                cx.open_url(junto_client_core::global_keys::INPUT_MONITORING_SETTINGS);
+                                cx.open_url(
+                                    junto_client_core::global_keys::INPUT_MONITORING_SETTINGS,
+                                );
                             })),
                     )
                     .into_any_element(),
