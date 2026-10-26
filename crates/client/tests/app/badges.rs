@@ -81,6 +81,13 @@ fn the_messages_for_the_person_are_counted_everywhere_and_a_read_takes_them_away
         window.badge() == Some(3)
     });
     assert_eq!(junto_client::app_badge::title(3), "(3) Junto");
+    // The tray takes the same count for its mark.
+    assert_eq!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.for_person()),
+        3
+    );
 
     // A restart counts what is still unread.
     window.close();

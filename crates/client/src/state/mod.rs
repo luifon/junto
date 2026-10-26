@@ -444,6 +444,8 @@ pub struct AppState {
     join_waiting: std::collections::HashSet<ServerId>,
     /// The place of the call that the call window shows, at the last change.
     call_window_shows: Option<(ServerId, PlaceId)>,
+    /// The unread messages for the person alone on every server (ADR 0741).
+    for_person: u64,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
@@ -877,6 +879,7 @@ impl AppState {
             message_sound_at: None,
             join_waiting: std::collections::HashSet::new(),
             call_window_shows: None,
+            for_person: 0,
             client,
             calls,
             voice_failed,
@@ -2599,6 +2602,13 @@ impl AppState {
         self.follow_jump(shown);
         self.follow_result_jump(shown);
         self.call_window_shows = call_window;
+        // The messages for the person on every server: the badge of the application and the
+        // mark of the tray count them (ADR 0741).
+        self.for_person = view
+            .servers
+            .iter()
+            .map(|row| row.for_person)
+            .fold(0, u64::saturating_add);
         self.tell_alerts(&snapshots, shown, call_window, cx);
         self.tell_join_answers(cx);
         self.follow_tray();
@@ -2691,6 +2701,13 @@ impl AppState {
         // The channel takes the place of a direct conversation that the server showed.
         self.selection.conversations.remove(&server_id);
         self.changed(cx);
+    }
+
+    /// The unread messages for the person alone on every server: the mentions and the
+    /// messages of direct conversations that are not muted (ADR 0741). The badge of the
+    /// application and the mark of the tray show it.
+    pub fn for_person(&self) -> u64 {
+        self.for_person
     }
 
     /// Shows a channel of a workspace of a server, as a press on a system notification
