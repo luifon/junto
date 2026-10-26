@@ -180,6 +180,7 @@ impl RenderOnce for Dialog {
             .absolute()
             .inset_0()
             .occlude()
+            .child(super::cover())
             .p(u(16.0))
             .pt(u(crate::shell::title_bar::cover_top(window, cx)))
             .bg(Hsla::from(colors.scrim))

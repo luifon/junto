@@ -223,6 +223,19 @@ impl Shell {
             servers.push(self.render_server(index, row, theme, cx));
         }
 
+        // An empty server book says so above the field that adds a server.
+        if servers.is_empty() {
+            servers.push(
+                div()
+                    .px(u(14.0))
+                    .pt(u(10.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(colors.bone_3)
+                    .debug_selector(|| "no-servers".to_owned())
+                    .child(text::NO_SERVERS_IN_BOOK)
+                    .into_any_element(),
+            );
+        }
         let asking = self.adding.is_some();
         let help: SharedString = if asking {
             text::ADDRESS_ASKING.into()

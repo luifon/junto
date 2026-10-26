@@ -176,7 +176,22 @@ impl Shell {
             (Some(server), Some(lists)) => self
                 .render_channel_list(view, server, lists, &theme, window, cx)
                 .into_any_element(),
-            _ => div().flex_1().into_any_element(),
+            // Without the lists of a server the column says why it lists nothing.
+            (selected, _) => div()
+                .relative()
+                .flex_1()
+                .px(u(14.0))
+                .pt(u(12.0))
+                .typeface(theme.types.small, &theme)
+                .ink(colors.ink_2)
+                .debug_selector(|| "no-channel-list".to_owned())
+                .child(if selected.is_some() {
+                    text::CHANNELS_AFTER_ANSWER
+                } else {
+                    text::NO_SERVER_CHANNELS
+                })
+                .child(crate::ui::area("channel-column-empty"))
+                .into_any_element(),
         };
         let stale = view
             .selected

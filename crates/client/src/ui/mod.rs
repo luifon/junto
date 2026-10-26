@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
-pub use area::area;
+pub use area::{COVER, area, cover};
 #[cfg(feature = "test-support")]
 pub use area::{record_areas, take_areas};
 pub use avatar::Avatar;

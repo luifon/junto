@@ -20,6 +20,15 @@ pub fn area(name: impl Into<SharedString>) -> impl IntoElement {
     .size_full()
 }
 
+/// The name that [`cover`] records.
+pub const COVER: &str = ":cover";
+
+/// Names the element that holds it as a layer that covers what is drawn before it: the
+/// areas under it are not measured.
+pub fn cover() -> impl IntoElement {
+    area(COVER)
+}
+
 #[cfg(feature = "test-support")]
 mod record {
     use std::cell::RefCell;

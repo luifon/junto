@@ -235,6 +235,7 @@ impl Shell {
             .absolute()
             .inset_0()
             .occlude()
+            .child(crate::ui::cover())
             .flex()
             .items_center()
             .justify_center()

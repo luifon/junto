@@ -641,6 +641,8 @@ fn a_transcript_read_error_keeps_the_pagination_control_in_place(cx: &mut TestAp
         window.shows("more-lines")
     });
     let before = window.cx.debug_bounds("more-lines").unwrap();
+    // The person points at the control when the error arrives (ADR 0730).
+    window.move_pointer(before.center());
     drop(server);
     window.state.update(&mut window.cx, |state, _| {
         state.read_transcript_lines(server_id, recording_id);

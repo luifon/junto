@@ -12,6 +12,9 @@ use image::RgbaImage;
 pub const MOST_GAP: f32 = 40.0;
 /// The width at each side of an area that is not read: the scroll bar and the borders.
 const SIDE: f32 = 12.0;
+/// The height at the top and at the bottom of an area that is not read, in pixels of the
+/// window.
+const EDGE: f32 = 2.0;
 /// The largest difference of a colour channel from the ground that is still the ground.
 const TOLERANCE: u8 = 6;
 
@@ -27,11 +30,25 @@ pub fn empty_bands(
     let design = device * scale as f32 / 100.0;
     let most = (MOST_GAP * design).round() as u32;
     let mut found = Vec::new();
-    for (name, bounds) in areas {
+    // An area drawn before a layer that covers it is not seen; the areas of the layer are
+    // drawn after its cover.
+    let covered = |index: usize, bounds: &Bounds<Pixels>| {
+        areas[index + 1..]
+            .iter()
+            .any(|(name, cover)| name.as_ref() == junto_client::ui::COVER && cover.intersects(bounds))
+    };
+    for (index, (name, bounds)) in areas.iter().enumerate() {
+        if name.as_ref() == junto_client::ui::COVER || covered(index, bounds) {
+            continue;
+        }
         let left = ((f32::from(bounds.left()) + SIDE) * device).max(0.0) as u32;
         let right = (((f32::from(bounds.right()) - SIDE) * device) as u32).min(image.width());
-        let top = (f32::from(bounds.top()) * device).max(0.0) as u32;
-        let bottom = ((f32::from(bounds.bottom()) * device) as u32).min(image.height());
+        // The rows at the top and at the bottom edge hold the borders of the parts next to
+        // the area.
+        let edge = (EDGE * device).ceil() as u32;
+        let top = (f32::from(bounds.top()) * device).max(0.0) as u32 + edge;
+        let bottom = (((f32::from(bounds.bottom()) * device) as u32).min(image.height()))
+            .saturating_sub(edge);
         if right <= left + 1 || bottom <= top + most {
             continue;
         }
