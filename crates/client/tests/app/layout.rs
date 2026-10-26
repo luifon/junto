@@ -164,3 +164,51 @@ fn a_long_system_line_wraps_inside_the_message_list(cx: &mut TestAppContext) {
         "the line does not wrap in the narrow window: {heights:?}"
     );
 }
+
+/// A channel whose messages do not fill the list shows them from the top of the list, under
+/// the title of the channel, and not at its end with an empty band above them (finding 8 of
+/// the second live test). A list that its messages fill still stands at its end.
+#[gpui::test]
+fn a_short_message_list_starts_at_its_top(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Layout");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let channel = window.selected_channel();
+    admin.send(&world, channel, document("First line"));
+    let last = admin.send(&world, channel, document("Second line"));
+    window.until_message("Second line");
+    window.settle();
+    let list = window.cx.debug_bounds("message-list").unwrap();
+    let start = window.cx.debug_bounds("history-start").unwrap();
+    assert!(
+        start.top() - list.top() < px(40.0),
+        "the first row starts {:?} under the top of the list",
+        start.top() - list.top()
+    );
+    let second = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{}", last.id)))
+        .unwrap();
+    assert!(
+        list.bottom() - second.bottom() > px(200.0),
+        "the rows stand at the end of the list"
+    );
+
+    let messages: Vec<_> = (0..40)
+        .map(|index| admin.send(&world, channel, document(&format!("Message {index}"))))
+        .collect();
+    window.until_message("Message 39");
+    window.settle();
+    let newest = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!(
+            "message:{}",
+            messages[39].id
+        )))
+        .unwrap();
+    assert!(
+        list.bottom() - newest.bottom() < px(40.0),
+        "a full list stands at its end"
+    );
+}
