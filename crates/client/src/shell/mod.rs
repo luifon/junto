@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod admin;
+mod arrange;
 mod book;
 pub mod call;
 mod camera;
@@ -90,6 +91,14 @@ pub(crate) enum Layer {
     Fork(threads::ForkDialog),
     /// The menu of a channel, at its row.
     ChannelMenu(junto_client_core::protocol::ids::ChannelId),
+    /// The menu of a group of the server book, at its head (ADR 0775).
+    GroupMenu(junto_client_core::arrangement::GroupId),
+    /// The menu of a workspace of the server book, at its row.
+    WorkspaceMenu(ServerId, junto_client_core::protocol::ids::WorkspaceId),
+    /// The choice of the group of the selected server, from its menu.
+    GroupChoice(ServerId),
+    /// The dialog that names a group.
+    RenameGroup(junto_client_core::arrangement::GroupId),
     /// The menu of a direct conversation, at its row.
     DirectMenu(junto_client_core::protocol::ids::ConversationId),
     /// The dialog of the notification settings of a scope.
@@ -362,6 +371,9 @@ pub struct Shell {
     pub(crate) linking: linking::LinkingUi,
     /// What the window holds of the update notice (ADR 0780).
     pub(crate) book: book::BookUi,
+    /// The drag that is over the server book, and the field of the name of a group
+    /// (ADR 0775).
+    pub(crate) arrange: arrange::ArrangeUi,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -444,6 +456,7 @@ impl Shell {
         let (account, account_subscriptions) = account::AccountUi::new(window, cx);
         let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
         let book = book::BookUi::new(window, cx);
+        let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
                 this.state
@@ -717,6 +730,7 @@ impl Shell {
             account,
             linking,
             book,
+            arrange,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -1431,6 +1445,14 @@ impl Shell {
             Layer::DirectMenu(conversation_id) => view
                 .lists()
                 .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == *conversation_id)),
+            // The group, the server or the workspace of the menu is no longer listed.
+            Layer::GroupMenu(group) | Layer::RenameGroup(group) => {
+                !view.groups.iter().any(|row| row.id == *group)
+            }
+            Layer::WorkspaceMenu(server_id, workspace_id) => !view.servers.iter().any(|row| {
+                row.id == *server_id && row.workspaces.iter().any(|held| held.id == *workspace_id)
+            }),
+            Layer::GroupChoice(server_id) => !view.servers.iter().any(|row| row.id == *server_id),
             // The scope of the dialog is gone.
             Layer::Notify => view.notify.is_none(),
             Layer::SearchFilter(_) => view
@@ -1484,6 +1506,8 @@ impl Shell {
             | Layer::PersonMenu(_)
             | Layer::MessageMenu(_)
             | Layer::ChannelMenu(_)
+            | Layer::GroupMenu(_)
+            | Layer::WorkspaceMenu(..)
             | Layer::DirectMenu(_)
             | Layer::SearchFilter(_)
             | Layer::RecordingFiles(_)
@@ -1501,6 +1525,8 @@ impl Shell {
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
+            Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
+            Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
             Layer::ConfirmRemove(server_id) => self
                 .render_confirm_remove(*server_id, view, window, cx)
                 .into_any_element(),

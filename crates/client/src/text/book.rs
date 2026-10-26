@@ -1,6 +1,7 @@
 //! The text of the order of the server book, of the update notice and of the version of a
 //! server (ADR 0780).
 
+use junto_client_core::arrangement::GroupColour;
 use junto_client_core::updates::Version;
 use junto_client_core::version::ServerVersion;
 
@@ -30,6 +31,145 @@ pub const fn move_help(step: Step, at_end: bool) -> &'static str {
         (Step::Down, false) => MOVE_DOWN_HELP,
         (Step::Down, true) => LAST_SERVER,
     }
+}
+
+// The arrangement of the server book (ADR 0775).
+pub const FIRST_IN_GROUP: &str = "It is the first server of its group.";
+pub const LAST_IN_GROUP: &str = "It is the last server of its group.";
+pub const GROUP_GONE: &str = "The group is no longer in the server book. Nothing was changed.";
+pub const WORKSPACE_GONE: &str = "The workspace is no longer listed. It was not moved.";
+
+pub fn too_many_groups(most: usize) -> String {
+    format!("The server book holds {most} groups, the most. Dissolve one to make another.")
+}
+
+/// The second line of a move item of a server: what the item does, or why it does nothing.
+/// A server in a group moves among the servers of its group.
+pub const fn server_move_help(step: Step, at_end: bool, in_group: bool) -> &'static str {
+    match (step, at_end, in_group) {
+        (Step::Up, true, true) => FIRST_IN_GROUP,
+        (Step::Down, true, true) => LAST_IN_GROUP,
+        (step, at_end, _) => move_help(step, at_end),
+    }
+}
+
+pub const COLLAPSE_EVERYTHING: &str = "Collapse every server and group";
+pub const EXPAND_EVERYTHING: &str = "Expand every server and group";
+pub const COLLAPSE_WORKSPACES: &str = "Collapse workspaces";
+pub const EXPAND_WORKSPACES: &str = "Expand workspaces";
+pub const COLLAPSE_WORKSPACES_HELP: &str = "Show the server without its workspaces.";
+pub const EXPAND_WORKSPACES_HELP: &str = "Show the workspaces under the server.";
+pub const MOVE_TO_GROUP: &str = "Group…";
+pub const MOVE_TO_GROUP_HELP: &str = "Put the server into a group, or into a new group.";
+pub const GROUP_CHOICE: &str = "Group of the server";
+pub const NEW_GROUP: &str = "New group";
+pub const NEW_GROUP_HELP: &str = "A new group that holds this server.";
+pub const REMOVE_FROM_GROUP: &str = "Remove from the group";
+pub const REMOVE_FROM_GROUP_HELP: &str = "The server stands directly after the group.";
+pub const IN_THIS_GROUP: &str = "The server is in this group.";
+pub const MARK_SERVER_READ: &str = "Mark server as read";
+pub const MARK_SERVER_READ_HELP: &str =
+    "Every channel and direct conversation of the server, up to its latest message.";
+pub const MARK_GROUP_READ: &str = "Mark group as read";
+pub const MARK_GROUP_READ_HELP: &str = "Every server of the group, up to its latest message.";
+pub const MARK_WORKSPACE_READ: &str = "Mark workspace as read";
+pub const MARK_WORKSPACE_READ_HELP: &str =
+    "Every channel of the workspace, up to its latest message.";
+pub const NOTHING_UNREAD: &str = "Nothing is unread.";
+
+pub const GROUP_MENU: &str = "Menu of the group";
+pub const RENAME_GROUP: &str = "Rename…";
+pub const RENAME_GROUP_HELP: &str = "Give the group a name, or leave it without one.";
+pub const COLLAPSE_GROUP: &str = "Collapse group";
+pub const EXPAND_GROUP: &str = "Expand group";
+pub const DISSOLVE_GROUP: &str = "Dissolve group";
+pub const DISSOLVE_GROUP_HELP: &str = "The servers stay in their place, outside a group.";
+pub const COLOUR: &str = "Colour";
+pub const CHOSEN: &str = "Chosen";
+pub const GROUP_MOVE_UP_HELP: &str = "One place up in the server book.";
+pub const GROUP_MOVE_DOWN_HELP: &str = "One place down in the server book.";
+pub const FIRST_PART: &str = "It is the first entry of the server book.";
+pub const LAST_PART: &str = "It is the last entry of the server book.";
+
+/// The second line of a move item of a group.
+pub const fn group_move_help(step: Step, at_end: bool) -> &'static str {
+    match (step, at_end) {
+        (Step::Up, false) => GROUP_MOVE_UP_HELP,
+        (Step::Up, true) => FIRST_PART,
+        (Step::Down, false) => GROUP_MOVE_DOWN_HELP,
+        (Step::Down, true) => LAST_PART,
+    }
+}
+
+pub const RENAME_GROUP_TITLE: &str = "Name of the group";
+pub const GROUP_NAME_FIELD: &str = "Name";
+pub const GROUP_NAME_HELP: &str =
+    "At most 64 characters. Without a name the server book names the group by its servers.";
+
+pub const WORKSPACE_MENU: &str = "Menu of the workspace";
+pub const WORKSPACE_MOVE_UP_HELP: &str = "One place up among the workspaces of the server.";
+pub const WORKSPACE_MOVE_DOWN_HELP: &str = "One place down among the workspaces of the server.";
+pub const FIRST_WORKSPACE: &str = "It is the first workspace of the server.";
+pub const LAST_WORKSPACE: &str = "It is the last workspace of the server.";
+
+/// The second line of a move item of a workspace.
+pub const fn workspace_move_help(step: Step, at_end: bool) -> &'static str {
+    match (step, at_end) {
+        (Step::Up, false) => WORKSPACE_MOVE_UP_HELP,
+        (Step::Up, true) => FIRST_WORKSPACE,
+        (Step::Down, false) => WORKSPACE_MOVE_DOWN_HELP,
+        (Step::Down, true) => LAST_WORKSPACE,
+    }
+}
+
+/// The name of a colour of a group.
+pub const fn colour_name(colour: GroupColour) -> &'static str {
+    match colour {
+        GroupColour::Bone => "Bone",
+        GroupColour::Terracotta => "Terracotta",
+        GroupColour::Ochre => "Ochre",
+        GroupColour::Olive => "Olive",
+        GroupColour::Cypress => "Cypress",
+        GroupColour::Bronze => "Bronze",
+        GroupColour::Cinnabar => "Cinnabar",
+    }
+}
+
+/// The name that a group shows: its own, or the names of its servers.
+pub fn group_shown_name(name: &str, servers: &[&str]) -> String {
+    if name.is_empty() {
+        servers.join(", ")
+    } else {
+        name.to_owned()
+    }
+}
+
+/// How many servers a group holds, as its head states it.
+pub fn server_count(count: usize) -> String {
+    match count {
+        1 => "1 server".to_owned(),
+        count => format!("{count} servers"),
+    }
+}
+
+/// The name of the head of a group for the accessibility tree and its tooltip: the name, the
+/// number of servers, whether it is collapsed, and what it holds unread and waiting.
+pub fn group_label(shown: &str, count: usize, collapsed: bool, extra: &[String]) -> String {
+    let mut label = format!(
+        "Group {shown}, {}, {}",
+        server_count(count),
+        if collapsed { "collapsed" } else { "expanded" }
+    );
+    for part in extra {
+        label.push_str(", ");
+        label.push_str(part);
+    }
+    label
+}
+
+/// The item of the choice of a group that moves the server into it.
+pub fn move_into(group: &str) -> String {
+    format!("Move into {group}")
 }
 
 // The update notice: one line of the channel column.

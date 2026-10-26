@@ -211,6 +211,67 @@ pub enum Change {
     },
 }
 
+/// The spot that one step up or down gives a server or a group, as the keyboard path of a
+/// drag (ADR 0702). A server in a group steps among the servers of its group; a server
+/// outside a group and a group step among the top-level parts, over a whole group. Absent at
+/// the end that the step leads to, and for an item that the shelves do not hold.
+pub fn step(shelves: &[Shelf], item: Item, up: bool) -> Option<Spot> {
+    let top = |index: usize| match &shelves[index] {
+        Shelf::Server(server) => Item::Server(*server),
+        Shelf::Group { group, .. } => Item::Group(group.id),
+    };
+    let beside = |index: usize, count: usize| {
+        if up {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1).filter(|next| *next < count)
+        }
+    };
+    if let Item::Server(server) = item {
+        for shelf in shelves {
+            if let Shelf::Group { servers, .. } = shelf
+                && let Some(index) = servers.iter().position(|held| *held == server)
+            {
+                let next = beside(index, servers.len())?;
+                let anchor = Item::Server(servers[next]);
+                return Some(if up {
+                    Spot::Before(anchor)
+                } else {
+                    Spot::After(anchor)
+                });
+            }
+        }
+    }
+    let index = shelves.iter().position(|shelf| match (shelf, item) {
+        (Shelf::Server(held), Item::Server(server)) => *held == server,
+        (Shelf::Group { group, .. }, Item::Group(id)) => group.id == id,
+        _ => false,
+    })?;
+    let next = beside(index, shelves.len())?;
+    Some(if up {
+        Spot::Before(top(next))
+    } else {
+        Spot::After(top(next))
+    })
+}
+
+/// The spot that one step up or down gives a workspace among `listed`, the workspaces of its
+/// server in the order of the person. Absent at the end that the step leads to.
+pub fn step_workspace(
+    listed: &[WorkspaceId],
+    workspace: WorkspaceId,
+    up: bool,
+) -> Option<WorkspaceSpot> {
+    let index = listed.iter().position(|held| *held == workspace)?;
+    if up {
+        Some(WorkspaceSpot::Before(listed[index.checked_sub(1)?]))
+    } else {
+        listed
+            .get(index + 1)
+            .map(|next| WorkspaceSpot::After(*next))
+    }
+}
+
 /// Why a change was not made. Nothing changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ArrangeError {

@@ -1,5 +1,6 @@
-//! The server book: every saved server with its workspaces and its state, and the field
-//! that adds a server. Collapsed, it shows one icon per server with a menu.
+//! The server book: every saved server with its workspaces and its state, the groups of the
+//! person (ADR 0775), and the field that adds a server. Collapsed, it shows one icon per
+//! server with a menu, and one tile per group.
 
 use gpui::{
     AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
@@ -10,7 +11,8 @@ use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 
 use super::{Layer, Shell, join, window_controls_height};
 use crate::assets::Icon;
-use crate::state::view::{ServerRow, ServerStatus, ShellView};
+use crate::state::book::DropTarget;
+use crate::state::view::{BookPart, ServerRow, ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -194,31 +196,105 @@ impl Shell {
                     .child(text::SERVER_BOOK),
             )
             .child(
-                Button::new("collapse-server-book")
-                    .kind(ButtonKind::Rail)
-                    .icon(Icon::Collapse)
-                    .tooltip(text::COLLAPSE_SERVER_BOOK)
-                    .selector("collapse-server-book")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_server_book(narrow, cx);
-                    })),
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(u(2.0))
+                    .child({
+                        // One control collapses every server and group while one of them is
+                        // expanded, and expands them all otherwise.
+                        let expanded = view.anything_expanded();
+                        let label = if expanded {
+                            text::book::COLLAPSE_EVERYTHING
+                        } else {
+                            text::book::EXPAND_EVERYTHING
+                        };
+                        Button::new("collapse-everything")
+                            .kind(ButtonKind::Rail)
+                            .icon(if expanded { Icon::Shrink } else { Icon::List })
+                            .tooltip(label)
+                            .accessible_label(label)
+                            .selector("collapse-everything")
+                            .disabled(view.servers.is_empty())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.arrange(
+                                        junto_client_core::arrangement::Change::CollapseEverything {
+                                            collapsed: expanded,
+                                        },
+                                        cx,
+                                    );
+                                });
+                            }))
+                    })
+                    .child(
+                        Button::new("collapse-server-book")
+                            .kind(ButtonKind::Rail)
+                            .icon(Icon::Collapse)
+                            .tooltip(text::COLLAPSE_SERVER_BOOK)
+                            .selector("collapse-server-book")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_server_book(narrow, cx);
+                            })),
+                    ),
             );
 
         let mut servers: Vec<AnyElement> = Vec::new();
-        for (index, row) in view.servers.iter().enumerate() {
-            if index > 0 {
-                servers.push(
-                    div()
-                        .flex_none()
-                        .mt(u(6.0))
-                        .mx(u(12.0))
-                        .mb(u(10.0))
-                        .child(Band::new(BandKind::Rail))
-                        .into_any_element(),
-                );
+        let band = || {
+            div()
+                .flex_none()
+                .mt(u(6.0))
+                .mx(u(12.0))
+                .mb(u(10.0))
+                .child(Band::new(BandKind::Rail))
+                .into_any_element()
+        };
+        for (position, part) in view.book.iter().enumerate() {
+            if position > 0 {
+                servers.push(band());
             }
-            servers.push(self.render_server(index, row, theme, cx));
+            match part {
+                BookPart::Server(index) => {
+                    servers.push(self.render_server(*index, &view.servers[*index], theme, cx));
+                }
+                BookPart::Group(group) => {
+                    let row = &view.groups[*group];
+                    servers.push(self.render_group_head(*group, row, view, theme, cx));
+                    if !row.collapsed {
+                        let members: Vec<AnyElement> = row
+                            .servers
+                            .iter()
+                            .map(|index| {
+                                self.render_server(*index, &view.servers[*index], theme, cx)
+                            })
+                            .collect();
+                        servers.push(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_none()
+                                .ml(u(6.0))
+                                .border_l_2()
+                                .border_color(Hsla::from(super::arrange::group_colour(
+                                    row.colour, theme,
+                                )))
+                                .debug_selector({
+                                    let group = *group;
+                                    move || format!("group-servers-{group}")
+                                })
+                                .children(members)
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
         }
+        servers.push(self.render_book_end(theme, cx));
+        let failed = self.state.read(cx).arrange_failure().is_some()
+            && !matches!(
+                self.layer,
+                Layer::GroupMenu(_) | Layer::WorkspaceMenu(..) | Layer::ServerMenu
+            );
 
         let asking = self.adding.is_some();
         let help: SharedString = if asking {
@@ -276,6 +352,10 @@ impl Shell {
 
         vec![
             header.into_any_element(),
+            div()
+                .flex_none()
+                .when(failed, |slot| slot.child(self.render_arrange_error(cx)))
+                .into_any_element(),
             ScrollArea::new("servers", &self.servers_scroll, text::SERVER_BOOK)
                 .dark()
                 .children(servers)
@@ -293,6 +373,8 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let server_id = row.id;
+        let collapsed = row.workspaces_collapsed;
+        let name: SharedString = row.name.clone().into();
         // The server is marked itself when no workspace row carries the selection.
         let marked = row.selected && !row.workspaces.iter().any(|workspace| workspace.selected);
         let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
@@ -338,6 +420,10 @@ impl Shell {
                 this.state
                     .update(cx, |state, cx| state.select_server(server_id, cx));
             }))
+            .on_drag(super::arrange::ServerDrag(server_id), {
+                let name = name.clone();
+                move |_, _, _, cx| cx.new(|_| super::person_drag::DragLabel(name.clone()))
+            })
             .child(
                 div()
                     .flex_none()
@@ -359,27 +445,96 @@ impl Shell {
                     .child(line),
             )
             .children(self.render_waiting_sign(index, row, cx))
-            // What the server holds unread that no row of a workspace shows.
-            .children(super::book::head_sign(row, index, cx));
-        let workspaces = row
-            .workspaces
-            .iter()
-            .enumerate()
-            .map(|(position, workspace)| {
-                let workspace_id = workspace.id;
-                WorkspaceRow::new(
-                    ("workspace", index * 1000 + position),
-                    workspace.name.clone(),
-                    workspace.id.as_uuid().as_u128(),
+            // What the server holds unread that no row of a workspace shows: with its
+            // workspaces collapsed, all that it holds.
+            .children(super::book::head_sign(row, index, cx))
+            .when(!row.workspaces.is_empty(), |head| {
+                let label = if collapsed {
+                    text::book::EXPAND_WORKSPACES
+                } else {
+                    text::book::COLLAPSE_WORKSPACES
+                };
+                head.child(
+                    div()
+                        .flex_none()
+                        .debug_selector(move || format!("workspaces-toggle-{index}"))
+                        .child(
+                            Button::new(("workspaces-toggle", index))
+                                .kind(ButtonKind::Rail)
+                                .icon(if collapsed {
+                                    Icon::ChevronRight
+                                } else {
+                                    Icon::ChevronDown
+                                })
+                                .tooltip(label)
+                                .accessible_label(label)
+                                .w(u(22.0))
+                                .h(u(22.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.state.update(cx, |state, cx| {
+                                        state.arrange(
+                                            junto_client_core::arrangement::Change::CollapseWorkspaces {
+                                                server: server_id,
+                                                collapsed: !collapsed,
+                                            },
+                                            cx,
+                                        );
+                                    });
+                                })),
+                        ),
                 )
-                .selected(workspace.selected)
-                .unread(super::channels::unread_sign(workspace.unread))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.select_workspace(server_id, workspace_id, cx);
-                    });
-                }))
             });
+        let head = self.drop_target(head, DropTarget::Server(server_id), theme, cx);
+        let open_menu = match &self.layer {
+            Layer::WorkspaceMenu(open_server, open) if *open_server == server_id => Some(*open),
+            _ => None,
+        };
+        let mut workspaces: Vec<AnyElement> = Vec::new();
+        for (position, workspace) in row.workspaces.iter().enumerate() {
+            let workspace_id = workspace.id;
+            let shown: SharedString = workspace.name.clone().into();
+            let row_element = WorkspaceRow::new(
+                ("workspace", index * 1000 + position),
+                workspace.name.clone(),
+                workspace.id.as_uuid().as_u128(),
+            )
+            .selected(workspace.selected)
+            .unread(super::channels::unread_sign(workspace.unread))
+            .open(open_menu == Some(workspace_id))
+            .on_menu(Self::handler(cx, move |this, window, cx| {
+                this.open_workspace_menu(server_id, workspace_id, window, cx);
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.select_workspace(server_id, workspace_id, cx);
+                });
+            }));
+            let dragged = div()
+                .id(("workspace-drag", index * 1000 + position))
+                .flex_none()
+                .on_drag(
+                    super::arrange::WorkspaceDrag(server_id, workspace_id),
+                    move |_, _, _, cx| cx.new(|_| super::person_drag::DragLabel(shown.clone())),
+                )
+                .child(row_element);
+            let dragged = self.drop_target(
+                dragged,
+                DropTarget::Workspace(server_id, workspace_id),
+                theme,
+                cx,
+            );
+            let menu = (open_menu == Some(workspace_id))
+                .then(|| self.render_workspace_menu(row, position, cx));
+            workspaces.push(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(dragged)
+                    .children(menu)
+                    .into_any_element(),
+            );
+        }
         div()
             .flex()
             .flex_col()
@@ -387,7 +542,7 @@ impl Shell {
             .pt(u(2.0))
             .pb(u(8.0))
             .child(head)
-            .when(!row.workspaces.is_empty(), |server| {
+            .when(!row.workspaces.is_empty() && !collapsed, |server| {
                 server.child(
                     div()
                         .relative()
@@ -420,20 +575,54 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let mut icons: Vec<AnyElement> = Vec::new();
-        for (index, row) in view.servers.iter().enumerate() {
-            if index > 0 {
-                icons.push(
-                    div()
-                        .flex_none()
-                        .w(u(28.0))
-                        .h(px(1.0))
-                        .my(u(7.0))
-                        .bg(Hsla::from(colors.basalt_rule))
-                        .into_any_element(),
-                );
+        let rule = || {
+            div()
+                .flex_none()
+                .w(u(28.0))
+                .h(px(1.0))
+                .my(u(7.0))
+                .bg(Hsla::from(colors.basalt_rule))
+                .into_any_element()
+        };
+        for (position, part) in view.book.iter().enumerate() {
+            if position > 0 {
+                icons.push(rule());
             }
-            icons.push(self.render_server_icon(index, row, theme, cx));
+            match part {
+                BookPart::Server(index) => {
+                    icons.push(self.render_server_icon(*index, &view.servers[*index], theme, cx));
+                }
+                BookPart::Group(group) => {
+                    let row = &view.groups[*group];
+                    let tile = self.render_group_tile(*group, row, view, theme, cx);
+                    if row.collapsed {
+                        icons.push(tile);
+                    } else {
+                        let members: Vec<AnyElement> = row
+                            .servers
+                            .iter()
+                            .map(|index| {
+                                self.render_server_icon(*index, &view.servers[*index], theme, cx)
+                            })
+                            .collect();
+                        icons.push(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_none()
+                                .items_center()
+                                .rounded(u(6.0))
+                                .bg(super::arrange::group_wash(row.colour, theme))
+                                .pb(u(4.0))
+                                .child(tile)
+                                .children(members)
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
         }
+        icons.push(self.render_book_end(theme, cx));
         vec![
             div()
                 .flex()
@@ -499,6 +688,7 @@ impl Shell {
             focus_ring(colors.basalt_edge, 1.0)
         };
         let focused_ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+        let name: SharedString = row.name.clone().into();
         let icon = div()
             .id(("server", index))
             .role(Role::ListItem)
@@ -539,6 +729,9 @@ impl Shell {
                 }
             }))
             .focus_visible(move |style| style.shadow(focused_ring))
+            .on_drag(super::arrange::ServerDrag(server_id), move |_, _, _, cx| {
+                cx.new(|_| super::person_drag::DragLabel(name.clone()))
+            })
             .child(div().rounded(u(4.0)).shadow(ring).child(picture(
                 "server-logo",
                 index,
@@ -589,6 +782,7 @@ impl Shell {
                         .bg(Hsla::from(colors.ochre)),
                 )
             });
+        let icon = self.drop_target(icon, DropTarget::Server(server_id), theme, cx);
         div()
             .relative()
             .flex_none()

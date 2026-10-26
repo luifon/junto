@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use gpui::RenderImage;
 use junto_client_core::api::SettingsScope;
+use junto_client_core::arrangement::{Arrangement, GroupColour, GroupId, ServerGroup, Shelf};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
@@ -266,6 +267,9 @@ pub struct Known {
     pub quiet_failed: Vec<(ServerId, String)>,
     /// What the update check holds, and what the person did with it (ADR 0780).
     pub updates: super::book::UpdatesKnown,
+    /// The groups, the order of the workspaces and what is collapsed in the server book,
+    /// as the client core holds them (ADR 0775).
+    pub arrangement: junto_client_core::arrangement::Arrangement,
 }
 
 /// Where the fork of a thread stands that the person asked for.
@@ -637,7 +641,41 @@ pub struct ServerRow {
     pub head_unread: Unread,
     /// The join requests that wait for a decision of the person (ADR 0761).
     pub waiting_join_requests: usize,
+    /// The workspaces in the order of the person (ADR 0775).
     pub workspaces: Vec<WorkspaceRow>,
+    /// The group of the server in the server book.
+    pub group: Option<GroupId>,
+    /// The server book shows the server without its workspaces.
+    pub workspaces_collapsed: bool,
+}
+
+/// One group of the server book (ADR 0775).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupRow {
+    pub id: GroupId,
+    /// The name as the person gave it; empty without one.
+    pub name: String,
+    /// The name that the server book shows: the given one, or the names of its servers.
+    pub shown_name: String,
+    pub colour: GroupColour,
+    pub collapsed: bool,
+    /// The servers of the group, as indexes of [`ShellView::servers`].
+    pub servers: Vec<usize>,
+    /// What the servers of the group hold unread, together.
+    pub unread: Unread,
+    /// The join requests that wait for the person on the servers of the group.
+    pub waiting_join_requests: usize,
+    /// The group holds the selected server.
+    pub selected: bool,
+}
+
+/// One top-level part of the server book, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookPart {
+    /// A server outside a group: an index of [`ShellView::servers`].
+    Server(usize),
+    /// A group: an index of [`ShellView::groups`].
+    Group(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1566,9 +1604,50 @@ pub struct ShellView {
     pub preset_refused: Vec<(ServerId, String)>,
     /// A newer build of the client that the source of releases offers (ADR 0780).
     pub update: Option<super::book::Available>,
+    /// The groups of the server book (ADR 0775).
+    pub groups: Vec<GroupRow>,
+    /// The top-level parts of the server book in their order: each server outside a group,
+    /// and each group with its servers.
+    pub book: Vec<BookPart>,
 }
 
 impl ShellView {
+    /// The top-level parts of the server book in the form of the client core, for the
+    /// changes of the arrangement.
+    pub fn shelves(&self) -> Vec<Shelf> {
+        self.book
+            .iter()
+            .map(|part| match part {
+                BookPart::Server(index) => Shelf::Server(self.servers[*index].id),
+                BookPart::Group(index) => {
+                    let group = &self.groups[*index];
+                    Shelf::Group {
+                        group: ServerGroup {
+                            id: group.id,
+                            name: group.name.clone(),
+                            colour: group.colour,
+                            collapsed: group.collapsed,
+                        },
+                        servers: group
+                            .servers
+                            .iter()
+                            .map(|server| self.servers[*server].id)
+                            .collect(),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// True while a group or the workspaces of a server are expanded in the server book.
+    pub fn anything_expanded(&self) -> bool {
+        self.groups.iter().any(|group| !group.collapsed)
+            || self
+                .servers
+                .iter()
+                .any(|row| !row.workspaces.is_empty() && !row.workspaces_collapsed)
+    }
+
     /// The lists of the selected server, while it shows them.
     pub fn lists(&self) -> Option<&ServerLists> {
         match &self.selected.as_ref()?.content {
@@ -3645,6 +3724,50 @@ fn call_notice(servers: &[ServerSnapshot], known: &Known) -> Option<CallNotice> 
     }
 }
 
+/// The groups of the server book and its top-level parts, from the rows of the servers in
+/// the order of the book (ADR 0775).
+fn book_parts(rows: &[ServerRow], arrangement: &Arrangement) -> (Vec<GroupRow>, Vec<BookPart>) {
+    let order: Vec<ServerId> = rows.iter().map(|row| row.id).collect();
+    let index_of = |server: &ServerId| rows.iter().position(|row| row.id == *server);
+    let mut groups = Vec::new();
+    let mut book = Vec::new();
+    for shelf in arrangement.shelves(&order) {
+        match shelf {
+            Shelf::Server(server) => {
+                if let Some(index) = index_of(&server) {
+                    book.push(BookPart::Server(index));
+                }
+            }
+            Shelf::Group { group, servers } => {
+                let servers: Vec<usize> = servers.iter().filter_map(index_of).collect();
+                let mut unread = Unread::default();
+                let mut waiting = 0;
+                for index in &servers {
+                    unread.add(rows[*index].unread);
+                    waiting += rows[*index].waiting_join_requests;
+                }
+                let names: Vec<&str> = servers
+                    .iter()
+                    .map(|index| rows[*index].name.as_str())
+                    .collect();
+                groups.push(GroupRow {
+                    id: group.id,
+                    shown_name: crate::text::book::group_shown_name(&group.name, &names),
+                    name: group.name,
+                    colour: group.colour,
+                    collapsed: group.collapsed,
+                    selected: servers.iter().any(|index| rows[*index].selected),
+                    servers,
+                    unread,
+                    waiting_join_requests: waiting,
+                });
+                book.push(BookPart::Group(groups.len() - 1));
+            }
+        }
+    }
+    (groups, book)
+}
+
 /// The view of the whole window.
 pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) -> ShellView {
     let selected_id = selection
@@ -3662,6 +3785,27 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             let shown = shown_model(server).and_then(|model| {
                 shown_workspace(model, selection.workspaces.get(&server.id).copied())
             });
+            let arrangement = &known.arrangement;
+            let collapsed = arrangement.workspaces_collapsed(server.id);
+            let mut workspaces: Vec<WorkspaceRow> = unreads
+                .as_ref()
+                .map(|(model, unreads)| {
+                    model
+                        .workspaces
+                        .iter()
+                        .map(|workspace| WorkspaceRow {
+                            unread: workspace_unread(workspace, unreads),
+                            id: workspace.workspace.id,
+                            name: workspace.workspace.name.clone(),
+                            selected: selected
+                                && shown.is_some_and(|shown| {
+                                    shown.workspace.id == workspace.workspace.id
+                                }),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            arrangement.sort_workspaces(server.id, &mut workspaces, |row| row.id);
             ServerRow {
                 id: server.id,
                 name: server.name.clone(),
@@ -3676,31 +3820,24 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     .as_ref()
                     .map(|(_, unreads)| unreads.total())
                     .unwrap_or_default(),
+                // With its workspaces collapsed, no row of a workspace shows anything: the
+                // head of the server shows all that it holds (ADR 0775).
                 head_unread: unreads
                     .as_ref()
-                    .map(|(model, unreads)| head_unread(model, unreads))
+                    .map(|(model, unreads)| {
+                        if collapsed && !workspaces.is_empty() {
+                            unreads.total()
+                        } else {
+                            head_unread(model, unreads)
+                        }
+                    })
                     .unwrap_or_default(),
                 waiting_join_requests: unreads.as_ref().map_or(0, |(model, _)| {
                     super::admin::view::waiting_join_requests(model)
                 }),
-                workspaces: unreads
-                    .as_ref()
-                    .map(|(model, unreads)| {
-                        model
-                            .workspaces
-                            .iter()
-                            .map(|workspace| WorkspaceRow {
-                                unread: workspace_unread(workspace, unreads),
-                                id: workspace.workspace.id,
-                                name: workspace.workspace.name.clone(),
-                                selected: selected
-                                    && shown.is_some_and(|shown| {
-                                        shown.workspace.id == workspace.workspace.id
-                                    }),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                workspaces,
+                group: arrangement.group_of(server.id),
+                workspaces_collapsed: collapsed,
                 status,
             }
         })
@@ -3752,6 +3889,8 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         account_id: Some(model.account.id),
         name: crate::text::label(&model.account.name),
     });
+    let rows: Vec<ServerRow> = rows;
+    let (groups, book) = book_parts(&rows, &known.arrangement);
     let mut view = ShellView {
         servers: rows,
         selected,
@@ -3795,6 +3934,8 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .map(|server| (server.id, server.name.clone()))
             .collect(),
         update: super::book::available(&known.updates),
+        groups,
+        book,
         share_notice: known
             .media
             .calls

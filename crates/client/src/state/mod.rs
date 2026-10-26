@@ -2451,6 +2451,7 @@ impl AppState {
         self.keep_people(cx);
         self.keep_logos(cx);
         self.follow_updates();
+        self.follow_arrangement();
         self.follow_call_keys();
         let view = self.view();
         let shown = view.shown();

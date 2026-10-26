@@ -23,7 +23,7 @@ use crate::messages::document;
 use crate::support::{Fault, FaultProxy, TestServer};
 
 impl Window {
-    fn server_names(&mut self) -> Vec<String> {
+    pub(crate) fn server_names(&mut self) -> Vec<String> {
         self.view()
             .servers
             .into_iter()
@@ -34,7 +34,7 @@ impl Window {
     /// Joins a further server with an invite code of its administrator. The new server
     /// is shown afterwards.
     #[track_caller]
-    fn join_further(&mut self, world: &World, server: &TestServer, admin: &Admin) {
+    pub(crate) fn join_further(&mut self, world: &World, server: &TestServer, admin: &Admin) {
         let count = self.view().servers.len();
         let code = admin.invite(world, 1);
         self.find_server(&server.address());
@@ -100,7 +100,7 @@ impl Window {
         }
     }
 
-    fn open_server_menu(&mut self) {
+    pub(crate) fn open_server_menu(&mut self) {
         if !self.shows("server-menu") {
             self.click("server-menu-button");
         }

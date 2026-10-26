@@ -530,3 +530,77 @@ fn a_stored_arrangement_outside_its_bounds_is_refused() {
     };
     assert!(named.check().is_err());
 }
+
+#[test]
+fn a_step_moves_a_server_within_its_group_and_a_top_level_part_over_whole_groups() {
+    let mut book = Book::new(5);
+    let ids = book.ids.clone();
+    book.change(Change::GroupWith {
+        server: ids[2],
+        target: ids[1],
+    })
+    .unwrap();
+    book.name(1, "G");
+    let group = book.group(1);
+    assert_eq!(book.shape(), "0 G[1 2] 3 4");
+    let shelves = book.arrangement.shelves(&book.order);
+    let up = |item| step(&shelves, item, true);
+    let down = |item| step(&shelves, item, false);
+    // Inside the group.
+    assert_eq!(up(Item::Server(ids[1])), None);
+    assert_eq!(
+        down(Item::Server(ids[1])),
+        Some(Spot::After(Item::Server(ids[2])))
+    );
+    assert_eq!(
+        up(Item::Server(ids[2])),
+        Some(Spot::Before(Item::Server(ids[1])))
+    );
+    assert_eq!(down(Item::Server(ids[2])), None);
+    // Outside: over the whole group.
+    assert_eq!(up(Item::Server(ids[0])), None);
+    assert_eq!(
+        down(Item::Server(ids[0])),
+        Some(Spot::After(Item::Group(group)))
+    );
+    assert_eq!(
+        up(Item::Server(ids[3])),
+        Some(Spot::Before(Item::Group(group)))
+    );
+    assert_eq!(down(Item::Server(ids[4])), None);
+    assert_eq!(
+        up(Item::Group(group)),
+        Some(Spot::Before(Item::Server(ids[0])))
+    );
+    assert_eq!(
+        down(Item::Group(group)),
+        Some(Spot::After(Item::Server(ids[3])))
+    );
+    assert_eq!(up(Item::Server(ServerId::generate())), None);
+
+    // The steps make the moves that they name.
+    let to = down(Item::Server(ids[0])).unwrap();
+    book.change(Change::MoveServer { server: ids[0], to })
+        .unwrap();
+    assert_eq!(book.shape(), "G[1 2] 0 3 4");
+    let shelves = book.arrangement.shelves(&book.order);
+    let to = step(&shelves, Item::Group(group), false).unwrap();
+    book.change(Change::MoveGroup { group, to }).unwrap();
+    assert_eq!(book.shape(), "0 G[1 2] 3 4");
+}
+
+#[test]
+fn a_step_moves_a_workspace_one_place_among_the_listed_ones() {
+    let listed: Vec<WorkspaceId> = (0..3).map(|_| WorkspaceId::generate()).collect();
+    assert_eq!(step_workspace(&listed, listed[0], true), None);
+    assert_eq!(
+        step_workspace(&listed, listed[0], false),
+        Some(WorkspaceSpot::After(listed[1]))
+    );
+    assert_eq!(
+        step_workspace(&listed, listed[2], true),
+        Some(WorkspaceSpot::Before(listed[1]))
+    );
+    assert_eq!(step_workspace(&listed, listed[2], false), None);
+    assert_eq!(step_workspace(&listed, WorkspaceId::generate(), true), None);
+}
