@@ -4,10 +4,10 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, ElementId, InteractiveElement, IntoElement,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Refineable, Rems, RenderOnce, ScrollHandle, Size,
-    StyleRefinement, Styled, Window, canvas, div, prelude::FluentBuilder,
+    Role, StatefulInteractiveElement, StyleRefinement, Styled, Window, canvas, div,
+    prelude::FluentBuilder,
 };
 
-use super::ScrollArea;
 use crate::text;
 
 /// The controls that a change of the height of a part moves (ADR 0730).
@@ -177,19 +177,24 @@ impl RenderOnce for Held {
             .overflow_hidden()
             .when_some(heights.get().shown, |frame, shown| frame.h(shown))
             .when_some(most, |frame, most| frame.max_h(most))
-            // Before its first measure the part has the height of its content.
-            .child(match heights.get().shown {
-                None => content.into_any_element(),
-                Some(_) => {
-                    let list = ScrollArea::new("held-content", &scroll, self.label);
-                    match self.selector {
-                        Some(selector) => list.selector(selector),
-                        None => list,
-                    }
-                    .child(content)
-                    .into_any_element()
-                }
-            })
+            // One structure in every frame: before its first measure the part has the
+            // height of its content, after it the list of its content scrolls in it.
+            .child(
+                div()
+                    .id("held-content")
+                    .role(Role::List)
+                    .aria_label(self.label)
+                    .when_some(self.selector, |list, selector| {
+                        list.debug_selector(move || selector.to_owned())
+                    })
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .child(content),
+            )
+            .child(super::scroll::scroll_bar(&scroll, false, cx))
             .child(
                 canvas(
                     move |bounds, window, cx| {

@@ -80,10 +80,12 @@ pub fn empty_bands(
                 };
                 found.push(format!(
                     "{name}: {} design px of empty space {place}, from {} to {} design px of \
-                     the window",
+                     the window (the area spans {} to {})",
                     at(space),
                     at(from),
                     at(y),
+                    at(top),
+                    at(bottom),
                 ));
             }
             last_part = Some(y);

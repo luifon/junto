@@ -341,6 +341,25 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        // "Mark all as read" is in the header, which has a height of its own: it appears
+        // with the first unread notice and moves nothing (ADR 0730).
+        let mark_all = (panel.unread > 0).then(|| {
+            Button::new("mark-all-read")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::CheckDouble)
+                .tooltip(if panel.marking {
+                    text::MARKING_ALL_READ
+                } else {
+                    text::MARK_ALL_READ
+                })
+                .disabled(panel.marking)
+                .selector("mark-all-read")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.mark_all_notices_read(server_id, cx);
+                    });
+                }))
+        });
         let header = SideHeader::new(text::NOTIFICATIONS)
             .title_bar()
             .icon(Icon::Bell)
@@ -350,6 +369,7 @@ impl Shell {
                 String::new()
             })
             .trailing(
+                div().flex().items_center().gap(u(4.0)).children(mark_all).child(
                 Button::new("close-notices")
                     .kind(ButtonKind::Ghost)
                     .icon(Icon::X)
@@ -362,35 +382,8 @@ impl Shell {
                             this.state.update(cx, |state, cx| state.close_notices(cx));
                         }
                     })),
+                ),
             );
-        let bar = (panel.unread > 0).then(|| {
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .px(u(14.0))
-                .pt(u(8.0))
-                .pb(u(9.0))
-                .bg(Hsla::from(colors.limestone))
-                .border_b_1()
-                .border_color(Hsla::from(colors.rule))
-                .child(
-                    Button::new("mark-all-read")
-                        .icon(Icon::CheckDouble)
-                        .label(if panel.marking {
-                            text::MARKING_ALL_READ
-                        } else {
-                            text::MARK_ALL_READ
-                        })
-                        .disabled(panel.marking)
-                        .selector("mark-all-read")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                state.mark_all_notices_read(server_id, cx);
-                            });
-                        })),
-                )
-        });
         let failed = panel.failed.clone().map(|reason| {
             div().flex_none().px(u(14.0)).pt(u(10.0)).child(
                 Notice::error(reason).selector("notices-failed").action(
@@ -529,7 +522,6 @@ impl Shell {
         };
         frame
             .child(header)
-            .child(crate::ui::notice_slot("notices-bar-slot").children(bar))
             .child(
                 crate::ui::notice_slot("notices-failed-slot")
                     .children(failed)

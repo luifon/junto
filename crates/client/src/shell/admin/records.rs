@@ -1777,7 +1777,8 @@ impl Shell {
                     .debug_selector(|| "audit-empty".to_owned())
             });
         }
-        let mut result = crate::ui::notice_slot("audit-result-slot");
+        // The end of the list moves nothing under it (ADR 0730).
+        let mut result = crate::ui::notice_slot("audit-result-slot").at_end();
         // The end of the list: a read that runs or failed, the older entries, the bound.
         match &page.state {
             AuditRead::NotRead | AuditRead::Reading => {
