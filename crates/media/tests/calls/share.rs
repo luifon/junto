@@ -451,7 +451,8 @@ impl Person {
     }
 
     /// The frame rate of the encoding of a picture of this width while the processor of this
-    /// person's device limits it below the full rate.
+    /// person's device limits it below the full rate, and has limited it for most of the time
+    /// of the encoding.
     async fn limited_by_processor(&self, width: u32) -> Option<f64> {
         let stats = self.calls.statistics().await.ok()?;
         (stats.publisher_stats.iter())
@@ -462,7 +463,8 @@ impl Person {
                         && stat.outbound.frame_width == width
                         && stat.outbound.quality_limitation_reason
                             == livekit::webrtc::stats::QualityLimitationReason::Cpu
-                        && stat.outbound.frames_per_second < 25.0 =>
+                        && stat.outbound.frames_per_second < 25.0
+                        && mostly_processor(&stat.outbound.quality_limitation_durations) =>
                 {
                     Some(stat.outbound.frames_per_second)
                 }
@@ -867,28 +869,69 @@ async fn one_person_shares_two_things_and_the_viewer_hears_only_the_one_watched(
     .await;
 }
 
-/// The slots of the shares of `of` that a room connection of the call library receives:
-/// the picture tracks and the sound tracks that it has subscribed to.
-fn received_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec<u8>) {
+/// True when the processor limited an encoding for more than half of its time, as its
+/// durations of each quality limitation state.
+fn mostly_processor(durations: &std::collections::HashMap<String, f64>) -> bool {
+    let all: f64 = durations.values().sum();
+    durations.get("cpu").is_some_and(|cpu| *cpu * 2.0 > all)
+}
+
+/// The packets that a subscribed track of a room connection has received.
+async fn packets_received(track: &livekit::prelude::RemoteTrack) -> u64 {
+    track
+        .get_stats()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|stat| match stat {
+            RtcStats::InboundRtp(stat) => stat.received.packets_received,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The slots of the shares of `of` whose media a room connection of the call library
+/// receives: the picture tracks and the sound tracks whose packets grow within one second.
+/// The call library keeps a track after the media server has withdrawn the permission to
+/// receive it, so the presence of a track does not say that its media arrives.
+async fn received_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec<u8>) {
     use livekit::prelude::TrackSource;
-    let (mut pictures, mut sounds) = (Vec::new(), Vec::new());
+    let mut tracks = Vec::new();
     for participant in room.remote_participants().values() {
         if junto_media::engine::account_of(participant.identity().as_str()) != Some(of) {
             continue;
         }
         for publication in participant.track_publications().values() {
-            if publication.track().is_none() {
+            let Some(track) = publication.track() else {
                 continue;
-            }
-            match publication.source() {
-                TrackSource::Screenshare => pictures.push(
+            };
+            let slot = match publication.source() {
+                TrackSource::Screenshare => (
+                    true,
                     junto_media::share::read_track_name(&publication.name())
                         .map_or(0, |name| name.slot),
                 ),
-                TrackSource::ScreenshareAudio => {
-                    sounds.push(junto_media::share::read_sound_name(&publication.name()));
-                }
-                _ => {}
+                TrackSource::ScreenshareAudio => (
+                    false,
+                    junto_media::share::read_sound_name(&publication.name()),
+                ),
+                _ => continue,
+            };
+            tracks.push((slot, track));
+        }
+    }
+    let mut before = Vec::new();
+    for (_, track) in &tracks {
+        before.push(packets_received(track).await);
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (mut pictures, mut sounds) = (Vec::new(), Vec::new());
+    for (((picture, slot), track), before) in tracks.iter().zip(before) {
+        if packets_received(track).await > before {
+            if *picture {
+                pictures.push(*slot);
+            } else {
+                sounds.push(*slot);
             }
         }
     }
@@ -907,7 +950,7 @@ async fn until_received(
 ) {
     let started = std::time::Instant::now();
     loop {
-        let received = received_slots(room, of);
+        let received = received_slots(room, of).await;
         if received == expected {
             return;
         }
@@ -972,7 +1015,7 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
         // Cara keeps the one share of the lowest slot, also some seconds later.
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            assert_eq!(received_slots(&old, ann_id), (vec![0], vec![0]));
+            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![0]));
         }
 
         // Ann ends the screen: one share is left, and Cara receives it.
