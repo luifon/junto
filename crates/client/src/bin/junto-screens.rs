@@ -759,6 +759,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
             muted: false,
             deafened: false,
             joining: None,
+            input_test_failed: None,
             call: Some(ActiveCall {
                 camera: junto_media::camera::CameraState::Off,
                 cameras: Vec::new(),

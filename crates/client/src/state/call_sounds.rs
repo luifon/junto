@@ -353,7 +353,7 @@ mod tests {
         assert!(sounds(&outside, &still_outside, true).is_empty());
         let listed = heard(
             &CallsView::default(),
-            Some(&[participant(other, true)]),
+            Some(&[participant(other, &[0])]),
             Some(scene.own),
         );
         assert_eq!(listed, outside);
