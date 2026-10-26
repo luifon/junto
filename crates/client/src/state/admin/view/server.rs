@@ -225,7 +225,11 @@ mod tests {
     #[test]
     fn only_an_administrator_has_the_page_of_the_server() {
         let pages = |account: OwnAccount| {
-            let groups = nav(&model(account), None, &crate::state::admin::view::Waiting::default());
+            let groups = nav(
+                &model(account),
+                None,
+                &crate::state::admin::view::Waiting::default(),
+            );
             assert_eq!(groups[0].title, NavTitle::Server);
             groups[0].pages.clone()
         };
