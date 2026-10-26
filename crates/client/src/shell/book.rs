@@ -620,9 +620,13 @@ impl Shell {
                 }
             }
             (UpdateWay::InApp, None) => parts.push(
-                sentence(txt::INSTALLS_ITSELF.into(), "version-no-install").into_any_element(),
+                sentence(txt::INSTALLS_ITSELF.into(), "version-installs-itself").into_any_element(),
             ),
-            (UpdateWay::NoSource, _) => {}
+            // A build without a source of its own installs nothing, also when the update
+            // check of a test names a newer version.
+            (UpdateWay::NoSource, _) => parts.push(
+                sentence(txt::NO_INSTALL.into(), "version-no-install").into_any_element(),
+            ),
             (way, Some(newer)) => {
                 if let Some(steps) = txt::update_steps(newer, way) {
                     parts.push(sentence(steps.into(), "update-steps").into_any_element());
