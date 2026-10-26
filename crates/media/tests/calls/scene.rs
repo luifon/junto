@@ -68,6 +68,8 @@ fn holding(
     let test = this_test();
     HOLDERS.lock().unwrap().push(test.clone());
     step("holds the media server");
+    // The holders before it had limits of their own.
+    crate::limit::restart_limit();
     MediaServer {
         _shared: shared,
         _alone: alone,
