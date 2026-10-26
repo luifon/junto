@@ -886,11 +886,12 @@ fn the_server_menu_has_no_empty_space_after_its_move_items(cx: &mut TestAppConte
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
     window.open_server_menu();
-    window.until("the menu offers the administration", |window| {
-        window.shows("menu-move-down") && window.shows("menu-administration")
+    // The item after the move items is the choice of the group of the server (ADR 0775).
+    window.until("the menu offers the group of the server", |window| {
+        window.shows("menu-move-down") && window.shows("menu-server-group")
     });
     let down = window.cx.debug_bounds("menu-move-down").unwrap();
-    let next = window.cx.debug_bounds("menu-administration").unwrap();
+    let next = window.cx.debug_bounds("menu-server-group").unwrap();
     let gap = next.top() - down.bottom();
     assert!(
         gap < gpui::px(16.0),

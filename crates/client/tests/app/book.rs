@@ -11,7 +11,6 @@ use junto_client_core::protocol::ids::WorkspaceId;
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
 
 use crate::harness::{Window, World, member, open, selector};
-use crate::messages::document;
 
 /// Drags from the middle of the element `from` to the point of the element `to` at `at` of
 /// its height, as the pointer does: a press, a move that starts the drag, a move to the
@@ -95,9 +94,11 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     let (acme_admin, harbor_admin, mill_admin) =
         (world.owner(&acme), world.owner(&harbor), world.owner(&mill));
     let (directory, mut window) = member(cx, &world, &acme.address(), &acme_admin, "Luca");
+    // A message in the channel that the window shows is read at once; the unread sign is
+    // tested with a mention in a channel of Acme Studio while a channel of Mill is shown.
+    let (acme_general, luca_at_acme) = (window.selected_channel(), window.own_account());
     window.join_further(&world, &harbor, &harbor_admin);
     window.join_further(&world, &mill, &mill_admin);
-    let mill_general = window.selected_channel();
     assert_eq!(window.server_names(), ["Acme Studio", "Harbor", "Mill"]);
     assert!(window.view().groups.is_empty());
 
@@ -166,7 +167,7 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     assert!(!window.shows("server-1") && !window.shows("server-2"));
     assert!(window.shows("server-0") && window.shows("group-count-0"));
     assert!(!window.shows("group-unread-0"));
-    mill_admin.send(&world, mill_general, document("A new plan"));
+    acme_admin.mention(&world, acme_general, "A new plan for ", luca_at_acme);
     window.until("the head of the group shows the unread message", |window| {
         window.shows("group-unread-0") && window.view().groups[0].unread.any()
     });
@@ -313,6 +314,16 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
     });
     window.press("escape");
     let ordered = window.workspaces_of_first();
+    // A message in the channel that the window shows is read at once: the window shows a
+    // workspace other than Lab before the message to Lab.
+    let shown = ordered
+        .iter()
+        .find(|name| name.as_str() != "Lab")
+        .cloned()
+        .unwrap();
+    let row = window.workspace_row(&shown);
+    window.click_named(row);
+    window.settle();
 
     // The workspaces of the server collapse; the head of the server then shows what they
     // hold unread.
@@ -322,7 +333,8 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
     });
     let hidden = window.workspace_row(&last);
     assert!(!window.shows_named(hidden));
-    admin.send(&world, plans, document("Plans for the week"));
+    let luca = window.own_account();
+    admin.mention(&world, plans, "Plans for the week, ", luca);
     window.until(
         "the head of the server shows the unread message",
         |window| window.shows("server-head-unread-0"),
@@ -360,7 +372,7 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
     });
 
     // Mark the server as read from its menu.
-    admin.send(&world, plans, document("And one more"));
+    admin.mention(&world, plans, "And one more, ", luca);
     window.until("the head shows the unread message", |window| {
         window.shows("server-head-unread-0")
     });
