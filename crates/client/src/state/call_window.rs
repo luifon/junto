@@ -9,7 +9,7 @@ impl AppState {
         } else {
             self.talking_windows.remove(&window);
         }
-        self.calls.set_talking(!self.talking_windows.is_empty());
+        self.sync_talking();
     }
     /// The call window, while it is open.
     pub fn call_window(&self) -> Option<gpui::AnyWindowHandle> {

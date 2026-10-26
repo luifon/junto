@@ -1006,7 +1006,7 @@ pub const VOICE_ACTIVATION: &str = "Voice activation";
 pub const PUSH_TO_TALK: &str = "Push to talk";
 pub const TALK_KEY: &str = "Key";
 pub const INPUT_MODE_HELP: &str = "Voice activation sends your open microphone. Push to talk \
-     sends it only while you hold the key, and only while Junto is the focused application.";
+     sends it only while you hold the key.";
 pub const ECHO_CANCELLATION: &str = "Echo cancellation";
 pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";
@@ -1020,10 +1020,66 @@ pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or le
 /// The question before the switch to push to talk.
 pub fn push_to_talk_question(key: TalkKey) -> String {
     format!(
-        "With push to talk, your microphone sends sound only while you hold {}, and only while \
-         Junto is the focused application. Switch to push to talk?",
+        "With push to talk, your microphone sends sound only while you hold {}. Switch to push \
+         to talk?",
         talk_key(key)
     )
+}
+
+// The key that mutes, and how the keys of a call reach Junto (ADR 0776).
+pub const MUTE_KEY: &str = "Mute key";
+pub const NO_MUTE_KEY: &str = "None";
+pub const SET_MUTE_KEY: &str = "Set key";
+pub const CHANGE_MUTE_KEY: &str = "Change key";
+pub const REMOVE_MUTE_KEY: &str = "Remove";
+pub const PRESS_MUTE_KEY: &str =
+    "Press the keys: Control, Alt, Shift or the system key, with a letter, a digit or a function \
+     key. Escape stops.";
+pub const MUTE_KEY_HELP: &str = "Mutes and unmutes your microphone in a call.";
+pub const KEYS_EVERYWHERE: &str =
+    "The key of push to talk and the mute key work also while another application is in front.";
+pub const KEYS_NEED_PERMISSION: &str = "To use the key of push to talk and the mute key while \
+     another application is in front, allow Junto under Input Monitoring in Privacy & Security of \
+     the System Settings. Until then they work while Junto is in front.";
+pub const KEYS_ALLOWED: &str = "Junto may read the keys under Input Monitoring: the key of push \
+     to talk and the mute key work also while another application is in front.";
+pub const ALLOW_INPUT_MONITORING: &str = "Allow";
+pub const OPEN_INPUT_MONITORING: &str = "Open System Settings";
+pub const KEYS_PORTAL: &str = "Your desktop gives Junto the key of push to talk and the mute key \
+     while another application is in front. It asks you to confirm them the first time a call \
+     needs them, and you can change them in its settings.";
+pub const KEYS_WINDOW_ONLY: &str = "On this desktop the key of push to talk and the mute key work \
+     only while a window of Junto is in front: it has no global shortcuts portal.";
+
+/// The sentence when the portal of the desktop did not give the keys.
+pub fn keys_portal_failed(reason: &str) -> String {
+    format!(
+        "Your desktop did not give Junto global shortcuts ({}). The key of push to talk and the \
+         mute key work while a window of Junto is in front.",
+        sentence(reason)
+    )
+}
+
+/// A key of a call as the settings name it.
+pub fn key_combo(combo: &junto_client_core::global_keys::KeyCombo) -> String {
+    use junto_client_core::global_keys::Key;
+    combo
+        .keys()
+        .iter()
+        .map(|key| match key {
+            Key::Control => "Control".to_owned(),
+            Key::Alt if cfg!(target_os = "macos") => "Option".to_owned(),
+            Key::Alt => "Alt".to_owned(),
+            Key::Shift => "Shift".to_owned(),
+            Key::Meta if cfg!(target_os = "macos") => "Command".to_owned(),
+            Key::Meta if cfg!(windows) => "Windows".to_owned(),
+            Key::Meta => "Super".to_owned(),
+            Key::Letter(letter) => letter.to_string(),
+            Key::Digit(digit) => digit.to_string(),
+            Key::Function(number) => format!("F{number}"),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 pub const SENSITIVITY: &str = "Sensitivity";
 pub const SENSITIVITY_HELP: &str =

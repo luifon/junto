@@ -1387,3 +1387,97 @@ fn the_tiles_of_the_people_fill_the_stage(cx: &mut TestAppContext) {
         }
     }
 }
+
+/// The keys of a call (ADR 0776): the source of the system reads them only in a call; its key
+/// of push to talk sends the microphone, its key that mutes closes it; a window gives the key
+/// that mutes only while no source gives it.
+#[gpui::test]
+fn the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window(cx: &mut TestAppContext) {
+    use junto_client_core::global_keys::{HeldKeys, Key};
+    use junto_media::calls::CallsView;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let held = HeldKeys::default();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.install_held_keys(held.clone(), cx);
+        state.set_input_mode(InputMode::PushToTalk, cx);
+        state.set_mute_key(Some("control+shift+m".parse().unwrap()), cx);
+    });
+    window.settle();
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let talking = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().talking())
+    };
+    let muted = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().muted)
+    };
+
+    // Outside a call nothing is read.
+    held.hold(Ok(vec![Key::Alt]));
+    std::thread::sleep(Duration::from_millis(150));
+    window.settle();
+    assert_eq!(held.readings(), 0);
+    assert!(!talking(&mut window));
+
+    // In a call the key of push to talk that the source holds sends the microphone.
+    let call = connected_call(&mut window, "Daily");
+    calls.show_view_for_test(CallsView {
+        call: Some(call.clone()),
+        ..CallsView::default()
+    });
+    window.until("the held key of push to talk sends the microphone", talking);
+    held.hold(Ok(Vec::new()));
+    window.until("the release ends it", |window| !talking(window));
+
+    // The key that mutes, from the source, closes the microphone.
+    assert!(!muted(&mut window));
+    held.hold(Ok(vec![Key::Control, Key::Shift, Key::Letter('M')]));
+    window.until("the key that mutes closed the microphone", muted);
+    held.hold(Ok(Vec::new()));
+    // While the source gives the key, a press of it in the window is not a second press.
+    calls.set_muted(false);
+    window.settle();
+    window.press("ctrl-shift-m");
+    std::thread::sleep(Duration::from_millis(100));
+    window.settle();
+    assert!(!muted(&mut window));
+
+    // The call ends: the readings stop.
+    calls.show_view_for_test(CallsView::default());
+    window.settle();
+    std::thread::sleep(Duration::from_millis(100));
+    let readings = held.readings();
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(held.readings(), readings);
+    window.close();
+
+    // A start without a source: the window that is in front gives the key that mutes.
+    let (_other_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
+    window.click_channel("Daily");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_mute_key(Some("control+shift+m".parse().unwrap()), cx);
+    });
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let call = connected_call(&mut window, "Daily");
+    calls.show_view_for_test(CallsView {
+        call: Some(call),
+        ..CallsView::default()
+    });
+    window.settle();
+    assert!(!muted(&mut window));
+    window.press("ctrl-shift-m");
+    window.until("the key that mutes in the window closed the microphone", muted);
+}

@@ -8,6 +8,7 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+mod call_keys;
 mod call_sounds;
 pub mod contacts;
 pub mod feed;
@@ -418,6 +419,11 @@ type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
+    /// The source of the system holds the key of push to talk (ADR 0776).
+    talking_globally: bool,
+    /// The keys of a call in every application, and what they were told last.
+    global_keys: junto_client_core::global_keys::GlobalKeys,
+    call_keys_told: Option<junto_client_core::global_keys::CallKeys>,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
     /// What the call window does before it closes: it gives the text of its composer to
     /// the main window (ADR 0772).
@@ -854,6 +860,9 @@ impl AppState {
                 .unwrap_or_default();
         let mut state = Self {
             talking_windows: HashSet::new(),
+            talking_globally: false,
+            global_keys: junto_client_core::global_keys::GlobalKeys::none(),
+            call_keys_told: None,
             call_window: None,
             call_window_closing: None,
             call_window_settings,
@@ -2442,6 +2451,7 @@ impl AppState {
         self.keep_people(cx);
         self.keep_logos(cx);
         self.follow_updates();
+        self.follow_call_keys();
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {

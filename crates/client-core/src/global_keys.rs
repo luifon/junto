@@ -1,0 +1,621 @@
+//! The keys of a call in every application (ADR 0776): the key of push to talk and the key
+//! that mutes and unmutes the microphone, also while another application is in front. A
+//! reader of the keyboard of the system tells which keys are held, at a short interval while
+//! a call needs them; [`Edges`] turns those readings into the events of the call. Where no
+//! reader exists, the window gives the same events while it is in front.
+
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "linux")]
+pub mod portal;
+#[cfg(windows)]
+mod windows;
+#[cfg(target_os = "linux")]
+pub mod x11;
+
+/// One key of the keyboard that a key of a call can use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Key {
+    Control,
+    /// Alt, the Option key on macOS.
+    Alt,
+    Shift,
+    /// The Command key on macOS, the Windows key, Super on Linux.
+    Meta,
+    /// A letter from A to Z, in upper case.
+    Letter(char),
+    /// A digit of the main block of the keyboard.
+    Digit(u8),
+    /// A function key from F1 to F24.
+    Function(u8),
+}
+
+impl Key {
+    pub fn is_modifier(self) -> bool {
+        matches!(self, Key::Control | Key::Alt | Key::Shift | Key::Meta)
+    }
+
+    /// The keys that a reader reads: the modifiers, the letters, the digits and the function
+    /// keys.
+    pub fn all() -> impl Iterator<Item = Key> {
+        [Key::Control, Key::Alt, Key::Shift, Key::Meta]
+            .into_iter()
+            .chain(('A'..='Z').map(Key::Letter))
+            .chain((0..=9).map(Key::Digit))
+            .chain((1..=24).map(Key::Function))
+    }
+
+    fn name(self) -> String {
+        match self {
+            Key::Control => "control".to_owned(),
+            Key::Alt => "alt".to_owned(),
+            Key::Shift => "shift".to_owned(),
+            Key::Meta => "meta".to_owned(),
+            Key::Letter(letter) => letter.to_ascii_lowercase().to_string(),
+            Key::Digit(digit) => digit.to_string(),
+            Key::Function(number) => format!("f{number}"),
+        }
+    }
+}
+
+impl FromStr for Key {
+    type Err = KeyError;
+
+    fn from_str(text: &str) -> Result<Self, KeyError> {
+        let text = text.trim().to_ascii_lowercase();
+        let key = match text.as_str() {
+            "control" | "ctrl" => Key::Control,
+            "alt" | "option" => Key::Alt,
+            "shift" => Key::Shift,
+            "meta" | "cmd" | "command" | "super" | "win" => Key::Meta,
+            _ => {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(letter @ 'a'..='z'), None) => Key::Letter(letter.to_ascii_uppercase()),
+                    (Some(digit @ '0'..='9'), None) => {
+                        Key::Digit(digit.to_digit(10).map_or(0, |digit| digit as u8))
+                    }
+                    (Some('f'), Some(_)) => {
+                        let number: u8 = text[1..].parse().map_err(|_| KeyError(text.clone()))?;
+                        if !(1..=24).contains(&number) {
+                            return Err(KeyError(text));
+                        }
+                        Key::Function(number)
+                    }
+                    _ => return Err(KeyError(text)),
+                }
+            }
+        };
+        Ok(key)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a key of a call: {0}")]
+pub struct KeyError(String);
+
+/// A key of a call: the modifiers and at most one other key, held together. The key of push
+/// to talk is one modifier; the key that mutes needs at least one modifier and one other
+/// key, so that it does not fire while a person types.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KeyCombo {
+    /// The keys in the order of [`Key`]: the modifiers first.
+    keys: Vec<Key>,
+}
+
+impl KeyCombo {
+    /// The combination of these keys. Empty, with two keys that are not modifiers, or with a
+    /// key twice, it is no combination.
+    pub fn new(keys: impl IntoIterator<Item = Key>) -> Result<Self, KeyError> {
+        let mut keys: Vec<Key> = keys.into_iter().collect();
+        keys.sort();
+        let text = || {
+            keys.iter()
+                .map(|key| key.name())
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+        let others = keys.iter().filter(|key| !key.is_modifier()).count();
+        let mut unique = keys.clone();
+        unique.dedup();
+        if keys.is_empty() || others > 1 || unique.len() != keys.len() {
+            return Err(KeyError(text()));
+        }
+        Ok(Self { keys })
+    }
+
+    /// The combination of one key.
+    pub fn single(key: Key) -> Self {
+        Self { keys: vec![key] }
+    }
+
+    pub fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
+    /// True when the key fires only while the person types it on purpose: one modifier or
+    /// more with one other key.
+    pub fn is_shortcut(&self) -> bool {
+        self.keys.iter().any(|key| key.is_modifier())
+            && self.keys.iter().any(|key| !key.is_modifier())
+    }
+
+    /// True when every key of the combination is held.
+    pub fn held_in(&self, held: &[Key]) -> bool {
+        self.keys.iter().all(|key| held.contains(key))
+    }
+}
+
+impl fmt::Display for KeyCombo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<String> = self.keys.iter().map(|key| key.name()).collect();
+        formatter.write_str(&names.join("+"))
+    }
+}
+
+impl FromStr for KeyCombo {
+    type Err = KeyError;
+
+    fn from_str(text: &str) -> Result<Self, KeyError> {
+        let keys = text
+            .split('+')
+            .map(Key::from_str)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(keys)
+    }
+}
+
+impl Serialize for KeyCombo {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyCombo {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// What the keys of a call are, while a call needs them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CallKeys {
+    /// The key of push to talk, while push to talk is on.
+    pub talk: Option<KeyCombo>,
+    /// The key that mutes and unmutes.
+    pub mute: Option<KeyCombo>,
+}
+
+impl CallKeys {
+    /// Every key that the readings need.
+    pub fn keys(&self) -> Vec<Key> {
+        let mut keys: Vec<Key> = self
+            .talk
+            .iter()
+            .chain(&self.mute)
+            .flat_map(|combo| combo.keys().iter().copied())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+}
+
+/// An event of the keys of a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEvent {
+    /// The key of push to talk is held now, or let go.
+    Talk(bool),
+    /// The key that mutes was pressed: the microphone changes between open and closed.
+    ToggleMute,
+}
+
+/// Turns readings of the held keys into events: the start and the end of a hold of the key of
+/// push to talk, and each press of the key that mutes. A press counts when the combination
+/// becomes held; holding it gives no second press.
+#[derive(Debug, Default)]
+pub struct Edges {
+    talking: bool,
+    mute_held: bool,
+}
+
+impl Edges {
+    pub fn read(&mut self, keys: &CallKeys, held: &[Key]) -> Vec<KeyEvent> {
+        let mut events = Vec::new();
+        let talking = keys.talk.as_ref().is_some_and(|talk| talk.held_in(held));
+        if talking != self.talking {
+            self.talking = talking;
+            events.push(KeyEvent::Talk(talking));
+        }
+        let mute_held = keys.mute.as_ref().is_some_and(|mute| mute.held_in(held));
+        if mute_held && !self.mute_held {
+            events.push(KeyEvent::ToggleMute);
+        }
+        self.mute_held = mute_held;
+        events
+    }
+
+    /// The readings end: a key of push to talk that was held is let go.
+    pub fn end(&mut self) -> Vec<KeyEvent> {
+        self.mute_held = false;
+        if std::mem::take(&mut self.talking) {
+            vec![KeyEvent::Talk(false)]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Reads which of some keys are held on the keyboard of the system, whichever application
+/// is in front.
+pub trait KeyReader: Send {
+    fn held(&mut self, keys: &[Key]) -> Result<Vec<Key>, ReadError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReadError {
+    /// The system does not let this program read the keyboard: on macOS the permission
+    /// Input Monitoring.
+    #[error("the system does not allow Junto to read the keyboard")]
+    NotAllowed,
+    #[error("the keyboard could not be read: {0}")]
+    Failed(String),
+}
+
+/// How the keys of a call reach Junto while another application is in front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// A reader of the system reads them: Windows and X11.
+    Everywhere,
+    /// macOS reads them with the permission Input Monitoring, which the person gives.
+    WithPermission(Permission),
+    /// A Wayland desktop with the global shortcuts portal: the desktop gives the presses.
+    Portal,
+    /// Only while a window of Junto is in front: a Wayland desktop without the portal.
+    WindowOnly,
+}
+
+/// The state of a permission of the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    Granted,
+    /// Not given yet, or refused: the system asks once; afterwards the person changes it in
+    /// the settings of the system.
+    NotGranted,
+}
+
+/// How the keys of a call reach Junto on this system now.
+pub fn reach() -> Reach {
+    #[cfg(target_os = "macos")]
+    {
+        Reach::WithPermission(macos::input_monitoring())
+    }
+    #[cfg(windows)]
+    {
+        Reach::Everywhere
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if x11::available() {
+            Reach::Everywhere
+        } else if portal::available() {
+            Reach::Portal
+        } else {
+            Reach::WindowOnly
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    {
+        Reach::WindowOnly
+    }
+}
+
+/// The state of the permission Input Monitoring of macOS, which the reader of the keyboard
+/// needs. `CGPreflightListenEventAccess`. Elsewhere there is no such permission.
+pub fn input_monitoring() -> Permission {
+    #[cfg(target_os = "macos")]
+    {
+        macos::input_monitoring()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Permission::Granted
+    }
+}
+
+/// Asks macOS for the permission Input Monitoring: the system shows its question the first
+/// time and lists Junto in its settings. `CGRequestListenEventAccess`. Returns the state
+/// after the question. Elsewhere it does nothing.
+pub fn request_input_monitoring() -> Permission {
+    #[cfg(target_os = "macos")]
+    {
+        macos::request_input_monitoring()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Permission::Granted
+    }
+}
+
+/// The address of the page of the settings of macOS where the person gives the permission
+/// Input Monitoring.
+pub const INPUT_MONITORING_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
+
+/// The reader of the keyboard of this system, when it has one.
+pub fn system_reader() -> Option<Box<dyn KeyReader>> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Box::new(macos::Reader))
+    }
+    #[cfg(windows)]
+    {
+        Some(Box::new(windows::Reader))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        x11::Reader::connect()
+            .ok()
+            .map(|reader| Box::new(reader) as Box<dyn KeyReader>)
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// The interval of the readings while a call needs the keys: short enough that the first
+/// syllable after the press of the key of push to talk is sent.
+pub const INTERVAL: std::time::Duration = std::time::Duration::from_millis(15);
+
+/// Reads the keys of a call at [`INTERVAL`] while a call needs them, on a thread of its own,
+/// and gives each event to a callback on that thread. Without a call nothing is read. The
+/// thread ends with the poller.
+pub struct Poller {
+    keys: std::sync::mpsc::Sender<Option<CallKeys>>,
+    failure: std::sync::Arc<std::sync::Mutex<Option<ReadError>>>,
+}
+
+impl Poller {
+    pub fn start(
+        mut reader: Box<dyn KeyReader>,
+        events: impl Fn(KeyEvent) + Send + 'static,
+    ) -> Self {
+        use std::sync::mpsc::RecvTimeoutError;
+        let (keys, taken) = std::sync::mpsc::channel::<Option<CallKeys>>();
+        let failure: std::sync::Arc<std::sync::Mutex<Option<ReadError>>> = Default::default();
+        let told = failure.clone();
+        let tell = move |error: Option<ReadError>| {
+            *told
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = error;
+        };
+        let started = std::thread::Builder::new()
+            .name("junto-call-keys".to_owned())
+            .spawn(move || {
+                let mut wanted: Option<CallKeys> = None;
+                let mut edges = Edges::default();
+                loop {
+                    // Without a call the thread only waits for the keys of the next call.
+                    let wait = if wanted.is_some() {
+                        INTERVAL
+                    } else {
+                        std::time::Duration::from_secs(1)
+                    };
+                    match taken.recv_timeout(wait) {
+                        Ok(mut next) => {
+                            while let Ok(newer) = taken.try_recv() {
+                                next = newer;
+                            }
+                            if next.is_none() {
+                                edges.end().into_iter().for_each(&events);
+                                tell(None);
+                            }
+                            wanted = next;
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                    let Some(keys) = &wanted else {
+                        continue;
+                    };
+                    match reader.held(&keys.keys()) {
+                        Ok(held) => {
+                            tell(None);
+                            edges.read(keys, &held).into_iter().for_each(&events);
+                        }
+                        Err(error) => {
+                            tell(Some(error));
+                            edges.end().into_iter().for_each(&events);
+                        }
+                    }
+                }
+            });
+        if let Err(error) = started {
+            *failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(ReadError::Failed(error.to_string()));
+        }
+        Self { keys, failure }
+    }
+
+    /// The keys that the call needs now; absent without a call, which stops the readings.
+    pub fn set(&self, keys: Option<CallKeys>) {
+        let _ = self.keys.send(keys);
+    }
+
+    /// Why the last reading failed, while it fails.
+    pub fn failure(&self) -> Option<ReadError> {
+        self.failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Where the keys of a call come from on this installation, and how that goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeysState {
+    /// The keyboard of the system is read while a call needs it.
+    Reading,
+    /// The last reading failed: on macOS without the permission Input Monitoring.
+    Failed(ReadError),
+    /// The desktop gives the presses of the shortcuts that Junto bound through its portal.
+    Portal,
+    /// The portal of the desktop ended, or is missing, with the reason.
+    PortalFailed(String),
+    /// Only a window of Junto that is in front gives the keys.
+    WindowOnly,
+}
+
+enum Source {
+    Poller(Poller),
+    #[cfg(target_os = "linux")]
+    Portal {
+        wanted: tokio::sync::watch::Sender<Option<CallKeys>>,
+        failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    },
+    None,
+}
+
+/// The keys of a call of this installation, also while another application is in front
+/// (ADR 0776): read from the keyboard of the system, or given by the global shortcuts portal
+/// of a Wayland desktop. Each event reaches the callback on a thread of the source.
+pub struct GlobalKeys {
+    source: Source,
+}
+
+impl GlobalKeys {
+    /// The source of this system. The portal runs on `runtime`.
+    pub fn of_system(
+        runtime: &tokio::runtime::Handle,
+        events: impl Fn(KeyEvent) + Send + Sync + 'static,
+    ) -> Self {
+        #[cfg(target_os = "linux")]
+        if !x11::available() && portal::available() {
+            let (wanted, watched) = tokio::sync::watch::channel(None);
+            let failure: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+            let told = failure.clone();
+            runtime.spawn(async move {
+                let ended = match zbus::Connection::session().await {
+                    Ok(connection) => portal::run(connection, watched, events).await,
+                    Err(error) => Err(portal::PortalError::Missing(error.to_string())),
+                };
+                if let Err(error) = ended {
+                    tracing::warn!(%error, "the keys of a call reach Junto only in its windows");
+                    *told
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(error.to_string());
+                }
+            });
+            return Self {
+                source: Source::Portal { wanted, failure },
+            };
+        }
+        let _ = runtime;
+        match system_reader() {
+            Some(reader) => Self::with_reader(reader, events),
+            None => Self::none(),
+        }
+    }
+
+    /// Reads the keys with `reader`: a test gives [`HeldKeys`].
+    pub fn with_reader(
+        reader: Box<dyn KeyReader>,
+        events: impl Fn(KeyEvent) + Send + 'static,
+    ) -> Self {
+        Self {
+            source: Source::Poller(Poller::start(reader, events)),
+        }
+    }
+
+    /// No source: only the windows give the keys.
+    pub fn none() -> Self {
+        Self {
+            source: Source::None,
+        }
+    }
+
+    /// The keys that the call needs now; absent without a call.
+    pub fn set(&self, keys: Option<CallKeys>) {
+        match &self.source {
+            Source::Poller(poller) => poller.set(keys),
+            #[cfg(target_os = "linux")]
+            Source::Portal { wanted, .. } => {
+                wanted.send_replace(keys);
+            }
+            Source::None => {}
+        }
+    }
+
+    pub fn state(&self) -> KeysState {
+        match &self.source {
+            Source::Poller(poller) => match poller.failure() {
+                Some(error) => KeysState::Failed(error),
+                None => KeysState::Reading,
+            },
+            #[cfg(target_os = "linux")]
+            Source::Portal { failure, .. } => {
+                match failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
+                    Some(reason) => KeysState::PortalFailed(reason),
+                    None => KeysState::Portal,
+                }
+            }
+            Source::None => KeysState::WindowOnly,
+        }
+    }
+}
+
+/// A reader whose held keys a test sets, and which counts its readings.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Default)]
+pub struct HeldKeys {
+    held: std::sync::Arc<std::sync::Mutex<Option<Result<Vec<Key>, ReadError>>>>,
+    readings: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl HeldKeys {
+    /// The keys that the next readings find held, or why they fail.
+    pub fn hold(&self, held: Result<Vec<Key>, ReadError>) {
+        *self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(held);
+    }
+
+    pub fn readings(&self) -> usize {
+        self.readings.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl KeyReader for HeldKeys {
+    fn held(&mut self, keys: &[Key]) -> Result<Vec<Key>, ReadError> {
+        self.readings
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or(Ok(Vec::new()))?;
+        Ok(held.into_iter().filter(|key| keys.contains(key)).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests;

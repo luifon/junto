@@ -46,6 +46,7 @@ use gpui::{
 use gpui_base::input::InputState;
 use junto_client_core::flow::add_server::AddServerFlow;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::global_keys::{Key, KeyCombo};
 use junto_client_core::voice::{InputMode, TalkKey};
 
 use call::{CallTab, DeviceKind, VolumeControl};
@@ -200,6 +201,8 @@ pub struct Shell {
     /// The person chose push to talk in the settings, and the settings ask before the
     /// switch (ADR 0507).
     push_to_talk_question: bool,
+    /// The settings wait for the keys of a new key that mutes (ADR 0776).
+    recording_mute_key: bool,
     pub(crate) state: Entity<AppState>,
     focus: FocusHandle,
     /// The focus of the layer that is open.
@@ -650,6 +653,7 @@ impl Shell {
             focused_camera: std::cell::Cell::new(None),
             stage_area: std::rc::Rc::default(),
             push_to_talk_question: false,
+            recording_mute_key: false,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
             drawing_call: false,
@@ -799,6 +803,31 @@ impl Shell {
                 }
         };
         self.set_talking(held, cx);
+    }
+
+    /// A key press in the window: the key that mutes, or the keys of a new key that mutes
+    /// while the settings wait for them (ADR 0776).
+    fn call_key_down(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if self.recording_mute_key {
+            if keystroke.key == "escape" {
+                self.recording_mute_key = false;
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            if let Some(pressed) = pressed_combo(keystroke).filter(KeyCombo::is_shortcut) {
+                self.recording_mute_key = false;
+                self.state
+                    .update(cx, |state, cx| state.set_mute_key(Some(pressed), cx));
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
+        if let Some(pressed) = pressed_combo(keystroke) {
+            self.state
+                .update(cx, |state, _| state.window_mute_key(&pressed));
+        }
     }
 
     /// The calls keep the state of the key and act on a change only, so the window tells
@@ -1268,6 +1297,9 @@ impl Render for Shell {
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx);
             }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                this.call_key_down(&event.keystroke, cx);
+            }))
             .when(frame, |shell| {
                 shell.child(self.render_title_strip(text::APP_NAME.into(), window, cx))
             })
@@ -1493,4 +1525,24 @@ pub(crate) fn window_controls_height(cx: &App) -> f32 {
     } else {
         10.0
     }
+}
+
+/// The key of a call that a key press in a window gives: its modifiers and its key, when the
+/// key is one that a key of a call can use.
+fn pressed_combo(keystroke: &gpui::Keystroke) -> Option<KeyCombo> {
+    let modifiers = keystroke.modifiers;
+    let mut keys: Vec<Key> = [
+        (modifiers.control, Key::Control),
+        (modifiers.alt, Key::Alt),
+        (modifiers.shift, Key::Shift),
+        (modifiers.platform, Key::Meta),
+    ]
+    .into_iter()
+    .filter_map(|(held, key)| held.then_some(key))
+    .collect();
+    let key: Key = keystroke.key.parse().ok()?;
+    if !key.is_modifier() {
+        keys.push(key);
+    }
+    KeyCombo::new(keys).ok()
 }

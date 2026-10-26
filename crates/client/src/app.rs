@@ -106,6 +106,8 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
         state.set_notifier(notifier);
         state.set_uses_system_applications(true);
         state.set_tray(tray, cx);
+        // The keys of a call while another application is in front (ADR 0776).
+        state.install_global_keys(cx);
     });
     state
 }

@@ -52,6 +52,12 @@ zeroize = "1"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs", "process", "stdio", "termios"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The keys of a call in every application (ADR 0776): the keyboard of an X11 session, and
+# the global shortcuts portal of a Wayland desktop. The client uses the same versions.
+x11rb = "0.13"
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+
 [target.'cfg(windows)'.dependencies]
 # The key of the identity of the application for the notifications (ADR 0742). gpui uses the
 # same crate for the same key.
@@ -79,6 +85,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

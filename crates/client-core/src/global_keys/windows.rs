@@ -1,0 +1,86 @@
+//! The reader of the keyboard of Windows (ADR 0776): the state of each key, which Windows
+//! gives every program whichever window is in front.
+
+#![allow(unsafe_code)]
+
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_F1, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+};
+
+use super::{Key, KeyReader, ReadError};
+
+/// The virtual keys of a key: both keys of the Windows key.
+fn codes(key: Key) -> Vec<i32> {
+    match key {
+        Key::Control => vec![i32::from(VK_CONTROL)],
+        Key::Alt => vec![i32::from(VK_MENU)],
+        Key::Shift => vec![i32::from(VK_SHIFT)],
+        Key::Meta => vec![i32::from(VK_LWIN), i32::from(VK_RWIN)],
+        Key::Letter(letter) => vec![letter as i32],
+        Key::Digit(digit) => vec![i32::from(b'0' + digit)],
+        Key::Function(number) => vec![i32::from(VK_F1) + i32::from(number) - 1],
+    }
+}
+
+pub(super) struct Reader;
+
+impl KeyReader for Reader {
+    fn held(&mut self, keys: &[Key]) -> Result<Vec<Key>, ReadError> {
+        Ok(keys
+            .iter()
+            .copied()
+            .filter(|key| {
+                codes(*key).into_iter().any(|code| {
+                    // SAFETY: GetAsyncKeyState takes any virtual key code and reads state
+                    // only. The high bit is set while the key is down.
+                    let state = unsafe { GetAsyncKeyState(code) };
+                    state < 0
+                })
+            })
+            .collect())
+    }
+}
+
+/// The reader against the keyboard of the desktop of the run. It does nothing without
+/// `JUNTO_TEST_GLOBAL_KEYS`. It presses F24, which no application of the machine uses, through
+/// `SendInput`, as a keyboard does.
+#[cfg(test)]
+mod tests {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_F24,
+    };
+
+    use super::*;
+
+    fn press(down: bool) {
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_F24,
+                    wScan: 0,
+                    dwFlags: if down { 0 } else { KEYEVENTF_KEYUP },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        // SAFETY: one keyboard input of the size that SendInput is told.
+        let sent = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+        assert_eq!(sent, 1, "SendInput");
+    }
+
+    #[test]
+    fn a_key_that_the_keyboard_holds_is_read_whichever_window_is_in_front() {
+        if std::env::var_os("JUNTO_TEST_GLOBAL_KEYS").is_none() {
+            return;
+        }
+        let mut reader = Reader;
+        let keys = [Key::Function(24), Key::Alt];
+        assert_eq!(reader.held(&keys).unwrap(), []);
+        press(true);
+        assert_eq!(reader.held(&keys).unwrap(), [Key::Function(24)]);
+        press(false);
+        assert_eq!(reader.held(&keys).unwrap(), []);
+    }
+}

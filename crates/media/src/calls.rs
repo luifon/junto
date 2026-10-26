@@ -579,6 +579,11 @@ impl Calls {
     }
 
     /// The push-to-talk key is held or released (ADR 0507).
+    /// True while the key of push to talk is held, as the calls were told last.
+    pub fn talking(&self) -> bool {
+        self.inner.shared().talking
+    }
+
     pub fn set_talking(&self, talking: bool) {
         let mut shared = self.inner.shared();
         if shared.talking != talking {

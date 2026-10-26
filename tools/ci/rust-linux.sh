@@ -33,6 +33,10 @@ tools/linux-container.sh cargo test --workspace --locked
 step "Panics in the callbacks of the platform"
 tools/linux-container.sh tools/linux/display.sh x11 sh -c 'JUNTO_TEST_NATIVE_PANICS=1 cargo test --locked -p junto-client --test native_panics'
 tools/linux-container.sh tools/linux/display.sh wayland sh -c 'JUNTO_TEST_NATIVE_PANICS=1 cargo test --locked -p junto-client --test native_panics'
+# The keys of a call in every application: the reader of the keyboard of X11 against the X
+# server of the run, whose keys xdotool presses (ADR 0776).
+step "Keys of a call read from the X server"
+tools/linux-container.sh tools/linux/display.sh x11 sh -c 'JUNTO_TEST_GLOBAL_KEYS=1 cargo test --locked -p junto-client-core --lib global_keys::x11'
 # The camera unit tests with the counts that the device checks read (ADR 0913); they open no
 # device.
 step "Camera unit tests of the device checks"
