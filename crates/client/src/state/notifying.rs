@@ -987,6 +987,144 @@ impl AppState {
         self.play_sound(junto_media::audio::sounds::Sound::Invitation, None);
     }
 
+    /// The scene of the rules of a system notification: the person looks at the active
+    /// window of the application, the main window with what it shows, or the call window
+    /// with the place of the call.
+    fn looked_at(&self) -> (bool, Shown) {
+        let shown = self.shown;
+        if self.window_active {
+            (true, shown)
+        } else if self.call_window_active {
+            (true, Shown::of_place(self.call_window_shows))
+        } else {
+            (false, shown)
+        }
+    }
+
+    /// Tells the system notification of one event of a server, when the event means
+    /// something that the person needs to know (ADR 0742).
+    pub(super) fn tell_event(
+        &mut self,
+        server_id: ServerId,
+        event: &junto_client_core::protocol::events::Event,
+        cx: &mut Context<Self>,
+    ) {
+        use super::event_alerts::{EventScene, TellScene, event_alert, fact_of, quiet_now};
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let Some(model) = server.live().view().model else {
+            return;
+        };
+        let own_device = match &server.access().state {
+            AccessState::LoggedIn { device_id, .. } => Some(*device_id),
+            _ => None,
+        };
+        let call = self
+            .known
+            .media
+            .calls
+            .call
+            .as_ref()
+            .filter(|call| call.target.server_id == server_id)
+            .map(|call| call.target.place);
+        let entry = self
+            .known
+            .entry
+            .as_ref()
+            .filter(|entry| entry.server_id == server_id)
+            .and_then(|entry| Some((entry.channel_id, entry.request_id?)));
+        let Some(fact) = fact_of(
+            event,
+            &EventScene {
+                server_id,
+                model: &model,
+                known: &self.known,
+                own_device,
+                call,
+                entry,
+            },
+        ) else {
+            return;
+        };
+        let (active, _) = self.looked_at();
+        let now = OffsetDateTime::now_utc();
+        let several_servers = self.client.servers().len() > 1;
+        let name = server.entry().name;
+        let seen = self.seen.entry(server_id).or_default();
+        let told = event_alert(
+            seen,
+            &TellScene {
+                server_id,
+                server_name: &name,
+                several_servers,
+                quiet: quiet_now(Some(&model), now),
+                active,
+                now,
+            },
+            &fact,
+            Some(event),
+        );
+        for tag in told.dismiss {
+            self.notifier.dismiss(&tag, cx);
+        }
+        for (alert, _) in told.show {
+            self.notifier.show(&alert, cx);
+        }
+    }
+
+    /// The join request of this device on a server was decided: the access went from a
+    /// waiting request to an account or to a refusal (ADR 0742).
+    pub(super) fn tell_join_answers(&mut self, cx: &mut Context<Self>) {
+        use super::event_alerts::{TellScene, event_alert, join_answer, quiet_now};
+        let servers = self.client.servers();
+        let several = servers.len() > 1;
+        let (active, _) = self.looked_at();
+        let now = OffsetDateTime::now_utc();
+        for server in &servers {
+            let state = &server.access().state;
+            let waiting = matches!(state, AccessState::WaitingForApproval { .. });
+            let was_waiting = if waiting {
+                self.join_waiting.insert(server.id());
+                false
+            } else {
+                self.join_waiting.remove(&server.id())
+            };
+            let logged_in = matches!(state, AccessState::LoggedIn { .. });
+            let refused = matches!(
+                state,
+                AccessState::NoAccount {
+                    notice: Some(
+                        junto_client_core::flow::access::Notice::RequestDenied
+                            | junto_client_core::flow::access::Notice::RequestExpired
+                    )
+                }
+            );
+            let name = server.entry().name;
+            let Some(fact) = join_answer(was_waiting, logged_in, refused, &name) else {
+                continue;
+            };
+            let quiet = quiet_now(server.live().view().model.as_deref(), now);
+            let seen = self.seen.entry(server.id()).or_default();
+            let told = event_alert(
+                seen,
+                &TellScene {
+                    server_id: server.id(),
+                    server_name: &name,
+                    several_servers: several,
+                    quiet,
+                    active,
+                    now,
+                },
+                &fact,
+                None,
+            );
+            for (alert, _) in told.show {
+                self.notifier.show(&alert, cx);
+            }
+        }
+    }
+
     /// The person pressed a notification of the system: the window shows what it was
     /// about, and its notice is read.
     pub fn alert_pressed(&mut self, tag: &str, cx: &mut Context<Self>) {
@@ -1020,6 +1158,27 @@ impl AppState {
                     server_id,
                     page: super::admin::AdminPage::JoinRequests,
                 }));
+            }
+            AlertTarget::Server(server_id) => self.select_server(server_id, cx),
+            AlertTarget::Channel {
+                server_id,
+                workspace_id,
+                channel_id,
+            } => self.show_channel(server_id, workspace_id, channel_id, cx),
+            AlertTarget::Workspace {
+                server_id,
+                workspace_id,
+            } => self.select_workspace(server_id, workspace_id, cx),
+            AlertTarget::Admin(server_id, page) => {
+                self.select_server(server_id, cx);
+                cx.emit(super::OpenAdmin(super::admin::AdminOpen::Server {
+                    server_id,
+                    page,
+                }));
+            }
+            AlertTarget::Account(server_id, page) => {
+                self.select_server(server_id, cx);
+                cx.emit(super::OpenAccount(page));
             }
         }
     }

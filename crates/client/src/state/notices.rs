@@ -586,6 +586,19 @@ pub fn stored_settings(
         .unwrap_or_default()
 }
 
+/// The level of a channel for the person: its own, or the level that it inherits.
+pub(super) fn channel_level(
+    server_id: ServerId,
+    channel_id: ChannelId,
+    model: &ServerModel,
+    known: &Known,
+) -> NotificationLevel {
+    stored_settings(server_id, SettingsScope::Channel(channel_id), model, known)
+        .level
+        .or_else(|| inherited_level(server_id, SettingsScope::Channel(channel_id), model, known))
+        .unwrap_or(NotificationLevel::Mentions)
+}
+
 /// The level that holds for a scope while the account stored none for it (ADR 0409): the
 /// level of the workspace for a channel, then the level of the administrators, then the
 /// level of the account on the server, then "mentions only".
@@ -813,6 +826,11 @@ pub struct Seen {
     do_not_disturb: bool,
     /// When the last system notifications of this server were shown.
     recent: Vec<OffsetDateTime>,
+    /// The system notifications of single events that are shown, with what a press on
+    /// each leads to (ADR 0742).
+    events: Vec<(String, AlertTarget)>,
+    /// The recordings, transcripts and exports whose end was told.
+    told: Vec<String>,
 }
 
 /// A system notification of a notice that is shown.
@@ -828,9 +846,46 @@ struct ShownAlert {
 }
 
 impl Seen {
+    /// True the first time a key is told: an end of a recording, of a transcript or of an
+    /// export is told once.
+    pub(super) fn tell_once(&mut self, key: String) -> bool {
+        if self.told.contains(&key) {
+            return false;
+        }
+        if self.told.len() >= MOST_SHOWN {
+            self.told.remove(0);
+        }
+        self.told.push(key);
+        true
+    }
+
+    /// True while this server has shown fewer than [`MOST_ALERTS`] system notifications
+    /// within [`ALERT_SPAN`].
+    pub(super) fn room_for_alert(&mut self, now: OffsetDateTime) -> bool {
+        self.recent
+            .retain(|at| *at <= now && now - *at < ALERT_SPAN);
+        self.recent.len() < MOST_ALERTS
+    }
+
+    /// A system notification of a single event is shown. Returns the tag of the one that
+    /// the application forgets for it.
+    pub(super) fn event_shown(
+        &mut self,
+        tag: String,
+        target: AlertTarget,
+        now: OffsetDateTime,
+    ) -> Option<String> {
+        self.recent.push(now);
+        self.events.push((tag, target));
+        (self.events.len() > MOST_SHOWN).then(|| self.events.remove(0).0)
+    }
+
     /// What a press on a system notification of this server leads to, while the
     /// notification is shown.
     pub fn target(&self, server_id: ServerId, tag: &str) -> Option<AlertTarget> {
+        if let Some((_, target)) = self.events.iter().find(|(shown, _)| shown == tag) {
+            return Some(*target);
+        }
         if let Some(shown) = self.shown.iter().find(|shown| shown.tag == tag) {
             return Some(AlertTarget::Notice {
                 server_id,
@@ -875,10 +930,12 @@ impl Seen {
             .entry_requests
             .iter()
             .map(|request_id| entry_request_tag(server_id, *request_id));
+        let events = self.events.iter().map(|(tag, _)| tag.clone());
         notices
             .chain(invitations)
             .chain(requests)
             .chain(entries)
+            .chain(events)
             .collect()
     }
 }
@@ -939,6 +996,23 @@ pub enum AlertTarget {
     JoinRequests(ServerId),
     /// The call of this device, on a server.
     Call(ServerId),
+    /// A server, whatever its state.
+    Server(ServerId),
+    /// A channel of a workspace.
+    Channel {
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+    },
+    /// A workspace.
+    Workspace {
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+    },
+    /// A page of the administration of a server.
+    Admin(ServerId, super::admin::AdminPage),
+    /// A page of the account on a server: its devices, its recoveries.
+    Account(ServerId, super::account::AccountPage),
 }
 
 pub fn notice_tag(server_id: ServerId, notice_id: Uuid) -> String {
@@ -959,7 +1033,7 @@ pub fn entry_request_tag(server_id: ServerId, request_id: EntryRequestId) -> Str
 
 /// A text of a server as a system notification takes it: one line without control
 /// characters, of at most `most` characters.
-fn one_line(text: &str, most: usize) -> String {
+pub(super) fn one_line(text: &str, most: usize) -> String {
     let mut line: String = text
         .chars()
         .map(|character| {

@@ -34,6 +34,7 @@ mod composing;
 mod contacts;
 mod data_directory;
 mod departures;
+mod event_alerts;
 mod files;
 mod flows;
 mod glossary;

@@ -414,6 +414,12 @@ pub struct OpenAdmin(pub admin::AdminOpen);
 
 impl gpui::EventEmitter<OpenAdmin> for AppState {}
 
+/// A press on a system notification asks the main window to show a page of the account on
+/// the selected server.
+pub struct OpenAccount(pub account::AccountPage);
+
+impl gpui::EventEmitter<OpenAccount> for AppState {}
+
 /// What the call window does before it closes.
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
@@ -433,6 +439,11 @@ pub struct AppState {
     heard: call_sounds::Heard,
     /// When the last sound of messages played (ADR 0707).
     message_sound_at: Option<std::time::Instant>,
+    /// The servers on which this device waited for the answer to its join request at the
+    /// last change (ADR 0742).
+    join_waiting: std::collections::HashSet<ServerId>,
+    /// The place of the call that the call window shows, at the last change.
+    call_window_shows: Option<(ServerId, PlaceId)>,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
@@ -864,6 +875,8 @@ impl AppState {
             sounds,
             heard: call_sounds::Heard::default(),
             message_sound_at: None,
+            join_waiting: std::collections::HashSet::new(),
+            call_window_shows: None,
             client,
             calls,
             voice_failed,
@@ -1878,6 +1891,7 @@ impl AppState {
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
         }
+        self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {
             self.search_after_permission_change(server_id, cx);
             self.audit_after_permission_change(server_id, *workspace_id, cx);
@@ -2584,7 +2598,9 @@ impl AppState {
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.follow_result_jump(shown);
+        self.call_window_shows = call_window;
         self.tell_alerts(&snapshots, shown, call_window, cx);
+        self.tell_join_answers(cx);
         self.follow_tray();
         self.follow_owners();
         self.ask_missing_quotes(shown, cx);
@@ -2673,6 +2689,26 @@ impl AppState {
             .channels
             .insert((server_id, workspace_id), channel_id);
         // The channel takes the place of a direct conversation that the server showed.
+        self.selection.conversations.remove(&server_id);
+        self.changed(cx);
+    }
+
+    /// Shows a channel of a workspace of a server, as a press on a system notification
+    /// asks.
+    pub fn show_channel(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_jump();
+        self.navigations += 1;
+        self.selection.server = Some(server_id);
+        self.selection.workspaces.insert(server_id, workspace_id);
+        self.selection
+            .channels
+            .insert((server_id, workspace_id), channel_id);
         self.selection.conversations.remove(&server_id);
         self.changed(cx);
     }
@@ -3056,6 +3092,7 @@ fn actionable_call(
 }
 
 pub mod direct;
+pub mod event_alerts;
 
 mod camera;
 

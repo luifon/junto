@@ -2233,6 +2233,92 @@ pub fn join_request_alert(name: &str) -> String {
     format!("{name} asks to join")
 }
 
+/// The titles of the system notifications of single events (ADR 0742).
+pub fn entry_answered_alert(
+    outcome: junto_client_core::protocol::call::EntryOutcome,
+    channel: &str,
+) -> String {
+    use junto_client_core::protocol::call::EntryOutcome;
+    match outcome {
+        EntryOutcome::Accepted => format!("You were let into {channel}"),
+        EntryOutcome::Denied => format!("You were not let into {channel}"),
+        EntryOutcome::Expired | EntryOutcome::Cancelled => {
+            format!("Nobody answered your request to enter {channel}")
+        }
+    }
+}
+
+pub fn moved_alert(by: Option<&str>, channel: &str) -> String {
+    format!("{} moved you to {channel}", by.unwrap_or(UNKNOWN_PERSON))
+}
+
+pub fn removed_alert(channel: &str) -> String {
+    format!("You were removed from the call in {channel}")
+}
+
+pub fn recording_started_alert(by: Option<&str>, channel: &str) -> String {
+    format!("{} started recording {channel}", by.unwrap_or(UNKNOWN_PERSON))
+}
+
+pub fn recording_done_alert(
+    state: junto_client_core::protocol::recording::RecordingState,
+    channel: &str,
+) -> String {
+    use junto_client_core::protocol::recording::RecordingState;
+    match state {
+        RecordingState::PartlyFailed => {
+            format!("The recording of {channel} is ready, with parts missing")
+        }
+        RecordingState::Failed => format!("The recording of {channel} failed"),
+        _ => format!("The recording of {channel} is ready"),
+    }
+}
+
+pub fn transcript_done_alert(
+    state: junto_client_core::protocol::transcript::TranscriptState,
+    channel: &str,
+) -> String {
+    use junto_client_core::protocol::transcript::TranscriptState;
+    match state {
+        TranscriptState::Partial => {
+            format!("The transcript of {channel} is ready, with parts missing")
+        }
+        TranscriptState::Failed => format!("The transcript of {channel} failed"),
+        _ => format!("The transcript of {channel} is ready"),
+    }
+}
+
+pub fn export_done_alert(ready: bool, place: &str) -> String {
+    if ready {
+        format!("Your export of {place} is ready")
+    } else {
+        format!("Your export of {place} failed")
+    }
+}
+
+pub const DEVICE_ADDED_ALERT: &str = "A device was added to your account";
+pub const RECOVERED_ALERT: &str = "The owner gave a new device access to your account";
+
+pub fn added_to_workspace_alert(workspace: &str) -> String {
+    format!("You were added to {workspace}")
+}
+
+pub fn call_started_alert(channel: &str) -> String {
+    format!("A call started in {channel}")
+}
+
+pub fn join_answered_alert(approved: bool, server: &str) -> String {
+    if approved {
+        format!("Your request to join {server} was approved")
+    } else {
+        format!("Your request to join {server} was refused")
+    }
+}
+
+/// A channel or a conversation whose name the state does not hold.
+pub const A_CHANNEL: &str = "a channel";
+pub const A_DIRECT_CONVERSATION: &str = "a direct conversation";
+
 pub const NOTIFICATION_SETTINGS: &str = "Notification settings";
 pub const NOTIFICATION_SETTINGS_ITEM: &str = "Notification settings…";
 

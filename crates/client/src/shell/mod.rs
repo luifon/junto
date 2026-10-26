@@ -54,7 +54,7 @@ pub use settings::{SettingsSection, sound_kind_selector};
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;
-use crate::state::{AppState, LevelsChanged, OpenAdmin};
+use crate::state::{AppState, LevelsChanged, OpenAccount, OpenAdmin};
 use crate::text;
 use crate::theme::{self, theme};
 use crate::ui::{Field, FieldEvent, StyleExt, tabular_numerals};
@@ -560,6 +560,12 @@ impl Shell {
             cx.subscribe_in(&state, window, |this, _, event: &OpenAdmin, window, cx| {
                 if !this.detached {
                     this.open_admin(event.0, window, cx);
+                }
+            }),
+            // Only the main window shows the account.
+            cx.subscribe_in(&state, window, |this, _, event: &OpenAccount, window, cx| {
+                if !this.detached {
+                    this.open_account(event.0, window, cx);
                 }
             }),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {

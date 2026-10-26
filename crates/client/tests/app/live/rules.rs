@@ -1637,3 +1637,103 @@ fn an_invitation_into_a_full_room_is_a_card_in_every_window_and_passes_the_limit
     drop(detached);
     scene.world.run(scene.caller.calls.leave());
 }
+
+/// The events of a call that a person needs to know while no window of the application is
+/// active are system notifications (ADR 0742): a call that starts in a voice channel whose
+/// messages all notify the person, the answers to the own request to enter, a removal and a
+/// move by a moderator.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::api::SettingsScope;
+    use junto_client_core::protocol::discovery::{NotificationLevel, NotificationSettings};
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let voice = scene.voice;
+    let own_server = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.client().servers())
+        .remove(0);
+    scene
+        .world
+        .run(own_server.api().set_notification_settings(
+            SettingsScope::Channel(voice),
+            &NotificationSettings {
+                level: Some(NotificationLevel::All),
+                ..NotificationSettings::default()
+            },
+        ))
+        .unwrap();
+    let held = own_server.clone();
+    scene.window.until("the level of the room is held", |_| {
+        held.live().view().model.is_some_and(|model| {
+            model
+                .notification_settings(SettingsScope::Channel(voice))
+                .is_some_and(|settings| settings.level == Some(NotificationLevel::All))
+        })
+    });
+    let told = |window: &mut Window, title: &str| window.shown_titles().iter().any(|shown| shown == title);
+
+    // Ada starts a call in the room.
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.window.until("the start of the call is told", |window| {
+        told(window, &format!("A call started in {ROOM}"))
+    });
+
+    // The room is locked; the people inside deny the request of Luca, then let Luca in.
+    scene.world.run(api.lock_call(voice)).unwrap();
+    scene.window.until("the lock is shown", |window| voice_of(window).locked);
+    scene.window.click_channel(ROOM);
+    scene.window.click("ask-to-enter");
+    let request = scene.entry_request();
+    scene
+        .world
+        .run(api.answer_entry_request(request.id, false))
+        .unwrap();
+    scene.window.until("the denial is told", |window| {
+        told(window, &format!("You were not let into {ROOM}"))
+    });
+    scene.window.until("the first request has ended", |window| {
+        voice_of(window).entry != Some(EntryState::Waiting)
+    });
+    scene.window.click("ask-to-enter");
+    scene.window.until("the second request waits", |window| {
+        voice_of(window).entry == Some(EntryState::Waiting)
+    });
+    let request = scene.entry_request();
+    scene
+        .world
+        .run(api.answer_entry_request(request.id, true))
+        .unwrap();
+    scene.window.until("the acceptance is told", |window| {
+        told(window, &format!("You were let into {ROOM}"))
+    });
+    scene.window.until("the person is inside", |window| {
+        connected(window) && own(window).is_some_and(|own| own.presence == Presence::Here)
+    });
+
+    // Ada removes Luca from the call.
+    scene
+        .world
+        .run(api.disconnect_participant(voice, scene.luca))
+        .unwrap();
+    scene.window.until("the removal is told", |window| {
+        told(window, &format!("You were removed from the call in {ROOM}"))
+    });
+    scene.world.run(api.unlock_call(voice)).unwrap();
+
+    // Luca enters again, and Ada moves Luca into another room.
+    scene.join_in_the_window();
+    let other = second_room(&scene.world, &scene.admin, &mut scene.window, "Second");
+    scene
+        .world
+        .run(api.move_participant(voice, scene.luca, other.place.channel_id().unwrap()))
+        .unwrap();
+    scene.window.until("the move is told", |window| {
+        told(window, "Ada moved you to Second")
+    });
+    scene.world.run(scene.caller.calls.leave());
+}
