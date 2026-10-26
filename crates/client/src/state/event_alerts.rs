@@ -400,6 +400,19 @@ fn told(fact: &Fact, server_id: ServerId) -> (String, String, AlertTarget) {
     }
 }
 
+/// A fact about the own request or the own call of the person: each follows an action on
+/// the person, so they cannot arrive as a flood, and the bound of
+/// [`super::notices::MOST_ALERTS`] does not hold them back.
+fn of_the_person(fact: &Fact) -> bool {
+    matches!(
+        fact,
+        Fact::EntryAnswered { .. }
+            | Fact::Moved { .. }
+            | Fact::Removed { .. }
+            | Fact::JoinAnswered { .. }
+    )
+}
+
 /// The tag of the system notification of a fact.
 pub fn event_tag(server_id: ServerId, id: Uuid) -> String {
     format!("event:{server_id}:{id}")
@@ -422,7 +435,7 @@ pub fn event_alert(
     {
         return alerts;
     }
-    if scene.quiet || scene.active || !seen.room_for_alert(scene.now) {
+    if scene.quiet || scene.active || (!of_the_person(fact) && !seen.room_for_alert(scene.now)) {
         return alerts;
     }
     let (title, body, target) = told(fact, scene.server_id);

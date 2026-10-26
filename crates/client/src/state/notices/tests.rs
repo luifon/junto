@@ -1932,6 +1932,27 @@ mod events {
         }
     }
 
+    /// Facts about the own call of the person follow an action on the person and are told
+    /// above the bound of system notifications; other facts are held to it.
+    #[test]
+    fn a_removal_from_the_call_is_told_above_the_bound_of_notifications() {
+        let scene = scene();
+        let mut seen = Seen::default();
+        for _ in 0..MOST_ALERTS {
+            let told = event_alert(&mut seen, &tell(scene.server_id), &Fact::Recovered, None);
+            assert_eq!(told.show.len(), 1);
+        }
+        let held = event_alert(&mut seen, &tell(scene.server_id), &Fact::Recovered, None);
+        assert!(held.show.is_empty());
+        let removed = Fact::Removed {
+            channel: Some("Daily".to_owned()),
+            workspace_id: scene.studio,
+            channel_id: scene.daily,
+        };
+        let told = event_alert(&mut seen, &tell(scene.server_id), &removed, None);
+        assert_eq!(told.show.len(), 1);
+    }
+
     #[test]
     fn the_answer_to_the_own_request_to_enter_is_told_on_the_device_that_asked() {
         let scene = scene();
