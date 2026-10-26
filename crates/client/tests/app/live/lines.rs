@@ -181,6 +181,14 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
     }
     world.run(api.end_meeting(voice)).unwrap();
     caller.calls.stop_share();
+    // The media engine of Ada reports the end of the share to the server after the stop:
+    // the lock follows once the window has the end, so that the lines keep this order.
+    window.until("the share of Ada ends", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().call)
+            .is_some_and(|call| call.shares.is_empty())
+    });
     world.run(api.lock_call(voice)).unwrap();
     world.run(api.unlock_call(voice)).unwrap();
 

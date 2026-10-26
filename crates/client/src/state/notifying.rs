@@ -1036,14 +1036,25 @@ impl AppState {
             AccessState::LoggedIn { device_id, .. } => Some(*device_id),
             _ => None,
         };
-        let call = self
-            .known
-            .media
-            .calls
+        // The place of the call of the person; after a removal the media engine can have
+        // ended the call before the event is read, and the ended call names the place.
+        let calls = &self.known.media.calls;
+        let call = calls
             .call
             .as_ref()
-            .filter(|call| call.target.server_id == server_id)
-            .map(|call| call.target.place);
+            .map(|call| call.target)
+            .or(match (&calls.outcome, event) {
+                (
+                    Some(junto_media::calls::Outcome::Ended { target, .. }),
+                    junto_client_core::protocol::events::Event::OwnCallChanged {
+                        call: None,
+                        left: Some(_),
+                    },
+                ) => Some(*target),
+                _ => None,
+            })
+            .filter(|target| target.server_id == server_id)
+            .map(|target| target.place);
         let entry = self
             .known
             .entry
