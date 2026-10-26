@@ -282,6 +282,8 @@ fn daily_chat() -> Made {
     made.system(60, "person_left", Some("Marta"), None);
     let notes = made.message("Carla", 65, "Notes from the Alpha review:");
     notes.attachments = vec![file(3, "alpha-review-notes.pdf", 96_000, None)];
+    let timings = made.message("Ana", 70, "The timeline of the mixdown:");
+    timings.attachments = vec![file(4, "mixdown-timeline.png", 1_200_000, Some((584, 144)))];
     let bruno = made.message(
         "Bruno",
         76,
@@ -371,6 +373,7 @@ pub(crate) type Fixture = (
 /// Shows the times in UTC, the pictures of the design, and these states of files.
 pub(crate) fn prepare(shell: &mut Shell, fixture: Fixture, cx: &mut gpui::Context<Shell>) {
     shell.show_picture(id(7001), &timeline_picture());
+    shell.show_picture(id(7004), &timeline_picture());
     let (drafts, uploads, downloads, refused) = fixture;
     shell.state().clone().update(cx, |state, cx| {
         state.show_messages_fixture(

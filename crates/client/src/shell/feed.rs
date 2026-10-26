@@ -1904,6 +1904,7 @@ impl Shell {
                     #[cfg(feature = "test-support")]
                     let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
                     let (width, height) = picture_size(attachment);
+                    let attachment_id = attachment.id;
                     let picture: AnyElement = match held {
                         Some(Picture::Ready(image)) => img(image.clone())
                             .size_full()
@@ -1921,25 +1922,38 @@ impl Shell {
                             .child(text::PICTURE_LOADING)
                             .into_any_element(),
                     };
+                    // The card takes the width of the list up to the size of the picture,
+                    // and the picture keeps its proportions in the width that it gets.
                     return div()
                         .flex_none()
                         .mt(u(5.0))
-                        .w(u(width.max(200.0)))
+                        .w_full()
+                        .max_w(u(width.max(200.0)))
                         .rounded(u(theme.metrics.radius))
                         .border_1()
                         .border_color(Hsla::from(colors.rule))
                         .bg(Hsla::from(colors.travertine_hi))
                         .overflow_hidden()
-                        .debug_selector(move || format!("picture:{}", index))
+                        .debug_selector(move || format!("picture-card:{attachment_id}"))
                         .child(
                             div()
                                 .flex()
+                                .flex_col()
                                 .items_center()
-                                .justify_center()
                                 .w_full()
-                                .h(u(height))
                                 .bg(Hsla::from(colors.plaster))
-                                .child(picture),
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("picture:{attachment_id}"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w_full()
+                                        .max_w(u(width))
+                                        .aspect_ratio(width / height)
+                                        .overflow_hidden()
+                                        .child(picture),
+                                ),
                         )
                         .child(
                             div()

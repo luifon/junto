@@ -57,6 +57,7 @@ mod panel_widths;
 mod panics;
 mod people;
 mod permissions;
+mod pictures;
 mod recordings;
 mod recovery;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
