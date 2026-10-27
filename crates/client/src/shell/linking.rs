@@ -811,10 +811,10 @@ impl Shell {
                 let mut column = column
                     .child(step_title(text::account::REQUEST_TEXT_TITLE, theme))
                     .child(sentence(text::account::REQUEST_TEXT_HELP, theme));
-                // The request text is drawn with the step that the press of "Request links"
-                // opens, and goes when every server is linked: that change waits while the
-                // pointer is on the controls under it (ADR 0730).
-                let result = crate::ui::held("link-request-result");
+                // The request text arrives with the step that the press of "Request links"
+                // opened, and goes when every server is linked: only that removal waits while
+                // the pointer is on the controls under it (ADR 0730).
+                let result = crate::ui::held("link-request-result").grows_at_once();
                 let result = match (request, fingerprint) {
                     (Some(request), Some(fingerprint)) => result
                         .child(div().flex_none().mt(u(8.0)).child(text_box(

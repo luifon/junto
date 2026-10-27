@@ -68,6 +68,7 @@ pub struct Held {
     moves: Moves,
     scroll: Option<ScrollHandle>,
     selector: Option<&'static str>,
+    grows_at_once: bool,
 }
 
 pub fn held(id: impl Into<ElementId>) -> Held {
@@ -80,6 +81,7 @@ pub fn held(id: impl Into<ElementId>) -> Held {
         moves: Moves::Below,
         scroll: None,
         selector: None,
+        grows_at_once: false,
     }
 }
 
@@ -104,6 +106,13 @@ impl Held {
     /// Keeps the position of the content in `handle`; without it the part keeps it.
     pub fn scroll(mut self, handle: &ScrollHandle) -> Self {
         self.scroll = Some(handle.clone());
+        self
+    }
+
+    /// The part grows at once and only a smaller height waits: its content arrives as a
+    /// part of a change that the person made, such as the step that a press opened.
+    pub fn grows_at_once(mut self) -> Self {
+        self.grows_at_once = true;
         self
     }
 
@@ -159,7 +168,7 @@ impl RenderOnce for Held {
                 .absolute()
                 .size_full(),
             );
-        let (most, moves) = (self.most, self.moves);
+        let (most, moves, grows_at_once) = (self.most, self.moves, self.grows_at_once);
         let wanted = move |heights: Heights, rem: Pixels| match most {
             Some(most) => heights.content.min(most.to_pixels(rem)),
             None => heights.content,
@@ -209,6 +218,7 @@ impl RenderOnce for Held {
                             now.changes = 0;
                         } else if now.shown.is_none()
                             || resized
+                            || (grows_at_once && now.shown.is_some_and(|shown| target > shown))
                             || (!now.pressed && !moves.covers(bounds, window.mouse_position()))
                         {
                             now.shown = Some(target);
