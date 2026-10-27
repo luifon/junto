@@ -46,7 +46,9 @@ pub async fn open_event_stream(
         ApiError::invalid("the event stream is opened with a WebSocket upgrade request")
     })?;
     proof::limit(&app.stream_opens, who.account_id, now)?;
-    let registration = app.streams.open(who.account_id, who.device_id)?;
+    let registration = app
+        .streams
+        .open(who.account_id, who.device_id, who.session_id, now)?;
 
     let link = registration.link().clone();
     let response = upgrade.response();

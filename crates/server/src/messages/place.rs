@@ -11,6 +11,7 @@ use junto_protocol::{
     message::{Message, MessagePlace},
 };
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Whether a request reads a place or changes its content. A direct conversation whose
@@ -20,6 +21,8 @@ use uuid::Uuid;
 pub enum Purpose {
     /// History, single messages, threads, files, read positions, follow choices, exports.
     Read,
+    /// A single message created after this session's current live connection began.
+    Live(Option<OffsetDateTime>),
     /// Sending, editing, deleting, reacting, uploading, pins and forks.
     Change,
 }
@@ -114,7 +117,8 @@ impl Place {
         }
         let other = if access.account_id == low { high } else { low };
         if !store::may_reach(connection, access, other).await? {
-            let read_only = purpose == Purpose::Read && store::departed(connection, other).await?;
+            let read_only =
+                purpose != Purpose::Change && store::departed(connection, other).await?;
             if !read_only {
                 return Err(ApiError::not_found());
             }
@@ -238,7 +242,13 @@ impl Place {
                 .fetch_optional(&mut *connection)
                 .await?;
         match row {
-            Some((Some(id), None)) => Self::channel(connection, access, id).await,
+            Some((Some(id), None)) => {
+                let place = Self::channel(connection, access, id).await?;
+                if purpose == Purpose::Read {
+                    place.require(access, WorkspacePermission::ReadMessageHistory)?;
+                }
+                Ok(place)
+            }
             Some((None, Some(id))) => Self::direct(connection, access, id, purpose).await,
             _ => Err(ApiError::not_found()),
         }

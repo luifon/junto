@@ -59,6 +59,12 @@ Messages and threads:
 - Adding a reaction requires add reactions. Removing one's existing reaction remains allowed.
 - Adding an ordinary role mention on send or edit requires mention roles. The everyone role and the everyone mention require mention everyone. An unchanged mention retained by an edit requires no new grant and sends no new mention notice.
 
+Message reads:
+
+- Channel and thread history require read message history. A single channel message also requires it unless the message was created strictly after the current subscribed event connection began. The server records this time; requests cannot supply it.
+- The live exception uses the latest subscribed connection for the requesting session and device. A replaced, unsubscribed or stopping connection grants no exception. Reconnecting establishes a new boundary. Current view channel permission is always required.
+- Sending and editing return the written message without requiring read message history. Internal checks of a reply destination and updates of its root do not turn an authorized write into a history read. Direct conversations retain their participant and departure rules.
+
 Message edits:
 
 - Editing a message is denied when the message is permanent, when the caller is not its author, and in a direct message when the caller is not a participant. These are limits. No permission lets a person edit the message of another person.

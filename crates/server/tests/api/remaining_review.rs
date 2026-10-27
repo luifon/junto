@@ -294,11 +294,24 @@ async fn review2_messages_do_not_wake_an_unrelated_background_connection() {
         None,
         None,
     );
-    let registration = app.streams.open(third.account_id, third.device_id).unwrap();
+    let registration = app
+        .streams
+        .open(
+            third.account_id,
+            third.device_id,
+            uuid::Uuid::nil(),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
     registration.link().set_level(Some(Level::Background));
     let recipient = app
         .streams
-        .open(reader.account_id, reader.device_id)
+        .open(
+            reader.account_id,
+            reader.device_id,
+            uuid::Uuid::nil(),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
         .unwrap();
     recipient.link().set_level(Some(Level::Background));
     let mut recipient_wakes = 0;
@@ -1066,7 +1079,12 @@ async fn review2_a_connection_opened_during_a_watcher_read_gets_its_notice() {
     assert!(pending.as_mut().now_or_never().is_none());
     let registration = app
         .streams
-        .open(reader.account_id, reader.device_id)
+        .open(
+            reader.account_id,
+            reader.device_id,
+            uuid::Uuid::nil(),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
         .unwrap();
     registration.link().set_level(Some(Level::Background));
     let mut tx = server.db.begin().await.unwrap();

@@ -225,7 +225,14 @@ async fn the_time_limit_of_a_write_is_not_renewed_by_interruptions() {
 
     let (near, far) = tokio::io::duplex(64);
     let socket = server_socket(near, &server.state.config.limits.stream).await;
-    let registration = streams.open(owner.account_id, owner.device_id).unwrap();
+    let registration = streams
+        .open(
+            owner.account_id,
+            owner.device_id,
+            uuid::Uuid::nil(),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
     let app = server.state.clone();
     let serving = tokio::spawn(connection::run(
         app,

@@ -772,7 +772,14 @@ async fn a_control_message_survives_a_check_of_the_session() {
 
     let (near, far) = tokio::io::duplex(64);
     let socket = server_socket(near, &server.state.config.limits.stream).await;
-    let registration = streams.open(owner.account_id, owner.device_id).unwrap();
+    let registration = streams
+        .open(
+            owner.account_id,
+            owner.device_id,
+            uuid::Uuid::nil(),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
+        .unwrap();
     let app = server.state.clone();
     let who = opened(&owner);
     tokio::spawn(connection::run(app, socket, who, epoch, registration));

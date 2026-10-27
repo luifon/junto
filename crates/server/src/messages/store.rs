@@ -80,6 +80,12 @@ pub async fn get(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let place = Place::load(connection, access, row.try_get("place_id")?, purpose).await?;
+    if let Purpose::Live(since) = purpose {
+        let created_at: OffsetDateTime = row.try_get("created_at")?;
+        if !since.is_some_and(|since| created_at > since) {
+            place.require(access, junto_authz::WorkspacePermission::ReadMessageHistory)?;
+        }
+    }
     let mut messages = load_messages(connection, access, &place, &[id]).await?;
     Ok((place, messages.pop().ok_or_else(ApiError::not_found)?))
 }

@@ -9,8 +9,10 @@ use std::time::Duration;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Level;
 use junto_protocol::ids::{AccountId, ChannelId, DeviceId};
+use time::OffsetDateTime;
 use tokio::sync::{Notify, Semaphore, watch};
 use tokio::task::AbortHandle;
+use uuid::Uuid;
 
 use crate::config::StreamLimits;
 use crate::error::ApiError;
@@ -26,6 +28,8 @@ pub struct Link {
     id: u64,
     account_id: AccountId,
     device_id: DeviceId,
+    session_id: Uuid,
+    started_at: OffsetDateTime,
     level: AtomicU8,
     news: Notify,
     attention: Notify,
@@ -231,6 +235,8 @@ impl Streams {
         self: &Arc<Self>,
         account_id: AccountId,
         device_id: DeviceId,
+        session_id: Uuid,
+        started_at: OffsetDateTime,
     ) -> Result<Registration, ApiError> {
         let limits = self.limits();
         let mut registry = lock(&self.registry);
@@ -259,6 +265,8 @@ impl Streams {
             id: registry.next_id,
             account_id,
             device_id,
+            session_id,
+            started_at,
             level: AtomicU8::new(NOT_SUBSCRIBED),
             news: Notify::new(),
             attention: Notify::new(),
@@ -275,6 +283,27 @@ impl Streams {
             streams: self.clone(),
             link,
         })
+    }
+
+    pub fn live_since(
+        &self,
+        account_id: AccountId,
+        device_id: DeviceId,
+        session_id: Uuid,
+    ) -> Option<OffsetDateTime> {
+        lock(&self.registry)
+            .by_account
+            .get(&account_id)?
+            .iter()
+            .filter(|link| {
+                link.device_id == device_id
+                    && link.session_id == session_id
+                    && link.level.load(Ordering::SeqCst) != NOT_SUBSCRIBED
+                    && !link.is_replaced()
+                    && !link.is_stopping()
+            })
+            .max_by_key(|link| link.id)
+            .map(|link| link.started_at)
     }
 
     fn close(&self, link: &Link) {
@@ -450,6 +479,41 @@ mod tests {
     }
 
     #[test]
+    fn live_reads_use_the_latest_subscribed_connection_of_the_same_session() {
+        let streams = streams(2, 4);
+        let account = AccountId::generate();
+        let device = DeviceId::generate();
+        let session = Uuid::new_v4();
+        let first_at = OffsetDateTime::UNIX_EPOCH;
+        let second_at = first_at + time::Duration::seconds(1);
+        let first = streams.open(account, device, session, first_at).unwrap();
+        assert_eq!(streams.live_since(account, device, session), None);
+        first.link().set_level(Some(Level::Full));
+        assert_eq!(streams.live_since(account, device, session), Some(first_at));
+        assert_eq!(streams.live_since(account, device, Uuid::new_v4()), None);
+        assert_eq!(
+            streams.live_since(account, DeviceId::generate(), session),
+            None
+        );
+        let second = streams.open(account, device, session, second_at).unwrap();
+        second.link().set_level(Some(Level::Full));
+        assert_eq!(
+            streams.live_since(account, device, session),
+            Some(second_at)
+        );
+        first.link().replaced.store(true, Ordering::SeqCst);
+        second.link().set_level(None);
+        assert_eq!(streams.live_since(account, device, session), None);
+        second.link().set_level(Some(Level::Background));
+        assert_eq!(
+            streams.live_since(account, device, session),
+            Some(second_at)
+        );
+        streams.shut_down();
+        assert_eq!(streams.live_since(account, device, session), None);
+    }
+
+    #[test]
     fn an_account_is_in_at_most_one_call() {
         let calls = CallRegistry::default();
         let account_id = AccountId::generate();
@@ -478,21 +542,57 @@ mod tests {
         let account_id = AccountId::generate();
         let device_id = DeviceId::generate();
 
-        let first = streams.open(account_id, device_id).unwrap();
-        let second = streams.open(account_id, device_id).unwrap();
+        let first = streams
+            .open(
+                account_id,
+                device_id,
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
+        let second = streams
+            .open(
+                account_id,
+                device_id,
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
         assert!(first.link().is_replaced());
         assert!(!second.link().is_replaced());
         assert_eq!(streams.connections_of(account_id), 2);
 
-        let third = streams.open(account_id, device_id).unwrap();
+        let third = streams
+            .open(
+                account_id,
+                device_id,
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
         assert!(second.link().is_replaced());
-        let refused = streams.open(account_id, device_id).err().unwrap();
+        let refused = streams
+            .open(
+                account_id,
+                device_id,
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .err()
+            .unwrap();
         assert_eq!(refused.code(), ErrorCode::TooManyConnections);
         assert!(!third.link().is_replaced());
 
         drop(first);
         assert_eq!(streams.connections_of(account_id), 2);
-        let fourth = streams.open(account_id, device_id).unwrap();
+        let fourth = streams
+            .open(
+                account_id,
+                device_id,
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
         assert!(third.link().is_replaced());
         drop((second, third, fourth));
         assert_eq!(streams.connections(), 0);
@@ -502,11 +602,39 @@ mod tests {
     fn another_device_is_refused_at_the_ceiling_of_the_account_and_closes_nothing() {
         let streams = streams(2, 2);
         let account_id = AccountId::generate();
-        let first = streams.open(account_id, DeviceId::generate()).unwrap();
-        let second = streams.open(account_id, DeviceId::generate()).unwrap();
-        assert!(streams.open(account_id, DeviceId::generate()).is_err());
+        let first = streams
+            .open(
+                account_id,
+                DeviceId::generate(),
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
+        let second = streams
+            .open(
+                account_id,
+                DeviceId::generate(),
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
+        assert!(
+            streams
+                .open(
+                    account_id,
+                    DeviceId::generate(),
+                    Uuid::nil(),
+                    OffsetDateTime::UNIX_EPOCH
+                )
+                .is_err()
+        );
         assert!(!first.link().is_replaced() && !second.link().is_replaced());
-        let other_account = streams.open(AccountId::generate(), DeviceId::generate());
+        let other_account = streams.open(
+            AccountId::generate(),
+            DeviceId::generate(),
+            Uuid::nil(),
+            OffsetDateTime::UNIX_EPOCH,
+        );
         assert!(other_account.is_ok());
     }
 
@@ -514,7 +642,12 @@ mod tests {
     async fn a_stop_aborts_the_tasks_that_do_not_end() {
         let streams = streams(2, 2);
         let registration = streams
-            .open(AccountId::generate(), DeviceId::generate())
+            .open(
+                AccountId::generate(),
+                DeviceId::generate(),
+                Uuid::nil(),
+                OffsetDateTime::UNIX_EPOCH,
+            )
             .unwrap();
         let link = registration.link().clone();
         let task = tokio::spawn(async move {
@@ -527,7 +660,12 @@ mod tests {
         assert!(link.is_stopping());
         assert_eq!(streams.connections(), 0);
         assert!(task.await.unwrap_err().is_cancelled());
-        let after_the_stop = streams.open(AccountId::generate(), DeviceId::generate());
+        let after_the_stop = streams.open(
+            AccountId::generate(),
+            DeviceId::generate(),
+            Uuid::nil(),
+            OffsetDateTime::UNIX_EPOCH,
+        );
         assert!(after_the_stop.is_err());
     }
 }

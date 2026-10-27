@@ -34,7 +34,13 @@ impl Target {
         purpose: Purpose,
     ) -> ApiResult<Place> {
         match self {
-            Self::Channel(id) => Place::channel(connection, access, id).await,
+            Self::Channel(id) => {
+                let place = Place::channel(connection, access, id).await?;
+                if purpose == Purpose::Read {
+                    place.require(access, WorkspacePermission::ReadMessageHistory)?;
+                }
+                Ok(place)
+            }
             Self::Direct(id) => Place::direct(connection, access, id, purpose).await,
             Self::Thread(id) => Ok(super::threads::root(connection, access, id, purpose)
                 .await?
@@ -173,7 +179,7 @@ pub(super) async fn send(
         place.require_send(&access, matches!(target, Target::Thread(_)))?;
         rate(app, &access, &mut counted)?;
         if let Some(reply) = body.reply_to {
-            let (parent, _) = messages::get(connection, &access, reply, Purpose::Read).await?;
+            let (parent, _) = messages::get(connection, &access, reply, Purpose::Change).await?;
             if parent.id != place.id {
                 return Err(ApiError::invalid(
                     "a reply stays in its channel or conversation",
@@ -185,7 +191,7 @@ pub(super) async fn send(
             _ => None,
         };
         if let (Some(root), Some(reply)) = (thread_root, body.reply_to) {
-            let (_, replied) = messages::get(connection, &access, reply, Purpose::Read).await?;
+            let (_, replied) = messages::get(connection, &access, reply, Purpose::Change).await?;
             if reply != root && replied.thread_root != Some(root) {
                 return Err(ApiError::invalid("a thread reply stays in its thread"));
             }
@@ -269,7 +275,8 @@ pub(super) async fn send(
         messages::notifications::create(connection, now, id, None).await?;
         if let Some(root) = thread_root {
             messages::threads::advance(connection, now, &access, root, position).await?;
-            let (_, root_message) = messages::get(connection, &access, root, Purpose::Read).await?;
+            let (_, root_message) =
+                messages::get(connection, &access, root, Purpose::Change).await?;
             messages::changed(
                 connection,
                 now,
@@ -282,7 +289,7 @@ pub(super) async fn send(
         } else {
             advance_read(connection, now, &access, &place, position).await?;
         }
-        Ok(messages::get(connection, &access, id, Purpose::Read)
+        Ok(messages::get(connection, &access, id, Purpose::Change)
             .await?
             .1)
     })
@@ -306,9 +313,18 @@ pub async fn get_message(
                 })?;
             counted = true;
         }
-        Ok(messages::get(connection, &access, id, Purpose::Read)
-            .await?
-            .1)
+        Ok(messages::get(
+            connection,
+            &access,
+            id,
+            Purpose::Live(app.streams.live_since(
+                access.account_id,
+                access.device_id,
+                access.session_id,
+            )),
+        )
+        .await?
+        .1)
     })
     .map(Json)
 }
@@ -364,7 +380,7 @@ pub async fn edit_message(
             .await?;
         messages::changed(connection, now, place.value, id, message.position, false).await?;
         messages::notifications::create(connection, now, id, Some(&recipients)).await?;
-        Ok(messages::get(connection, &access, id, Purpose::Read)
+        Ok(messages::get(connection, &access, id, Purpose::Change)
             .await?
             .1)
     })
