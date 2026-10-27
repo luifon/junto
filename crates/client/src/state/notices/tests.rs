@@ -1793,10 +1793,12 @@ fn a_share_or_a_presentation_holds_the_notifications_of_messages() {
     let mut scene = scene();
     let mut seen = Seen::default();
     scene.alerts(&mut seen);
-    let presenting = |scene: &Scene| AlertScene {
-        presenting: true,
-        ..scene.alert_scene(false, Shown::default())
-    };
+    fn presenting(scene: &Scene) -> AlertScene<'_> {
+        AlertScene {
+            presenting: true,
+            ..scene.alert_scene(false, Shown::default())
+        }
+    }
     let held = scene.message(scene.in_channel(scene.general), 7, "during the share, @you");
     scene.notice(NotificationKind::Mention, held, 1);
     let told = alerts(&mut seen, &presenting(&scene));

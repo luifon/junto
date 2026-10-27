@@ -1415,8 +1415,12 @@ async fn a_burst_of_replies_keeps_the_notices_and_the_unread_threads_without_rea
             },
         )
         .await;
-    rig.model_when("the list is read", |_| {
-        rig.http.count("/notifications") == before.0 + 1
+    soon("the list is read", async {
+        while rig.http.count("/notifications") == before.0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     })
     .await;
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert_eq!(rig.http.count("/notifications"), before.0 + 1);
 }

@@ -713,7 +713,7 @@ async fn mentions_use_current_text_roles_and_permissions_at_delivery_and_replay(
         .await
         .ok(StatusCode::CREATED);
     assert!(
-        matches!(server.traffic(&author,&mut to_a).await.as_slice(),[(_,Event::MessageMentioned{message_id,..}),(_,Event::NotificationChanged{message_id:notice})] if *message_id==positive.id && *notice==positive.id)
+        matches!(server.traffic(&author,&mut to_a).await.as_slice(),[(_,Event::MessageMentioned{message_id,..}),(_,Event::NotificationChanged{message_id:notice,..})] if *message_id==positive.id && *notice==positive.id)
     );
     server.state.streams.hold();
     let sent: Message = server
