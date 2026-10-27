@@ -33,6 +33,13 @@ pub fn rem_size(scale_percent: u32) -> Pixels {
     px(REM_AT_100 * clamp_scale(scale_percent) as f32 / 100.0)
 }
 
+/// A size of the design in pixels of the window at an interface scale: the least size of a
+/// window holds the same layout at every scale (ADR 0731).
+pub fn scaled_size((width, height): (f32, f32), scale_percent: u32) -> gpui::Size<Pixels> {
+    let scale = clamp_scale(scale_percent) as f32 / 100.0;
+    gpui::size(px(width * scale), px(height * scale))
+}
+
 pub fn clamp_scale(scale_percent: u32) -> u32 {
     scale_percent.clamp(SCALE_MIN, SCALE_MAX)
 }

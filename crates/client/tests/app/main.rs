@@ -44,6 +44,7 @@ mod gpui_panics;
 mod growth;
 mod growth_tests;
 mod harness;
+mod header;
 mod layout;
 mod layout_forms;
 mod linking;

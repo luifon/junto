@@ -450,10 +450,15 @@ impl Shell {
         };
         let who = div()
             .flex_none()
+            .min_w_0()
             .when(wide, |who| who.w(u(236.0)))
             .child(
+                // The mark of the former speaker and the mark of a correction go under the
+                // name where the line is narrow, so the control at the right of the line
+                // stays in view (ADR 0730).
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(u(7.0))
                     .text_size(u(14.0))

@@ -383,6 +383,11 @@ impl RenderOnce for Button {
         // The handle is kept while the button is disabled, so the focus can return to it
         // when the button takes the focus again; only an enabled button tracks it.
         let focus = super::reveal::handle(&self.id, window, cx);
+        #[cfg(feature = "test-support")]
+        let placed = super::placed::placed(match self.selector {
+            Some(selector) => selector.into(),
+            None => format!("{}", self.id).into(),
+        });
         let mut frame = div()
             .id(self.id)
             .role(Role::Button)
@@ -419,6 +424,8 @@ impl RenderOnce for Button {
             frame = frame.shadow(ledge(colour));
         }
         frame.style().refine(&self.style);
+        #[cfg(feature = "test-support")]
+        let frame = frame.child(placed);
 
         let ring = focus_ring(look.ring, metrics.focus_ring);
         let selector = self.selector;

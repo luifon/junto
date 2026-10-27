@@ -129,10 +129,13 @@ fn stepped_limit(limit: Option<u32>, inside: usize, up: bool) -> Option<Option<u
 impl Shell {
     /// The controls of the room in the header of its voice channel: meeting mode, the
     /// lock, and the count of the people inside.
+    /// The `compact` form draws the switches with their icons and states, without their
+    /// names, which stay in the tooltips and for a screen reader.
     pub(crate) fn render_room_controls(
         &mut self,
         room: &RoomView,
         theme: &Theme,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         if !room.ready {
@@ -144,7 +147,7 @@ impl Shell {
         let mut controls = vec![
             Button::new("meeting-toggle")
                 .icon(Icon::Hand)
-                .label(text::MEETING_MODE)
+                .when(!compact, |button| button.label(text::MEETING_MODE))
                 .tag(on_off(meeting_on), meeting_on)
                 .tooltip(meeting_help.clone())
                 // The state, and why the person cannot change it, for a screen reader.
@@ -163,7 +166,7 @@ impl Shell {
                 .into_any_element(),
             Button::new("lock-toggle")
                 .icon(if locked { Icon::Lock } else { Icon::Unlock })
-                .label(text::LOCK_ROOM)
+                .when(!compact, |button| button.label(text::LOCK_ROOM))
                 .tag(on_off(locked), locked)
                 .tooltip(if room.allowed.lock {
                     text::LOCK_ROOM_HELP
@@ -244,7 +247,14 @@ impl Shell {
                 },
             )])
         };
-        let request = div().flex().flex_none().items_center().gap(u(8.0));
+        // In a narrow main area the request goes to a line of its own, and its name gives
+        // way there before its buttons (ADR 0730).
+        let request = div()
+            .flex()
+            .flex_shrink_1()
+            .min_w_0()
+            .items_center()
+            .gap(u(8.0));
         let request: Option<AnyElement> = if meeting.by_self {
             match (meeting.hands.first(), meeting.waiting.first()) {
                 (Some((account_id, name)), _) => {
@@ -260,6 +270,8 @@ impl Shell {
                                 div()
                                     .id("meeting-hand")
                                     .debug_selector(move || format!("meeting-hand:{account_id}"))
+                                    .min_w_0()
+                                    .truncate()
                                     .child(strong(
                                         format!("{name}{}", text::RAISED_A_HAND),
                                         name.len(),
@@ -357,12 +369,13 @@ impl Shell {
             .debug_selector(|| "meeting-bar".to_owned())
             .flex()
             .flex_none()
+            .flex_wrap()
             .items_center()
             .gap(u(10.0))
-            .h(u(40.0))
+            .min_h(u(40.0))
+            .py(u(6.0))
             .pl(u(16.0))
             .pr(u(10.0))
-            .overflow_hidden()
             .bg(Hsla::from(colors.cypress))
             .typeface(theme.types.control, theme)
             .font_weight(gpui::FontWeight::MEDIUM)

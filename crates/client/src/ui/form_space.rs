@@ -57,12 +57,15 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
     /// `open` is the form or question that the page shows now.
     pub fn row(&self, open: Option<M>, modes: &[M], row: impl IntoElement) -> Div {
         // The row is in a part that does not grow, so that a row that grows in its parent
-        // keeps its own height and the kept height is free space under it.
+        // keeps its own height and the kept height is free space under it. Both parts have
+        // the width of their place: as the root of a list item, a part without a width took
+        // the least width of its content, and a line of a transcript was wider than its panel.
         let space = div()
             .flex()
             .flex_col()
             .flex_none()
-            .child(div().flex().flex_col().flex_none().child(row));
+            .w_full()
+            .child(div().flex().flex_col().flex_none().w_full().child(row));
         let key = modes.first().copied();
         if let Some(open) = open.filter(|open| modes.contains(open)) {
             let drawn = self.drawn.clone();

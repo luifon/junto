@@ -28,10 +28,13 @@ step "The client holds the camera code and not the test camera device"
 tools/linux-container.sh sh -c 'llvm-nm-22 /target/debug/junto >/tmp/symbols && grep -q junto_camera_open /tmp/symbols && ! grep -q junto_fake_ /tmp/symbols'
 step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
-# Every screen of junto-screens: no empty band in an area, and each screen settles within
-# its bound (ADR 0730, ADR 0731). It measures and writes no picture.
+# Every screen of junto-screens: no empty band in an area, no control past an edge of the
+# window, and each screen settles within its bound (ADR 0730, ADR 0731). It measures and
+# writes no picture. The second run draws every screen at the least size of the window.
 step "Screens without empty bands"
 tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
+step "Screens at the least size of the window"
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
 # A panic in a task of the window thread, on the event loop of X11 and of Wayland: the client
 # continues, writes the report and states it (ADR 0757).
 step "Panics in the callbacks of the platform"

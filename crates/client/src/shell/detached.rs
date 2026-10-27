@@ -40,6 +40,10 @@ const RECORDING_BESIDE_CONTROLS: f32 = 600.0;
 /// of the design. A narrower window draws the panel over the stage.
 const STAGE_BESIDE_PANEL: f32 = 480.0;
 
+/// The smallest size of the call window in pixels at 100 %; it follows the interface scale at
+/// its opening (ADR 0731).
+pub(crate) const CALL_WINDOW_MIN_SIZE: (f32, f32) = (480.0, 320.0);
+
 pub fn open(state: Entity<AppState>, cx: &mut App) {
     if state.read(cx).is_call_detached() {
         return;
@@ -83,7 +87,10 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         WindowOptions {
             display_id: display.map(|display| display.id()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(480.0), px(320.0))),
+            window_min_size: Some(crate::theme::scaled_size(
+                CALL_WINDOW_MIN_SIZE,
+                state.read(cx).settings().scale_percent,
+            )),
             kind: if saved.keep_on_top && !ASKS_WINDOW_MANAGER {
                 WindowKind::Floating
             } else {
@@ -452,7 +459,7 @@ impl Shell {
                     }),
             );
         let controls = match panel.and_then(|panel| panel.room()) {
-            Some(room) => controls.children(self.render_room_controls(room, &theme, cx)),
+            Some(room) => controls.children(self.render_room_controls(room, &theme, false, cx)),
             None => controls,
         };
         body = body.child(controls);

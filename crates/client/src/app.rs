@@ -15,7 +15,8 @@ use crate::theme::{self, Theme};
 
 actions!(junto, [Quit]);
 
-/// The size of a new main window and its smallest size, in pixels at 100 %.
+/// The size of a new main window and its smallest size, in pixels at 100 %. The smallest size
+/// follows the interface scale at the start (ADR 0731).
 const WINDOW_SIZE: (f32, f32) = (1440.0, 900.0);
 const WINDOW_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
@@ -166,7 +167,7 @@ pub fn open_main_window(
             show: true,
             app_id: Some(APP_ID.to_owned()),
             icon: crate::window_icon::icon(),
-            window_min_size: Some(size(px(WINDOW_MIN_SIZE.0), px(WINDOW_MIN_SIZE.1))),
+            window_min_size: Some(theme::scaled_size(WINDOW_MIN_SIZE, scale)),
             ..WindowOptions::default()
         },
         move |window, cx| {

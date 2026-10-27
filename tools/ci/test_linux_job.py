@@ -18,6 +18,8 @@ exit 0
 DEVICE_TESTS = "cargo test --locked -p junto-media --test linux_audio --test tls_trust -- --ignored"
 SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support "
            "--bin junto-screens -- /tmp/junto-screens")
+LEAST_SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client "
+                 "--features test-support --bin junto-screens -- /tmp/junto-screens")
 
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
@@ -53,6 +55,15 @@ class LinuxSteps(unittest.TestCase):
         status, commands, _ = self.run_job(fail_on="--bin junto-screens")
         self.assertEqual(status, 17)
         self.assertEqual(commands[-1], SCREENS)
+
+    def test_the_linux_job_draws_every_screen_at_the_least_size_of_the_window(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        self.assertIn(LEAST_SCREENS, commands)
+        self.assertLess(commands.index(SCREENS), commands.index(LEAST_SCREENS))
+        status, commands, _ = self.run_job(fail_on="JUNTO_SCREENS_SIZE=720x480")
+        self.assertEqual(status, 17)
+        self.assertEqual(commands[-1], LEAST_SCREENS)
 
     def test_a_failed_test_of_sound_devices_fails_the_linux_job(self):
         status, commands, _ = self.run_job(fail_on="--test linux_audio")

@@ -15,7 +15,7 @@ use junto_client_core::settings::Panel;
 
 use super::edges::Side;
 
-use super::search::SEARCH_FIELD_WIDTH;
+use super::search::search_width;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use junto_media::calls::Phase;
@@ -274,6 +274,9 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let members_open = self.members_open && call.is_none();
+        // The buttons show their icons alone where their labels do not fit (ADR 0730).
+        let fit = self.header_fit.clone();
+        let compact = fit.compact();
         let conversation = view.lists().and_then(|lists| lists.conversation.as_ref());
         let title: Option<(Icon, SharedString)> = match (conversation, channel) {
             (Some(conversation), _) => Some((
@@ -338,9 +341,9 @@ impl Shell {
                     // The recording of the call, and then the state of the room.
                     PanelPlace::Channel(channel) => {
                         let recording = &channel.recording;
-                        after.extend(self.render_recording_control(recording, theme, false, cx));
+                        after.extend(self.render_recording_control(recording, theme, compact, cx));
                         after.push(div().flex_1().into_any_element());
-                        after.extend(self.render_room_controls(&channel.room, theme, cx));
+                        after.extend(self.render_room_controls(&channel.room, theme, compact, cx));
                     }
                     // Whether the other person has taken a place in the call.
                     PanelPlace::Direct(direct) => {
@@ -392,18 +395,31 @@ impl Shell {
             }
             after.push(div().flex_1().into_any_element());
         }
+        // The header of a call in a narrow window holds the controls of the room and the
+        // buttons of the panel: its parts stand closer.
+        let gap = u(if narrow && call.is_some() { 6.0 } else { 10.0 });
+        let right = u(if narrow && call.is_some() { 8.0 } else { 14.0 });
         super::title_bar::header_zone(div())
             .id("main-header")
             .relative()
             .flex()
             .flex_none()
             .items_center()
-            // The header of a call in a narrow window holds the controls of the room and
-            // the buttons of the panel: its parts stand closer.
-            .gap(u(if narrow && call.is_some() { 6.0 } else { 10.0 }))
-            .h(u(theme.metrics.header_height))
+            .gap(gap)
+            .map(|header| {
+                if compact {
+                    // The short form wraps where even it does not fit.
+                    header
+                        .flex_wrap()
+                        .min_h(u(theme.metrics.header_height))
+                        .py(u(7.0))
+                } else {
+                    header.h(u(theme.metrics.header_height))
+                }
+            })
             .pl(u(16.0))
-            .pr(u(if narrow && call.is_some() { 8.0 } else { 14.0 }))
+            .pr(right)
+            .child(fit.row(right, gap))
             .bg(Hsla::from(colors.travertine))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
@@ -421,10 +437,16 @@ impl Shell {
                         .aria_label(name.clone())
                         .debug_selector(|| "channel-title".to_owned())
                         .flex()
-                        .flex_none()
                         .items_center()
                         .gap(u(7.0))
                         .max_w(u(420.0))
+                        .map(|title| {
+                            if compact {
+                                title.flex_shrink_1().min_w_0()
+                            } else {
+                                title.flex_none()
+                            }
+                        })
                         .typeface(theme.types.title, theme)
                         .ink(colors.ink)
                         .child(icon(shown, 17.0, colors.terracotta_deep))
@@ -436,7 +458,8 @@ impl Shell {
                 header.child(
                     Button::new("mark-as-read")
                         .icon(Icon::CheckDouble)
-                        .label(text::MARK_AS_READ)
+                        .when(!compact, |button| button.label(text::MARK_AS_READ))
+                        .accessible_label(text::MARK_AS_READ)
                         .tooltip(text::MARK_AS_READ_HELP)
                         .selector("mark-as-read")
                         .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
@@ -450,7 +473,7 @@ impl Shell {
                     header.child(
                         Button::new("pins")
                             .icon(Icon::Pin)
-                            .label(text::PINS)
+                            .when(!compact, |button| button.label(text::PINS))
                             .tooltip(if pins_open {
                                 text::CLOSE_PINS
                             } else {
@@ -502,7 +525,7 @@ impl Shell {
                 header.child(
                     Button::new("members")
                         .icon(Icon::People)
-                        .label(text::MEMBERS)
+                        .when(!compact, |button| button.label(text::MEMBERS))
                         .tooltip(if members_open {
                             text::CLOSE_MEMBERS
                         } else {
@@ -534,14 +557,15 @@ impl Shell {
             // (ADR 0730).
             .when(view.lists().is_some() && call.is_none(), |header| {
                 header.child(match view.workspace() {
-                    Some(_) => self.render_search_field(cx),
+                    Some(_) => self.render_search_field(compact, cx),
                     None => div()
                         .flex_none()
-                        .w(u(SEARCH_FIELD_WIDTH))
+                        .w(u(search_width(compact)))
                         .debug_selector(|| "search-place".to_owned())
                         .into_any_element(),
                 })
             })
+            .when(!compact, |header| header.child(fit.end()))
     }
 
     /// The marker of a channel whose messages are permanent, with its explanation on

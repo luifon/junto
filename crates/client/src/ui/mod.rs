@@ -10,6 +10,7 @@ mod button;
 mod controls;
 mod dialog;
 mod field;
+mod fit;
 mod form_space;
 mod held;
 mod marks;
@@ -20,6 +21,7 @@ mod paint_text;
 mod panel;
 mod pattern;
 mod picture;
+mod placed;
 mod reveal;
 mod rows;
 mod scroll;
@@ -39,6 +41,7 @@ pub use button::{Button, ButtonKind};
 pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
+pub use fit::Fit;
 pub use form_space::{FormSpace, NewRow};
 #[cfg(feature = "test-support")]
 pub use held::take_unsettled;
@@ -55,6 +58,9 @@ pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;
 #[cfg(all(target_os = "macos", feature = "test-support"))]
 pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_painted_surfaces};
+pub use placed::{Placed, outside};
+#[cfg(feature = "test-support")]
+pub use placed::{record_controls, take_controls};
 pub use rows::{
     CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
 };
