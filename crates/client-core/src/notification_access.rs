@@ -49,7 +49,9 @@ pub fn request() -> Answer {
     }
 }
 
+// The answer of the notification centre is a pointer that the system gives to the block.
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 mod macos {
     use std::ptr::NonNull;
     use std::sync::Mutex;

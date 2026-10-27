@@ -1,6 +1,11 @@
 //! The operations of Windows of the setup program (ADR 0728): the entry of the list of
 //! installed programs, the Start menu shortcut, the questions to the person, and the
 //! instances of Junto that run.
+//! The shortcut (COM), the questions (`MessageBoxW`) and the list of processes call the
+//! Windows API, so the module allows unsafe code; the decisions of the setup program are in
+//! `setup.rs`, without unsafe code, and their tests run on every system.
+
+#![allow(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 
