@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use zbus::connection::Builder;
 use zbus::zvariant::Value;
 
@@ -15,6 +15,7 @@ const INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
 const OBJECT: &str = "/chat/junto/Junto/LauncherEntry";
 /// The pause before the worker connects to the session bus again.
 const RETRY: Duration = Duration::from_secs(5);
+const ATTEMPT: Duration = Duration::from_secs(3);
 
 /// The entry of the desktop file of the application that the signal names.
 fn application() -> String {
@@ -25,7 +26,7 @@ fn application() -> String {
 }
 
 pub(super) struct Launcher {
-    counts: mpsc::UnboundedSender<u64>,
+    counts: watch::Sender<u64>,
 }
 
 impl Launcher {
@@ -38,7 +39,7 @@ impl Launcher {
 pub(super) fn launcher() -> &'static Launcher {
     static LAUNCHER: OnceLock<Launcher> = OnceLock::new();
     LAUNCHER.get_or_init(|| {
-        let (counts, receive) = mpsc::unbounded_channel();
+        let (counts, receive) = watch::channel(0);
         let started = std::thread::Builder::new()
             .name("launcher-entry".into())
             .spawn(move || {
@@ -57,43 +58,45 @@ pub(super) fn launcher() -> &'static Launcher {
     })
 }
 
-/// Sends each count that it is given, and the last count again after a new connection.
+/// Sends the latest count, including after the session bus becomes available again.
 async fn worker(
     connect: impl Fn() -> zbus::Result<Builder<'static>>,
-    mut counts: mpsc::UnboundedReceiver<u64>,
+    mut counts: watch::Receiver<u64>,
 ) {
-    let mut count = None;
+    let mut closed = counts.clone();
     let mut reported = false;
     loop {
-        let connection = match connect() {
-            Ok(builder) => builder.build().await,
-            Err(error) => Err(error),
+        let connecting = async {
+            match connect() {
+                Ok(builder) => builder.build().await,
+                Err(error) => Err(error),
+            }
         };
-        let connection = match connection {
-            Ok(connection) => connection,
-            Err(error) => {
-                if !reported {
-                    tracing::warn!(%error, "the launcher count has no session bus");
-                    reported = true;
+        let connection = tokio::select! {
+            _ = closed.wait_for(|_| false) => return,
+            result = tokio::time::timeout(ATTEMPT, connecting) => result,
+        };
+        if let Ok(Ok(connection)) = connection {
+            loop {
+                let count = *counts.borrow_and_update();
+                let sent = tokio::select! {
+                    _ = closed.wait_for(|_| false) => return,
+                    result = tokio::time::timeout(ATTEMPT, send(&connection, count)) => result,
+                };
+                if !matches!(sent, Ok(Ok(()))) {
+                    break;
                 }
-                tokio::time::sleep(RETRY).await;
-                continue;
+                if counts.changed().await.is_err() {
+                    return;
+                }
             }
-        };
-        if let Some(count) = count
-            && send(&connection, count).await.is_err()
-        {
-            continue;
+        } else if !reported {
+            tracing::warn!("the launcher count has no session bus");
+            reported = true;
         }
-        loop {
-            let Some(next) = counts.recv().await else {
-                return;
-            };
-            count = Some(next);
-            if let Err(error) = send(&connection, next).await {
-                tracing::debug!(%error, "the launcher count was not sent");
-                break;
-            }
+        tokio::select! {
+            _ = closed.wait_for(|_| false) => return,
+            _ = tokio::time::sleep(RETRY) => {},
         }
     }
 }

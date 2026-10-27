@@ -83,7 +83,7 @@ async fn the_count_reaches_a_dock_on_the_session_bus() {
     let mut updates = zbus::MessageStream::for_match_rule(rule, &dock, None)
         .await
         .unwrap();
-    let (counts, receive) = mpsc::unbounded_channel();
+    let (counts, receive) = watch::channel(0);
     let address = bus.address.clone();
     let worker = tokio::spawn(worker(move || Builder::address(address.as_str()), receive));
     let entry = "application://chat.junto.Junto.desktop".to_owned();
@@ -92,4 +92,96 @@ async fn the_count_reaches_a_dock_on_the_session_bus() {
     counts.send(0).unwrap();
     assert_eq!(next_update(&mut updates).await, (entry, 0, false));
     worker.abort();
+}
+
+#[tokio::test]
+async fn a_missing_bus_observes_worker_shutdown() {
+    let (counts, receive) = watch::channel(0);
+    let work = tokio::spawn(worker(
+        || Builder::address("unix:path=/nonexistent/junto-test-bus"),
+        receive,
+    ));
+    for count in 0..10_000 {
+        counts.send(count).unwrap();
+    }
+    drop(counts);
+    tokio::time::timeout(Duration::from_secs(1), work)
+        .await
+        .expect("shutdown while disconnected")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_unresponsive_bus_has_a_connection_deadline() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("bus");
+    let socket = tokio::net::UnixListener::bind(&path).unwrap();
+    let address = format!("unix:path={}", path.display());
+    let (counts, receive) = watch::channel(0);
+    let work = tokio::spawn(worker(move || Builder::address(address.as_str()), receive));
+    let (_connection, _) = tokio::time::timeout(Duration::from_secs(1), socket.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(counts);
+    tokio::time::timeout(Duration::from_secs(1), work)
+        .await
+        .expect("shutdown during authentication")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stalled_authentication_is_retried_within_the_connection_bound() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("bus");
+    let socket = tokio::net::UnixListener::bind(&path).unwrap();
+    let address = format!("unix:path={}", path.display());
+    let (counts, receive) = watch::channel(0);
+    let work = tokio::spawn(worker(move || Builder::address(address.as_str()), receive));
+    let (_first, _) = tokio::time::timeout(Duration::from_secs(1), socket.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (_second, _) =
+        tokio::time::timeout(ATTEMPT + RETRY + Duration::from_secs(2), socket.accept())
+            .await
+            .expect("connection attempt has a deadline")
+            .unwrap();
+    drop(counts);
+    tokio::time::timeout(Duration::from_secs(1), work)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_recovered_bus_gets_only_the_latest_count() {
+    let bus = Bus::new();
+    let dock = Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface(INTERFACE)
+        .unwrap()
+        .member("Update")
+        .unwrap()
+        .build();
+    let mut updates = zbus::MessageStream::for_match_rule(rule, &dock, None)
+        .await
+        .unwrap();
+    let (counts, receive) = watch::channel(0);
+    for count in 0..10_000 {
+        counts.send(count).unwrap();
+    }
+    let address = bus.address.clone();
+    let work = tokio::spawn(worker(move || Builder::address(address.as_str()), receive));
+    assert_eq!(next_update(&mut updates).await.1, 9_999);
+    drop(counts);
+    tokio::time::timeout(Duration::from_secs(1), work)
+        .await
+        .unwrap()
+        .unwrap();
 }

@@ -656,9 +656,6 @@ pub struct ServerRow {
     /// direct conversations (ADR 0741). The collapsed server book and the badge of the
     /// application count them.
     pub for_person: u64,
-    /// The part of `for_person` that no listed workspace shows: the direct conversations,
-    /// and every mention of a server without a listed workspace.
-    pub head_for_person: u64,
     /// The join requests that wait for a decision of the person (ADR 0761).
     pub waiting_join_requests: usize,
     pub workspaces: Vec<WorkspaceRow>,
@@ -3634,12 +3631,6 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                 for_person: unreads
                     .as_ref()
                     .map_or(0, |(_, unreads)| unreads.for_person(|_| true)),
-                head_for_person: unreads.as_ref().map_or(0, |(model, unreads)| {
-                    let without_workspace = model.workspaces.is_empty();
-                    unreads.for_person(|place| {
-                        without_workspace || matches!(place, PlaceId::Direct(_))
-                    })
-                }),
                 waiting_join_requests: unreads.as_ref().map_or(0, |(model, _)| {
                     super::admin::view::waiting_join_requests(model)
                 }),

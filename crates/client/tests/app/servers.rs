@@ -34,7 +34,7 @@ impl Window {
     /// Joins a further server with an invite code of its administrator. The new server
     /// is shown afterwards.
     #[track_caller]
-    fn join_further(&mut self, world: &World, server: &TestServer, admin: &Admin) {
+    pub(crate) fn join_further(&mut self, world: &World, server: &TestServer, admin: &Admin) {
         let count = self.view().servers.len();
         let code = admin.invite(world, 1);
         self.find_server(&server.address());
@@ -256,10 +256,14 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
                 .is_some_and(|workspace| workspace.unread.mentions == 1)
     });
     let view = window.view();
-    // The head of the server shows the direct message, which no workspace row shows.
+    // The head of the server counts the direct message and the mention of the whole
+    // server (ADR 0741).
     let row = &view.servers[1];
     assert_eq!((row.head_unread.messages, row.head_unread.mentions), (1, 0));
-    assert!(window.shows("server-head-unread-1"));
+    assert_eq!(
+        window.drawn_number("server-head-unread-1").as_deref(),
+        Some("2")
+    );
     // The workspace shows the mention.
     assert_eq!(row.workspaces[0].unread.messages, 1);
     assert_eq!(row.workspaces[0].unread.mentions, 1);

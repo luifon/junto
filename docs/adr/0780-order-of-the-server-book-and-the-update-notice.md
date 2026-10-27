@@ -30,7 +30,7 @@ Order of the server book, in the window:
 Unread sign of a server:
 
 - The row of a server has a second unread value: what the server holds unread that no row of a workspace shows. These are the direct conversations, and every place when the server lists no workspace.
-- In the expanded server book the head of a server shows that value with the sign of the channel list: the count of the mentions when there is one, and a dot otherwise. The notification settings decide what counts, as for a channel (ADR 0409).
+- In the expanded server book the head of a server shows that value with the sign of the channel list: the count of the messages for the person on the whole server when there is one (ADR 0741), and a dot otherwise. The notification settings decide what counts, as for a channel (ADR 0409).
 - The collapsed server book keeps its dot, which stands for every unread place of the server.
 - A server that shows no lists has no sign. A server in the connection mode "when selected" has no connection while it is not selected (ADR 0107), so its signs do not change until it is selected.
 
