@@ -77,6 +77,17 @@ def started_program():
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_offering_restart_without_starting_the_new_version_is_rejected(self):
+        output = "\n".join([
+            "Junto update notice: 0.1.1",
+            "Junto version line: Junto 0.1.0 (test configuration) Junto 0.1.1 is available.",
+            "installed version 0.1.1",
+            "Junto restart offered: Junto 0.1.1 is installed. Restart Junto to use it."])
+        with self.assertRaisesRegex(AssertionError, "Restart did not draw"):
+            check_lifecycle.update_lines(output, ["0.1.0", "0.1.1"], restarted=True)
+        output += "\nJunto restart requested: 123\nJunto first frame version: 0.1.1 pid 124"
+        check_lifecycle.update_lines(output, ["0.1.0", "0.1.1"], restarted=True)
+
     @unittest.skipIf(os.name == "nt", "the Unix CI lock is an inherited file descriptor")
     def test_commands_inherit_the_ci_lock(self):
         with tempfile.TemporaryFile() as lock:

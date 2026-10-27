@@ -34,6 +34,7 @@ pub(super) struct InstallState {
     working: bool,
     installed: bool,
     status: Option<String>,
+    restart: Option<PathBuf>,
 }
 
 impl InstallState {
@@ -44,7 +45,10 @@ impl InstallState {
     /// The update of this copy from the compiled source, or from `base` in a test
     /// configuration (`--update-source`).
     pub fn with_source(base: Option<String>) -> Self {
-        let mut state = Self::default();
+        let mut state = Self {
+            restart: restart_path(std::env::var_os("APPIMAGE")),
+            ..Self::default()
+        };
         let compiled = junto_client_core::releases::HttpSource::compiled();
         let source = match &base {
             Some(base) => junto_client_core::releases::HttpSource::new(
@@ -170,10 +174,17 @@ pub fn version_line(
 }
 
 /// The program that a restart starts: the AppImage file that the person started, not the
-/// program inside its mount, which ends with the process. Other packages start the same
-/// path again, which the update replaced in place.
+/// program inside its mount. On Linux the executable path is read before replacement:
+/// after it, current_exe names the moved or deleted old executable.
 pub fn restart_path(appimage: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    appimage.filter(|path| !path.is_empty()).map(PathBuf::from)
+    appimage
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            cfg!(target_os = "linux")
+                .then(std::env::current_exe)
+                .and_then(Result::ok)
+        })
 }
 
 impl AppState {
@@ -311,7 +322,7 @@ impl AppState {
         if !self.update_install.installed {
             return;
         }
-        if let Some(path) = restart_path(std::env::var_os("APPIMAGE")) {
+        if let Some(path) = self.update_install.restart.clone() {
             cx.set_restart_path(path);
         }
         cx.restart();
@@ -331,6 +342,13 @@ mod tests {
             can_check: true,
             checking: false,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linux_directory_retains_its_launch_path_before_replacement() -> std::io::Result<()> {
+        assert_eq!(restart_path(None), Some(std::env::current_exe()?));
+        Ok(())
     }
 
     #[test]
@@ -416,7 +434,10 @@ mod tests {
             restart_path(Some("/opt/apps/Junto.AppImage".into())),
             Some(PathBuf::from("/opt/apps/Junto.AppImage"))
         );
-        assert_eq!(restart_path(Some("".into())), None);
-        assert_eq!(restart_path(None), None);
+        let executable = cfg!(target_os = "linux")
+            .then(std::env::current_exe)
+            .and_then(Result::ok);
+        assert_eq!(restart_path(Some("".into())), executable);
+        assert_eq!(restart_path(None), executable);
     }
 }

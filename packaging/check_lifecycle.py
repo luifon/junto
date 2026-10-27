@@ -77,6 +77,7 @@ class Processes:
 
     def __init__(self, arguments, options):
         self.job = None
+        self.graceful = options.pop("graceful", False)
         if os.name == "nt":
             self.job = _kernel32.CreateJobObjectW(None, None)
             if not self.job:
@@ -122,6 +123,16 @@ class Processes:
             if self.job:
                 _kernel32.TerminateJobObject(self.job, 1)
         else:
+            if self.graceful:
+                deadline = time.monotonic() + 15
+                try:
+                    os.killpg(self.child.pid, signal.SIGTERM)
+                    while time.monotonic() < deadline:
+                        self.child.poll()
+                        os.killpg(self.child.pid, 0)
+                        time.sleep(.05)
+                except ProcessLookupError:
+                    return
             try:
                 os.killpg(self.child.pid, signal.SIGKILL)
             # macOS refuses the signal when every process of the group has ended but the
@@ -316,7 +327,7 @@ def versions(manifest):
     return [current, f"{major}.{minor}.{patch + 1}"]
 
 
-def update_lines(output, versions):
+def update_lines(output, versions, *, restarted=False):
     """Requires the lines of `--check-update`: the notice of the newer version, the version
     line of the server book, the installed version and the offered restart."""
     current, new = versions
@@ -328,6 +339,13 @@ def update_lines(output, versions):
     missing = [line for line in expected if line not in lines]
     if missing:
         raise AssertionError(f"the window did not report the update {missing}: {output}")
+    if restarted:
+        old = [line.removeprefix("Junto restart requested: ") for line in lines
+               if line.startswith("Junto restart requested: ")]
+        prefix = f"Junto first frame version: {new} pid "
+        new_process = [line.removeprefix(prefix) for line in lines if line.startswith(prefix)]
+        if len(old) != 1 or len(new_process) != 1 or old[0] == new_process[0]:
+            raise AssertionError("Restart did not draw the new version in a new process: " + output)
 
 
 def requests(system, kind, arch, versions):
@@ -486,10 +504,11 @@ def check(parent, system, files, *, signing=None):
             data = work / "data-update"
             if os.name != "nt":
                 data.mkdir(mode=0o700)
-            output = command([*display, binary, "--data-dir", data, "--no-activate",
+            restart = [sys.executable, ROOT / "packaging/check_restart.py"] if system == "linux" else []
+            output = command([*display, *restart, binary, "--data-dir", data, "--no-activate",
                               "--update-source", address, "--check-update"],
-                             env=runtime, timeout=UPDATE_BOUND)
-            update_lines(output, built)
+                             env=runtime, timeout=UPDATE_BOUND, graceful=system == "linux")
+            update_lines(output, built, restarted=system == "linux")
             print(f"    updated to {built[1]} by the window of the installed client in "
                   f"{time.monotonic() - began:.1f} s", flush=True)
             if server.paths != requests(system, kind, arch, built):

@@ -67,7 +67,7 @@ The version of this copy, below "Add server":
   - The Debian package (ADR 0728): the name of the `.deb` of the version, with "Details". The section "Version" states that the package manager of the system updates it, the command `sudo apt install ./junto_<version>_amd64.deb` with "Copy command", and the address of the download page with "Copy address".
   - A copy that no package installed: that it does not update itself, the address of the download page, with "Details".
 - The download page is the release site whose directory `updates/` is the update source (ADR 0727); the page of a release is the notes page of its version on that site.
-- "Restart" quits the application as Quit does (the call is left first) and starts the installed version with the same data directory: gpui starts the same path again after the process ended, the path that the update replaced; for an AppImage the file in `APPIMAGE`, not the program inside its mount, which ends with the process.
+- "Restart" quits the application as Quit does (the call is left first) and starts the installed version with the same data directory: gpui starts the same path again after the process ended, the path that the update replaced; for an AppImage the file in `APPIMAGE`, not the program inside its mount, which ends with the process. Linux retains this path when the update source is initialized, before replacement: resolving the executable after the exchange names the moved or deleted old program.
 
 Version of a server, in the client core:
 

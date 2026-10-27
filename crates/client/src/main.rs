@@ -153,7 +153,7 @@ fn update_source_of(
 }
 
 /// `--check-update`: the window checks its source, shows the notice, and installs the newer
-/// version with its update action; the start then ends. The lines that it prints are what
+/// version with its update action; on Linux it then restarts. The lines it prints are what
 /// the package checks read. It fails when no newer version is found in 300 seconds.
 fn check_update_through_the_window(
     state: &gpui::Entity<junto_client::state::AppState>,
@@ -191,6 +191,13 @@ fn check_update_through_the_window(
                 println!("installed version {}", update.version);
                 println!("Junto restart offered: {}", line.sentence);
                 reached.set(true);
+                if cfg!(target_os = "linux") {
+                    println!("Junto restart requested: {}", std::process::id());
+                    state.update(cx, |state, cx| {
+                        state.act_on_version_line(cx);
+                    });
+                    return;
+                }
             } else {
                 eprintln!(
                     "the update was not installed: {}",
@@ -400,7 +407,7 @@ fn main() -> ExitCode {
     let check_update = arguments.check_update;
     let update_source = arguments.update_source;
     // A restart after an update starts the same data directory (ADR 0780).
-    let restart_arguments: Vec<std::ffi::OsString> = if chosen_dir {
+    let mut restart_arguments: Vec<std::ffi::OsString> = if chosen_dir {
         vec![
             "--data-dir".into(),
             client.data_dir().root().as_os_str().to_owned(),
@@ -408,6 +415,9 @@ fn main() -> ExitCode {
     } else {
         Vec::new()
     };
+    if check_update && cfg!(target_os = "linux") {
+        restart_arguments.push("--check-startup".into());
+    }
     let started = std::rc::Rc::new(std::cell::Cell::new(false));
     let reached = started.clone();
     gpui_platform::application()
@@ -438,6 +448,13 @@ fn main() -> ExitCode {
                             window.on_next_frame(move |_, cx| {
                                 reached.set(true);
                                 println!("Junto first frame rendered");
+                                if junto_client_core::releases::TEST_CONFIGURATION {
+                                    println!(
+                                        "Junto first frame version: {} pid {}",
+                                        junto_client_core::updates::Version::THIS_BUILD,
+                                        std::process::id()
+                                    );
+                                }
                                 cx.quit();
                             });
                         });
