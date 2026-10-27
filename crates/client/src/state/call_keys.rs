@@ -85,7 +85,7 @@ impl AppState {
             KeyEvent::Held(action, held) => self.hold_action(None, action, held),
             KeyEvent::Pressed(action) => {
                 if !self.perform_call_action(action, cx) && action.may_work_outside() {
-                    crate::notify::bring_to_front(cx);
+                    crate::notify::bring_to_front(None, cx);
                     cx.emit(super::WindowKeyAction(action));
                 }
             }
