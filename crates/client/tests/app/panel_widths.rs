@@ -219,6 +219,14 @@ fn the_main_area_keeps_its_least_width_with_every_panel_at_its_widest(cx: &mut T
     let server = world.server("Panels");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    // A message, so that the main area draws its message list.
+    let general = window.selected_channel();
+    admin.send(
+        &world,
+        general,
+        crate::messages::document("The plan for today"),
+    );
+    window.until_message("The plan for today");
     window.state.update(&mut window.cx, |state, cx| {
         state.set_panel_width(Panel::ServerBook, 360.0, cx);
         state.set_panel_width(Panel::Channels, 420.0, cx);
