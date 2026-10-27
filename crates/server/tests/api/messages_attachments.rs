@@ -296,42 +296,128 @@ async fn downloads_state_safe_headers_and_accept_one_byte_range() {
     assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
 }
 
+/// Sends one file and returns its media type, its size and its frames as the message
+/// states them.
+async fn previewed(files: &Files, bytes: &[u8]) -> (String, Option<(u32, u32)>, Option<u32>) {
+    let upload = files.upload(bytes).await;
+    let sent = files.attach(&[upload.id]).await;
+    let file = &sent.attachments[0];
+    (
+        file.media_type.clone(),
+        file.width.zip(file.height),
+        file.frames,
+    )
+}
+
 #[tokio::test]
-async fn previews_refuse_large_or_animated_images() {
+async fn previews_refuse_files_and_pictures_above_their_bounds() {
+    use junto_server::image::samples;
     let files = Files::open().await;
-    let mut large = junto_server::image::samples::png(2, 2);
-    large.resize(8 * 1024 * 1024 + 1, 0);
-    let animated = junto_server::image::samples::animated_png(2, 2);
-    // Above 16,777,216 pixels, and a side above 16,384 pixels.
+    // A file of 32 MiB is read for its preview, a larger one is not.
+    let mut largest = samples::png(2, 2);
+    largest.resize(32 * 1024 * 1024, 0);
+    assert_eq!(
+        previewed(&files, &largest).await,
+        ("image/png".to_owned(), Some((2, 2)), None)
+    );
+    largest.push(0);
+    let none = ("application/octet-stream".to_owned(), None, None);
+    assert_eq!(previewed(&files, &largest).await, none);
     for bytes in [
-        large,
-        animated,
-        junto_server::image::samples::png(4097, 4096),
-        junto_server::image::samples::png(16_385, 1),
+        // Above 33,554,432 pixels, and a side above 16,384 pixels.
+        samples::png(8192, 4097),
+        samples::png(16_385, 1),
+        // A canvas above 4,194,304 pixels, more than 2,048 frames, and frames of more than
+        // 1,073,741,824 pixels together.
+        samples::gif(2049, 2049, 2),
+        samples::gif(8, 8, 2049),
+        samples::gif(2048, 1024, 513),
+        samples::webp_animated(2049, 2049, 2),
+        samples::animated_png_of(2049, 2049, 2),
+        // Animations without frames.
+        samples::animated_png_of(8, 8, 0),
+        samples::webp_extended(8, 8, true),
     ] {
-        let upload = files.upload(&bytes).await;
-        let sent = files.attach(&[upload.id]).await;
-        assert_eq!(sent.attachments[0].width, None);
-        assert_eq!(sent.attachments[0].media_type, "application/octet-stream");
+        assert_eq!(previewed(&files, &bytes).await, none);
     }
 }
 
-/// A picture larger than 1,024 pixels per side gets its size, up to 16,777,216 pixels: a
+/// A picture larger than 1,024 pixels per side gets its size, up to 33,554,432 pixels: a
 /// client shows a reduced copy in its lists and the picture at its own size in its viewer.
 #[tokio::test]
 async fn previews_state_the_size_of_a_picture_larger_than_1024_pixels() {
+    use junto_server::image::samples;
     let files = Files::open().await;
-    for (width, height) in [(4096, 4096), (2560, 1440), (16_384, 1)] {
-        let upload = files
-            .upload(&junto_server::image::samples::png(width, height))
-            .await;
-        let sent = files.attach(&[upload.id]).await;
+    for (width, height) in [(8192, 4096), (5120, 2880), (2560, 1440), (16_384, 1)] {
         assert_eq!(
-            (sent.attachments[0].width, sent.attachments[0].height),
-            (Some(width), Some(height))
+            previewed(&files, &samples::png(width, height)).await,
+            ("image/png".to_owned(), Some((width, height)), None)
         );
-        assert_eq!(sent.attachments[0].media_type, "image/png");
     }
+    // A photo of 24 megapixels.
+    assert_eq!(
+        previewed(&files, &samples::jpeg(5712, 4284)).await,
+        ("image/jpeg".to_owned(), Some((5712, 4284)), None)
+    );
+}
+
+/// GIF, animated WebP and animated PNG pictures state the size of their canvas and their
+/// frames. A GIF of one frame is a still picture.
+#[tokio::test]
+async fn previews_state_the_frames_of_an_animated_picture() {
+    use junto_server::image::samples;
+    let files = Files::open().await;
+    let cases = [
+        (
+            samples::gif(498, 280, 37),
+            "image/gif",
+            (498, 280),
+            Some(37),
+        ),
+        (samples::gif(64, 64, 1), "image/gif", (64, 64), None),
+        (samples::gif(8, 8, 2048), "image/gif", (8, 8), Some(2048)),
+        (
+            samples::gif(2048, 2048, 256),
+            "image/gif",
+            (2048, 2048),
+            Some(256),
+        ),
+        (
+            samples::webp_animated(480, 270, 12),
+            "image/webp",
+            (480, 270),
+            Some(12),
+        ),
+        (
+            samples::animated_png_of(100, 80, 9),
+            "image/png",
+            (100, 80),
+            Some(9),
+        ),
+    ];
+    for (bytes, media_type, size, frames) in cases {
+        assert_eq!(
+            previewed(&files, &bytes).await,
+            (media_type.to_owned(), Some(size), frames)
+        );
+    }
+    // The history states the frames as the answer of the send does.
+    let upload = files.upload(&samples::gif(32, 32, 5)).await;
+    let sent = files.attach(&[upload.id]).await;
+    let page: MessagePage = files
+        .server
+        .get(
+            &files.owner,
+            &format!("/api/v1/channels/{}/messages", files.channel.id),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let read = page
+        .messages
+        .iter()
+        .find(|message| message.id == sent.id)
+        .unwrap();
+    assert_eq!(read.attachments[0].frames, Some(5));
 }
 
 #[tokio::test]

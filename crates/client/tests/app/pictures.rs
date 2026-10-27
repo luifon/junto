@@ -574,3 +574,422 @@ fn a_picture_larger_than_the_copy_of_the_lists_is_read_at_its_own_size_for_the_v
         None
     );
 }
+
+/// A GIF whose frames have different colours, each shown for `delay` milliseconds.
+pub(crate) fn gif(width: u32, height: u32, frames: u32, delay: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut bytes, 30);
+        encoder
+            .set_repeat(image::codecs::gif::Repeat::Infinite)
+            .unwrap();
+        for index in 0..frames {
+            let colour = image::Rgba([(index * 40 % 256) as u8, 90, 200, 255]);
+            encoder
+                .encode_frame(image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(width, height, colour),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(delay, 1),
+                ))
+                .unwrap();
+        }
+    }
+    bytes
+}
+
+/// The size of the copy of a file that the lists hold, and its frames.
+fn held(window: &mut Window, id: AttachmentId) -> ((u32, u32), usize) {
+    window
+        .in_shell(|shell, _, _| shell.held_picture(id))
+        .unwrap_or_else(|| panic!("the window holds no picture of {id}"))
+}
+
+/// The largest size in pixels of the device at which the lists of the window draw a
+/// picture: 292 by 220 pixels of the design.
+fn list_fit(window: &mut Window) -> (f32, f32) {
+    let scale = window.cx.update(|window, _| window.scale_factor());
+    (292.0 * scale, 220.0 * scale)
+}
+
+/// A GIF and a screenshot of a screen of 2560 by 1440 pixels are drawn in the list within
+/// its width with their proportions, from copies at the size that the list draws, and open
+/// in the viewer at their own size, the GIF with every frame. Its download stays.
+#[gpui::test]
+fn a_gif_and_a_screenshot_are_drawn_in_the_list_and_open_in_the_viewer(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let party = gif(800, 450, 6, 100);
+    let sent = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "Two pictures",
+        vec![
+            ("party.gif", party.clone()),
+            ("screen.png", png(2560, 1440)),
+        ],
+    );
+    let (moving, screen) = (sent.attachments[0].clone(), sent.attachments[1].clone());
+    assert_eq!(
+        (
+            moving.media_type.as_str(),
+            moving.width.zip(moving.height),
+            moving.frames
+        ),
+        ("image/gif", Some((800, 450)), Some(6))
+    );
+    assert_eq!(
+        (
+            screen.media_type.as_str(),
+            screen.width.zip(screen.height),
+            screen.frames
+        ),
+        ("image/png", Some((2560, 1440)), None)
+    );
+    window.until_message("Two pictures");
+    until_picture_read(&mut window, moving.id);
+    until_picture_read(&mut window, screen.id);
+    fits(&mut window, moving.id, (800.0, 450.0), "the GIF");
+    fits(&mut window, screen.id, (2560.0, 1440.0), "the screenshot");
+    assert!(!window.shows_named("file:0".to_owned()) && !window.shows_named("file:1".to_owned()));
+
+    // The lists hold both reduced to the size that they draw, the GIF with every frame.
+    let (fit_width, fit_height) = list_fit(&mut window);
+    for (id, own, frames) in [(moving.id, (800, 450), 6), (screen.id, (2560, 1440), 1)] {
+        let ((width, height), count) = held(&mut window, id);
+        assert_eq!(count, frames);
+        assert!(
+            width as f32 <= fit_width.ceil() && height as f32 <= fit_height.ceil(),
+            "{width} by {height} is larger than the list draws, {fit_width} by {fit_height}"
+        );
+        assert!(width < own.0, "the copy of {own:?} is not reduced: {width}");
+    }
+
+    let downloads = tempfile::tempdir().unwrap();
+    let target = downloads.path().to_path_buf();
+    window.in_shell(move |shell, _, cx| {
+        shell
+            .state()
+            .update(cx, |state, _| state.set_download_directory(target));
+    });
+    click_picture(&mut window, moving.id);
+    viewer_shows(
+        &mut window,
+        "party.gif",
+        moving.bytes,
+        Some("1 of 2"),
+        (800.0, 450.0),
+    );
+    window.until("the viewer holds the GIF at its own size", |window| {
+        window.in_shell(|shell, _, _| shell.viewer_image_size()) == Some((800, 450))
+    });
+    window.click_named(format!("viewer-download:{}", moving.id));
+    let saved = downloads.path().join("party.gif");
+    window.until("the GIF is saved", |_| {
+        std::fs::read(&saved).is_ok_and(|read| read == party)
+    });
+    window.press("right");
+    viewer_shows(
+        &mut window,
+        "screen.png",
+        screen.bytes,
+        Some("2 of 2"),
+        (2560.0, 1440.0),
+    );
+    window.until(
+        "the viewer holds the screenshot at its own size",
+        |window| window.in_shell(|shell, _, _| shell.viewer_image_size()) == Some((2560, 1440)),
+    );
+    window.press("escape");
+    assert!(!window.shows("picture-viewer"));
+}
+
+/// Moves the clock of the application and gives the windows the frames that it asks for.
+fn wait_for(window: &mut Window, milliseconds: u64) {
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(milliseconds));
+    window.settle();
+}
+
+fn frames(window: &mut Window, id: AttachmentId) -> Vec<usize> {
+    let mut frames = window.in_shell(|shell, _, _| shell.shown_frames(id));
+    frames.sort_unstable();
+    frames
+}
+
+/// How often the window was drawn, after it has no work left for a frame of the display:
+/// the scrollbars of the list ask for frames for a time after a scroll (ADR 0793).
+fn draws(window: &mut Window) -> usize {
+    window.until("the window has no work for a frame", |window| {
+        window.frame() == 0
+    });
+    window.in_shell(|shell, _, _| shell.draws().0)
+}
+
+/// An animation plays while it is in view in the active window: each frame for its delay,
+/// with one drawing of the window at the end of each frame. It stops while the window is
+/// not active, with reduced motion unless the pointer is over it, and out of view, where it
+/// asks for no drawing; back in view it continues at the frame where it stopped. The
+/// viewer plays it too.
+#[gpui::test]
+fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let sent = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "Moving",
+        vec![("moving.gif", gif(64, 64, 4, 100))],
+    );
+    let id = sent.attachments[0].id;
+    window.until_message("Moving");
+    until_picture_read(&mut window, id);
+    window.settle();
+    assert_eq!(frames(&mut window, id), [0]);
+
+    // The window is not active: the animation stays at its first frame.
+    let before = draws(&mut window);
+    wait_for(&mut window, 300);
+    assert_eq!(frames(&mut window, id), [0]);
+    assert_eq!(
+        draws(&mut window),
+        before,
+        "a window that is not active was drawn"
+    );
+
+    window.cx.update(|window, _| window.activate_window());
+    window.settle();
+    for frame in [0, 1, 2, 3, 0, 1] {
+        assert_eq!(frames(&mut window, id), [frame]);
+        let before = draws(&mut window);
+        wait_for(&mut window, 99);
+        assert_eq!(
+            frames(&mut window, id),
+            [frame],
+            "a frame ended before its delay"
+        );
+        assert_eq!(
+            draws(&mut window),
+            before,
+            "the window was drawn within a frame"
+        );
+        wait_for(&mut window, 1);
+        assert!(
+            draws(&mut window) > before,
+            "the end of a frame drew nothing"
+        );
+    }
+    assert_eq!(frames(&mut window, id), [2]);
+
+    // With reduced motion the animation stops, and plays while the pointer is over it.
+    window.cx.update(|_, cx| cx.set_reduce_motion(true));
+    window.settle();
+    let before = draws(&mut window);
+    wait_for(&mut window, 500);
+    assert_eq!(frames(&mut window, id), [2]);
+    assert_eq!(draws(&mut window), before);
+    window.hover_named(format!("picture:{id}"));
+    wait_for(&mut window, 100);
+    assert_eq!(frames(&mut window, id), [3]);
+    window.move_pointer(gpui::point(gpui::px(2.0), gpui::px(2.0)));
+    wait_for(&mut window, 500);
+    assert_eq!(frames(&mut window, id), [3]);
+    window.cx.update(|_, cx| cx.set_reduce_motion(false));
+    window.settle();
+    wait_for(&mut window, 100);
+    assert_eq!(frames(&mut window, id), [0]);
+
+    // Out of view the animation asks for no drawing.
+    for number in 0..60 {
+        send_files(
+            &world,
+            &admin,
+            PlaceId::Channel(general),
+            &format!("Text {number}"),
+            Vec::new(),
+        );
+    }
+    window.until_message("Text 59");
+    window.until("the picture is out of view", |window| {
+        window
+            .in_shell(|shell, _, _| shell.shown_frames(id))
+            .is_empty()
+    });
+    wait_for(&mut window, 200);
+    assert!(!window.in_shell(|shell, _, _| shell.animation_waits()));
+    let before = draws(&mut window);
+    wait_for(&mut window, 1_000);
+    assert_eq!(
+        draws(&mut window),
+        before,
+        "an animation out of view drew the window"
+    );
+    let picture = selector(format!("picture:{id}"));
+    scroll_until(
+        &mut window,
+        "the picture is in view again",
+        300.0,
+        |window| {
+            let list = window.cx.debug_bounds("message-list").unwrap();
+            window
+                .cx
+                .debug_bounds(picture)
+                .is_some_and(|shown| shown.top() >= list.top() && shown.bottom() <= list.bottom())
+        },
+    );
+    assert_eq!(frames(&mut window, id), [0]);
+    wait_for(&mut window, 100);
+    assert_eq!(frames(&mut window, id), [1]);
+
+    // The viewer plays the animation.
+    click_picture(&mut window, id);
+    assert!(window.shows("picture-viewer"));
+    window.until("the viewer draws the animation", |window| {
+        window.in_shell(|shell, _, _| shell.shown_frames(id)).len() == 2
+    });
+    let shown = frames(&mut window, id);
+    wait_for(&mut window, 100);
+    let next = frames(&mut window, id);
+    assert!(
+        next.len() == 2 && next != shown,
+        "the viewer does not play the animation: {shown:?} then {next:?}"
+    );
+}
+
+/// Turns the wheel over the message list by `delta` pixels until `done` holds.
+fn scroll_until(
+    window: &mut Window,
+    what: &str,
+    delta: f32,
+    mut done: impl FnMut(&mut Window) -> bool,
+) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+    window.settle();
+    let area = window.cx.debug_bounds("message-list").unwrap();
+    window.until(what, |window| {
+        let reached = done(window);
+        if !reached {
+            window.dispatch(ScrollWheelEvent {
+                position: area.center(),
+                delta: ScrollDelta::Pixels(point(px(0.0), px(delta))),
+                ..Default::default()
+            });
+        }
+        reached
+    });
+}
+
+/// The bytes of the held copies of these files whose pictures lie within the message list
+/// or the 800 pixels above and below it that the list lays out (the pictures that a
+/// drawing asks for).
+fn bytes_near_view(window: &mut Window, ids: &[(AttachmentId, bool)]) -> u64 {
+    let list = window.cx.debug_bounds("message-list").unwrap();
+    let near = gpui::Bounds {
+        origin: gpui::point(list.left(), list.top() - gpui::px(800.0)),
+        size: gpui::size(list.size.width, list.size.height + gpui::px(1600.0)),
+    };
+    let mut bytes = 0;
+    for (id, _) in ids {
+        let shown = window
+            .cx
+            .debug_bounds(selector(format!("picture:{id}")))
+            .is_some_and(|picture| picture.intersects(&near));
+        if let Some(((width, height), frames)) = window
+            .in_shell(|shell, _, _| shell.held_picture(*id))
+            .filter(|_| shown)
+        {
+            bytes += u64::from(width) * u64::from(height) * 4 * frames as u64;
+        }
+    }
+    bytes
+}
+
+/// A list with 40 screenshots of 2560 by 1440 pixels and 10 GIFs of 498 by 280 pixels with
+/// 30 frames is scrolled from its first picture to its last. Each picture is held at the
+/// size that the list draws, and the window holds at most 96 MiB of pictures besides the
+/// ones that the list lays out. The test prints the bytes that the window holds at the end
+/// and at most, and the bytes of the pictures at their own size.
+#[gpui::test]
+fn many_large_pictures_are_held_at_the_size_that_the_list_draws(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let screen = png(2560, 1440);
+    let party = gif(498, 280, 30, 50);
+    let mut ids = Vec::new();
+    for message in 0..5 {
+        let mut files = Vec::new();
+        for _ in 0..8 {
+            files.push(("screen.png", screen.clone()));
+        }
+        for _ in 0..2 {
+            files.push(("party.gif", party.clone()));
+        }
+        let sent = send_files(
+            &world,
+            &admin,
+            PlaceId::Channel(general),
+            &format!("Pictures {message}"),
+            files,
+        );
+        ids.extend(
+            sent.attachments
+                .iter()
+                .map(|file| (file.id, file.frames.is_some())),
+        );
+    }
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0))));
+    window.until_message("Pictures 4");
+    let first = selector(format!("picture:{}", ids[0].0));
+    scroll_until(
+        &mut window,
+        "the first picture is in view",
+        600.0,
+        |window| {
+            let list = window.cx.debug_bounds("message-list").unwrap();
+            window
+                .cx
+                .debug_bounds(first)
+                .is_some_and(|picture| picture.top() >= list.top())
+        },
+    );
+    const MOST_HELD_BYTES: u64 = 96 * 1024 * 1024;
+    let (fit_width, fit_height) = list_fit(&mut window);
+    let mut most = 0;
+    for (id, moving) in &ids {
+        window.wheel_to("message-list", selector(format!("picture:{id}")));
+        until_picture_read(&mut window, *id);
+        let ((width, height), count) = held(&mut window, *id);
+        assert!(width as f32 <= fit_width.ceil() && height as f32 <= fit_height.ceil());
+        assert_eq!(count, if *moving { 30 } else { 1 });
+        let held_bytes = window.in_shell(|shell, _, _| shell.message_picture_bytes());
+        let near = bytes_near_view(&mut window, &ids);
+        assert!(
+            held_bytes <= MOST_HELD_BYTES + near,
+            "the window holds {held_bytes} bytes, {near} of them near the view"
+        );
+        most = most.max(held_bytes);
+    }
+    let held_bytes = window.in_shell(|shell, _, _| shell.message_picture_bytes());
+    let own: u64 = 40 * 2560 * 1440 * 4 + 10 * 498 * 280 * 4 * 30;
+    eprintln!(
+        "held pictures at a display scale of {}: {held_bytes} bytes after the scroll, at most \
+         {most} bytes; the pictures at their own size: {own} bytes",
+        window.cx.update(|window, _| window.scale_factor())
+    );
+    assert!(most <= own / 4, "{most} of {own}");
+}

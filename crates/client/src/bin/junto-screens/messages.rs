@@ -161,6 +161,7 @@ fn file(number: u32, name: &str, bytes: u64, picture: Option<(u32, u32)>) -> Att
         .to_owned(),
         width: picture.map(|size| size.0),
         height: picture.map(|size| size.1),
+        frames: None,
     }
 }
 
@@ -502,6 +503,41 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             shell.show_picture(id(7011), &plain_picture(640, 420, [143, 177, 191]));
             shell.show_picture(id(7012), &plain_picture(300, 500, [199, 154, 69]));
             shell.open_picture_viewer(server_id, shared_id, pictures, 1, window, cx);
+        },
+    )?;
+    // A GIF and a screenshot of a screen of 2560 by 1440 pixels in the list, each in the
+    // width of the list (ADR 0740). The GIF shows its first frame.
+    let mut large = general();
+    let mut moving = file(13, "applause.gif", 2_400_000, Some((498, 280)));
+    moving.media_type = "image/gif".to_owned();
+    moving.frames = Some(24);
+    let shared = large.message(
+        "Ana",
+        100,
+        "The screen of the mixer, and the room after it.",
+    );
+    shared.attachments = vec![
+        file(14, "mixer-screen.png", 3_100_000, Some((2560, 1440))),
+        moving,
+    ];
+    studio.draw(
+        Screen::new(
+            "messages-gif-and-screenshot",
+            with_timeline(large.timeline()),
+        ),
+        move |shell, _, cx| {
+            prepare(shell, none(), cx);
+            shell.show_picture(id(7014), &plain_picture(2560, 1440, [143, 177, 191]));
+            let mut gif = Vec::new();
+            let first = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                498,
+                280,
+                image::Rgba([199, 154, 69, 255]),
+            ))
+            .write_to(&mut std::io::Cursor::new(&mut gif), image::ImageFormat::Gif);
+            if first.is_ok() {
+                shell.show_picture(id(7013), &gif);
+            }
         },
     )?;
     studio.draw(

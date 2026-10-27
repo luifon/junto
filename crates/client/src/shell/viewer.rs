@@ -7,16 +7,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext as _, Context, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ObjectFit, ParentElement, Pixels, RenderImage, Role, SharedString,
-    Size, StatefulInteractiveElement, Styled, StyledImage, Window, canvas, div, img,
-    prelude::FluentBuilder, px, size,
+    AnyElement, Context, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, Pixels, RenderImage, Role, SharedString, Size,
+    StatefulInteractiveElement, Styled, Window, canvas, div, prelude::FluentBuilder, px, size,
 };
 use gpui_base::FocusTrapElement as _;
 use junto_client_core::protocol::ids::{AttachmentId, MessageId, ServerId};
 use junto_client_core::protocol::message::Attachment;
 
-use super::feed::{LIST_PICTURE_SIDE, decode, picture_pixels};
+use super::decode::{LIST_FRAME_BYTES, Stated, VIEWER_FRAME_BYTES, plan};
+use super::feed::{picture_pixels, read_picture};
+use super::moving::{self, Playback};
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::AppState;
@@ -104,10 +105,11 @@ impl PictureViewer {
     }
 }
 
-/// True when the message lists hold a reduced copy of the picture.
-fn reduced_in_lists(attachment: &Attachment) -> bool {
-    picture_pixels(attachment)
-        .is_some_and(|(width, height)| width > LIST_PICTURE_SIDE || height > LIST_PICTURE_SIDE)
+/// True when the message lists hold the picture reduced to `fit`, or with fewer frames than
+/// its file.
+fn reduced_in_lists(attachment: &Attachment, fit: (u32, u32)) -> bool {
+    Stated::of(attachment)
+        .is_some_and(|stated| !plan(stated, Some(fit), LIST_FRAME_BYTES).whole(stated))
 }
 
 impl Shell {
@@ -165,8 +167,9 @@ impl Shell {
         }
     }
 
-    /// Reads the shown picture at its own size when the lists hold a reduced copy of it. An
-    /// answer for a picture that the viewer no longer shows is released at once.
+    /// Reads the shown picture at its own size, and every frame of an animation within the
+    /// bytes of the viewer, when the lists hold a reduced copy of it. An answer for a
+    /// picture that the viewer no longer shows is released at once.
     fn read_viewer_picture(&mut self, cx: &mut Context<Self>) {
         let Layer::Picture(viewer) = &self.layer else {
             return;
@@ -175,13 +178,15 @@ impl Shell {
             return;
         };
         let server_id = viewer.server_id;
-        if !reduced_in_lists(&attachment) || self.picture_of_screen_tool(attachment.id) {
+        if !reduced_in_lists(&attachment, self.message_pictures.fit)
+            || self.picture_of_screen_tool(attachment.id)
+        {
             return;
         }
         let Some(owner) = self.state.read(cx).owner(server_id) else {
             return;
         };
-        let reading = self.state.read(cx).picture(owner, &attachment);
+        let reading = read_picture(self, owner, &attachment, None, VIEWER_FRAME_BYTES, cx);
         let Layer::Picture(viewer) = &mut self.layer else {
             return;
         };
@@ -192,15 +197,8 @@ impl Shell {
             number,
             image: LargeImage::Reading,
         });
-        let stated = picture_pixels(&attachment).unwrap_or_default();
         cx.spawn(async move |this, cx| {
-            let decoded = match reading.await {
-                Ok(bytes) => {
-                    cx.background_spawn(async move { decode(&bytes, stated, None) })
-                        .await
-                }
-                Err(_) => None,
-            };
+            let decoded = reading.await.ok().flatten();
             let _ = this.update(cx, |this, cx| {
                 let unused = match &mut this.layer {
                     Layer::Picture(viewer) => match &mut viewer.large {
@@ -262,7 +260,16 @@ impl Shell {
         let (listed, failed) = self.listed_picture(server_id, &attachment, cx);
         let image = large.or(listed);
         let bar = self.render_viewer_bar(&attachment, shown, count, &theme, window, cx);
-        let picture = Self::render_viewer_picture(&attachment, image, failed, area, &theme, window);
+        let playback = Rc::clone(&self.message_pictures.playback);
+        let picture = Self::render_viewer_picture(
+            &attachment,
+            image,
+            failed,
+            area,
+            &playback,
+            &theme,
+            window,
+        );
         let arrows = (count > 1).then(|| {
             [
                 (
@@ -439,6 +446,7 @@ impl Shell {
         image: Option<Arc<RenderImage>>,
         failed: bool,
         area: Rc<Cell<Option<Size<Pixels>>>>,
+        playback: &Rc<Playback>,
         theme: &Theme,
         window: &Window,
     ) -> AnyElement {
@@ -462,10 +470,9 @@ impl Shell {
             .clamp(0.0, 1.0);
         let drawn = size(largest.width * fit, largest.height * fit);
         let shown: AnyElement = match image {
-            Some(image) => img(image)
-                .size_full()
-                .object_fit(ObjectFit::Contain)
-                .into_any_element(),
+            Some(image) => {
+                moving::picture(image, format!("viewer:{}", attachment.id).into(), playback)
+            }
             None => div()
                 .size_full()
                 .flex()

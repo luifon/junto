@@ -241,6 +241,10 @@ pub struct Attachment {
     pub media_type: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// The frames of an animated picture (GIF, animated WebP or animated PNG), at least 2.
+    /// Absent for a still picture and for every other file.
+    #[serde(default)]
+    pub frames: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

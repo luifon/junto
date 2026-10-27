@@ -9,11 +9,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext as _, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
+    AnyElement, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListState,
-    MouseButton, ObjectFit, ParentElement, RenderImage, Role, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledImage, StyledText,
-    UnderlineStyle, Window, canvas, div, img, list, point, prelude::FluentBuilder, px,
+    MouseButton, ParentElement, RenderImage, Role, SharedString, StatefulInteractiveElement,
+    StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, canvas, div, list, point,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
@@ -25,6 +25,8 @@ use junto_client_core::protocol::message::{
 };
 use junto_client_core::transfers::{DownloadStage, UploadStage};
 
+use super::decode::{self, LIST_FRAME_BYTES, Stated};
+use super::moving::{self, Playback};
 use super::pictures::{MOST_PICTURES, Outcome, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
@@ -35,7 +37,7 @@ use crate::state::feed::{
     can_send_again,
 };
 use crate::state::people::ServerFaces;
-use crate::state::view::{DraftFile, ServerLists, ShellView, WorkspaceView};
+use crate::state::view::{DraftFile, ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -50,12 +52,6 @@ const AUTHOR_OVERLAP: f32 = 4.0;
 /// The widest picture of a message, and the tallest, in design pixels.
 const PICTURE_WIDTH: f32 = 292.0;
 const PICTURE_HEIGHT: f32 = 220.0;
-/// The most pixels of a picture of a message that the window decodes: 64 MiB as RGBA. The
-/// server marks no larger picture (ADR 0408).
-const MOST_PICTURE_PIXELS: u64 = 16_777_216;
-/// The longest side of the copy of a picture that a message list holds. The viewer reads a
-/// picture with a longer side again at its own size (ADR 0740).
-pub(super) const LIST_PICTURE_SIDE: u32 = 1024;
 /// The rows from an end of the list at which the next page is read.
 const PAGE_MARGIN: usize = 4;
 
@@ -294,23 +290,53 @@ impl FeedList {
 }
 
 /// The pictures of messages that the window holds decoded.
-#[derive(Default)]
 pub(crate) struct MessagePictures {
     held: Pictures<Arc<RenderImage>>,
     /// The pictures that the drawing which runs asked for and that are not held.
     waiting: Vec<(PictureKey, Attachment)>,
     /// The step that starts the reads of the waiting pictures is on its way.
     starting: bool,
+    /// The largest size at which the lists draw a picture, in pixels of the device, at the
+    /// last drawing: the size that the copies of the lists are reduced to fit.
+    pub(super) fit: (u32, u32),
+    pub(super) playback: Rc<Playback>,
     /// The pictures that the screen tool draws for files of its own, which no server has.
     #[cfg(feature = "test-support")]
     shown: HashMap<AttachmentId, Picture<Arc<RenderImage>>>,
+}
+
+impl Default for MessagePictures {
+    fn default() -> Self {
+        Self {
+            held: Pictures::default(),
+            waiting: Vec::new(),
+            starting: false,
+            fit: (PICTURE_WIDTH as u32, PICTURE_HEIGHT as u32),
+            playback: Rc::default(),
+            #[cfg(feature = "test-support")]
+            shown: HashMap::new(),
+        }
+    }
 }
 
 impl MessagePictures {
     /// A drawing of the window starts (see [`Pictures::drawing_starts`]).
     pub(crate) fn drawing_starts(&mut self) {
         self.held.drawing_starts();
+        self.playback.drawing_starts();
     }
+}
+
+/// The largest size at which a list of this window draws a picture, in pixels of the
+/// device: the largest picture of a message at the interface scale and the scale of the
+/// display.
+pub(super) fn list_fit(window: &Window) -> (u32, u32) {
+    let per_design = f32::from(window.rem_size()) / crate::theme::REM_AT_100;
+    let device = per_design * window.scale_factor();
+    (
+        (PICTURE_WIDTH * device).ceil() as u32,
+        (PICTURE_HEIGHT * device).ceil() as u32,
+    )
 }
 
 /// What a pane draws: its feed, the files of its next message, and what it says of a
@@ -348,12 +374,7 @@ pub(crate) struct MessageMenuOpen {
 
 /// True when the server marked the file as a picture that a client can show (ADR 0408).
 fn is_picture(attachment: &Attachment) -> bool {
-    matches!(
-        attachment.media_type.as_str(),
-        "image/png" | "image/jpeg" | "image/webp"
-    ) && picture_pixels(attachment).is_some_and(|(width, height)| {
-        width >= 1 && height >= 1 && u64::from(width) * u64::from(height) <= MOST_PICTURE_PIXELS
-    })
+    Stated::of(attachment).is_some()
 }
 
 /// The width and the height of a picture in its pixels, as the server states them.
@@ -361,36 +382,42 @@ pub(super) fn picture_pixels(attachment: &Attachment) -> Option<(u32, u32)> {
     attachment.width.zip(attachment.height)
 }
 
-/// Decodes a picture that another account sent. The decoder refuses a picture that is
-/// larger than `stated`, the size that the server marks, whatever its header states. With
-/// `side`, a picture with a longer side is reduced to fit a square of that side, with its
-/// proportions.
-pub(super) fn decode(
-    bytes: &[u8],
-    stated: (u32, u32),
-    side: Option<u32>,
-) -> Option<Arc<RenderImage>> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(stated.0);
-    limits.max_image_height = Some(stated.1);
-    limits.max_alloc = Some(MOST_PICTURE_PIXELS * 4);
-    reader.limits(limits);
-    let decoded = reader.decode().ok()?;
-    let decoded = match side {
-        Some(side) if decoded.width() > side || decoded.height() > side => {
-            decoded.thumbnail(side, side)
-        }
-        _ => decoded,
-    };
-    let mut picture = decoded.into_rgba8();
-    // The window takes the colours in the order blue, green, red.
-    for pixel in picture.pixels_mut() {
-        pixel.0.swap(0, 2);
+/// Reads a picture of a message for `owner` and decodes it with the plan of `fit` and
+/// `budget` once its memory fits next to the other decodings (see [`decode::reserve`]).
+/// The failure of the read, or `Ok(None)` when the bytes are no picture that the window
+/// draws.
+pub(super) fn read_picture(
+    this: &mut Shell,
+    owner: junto_client_core::Owner,
+    attachment: &Attachment,
+    fit: Option<(u32, u32)>,
+    budget: u64,
+    cx: &mut Context<Shell>,
+) -> impl std::future::Future<
+    Output = Result<Option<Arc<RenderImage>>, junto_client_core::transfers::TransferFailure>,
+> + use<> {
+    let reading = this.state.read(cx).picture(owner, attachment);
+    let stated = Stated::of(attachment);
+    let executor = cx.background_executor().clone();
+    async move {
+        let bytes = reading.await?;
+        let Some(stated) = stated else {
+            return Ok(None);
+        };
+        let plan = decode::plan(stated, fit, budget);
+        let memory = decode::decoding_bytes(bytes.len() as u64, stated, plan);
+        let Some(reserved) = decode::reserve(memory).await else {
+            return Ok(None);
+        };
+        Ok(executor
+            .spawn(async move {
+                let decoded = decode::decode(&bytes, stated, plan);
+                drop(bytes);
+                drop(reserved);
+                decoded
+            })
+            .await)
     }
-    Some(Arc::new(RenderImage::new(vec![image::Frame::new(picture)])))
 }
 
 /// The size of a picture in the list: its own size, reduced to the bounds of the list
@@ -1786,7 +1813,19 @@ impl Shell {
     /// Draws these bytes as the picture of a file of a message. The screen tool uses it.
     #[cfg(feature = "test-support")]
     pub fn show_picture(&mut self, attachment_id: AttachmentId, bytes: &[u8]) {
-        let picture = decode(bytes, (16_384, 16_384), Some(LIST_PICTURE_SIDE))
+        let size = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok());
+        let picture = size
+            .and_then(|(width, height)| {
+                let stated = Stated {
+                    width,
+                    height,
+                    frames: 1,
+                };
+                decode::decode(bytes, stated, decode::plan(stated, None, LIST_FRAME_BYTES))
+            })
             .map_or(Picture::Failed, Picture::Ready);
         self.message_pictures.shown.insert(attachment_id, picture);
     }
@@ -1830,6 +1869,41 @@ impl Shell {
         self.message_pictures.held.ready_of(attachment_id)
     }
 
+    /// The bytes of the pictures of messages that the window holds, and the size and the
+    /// frames of the held copy of a file. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn message_picture_bytes(&self) -> u64 {
+        self.message_pictures.held.bytes()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn held_picture(&self, attachment_id: AttachmentId) -> Option<((u32, u32), usize)> {
+        self.message_pictures
+            .held
+            .ready_image_of(attachment_id)
+            .map(|image| {
+                let size = image.size(0);
+                (
+                    (size.width.0 as u32, size.height.0 as u32),
+                    image.frame_count(),
+                )
+            })
+    }
+
+    /// The frames that the last drawing showed of the animations of a file. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn shown_frames(&self, attachment_id: AttachmentId) -> Vec<usize> {
+        self.message_pictures
+            .playback
+            .shown_frames(&attachment_id.to_string())
+    }
+
+    /// True while an animation will draw the window again. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn animation_waits(&self) -> bool {
+        self.message_pictures.playback.waits()
+    }
+
     /// The pictures of an account that a server has no more, and of a server that was
     /// removed, are dropped (ADR 0745).
     fn keep_pictures_of_present_owners(&mut self, cx: &mut Context<Self>) {
@@ -1856,7 +1930,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<PictureKey> {
         let owner = self.state.read(cx).owner(server_id)?;
-        let key = PictureKey::of(owner, attachment);
+        let key = PictureKey::of(owner, attachment, self.message_pictures.fit);
         let pictures = &mut self.message_pictures;
         if pictures.held.touch(&key, cx.background_executor().now()) {
             return Some(key);
@@ -1889,16 +1963,17 @@ impl Shell {
             else {
                 continue;
             };
-            let reading = self.state.read(cx).picture(key.owner, &attachment);
-            let stated = picture_pixels(&attachment).unwrap_or_default();
+            let reading = read_picture(
+                self,
+                key.owner,
+                &attachment,
+                Some(key.fit),
+                LIST_FRAME_BYTES,
+                cx,
+            );
             cx.spawn(async move |this, cx| {
                 let outcome = match reading.await {
-                    Ok(bytes) => cx
-                        .background_spawn(
-                            async move { decode(&bytes, stated, Some(LIST_PICTURE_SIDE)) },
-                        )
-                        .await
-                        .map_or(Outcome::Refused, Outcome::Read),
+                    Ok(decoded) => decoded.map_or(Outcome::Refused, Outcome::Read),
                     Err(failure) if failure.is_transient() => Outcome::Unanswered,
                     Err(_) => Outcome::Refused,
                 };
@@ -1937,14 +2012,14 @@ impl Shell {
         &mut self,
         feed: &Feed,
         message: &Message,
-        workspace: Option<&WorkspaceView>,
+        window: &Window,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let server_id = feed.server_id;
         let message_id = message.id;
-        let _ = workspace;
+        self.message_pictures.fit = list_fit(window);
         // The pictures of the message, which the viewer shows one after the other.
         let pictures: Rc<Vec<Attachment>> = Rc::new(
             message
@@ -1972,11 +2047,11 @@ impl Shell {
                     let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
                     let (width, height) = picture_size(attachment);
                     let attachment_id = attachment.id;
+                    let slot: SharedString = format!("{:?}:{attachment_id}", feed.place).into();
                     let picture: AnyElement = match held {
-                        Some(Picture::Ready(image)) => img(image.clone())
-                            .size_full()
-                            .object_fit(ObjectFit::Contain)
-                            .into_any_element(),
+                        Some(Picture::Ready(image)) => {
+                            moving::picture(image.clone(), slot, &self.message_pictures.playback)
+                        }
                         Some(Picture::Failed | Picture::Unanswered { .. }) => div()
                             .p(u(8.0))
                             .typeface(theme.types.small, theme)
@@ -2604,7 +2679,7 @@ impl Shell {
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(feed, message, None, &theme, cx));
+            body.extend(self.attachments(feed, message, window, &theme, cx));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {
@@ -3268,37 +3343,6 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
 mod tests {
     use super::*;
 
-    fn png(width: u32, height: u32) -> Vec<u8> {
-        let picture = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
-        let mut bytes = Vec::new();
-        picture
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Png,
-            )
-            .unwrap();
-        bytes
-    }
-
-    fn side(image: &RenderImage) -> (i32, i32) {
-        let size = image.size(0);
-        (size.width.0, size.height.0)
-    }
-
-    #[test]
-    fn a_picture_with_a_side_above_the_copy_of_the_lists_is_reduced_with_its_proportions() {
-        let bytes = png(2000, 1000);
-        let listed = decode(&bytes, (2000, 1000), Some(LIST_PICTURE_SIDE)).unwrap();
-        assert_eq!(side(&listed), (1024, 512));
-        let whole = decode(&bytes, (2000, 1000), None).unwrap();
-        assert_eq!(side(&whole), (2000, 1000));
-        let small = decode(&png(300, 200), (300, 200), Some(LIST_PICTURE_SIDE)).unwrap();
-        assert_eq!(side(&small), (300, 200));
-        // A picture larger than the size that the server states is refused.
-        assert!(decode(&bytes, (1999, 1000), None).is_none());
-        assert!(decode(&bytes, (2000, 999), Some(LIST_PICTURE_SIDE)).is_none());
-    }
-
     #[test]
     fn a_picture_is_shown_up_to_the_most_pixels_that_the_window_decodes() {
         let file = |width, height| Attachment {
@@ -3309,12 +3353,17 @@ mod tests {
             media_type: "image/png".to_owned(),
             width: Some(width),
             height: Some(height),
+            frames: None,
         };
-        assert!(is_picture(&file(4096, 4096)));
+        assert!(is_picture(&file(8192, 4096)));
         assert!(is_picture(&file(16_384, 1)));
         assert!(is_picture(&file(2560, 1440)));
-        assert!(!is_picture(&file(4097, 4096)));
+        assert!(!is_picture(&file(8192, 4097)));
         assert!(!is_picture(&file(0, 10)));
+        let mut moving = file(498, 280);
+        moving.media_type = "image/gif".to_owned();
+        moving.frames = Some(37);
+        assert!(is_picture(&moving));
         let mut other = file(10, 10);
         other.media_type = "application/octet-stream".to_owned();
         assert!(!is_picture(&other));

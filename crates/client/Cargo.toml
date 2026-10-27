@@ -110,8 +110,9 @@ futures-util = { workspace = true }
 # gpui uses the same crate.
 backtrace = "0.3"
 # The picture of a share is given to gpui as an image of this crate, in the version that
-# gpui uses.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# gpui uses. The pictures of messages are decoded with it, GIF with the decoder that gpui
+# builds already (ADR 0740).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # The time zone of the system, for the times of messages. gpui uses the same crate.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The names and the rules of the IANA time zones, carried in the binary: a daily quiet

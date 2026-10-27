@@ -1524,6 +1524,7 @@ mod tests {
             media_type: "application/octet-stream".to_owned(),
             width: None,
             height: None,
+            frames: None,
         }];
         let mut marker = scene.message(3, scene.ana, 2, "");
         marker.deleted = true;

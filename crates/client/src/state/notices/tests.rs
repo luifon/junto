@@ -1413,6 +1413,7 @@ fn the_text_of_a_system_notification_is_one_line_of_a_bounded_length() {
         sha256: String::new(),
         width: None,
         height: None,
+        frames: None,
     }];
     scene.notice(NotificationKind::Mention, message, 1);
     let told = scene.alerts(&mut seen);
