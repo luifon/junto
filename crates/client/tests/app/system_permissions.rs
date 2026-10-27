@@ -215,6 +215,7 @@ fn the_question_for_the_notifications_is_asked_once_at_the_start(cx: &mut TestAp
     notifications.set(NotificationAccess::NotAsked);
     window.state.update(&mut window.cx, |state, cx| {
         state.ask_for_notifications_once(cx);
+        state.read_permissions(cx);
     });
     window.until("the notifications are allowed", |window| {
         access(window, Permission::Notifications) == Access::Allowed
@@ -229,4 +230,85 @@ fn the_question_for_the_notifications_is_asked_once_at_the_start(cx: &mut TestAp
         access(window, Permission::Notifications) == Access::Refused
     });
     assert_eq!(notifications.asked(), 1);
+}
+
+#[gpui::test]
+fn an_older_permission_read_cannot_overwrite_completed_requests(cx: &mut TestAppContext) {
+    use junto_client::notify::NotificationPermission;
+    use junto_client_core::notification_access::Answer;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::sync::oneshot;
+
+    struct HeldRead {
+        release: RefCell<Option<oneshot::Receiver<()>>>,
+        reading: Arc<AtomicBool>,
+        completed: Arc<AtomicBool>,
+    }
+    impl NotificationPermission for HeldRead {
+        fn read(&self) -> Answer {
+            let release = self.release.borrow_mut().take();
+            let (reading, completed) = (self.reading.clone(), self.completed.clone());
+            Box::pin(async move {
+                if let Some(release) = release {
+                    reading.store(true, Ordering::SeqCst);
+                    release.await.unwrap();
+                    completed.store(true, Ordering::SeqCst);
+                }
+                NotificationAccess::NotAsked
+            })
+        }
+        fn request(&self) -> Answer {
+            Box::pin(std::future::ready(NotificationAccess::Allowed))
+        }
+    }
+    let (_directory, mut window) = named(cx, "Luca");
+    window.permission.set(MicrophoneAccess::NotAsked);
+    window.camera.set_access(CameraAccess::NotAsked);
+    let (release, receive) = oneshot::channel();
+    let source = Rc::new(HeldRead {
+        release: RefCell::new(Some(receive)),
+        reading: Arc::default(),
+        completed: Arc::default(),
+    });
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_notification_permission_for_test(source.clone());
+        state.read_permissions(cx);
+    });
+    window.until(
+        "the old microphone and camera reads await notification settings",
+        |_| source.reading.load(Ordering::SeqCst),
+    );
+    for permission in [
+        Permission::Microphone,
+        Permission::Camera,
+        Permission::Notifications,
+    ] {
+        window.state.update(&mut window.cx, |state, cx| {
+            state.ask_permission(permission, cx)
+        });
+        window.until("the permission request completed", |window| {
+            access(window, permission) == Access::Allowed
+        });
+    }
+    release.send(()).unwrap();
+    window.until("the delayed read completed", |_| {
+        source.completed.load(Ordering::SeqCst)
+    });
+    window.run_tasks();
+    for permission in [
+        Permission::Microphone,
+        Permission::Camera,
+        Permission::Notifications,
+    ] {
+        assert_eq!(
+            access(&mut window, permission),
+            Access::Allowed,
+            "{permission:?}"
+        );
+    }
 }

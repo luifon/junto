@@ -1,6 +1,6 @@
 //! The permissions of the operating system in the state of the application: what is known
 //! of each, the question of the system, and the page of its settings (ADR 0708).
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use gpui::Context;
 use junto_client_core::transfers::{DownloadStage, TransferFailure};
@@ -19,14 +19,52 @@ pub(super) struct PermissionsState {
     camera: Option<Access>,
     screen: Option<Access>,
     notification: Option<Access>,
+    ask_notifications_once: bool,
     input: Option<bool>,
-    /// The number of the last read, so that an older answer does not replace a newer one.
-    reads: u64,
+    order: HashMap<Permission, PermissionOrder>,
     /// The system of the rules. A test of the window names another one.
     system: System,
 }
 
+#[derive(Default)]
+pub(super) struct PermissionOrder {
+    generation: u64,
+    asking: bool,
+}
+
+impl PermissionOrder {
+    pub(super) fn read(&mut self) -> Option<u64> {
+        if self.asking {
+            return None;
+        }
+        self.generation += 1;
+        Some(self.generation)
+    }
+
+    fn request(&mut self) -> u64 {
+        self.generation += 1;
+        self.asking = true;
+        self.generation
+    }
+
+    pub(super) fn accepts(&self, read: Option<u64>) -> bool {
+        !self.asking && read == Some(self.generation)
+    }
+
+    fn finish_request(&mut self, request: u64) -> bool {
+        if self.generation != request {
+            return false;
+        }
+        self.asking = false;
+        true
+    }
+}
+
 impl PermissionsState {
+    pub(super) fn order(&mut self, permission: Permission) -> &mut PermissionOrder {
+        self.order.entry(permission).or_default()
+    }
+
     pub fn new() -> Self {
         let fixed = crate::notify::FixedNotificationPermission::default();
         let fixed_input = permissions::FixedInputMonitoring::default();
@@ -39,8 +77,9 @@ impl PermissionsState {
             camera: None,
             screen: None,
             notification: None,
+            ask_notifications_once: false,
             input: None,
-            reads: 0,
+            order: HashMap::new(),
             system: System::this(),
         }
     }
@@ -183,8 +222,10 @@ impl AppState {
     /// window of the application becomes active, and when the settings show them. A person
     /// changes them in the settings of the system and comes back.
     pub fn read_permissions(&mut self, cx: &mut Context<Self>) {
-        self.permissions.reads += 1;
-        let read = self.permissions.reads;
+        let microphone_read = self.permissions.order(Permission::Microphone).read();
+        let camera_read = self.permissions.order(Permission::Camera).read();
+        let screen_read = self.permissions.order(Permission::Screen).read();
+        let notification_read = self.permissions.order(Permission::Notifications).read();
         let calls = self.calls.clone();
         let reading = cx.background_executor().spawn(async move {
             (
@@ -204,19 +245,46 @@ impl AppState {
             let (microphone, camera, screen) = reading.await;
             let notification = notification.await;
             let _ = this.update(cx, |this, cx| {
-                if this.permissions.reads != read {
-                    return;
-                }
                 let before = (
                     this.known.media.access,
                     this.permissions.camera,
                     this.permissions.screen,
                     this.permissions.notification,
                 );
-                this.known.media.access = Some(microphone);
-                this.permissions.camera = Some(camera.into());
-                this.permissions.screen = Some(permissions::screen_access(screen));
-                this.permissions.notification = Some(notification.into());
+                if this
+                    .permissions
+                    .order(Permission::Microphone)
+                    .accepts(microphone_read)
+                {
+                    this.known.media.access = Some(microphone);
+                }
+                if this
+                    .permissions
+                    .order(Permission::Camera)
+                    .accepts(camera_read)
+                {
+                    this.permissions.camera = Some(camera.into());
+                }
+                if this
+                    .permissions
+                    .order(Permission::Screen)
+                    .accepts(screen_read)
+                {
+                    this.permissions.screen = Some(permissions::screen_access(screen));
+                }
+                if this
+                    .permissions
+                    .order(Permission::Notifications)
+                    .accepts(notification_read)
+                {
+                    this.permissions.notification = Some(notification.into());
+                    if std::mem::take(&mut this.permissions.ask_notifications_once)
+                        && notification
+                            == junto_client_core::notification_access::NotificationAccess::NotAsked
+                    {
+                        this.ask_permission(Permission::Notifications, cx);
+                    }
+                }
                 // A read that finds what the state holds changes nothing, so the window is
                 // not drawn again for it.
                 if before
@@ -239,10 +307,14 @@ impl AppState {
     pub fn ask_permission(&mut self, permission: Permission, cx: &mut Context<Self>) {
         match permission {
             Permission::Microphone => {
+                let request = self.permissions.order(permission).request();
                 let asking = self.calls.request_microphone_access();
                 cx.spawn(async move |this, cx| {
                     let access = asking.await;
                     let _ = this.update(cx, |this, cx| {
+                        if !this.permissions.order(permission).finish_request(request) {
+                            return;
+                        }
                         this.known.media.access = Some(access);
                         cx.notify();
                     });
@@ -250,10 +322,14 @@ impl AppState {
                 .detach();
             }
             Permission::Camera => {
+                let request = self.permissions.order(permission).request();
                 let asking = self.calls.request_camera_access();
                 cx.spawn(async move |this, cx| {
                     let access = asking.await;
                     let _ = this.update(cx, |this, cx| {
+                        if !this.permissions.order(permission).finish_request(request) {
+                            return;
+                        }
                         this.permissions.camera = Some(access.into());
                         cx.notify();
                     });
@@ -265,10 +341,15 @@ impl AppState {
                 self.read_permissions(cx);
             }
             Permission::Notifications => {
+                self.permissions.ask_notifications_once = false;
+                let request = self.permissions.order(permission).request();
                 let asking = self.permissions.notifications.request();
                 cx.spawn(async move |this, cx| {
                     let access = asking.await;
                     let _ = this.update(cx, |this, cx| {
+                        if !this.permissions.order(permission).finish_request(request) {
+                            return;
+                        }
                         this.permissions.notification = Some(access.into());
                         cx.notify();
                     });
@@ -288,18 +369,8 @@ impl AppState {
     /// as Discord and Slack do at their first start. The other permissions are asked for
     /// at their first use.
     pub fn ask_for_notifications_once(&mut self, cx: &mut Context<Self>) {
-        let reading = self.permissions.notifications.read();
-        cx.spawn(async move |this, cx| {
-            let access = reading.await;
-            let _ = this.update(cx, |this, cx| {
-                this.permissions.notification = Some(access.into());
-                if access == junto_client_core::notification_access::NotificationAccess::NotAsked {
-                    this.ask_permission(Permission::Notifications, cx);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.permissions.ask_notifications_once = true;
+        self.read_permissions(cx);
     }
 
     /// Opens the page of the settings of the system that holds a permission. For the
@@ -330,6 +401,10 @@ impl AppState {
 
 #[cfg(feature = "test-support")]
 impl AppState {
+    pub fn use_notification_permission_for_test(&mut self, source: Rc<dyn NotificationPermission>) {
+        self.permissions.notifications = source;
+    }
+
     /// Draws these states of the permissions with the rules of a system, in place of the
     /// ones that a read gives. The screen tool uses it.
     pub fn show_permissions_fixture(
@@ -342,7 +417,10 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         // A read that is on its way does not replace the fixture.
-        self.permissions.reads += 1;
+        for order in self.permissions.order.values_mut() {
+            order.generation += 1;
+            order.asking = false;
+        }
         self.permissions.system = system;
         self.known.media.access = Some(microphone);
         self.permissions.camera = Some(camera);

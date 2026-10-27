@@ -1930,6 +1930,10 @@ impl AppState {
     /// Reads the sound devices and the microphone permission again, on a background
     /// thread: the list of a system can take a moment.
     pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
+        let read = self
+            .permissions
+            .order(crate::permissions::Permission::Microphone)
+            .read();
         let calls = self.calls.clone();
         let reading = cx.background_executor().spawn(async move {
             (
@@ -1945,7 +1949,13 @@ impl AppState {
                     Ok(devices) => this.known.media.devices = devices,
                     Err(error) => tracing::warn!(%error, "the sound devices were not read"),
                 }
-                this.known.media.access = Some(access);
+                if this
+                    .permissions
+                    .order(crate::permissions::Permission::Microphone)
+                    .accepts(read)
+                {
+                    this.known.media.access = Some(access);
+                }
                 this.camera_devices = cameras.unwrap_or_default();
                 cx.notify();
             });
