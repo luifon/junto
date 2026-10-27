@@ -48,8 +48,8 @@ use gpui::{
 use gpui_base::input::InputState;
 use junto_client_core::flow::add_server::AddServerFlow;
 use junto_client_core::global_keys::{Key, KeyCombo};
-use junto_client_core::protocol::ids::{AccountId, ServerId};
 use junto_client_core::keybinds::KeyAction;
+use junto_client_core::protocol::ids::{AccountId, ServerId};
 use junto_client_core::voice::InputMode;
 
 use call::{CallTab, DeviceKind, VolumeControl};
