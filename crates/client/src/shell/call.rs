@@ -994,22 +994,26 @@ impl Shell {
             .min_h_0()
             .child(gpui::list(state.clone(), render).size_full())
             .child(crate::ui::area("call-members"))
-            .child(div().absolute().inset_0().child(
-                gpui_base::Scrollbar::vertical(&state)
-                    .viewport_from_layout()
-                    .mode(gpui_base::ScrollbarMode::Always)
-                    .styles(move |styles| {
-                        let thumb = Hsla::from(colors.rule);
-                        let held = Hsla::from(colors.ink_3);
-                        styles
-                            .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
-                            .track_hover(|track| track.bg(gpui::transparent_black()))
-                            .track_active(|track| track.bg(gpui::transparent_black()))
-                            .thumb(|bar| bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0)))
-                            .thumb_hover(|bar| bar.bg(held))
-                            .thumb_active(|bar| bar.bg(held))
-                    }),
-            ));
+            .child(
+                div().absolute().inset_0().child(
+                    gpui_base::Scrollbar::vertical(&state)
+                        .viewport_from_layout()
+                        .mode(gpui_base::ScrollbarMode::Always)
+                        .styles(move |styles| {
+                            let thumb = Hsla::from(colors.rule);
+                            let held = Hsla::from(colors.ink_3);
+                            styles
+                                .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
+                                .track_hover(|track| track.bg(gpui::transparent_black()))
+                                .track_active(|track| track.bg(gpui::transparent_black()))
+                                .thumb(|bar| {
+                                    bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0))
+                                })
+                                .thumb_hover(|bar| bar.bg(held))
+                                .thumb_active(|bar| bar.bg(held))
+                        }),
+                ),
+            );
         div()
             .flex()
             .flex_col()

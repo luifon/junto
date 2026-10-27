@@ -22,14 +22,13 @@ use junto_media::calls::Phase;
 
 use crate::state::view::{
     CallPanel, ChannelRow, ConversationRefusal, MemberRow, Members, PanelPlace, RecordingControl,
-    RecordingShown, Relation,
-    SelectedServer, ServerLists, ServerStatus, ShellView, VoiceState,
+    RecordingShown, Relation, SelectedServer, ServerLists, ServerStatus, ShellView, VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Flag, FlagKind, Notice, SectionLabel, SideHeader, StatePanel,
-    StyleExt, float_shadow, icon, tooltip,
+    Button, ButtonKind, Flag, FlagKind, Notice, SectionLabel, SideHeader, StatePanel, StyleExt,
+    float_shadow, icon, tooltip,
 };
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
@@ -1369,7 +1368,14 @@ impl Shell {
             match rows.get(index - 1) {
                 Some(member) => div()
                     .w_full()
-                    .child(this.member_row(index - 1, member, server_id, refused.as_ref(), asked, cx))
+                    .child(this.member_row(
+                        index - 1,
+                        member,
+                        server_id,
+                        refused.as_ref(),
+                        asked,
+                        cx,
+                    ))
                     .into_any_element(),
                 None => div().w_full().h(u(4.0)).into_any_element(),
             }
@@ -1395,9 +1401,7 @@ impl Shell {
                             let thumb = Hsla::from(colors.rule);
                             let held = Hsla::from(colors.ink_3);
                             styles
-                                .track(|track| {
-                                    track.bg(gpui::transparent_black()).width(px(10.0))
-                                })
+                                .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
                                 .track_hover(|track| track.bg(gpui::transparent_black()))
                                 .track_active(|track| track.bg(gpui::transparent_black()))
                                 .thumb(|bar| {

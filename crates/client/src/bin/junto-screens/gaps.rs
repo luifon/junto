@@ -58,7 +58,7 @@ pub fn empty_bands(
         let blank = |y: u32| {
             let start = y as usize * stride + left as usize * 4;
             let end = y as usize * stride + right as usize * 4;
-            raw[start..end].chunks_exact(4).all(|pixel| {
+            raw[start..end].as_chunks::<4>().0.iter().all(|pixel| {
                 pixel[0].abs_diff(ground[0]) <= TOLERANCE
                     && pixel[1].abs_diff(ground[1]) <= TOLERANCE
                     && pixel[2].abs_diff(ground[2]) <= TOLERANCE
