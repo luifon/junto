@@ -101,19 +101,13 @@ async fn a_member_follows_a_new_channel_a_new_category_a_rename_a_move_and_a_del
         .create_category(workspace_id, &projects)
         .await
         .unwrap();
-    let model = model_when(member, "the new channel and the new category", |model| {
+    let model = model_when(member, "the new channel", |model| {
         model.channel(plans.id).is_some()
-            && model.workspace(workspace_id).is_some_and(|workspace| {
-                workspace
-                    .categories
-                    .iter()
-                    .any(|held| held.id == category.id)
-            })
     })
     .await;
     assert_eq!(model.channel(plans.id).unwrap().channel, plans);
     assert!(
-        model
+        !model
             .workspace(workspace_id)
             .unwrap()
             .categories
@@ -137,11 +131,18 @@ async fn a_member_follows_a_new_channel_a_new_category_a_rename_a_move_and_a_del
         ..UpdateChannel::default()
     };
     owner.api().update_channel(plans.id, &moved).await.unwrap();
-    model_when(member, "the channel in the category", |model| {
-        model
-            .channel(plans.id)
-            .is_some_and(|held| held.channel.category_id == Some(category.id))
-    })
+    model_when(
+        member,
+        "the channel and its newly visible category",
+        |model| {
+            model
+                .channel(plans.id)
+                .is_some_and(|held| held.channel.category_id == Some(category.id))
+                && model
+                    .workspace(workspace_id)
+                    .is_some_and(|held| held.categories.contains(&category))
+        },
+    )
     .await;
 
     owner
@@ -159,12 +160,12 @@ async fn a_member_follows_a_new_channel_a_new_category_a_rename_a_move_and_a_del
     .await;
     assert_eq!(model.channel(plans.id).unwrap().channel.name, "roadmap");
 
-    // Each change reached the member as an event, and the state was not read again.
-    let told = told_until(&mut told, "the deleted category", |notices| {
-        told_of(notices, |event| {
-            matches!(event, Event::CategoryDeleted { category_id, .. }
-                if *category_id == category.id)
-        })
+    let told = told_until(&mut told, "the category visibility refreshes", |notices| {
+        notices
+            .iter()
+            .filter(|notice| matches!(notice, Notice::Reloaded { .. }))
+            .count()
+            >= 2
     })
     .await;
     let created_channel = |event: &Event| {
@@ -186,10 +187,10 @@ async fn a_member_follows_a_new_channel_a_new_category_a_rename_a_move_and_a_del
             if channel.id == plans.id && channel.category_id == Some(category.id))
     };
     assert!(told_of(&told, created_channel), "{told:?}");
-    assert!(told_of(&told, created_category), "{told:?}");
+    assert!(!told_of(&told, created_category), "{told:?}");
     assert!(told_of(&told, was_renamed), "{told:?}");
     assert!(told_of(&told, was_moved), "{told:?}");
-    assert!(!reloaded(&told), "{told:?}");
+    assert!(reloaded(&told), "{told:?}");
     for handle in [owner, member] {
         agrees_with_a_snapshot(handle).await;
     }
