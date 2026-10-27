@@ -490,13 +490,23 @@ fn the_navigation_and_message_actions_at_their_keys(cx: &mut TestAppContext) {
     window.click_channel("general");
     assert_eq!(window.selected_channel(), general);
     admin.mention(&world, plans, "And the agenda, ", luca);
-    window.until("the server holds the second mention", |window| {
-        window.view().servers[0].unread.any()
+    // The test window is not the active window, so a shown channel is not read: both
+    // mentions are unread before the key.
+    window.until("the server holds both mentions", |window| {
+        window.view().servers[0].unread.mentions == 2
     });
     press_default(&mut window, KeyAction::MarkServerRead);
-    window.until("the server holds nothing unread", |window| {
-        !window.view().servers[0].unread.any()
-    });
+    window.until_read(
+        "the server holds nothing unread",
+        |window| {
+            let view = window.view();
+            (
+                view.servers[0].unread,
+                view.workspace().map(|shown| shown.sections.clone()),
+            )
+        },
+        |(unread, _)| !unread.any(),
+    );
 
     window.write("Hello from Luca");
     let own = window.until_message("Hello from Luca").message.id;
