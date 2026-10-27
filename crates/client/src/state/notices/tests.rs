@@ -210,6 +210,7 @@ impl Scene {
             now: morning(),
             active,
             shown,
+            presenting: false,
         }
     }
 
@@ -1782,6 +1783,36 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
             .show
             .is_empty()
     );
+}
+
+/// While the person shares a screen or presents, the account holds its notifications: no
+/// system notification and no sound of messages; the notice stays in the list and is not
+/// shown when the share ends. The account can turn the hold off (ADR 0742).
+#[test]
+fn a_share_or_a_presentation_holds_the_notifications_of_messages() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    let presenting = |scene: &Scene| AlertScene {
+        presenting: true,
+        ..scene.alert_scene(false, Shown::default())
+    };
+    let held = scene.message(scene.in_channel(scene.general), 7, "during the share, @you");
+    scene.notice(NotificationKind::Mention, held, 1);
+    let told = alerts(&mut seen, &presenting(&scene));
+    assert!(told.show.is_empty() && told.sounds.is_empty());
+    assert_eq!(scene.model.notices.len(), 1);
+    // The share ended: the held notice is not shown later; a new one is.
+    assert!(scene.alerts(&mut seen).show.is_empty());
+    let after = scene.message(scene.in_channel(scene.general), 8, "after it, @you");
+    scene.notice(NotificationKind::Mention, after, 2);
+    assert_eq!(scene.alerts(&mut seen).show.len(), 1);
+
+    // The rule of the setting: absent or on holds, off does not.
+    let mut settings = NotificationSettings::default();
+    assert!(holds_while_presenting(&settings));
+    settings.hold_while_presenting = Some(false);
+    assert!(!holds_while_presenting(&settings));
 }
 
 /// The account can keep the text of messages out of the notifications of the system: a

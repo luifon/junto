@@ -696,6 +696,9 @@ pub struct QuietView {
     pub daily: Option<Agreement<Option<DailyQuiet>>>,
     /// The system notifications of messages leave out their text (ADR 0742).
     pub hide_text: Option<Agreement<bool>>,
+    /// System notifications and the sounds of messages wait while the person shares a
+    /// screen or presents (ADR 0742).
+    pub hold_while_presenting: Option<Agreement<bool>>,
     /// The account of the shown server is in its quiet time now.
     pub quiet_now: bool,
     pub busy: bool,
@@ -743,10 +746,15 @@ pub fn quiet_view(
         .iter()
         .map(|(server_id, _, model)| account(*server_id, model).hide_text)
         .collect();
+    let hold: Vec<bool> = servers
+        .iter()
+        .map(|(server_id, _, model)| holds_while_presenting(&account(*server_id, model)))
+        .collect();
     QuietView {
         do_not_disturb: agreement(&dnd),
         daily: agreement(&daily),
         hide_text: agreement(&hide_text),
+        hold_while_presenting: agreement(&hold),
         quiet_now: known.clock.is_some_and(|now| {
             servers
                 .iter()
@@ -766,6 +774,12 @@ pub fn quiet_view(
 
 /// True while the account of a server wants no alert at an instant. The clock of the zone
 /// that the daily quiet time names decides, as on the server (ADR 0412, ADR 0798).
+/// The account holds its notifications while the person shares a screen or presents; on
+/// unless the account turned it off (ADR 0742).
+pub fn holds_while_presenting(settings: &NotificationSettings) -> bool {
+    settings.hold_while_presenting != Some(false)
+}
+
 pub(super) fn quiet_at(model: &ServerModel, at: OffsetDateTime) -> bool {
     model.is_quiet(|zone| zones::minute_in(zone, at))
 }
@@ -960,6 +974,9 @@ pub struct AlertScene<'a> {
     pub active: bool,
     /// What the window shows.
     pub shown: Shown,
+    /// The person shares a screen or presents in meeting mode, and the account holds its
+    /// notifications meanwhile: nothing is shown and no sound of messages plays (ADR 0742).
+    pub presenting: bool,
 }
 
 /// The system notifications to show and the tags to take away after a change, and the
@@ -1153,7 +1170,7 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
         seen.newest = newest;
         seen.do_not_disturb = do_not_disturb;
     }
-    let quiet = quiet_at(model, scene.now);
+    let quiet = quiet_at(model, scene.now) || scene.presenting;
     let held_back = seen.do_not_disturb && !do_not_disturb;
     seen.do_not_disturb = do_not_disturb;
     seen.recent

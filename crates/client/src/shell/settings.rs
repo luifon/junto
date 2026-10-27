@@ -574,6 +574,24 @@ impl Shell {
                 cx,
             ));
         }
+        if let Some(hold) = quiet.hold_while_presenting {
+            let on = hold == crate::state::notices::Agreement::All(true);
+            let busy = quiet.busy;
+            parts.push(self.switch_row(
+                theme,
+                "hold-while-presenting",
+                text::HOLD_WHILE_PRESENTING,
+                text::HOLD_WHILE_PRESENTING_HELP,
+                on,
+                Box::new(move |this: &mut Shell, cx: &mut Context<Shell>| {
+                    if !busy {
+                        this.state
+                            .update(cx, |state, cx| state.set_hold_while_presenting(!on, cx));
+                    }
+                }),
+                cx,
+            ));
+        }
         parts
     }
 

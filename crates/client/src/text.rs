@@ -2238,6 +2238,8 @@ pub const ALERT_WITHOUT_TEXT: &str = "New notification";
 pub const ALERT_TEXT_HIDDEN: &str = "New message";
 pub const NOTIFICATION_TEXT: &str = "Message text in notifications";
 pub const NOTIFICATION_TEXT_HELP: &str = "Off: a notification names who wrote and where, without the text. Each server keeps the choice of your account.";
+pub const HOLD_WHILE_PRESENTING: &str = "Hold notifications while you share or present";
+pub const HOLD_WHILE_PRESENTING_HELP: &str = "While you share your screen or present in meeting mode, no notification appears and messages play no sound. They stay in the list of notifications.";
 
 /// The title of the system notification of a notice. It names the server when the device
 /// has more than one.

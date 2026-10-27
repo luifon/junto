@@ -32,6 +32,10 @@ pub struct NotificationSettings {
     /// without the text (ADR 0742).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_text: bool,
+    /// Account scope: system notifications and the sounds of messages wait while the person
+    /// shares a screen or presents in meeting mode. Absent: they wait (ADR 0742).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_while_presenting: Option<bool>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

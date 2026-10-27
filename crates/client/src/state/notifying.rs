@@ -734,6 +734,43 @@ impl AppState {
         self.change_quiet(cx, move |settings| settings.do_not_disturb = on);
     }
 
+    /// Holds the system notifications and the sounds of messages while the person shares a
+    /// screen or presents, or turns that off, on every server of the device (ADR 0742).
+    pub fn set_hold_while_presenting(&mut self, hold: bool, cx: &mut Context<Self>) {
+        self.change_quiet(cx, move |settings| {
+            settings.hold_while_presenting = (!hold).then_some(false);
+        });
+    }
+
+    /// The person shares a screen in the call of this device or presents in its meeting
+    /// mode, and the account on `server_id` holds its notifications then (ADR 0742).
+    pub(super) fn holds_for_presenting(
+        &self,
+        server_id: ServerId,
+        model: &junto_client_core::model::ServerModel,
+    ) -> bool {
+        let Some(call) = self.known.media.calls.call.as_ref() else {
+            return false;
+        };
+        let sharing = matches!(call.share, junto_media::engine::ShareState::Running(_));
+        let presents = self
+            .client
+            .server(call.target.server_id)
+            .and_then(|server| server.live().view().model)
+            .is_some_and(|held| {
+                held.call_at(&call.target.place)
+                    .and_then(|held_call| held_call.meeting.as_ref())
+                    .is_some_and(|meeting| meeting.presenter == held.account.id)
+            });
+        let settings = super::notices::stored_settings(
+            server_id,
+            junto_client_core::api::SettingsScope::Account,
+            model,
+            &self.known,
+        );
+        (sharing || presents) && super::notices::holds_while_presenting(&settings)
+    }
+
     /// Leaves the text of messages out of the notifications of the system, or shows it,
     /// on every server of the device (ADR 0742).
     pub fn set_hide_text(&mut self, hide: bool, cx: &mut Context<Self>) {
@@ -945,6 +982,7 @@ impl AppState {
             let Some(model) = super::view::shown_model(server) else {
                 continue;
             };
+            let presenting = self.holds_for_presenting(server.id, model);
             let seen = self.seen.entry(server.id).or_default();
             let told = alerts(
                 seen,
@@ -957,6 +995,7 @@ impl AppState {
                     now,
                     active,
                     shown,
+                    presenting,
                 },
             );
             for tag in told.dismiss {
@@ -1093,6 +1132,7 @@ impl AppState {
         let now = OffsetDateTime::now_utc();
         let several_servers = self.client.servers().len() > 1;
         let name = server.entry().name;
+        let presenting = self.holds_for_presenting(server_id, &model);
         let seen = self.seen.entry(server_id).or_default();
         let told = event_alert(
             seen,
@@ -1100,7 +1140,7 @@ impl AppState {
                 server_id,
                 server_name: &name,
                 several_servers,
-                quiet: quiet_now(Some(&model), now),
+                quiet: quiet_now(Some(&model), now) || presenting,
                 active,
                 now,
             },
@@ -1174,7 +1214,11 @@ impl AppState {
             let Some(fact) = join_answer(was_waiting, logged_in, refused, &name) else {
                 continue;
             };
-            let quiet = quiet_now(server.live().view().model.as_deref(), now);
+            let model = server.live().view().model;
+            let presenting = model
+                .as_deref()
+                .is_some_and(|model| self.holds_for_presenting(server.id(), model));
+            let quiet = quiet_now(model.as_deref(), now) || presenting;
             let seen = self.join_seen.entry(server.id()).or_default();
             let told = event_alert(
                 seen,
