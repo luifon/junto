@@ -1535,8 +1535,10 @@ impl Shell {
                     .role(Role::List)
                     .aria_label(text::TRANSCRIPT)
                     .debug_selector(|| "transcript-lines".to_owned())
+                    .relative()
                     .size_full()
-                    .child(list(state.clone(), render).size_full()),
+                    .child(list(state.clone(), render).size_full())
+                    .child(crate::ui::area("transcript-lines")),
             )
             .child(
                 div().absolute().inset_0().child(

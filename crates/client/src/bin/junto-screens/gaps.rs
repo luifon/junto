@@ -2,14 +2,17 @@
 //! region whose parts start at its top and follow each other: a list, a page, the content
 //! of a dialog or of a panel. A band of the ground colour of an area that is taller than
 //! the design allows, above its first part or between two parts, is an empty band. Space
-//! after the last part is the end of the area.
+//! after the last part is the end of the area, except in the frame of a kept result
+//! ([`junto_client::ui::KEPT`]), which has the height of the row that it replaces and whose
+//! sentence is its content.
 
 use gpui::{Bounds, Pixels, SharedString};
 use image::RgbaImage;
 
 /// The tallest space above the first part of an area and between two of its parts, in
-/// pixels of the design.
-pub const MOST_GAP: f32 = 40.0;
+/// pixels of the design: the largest spacing of the design, which a band of 33 to 40 pixels
+/// passed before (review L2).
+pub const MOST_GAP: f32 = 32.0;
 /// The width at each side of an area that is not read: the scroll bar and the borders.
 const SIDE: f32 = 12.0;
 /// The height at the top and at the bottom of an area that is not read, in pixels of the
@@ -90,12 +93,22 @@ pub fn empty_bands(
             }
             last_part = Some(y);
         }
-        if last_part.is_none() {
-            found.push(format!(
+        match last_part {
+            None => found.push(format!(
                 "{name}: {} design px with no part, from {} design px of the window",
                 at(bottom - top),
                 at(top)
-            ));
+            )),
+            Some(last) if name.as_ref() == junto_client::ui::KEPT && bottom - last > most => {
+                found.push(format!(
+                    "{name}: {} design px of empty space after the result, from {} to {} \
+                     design px of the window",
+                    at(bottom - last),
+                    at(last),
+                    at(bottom),
+                ));
+            }
+            Some(_) => {}
         }
     }
     found
@@ -166,6 +179,37 @@ mod tests {
         let image = screen(&[]);
         let found = empty_bands(&image, &area(), 200.0, 100);
         assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    /// A band of 36 design pixels is longer than the largest spacing of the design (L2).
+    #[test]
+    fn a_band_above_the_spacing_of_the_design_is_found() {
+        let image = screen(&[(10, 30), (66, 86)]);
+        let found = empty_bands(&image, &area(), 200.0, 100);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("36 design px of empty space between two parts"));
+    }
+
+    /// The frame of a kept result that is much taller than its sentence is an empty band
+    /// in a coloured frame (review L2).
+    #[test]
+    fn a_kept_result_much_taller_than_its_sentence_is_found() {
+        let image = screen(&[(10, 30)]);
+        let kept = vec![(
+            junto_client::ui::KEPT.into(),
+            Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(120.0))),
+        )];
+        let found = empty_bands(&image, &kept, 200.0, 100);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("after the result"), "{found:?}");
+        let fitting = vec![(
+            junto_client::ui::KEPT.into(),
+            Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(50.0))),
+        )];
+        assert_eq!(
+            empty_bands(&image, &fitting, 200.0, 100),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

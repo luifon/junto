@@ -686,6 +686,7 @@ impl Shell {
                 .flex_shrink_1()
                 .min_h(u(theme.metrics.channel_row_height))
                 .children(conversations)
+                .child(crate::ui::area("direct-list"))
                 .into_any_element(),
         );
         rows

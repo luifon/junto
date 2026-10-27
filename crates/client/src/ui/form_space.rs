@@ -183,6 +183,8 @@ impl RenderOnce for KeptResult {
         let colors = theme.colors;
         div()
             .debug_selector(|| "kept-result".to_owned())
+            .relative()
+            .child(super::area(super::KEPT))
             .flex()
             .flex_1()
             .min_h_0()

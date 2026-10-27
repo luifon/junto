@@ -25,6 +25,10 @@ pub fn area(name: impl Into<SharedString>) -> impl IntoElement {
 /// The name that [`cover`] records.
 pub const COVER: &str = ":cover";
 
+/// The name of the frame of a kept result (`ui::FormSpace`): the space after its sentence
+/// is measured as well.
+pub const KEPT: &str = ":kept";
+
 /// Names the element that holds it as a layer that covers what is drawn before it: the
 /// areas under it are not measured.
 pub fn cover() -> impl IntoElement {

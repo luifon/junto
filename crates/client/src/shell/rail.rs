@@ -279,9 +279,11 @@ impl Shell {
             .child(
                 div()
                     .id("address-help")
+                    .relative()
                     .h(u(64.0))
                     .overflow_y_scroll()
                     .debug_selector(|| "address-help".to_owned())
+                    .child(crate::ui::area("address-help"))
                     .when(failed, |help| help.role(Role::Alert))
                     .aria_label(help.clone())
                     .mt(u(7.0))
