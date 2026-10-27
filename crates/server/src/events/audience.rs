@@ -1040,6 +1040,7 @@ impl WorkspaceStanding {
 
     fn kept_scope(&self, overrides: &[KeptOverride]) -> Option<ChannelScope> {
         let mut scope = ChannelScope {
+            person_override: Default::default(),
             workspace: self.scope.clone(),
             everyone_override: Override::NONE,
             role_overrides: Vec::new(),
@@ -1130,6 +1131,7 @@ pub fn receives<'a>(
         ),
         Audience::DeletedWorkspace { members, .. } => {
             let scope = WorkspaceScope {
+                person_override: Default::default(),
                 membership: if recipient.listed.contains(members) {
                     Membership::Member
                 } else {
@@ -1249,6 +1251,7 @@ mod tests {
 
     fn member() -> Actor {
         Actor {
+            server_override: Default::default(),
             position: Position::Member,
             server_roles: vec![],
         }
@@ -1256,6 +1259,7 @@ mod tests {
 
     fn administrator() -> Actor {
         Actor {
+            server_override: Default::default(),
             position: Position::Member,
             server_roles: vec![ServerPermissions::from(ServerPermission::Administrator)],
         }
@@ -1326,6 +1330,7 @@ mod tests {
         private: bool,
     ) -> WorkspaceStanding {
         let scope = WorkspaceScope {
+            person_override: Default::default(),
             membership,
             everyone: WorkspacePermissions::EVERYONE_DEFAULT,
             roles: if with_role {
@@ -1340,6 +1345,7 @@ mod tests {
         let channel = ChannelStanding {
             deleted: false,
             scope: ChannelScope {
+                person_override: Default::default(),
                 workspace: scope.clone(),
                 everyone_override: if private { deny_view() } else { Override::NONE },
                 role_overrides: vec![RoleOverride {
@@ -1420,6 +1426,7 @@ mod tests {
         assert!(may_receive(own, &audience, None));
 
         let moderator = Actor {
+            server_override: Default::default(),
             position: Position::Member,
             server_roles: vec![ServerPermissions::from(ServerPermission::BanMembers)],
         };
@@ -1434,10 +1441,12 @@ mod tests {
         };
         let plain = member();
         let inviter = Actor {
+            server_override: Default::default(),
             position: Position::Member,
             server_roles: vec![ServerPermissions::from(ServerPermission::CreateInvites)],
         };
         let owner = Actor {
+            server_override: Default::default(),
             position: Position::Owner,
             server_roles: vec![],
         };
@@ -1762,6 +1771,7 @@ mod tests {
             }
         }
         let owner = Actor {
+            server_override: Default::default(),
             position: Position::Owner,
             server_roles: vec![],
         };
@@ -1856,6 +1866,7 @@ mod tests {
             workspace_ids: vec![seen, unseen],
         };
         let inviter = Actor {
+            server_override: Default::default(),
             position: Position::Member,
             server_roles: vec![ServerPermissions::from(ServerPermission::CreateInvites)],
         };

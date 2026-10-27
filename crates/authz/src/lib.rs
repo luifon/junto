@@ -4,14 +4,16 @@
 
 mod evaluate;
 mod model;
+mod overrides;
 mod permissions;
+pub use overrides::{Override, ServerOverride};
 
 pub use evaluate::authorize;
 pub use model::{
     Acquaintance, Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant,
     ChannelScope, Contact, Decision, Denial, Departing, HeldRole, Membership, MessagePlace,
-    OverlappingOverride, Override, OwnerAction, Participation, Permanence, Position, Reach,
-    Request, RoleKey, RoleOverride, Target, WorkspaceScope,
+    OverlappingOverride, OwnerAction, Participation, Permanence, Position, Reach, Request, RoleKey,
+    RoleOverride, Target, WorkspaceScope,
 };
 pub use permissions::{
     ServerPermission, ServerPermissions, WorkspacePermission, WorkspacePermissions,

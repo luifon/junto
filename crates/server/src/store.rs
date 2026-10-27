@@ -916,6 +916,7 @@ pub async fn contacts(
     rows.into_iter()
         .map(|(id, owner, roles)| {
             let actor = junto_authz::Actor {
+                server_override: Default::default(),
                 position: if owner {
                     junto_authz::Position::Owner
                 } else {

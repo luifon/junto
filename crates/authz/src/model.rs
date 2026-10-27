@@ -1,6 +1,7 @@
 use crate::permissions::{
     ServerPermission, ServerPermissions, WorkspacePermission, WorkspacePermissions,
 };
+use crate::{Override, ServerOverride};
 
 /// Identifies a workspace role inside one evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -17,6 +18,7 @@ pub enum Position {
 pub struct Actor {
     pub position: Position,
     pub server_roles: Vec<ServerPermissions>,
+    pub server_override: ServerOverride,
 }
 
 impl Actor {
@@ -24,6 +26,8 @@ impl Actor {
         self.server_roles
             .iter()
             .fold(ServerPermissions::EMPTY, |held, role| held.union(*role))
+            .difference(self.server_override.deny())
+            .union(self.server_override.allow())
     }
 
     /// The server owner is a position above the administrator permission.
@@ -53,6 +57,7 @@ pub struct WorkspaceScope {
     pub membership: Membership,
     pub everyone: WorkspacePermissions,
     pub roles: Vec<HeldRole>,
+    pub person_override: Override,
 }
 
 impl WorkspaceScope {
@@ -61,6 +66,8 @@ impl WorkspaceScope {
         self.roles
             .iter()
             .fold(self.everyone, |held, role| held.union(role.permissions))
+            .difference(self.person_override.deny())
+            .union(self.person_override.allow())
     }
 }
 
@@ -75,50 +82,6 @@ impl std::fmt::Display for OverlappingOverride {
 
 impl std::error::Error for OverlappingOverride {}
 
-/// The allow and deny sets of one role in one channel. No permission is in both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Override {
-    allow: WorkspacePermissions,
-    deny: WorkspacePermissions,
-}
-
-impl Override {
-    pub const NONE: Self = Self {
-        allow: WorkspacePermissions::EMPTY,
-        deny: WorkspacePermissions::EMPTY,
-    };
-
-    pub fn new(
-        allow: WorkspacePermissions,
-        deny: WorkspacePermissions,
-    ) -> Result<Self, OverlappingOverride> {
-        if allow.intersection(deny).is_empty() {
-            Ok(Self { allow, deny })
-        } else {
-            Err(OverlappingOverride)
-        }
-    }
-
-    pub const fn allow(self) -> WorkspacePermissions {
-        self.allow
-    }
-
-    pub const fn deny(self) -> WorkspacePermissions {
-        self.deny
-    }
-
-    pub const fn is_none(self) -> bool {
-        self.allow.is_empty() && self.deny.is_empty()
-    }
-
-    /// The permissions that replacing `self` with `next` can add to a holder of the role.
-    pub fn granted_by_change_to(self, next: Self) -> WorkspacePermissions {
-        next.allow
-            .difference(self.allow)
-            .union(self.deny.difference(next.deny))
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoleOverride {
     pub role: RoleKey,
@@ -132,6 +95,7 @@ pub struct ChannelScope {
     pub workspace: WorkspaceScope,
     pub everyone_override: Override,
     pub role_overrides: Vec<RoleOverride>,
+    pub person_override: Override,
 }
 
 impl ChannelScope {
@@ -151,8 +115,8 @@ impl ChannelScope {
         let after_everyone = self
             .workspace
             .base_permissions()
-            .difference(self.everyone_override.deny)
-            .union(self.everyone_override.allow);
+            .difference(self.everyone_override.deny())
+            .union(self.everyone_override.allow());
         let held = self.role_overrides.iter().filter(|role_override| {
             self.workspace
                 .roles
@@ -163,12 +127,16 @@ impl ChannelScope {
             (WorkspacePermissions::EMPTY, WorkspacePermissions::EMPTY),
             |(allow, deny), role_override| {
                 (
-                    allow.union(role_override.rule.allow),
-                    deny.union(role_override.rule.deny),
+                    allow.union(role_override.rule.allow()),
+                    deny.union(role_override.rule.deny()),
                 )
             },
         );
-        after_everyone.difference(deny).union(allow)
+        after_everyone
+            .difference(deny)
+            .union(allow)
+            .difference(self.person_override.deny())
+            .union(self.person_override.allow())
     }
 }
 

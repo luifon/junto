@@ -63,6 +63,7 @@ struct Standing {
 
 fn make_actor(owner: bool, roles: Vec<i64>) -> ApiResult<Actor> {
     Ok(Actor {
+        server_override: Default::default(),
         position: if owner {
             Position::Owner
         } else {
@@ -143,6 +144,7 @@ pub async fn load(
                     }
                 }
                 let scope = WorkspaceScope {
+                    person_override: Default::default(),
                     membership: if workspace.member {
                         Membership::Member
                     } else {

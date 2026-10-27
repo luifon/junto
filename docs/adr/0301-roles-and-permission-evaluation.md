@@ -23,12 +23,13 @@ Channel overrides:
 
 - A workspace role can have allow overrides and deny overrides per channel.
 - Overrides exist per channel only. A category has no overrides, and a channel takes no override from its category.
-- There are no overrides for a single member in the first version.
+- A person has an allow and a deny set at server, workspace, category and channel level. Each set is disjoint. Server permissions use server sets; the other levels use workspace sets.
 
 Evaluation rule:
 
-- A member's base permissions in a workspace are those of the workspace's "everyone" role plus those of all of the member's roles in that workspace.
-- In a channel, the override of the "everyone" role applies first, then the denies of the member's roles, then the allows of the member's roles. An allow from one role wins over a deny from another role.
+- Server permissions combine all server roles, then remove the person's denies and add the person's allows. The owner bypasses the result. Only the owner may use a person override to remove the administrator pass of an administrator role.
+- A member's base permissions combine the workspace's "everyone" role and every held workspace role, then remove the workspace person's denies and add their allows.
+- In a channel, the override of the "everyone" role applies first, then the denies of the member's roles, then the allows of the member's roles. An allow from one role wins over a deny from another role. The channel person's denies and allows apply last. Role order has no effect on this evaluation.
 - One function applies this rule for the API, events, downloads, exports, search and call admission.
 
 Administrator permission and its limits:
@@ -48,7 +49,7 @@ Invitations:
 - A person, an event, a download, an export, a search result and a call admission are all decided by the same function, so one test suite covers the rule for all of them.
 - A member with two roles, one that denies and one that allows a permission in a channel, has the permission.
 - A channel cannot be hidden from an administrator.
-- An exception for one member in one channel requires a role that only that member has.
+- An exception for one member uses a person override and needs no separate role.
 - The server owner is a single position above the administrator permission. It is assigned by the first start of the server and by the server command line (ADR 0201).
 - The list of workspace permissions is not closed; later records can add to it.
 

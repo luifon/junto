@@ -287,6 +287,7 @@ impl Access {
             token_id: None,
             token_actions: Vec::new(),
             actor: Actor {
+                server_override: Default::default(),
                 position,
                 server_roles,
             },
@@ -485,6 +486,7 @@ impl Access {
         }
         let everyone = everyone.ok_or_else(ApiError::not_found)?;
         Ok(WorkspaceScope {
+            person_override: Default::default(),
             membership: if is_member {
                 Membership::Member
             } else {
@@ -645,6 +647,7 @@ pub fn reads_invite(
     let allows = |request: Request<'_>| authorize(actor, &request).is_allowed();
     let sees = |workspace_id: &WorkspaceId| {
         let scope = WorkspaceScope {
+            person_override: Default::default(),
             membership: if member_of.contains(workspace_id) {
                 Membership::Member
             } else {
@@ -724,6 +727,7 @@ fn channel_scope(workspace: WorkspaceScope, overrides: &[OverrideRow]) -> ApiRes
         }
     }
     Ok(ChannelScope {
+        person_override: Default::default(),
         workspace,
         everyone_override,
         role_overrides,

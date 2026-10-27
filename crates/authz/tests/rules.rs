@@ -13,6 +13,7 @@ use WorkspacePermission as W;
 
 fn owner() -> Actor {
     Actor {
+        server_override: Default::default(),
         position: Position::Owner,
         server_roles: vec![],
     }
@@ -28,6 +29,7 @@ fn plain() -> Actor {
 
 fn with_server(permissions: &[ServerPermission]) -> Actor {
     Actor {
+        server_override: Default::default(),
         position: Position::Member,
         server_roles: permissions
             .iter()
@@ -49,6 +51,7 @@ fn role(key: u128, permissions: &[W]) -> HeldRole {
 
 fn workspace(everyone: &[W], roles: Vec<HeldRole>) -> WorkspaceScope {
     WorkspaceScope {
+        person_override: Default::default(),
         membership: Membership::Member,
         everyone: set(everyone),
         roles,
@@ -57,6 +60,7 @@ fn workspace(everyone: &[W], roles: Vec<HeldRole>) -> WorkspaceScope {
 
 fn outside(everyone: &[W]) -> WorkspaceScope {
     WorkspaceScope {
+        person_override: Default::default(),
         membership: Membership::NotMember,
         everyone: set(everyone),
         roles: vec![],
@@ -80,6 +84,7 @@ fn channel(
     role_overrides: Vec<RoleOverride>,
 ) -> ChannelScope {
     ChannelScope {
+        person_override: Default::default(),
         workspace,
         everyone_override,
         role_overrides,
@@ -1072,5 +1077,129 @@ fn admit_to_full_call_is_held_by_a_role_an_override_or_an_administrator() {
             permission: W::AdmitToFullCall,
         };
         assert_eq!(authorize(&actor, &request), expected, "{actor:?} {scope:?}");
+    }
+}
+
+#[test]
+fn server_person_overrides_follow_roles_and_owner_still_passes() {
+    for permission in ServerPermission::ALL {
+        let mut actor = with_server(&[*permission]);
+        actor.server_override =
+            junto_authz::ServerOverride::new(ServerPermissions::EMPTY, (*permission).into())
+                .unwrap();
+        assert_eq!(
+            authorize(&actor, &Request::Server(*permission)),
+            missing_server(*permission)
+        );
+        actor.position = Position::Owner;
+        assert_eq!(authorize(&actor, &Request::Server(*permission)), Allow);
+        actor.position = Position::Member;
+        actor.server_roles.clear();
+        actor.server_override =
+            junto_authz::ServerOverride::new((*permission).into(), ServerPermissions::EMPTY)
+                .unwrap();
+        assert_eq!(authorize(&actor, &Request::Server(*permission)), Allow);
+    }
+}
+
+#[test]
+fn workspace_person_overrides_follow_every_role() {
+    for permission in W::ALL {
+        let mut scope = workspace(&[*permission], vec![role(1, &[*permission])]);
+        scope.person_override = rule(&[], &[*permission]);
+        assert_eq!(
+            authorize(
+                &plain(),
+                &Request::Workspace {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            missing(*permission)
+        );
+        scope.everyone = WorkspacePermissions::EMPTY;
+        scope.roles.clear();
+        scope.person_override = rule(&[*permission], &[]);
+        assert_eq!(
+            authorize(
+                &plain(),
+                &Request::Workspace {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            Allow
+        );
+        scope.membership = Membership::NotMember;
+        assert_eq!(
+            authorize(
+                &plain(),
+                &Request::Workspace {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            Deny(Denial::NotMember)
+        );
+    }
+}
+
+#[test]
+fn channel_person_overrides_follow_everyone_and_role_overrides() {
+    for permission in W::ALL {
+        let mut scope = channel(
+            workspace(
+                &[W::ViewChannel, *permission],
+                vec![role(1, &[]), role(2, &[])],
+            ),
+            rule(&[], &[*permission]),
+            vec![
+                role_rule(1, &[], &[*permission]),
+                role_rule(2, &[*permission], &[]),
+            ],
+        );
+        scope.person_override = rule(&[], &[*permission]);
+        assert_eq!(
+            authorize(
+                &plain(),
+                &Request::Channel {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            missing(*permission)
+        );
+        scope.person_override = rule(&[*permission], &[]);
+        assert_eq!(
+            authorize(
+                &plain(),
+                &Request::Channel {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            Allow
+        );
+        scope.person_override = rule(&[], &[W::ViewChannel]);
+        assert_eq!(
+            authorize(
+                &plain(),
+                &Request::Channel {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            missing(W::ViewChannel)
+        );
+        assert_eq!(
+            authorize(
+                &administrator(),
+                &Request::Channel {
+                    scope: &scope,
+                    permission: *permission
+                }
+            ),
+            Allow
+        );
     }
 }

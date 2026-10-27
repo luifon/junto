@@ -51,6 +51,7 @@ fn actor() -> impl Strategy<Value = Actor> {
         prop::collection::vec(server_permissions(), 0..4),
     )
         .prop_map(|(position, server_roles)| Actor {
+            server_override: Default::default(),
             position,
             server_roles,
         })
@@ -112,7 +113,9 @@ fn channel_scope() -> impl Strategy<Value = ChannelScope> {
                     }
                 }
                 ChannelScope {
+                    person_override: Default::default(),
                     workspace: WorkspaceScope {
+                        person_override: Default::default(),
                         membership,
                         everyone,
                         roles,
@@ -486,7 +489,9 @@ proptest! {
         taken in any::<Index>(),
     ) {
         let holding = |roles: Vec<HeldRole>| ChannelScope {
+            person_override: Default::default(),
             workspace: WorkspaceScope {
+                person_override: Default::default(),
                 membership: Membership::Member,
                 everyone: caller.workspace.everyone,
                 roles,
