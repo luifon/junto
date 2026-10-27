@@ -15126,6 +15126,13 @@
           "name": {
             "type": "string"
           },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverrideEntry"
+            },
+            "description": "The role overrides of the category, which its synced channels take. An override of a\nrole that is absent here is kept; an override with two empty sets is removed."
+          },
           "position": {
             "type": [
               "integer",
@@ -15432,6 +15439,13 @@
             ],
             "format": "int32",
             "description": "Absent: a new channel goes after the last one, an existing one keeps its position."
+          },
+          "synced": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "For a channel in a category. `true`: the channel takes the overrides of its category,\nand the entry states no overrides of its own. `false`: the channel has its own\noverrides. Absent: a new channel in a category is synced, and an existing channel\nkeeps its state until a stated override changes what it uses."
           },
           "user_limit": {
             "type": [
@@ -19762,7 +19776,7 @@
           },
           {
             "type": "object",
-            "description": "Two empty sets remove the override.",
+            "description": "Two empty sets remove the override. The first change of what a synced channel uses\nfirst copies the overrides of its category to the channel, which is no longer synced\nafterwards.",
             "required": [
               "channel",
               "role",
@@ -19792,6 +19806,64 @@
               },
               "role": {
                 "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Two empty sets remove the override. The synced channels of the category take it.",
+            "required": [
+              "category",
+              "role",
+              "change"
+            ],
+            "properties": {
+              "allow": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "category": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "change": {
+                "type": "string",
+                "enum": [
+                  "set_category_override"
+                ]
+              },
+              "deny": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "role": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`true`: the channel takes the rules of its category again, and its own rules, also\nthose of people, are removed. `false`: the channel keeps the rules of its category as\nits own and is no longer synced. The channel must have a category.",
+            "required": [
+              "channel",
+              "synced",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "set_channel_sync"
+                ]
+              },
+              "channel": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "synced": {
+                "type": "boolean"
               }
             }
           },
@@ -19908,7 +19980,7 @@
       },
       "StructureFile": {
         "type": "object",
-        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and overrides.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and the role overrides of categories and channels.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no account,\nno rule of a person, no message and no secret.",
         "required": [
           "format"
         ],
@@ -19920,7 +19992,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 2. This tool also reads format 1.",
+            "description": "The version of the file format: 4. This tool also reads the formats 1 to 3.",
             "minimum": 0
           },
           "server_roles": {

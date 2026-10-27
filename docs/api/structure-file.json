@@ -12,6 +12,13 @@
           "name": {
             "type": "string"
           },
+          "overrides": {
+            "description": "The role overrides of the category, which its synced channels take. An override of a\nrole that is absent here is kept; an override with two empty sets is removed.",
+            "items": {
+              "$ref": "#/components/schemas/OverrideEntry"
+            },
+            "type": "array"
+          },
           "position": {
             "description": "Absent: a new category goes after the last one, an existing one keeps its position.",
             "format": "int32",
@@ -76,6 +83,13 @@
             "format": "int32",
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "synced": {
+            "description": "For a channel in a category. `true`: the channel takes the overrides of its category,\nand the entry states no overrides of its own. `false`: the channel has its own\noverrides. Absent: a new channel in a category is synced, and an existing channel\nkeeps its state until a stated override changes what it uses.",
+            "type": [
+              "boolean",
               "null"
             ]
           },
@@ -255,14 +269,14 @@
       },
       "StructureFile": {
         "additionalProperties": false,
-        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and overrides.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and the role overrides of categories and channels.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no account,\nno rule of a person, no message and no secret.",
         "properties": {
           "delete": {
             "$ref": "#/components/schemas/Deletions",
             "description": "The entries that applying the file deletes. Nothing else is deleted."
           },
           "format": {
-            "description": "The version of the file format: 2. This tool also reads format 1.",
+            "description": "The version of the file format: 4. This tool also reads the formats 1 to 3.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -367,6 +381,6 @@
       }
     }
   },
-  "description": "The structure of a Junto server as the setup tool writes it: format 2. The tool reads the formats 1 to 2. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
+  "description": "The structure of a Junto server as the setup tool writes it: format 4. The tool reads the formats 1 to 4. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
   "title": "Junto structure file"
 }
