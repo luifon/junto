@@ -167,6 +167,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LP
                 LRESULT(0)
             }
             STALL => {
+                say("stalling".to_owned());
                 std::thread::sleep(std::time::Duration::from_secs(w.0 as u64));
                 LRESULT(0)
             }

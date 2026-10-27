@@ -385,6 +385,34 @@ fn the_preview_of_a_window_whose_application_does_not_answer_fails_without_waiti
 }
 
 #[test]
+fn a_preview_does_not_wait_for_a_window_that_has_just_stopped_answering() {
+    let mut fixture = Fixture::open();
+    fixture.send("stall 10");
+    assert_eq!(fixture.line(), "stalling");
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let started = Instant::now();
+    let result = runtime.block_on(capture.preview(
+        PictureSource::Window(fixture.window),
+        junto_media::share::PREVIEW_BOUND,
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "native capture took {:?}",
+        started.elapsed()
+    );
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        runtime
+            .block_on(capture.preview(
+                PictureSource::Display(fixture.screen),
+                junto_media::share::PREVIEW_BOUND,
+            ))
+            .is_ok()
+    );
+}
+
+#[test]
 fn a_window_share_shows_its_colours_follows_a_change_and_ends_when_the_window_closes() {
     let mut fixture = Fixture::open();
     let capture = junto_media::share::system();
