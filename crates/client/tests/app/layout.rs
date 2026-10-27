@@ -211,8 +211,8 @@ fn a_window_that_is_not_active_shows_a_late_notice_at_once(cx: &mut TestAppConte
 /// Changes of the state derive the view of the window when the window draws, not at each
 /// change: each answer of a profile derived the whole view, which with 601 members and 2,001
 /// accounts held the window thread for seconds (review M8). The test platform draws a window
-/// after each round of work, so the test turns drawing off: 50 changes then derive nothing
-/// until the next drawing.
+/// after each round of work, so the test turns drawing off: of 50 changes, only the first
+/// after the last drawing derives the view, and the others wait for the next drawing.
 #[gpui::test]
 fn changes_of_the_state_derive_the_view_when_the_window_draws(cx: &mut TestAppContext) {
     let world = World::new();
