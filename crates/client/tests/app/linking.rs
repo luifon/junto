@@ -533,6 +533,10 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
 
     let new_scroll = new.in_shell(|shell, _, _| shell.linking_scroll_handle());
     let check_bounds = new.reveal(&new_scroll, "link-check-all");
+    // The person rests the pointer on the check of the active window of the new device: a
+    // change waits for the pointer in the active window only (ADR 0730).
+    new.cx.update(|window, _| window.activate_window());
+    new.move_pointer(check_bounds.center());
     let first_scroll = first.in_shell(|shell, _, _| shell.linking_scroll_handle());
     first.reveal(&first_scroll, "link-all-approve");
     first.click("link-all-approve");

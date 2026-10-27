@@ -90,17 +90,11 @@ impl Shell {
                 }
             }
             KeyAction::ShowCall => self.state.update(cx, |state, cx| state.show_call(cx)),
-            // The panel of the call window, the panel over the content of a narrow main
-            // window, or the panel beside the stage of a wide one.
+            // The panel of the call of this window, as the button of its header closes and
+            // opens it.
             KeyAction::ToggleCallPanel => {
                 if view.call.is_some() {
-                    let theme = crate::theme::theme(cx);
-                    if self.detached || super::logical_width(window) < theme.metrics.narrow_below {
-                        self.call_panel_open = !self.call_panel_open;
-                    } else {
-                        self.call_panel_hidden = !self.call_panel_hidden;
-                    }
-                    cx.notify();
+                    self.toggle_call_panel(cx);
                 }
             }
             KeyAction::Back => {

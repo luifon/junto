@@ -3,27 +3,32 @@
 //! side panel with the members of the workspace.
 
 use gpui::{
-    AnyElement, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
-    SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
+    AnyElement, App, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Role, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
-use junto_client_core::protocol::ids::AccountId;
-use junto_client_core::protocol::structure::ChannelKind;
+use std::rc::Rc;
 
-use super::search::SEARCH_FIELD_WIDTH;
+use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
+
+use super::edges::Side;
+
+use super::search::search_width;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use junto_media::calls::Phase;
 
 use crate::state::view::{
-    CallPanel, ChannelRow, Members, PanelPlace, RecordingControl, RecordingShown, Relation,
-    SelectedServer, ServerLists, ServerStatus, ShellView, VoiceState,
+    CallPanel, ChannelRow, ConversationRefusal, MemberRow, Members, PanelPlace, RecordingControl,
+    RecordingShown, Relation, SelectedServer, ServerLists, ServerStatus, ShellView, VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Flag, FlagKind, Notice, ScrollArea, SectionLabel, SideHeader, StatePanel,
-    StyleExt, float_shadow, icon, tooltip,
+    Button, ButtonKind, Flag, FlagKind, Notice, SectionLabel, SideHeader, StatePanel, StyleExt,
+    float_shadow, icon, tooltip,
 };
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
@@ -66,22 +71,33 @@ impl Shell {
                     && shown.pins.is_none()
                     && let Some(transcript) = &shown.transcript
                 {
-                    return Some(this.render_transcript_panel(server_id, transcript, window, cx));
+                    return Some((
+                        Panel::Transcript,
+                        this.render_transcript_panel(server_id, transcript, window, cx),
+                    ));
                 }
                 let thread = shown.and_then(|shown| shown.thread.as_ref());
                 let pins = shown.and_then(|shown| shown.pins.as_ref());
                 let search = shown.and_then(|shown| shown.search.as_ref());
                 match (thread, pins, &lists.notices, search) {
-                    (Some(thread), ..) => Some(this.render_thread_panel(thread, window, cx)),
-                    (None, Some(pins), ..) => {
-                        Some(this.render_pins_panel(pins, lists.feed.as_ref(), window, cx))
+                    (Some(thread), ..) => {
+                        Some((Panel::Thread, this.render_thread_panel(thread, window, cx)))
                     }
-                    (None, None, Some(notices), _) => server_id
-                        .map(|server_id| this.render_notices_panel(server_id, notices, false, cx)),
+                    (None, Some(pins), ..) => Some((
+                        Panel::Pins,
+                        this.render_pins_panel(pins, lists.feed.as_ref(), window, cx),
+                    )),
+                    (None, None, Some(notices), _) => server_id.map(|server_id| {
+                        (
+                            Panel::Notices,
+                            this.render_notices_panel(server_id, notices, false, cx),
+                        )
+                    }),
                     (None, None, None, Some(search)) => {
-                        Some(this.render_search_panel(search, window, cx))
+                        Some((Panel::Search, this.render_search_panel(search, window, cx)))
                     }
-                    _ => members_open.then(|| this.render_members(lists, &theme, cx)),
+                    _ => members_open
+                        .then(|| (Panel::Members, this.render_members(lists, &theme, cx))),
                 }
             };
 
@@ -92,7 +108,8 @@ impl Shell {
                 .after_actions(notices.take().unwrap_or_default())
                 .into_any_element()
         };
-        let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, lists) {
+        let (body, side): (AnyElement, Option<(Panel, AnyElement)>) = match (&view.selected, lists)
+        {
             (None, _) => (
                 stated(
                     StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER).selector("no-server"),
@@ -101,7 +118,11 @@ impl Shell {
                 None,
             ),
             (Some(server), Some(lists)) => match (call, channel, lists.conversation.as_ref()) {
-                (Some(panel), _, _) => self.render_call(view, panel, narrow, window, cx),
+                (Some(panel), _, _) => {
+                    // A panel that does not fit beside the stage lies over it (review M2).
+                    let over = narrow || !self.side_fits(Panel::Call, cx);
+                    self.render_call(view, panel, over, window, cx)
+                }
                 (None, Some(_), _) => (
                     self.render_feed(lists, false, notices.take().unwrap_or_default(), window, cx),
                     side_of(self, lists, window, cx),
@@ -173,7 +194,8 @@ impl Shell {
                     .child(body)
                     .child(
                         crate::ui::notice_slot("call-notice-area")
-                            .h(u(128.0))
+                            .most(128.0)
+                            .moves_over(&self.stage_controls)
                             .children(
                                 call.and_then(|panel| panel.room())
                                     .and_then(|room| room.meeting.as_ref())
@@ -191,8 +213,24 @@ impl Shell {
                     .children(notices.take().into_iter().flatten())
                     .child(body)
             })
-            .when_some(side, |split, side| {
-                if narrow {
+            .when_some(side, |split, (panel, side)| {
+                let design = if matches!(panel, Panel::Call | Panel::CallWindow) {
+                    theme.metrics.call_panel_width
+                } else {
+                    theme.metrics.side_panel_width
+                };
+                // A panel that does not fit beside the main area lies over it, as in a narrow
+                // window (review M2). A call panel over the content also holds its close
+                // button.
+                let over = narrow || !self.side_fits(panel, cx);
+                let close = if over && panel == Panel::Call {
+                    super::call::PANEL_CLOSE_WIDTH
+                } else {
+                    0.0
+                };
+                let width = self.panel_width(panel, design, cx) + close;
+                let edge = self.panel_edge(panel, Side::Left, width, design, window, cx);
+                if over {
                     // The panel lies over the content, with a flat cover behind it.
                     split
                         .child(Self::side_cover(&theme, cx, move |this, cx| {
@@ -214,8 +252,9 @@ impl Shell {
                             }
                         }))
                         .child(Self::side_overlay(&theme, side))
+                        .child(edge)
                 } else {
-                    split.child(side)
+                    split.child(side).child(edge)
                 }
             });
 
@@ -227,7 +266,14 @@ impl Shell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.render_main_header(view, channel, call, narrow, &theme, cx))
+            .child(self.render_main_header(
+                view,
+                channel,
+                call,
+                narrow || (call.is_some() && !self.side_fits(Panel::Call, cx)),
+                &theme,
+                cx,
+            ))
             .child(split)
     }
 
@@ -242,6 +288,9 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let members_open = self.members_open && call.is_none();
+        // The buttons show their icons alone where their labels do not fit (ADR 0730).
+        let fit = self.header_fit.clone();
+        let compact = fit.compact();
         let conversation = view.lists().and_then(|lists| lists.conversation.as_ref());
         let title: Option<(Icon, SharedString)> = match (conversation, channel) {
             (Some(conversation), _) => Some((
@@ -306,9 +355,9 @@ impl Shell {
                     // The recording of the call, and then the state of the room.
                     PanelPlace::Channel(channel) => {
                         let recording = &channel.recording;
-                        after.extend(self.render_recording_control(recording, theme, false, cx));
+                        after.extend(self.render_recording_control(recording, theme, compact, cx));
                         after.push(div().flex_1().into_any_element());
-                        after.extend(self.render_room_controls(&channel.room, theme, cx));
+                        after.extend(self.render_room_controls(&channel.room, theme, compact, cx));
                     }
                     // Whether the other person has taken a place in the call.
                     PanelPlace::Direct(direct) => {
@@ -340,7 +389,9 @@ impl Shell {
                     }
                 }
             }
-            if narrow {
+            // The buttons that open the panel of the call: over the stage of a narrow
+            // window, and in a wide window while the person closed it.
+            if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
         } else {
@@ -358,18 +409,31 @@ impl Shell {
             }
             after.push(div().flex_1().into_any_element());
         }
+        // The header of a call in a narrow window holds the controls of the room and the
+        // buttons of the panel: its parts stand closer.
+        let gap = u(if narrow && call.is_some() { 6.0 } else { 10.0 });
+        let right = u(if narrow && call.is_some() { 8.0 } else { 14.0 });
         super::title_bar::header_zone(div())
             .id("main-header")
             .relative()
             .flex()
             .flex_none()
             .items_center()
-            // The header of a call in a narrow window holds the controls of the room and
-            // the buttons of the panel: its parts stand closer.
-            .gap(u(if narrow && call.is_some() { 6.0 } else { 10.0 }))
-            .h(u(theme.metrics.header_height))
+            .gap(gap)
+            .map(|header| {
+                if compact {
+                    // The short form wraps where even it does not fit.
+                    header
+                        .flex_wrap()
+                        .min_h(u(theme.metrics.header_height))
+                        .py(u(7.0))
+                } else {
+                    header.h(u(theme.metrics.header_height))
+                }
+            })
             .pl(u(16.0))
-            .pr(u(if narrow && call.is_some() { 8.0 } else { 14.0 }))
+            .pr(right)
+            .child(fit.row(right, gap))
             .bg(Hsla::from(colors.travertine))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
@@ -387,10 +451,16 @@ impl Shell {
                         .aria_label(name.clone())
                         .debug_selector(|| "channel-title".to_owned())
                         .flex()
-                        .flex_none()
                         .items_center()
                         .gap(u(7.0))
                         .max_w(u(420.0))
+                        .map(|title| {
+                            if compact {
+                                title.flex_shrink_1().min_w_0()
+                            } else {
+                                title.flex_none()
+                            }
+                        })
                         .typeface(theme.types.title, theme)
                         .ink(colors.ink)
                         .child(icon(shown, 17.0, colors.terracotta_deep))
@@ -402,7 +472,8 @@ impl Shell {
                 header.child(
                     Button::new("mark-as-read")
                         .icon(Icon::CheckDouble)
-                        .label(text::MARK_AS_READ)
+                        .when(!compact, |button| button.label(text::MARK_AS_READ))
+                        .accessible_label(text::MARK_AS_READ)
                         .tooltip(text::MARK_AS_READ_HELP)
                         .selector("mark-as-read")
                         .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
@@ -416,7 +487,7 @@ impl Shell {
                     header.child(
                         Button::new("pins")
                             .icon(Icon::Pin)
-                            .label(text::PINS)
+                            .when(!compact, |button| button.label(text::PINS))
                             .tooltip(if pins_open {
                                 text::CLOSE_PINS
                             } else {
@@ -468,7 +539,7 @@ impl Shell {
                 header.child(
                     Button::new("members")
                         .icon(Icon::People)
-                        .label(text::MEMBERS)
+                        .when(!compact, |button| button.label(text::MEMBERS))
                         .tooltip(if members_open {
                             text::CLOSE_MEMBERS
                         } else {
@@ -500,14 +571,15 @@ impl Shell {
             // (ADR 0730).
             .when(view.lists().is_some() && call.is_none(), |header| {
                 header.child(match view.workspace() {
-                    Some(_) => self.render_search_field(cx),
+                    Some(_) => self.render_search_field(compact, cx),
                     None => div()
                         .flex_none()
-                        .w(u(SEARCH_FIELD_WIDTH))
+                        .w(u(search_width(compact)))
                         .debug_selector(|| "search-place".to_owned())
                         .into_any_element(),
                 })
             })
+            .when(!compact, |header| header.child(fit.end()))
     }
 
     /// The marker of a channel whose messages are permanent, with its explanation on
@@ -1277,7 +1349,6 @@ impl Shell {
     ) -> AnyElement {
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
-        let faces = self.shown_faces();
         let header = SideHeader::new(text::MEMBERS)
             .title_bar()
             .icon(Icon::People)
@@ -1312,6 +1383,7 @@ impl Shell {
                     .debug_selector(|| "no-workspace-members".to_owned())
                     .into_any_element(),
                 theme,
+                cx,
             );
         };
         let body: AnyElement = match members {
@@ -1335,130 +1407,215 @@ impl Shell {
                     ),
                 )
                 .into_any_element(),
-            Members::Loaded(members) => {
-                let server_id = self
-                    .view
-                    .as_ref()
-                    .and_then(|view| view.selected.as_ref())
-                    .map(|server| server.id);
-                let refused = lists.conversation_refused.clone();
-                let asked = lists.conversation_asked;
-                let rows = members.iter().enumerate().map(|(index, member)| {
-                    let detail: SharedString = member.roles.join(" · ").into();
-                    let account_id = member.account_id;
-                    let write = (!member.is_self).then(|| {
-                        div()
-                            .flex_none()
-                            .debug_selector(move || format!("message-member:{account_id}"))
-                            .child(
-                                Button::new(("message-member", index))
-                                    .kind(ButtonKind::Ghost)
-                                    .icon(Icon::Chat)
-                                    .tooltip(text::message_person(&member.name))
-                                    .accessible_label(text::message_person(&member.name))
-                                    .disabled(asked == Some(account_id))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let Some(server_id) = server_id else {
-                                            return;
-                                        };
-                                        this.state.update(cx, |state, cx| {
-                                            state.open_conversation(server_id, account_id, cx);
-                                        });
-                                    })),
-                            )
-                    });
-                    let refusal = refused
-                        .as_ref()
-                        .filter(|refusal| refusal.account_id == account_id)
-                        .map(|refusal| {
-                            div()
-                                .debug_selector(|| "conversation-refused".to_owned())
-                                .typeface(theme.types.small, theme)
-                                .line_height(u(17.0))
-                                .ink(colors.cinnabar_ink)
-                                .child(SharedString::from(refusal.reason.clone()))
-                        });
-                    div()
-                        .id(("member", index))
-                        .role(Role::ListItem)
-                        .aria_label(member.name.clone())
-                        .debug_selector({
-                            let account_id = member.account_id;
-                            move || format!("member-row:{account_id}")
-                        })
-                        .flex()
-                        .flex_none()
-                        .gap(u(10.0))
-                        .pt(u(7.0))
-                        .pb(u(8.0))
-                        .pl(u(14.0))
-                        .pr(u(12.0))
-                        .when(index > 0, |row| {
-                            row.border_t_1().border_color(Hsla::from(colors.rule_soft))
-                        })
-                        .child(div().mt(u(2.0)).child(super::people::avatar_of(
-                            &faces,
-                            member.account_id,
-                            &member.name,
-                            member.pictured,
-                            30.0,
-                        )))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(u(7.0))
-                                        .line_height(u(19.0))
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .truncate()
-                                                .typeface(theme.types.name, theme)
-                                                .line_height(u(19.0))
-                                                .ink(colors.ink)
-                                                .child(member.name.clone()),
-                                        )
-                                        .when(member.is_self, |line| {
-                                            line.child(
-                                                div()
-                                                    .flex_none()
-                                                    .typeface(theme.types.small, theme)
-                                                    .ink(colors.ink_2)
-                                                    .child(text::YOU),
-                                            )
-                                        }),
-                                )
-                                .when(!detail.is_empty(), |column| {
-                                    column.child(
-                                        div()
-                                            .typeface(theme.types.small, theme)
-                                            .line_height(u(18.0))
-                                            .ink(colors.ink_2)
-                                            .truncate()
-                                            .child(detail),
-                                    )
-                                })
-                                .children(refusal),
-                        )
-                        .children(write)
-                });
-                ScrollArea::new("member-list", &self.members_scroll, text::MEMBERS)
-                    .child(SectionLabel::new(text::MEMBERS).count(members.len()))
-                    .children(rows)
-                    .child(div().flex_none().h(u(4.0)))
-                    .into_any_element()
-            }
+            Members::Loaded(members) => self.member_list(members, lists, cx),
         };
-        self.side_panel(header, body, theme)
+        self.side_panel(header, body, theme, cx)
+    }
+
+    /// The member list of the side panel. It lays out only the rows in view, so a
+    /// workspace of hundreds of members costs no more per frame than a few (open item CD8:
+    /// 601 members took 181 ms of each frame).
+    fn member_list(
+        &mut self,
+        members: &[MemberRow],
+        lists: &ServerLists,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let rows: Rc<Vec<MemberRow>> = Rc::new(members.to_vec());
+        if self.member_rows.as_ref() != Some(&rows) {
+            // The label of the section, each member, and the space at the end.
+            super::changed_rows(&self.members_list, rows.len() + 2);
+            self.member_rows = Some(rows.clone());
+        }
+        let server_id = self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id);
+        let refused = lists.conversation_refused.clone();
+        let asked = lists.conversation_asked;
+        let count = rows.len();
+        let render = cx.processor(move |this: &mut Self, index: usize, _window, cx| {
+            if index == 0 {
+                return div()
+                    .w_full()
+                    .child(SectionLabel::new(text::MEMBERS).count(count))
+                    .into_any_element();
+            }
+            match rows.get(index - 1) {
+                Some(member) => div()
+                    .w_full()
+                    .child(this.member_row(
+                        index - 1,
+                        member,
+                        server_id,
+                        refused.as_ref(),
+                        asked,
+                        cx,
+                    ))
+                    .into_any_element(),
+                None => div().w_full().h(u(4.0)).into_any_element(),
+            }
+        });
+        let state = self.members_list.clone();
+        div()
+            .id("member-list")
+            .role(Role::List)
+            .aria_label(text::MEMBERS)
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(gpui::list(state.clone(), render).size_full())
+            .child(crate::ui::area("member-list"))
+            .child(
+                div().absolute().inset_0().child(
+                    gpui_base::Scrollbar::vertical(&state)
+                        .viewport_from_layout()
+                        .mode(gpui_base::ScrollbarMode::Always)
+                        .styles(move |styles| {
+                            let thumb = Hsla::from(colors.rule);
+                            let held = Hsla::from(colors.ink_3);
+                            styles
+                                .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
+                                .track_hover(|track| track.bg(gpui::transparent_black()))
+                                .track_active(|track| track.bg(gpui::transparent_black()))
+                                .thumb(|bar| {
+                                    bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0))
+                                })
+                                .thumb_hover(|bar| bar.bg(held))
+                                .thumb_active(|bar| bar.bg(held))
+                        }),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// One row of the member list.
+    fn member_row(
+        &mut self,
+        index: usize,
+        member: &MemberRow,
+        server_id: Option<ServerId>,
+        refused: Option<&ConversationRefusal>,
+        asked: Option<AccountId>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let faces = self.shown_faces();
+        let detail: SharedString = member.roles.join(" · ").into();
+        let account_id = member.account_id;
+        let write = (!member.is_self).then(|| {
+            div()
+                .flex_none()
+                .debug_selector(move || format!("message-member:{account_id}"))
+                .child(
+                    Button::new(("message-member", index))
+                        .kind(ButtonKind::Ghost)
+                        .icon(Icon::Chat)
+                        .tooltip(text::message_person(&member.name))
+                        .accessible_label(text::message_person(&member.name))
+                        .disabled(asked == Some(account_id))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let Some(server_id) = server_id else {
+                                return;
+                            };
+                            this.state.update(cx, |state, cx| {
+                                state.open_conversation(server_id, account_id, cx);
+                            });
+                        })),
+                )
+        });
+        let refusal = refused
+            .filter(|refusal| refusal.account_id == account_id)
+            .map(|refusal| {
+                div()
+                    .debug_selector(|| "conversation-refused".to_owned())
+                    .typeface(theme.types.small, &theme)
+                    .line_height(u(17.0))
+                    .ink(colors.cinnabar_ink)
+                    .child(SharedString::from(refusal.reason.clone()))
+            });
+        div()
+            .id(("member", index))
+            .role(Role::ListItem)
+            .aria_label(member.name.clone())
+            .debug_selector(move || format!("member-row:{account_id}"))
+            .flex()
+            .flex_none()
+            .gap(u(10.0))
+            .pt(u(7.0))
+            .pb(u(8.0))
+            .pl(u(14.0))
+            .pr(u(12.0))
+            .when(index > 0, |row| {
+                row.border_t_1().border_color(Hsla::from(colors.rule_soft))
+            })
+            .child(div().mt(u(2.0)).child(super::people::avatar_of(
+                &faces,
+                member.account_id,
+                &member.name,
+                member.pictured,
+                30.0,
+            )))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(7.0))
+                            .line_height(u(19.0))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .typeface(theme.types.name, &theme)
+                                    .line_height(u(19.0))
+                                    .ink(colors.ink)
+                                    .child(member.name.clone()),
+                            )
+                            .when(member.is_self, |line| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .typeface(theme.types.small, &theme)
+                                        .ink(colors.ink_2)
+                                        .child(text::YOU),
+                                )
+                            }),
+                    )
+                    .when(!detail.is_empty(), |column| {
+                        column.child(
+                            div()
+                                .typeface(theme.types.small, &theme)
+                                .line_height(u(18.0))
+                                .ink(colors.ink_2)
+                                .truncate()
+                                .child(detail),
+                        )
+                    })
+                    .children(refusal),
+            )
+            .children(write)
+            .into_any_element()
     }
 
     /// The side panel of the members with its header and its body.
-    fn side_panel(&self, header: SideHeader, body: AnyElement, theme: &Theme) -> AnyElement {
+    fn side_panel(
+        &self,
+        header: SideHeader,
+        body: AnyElement,
+        theme: &Theme,
+        cx: &App,
+    ) -> AnyElement {
         let colors = theme.colors;
+        let width = self.panel_width(Panel::Members, theme.metrics.side_panel_width, cx);
         div()
             .id("side-panel")
             .role(Role::Complementary)
@@ -1467,7 +1624,7 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.side_panel_width))
+            .w(u(width))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -1488,7 +1645,7 @@ fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
 /// tooltip and accessible label. While the recording is stopping, the disabled action states it.
 fn stop_action(stopping: bool) -> (&'static str, &'static str) {
     if stopping {
-        (text::RECORDING_STOPS, text::RECORDING_STOPS)
+        (text::STOPPING, text::RECORDING_STOPS)
     } else {
         (text::STOP, text::STOP_RECORDING)
     }
@@ -1755,9 +1912,6 @@ mod tests {
     #[test]
     fn the_stop_action_of_a_stopping_recording_states_that_it_stops() {
         assert_eq!(stop_action(false), (text::STOP, text::STOP_RECORDING));
-        assert_eq!(
-            stop_action(true),
-            (text::RECORDING_STOPS, text::RECORDING_STOPS)
-        );
+        assert_eq!(stop_action(true), (text::STOPPING, text::RECORDING_STOPS));
     }
 }

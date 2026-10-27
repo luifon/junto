@@ -102,6 +102,11 @@ pub struct Reading {
     pub open: bool,
     pub older: bool,
     pub newer: bool,
+    /// The reads of the page before the loaded messages that failed and that the client
+    /// does not try again. A reader asks for that page again when the count changes.
+    pub older_failed: u32,
+    /// The same for the page after the loaded messages.
+    pub newer_failed: u32,
 }
 
 /// Which messages of a place a read asks for.

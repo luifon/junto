@@ -424,8 +424,15 @@ impl RenderOnce for Tab {
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let focus = super::reveal::handle(&self.id, window, cx);
-        div()
-            .id(self.id)
+        #[cfg(feature = "test-support")]
+        let placed = super::placed::placed(match self.selector {
+            Some(selector) => selector.into(),
+            None => format!("{}", self.id).into(),
+        });
+        let tab = div();
+        #[cfg(feature = "test-support")]
+        let tab = tab.child(placed);
+        tab.id(self.id)
             .role(Role::Tab)
             .aria_label(match &self.count {
                 Some(count) => SharedString::from(format!("{}, {count}", self.label)),

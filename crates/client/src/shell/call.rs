@@ -5,13 +5,16 @@
 //! Every function here draws from the derived view and reads no window: the call view can
 //! be drawn in a window of its own without a change (ADR 0507).
 
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement,
     Styled, StyledText, Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::settings::Panel;
 use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
 use junto_media::permission::MicrophoneAccess;
@@ -35,7 +38,7 @@ use crate::ui::{
 
 /// The width that a panel over the content adds for its close button, in pixels of the
 /// design.
-const PANEL_CLOSE_WIDTH: f32 = 40.0;
+pub(crate) const PANEL_CLOSE_WIDTH: f32 = 40.0;
 
 /// The pane of the panel of a call that is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,7 +66,11 @@ pub(crate) struct VolumeControl {
 }
 
 /// A person outside the call in the member list of a call, with the line of the state.
-struct OutsideRow {
+/// The people that the member list of a call lists: in the call and outside it.
+pub(crate) type CallMemberRows = (Rc<Vec<Occupant>>, Rc<Vec<OutsideRow>>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutsideRow {
     account_id: AccountId,
     name: SharedString,
     state: Option<(Icon, SharedString)>,
@@ -352,12 +359,20 @@ impl Shell {
             Button::new(selector)
                 .icon(shown)
                 .tooltip(label)
+                .accessible_label(match tab {
+                    CallTab::Chat if waits > 0 => {
+                        SharedString::from(format!("{label}, {}", text::unread_messages(waits)))
+                    }
+                    CallTab::Members if waits > 0 => {
+                        SharedString::from(format!("{label}, {}", text::members_waiting(waits)))
+                    }
+                    _ => SharedString::from(label),
+                })
                 .count((waits > 0).then(|| text::unread_count(waits)))
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.show_call_tab(tab, cx);
-                    this.call_panel_open = true;
-                    this.call_panel_hidden = false;
+                    this.open_call_panel(cx);
                 }))
                 .into_any_element()
         })
@@ -387,8 +402,7 @@ impl Shell {
             .selector("open-call-notices")
             .on_click(cx.listener(|this, _, _, cx| {
                 this.open_call_notices(cx);
-                this.call_panel_open = true;
-                this.call_panel_hidden = false;
+                this.open_call_panel(cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -561,14 +575,15 @@ impl Shell {
                     crate::ui::tile::TILE_SIZE.0 * 2.0 + crate::ui::tile::TILE_GAP,
                     crate::ui::tile::TILE_SIZE.1,
                 ));
-                // The focused tile fills the stage above one row of the size of the strip.
+                // The focused tile fills the stage above the rows of the strip: the strip
+                // wraps when its tiles do not fit across the stage.
                 let others = shown.len().saturating_sub(usize::from(focus.is_some()));
                 let (columns, size) = match focus {
                     Some(_) if others > 0 => crate::ui::tile::grid(
                         1,
                         (
                             area.0,
-                            area.1 - crate::ui::tile::STRIP_TILE_SIZE.1 - crate::ui::tile::TILE_GAP,
+                            area.1 - crate::ui::tile::strip_height(others, area.0),
                         ),
                     ),
                     Some(_) => crate::ui::tile::grid(1, area),
@@ -675,6 +690,7 @@ impl Shell {
                                                 .role(Role::List)
                                                 .aria_label(text::IN_THE_CALL)
                                                 .debug_selector(|| "call-people".to_owned())
+                                                .relative()
                                                 .flex()
                                                 .flex_wrap()
                                                 .justify_center()
@@ -687,7 +703,8 @@ impl Shell {
                                                     large
                                                         .into_iter()
                                                         .map(|(index, p)| tile(index, p)),
-                                                ),
+                                                )
+                                                .child(self.stage_controls.mark()),
                                         )
                                         .when(!strip.is_empty(), |area| {
                                             area.child(
@@ -695,6 +712,7 @@ impl Shell {
                                                     .debug_selector(|| {
                                                         "call-focus-strip".to_owned()
                                                     })
+                                                    .relative()
                                                     .flex()
                                                     .flex_wrap()
                                                     .justify_center()
@@ -706,7 +724,8 @@ impl Shell {
                                                         strip
                                                             .into_iter()
                                                             .map(|(index, p)| tile(index, p)),
-                                                    ),
+                                                    )
+                                                    .child(self.stage_controls.mark()),
                                             )
                                         }),
                                 ),
@@ -842,21 +861,18 @@ impl Shell {
                         cx,
                     )),
             )
-            .when(narrow, |tabs| {
-                tabs.child(
-                    div().flex().flex_none().items_center().child(
-                        Button::new("close-call-panel")
-                            .kind(ButtonKind::Ghost)
-                            .icon(Icon::X)
-                            .tooltip(text::CLOSE_PANEL)
-                            .selector("close-call-panel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.call_panel_open = false;
-                                cx.notify();
-                            })),
-                    ),
-                )
-            });
+            // The panel closes in every window, as the server book does; the stage then
+            // takes its width (round 2 item 16).
+            .child(
+                div().flex().flex_none().items_center().child(
+                    Button::new("close-call-panel")
+                        .kind(ButtonKind::Ghost)
+                        .icon(if narrow { Icon::X } else { Icon::CollapseRight })
+                        .tooltip(text::CLOSE_PANEL)
+                        .selector("close-call-panel")
+                        .on_click(cx.listener(|this, _, _, cx| this.close_call_panel(cx))),
+                ),
+            );
         let pane = match (&notices, self.call_tab) {
             (Some((shown, server_id)), _) => self.render_notices_panel(*server_id, shown, true, cx),
             (None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
@@ -873,7 +889,7 @@ impl Shell {
             .flex_none()
             // A panel over the content also holds its close button beside the tabs.
             .w(u(
-                theme.metrics.call_panel_width + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }
+                self.call_panel_width(cx) + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }
             ))
             .h_full()
             .bg(Hsla::from(colors.plaster))
@@ -906,7 +922,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .flex_none()
-                .w(u(theme.metrics.call_panel_width))
+                .w(u(self.call_panel_width(cx)))
                 .h_full()
                 .bg(Hsla::from(colors.plaster))
                 .border_l_1()
@@ -975,11 +991,109 @@ impl Shell {
         view: &ShellView,
         panel: &CallPanel,
         theme: &Theme,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
         let server_id = view.selected.as_ref().map(|server| server.id);
+        let people: Rc<Vec<Occupant>> = Rc::new(panel.people.clone());
+        // Outside the call: the members of the workspace, or the other person of a
+        // direct-message call while it rings.
+        let outside: Rc<Vec<OutsideRow>> = Rc::new(match &panel.place {
+            PanelPlace::Channel(channel) => channel
+                .outside
+                .iter()
+                .map(|member| OutsideRow {
+                    account_id: member.account_id,
+                    name: member.name.clone().into(),
+                    state: member
+                        .place
+                        .as_ref()
+                        .map(|place| (Icon::Speaker, text::in_channel(place).into())),
+                })
+                .collect(),
+            PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
+                account_id: direct.other,
+                name: panel.place_name().to_owned().into(),
+                state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
+            }],
+            PanelPlace::Direct(_) => Vec::new(),
+        });
+        // The list lays out only the rows in view: a call in a workspace of hundreds of
+        // members lists all of them outside the call (open item CD8).
+        let shape = (people.clone(), outside.clone());
+        if self.call_member_rows.as_ref() != Some(&shape) {
+            let count = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
+            super::changed_rows(&self.call_members_list, count);
+            self.call_member_rows = Some(shape);
+        }
+        let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
+            div()
+                .w_full()
+                .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
+                .into_any_element()
+        });
+        let state = self.call_members_list.clone();
+        let list = div()
+            .id("call-members")
+            .debug_selector(|| "call-members".to_owned())
+            .role(Role::List)
+            .aria_label(text::MEMBERS)
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(gpui::list(state.clone(), render).size_full())
+            .child(crate::ui::area("call-members"))
+            .child(
+                div().absolute().inset_0().child(
+                    gpui_base::Scrollbar::vertical(&state)
+                        .viewport_from_layout()
+                        .mode(gpui_base::ScrollbarMode::Always)
+                        .styles(move |styles| {
+                            let thumb = Hsla::from(colors.rule);
+                            let held = Hsla::from(colors.ink_3);
+                            styles
+                                .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
+                                .track_hover(|track| track.bg(gpui::transparent_black()))
+                                .track_active(|track| track.bg(gpui::transparent_black()))
+                                .thumb(|bar| {
+                                    bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0))
+                                })
+                                .thumb_hover(|bar| bar.bg(held))
+                                .thumb_active(|bar| bar.bg(held))
+                        }),
+                ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(list)
+            .children(
+                panel
+                    .channel()
+                    .map(|channel| self.render_invite_area(channel, theme, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// One item of the member list of a call: the label of the people in the call, a
+    /// person in the call, the label of the people outside it, a person outside, or the
+    /// space at the end.
+    fn call_member_item(
+        &mut self,
+        index: usize,
+        people: &[Occupant],
+        outside: &[OutsideRow],
+        server_id: Option<ServerId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
         let faces = self.shown_faces();
         let state_line = |states: Vec<(Icon, SharedString)>| {
             let mut line = div()
@@ -987,7 +1101,7 @@ impl Shell {
                 .flex_wrap()
                 .items_center()
                 .gap(u(5.0))
-                .typeface(theme.types.small, theme)
+                .typeface(theme.types.small, &theme)
                 .line_height(u(18.0))
                 .ink(colors.ink_2);
             for (index, (shown, label)) in states.into_iter().enumerate() {
@@ -1037,7 +1151,7 @@ impl Shell {
                     div()
                         .min_w_0()
                         .truncate()
-                        .typeface(theme.types.name, theme)
+                        .typeface(theme.types.name, &theme)
                         .line_height(u(19.0))
                         .ink(colors.ink)
                         .child(name),
@@ -1047,7 +1161,7 @@ impl Shell {
                         div()
                             .id(format!("member-camera:{account}"))
                             .debug_selector(move || format!("member-camera:{account}"))
-                            .tooltip(tooltip(text::CAMERA))
+                            .tooltip(tooltip(text::CAMERA_ON))
                             .child(icon(Icon::Camera, 14.0, colors.ink_2)),
                     )
                 })
@@ -1055,15 +1169,19 @@ impl Shell {
                     line.child(
                         div()
                             .flex_none()
-                            .typeface(theme.types.small, theme)
+                            .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
                             .child(text::YOU),
                     )
                 })
         };
-        let people = panel.people.as_slice();
-        let mut inside: Vec<AnyElement> = Vec::new();
-        for (index, occupant) in people.iter().enumerate() {
+        if index == 0 {
+            return SectionLabel::new(text::IN_THE_CALL)
+                .count(people.len())
+                .into_any_element();
+        }
+        if let Some(occupant) = people.get(index - 1) {
+            let index = index - 1;
             let name = occupant_name(occupant);
             let (_, label) = tile_marks(occupant);
             let mark: AnyElement = match occupant.microphone {
@@ -1092,7 +1210,7 @@ impl Shell {
                             .items_center()
                             .gap(u(8.0))
                             .mt(u(3.0))
-                            .typeface(theme.types.small, theme)
+                            .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
                             .child(text::VOLUME)
                             .child(
@@ -1108,97 +1226,51 @@ impl Shell {
                 }
                 _ => None,
             };
-            inside.push(
-                row(index, occupant.account_id, label.into())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                name_line(
-                                    name,
-                                    occupant.is_self,
-                                    self.camera_request(occupant, cx)
-                                        .map(|_| occupant.account_id),
-                                )
+            let camera = self
+                .camera_request(occupant, cx)
+                .map(|_| occupant.account_id);
+            return row(index, occupant.account_id, label.into())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            name_line(name, occupant.is_self, camera)
                                 .child(div().flex_1())
                                 .child(div().flex().flex_none().items_center().child(mark)),
-                            )
-                            .child(state_line(member_states(occupant)))
-                            .children(volume),
-                    )
-                    .into_any_element(),
-            );
-        }
-        // Outside the call: the members of the workspace, or the other person of a
-        // direct-message call while it rings.
-        let outside: Vec<OutsideRow> = match &panel.place {
-            PanelPlace::Channel(channel) => channel
-                .outside
-                .iter()
-                .map(|member| OutsideRow {
-                    account_id: member.account_id,
-                    name: member.name.clone().into(),
-                    state: member
-                        .place
-                        .as_ref()
-                        .map(|place| (Icon::Speaker, text::in_channel(place).into())),
-                })
-                .collect(),
-            PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
-                account_id: direct.other,
-                name: panel.place_name().to_owned().into(),
-                state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
-            }],
-            PanelPlace::Direct(_) => Vec::new(),
-        };
-        let outside: Vec<AnyElement> = outside
-            .into_iter()
-            .enumerate()
-            .map(
-                |(
-                    index,
-                    OutsideRow {
-                        account_id,
-                        name,
-                        state,
-                    },
-                )| {
-                    row(people.len() + index, account_id, name.clone())
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(name_line(name, false, None))
-                                .when_some(state, |column, state| {
-                                    column.child(state_line(vec![state]))
-                                }),
                         )
-                        .into_any_element()
-                },
-            )
-            .collect();
-        let list = ScrollArea::new("call-members", &self.call_members_scroll, text::MEMBERS)
-            .selector("call-members")
-            .child(SectionLabel::new(text::IN_THE_CALL).count(people.len()))
-            .children(inside)
-            .when(!outside.is_empty(), |list| {
-                list.child(SectionLabel::new(text::NOT_IN_THE_CALL).count(outside.len()))
-                    .children(outside)
-            })
-            .child(div().flex_none().h(u(4.0)));
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(list)
-            .children(
-                panel
-                    .channel()
-                    .map(|channel| self.render_invite_area(channel, theme, cx)),
-            )
-            .into_any_element()
+                        .child(state_line(member_states(occupant)))
+                        .children(volume),
+                )
+                .into_any_element();
+        }
+        let rest = index - 1 - people.len();
+        if outside.is_empty() {
+            return div().h(u(4.0)).into_any_element();
+        }
+        if rest == 0 {
+            return SectionLabel::new(text::NOT_IN_THE_CALL)
+                .count(outside.len())
+                .into_any_element();
+        }
+        match outside.get(rest - 1) {
+            Some(OutsideRow {
+                account_id,
+                name,
+                state,
+            }) => row(people.len() + rest - 1, *account_id, name.clone())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(name_line(name.clone(), false, None))
+                        .when_some(state.clone(), |column, state| {
+                            column.child(state_line(vec![state]))
+                        }),
+                )
+                .into_any_element(),
+            None => div().h(u(4.0)).into_any_element(),
+        }
     }
 
     fn render_call_settings(
@@ -1534,7 +1606,6 @@ impl Shell {
         choices: &[DeviceChoice],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = theme(cx);
         let label = match kind {
             DeviceKind::Camera => text::CAMERA,
             DeviceKind::Input => text::INPUT_DEVICE,
@@ -1585,7 +1656,7 @@ impl Shell {
             .child(deferred(
                 anchored().snap_to_window().child(
                     Menu::new("device-menu", label, self.layer_focus())
-                        .width(theme.metrics.call_panel_width - 28.0)
+                        .width(self.call_panel_width(cx) - 28.0)
                         .selector("device-menu")
                         .on_close(Self::handler(cx, |this, window, cx| {
                             this.device_menu_closed_by_press = !window.last_input_was_keyboard();
@@ -1807,8 +1878,16 @@ impl Shell {
                         } else {
                             Icon::CameraOff
                         })
-                        .tooltip(text::CAMERA)
-                        .accessible_label(text::CAMERA)
+                        .tooltip(if camera_on {
+                            text::TURN_OFF_CAMERA
+                        } else {
+                            text::TURN_ON_CAMERA
+                        })
+                        .accessible_label(if camera_on {
+                            text::TURN_OFF_CAMERA
+                        } else {
+                            text::TURN_ON_CAMERA
+                        })
                         .selector("call-camera")
                         .disabled(!camera_usable)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1828,12 +1907,12 @@ impl Shell {
                         .icon(Icon::LayoutGrid)
                         .selector("camera-focus")
                         .tooltip(if self.camera_focus {
-                            "Show camera grid"
+                            text::SHOW_GRID
                         } else {
                             text::FOCUS_SPEAKER
                         })
                         .accessible_label(if self.camera_focus {
-                            "Show camera grid"
+                            text::SHOW_GRID
                         } else {
                             text::FOCUS_SPEAKER
                         })
@@ -1940,8 +2019,13 @@ impl Shell {
                                 Button::new("camera-settings")
                                     .label(text::SETTINGS)
                                     .selector("camera-settings")
+                                    // The camera is chosen in the Settings tab of the call.
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_settings(window, cx)
+                                        this.open(
+                                            super::Open::CallTab(CallTab::Settings),
+                                            window,
+                                            cx,
+                                        )
                                     })),
                             )
                             .child(
@@ -2059,8 +2143,9 @@ impl Shell {
         narrow: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (AnyElement, Option<AnyElement>) {
+    ) -> (AnyElement, Option<(Panel, AnyElement)>) {
         let theme = theme(cx);
+        self.stage_controls.clear();
         let stage = if self.state.read(cx).is_call_detached() && !self.detached {
             div()
                 .flex()
@@ -2076,13 +2161,72 @@ impl Shell {
         } else {
             self.render_call_stage(panel, &theme, cx)
         };
-        let side = (if narrow {
+        self.call_panel_overlay = narrow;
+        let side = self.call_panel_shown(narrow, cx).then(|| {
+            (
+                Panel::Call,
+                self.render_call_panel(view, panel, narrow, window, cx),
+            )
+        });
+        (stage, side)
+    }
+
+    /// The panel of the call is drawn: beside the stage unless the person closed it (kept in
+    /// the settings), or over the stage of a narrow window while it is open.
+    pub(crate) fn call_panel_shown(&self, overlay: bool, cx: &App) -> bool {
+        if overlay {
             self.call_panel_open
         } else {
-            !self.call_panel_hidden
-        })
-        .then(|| self.render_call_panel(view, panel, narrow, window, cx));
-        (stage, side)
+            !self.state.read(cx).call_panel_closed(self.detached)
+        }
+    }
+
+    /// Opens the panel of the call of this window.
+    pub(crate) fn open_call_panel(&mut self, cx: &mut Context<Self>) {
+        self.call_panel_open = true;
+        let detached = self.detached;
+        self.state.update(cx, |state, cx| {
+            state.set_call_panel_closed(detached, false, cx)
+        });
+        cx.notify();
+    }
+
+    /// Closes the panel of the call of this window; beside the stage the choice is kept.
+    pub(crate) fn close_call_panel(&mut self, cx: &mut Context<Self>) {
+        if self.call_panel_overlay {
+            self.call_panel_open = false;
+        } else {
+            let detached = self.detached;
+            self.state.update(cx, |state, cx| {
+                state.set_call_panel_closed(detached, true, cx)
+            });
+        }
+        cx.notify();
+    }
+
+    /// Closes the panel of the call of this window when it is open and opens it otherwise:
+    /// the button of the header and the key of the shortcut list.
+    pub fn toggle_call_panel(&mut self, cx: &mut Context<Self>) {
+        if self.call_panel_shown(self.call_panel_overlay, cx) {
+            self.close_call_panel(cx);
+        } else {
+            self.open_call_panel(cx);
+        }
+    }
+
+    /// The panel of the call of this window: the one of the main window or the one of the
+    /// separate call window, each with its own width.
+    pub(crate) fn call_panel(&self) -> Panel {
+        if self.detached {
+            Panel::CallWindow
+        } else {
+            Panel::Call
+        }
+    }
+
+    /// The width of the panel of the call in pixels of the design.
+    pub(crate) fn call_panel_width(&self, cx: &App) -> f32 {
+        self.panel_width(self.call_panel(), theme(cx).metrics.call_panel_width, cx)
     }
 
     /// The stage of a call: its shares while the call is connected and a person shares,

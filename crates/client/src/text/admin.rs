@@ -535,3 +535,51 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
     };
     fixed.to_owned()
 }
+
+/// The results of the requests of the forms and questions of the administration, drawn in
+/// the space that a row keeps after the answer (ADR 0730).
+pub mod done {
+    pub const WORKSPACE_CREATED: &str = "The workspace is created.";
+    pub const NAME_SAVED: &str = "The new name is saved.";
+    pub const WORKSPACE_DELETED: &str = "The workspace is deleted.";
+    pub const CODE_ENTERED: &str = "You are a member of the workspace of the code.";
+    pub const CATEGORY_CREATED: &str = "The category is created.";
+    pub const CATEGORY_DELETED: &str = "The category is deleted.";
+    pub const CHANNEL_CREATED: &str = "The channel is created.";
+    pub const CHANNEL_DELETED: &str = "The channel is deleted.";
+    pub const CHANNEL_ARCHIVED: &str = "The channel is archived.";
+    pub const CHANNEL_MOVED: &str = "The channel is moved.";
+    pub const CHANNEL_NOT_MOVED: &str = "The channel was not moved.";
+    pub const DAYS_SAVED: &str = "The number of days is saved.";
+    pub const LOGO_REMOVED: &str = "The logo is removed.";
+    pub const NO_LOGO: &str = "The server has no logo now.";
+    pub const TERM_ADDED: &str = "The term is added.";
+    pub const TERM_SAVED: &str = "The term is saved.";
+    pub const TERM_REMOVED: &str = "The term is removed.";
+    pub const TERM_CHANGED_ELSEWHERE: &str =
+        "Another person changed the glossary, so the form closed.";
+    pub const LIMIT_SAVED: &str = "The limit is saved.";
+    pub const TOKEN_MADE: &str = "The access token is made.";
+    pub const EXPORT_REMOVED: &str = "The export is removed.";
+    pub const ROLE_CREATED: &str = "The role is created.";
+    pub const ROLE_DELETED: &str = "The role is deleted.";
+    pub const ROLE_CHANGED_ELSEWHERE: &str = "The role changed, so the form closed.";
+    pub const INVITE_MADE: &str = "The invite is made.";
+    pub const ACCOUNT_CHANGED_ELSEWHERE: &str = "The account changed, so the question closed.";
+
+    pub fn removed_from_server(name: &str) -> String {
+        format!("{name} is removed from the server.")
+    }
+
+    pub fn banned(name: &str) -> String {
+        format!("{name} is banned.")
+    }
+
+    pub fn removed_from_workspace(name: &str) -> String {
+        format!("{name} is removed from the workspace.")
+    }
+
+    pub fn recovered(name: &str) -> String {
+        format!("{name} can use the new device now.")
+    }
+}

@@ -601,6 +601,9 @@ pub enum Fault {
     LoseAnswer,
     /// Ends the connection without passing the request on.
     Cut,
+    /// Answers `invalid_request` and does not pass the request on: a refusal that the
+    /// client does not try again.
+    Refused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1076,6 +1079,19 @@ async fn serve(
             body.len()
         );
         answered(503, body);
+        client.write_all(head.as_bytes()).await?;
+        client.write_all(body).await?;
+        return client.shutdown().await;
+    }
+    if fault == Some(Fault::Refused) {
+        let body =
+            br#"{"error":{"code":"invalid_request","message":"the proxy of the test refused"}}"#;
+        let head = format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        answered(400, body);
         client.write_all(head.as_bytes()).await?;
         client.write_all(body).await?;
         return client.shutdown().await;

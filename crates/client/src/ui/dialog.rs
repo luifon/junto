@@ -89,6 +89,19 @@ impl RenderOnce for Dialog {
             })
             .read(cx)
             .clone();
+        // The place of the panel in the cover after its first drawing (ADR 0730).
+        let placed = window
+            .use_keyed_state("dialog-placed", cx, |_, _| {
+                std::rc::Rc::new(std::cell::Cell::new(Placed::default()))
+            })
+            .read(cx)
+            .clone();
+        let size = window.viewport_size();
+        let kept = placed
+            .get()
+            .top
+            .filter(|_| placed.get().window == Some(size))
+            .map(|top| (top, placed.get().room));
         let (by_button, by_key, by_cover) =
             (self.on_close.clone(), self.on_close.clone(), self.on_close);
         let header = SideHeader::new(self.title.clone()).when_some(by_button, |header, close| {
@@ -108,10 +121,14 @@ impl RenderOnce for Dialog {
             .when_some(self.selector, |panel, selector| {
                 panel.debug_selector(|| selector.to_owned())
             })
+            .relative()
             .w(u(metrics.dialog_width))
             .max_w_full()
             // A dialog that is taller than the window scrolls its content.
-            .max_h_full()
+            .map(|panel| match kept {
+                Some((top, room)) => panel.mt(top).max_h(room - top),
+                None => panel.max_h_full(),
+            })
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -136,6 +153,7 @@ impl RenderOnce for Dialog {
                     .flex()
                     .flex_col()
                     .min_h_0()
+                    .child(super::area("dialog-content"))
                     .child(
                         div()
                             .id("dialog-content")
@@ -155,15 +173,14 @@ impl RenderOnce for Dialog {
                     )
                     .child(scroll_bar(&scroll, false, cx)),
             )
+            .child(measure_panel(placed.clone()))
             .focus_trap("dialog-trap", &self.focus);
         div()
             .id("dialog-cover")
             .absolute()
             .inset_0()
             .occlude()
-            .flex()
-            .items_center()
-            .justify_center()
+            .child(super::cover())
             .p(u(16.0))
             .pt(u(crate::shell::title_bar::cover_top(window, cx)))
             .bg(Hsla::from(colors.scrim))
@@ -172,9 +189,76 @@ impl RenderOnce for Dialog {
                     close(window, cx);
                 }
             })
-            .child(panel)
+            .child(
+                // The panel is centred at its first drawing and keeps its top after it, so a
+                // late result that makes it taller moves no control above the result. A new
+                // size of the window centres it again.
+                div()
+                    .relative()
+                    .size_full()
+                    .flex()
+                    .justify_center()
+                    .map(|room| match kept {
+                        Some(_) => room.items_start(),
+                        None => room.items_center(),
+                    })
+                    .child(panel)
+                    .child(measure_room(placed, size)),
+            )
             .children(crate::shell::title_bar::layer_band(window, cx))
     }
+}
+
+/// Where the panel of a dialog lies in the room of the cover.
+#[derive(Debug, Clone, Copy, Default)]
+struct Placed {
+    /// The distance of the top of the panel from the top of the room.
+    top: Option<gpui::Pixels>,
+    /// The height of the room.
+    room: gpui::Pixels,
+    /// The top of the room in the window.
+    room_top: gpui::Pixels,
+    /// The size of the window at the first drawing.
+    window: Option<gpui::Size<gpui::Pixels>>,
+}
+
+fn measure_room(
+    placed: std::rc::Rc<std::cell::Cell<Placed>>,
+    size: gpui::Size<gpui::Pixels>,
+) -> impl IntoElement {
+    gpui::canvas(
+        move |bounds, _, _| {
+            let mut now = placed.get();
+            if now.window != Some(size) {
+                now = Placed {
+                    window: Some(size),
+                    ..Placed::default()
+                };
+            }
+            now.room = bounds.size.height;
+            now.room_top = bounds.top();
+            placed.set(now);
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .size_full()
+}
+
+fn measure_panel(placed: std::rc::Rc<std::cell::Cell<Placed>>) -> impl IntoElement {
+    gpui::canvas(
+        move |bounds, _, _| {
+            let mut now = placed.get();
+            if now.top.is_none() && now.window.is_some() {
+                // The canvas lies inside the border of the panel, which is 1 pixel wide.
+                now.top = Some(bounds.top() - gpui::px(1.0) - now.room_top);
+                placed.set(now);
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .size_full()
 }
 
 /// The row of buttons at the end of a dialog.

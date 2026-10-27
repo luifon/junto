@@ -203,3 +203,103 @@ fn measure_with(studio: &mut Studio, count: u32) -> Result<(), String> {
     studio.cx.run_until_parked();
     Ok(())
 }
+
+/// The frames of the window with 601 members in the shown workspace and the People page of
+/// the administration with 2,001 accounts open (open item CD8): each answer of a profile
+/// that the window reads makes the state change, and the next frame derives the whole view
+/// again. The time of a frame without a change is the cost of one such answer.
+pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
+    use junto_client::state::admin::AdminPage;
+    use junto_client_core::model::{Collection, Loadable};
+    use junto_client_core::protocol::account::{AccountStatus, AccountSummary};
+    use junto_client_core::protocol::structure::WorkspaceMember;
+
+    const WARM_UP: usize = 5;
+    for (members, accounts, panel) in [
+        (7usize, 7usize, true),
+        (601, 7, false),
+        (601, 7, true),
+        (7, 2_001, true),
+        (601, 2_001, true),
+    ] {
+        let people = super::admin::servers(move |model| {
+            let listed: Vec<AccountSummary> = (0..accounts)
+                .map(|index| AccountSummary {
+                    id: super::id(5_000 + index as u32),
+                    name: format!("Person {index:04}"),
+                    status: AccountStatus::Active,
+                    is_owner: index == 0,
+                    server_role_ids: Vec::new(),
+                    created_at: super::at(),
+                })
+                .collect();
+            super::admin::collections(model).accounts = Collection::Loaded(listed);
+            let workspace = Arc::make_mut(&mut model.workspaces[0]);
+            workspace.members = Loadable::Loaded(
+                (0..members)
+                    .map(|index| WorkspaceMember {
+                        avatar: None,
+                        account_id: super::id(5_000 + index as u32),
+                        name: format!("Person {index:04}"),
+                        role_ids: Vec::new(),
+                    })
+                    .collect(),
+            );
+        });
+        let (window, shell, state) = studio.open(
+            Screen::new("people-frames", people),
+            Box::new(move |shell: &mut Shell, window, cx| {
+                if panel {
+                    shell.open(junto_client::shell::Open::Members, window, cx);
+                }
+                super::admin::open_page(shell, AdminPage::People, window, cx);
+            }),
+        )?;
+        let mut times = Vec::new();
+        for step in 0..WARM_UP + 60 {
+            let started = Instant::now();
+            studio
+                .cx
+                .update_window(window.into(), |_, window, _| window.refresh())
+                .map_err(|error| format!("{error:#}"))?;
+            studio.cx.run_until_parked();
+            if step >= WARM_UP {
+                times.push(started.elapsed());
+            }
+        }
+        println!(
+            "{}",
+            Times(times).line(&format!(
+                "{members} members (member list {}) and the People page of {accounts} accounts",
+                if panel { "open" } else { "closed" }
+            ))
+        );
+        // The cost of answers of profiles that each change the state (review M8). The
+        // headless platform draws after each round of work, so each answer here is derived
+        // and drawn: the cost of an answer that a frame follows. In the application the
+        // answers that come between two frames are derived once.
+        const ANSWERS: u32 = 500;
+        let derived = studio.cx.update(|cx| shell.read(cx).derivations());
+        let started = Instant::now();
+        for _ in 0..ANSWERS {
+            studio.cx.update(|cx| state.update(cx, |_, cx| cx.notify()));
+        }
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.refresh())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+        let derived = studio.cx.update(|cx| shell.read(cx).derivations()) - derived;
+        println!(
+            "{members} members and {accounts} accounts: {ANSWERS} changes of the state and one \
+             frame in {:.0} ms, {derived} derivations of the view",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.remove_window())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+    }
+    Ok(())
+}

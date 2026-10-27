@@ -9,7 +9,16 @@
 //! ```sh
 //! cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 //! JUNTO_SCREENS_THEME=dark cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
+//! JUNTO_SCREENS_FILES=0 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
+//! JUNTO_SCREENS_SIZE=720x600 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 //! ```
+//!
+//! Every run measures the empty bands of each screen and ends with an error when a screen
+//! has one, when a control of a screen lies past the left or right edge of the window, or
+//! when a screen does not settle (ADR 0730, ADR 0731). With `JUNTO_SCREENS_FILES=0` it writes
+//! no file and only measures. `JUNTO_SCREENS_SIZE` draws every window screen at one size, such
+//! as the least size of the window at 100 % (a screen at
+//! another interface scale gets that size at its scale).
 
 // The program is a tool of the developers that writes the files of the screens that it
 // draws; the refusals of the file system in `clippy.toml` are for the application (ADR 0730).
@@ -96,6 +105,8 @@ mod direct;
 mod discovery;
 #[path = "junto-screens/frames.rs"]
 mod frames;
+#[path = "junto-screens/gaps.rs"]
+mod gaps;
 #[path = "junto-screens/logo.rs"]
 mod logo;
 #[path = "junto-screens/messages.rs"]
@@ -110,6 +121,35 @@ mod roles;
 mod threads;
 
 const WINDOW: (f32, f32) = (1440.0, 900.0);
+
+/// The most frames that a screen is drawn before its areas stay the same.
+const SETTLE_FRAMES: usize = 8;
+/// The longest time that the drawing of one screen takes before the program ends with an
+/// error.
+const SCREEN_TIME: Duration = Duration::from_secs(120);
+
+/// Ends the program with the name of the screen when the drawing of one screen takes
+/// longer than [`SCREEN_TIME`]: a task that never ends keeps `run_until_parked` from
+/// returning, and the program would draw without an end.
+fn watch_the_drawing(drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let late = drawing
+                .lock()
+                .ok()
+                .and_then(|drawing| *drawing)
+                .filter(|(_, started)| started.elapsed() > SCREEN_TIME);
+            if let Some((name, _)) = late {
+                eprintln!(
+                    "junto-screens: the screen {name} did not settle within {} seconds",
+                    SCREEN_TIME.as_secs()
+                );
+                std::process::exit(1);
+            }
+        }
+    });
+}
 
 /// An identifier that is the same in every run, so that a generated avatar is the same.
 fn id<T: FromStr>(number: u32) -> T
@@ -492,6 +532,16 @@ struct Studio {
     drawn: usize,
     /// The theme of every screen (`JUNTO_SCREENS_THEME`: `light`, the default, or `dark`).
     theme: ThemeChoice,
+    /// The empty bands of the screens drawn so far ([`gaps::empty_bands`]), and the controls
+    /// past an edge of their window ([`junto_client::ui::outside`]).
+    bands: Vec<String>,
+    /// The size of every window screen (`JUNTO_SCREENS_SIZE`, such as `720x600`).
+    size: Option<(f32, f32)>,
+    /// The screens are written as files; `JUNTO_SCREENS_FILES=0` only measures them.
+    files: bool,
+    /// The screen that is drawn and when its drawing started, for the watch of
+    /// [`watch_the_drawing`].
+    drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>,
 }
 
 /// One screen: the servers it shows, the state of the calls and the interface scale.
@@ -582,13 +632,34 @@ impl Studio {
             Ok("light") | Err(_) => ThemeChoice::Light,
             Ok(other) => return Err(format!("JUNTO_SCREENS_THEME is light or dark, not {other}")),
         };
+        let size = match std::env::var("JUNTO_SCREENS_SIZE") {
+            Ok(size) => Some(
+                size.split_once('x')
+                    .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
+                    .ok_or_else(|| format!("JUNTO_SCREENS_SIZE is WIDTHxHEIGHT, not {size}"))?,
+            ),
+            Err(_) => None,
+        };
+        let drawing = Arc::new(std::sync::Mutex::new(None));
+        watch_the_drawing(drawing.clone());
         Ok(Self {
             cx,
             out,
             scratch,
             drawn: 0,
             theme,
+            bands: Vec::new(),
+            size,
+            files: std::env::var("JUNTO_SCREENS_FILES").as_deref() != Ok("0"),
+            drawing,
         })
+    }
+
+    /// Notes the screen that is drawn from now on.
+    fn drawing(&self, name: Option<&'static str>) {
+        if let Ok(mut drawing) = self.drawing.lock() {
+            *drawing = name.map(|name| (name, Instant::now()));
+        }
     }
 
     /// Draws one screen. `prepare` opens what the screen shows beyond its servers.
@@ -600,6 +671,17 @@ impl Studio {
         self.draw_after(screen, Box::new(prepare), |_| true)
     }
 
+    /// Like [`Studio::draw`], and runs `answer` after the screen was drawn once, as an
+    /// answer of the server that arrives while the screen is shown.
+    fn draw_answered(
+        &mut self,
+        screen: Screen,
+        prepare: impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) + 'static,
+        answer: impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) + 'static,
+    ) -> Result<(), String> {
+        self.draw_with(screen, Box::new(prepare), |_| true, Some(Box::new(answer)))
+    }
+
     /// Like [`Studio::draw`], and waits until `ready` holds before the screen is captured.
     fn draw_after(
         &mut self,
@@ -607,7 +689,28 @@ impl Studio {
         prepare: Prepare,
         ready: impl Fn(&Shell) -> bool,
     ) -> Result<(), String> {
+        self.draw_with(screen, prepare, ready, None)
+    }
+
+    fn draw_with(
+        &mut self,
+        screen: Screen,
+        prepare: Prepare,
+        ready: impl Fn(&Shell) -> bool,
+        answer: Option<Prepare>,
+    ) -> Result<(), String> {
+        // The size of every screen is a size of the design: a screen at another interface
+        // scale gets the window of that scale, as the least size of the window does.
+        let screen = match self.size {
+            Some(size) => {
+                let scaled = junto_client::theme::scaled_size(size, screen.scale);
+                screen.size(f32::from(scaled.width), f32::from(scaled.height))
+            }
+            None => screen,
+        };
         let name = screen.name;
+        let (width, scale) = (screen.size.0, screen.scale);
+        self.drawing(Some(name));
         let (window, shell, _) = self.open(screen, prepare)?;
         let started = Instant::now();
         loop {
@@ -620,24 +723,98 @@ impl Studio {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        // Two frames: the first lays the layers out, the second draws what they opened.
-        for _ in 0..2 {
+        if let Some(answer) = answer {
+            for _ in 0..2 {
+                self.cx
+                    .update_window(window.into(), |_, window, _| window.refresh())
+                    .map_err(|error| format!("{error:#}"))?;
+                self.cx.run_until_parked();
+            }
+            self.cx
+                .update_window(window.into(), |_, window, cx| {
+                    shell.update(cx, |shell, cx| answer(shell, window, cx));
+                })
+                .map_err(|error| format!("{error:#}"))?;
+            self.cx.run_until_parked();
+            // The screen shows the page after the bound of the kept space of a form: the
+            // result at the height of its sentence (ADR 0730).
+            for _ in 0..2 {
+                self.cx
+                    .update_window(window.into(), |_, window, _| window.refresh())
+                    .map_err(|error| format!("{error:#}"))?;
+                self.cx.run_until_parked();
+            }
+            self.cx
+                .advance_clock(junto_client::ui::WAIT_BOUND + std::time::Duration::from_millis(50));
+            self.cx.run_until_parked();
+        }
+        // The first frame lays the layers out, the second draws what they opened, and a
+        // part that takes the height of a late content draws it in the frame after its
+        // measure (ADR 0730). The screen is drawn until two frames lay out the same areas.
+        junto_client::ui::take_unsettled();
+        let mut areas = None;
+        let mut controls = Vec::new();
+        let mut settled = false;
+        for _ in 0..SETTLE_FRAMES {
+            junto_client::ui::record_areas();
+            junto_client::ui::record_controls();
             self.cx
                 .update_window(window.into(), |_, window, _| window.refresh())
                 .map_err(|error| format!("{error:#}"))?;
             self.cx.run_until_parked();
+            let drawn = junto_client::ui::take_areas();
+            controls = junto_client::ui::take_controls();
+            if areas.as_ref() == Some(&drawn) {
+                settled = true;
+                break;
+            }
+            areas = Some(drawn);
+        }
+        let areas = areas.unwrap_or_default();
+        if !settled {
+            return Err(format!(
+                "{name}: the screen did not settle: its areas changed in each of \
+                 {SETTLE_FRAMES} frames"
+            ));
+        }
+        let unsettled = junto_client::ui::take_unsettled();
+        if !unsettled.is_empty() {
+            return Err(format!(
+                "{name}: the height of these parts changed in each frame, which two parts \
+                 with one element id do: {unsettled:?}"
+            ));
         }
         let image = self
             .cx
             .capture_screenshot(window.into())
             .map_err(|error| format!("{name}: {error:#}"))?;
-        let file = self.out.join(format!("{name}.png"));
-        image.save(&file).map_err(|error| error.to_string())?;
-        println!("{}", file.display());
+        self.bands.extend(
+            gaps::empty_bands(&image, &areas, width, scale)
+                .into_iter()
+                .map(|band| format!("{name}: {band}")),
+        );
+        self.bands.extend(
+            junto_client::ui::outside(&controls, px(width))
+                .into_iter()
+                .map(|control| {
+                    format!(
+                        "{name}: the control {} at {:?} lies past an edge of the window",
+                        control.name, control.bounds
+                    )
+                }),
+        );
+        if self.files {
+            let file = self.out.join(format!("{name}.png"));
+            image.save(&file).map_err(|error| error.to_string())?;
+            println!("{}", file.display());
+        } else {
+            println!("{name}");
+        }
         self.cx
             .update_window(window.into(), |_, window, _| window.remove_window())
             .map_err(|error| format!("{error:#}"))?;
         self.cx.run_until_parked();
+        self.drawing(None);
         Ok(())
     }
 
@@ -2959,6 +3136,7 @@ impl gpui::Render for Components {
 }
 
 fn draw_components(studio: &mut Studio) -> Result<(), String> {
+    studio.drawing(Some("components"));
     let window = studio
         .cx
         .open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -2995,6 +3173,7 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
         .update_window(window.into(), |_, window, _| window.remove_window())
         .map_err(|error| format!("{error:#}"))?;
     studio.cx.run_until_parked();
+    studio.drawing(None);
     Ok(())
 }
 
@@ -3083,6 +3262,9 @@ fn run(out: &Path) -> Result<(), String> {
         // Not a picture: the time of a frame with 10,000 loaded messages.
         Some("frames") => frames::measure(&mut studio),
         Some("audit-frames") => frames::measure_audit(&mut studio),
+        Some("people-frames") => frames::measure_people(&mut studio),
+        // Not a picture: the cost of an animation in view (review M5).
+        Some("gif-frames") => messages::measure_animation(&mut studio),
         Some("admin") => admin::draw(&mut studio),
         Some("people") => people::draw(&mut studio),
         Some("roles") => roles::draw(&mut studio),
@@ -3110,10 +3292,23 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();
+    let bands = std::mem::take(&mut studio.bands);
     drop(studio);
     // The data directories of the screens hold no server and no key of a real server.
     let removed = std::fs::remove_dir_all(&scratch).map_err(|error| error.to_string());
-    drawn.and(removed)
+    drawn.and(removed)?;
+    if bands.is_empty() {
+        return Ok(());
+    }
+    for band in &bands {
+        eprintln!("{band}");
+    }
+    Err(format!(
+        "{} empty bands taller than {} design px or controls past an edge of the window \
+         (ADR 0730)",
+        bands.len(),
+        gaps::MOST_GAP
+    ))
 }
 
 fn main() -> std::process::ExitCode {

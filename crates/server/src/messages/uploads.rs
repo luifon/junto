@@ -21,6 +21,32 @@ use std::{
 use time::OffsetDateTime;
 
 pub const CHUNK: usize = 1024 * 1024;
+/// The bounds of a file that gets preview metadata (ADR 0408). The largest file that a
+/// client reads into memory to draw it.
+pub const MOST_PICTURE_BYTES: u64 = 32 * 1024 * 1024;
+/// The largest still picture: 128 MiB of pixels as RGBA, which a client decodes before it
+/// reduces the picture, and the longest side of a WebP file.
+pub const MOST_PICTURE_PIXELS: u64 = 33_554_432;
+pub const LONGEST_PICTURE_SIDE: u32 = 16_384;
+/// The largest canvas of an animation, 16 MiB as RGBA, which a client decodes once for each
+/// frame; the most frames; and the most pixels of all frames together, which bound the
+/// time of the decoding.
+pub const MOST_FRAME_PIXELS: u64 = 4_194_304;
+pub const MOST_FRAMES: u32 = 2_048;
+pub const MOST_ANIMATION_PIXELS: u64 = 1_073_741_824;
+
+/// The picture that a client draws for a file, when the file is within the bounds.
+pub fn preview(picture: crate::image::Picture) -> Option<crate::image::Picture> {
+    let pixels = u64::from(picture.width) * u64::from(picture.height);
+    let still =
+        pixels <= MOST_PICTURE_PIXELS && picture.width.max(picture.height) <= LONGEST_PICTURE_SIDE;
+    let moving = picture.frames <= 1
+        || (pixels <= MOST_FRAME_PIXELS
+            && picture.frames <= MOST_FRAMES
+            && pixels * u64::from(picture.frames) <= MOST_ANIMATION_PIXELS);
+    (still && moving).then_some(picture)
+}
+
 pub fn root(app: &AppState) -> ApiResult<&Path> {
     app.config.attachments_directory.as_deref().ok_or_else(|| {
         ApiError::new(
@@ -108,7 +134,7 @@ pub async fn of_messages(
     connection: &mut PgConnection,
     ids: &[MessageId],
 ) -> ApiResult<std::collections::HashMap<MessageId, Vec<Attachment>>> {
-    let rows = sqlx::query("select * from attachments where message_id=any($1) and complete and removed_at is null order by
+    let rows = sqlx::query("select id,message_id,name,bytes,sha256,media_type,width,height,frames from attachments where message_id=any($1) and complete and removed_at is null order by
              position,id")
         .bind(ids)
         .fetch_all(connection)
@@ -130,6 +156,9 @@ pub async fn of_messages(
                     .map(|value| value as u32),
                 height: row
                     .try_get::<Option<i32>, _>("height")?
+                    .map(|value| value as u32),
+                frames: row
+                    .try_get::<Option<i32>, _>("frames")?
                     .map(|value| value as u32),
             });
     }
@@ -192,17 +221,25 @@ pub async fn chunks(
         .await?)
 }
 
-pub fn check(
+/// The stored chunks of an upload read in order as one file. Each chunk is checked against
+/// its length and hash when it is read, and adds to the hash of the file.
+struct Stored {
     root: PathBuf,
     id: AttachmentId,
-    parts: Vec<(i64, i32, String)>,
-) -> ApiResult<(String, Option<crate::image::Image>)> {
-    let mut digest = Sha256::new();
-    let mut preview = Vec::new();
-    let mut preview_fits = true;
-    for (offset, size, expected) in parts {
+    parts: std::vec::IntoIter<(i64, i32, String)>,
+    chunk: Vec<u8>,
+    at: usize,
+    digest: Sha256,
+    failure: Option<ApiError>,
+}
+
+impl Stored {
+    fn next_chunk(&mut self) -> ApiResult<bool> {
+        let Some((offset, size, expected)) = self.parts.next() else {
+            return Ok(false);
+        };
         let mut bytes = Vec::new();
-        files::open(&root, &chunk(id, offset as u64))
+        files::open(&self.root, &chunk(self.id, offset as u64))
             .map_err(io)?
             .take(CHUNK as u64 + 1)
             .read_to_end(&mut bytes)
@@ -212,21 +249,63 @@ pub fn check(
                 "an uploaded chunk failed its integrity check",
             ));
         }
-        digest.update(&bytes);
-        if preview_fits && preview.len() + bytes.len() <= 8 * CHUNK {
-            preview.extend(&bytes);
-        } else {
-            preview.clear();
-            preview_fits = false;
-        }
+        self.digest.update(&bytes);
+        self.chunk = bytes;
+        self.at = 0;
+        Ok(true)
     }
-    let image = if preview_fits {
-        crate::image::inspect(&preview).filter(|im| im.width <= 1024 && im.height <= 1024)
+}
+
+impl Read for Stored {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        while self.failure.is_none() && self.at == self.chunk.len() {
+            match self.next_chunk() {
+                Ok(true) => {}
+                Ok(false) => return Ok(0),
+                Err(error) => self.failure = Some(error),
+            }
+        }
+        if self.failure.is_some() {
+            return Err(std::io::Error::other("an uploaded chunk was not read"));
+        }
+        let count = buffer.len().min(self.chunk.len() - self.at);
+        buffer[..count].copy_from_slice(&self.chunk[self.at..self.at + count]);
+        self.at += count;
+        Ok(count)
+    }
+}
+
+/// Reads every chunk of an upload once: checks each chunk, computes the hash of the file,
+/// and reads the preview metadata of a picture within [`MOST_PICTURE_BYTES`] from the
+/// parts of the file that state it.
+pub fn check(
+    root: PathBuf,
+    id: AttachmentId,
+    parts: Vec<(i64, i32, String)>,
+) -> ApiResult<(String, Option<crate::image::Picture>)> {
+    let total: u64 = parts.iter().map(|(_, size, _)| *size as u64).sum();
+    let mut stored = Stored {
+        root,
+        id,
+        parts: parts.into_iter(),
+        chunk: Vec::new(),
+        at: 0,
+        digest: Sha256::new(),
+        failure: None,
+    };
+    let image = if total <= MOST_PICTURE_BYTES {
+        crate::image::picture(std::io::BufReader::new(&mut stored), total).and_then(preview)
     } else {
         None
     };
+    let rest = std::io::copy(&mut stored, &mut std::io::sink());
+    if let Some(failure) = stored.failure.take() {
+        return Err(failure);
+    }
+    rest.map_err(io)?;
     Ok((
-        digest
+        stored
+            .digest
             .finalize()
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -400,9 +479,9 @@ pub async fn copy_attachments(
             })
             .collect::<ApiResult<_>>()?;
         sqlx::query("insert into
-             attachments(id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,width,height,expires_at,touched_at,attached,staging_cleaned,storage_id,retention_at,position)
+             attachments(id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,width,height,frames,expires_at,touched_at,attached,staging_cleaned,storage_id,retention_at,position)
              select
-             mapping.new_id,$1,a.owner_id,mapping.message_id,a.name,a.bytes,a.received,a.sha256,true,a.media_type,a.width,a.height,a.expires_at,$2,true,true,a.storage_id,a.retention_at,a.position
+             mapping.new_id,$1,a.owner_id,mapping.message_id,a.name,a.bytes,a.received,a.sha256,true,a.media_type,a.width,a.height,a.frames,a.expires_at,$2,true,true,a.storage_id,a.retention_at,a.position
              from unnest($3::uuid[],$4::uuid[],$5::uuid[]) mapping(old_id,new_id,message_id) join attachments a on
              a.id=mapping.old_id")
             .bind(channel)

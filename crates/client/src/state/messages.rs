@@ -96,6 +96,10 @@ pub fn measure(sources: Vec<UploadSource>) -> Vec<Measured> {
         .collect()
 }
 
+/// The read of a picture of a message, started by [`AppState::picture_read`].
+pub type PictureRead =
+    std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, TransferFailure>> + 'static>>;
+
 impl AppState {
     /// The places whose messages the window shows are held open in the client core: the
     /// place of the main area and the thread of the side panel. Every other place is
@@ -984,6 +988,19 @@ impl AppState {
     #[cfg(feature = "test-support")]
     pub fn set_download_directory(&mut self, directory: PathBuf) {
         self.download_directory = Some(directory);
+    }
+
+    /// Starts the read of a picture of a message for `owner` when it is called, so that the
+    /// window starts it after the bytes of its decoding are held (review M6).
+    pub fn picture_read(&self, owner: Owner) -> impl FnOnce(&Attachment) -> PictureRead + use<> {
+        let transfers = self
+            .client
+            .server(owner.entry.server_id)
+            .map(|server| server.transfers());
+        move |attachment| match transfers {
+            Some(transfers) => Box::pin(transfers.picture(owner, attachment)),
+            None => Box::pin(async { Err(TransferFailure::Stopped) }),
+        }
     }
 
     /// Reads a picture of a message into memory for its owner, for the window to draw

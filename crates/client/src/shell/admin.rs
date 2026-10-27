@@ -76,6 +76,33 @@ pub enum Mode {
     Limit(server::Limit),
 }
 
+impl Mode {
+    /// The result of the request of the form or question (ADR 0730).
+    fn done(self) -> &'static str {
+        use text::admin::done;
+        match self {
+            Self::CreateWorkspace => done::WORKSPACE_CREATED,
+            Self::RenameWorkspace(_) | Self::RenameCategory(_) | Self::RenameChannel => {
+                done::NAME_SAVED
+            }
+            Self::DeleteWorkspace(_) => done::WORKSPACE_DELETED,
+            Self::EnterCode => done::CODE_ENTERED,
+            Self::CreateCategory => done::CATEGORY_CREATED,
+            Self::DeleteCategory(_) => done::CATEGORY_DELETED,
+            Self::CreateChannel(_) => done::CHANNEL_CREATED,
+            Self::DeleteChannel(_) => done::CHANNEL_DELETED,
+            Self::ArchiveChannel(_) => done::CHANNEL_ARCHIVED,
+            Self::MoveChannel(_) => done::CHANNEL_MOVED,
+            Self::Days(_) => done::DAYS_SAVED,
+            Self::RemoveLogo => done::LOGO_REMOVED,
+            Self::AddTerm => done::TERM_ADDED,
+            Self::ChangeTerm(_) => done::TERM_SAVED,
+            Self::RemoveTerm(_) => done::TERM_REMOVED,
+            Self::Limit(_) => done::LIMIT_SAVED,
+        }
+    }
+}
+
 /// What the layer of the administration holds of the window itself: the text of its
 /// fields, and which row shows a form or a question.
 pub(crate) struct AdminUi {
@@ -563,7 +590,9 @@ impl Shell {
             {
                 self.admin.sent = None;
                 if let Some(mode) = self.admin.mode.take() {
-                    self.admin.space.keep(mode);
+                    self.admin
+                        .space
+                        .keep(mode, text::admin::done::CHANNEL_NOT_MOVED);
                 }
                 self.admin.move_group = None;
             }
@@ -573,7 +602,7 @@ impl Shell {
                 // The answer arrives while the person can be pointing at a control under
                 // the row: the row keeps the height of its form.
                 if let Some(mode) = self.admin.mode.take() {
-                    self.admin.space.keep(mode);
+                    self.admin.space.keep(mode, mode.done());
                 }
                 self.admin.opened_term = None;
                 self.admin.invalid = None;
@@ -673,6 +702,34 @@ impl Shell {
                         confirmed(this, window, cx);
                     })),
             )
+    }
+
+    /// The server did the request of the form or question that the administration shows,
+    /// while the pointer is on it: the row keeps its height and states the result (ADR
+    /// 0730). The screen tool uses it.
+    #[cfg(feature = "test-support")]
+    pub fn answer_open_admin_form(&mut self, cx: &mut Context<Self>) {
+        let view = self.state.read(cx).admin_view();
+        if let Some(mode) = self.admin.mode.take() {
+            self.admin.space.keep(mode, mode.done());
+        }
+        if let Some(open) = self.admin.people.open.take() {
+            let done = view
+                .as_ref()
+                .map(|view| open.done(view))
+                .unwrap_or_default();
+            self.admin.people.space.keep(open, done);
+        }
+        if let Some(open) = self.admin.roles.open.take() {
+            self.admin.roles.space.keep(open, open.done());
+        }
+        if let Some(export_id) = self.admin.records.removing.take() {
+            self.admin.records.space.keep(
+                records::Open::RemoveExport(export_id),
+                text::admin::done::EXPORT_REMOVED,
+            );
+        }
+        cx.notify();
     }
 
     /// A row that shows the form or the question of one of `modes` while it is open.
@@ -873,6 +930,7 @@ impl Shell {
             .absolute()
             .inset_0()
             .occlude()
+            .child(crate::ui::cover())
             .flex()
             .items_center()
             .justify_center()

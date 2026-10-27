@@ -343,7 +343,16 @@ fn a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button(
 ) {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
     let world = World::new();
-    let (_server, admin, _directory, mut window, _, root_id) = with_root(cx, &world);
+    let (_server, admin, _directory, mut window, channel_id, _) = with_root(cx, &world);
+    // The list is full and stands at its end, so the line of the replies under the root
+    // moves the rows above it.
+    for number in 0..40 {
+        admin.send(&world, channel_id, document(&format!("Line {number}")));
+    }
+    let root_id = admin
+        .send(&world, channel_id, document("One track per speaker?"))
+        .id;
+    window.until_message("One track per speaker?");
     window.hover_named(format!("message:{root_id}"));
     let button = selector(format!("thread:{root_id}"));
     let pressed = window

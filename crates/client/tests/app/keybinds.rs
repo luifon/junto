@@ -723,3 +723,43 @@ fn a_binding_goes_before_the_keys_of_the_focused_composer(cx: &mut TestAppContex
         (None, Some(own))
     );
 }
+
+/// The key of the call panel closes and opens the panel of the call as the button of the
+/// header does: one state, which the settings keep for the panel beside the stage
+/// (ADR 0730, ADR 0777).
+#[gpui::test]
+fn the_key_of_the_call_panel_closes_and_opens_it_as_its_button_does(cx: &mut TestAppContext) {
+    use junto_media::calls::CallsView;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let call = connected_call(&mut window, "Daily");
+    calls.show_view_for_test(CallsView {
+        call: Some(call),
+        ..CallsView::default()
+    });
+    window.until("the panel of the call is drawn", |window| {
+        window.shows("call-panel")
+    });
+    let closed = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.call_panel_closed(false))
+    };
+    press_default(&mut window, KeyAction::ToggleCallPanel);
+    window.until("the key closed the panel", |window| {
+        !window.shows("call-panel")
+    });
+    assert!(closed(&mut window));
+    press_default(&mut window, KeyAction::ToggleCallPanel);
+    window.until("the key opened the panel", |window| {
+        window.shows("call-panel")
+    });
+    assert!(!closed(&mut window));
+}

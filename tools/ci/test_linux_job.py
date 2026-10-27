@@ -16,6 +16,10 @@ case "$*" in *"$FAIL_ON"*) [ -z "$FAIL_ON" ] || exit 17 ;; esac
 exit 0
 """
 DEVICE_TESTS = "cargo test --no-fail-fast --locked -p junto-media --test linux_audio --test tls_trust -- --ignored"
+SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support "
+           "--bin junto-screens -- /tmp/junto-screens")
+LEAST_SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client "
+                 "--features test-support --bin junto-screens -- /tmp/junto-screens")
 
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
@@ -43,6 +47,25 @@ class LinuxSteps(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn(DEVICE_TESTS, commands)
         self.assertLess(commands.index("cargo build --workspace --locked"), commands.index(DEVICE_TESTS))
+
+    def test_the_linux_job_measures_the_empty_bands_of_every_screen(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        self.assertIn(SCREENS, commands)
+        status, commands, output = self.run_job(fail_on="--bin junto-screens")
+        self.assertEqual(status, 17)
+        self.assertIn(f"Screens without empty bands (exit 17): tools/linux-container.sh {SCREENS}",
+                      output.split("=== Failed steps", 1)[1])
+
+    def test_the_linux_job_draws_every_screen_at_the_least_size_of_the_window(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        self.assertIn(LEAST_SCREENS, commands)
+        self.assertLess(commands.index(SCREENS), commands.index(LEAST_SCREENS))
+        status, commands, output = self.run_job(fail_on="JUNTO_SCREENS_SIZE=720x480")
+        self.assertEqual(status, 17)
+        self.assertIn(f"Screens at the least size of the window (exit 17): tools/linux-container.sh {LEAST_SCREENS}",
+                      output.split("=== Failed steps", 1)[1])
 
     def test_a_failed_test_of_sound_devices_fails_the_linux_job(self):
         status, commands, output = self.run_job(fail_on="--test linux_audio")

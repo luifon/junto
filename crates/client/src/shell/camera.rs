@@ -196,9 +196,7 @@ pub(crate) fn failure(state: &junto_media::camera::CameraState) -> Option<&'stat
         )) => crate::text::CAMERA_RESTRICTED,
         CameraState::Failed(CameraError::NoPermission(_)) => crate::text::CAMERA_REFUSED,
         CameraState::Failed(CameraError::DeviceGone) => crate::text::CAMERA_GONE,
-        CameraState::Failed(CameraError::NotConnected) => {
-            "Wait for the call to connect, then turn on the camera."
-        }
+        CameraState::Failed(CameraError::NotConnected) => crate::text::CAMERA_NOT_CONNECTED,
         CameraState::Failed(CameraError::Blocked) => crate::text::CAMERA_BLOCKED,
         CameraState::Failed(CameraError::Unsupported) => crate::text::CAMERA_UNSUPPORTED,
         CameraState::Failed(CameraError::Interrupted) => crate::text::CAMERA_INTERRUPTED,

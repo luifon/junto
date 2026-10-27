@@ -684,7 +684,7 @@ fn the_parts_of_a_recording_state_their_time_ranges_and_what_was_not_saved() {
         (parts[3].title.as_str(), parts[3].state.as_str()),
         (
             "Shared sound of Carla",
-            "not saved: the recorder was lost while it ran"
+            "not saved: the recorder lost its connection while recording"
         )
     );
     assert_eq!(parts[3].span.as_deref(), Some("09:41:00 – 09:42:05"));

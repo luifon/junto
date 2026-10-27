@@ -1594,13 +1594,13 @@ impl Shell {
             // The sentence about the share, with its strong part.
             let (line, strong) = if several {
                 let title = title_of(share);
-                let line = format!("You watch {title}");
+                let line = text::watching_share(&title);
                 let range = line.len() - title.len()..line.len();
                 (line, range)
             } else if own {
-                ("You are sharing".to_owned(), 0..3)
+                (text::YOU_ARE_SHARING.to_owned(), 0..3)
             } else {
-                (format!("{name} is sharing"), 0..name.len())
+                (text::is_sharing(&name), 0..name.len())
             };
             let muted = !own && stage.volume == 0 && share.sound != Some(ShareAudio::None);
             let sound: Option<(SharedString, bool)> = if share.sound_held {
@@ -1835,6 +1835,7 @@ impl Shell {
             .role(Role::List)
             .aria_label(text::IN_THE_CALL)
             .debug_selector(|| "call-people".to_owned())
+            .relative()
             .flex()
             .flex_none()
             .items_start()
@@ -1857,7 +1858,8 @@ impl Shell {
                     .overflow_y_scroll()
             })
             .children(tiles)
-            .children(hidden_note);
+            .children(hidden_note)
+            .child(self.stage_controls.mark());
 
         div()
             .id("call-stage")

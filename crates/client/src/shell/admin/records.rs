@@ -398,7 +398,7 @@ impl Shell {
         if ui.token_form {
             ui.token_form = false;
             ui.token_sent = false;
-            ui.space.keep(Open::NewToken);
+            ui.space.keep(Open::NewToken, text::admin::done::TOKEN_MADE);
         }
     }
 
@@ -430,7 +430,10 @@ impl Shell {
                 ui.removing = None;
                 // The row of the export stays until the state of the server removes it:
                 // until then it keeps the height of its question.
-                ui.space.keep(Open::RemoveExport(export_id));
+                ui.space.keep(
+                    Open::RemoveExport(export_id),
+                    text::admin::done::EXPORT_REMOVED,
+                );
             }
         }
     }
@@ -1777,7 +1780,8 @@ impl Shell {
                     .debug_selector(|| "audit-empty".to_owned())
             });
         }
-        let mut result = crate::ui::notice_slot("audit-result-slot");
+        // The end of the list moves nothing under it (ADR 0730).
+        let mut result = crate::ui::notice_slot("audit-result-slot").at_end();
         // The end of the list: a read that runs or failed, the older entries, the bound.
         match &page.state {
             AuditRead::NotRead | AuditRead::Reading => {

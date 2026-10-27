@@ -88,12 +88,16 @@ pub fn scroll_bar<H: ScrollbarHandle + Clone + 'static>(
 
 impl RenderOnce for ScrollArea {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let name = self
+            .selector
+            .map_or_else(|| self.label.clone(), SharedString::from);
         div()
             .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(super::area(name))
             .child(
                 div()
                     .id(self.id)

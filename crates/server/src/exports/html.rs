@@ -432,6 +432,7 @@ mod tests {
             media_type: "text/plain".to_owned(),
             width: None,
             height: None,
+            frames: None,
         }];
         message.reactions = vec![Reaction {
             emoji: "<b>".to_owned(),

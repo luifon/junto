@@ -326,22 +326,24 @@ pub async fn complete_upload(
         transact!(app.background(), |connection| {
             let access = Access::open(connection, &bearer, app.now()).await?;
             files::writable(connection, &access, id, app.now()).await?;
-            let (media, width, height) =
-                image.map_or(("application/octet-stream", None, None), |im| {
+            let (media, width, height, frames) =
+                image.map_or(("application/octet-stream", None, None, None), |im| {
                     (
                         im.kind.media_type(),
                         Some(im.width as i32),
                         Some(im.height as i32),
+                        (im.frames > 1).then_some(im.frames as i32),
                     )
                 });
             sqlx::query(
-                "update attachments set complete=true,media_type=$2,width=$3,height=$4
+                "update attachments set complete=true,media_type=$2,width=$3,height=$4,frames=$5
                      where id=$1",
             )
             .bind(id)
             .bind(media)
             .bind(width)
             .bind(height)
+            .bind(frames)
             .execute(&mut *connection)
             .await?;
             storage::release(connection, id.as_uuid()).await?;

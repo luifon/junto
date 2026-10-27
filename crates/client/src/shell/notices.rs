@@ -18,6 +18,7 @@ use junto_client_core::api::SettingsScope;
 use junto_client_core::protocol::discovery::NotificationLevel;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, ServerId};
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
@@ -220,6 +221,7 @@ pub(crate) fn side_panel(
     theme: &Theme,
     label: impl Into<SharedString>,
     selector: &'static str,
+    width: f32,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id("side-panel")
@@ -229,7 +231,7 @@ pub(crate) fn side_panel(
         .flex()
         .flex_col()
         .flex_none()
-        .w(u(theme.metrics.side_panel_width))
+        .w(u(width))
         .h_full()
         .bg(Hsla::from(theme.colors.plaster))
         .border_l_1()
@@ -368,8 +370,7 @@ impl Shell {
                         // A narrow window draws the panel of the call over the stage
                         // only while it is open.
                         if in_call {
-                            this.call_panel_open = true;
-                            this.call_panel_hidden = false;
+                            this.open_call_panel(cx);
                         }
                     })),
             )
@@ -427,6 +428,25 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        // "Mark all as read" is in the header, which has a height of its own: it appears
+        // with the first unread notice and moves nothing (ADR 0730).
+        let mark_all = (panel.unread > 0).then(|| {
+            Button::new("mark-all-read")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::CheckDouble)
+                .tooltip(if panel.marking {
+                    text::MARKING_ALL_READ
+                } else {
+                    text::MARK_ALL_READ
+                })
+                .disabled(panel.marking)
+                .selector("mark-all-read")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.mark_all_notices_read(server_id, cx);
+                    });
+                }))
+        });
         let header = SideHeader::new(text::NOTIFICATIONS)
             .title_bar()
             .icon(Icon::Bell)
@@ -436,47 +456,26 @@ impl Shell {
                 String::new()
             })
             .trailing(
-                Button::new("close-notices")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_NOTIFICATIONS)
-                    .selector("close-notices")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if in_call {
-                            this.close_call_notices(cx);
-                        } else {
-                            this.state.update(cx, |state, cx| state.close_notices(cx));
-                        }
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(4.0))
+                    .children(mark_all)
+                    .child(
+                        Button::new("close-notices")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::X)
+                            .tooltip(text::CLOSE_NOTIFICATIONS)
+                            .selector("close-notices")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if in_call {
+                                    this.close_call_notices(cx);
+                                } else {
+                                    this.state.update(cx, |state, cx| state.close_notices(cx));
+                                }
+                            })),
+                    ),
             );
-        let bar = (panel.unread > 0).then(|| {
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .px(u(14.0))
-                .pt(u(8.0))
-                .pb(u(9.0))
-                .bg(Hsla::from(colors.limestone))
-                .border_b_1()
-                .border_color(Hsla::from(colors.rule))
-                .child(
-                    Button::new("mark-all-read")
-                        .icon(Icon::CheckDouble)
-                        .label(if panel.marking {
-                            text::MARKING_ALL_READ
-                        } else {
-                            text::MARK_ALL_READ
-                        })
-                        .disabled(panel.marking)
-                        .selector("mark-all-read")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                state.mark_all_notices_read(server_id, cx);
-                            });
-                        })),
-                )
-        });
         let failed = panel.failed.clone().map(|reason| {
             div().flex_none().px(u(14.0)).pt(u(10.0)).child(
                 Notice::error(reason).selector("notices-failed").action(
@@ -568,11 +567,15 @@ impl Shell {
                 .flex_1()
                 .min_h_0()
         } else {
-            side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
+            side_panel(
+                &theme,
+                text::NOTIFICATIONS,
+                "notices-panel",
+                self.panel_width(Panel::Notices, theme.metrics.side_panel_width, cx),
+            )
         };
         frame
             .child(header)
-            .child(crate::ui::notice_slot("notices-bar-slot").children(bar))
             .child(
                 crate::ui::notice_slot("notices-failed-slot")
                     .children(failed)

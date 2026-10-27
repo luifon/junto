@@ -9,6 +9,8 @@ use gpui::{
 };
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 
+use junto_client_core::settings::Panel;
+
 use super::{Layer, Shell, join, window_controls_height};
 use crate::assets::Icon;
 use crate::state::book::DropTarget;
@@ -145,10 +147,11 @@ impl Shell {
         let width = if collapsed {
             theme.metrics.rail_collapsed_width
         } else {
-            theme.metrics.rail_width
+            self.panel_width(Panel::ServerBook, theme.metrics.rail_width, cx)
         };
         let frame = div()
             .id("server-book")
+            .debug_selector(|| "server-book".to_owned())
             .role(Role::Navigation)
             .aria_label(text::SERVER_BOOK)
             .relative()
@@ -296,6 +299,19 @@ impl Shell {
                 Layer::GroupMenu(_) | Layer::WorkspaceMenu(..) | Layer::ServerMenu
             );
 
+        // An empty server book says so above the field that adds a server.
+        if servers.is_empty() {
+            servers.push(
+                div()
+                    .px(u(14.0))
+                    .pt(u(10.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(colors.bone_3)
+                    .debug_selector(|| "no-servers".to_owned())
+                    .child(text::NO_SERVERS_IN_BOOK)
+                    .into_any_element(),
+            );
+        }
         let asking = self.adding.is_some();
         let help: SharedString = if asking {
             text::ADDRESS_ASKING.into()
@@ -339,9 +355,11 @@ impl Shell {
             .child(
                 div()
                     .id("address-help")
+                    .relative()
                     .h(u(64.0))
                     .overflow_y_scroll()
                     .debug_selector(|| "address-help".to_owned())
+                    .child(crate::ui::area("address-help"))
                     .when(failed, |help| help.role(Role::Alert))
                     .aria_label(help.clone())
                     .mt(u(7.0))

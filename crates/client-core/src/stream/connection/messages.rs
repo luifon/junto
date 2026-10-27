@@ -907,6 +907,17 @@ impl Client {
                     self.model_changed = true;
                 } else if let Some(timeline) = model.timeline_mut(place) {
                     timeline.failed = Some(ReadFailure::of(&error));
+                    match reach {
+                        Reach::Older => {
+                            timeline.reading.older_failed =
+                                timeline.reading.older_failed.wrapping_add(1);
+                        }
+                        Reach::Newer => {
+                            timeline.reading.newer_failed =
+                                timeline.reading.newer_failed.wrapping_add(1);
+                        }
+                        Reach::Open | Reach::End | Reach::At(_) => {}
+                    }
                     self.model_changed = true;
                 }
                 let error = std::sync::Arc::new(error);

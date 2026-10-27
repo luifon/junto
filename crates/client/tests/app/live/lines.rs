@@ -261,11 +261,8 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         ("Ada created this channel", SystemKind::Plain),
         ("Call started by Ada", SystemKind::Start),
         ("Luca joined the call", SystemKind::Plain),
-        ("Ada closed the microphone of Luca", SystemKind::Plain),
-        (
-            "Ada removed the microphone block of Luca",
-            SystemKind::Plain,
-        ),
+        ("Ada blocked the microphone of Luca", SystemKind::Plain),
+        ("Ada unblocked the microphone of Luca", SystemKind::Plain),
         ("Ada started sharing", SystemKind::Start),
         ("Ada changed the settings of the room", SystemKind::Plain),
         ("Ada turned meeting mode on", SystemKind::Start),

@@ -1,9 +1,17 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use std::time::Instant;
+
 use gpui::{
-    DispatchPhase, Div, IntoElement, MouseMoveEvent, ParentElement, Pixels, Styled, canvas, div,
+    App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseDownEvent, MouseMoveEvent,
+    ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, canvas, div,
+    prelude::FluentBuilder,
 };
+
+use super::{StyleExt, icon};
+use crate::assets::Icon;
+use crate::theme::{theme, u};
 
 /// The space of the rows that show a form or a question in place of their content (ADR
 /// 0730). `M` names the form or question of one row.
@@ -16,18 +24,50 @@ use gpui::{
 /// the page, when the page changes and when the layer closes. The space releases itself
 /// when the pointer moves above the row or beside it, where no control under the row is
 /// under the pointer. The answer therefore moves no control under the pointer.
+///
+/// The kept space under the content of the row states the result of the request, in a
+/// frame of the colour of a result that fills it, so that it is no empty band (finding of
+/// the live tests: a large empty space stayed after an action in an expanded row). The space
+/// keeps the height of the form for at most [`super::WAIT_BOUND`]; then the row has its
+/// content and the result at the height of its sentence, and a press in the rows that
+/// moved under a resting pointer is refused for [`super::MOVED_GUARD`] (review L2: the
+/// frame was much taller than its sentence).
 pub struct FormSpace<M> {
     /// The open form and the height of its row as it was drawn last.
     drawn: Rc<Cell<Option<(M, Pixels)>>>,
     /// The form whose request the server did, and the height that its row had then.
     kept: Rc<Cell<Option<(M, Pixels)>>>,
+    /// The sentence of the result of the kept form.
+    result: Rc<RefCell<SharedString>>,
+    /// The height of the rows without their form as they were drawn last, by the first
+    /// form of each row: a form is never lower than its row, so the row does not grow
+    /// when the answer closes the form.
+    closed: Rc<RefCell<Vec<(M, Pixels)>>>,
+    /// The bound of the kept height: the number of the last kept result, the number whose
+    /// timer runs, the kept result has the height of its sentence, and when that change
+    /// moved the rows under a resting pointer.
+    bound: Rc<Cell<Bound>>,
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Bound {
+    kept: u64,
+    timed: u64,
+    over: bool,
+    moved_at: Option<Instant>,
+}
+
+/// The most rows whose height without a form is kept.
+const MOST_CLOSED: usize = 256;
 
 impl<M> Default for FormSpace<M> {
     fn default() -> Self {
         Self {
             drawn: Rc::default(),
             kept: Rc::default(),
+            result: Rc::default(),
+            closed: Rc::default(),
+            bound: Rc::default(),
         }
     }
 }
@@ -37,64 +77,217 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
     /// `open` is the form or question that the page shows now.
     pub fn row(&self, open: Option<M>, modes: &[M], row: impl IntoElement) -> Div {
         // The row is in a part that does not grow, so that a row that grows in its parent
-        // keeps its own height and the kept height is free space under it.
+        // keeps its own height and the kept height is free space under it. Both parts have
+        // the width of their place: as the root of a list item, a part without a width took
+        // the least width of its content, and a line of a transcript was wider than its panel.
         let space = div()
             .flex()
             .flex_col()
             .flex_none()
-            .child(div().flex().flex_col().flex_none().child(row));
+            .w_full()
+            .child(div().flex().flex_col().flex_none().w_full().child(row));
+        let key = modes.first().copied();
         if let Some(open) = open.filter(|open| modes.contains(open)) {
             let drawn = self.drawn.clone();
-            return space.relative().child(
-                canvas(
-                    move |bounds, _, _| drawn.set(Some((open, bounds.size.height))),
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            );
+            let closed = key.and_then(|key| {
+                self.closed
+                    .borrow()
+                    .iter()
+                    .find(|(row, _)| *row == key)
+                    .map(|(_, height)| *height)
+            });
+            return space
+                .relative()
+                .when_some(closed, |space, height| space.min_h(height))
+                .child(
+                    canvas(
+                        move |bounds, _, _| drawn.set(Some((open, bounds.size.height))),
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                );
         }
         match self.kept.get() {
             Some((kept, height)) if modes.contains(&kept) => {
                 let held = self.kept.clone();
-                space.min_h(height).relative().child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, (), window, _| {
-                            window.on_mouse_event(
-                                move |event: &MouseMoveEvent, phase, window, _| {
-                                    let at = event.position;
-                                    let beside = at.x < bounds.left() || at.x > bounds.right();
-                                    if phase == DispatchPhase::Bubble
-                                        && (at.y < bounds.top() || beside)
-                                        && held.get().is_some()
-                                    {
-                                        held.set(None);
-                                        window.refresh();
-                                    }
-                                },
-                            );
-                        },
+                let result = self.result.borrow().clone();
+                let bound = self.bound.clone();
+                let over = bound.get().over;
+                let guard = bound.clone();
+                space
+                    .when(!over, |space| space.min_h(height))
+                    .relative()
+                    // The result fills the space under the content and never makes the row
+                    // taller than the kept height; after the bound it has the height of its
+                    // sentence.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .map(|part| {
+                                if over {
+                                    part.flex_none()
+                                } else {
+                                    part.flex_grow(1.0)
+                                        .flex_shrink_0()
+                                        .flex_basis(gpui::px(0.0))
+                                        .min_h_0()
+                                        .overflow_hidden()
+                                }
+                            })
+                            .child(KeptResult { sentence: result }),
                     )
-                    .absolute()
-                    .size_full(),
-                )
+                    .child(
+                        canvas(
+                            move |area, window, cx| {
+                                let mut now = bound.get();
+                                if now.over || now.timed == now.kept {
+                                    return;
+                                }
+                                now.timed = now.kept;
+                                bound.set(now);
+                                let (number, timer) = (now.kept, bound.clone());
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        cx.background_executor().timer(super::WAIT_BOUND).await;
+                                        let _ = cx.update(|window, cx| {
+                                            let mut now = timer.get();
+                                            if now.kept == number && !now.over {
+                                                now.over = true;
+                                                // Only a pointer that rests in the rows that
+                                                // move guards the next press.
+                                                let at = window.mouse_position();
+                                                let under = at.y >= area.top()
+                                                    && at.x >= area.left()
+                                                    && at.x <= area.right();
+                                                if under && window.is_window_active() {
+                                                    now.moved_at =
+                                                        Some(cx.background_executor().now());
+                                                }
+                                                timer.set(now);
+                                                window.refresh();
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                            },
+                            move |bounds, (), window, _| {
+                                let guarded = guard.clone();
+                                window.on_mouse_event(
+                                    move |event: &MouseDownEvent, phase, _, cx| {
+                                        let at = event.position;
+                                        let beside = at.x < bounds.left() || at.x > bounds.right();
+                                        let moved = guarded.get().moved_at.is_some_and(|at| {
+                                            cx.background_executor()
+                                                .now()
+                                                .saturating_duration_since(at)
+                                                < super::MOVED_GUARD
+                                        });
+                                        if phase == DispatchPhase::Capture
+                                            && moved
+                                            && !beside
+                                            && at.y >= bounds.top()
+                                        {
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                );
+                                window.on_mouse_event(
+                                    move |event: &MouseMoveEvent, phase, window, _| {
+                                        let at = event.position;
+                                        let beside = at.x < bounds.left() || at.x > bounds.right();
+                                        if phase == DispatchPhase::Bubble
+                                            && (at.y < bounds.top() || beside)
+                                            && held.get().is_some()
+                                        {
+                                            held.set(None);
+                                            window.refresh();
+                                        }
+                                    },
+                                );
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
             }
-            _ => space,
+            _ => match key {
+                Some(key) => {
+                    let closed = self.closed.clone();
+                    space.relative().child(
+                        canvas(
+                            move |bounds, _, _| {
+                                let mut rows = closed.borrow_mut();
+                                rows.retain(|(row, _)| *row != key);
+                                if rows.len() >= MOST_CLOSED {
+                                    rows.remove(0);
+                                }
+                                rows.push((key, bounds.size.height));
+                            },
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                }
+                None => space,
+            },
         }
     }
 
     /// The server did the request of the open form `open`, which closes now: its row keeps
-    /// the height that it was drawn with.
-    pub fn keep(&mut self, open: M) {
+    /// the height that it was drawn with, and states `result` in the space under its
+    /// content.
+    pub fn keep(&mut self, open: M, result: impl Into<SharedString>) {
         self.kept
             .set(self.drawn.get().filter(|(drawn, _)| *drawn == open));
+        *self.result.borrow_mut() = result.into();
+        let mut bound = self.bound.get();
+        bound.kept += 1;
+        bound.over = false;
+        bound.moved_at = None;
+        self.bound.set(bound);
     }
 
     /// The person opened or put away a form or question, the page changed or the layer
     /// closed: no row keeps a height.
     pub fn release(&mut self) {
         self.kept.set(None);
+    }
+}
+
+/// The result of a request in the space that its row keeps.
+#[derive(gpui::IntoElement)]
+struct KeptResult {
+    sentence: SharedString,
+}
+
+impl RenderOnce for KeptResult {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        div()
+            .debug_selector(|| "kept-result".to_owned())
+            .relative()
+            .child(super::area(super::KEPT))
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .items_start()
+            .gap(u(8.0))
+            .mt(u(6.0))
+            .mb(u(6.0))
+            .px(u(10.0))
+            .py(u(8.0))
+            .rounded(u(theme.metrics.radius))
+            .border_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.cypress_wash))
+            .typeface(theme.types.notice, &theme)
+            .ink(colors.ink)
+            .child(icon(Icon::Check, 15.0, colors.cypress_ink))
+            .child(div().flex_1().min_w_0().child(self.sentence))
     }
 }
 

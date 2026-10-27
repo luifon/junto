@@ -469,10 +469,15 @@ impl Shell {
         };
         let who = div()
             .flex_none()
+            .min_w_0()
             .when(wide, |who| who.w(u(236.0)))
             .child(
+                // The mark of the former speaker and the mark of a correction go under the
+                // name where the line is narrow, so the control at the right of the line
+                // stays in view (ADR 0730).
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(u(7.0))
                     .text_size(u(14.0))
@@ -1549,8 +1554,10 @@ impl Shell {
                     .role(Role::List)
                     .aria_label(text::TRANSCRIPT)
                     .debug_selector(|| "transcript-lines".to_owned())
+                    .relative()
                     .size_full()
-                    .child(list(state.clone(), render).size_full()),
+                    .child(list(state.clone(), render).size_full())
+                    .child(crate::ui::area("transcript-lines")),
             )
             .child(
                 div().absolute().inset_0().child(
@@ -1668,9 +1675,18 @@ impl Shell {
                 self.transcript_lines(server_id, panel, transcript, open, names, *when, &theme, cx)
             }
         };
-        side_panel(&theme, text::TRANSCRIPT, "transcript-panel")
-            .child(header)
-            .child(body)
-            .into_any_element()
+        side_panel(
+            &theme,
+            text::TRANSCRIPT,
+            "transcript-panel",
+            self.panel_width(
+                junto_client_core::settings::Panel::Transcript,
+                theme.metrics.side_panel_width,
+                cx,
+            ),
+        )
+        .child(header)
+        .child(body)
+        .into_any_element()
     }
 }

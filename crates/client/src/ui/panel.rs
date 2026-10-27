@@ -494,14 +494,12 @@ impl RenderOnce for StatePanel {
                         .children(self.actions),
                 )
             });
-        // The space above the statement and the part under it grow alike from nothing,
-        // so the statement is centred whatever the part under it holds. The part under it
-        // keeps a height of its own also when it is empty, so that a short main area
-        // shows the start of what arrives there without a move of the statement.
+        // The statement starts at the top of its area, and what arrives under it grows
+        // downward and moves nothing above it (ADR 0730).
         let after = div()
             .id("state-after")
             .flex_1()
-            .min_h(u(96.0))
+            .min_h_0()
             .w_full()
             .max_w(u(520.0))
             .overflow_y_scroll()
@@ -512,18 +510,20 @@ impl RenderOnce for StatePanel {
             })
             .children(self.after);
         div()
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
             .items_center()
             .px(u(24.0))
-            .pb(u(48.0))
+            .pt(u(32.0))
+            .pb(u(24.0))
             .when_some(self.selector, |panel, selector| {
                 panel.debug_selector(|| selector.to_owned())
             })
-            .child(div().flex_1().min_h_0())
             .child(stated)
             .child(after)
+            .child(super::area(self.selector.unwrap_or("state-panel")))
     }
 }

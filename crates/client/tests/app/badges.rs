@@ -660,10 +660,8 @@ fn the_chat_tab_counts_the_unread_messages_of_the_call_while_another_tab_is_show
 }
 
 /// In a window of the least size the buttons of the header that open the panel of a call
-/// draw the count of their tab inside the window. Ignored until the header of a call keeps
-/// these buttons inside a window of 720 points (the layout branch corrects the header).
+/// draw the count of their tab inside the window.
 #[gpui::test]
-#[ignore = "waits for the correction of the call header in a narrow window"]
 fn the_buttons_of_the_panel_in_a_narrow_window_draw_the_counts_of_their_tabs(
     cx: &mut TestAppContext,
 ) {

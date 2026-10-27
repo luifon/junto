@@ -114,6 +114,8 @@ impl Shell {
                     .child(choice),
             );
         }
+        // The state of the read follows the rows, so an answer moves no row (ADR 0730).
+        let list = list.children(status.map(|status| div().flex_none().pt(u(6.0)).child(status)));
         // "Show more" stands under the list, at a place of its own in every state: the rows
         // of its answer join the list after the rows before, and nothing moves under the
         // pointer (ADR 0730).
@@ -143,11 +145,6 @@ impl Shell {
                 div().mt(u(10.0)).child(
                     Field::new(&self.contact_part, text::CONTACT_PART).selector("contact-part"),
                 ),
-            )
-            .child(
-                crate::ui::notice_slot("contacts-status-slot")
-                    .mt(u(6.0))
-                    .children(status),
             )
             .child(
                 div()

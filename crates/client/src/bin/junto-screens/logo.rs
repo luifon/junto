@@ -138,6 +138,16 @@ pub fn draw(studio: &mut Studio) -> Result<(), String> {
             shell.submit_admin_form(window, cx);
         }),
     )?;
+    // The limit was saved: the row keeps its space with the result (ADR 0730).
+    studio.draw_answered(
+        Screen::new("limits-page-saved", owned()),
+        with_logo(|shell, window, cx| {
+            open_server_page(shell, window, cx);
+            shell.set_admin_mode(Some(Mode::Limit(Limit::FileSize)), "", window, cx);
+            shell.type_admin_value("25", window, cx);
+        }),
+        |shell, _, cx| shell.answer_open_admin_form(cx),
+    )?;
     // The server refused the limits.
     studio.draw(
         Screen::new("limits-page-refused", owned()),

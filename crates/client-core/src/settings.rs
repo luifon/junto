@@ -1,6 +1,9 @@
 //! The settings of the interface that belong to one installation and to no server: the
-//! interface scale, the theme, the form of the server book (ADR 0703, ADR 0710) and the key
-//! bindings (ADR 0777).
+//! interface scale, the theme, the form of the server book, the widths of the panels,
+//! whether the panel of a call is closed (ADR 0703, ADR 0710) and the key bindings
+//! (ADR 0777).
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +61,90 @@ pub enum ThemeChoice {
     System,
 }
 
+/// A panel beside the main area whose width the person sets by dragging its edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Panel {
+    ServerBook,
+    Channels,
+    Thread,
+    Pins,
+    Notices,
+    Search,
+    Members,
+    Transcript,
+    /// The panel of the call beside its stage in the main window.
+    Call,
+    /// The panel of the call in the separate call window.
+    CallWindow,
+}
+
+impl Panel {
+    pub const ALL: [Self; 10] = [
+        Self::ServerBook,
+        Self::Channels,
+        Self::Thread,
+        Self::Pins,
+        Self::Notices,
+        Self::Search,
+        Self::Members,
+        Self::Transcript,
+        Self::Call,
+        Self::CallWindow,
+    ];
+
+    /// The narrowest and the widest width of the panel, in pixels of the design.
+    pub const fn bounds(self) -> (u16, u16) {
+        match self {
+            Self::ServerBook => (160, 360),
+            Self::Channels => (200, 420),
+            Self::Call | Self::CallWindow => (280, 720),
+            Self::Thread
+            | Self::Pins
+            | Self::Notices
+            | Self::Search
+            | Self::Members
+            | Self::Transcript => (280, 720),
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The widths that the person gave the panels, in pixels of the design. A panel without
+/// one has the width of the design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PanelWidths([Option<u16>; Panel::ALL.len()]);
+
+impl PanelWidths {
+    pub fn get(&self, panel: Panel) -> Option<u16> {
+        self.0[panel.index()]
+    }
+
+    /// Keeps `width` for `panel`, within the bounds of the panel.
+    pub fn set(&mut self, panel: Panel, width: u16) {
+        let (least, most) = panel.bounds();
+        self.0[panel.index()] = Some(width.clamp(least, most));
+    }
+
+    fn of(stored: &BTreeMap<Panel, u16>) -> Self {
+        let mut widths = Self::default();
+        for (panel, width) in stored {
+            widths.set(*panel, *width);
+        }
+        widths
+    }
+
+    fn stored(&self) -> BTreeMap<Panel, u16> {
+        Panel::ALL
+            .into_iter()
+            .filter_map(|panel| self.get(panel).map(|width| (panel, width)))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterfaceSettings {
     /// The interface scale in percent, from 90 to 150.
@@ -65,6 +152,11 @@ pub struct InterfaceSettings {
     /// The server book shows icons only.
     pub server_book_collapsed: bool,
     pub theme: ThemeChoice,
+    pub panel_widths: PanelWidths,
+    /// The person closed the panel of a call beside its stage in the main window.
+    pub call_panel_closed: bool,
+    /// The same for the separate call window.
+    pub call_window_panel_closed: bool,
 }
 
 impl Default for InterfaceSettings {
@@ -73,6 +165,9 @@ impl Default for InterfaceSettings {
             scale_percent: 100,
             server_book_collapsed: false,
             theme: ThemeChoice::default(),
+            panel_widths: PanelWidths::default(),
+            call_panel_closed: false,
+            call_window_panel_closed: false,
         }
     }
 }
@@ -87,6 +182,28 @@ struct SettingsFile {
     theme: ThemeChoice,
     #[serde(default)]
     keybinds: Keybinds,
+    /// A panel that this client does not know is left out of the file at the next write.
+    #[serde(default, deserialize_with = "known_panels")]
+    panel_widths: BTreeMap<Panel, u16>,
+    #[serde(default)]
+    call_panel_closed: bool,
+    #[serde(default)]
+    call_window_panel_closed: bool,
+}
+
+/// The widths of the panels that this client knows; a panel of a later client is skipped.
+fn known_panels<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<Panel, u16>, D::Error> {
+    let all = BTreeMap::<String, u16>::deserialize(deserializer)?;
+    Ok(all
+        .into_iter()
+        .filter_map(|(name, width)| {
+            serde_json::from_value::<Panel>(serde_json::Value::String(name))
+                .ok()
+                .map(|panel| (panel, width))
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +237,9 @@ impl SettingsStore {
                 .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
             server_book_collapsed: file.server_book_collapsed,
             theme: file.theme,
+            panel_widths: PanelWidths::of(&file.panel_widths),
+            call_panel_closed: file.call_panel_closed,
+            call_window_panel_closed: file.call_window_panel_closed,
         };
         Ok((settings, file.keybinds.checked()))
     }
@@ -176,6 +296,9 @@ impl SettingsStore {
                 server_book_collapsed: settings.server_book_collapsed,
                 theme: settings.theme,
                 keybinds: keybinds.clone(),
+                panel_widths: settings.panel_widths.stored(),
+                call_panel_closed: settings.call_panel_closed,
+                call_window_panel_closed: settings.call_window_panel_closed,
             },
         )?;
         Ok((settings, keybinds))
@@ -201,15 +324,42 @@ mod tests {
         assert_eq!(store.load().unwrap(), InterfaceSettings::default());
         assert!(!data_dir.root().join(SETTINGS_FILE).exists());
 
+        let mut panel_widths = PanelWidths::default();
+        panel_widths.set(Panel::Call, 420);
+        panel_widths.set(Panel::ServerBook, 900);
         let chosen = InterfaceSettings {
             scale_percent: 125,
             server_book_collapsed: true,
             theme: ThemeChoice::Dark,
+            panel_widths,
+            call_panel_closed: true,
+            call_window_panel_closed: false,
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
+        let loaded = store.load().unwrap().panel_widths;
+        assert_eq!(loaded.get(Panel::Call), Some(420));
+        // A width beyond the bounds of its panel is kept as the nearest bound.
+        assert_eq!(
+            loaded.get(Panel::ServerBook),
+            Some(Panel::ServerBook.bounds().1)
+        );
+        assert_eq!(loaded.get(Panel::Thread), None);
         let text = fs::read_to_string(data_dir.root().join(SETTINGS_FILE)).unwrap();
         assert!(text.contains("\"format_version\": 3"), "{text}");
+    }
+
+    #[test]
+    fn the_width_of_a_panel_that_this_client_does_not_know_is_skipped() {
+        let (_directory, data_dir, store) = store();
+        fs::write(
+            data_dir.root().join(SETTINGS_FILE),
+            r#"{"format_version":1,"scale_percent":100,"panel_widths":{"call":400,"later_panel":300,"thread":10}}"#,
+        )
+        .unwrap();
+        let widths = store.load().unwrap().panel_widths;
+        assert_eq!(widths.get(Panel::Call), Some(400));
+        assert_eq!(widths.get(Panel::Thread), Some(Panel::Thread.bounds().0));
     }
 
     #[test]
@@ -364,6 +514,9 @@ mod tests {
             scale_percent: 125,
             server_book_collapsed: true,
             theme: ThemeChoice::Light,
+            panel_widths: PanelWidths::default(),
+            call_panel_closed: false,
+            call_window_panel_closed: false,
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

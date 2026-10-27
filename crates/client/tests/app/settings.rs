@@ -126,6 +126,15 @@ fn the_dark_theme_is_chosen_in_the_interface_section_and_kept(cx: &mut TestAppCo
     let stored = std::fs::read_to_string(directory.path().join("junto").join("settings.json"))
         .expect("the settings are written");
     assert!(stored.contains("\"theme\": \"dark\""), "{stored}");
+    // A new start of the application draws its first window in the dark theme. The theme
+    // of the test application is set back to the light one before, so that the window
+    // shows what the start reads from the settings.
+    window.close();
+    cx.update(|cx| theme::apply(ThemeChoice::Light, cx));
+    let mut window = crate::harness::open(cx, directory.path());
+    assert_eq!(colours(&mut window), Theme::broadcast().colors);
+    window.click("app-settings");
+    window.click("settings-section-interface");
     window.click("theme-0");
     assert_eq!(colours(&mut window), Theme::stone().colors);
 }

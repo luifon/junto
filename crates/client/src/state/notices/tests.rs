@@ -1415,6 +1415,7 @@ fn the_text_of_a_system_notification_is_one_line_of_a_bounded_length() {
         sha256: String::new(),
         width: None,
         height: None,
+        frames: None,
     }];
     scene.notice(NotificationKind::Mention, message, 1);
     let told = scene.alerts(&mut seen);
@@ -1764,7 +1765,7 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
         told.show[0].0.tag,
         entry_request_tag(scene.server_id, new.id)
     );
-    assert_eq!(told.show[0].0.title, "Ana asks to enter Daily");
+    assert_eq!(told.show[0].0.title, "Ana asks to join Daily");
     assert_eq!(told.show[0].1, AlertTarget::Call(scene.server_id));
     assert_eq!(scene.alerts(&mut seen), Alerts::default());
 

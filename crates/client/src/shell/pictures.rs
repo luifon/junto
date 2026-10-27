@@ -11,7 +11,11 @@ use junto_client_core::protocol::ids::AttachmentId;
 use junto_client_core::protocol::message::Attachment;
 
 /// How many pictures of messages the window holds.
-pub(crate) const MOST_PICTURES: usize = 48;
+pub(crate) const MOST_PICTURES: usize = 128;
+/// The most bytes of the pictures that the window holds. Above it the pictures that the
+/// last drawing did not ask for are dropped, the oldest first; the pictures that one
+/// drawing asks for are kept above it.
+pub(crate) const MOST_HELD_BYTES: u64 = 96 * 1024 * 1024;
 /// How many pictures of one owner are read at one time. A picture that finds no free read
 /// is asked for again when the window is drawn after a read has ended. The reads of one
 /// server do not count for another, so a server that answers slowly delays its own
@@ -28,15 +32,31 @@ pub(crate) struct PictureKey {
     pub owner: Owner,
     pub attachment_id: AttachmentId,
     pub sha256: String,
+    /// The size in pixels of the device that the picture was reduced to fit. A window that
+    /// draws pictures larger after a change of its scale reads them again at that size; a
+    /// window that draws them smaller uses the held copy ([`Pictures::covering`]).
+    pub fit: (u32, u32),
 }
 
 impl PictureKey {
-    pub(crate) fn of(owner: Owner, attachment: &Attachment) -> Self {
+    pub(crate) fn of(owner: Owner, attachment: &Attachment, fit: (u32, u32)) -> Self {
         Self {
             owner,
             attachment_id: attachment.id,
             sha256: attachment.sha256.clone(),
+            fit,
         }
+    }
+}
+
+/// The bytes that a held picture takes.
+pub(crate) trait Weight {
+    fn bytes(&self) -> u64;
+}
+
+impl Weight for std::sync::Arc<gpui::RenderImage> {
+    fn bytes(&self) -> u64 {
+        super::decode::held_bytes(self)
     }
 }
 
@@ -96,6 +116,8 @@ pub(crate) struct Pictures<Image> {
     flying: HashMap<Owner, usize>,
     /// The images that left the list and that the window has not released yet.
     dropped: Vec<Image>,
+    /// The bytes of the held images.
+    bytes: u64,
 }
 
 impl<Image> Default for Pictures<Image> {
@@ -107,13 +129,44 @@ impl<Image> Default for Pictures<Image> {
             reads: 0,
             flying: HashMap::new(),
             dropped: Vec::new(),
+            bytes: 0,
         }
     }
 }
 
-impl<Image> Pictures<Image> {
+impl<Image: Weight> Pictures<Image> {
+    /// The bytes of the held images.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
     pub(crate) fn get(&self, key: &PictureKey) -> Option<&Picture<Image>> {
         self.held.get(key).map(|held| &held.picture)
+    }
+
+    /// The key of the smallest read copy of the file of `key` for its owner that was reduced
+    /// to fit a size at least as large as `key.fit`: a picture drawn smaller after a change
+    /// of the scale of the window uses it, and nothing is read again (review M7).
+    pub(crate) fn covering(&self, key: &PictureKey) -> Option<PictureKey> {
+        self.held
+            .iter()
+            .filter(|(held, picture)| {
+                held.owner == key.owner
+                    && held.attachment_id == key.attachment_id
+                    && held.sha256 == key.sha256
+                    && held.fit.0 >= key.fit.0
+                    && held.fit.1 >= key.fit.1
+                    && matches!(picture.picture, Picture::Ready(_))
+            })
+            .min_by_key(|(held, _)| u64::from(held.fit.0) * u64::from(held.fit.1))
+            .map(|(held, _)| held.clone())
+    }
+
+    /// How many reads of pictures the window started. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn reads(&self) -> u64 {
+        self.reads
     }
 
     /// A drawing of the window starts. The pictures that it asks for are in use.
@@ -210,8 +263,12 @@ impl<Image> Pictures<Image> {
         self.end_read(key);
         match self.held.get_mut(key) {
             Some(held) if matches!(held.picture, Picture::Reading(of) if of == number) => {
+                let read = matches!(outcome, Outcome::Read(_));
                 held.picture = match outcome {
-                    Outcome::Read(image) => Picture::Ready(image),
+                    Outcome::Read(image) => {
+                        self.bytes += image.bytes();
+                        Picture::Ready(image)
+                    }
                     Outcome::Refused => Picture::Failed,
                     Outcome::Unanswered => {
                         held.unanswered = held.unanswered.saturating_add(1);
@@ -222,6 +279,9 @@ impl<Image> Pictures<Image> {
                         }
                     }
                 };
+                if read {
+                    self.shed(key);
+                }
                 true
             }
             _ => {
@@ -255,7 +315,26 @@ impl<Image> Pictures<Image> {
             ..
         }) = self.held.remove(key)
         {
+            self.bytes = self.bytes.saturating_sub(image.bytes());
             self.dropped.push(image);
+        }
+    }
+
+    /// Drops the oldest read pictures that the last drawing did not ask for, other than
+    /// `kept`, while the held images take more than [`MOST_HELD_BYTES`].
+    fn shed(&mut self, kept: &PictureKey) {
+        while self.bytes > MOST_HELD_BYTES {
+            let drawing = self.drawing;
+            let oldest = self.order.iter().position(|key| {
+                key != kept
+                    && self.held.get(key).is_some_and(|held| {
+                        matches!(held.picture, Picture::Ready(_)) && held.used < drawing
+                    })
+            });
+            let Some(gone) = oldest.and_then(|at| self.order.remove(at)) else {
+                return;
+            };
+            self.forget(&gone);
         }
     }
 
@@ -274,6 +353,17 @@ impl<Image> Pictures<Image> {
             })
             .map(|(key, _)| key.owner)
             .collect()
+    }
+
+    /// A held image of this file that is read.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn ready_image_of(&self, attachment_id: AttachmentId) -> Option<&Image> {
+        self.held
+            .iter()
+            .find_map(|(key, held)| match &held.picture {
+                Picture::Ready(image) if key.attachment_id == attachment_id => Some(image),
+                _ => None,
+            })
     }
 }
 
@@ -294,11 +384,34 @@ mod tests {
         }
     }
 
+    impl Weight for &str {
+        fn bytes(&self) -> u64 {
+            0
+        }
+    }
+
+    impl Weight for usize {
+        fn bytes(&self) -> u64 {
+            0
+        }
+    }
+
+    /// A picture of this many bytes.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Weighed(u64);
+
+    impl Weight for Weighed {
+        fn bytes(&self) -> u64 {
+            self.0
+        }
+    }
+
     fn key(owner: Owner, attachment_id: AttachmentId, sha256: &str) -> PictureKey {
         PictureKey {
             owner,
             attachment_id,
             sha256: sha256.to_owned(),
+            fit: (584, 440),
         }
     }
 
@@ -308,11 +421,50 @@ mod tests {
 
     /// One drawing of the window that asks for these pictures, and the reads that start
     /// after it.
-    fn draw<Image>(pictures: &mut Pictures<Image>, asked: &[PictureKey]) -> Vec<(PictureKey, u64)> {
+    fn draw<Image: Weight>(
+        pictures: &mut Pictures<Image>,
+        asked: &[PictureKey],
+    ) -> Vec<(PictureKey, u64)> {
         draw_at(pictures, asked, now())
     }
 
-    fn draw_at<Image>(
+    #[test]
+    fn the_held_pictures_stay_within_their_bytes_except_the_ones_in_use() {
+        const MIB: u64 = 1024 * 1024;
+        let mut pictures = Pictures::<Weighed>::default();
+        let asked = owner();
+        let keys: Vec<PictureKey> = (0..8)
+            .map(|_| key(asked, AttachmentId::generate(), "aa"))
+            .collect();
+        // Each view shows two pictures of 30 MiB.
+        for view in keys.chunks(2) {
+            for (key, number) in draw(&mut pictures, view) {
+                pictures.settle(&key, number, Outcome::Read(Weighed(30 * MIB)), now());
+            }
+            assert!(pictures.bytes() <= MOST_HELD_BYTES, "{}", pictures.bytes());
+        }
+        // The pictures of the last view and the newest one before it are held.
+        assert_eq!(pictures.bytes(), 90 * MIB);
+        for gone in &keys[..5] {
+            assert_eq!(pictures.get(gone), None);
+        }
+        for held in &keys[5..] {
+            assert_eq!(pictures.get(held), Some(&Picture::Ready(Weighed(30 * MIB))));
+        }
+        assert_eq!(pictures.take_dropped().len(), 5);
+        // One view with four such pictures holds all four, above the bound.
+        let mut started = draw(&mut pictures, &keys[..4]);
+        started.sort_by_key(|(_, number)| *number);
+        for (key, number) in started {
+            pictures.settle(&key, number, Outcome::Read(Weighed(30 * MIB)), now());
+        }
+        for in_view in &keys[..4] {
+            assert!(pictures.get(in_view).is_some());
+        }
+        assert_eq!(pictures.bytes(), 120 * MIB);
+    }
+
+    fn draw_at<Image: Weight>(
         pictures: &mut Pictures<Image>,
         asked: &[PictureKey],
         now: Instant,
@@ -329,7 +481,7 @@ mod tests {
     }
 
     /// Asks for one picture in a drawing and takes the number of its read.
-    fn read<Image>(pictures: &mut Pictures<Image>, key: &PictureKey) -> u64 {
+    fn read<Image: Weight>(pictures: &mut Pictures<Image>, key: &PictureKey) -> u64 {
         let started = draw(pictures, std::slice::from_ref(key));
         assert_eq!(started.len(), 1, "the read starts");
         started[0].1

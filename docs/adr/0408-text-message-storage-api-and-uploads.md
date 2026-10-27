@@ -239,10 +239,39 @@ Attachments:
   result after that response, so the response never promises an unchanged upload.
   A hash mismatch is recorded durably and releases the reservation; later completion
   attempts return that failure without reading or hashing the file again.
-  Still PNG, JPEG and WebP files up to 8 MiB with dimensions up to 1,024 per side get
-  preview metadata using the avatar header checker. Other files remain downloads with
-  `application/octet-stream`. The server does not decode images. Clients treat attachments
-  as untrusted files.
+  PNG, JPEG, WebP and GIF files up to 32 MiB get preview metadata: the media type, the
+  size, and for an animation the number of its frames (`frames`, at least 2; migration
+  0041 adds the column, and the copy of a thread fork keeps it). An animation is a GIF
+  with more than one image, a WebP file with the animation flag and its frame chunks, or
+  a PNG file with an animation chunk; a GIF with one image is a still picture of the type
+  `image/gif`. The server reads the parts of the file that state these in the pass that
+  checks the chunks and computes the hash, with one chunk in memory, and decodes no image
+  data. Avatars and logos keep the still PNG, JPEG and WebP of ADR 0119.
+  The stated size is the size after the turn of the EXIF orientation: the orientations 5
+  to 8 exchange the width and the height. The server reads the first EXIF segment of a
+  JPEG before its frame header, an `eXIf` chunk of a PNG before its image data, and the
+  `EXIF` chunk of a WebP file whose header has the EXIF flag, each up to 65,536 bytes.
+  Reason: a phone stores a portrait photo as 4032 × 3024 pixels with the orientation 6,
+  and the card of the picture had landscape proportions (review H1). Tests:
+  `image::tests::a_picture_turned_by_its_exif_orientation_states_its_turned_size` and the
+  API test `previews_state_the_size_of_a_photo_after_its_exif_orientation`.
+  The bounds: a still picture has at most 33,554,432 pixels, the 128 MiB as RGBA that a
+  client decodes before it reduces the picture, and at most 16,384 pixels per side, the
+  longest side of a WebP file. An animation has a canvas of at most 4,194,304 pixels
+  (16 MiB as RGBA, decoded once for each frame), at most 2,048 frames, and at most
+  1,073,741,824 pixels in all its frames together, which bound the time of its decoding.
+  32 MiB is the most that a client reads into memory to draw a picture. The pixel bound
+  covers screenshots of screens up to 8K (7680 × 4320) and photos of 24 megapixels; a
+  photo of 48 megapixels and a file above 32 MiB remain files. HEIC and AVIF files remain files: the decoders of the
+  client (the `image` crate) read neither without a C library (libheif, dav1d). Every
+  other file, a file above a bound and an animation without frames remain downloads with
+  `application/octet-stream`.
+  Before, only still PNG, JPEG and WebP files up to 8 MiB and 16,777,216 pixels got the
+  metadata, so a GIF, an animated WebP or PNG, a PNG screenshot above 8 MiB and a photo
+  above 16 megapixels were rows of files; before that the bound was 1,024 pixels per side.
+  A client shows a picture reduced in a list and at the size of its place in its viewer, and plays
+  an animation (ADR 0740). A file uploaded before a change keeps the metadata it got.
+  Clients treat attachments as untrusted files.
 - Sending claims complete uploads once, in the message transaction. Upload ownership,
   place and expiry are checked again. An attachment cannot be reused by another message.
 - Each attachment of a message stores its index in the `attachments` list of the send

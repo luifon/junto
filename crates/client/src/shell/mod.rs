@@ -12,14 +12,19 @@ mod camera;
 mod channels;
 mod composer;
 mod contacts;
+mod decode;
 pub mod detached;
 mod direct;
+mod edges;
 mod feed;
 mod invited;
 mod join;
 mod keybinds;
 pub mod linking;
 mod main_area;
+mod moving;
+/// The least time between two drawings that the animations of a window ask for.
+pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
 mod panic_notice;
 mod people;
@@ -38,6 +43,7 @@ pub mod share;
 mod threads;
 pub mod title_bar;
 mod transcript_edit;
+mod viewer;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -129,6 +135,8 @@ pub(crate) enum Layer {
     /// The chooser of a new direct conversation (ADR 0307). The state of the application
     /// holds the accounts that it lists.
     NewDirect,
+    /// The viewer of the pictures of a message (ADR 0740).
+    Picture(Box<viewer::PictureViewer>),
 }
 
 /// What the emoji of the picker is for.
@@ -248,6 +256,12 @@ pub struct Shell {
     expanded_while_narrow: bool,
     /// The width of the server book as it was drawn last, in design pixels.
     pub(crate) rail_width: f32,
+    /// The drag of the edge of a panel that is on its way.
+    edge_drag: Option<edges::Drag>,
+    /// The width of the window as it was drawn last, in design pixels.
+    window_width: f32,
+    /// The keyboard focus of the edge of each panel.
+    edge_focus: HashMap<junto_client_core::settings::Panel, FocusHandle>,
 
     // The side panel.
     pub(crate) members_open: bool,
@@ -261,8 +275,16 @@ pub struct Shell {
     pub(crate) invitations_newest: Option<junto_client_core::protocol::ids::CallInvitationId>,
     /// The panel of the call lies over the content of a narrow window.
     pub(crate) call_panel_open: bool,
-    /// The person closed the panel of the call beside the stage of a wide window.
-    pub(crate) call_panel_hidden: bool,
+    /// The panel of the call lies over the stage in this window, as it was drawn last: its
+    /// open state then lasts only while it is open, and is not kept in the settings.
+    pub(crate) call_panel_overlay: bool,
+    /// The tiles of the stage of the call as they were drawn last: a notice under the stage
+    /// waits while the pointer is on one of them (ADR 0730).
+    pub(crate) stage_controls: crate::ui::MovedControls,
+    /// The form of the header of this window that fits its width (ADR 0730).
+    pub(crate) header_fit: crate::ui::Fit,
+    /// The server book is drawn as its row of icons in this drawing.
+    pub(crate) book_collapsed: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
@@ -286,6 +308,13 @@ pub struct Shell {
     /// How often the window was drawn.
     #[cfg(feature = "test-support")]
     draws: usize,
+    /// A change of the state came since the view was last derived (review M8).
+    view_stale: bool,
+    /// The view was derived from the state since the last drawing.
+    derived_since_drawing: bool,
+    /// How often the view was derived from the state. A test reads it.
+    #[cfg(feature = "test-support")]
+    derivations: usize,
     /// How often received pictures asked for a drawing of the window.
     #[cfg(feature = "test-support")]
     pub(crate) picture_draws: usize,
@@ -319,8 +348,14 @@ pub struct Shell {
     pub(crate) servers_scroll: ScrollHandle,
     pub(crate) channels_scroll: ScrollHandle,
     pub(crate) directs_scroll: ScrollHandle,
-    pub(crate) members_scroll: ScrollHandle,
-    pub(crate) call_members_scroll: ScrollHandle,
+    /// The member list of the side panel, which lays out only the rows in view, and the
+    /// rows that it holds.
+    pub(crate) members_list: gpui::ListState,
+    pub(crate) member_rows: Option<std::rc::Rc<Vec<crate::state::view::MemberRow>>>,
+    /// The member list of the panel of a call, which lays out only the rows in view, and
+    /// the people that it lists.
+    pub(crate) call_members_list: gpui::ListState,
+    pub(crate) call_member_rows: Option<call::CallMemberRows>,
     pub(crate) call_settings_scroll: ScrollHandle,
 
     // The fields of the layers.
@@ -338,6 +373,9 @@ pub struct Shell {
     /// The list of the messages of the shown channel.
     pub(crate) feed: feed::FeedList,
     pub(crate) message_pictures: feed::MessagePictures,
+    /// The reads of the picture viewers of this window, so that a read of a closed viewer
+    /// never passes for a read of a later one.
+    pub(crate) viewer_reads: u64,
     /// The tokens of the code blocks that the window drew.
     pub(crate) code_tokens: feed::CodeTokens,
     pub(crate) composer: composer::Composer,
@@ -570,42 +608,21 @@ impl Shell {
                     }
                 }
             }),
-            cx.observe_in(&state, window, |this, state, window, cx| {
+            // The first change of the state after a drawing derives the view at once; a later
+            // change before the next drawing marks it as stale, and that drawing derives it
+            // once, however many changes came (review M8: each answer of a profile derived the
+            // whole view).
+            cx.observe_in(&state, window, |this, _, window, cx| {
                 #[cfg(feature = "test-support")]
                 crate::panics::test_support::reached(
                     crate::panics::test_support::Handler::StateObserver,
                 );
-                // A share that is being chosen belongs to one call, in both windows.
-                this.drop_stale_share_picker(window, cx);
-                // The call window shows the place of the call, with its chat (ADR 0772).
-                let view = if this.detached {
-                    state.read(cx).call_view()
+                if this.derived_since_drawing {
+                    this.view_stale = true;
                 } else {
-                    if let Some((submitted, result)) =
-                        state.update(cx, |state, _| state.take_name_result())
-                    {
-                        this.name_was_decided(&submitted, result, window, cx);
-                    }
-                    state.read(cx).view()
-                };
-                // A layer whose server is gone, or whose work is done, has nothing to show.
-                this.drop_stale_layer(&view, window, cx);
-                // The list of the members who can be invited belongs to the call that
-                // the window shows.
-                if view.lists().is_none_or(|lists| lists.call.is_none()) {
-                    this.invite_open = false;
+                    this.derived_since_drawing = true;
+                    this.take_state(window, cx);
                 }
-                // A search that ended empties its field.
-                let searched = this
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.search_text.is_some());
-                if searched && view.search_text.is_none() {
-                    this.type_search("", window, cx);
-                }
-                this.view = Some(view.clone());
-                this.take_handed_drafts(window, cx);
-                this.feed_changed(&view, window, cx);
                 cx.notify();
             }),
             // Only the main window shows the administration.
@@ -712,10 +729,16 @@ impl Shell {
             server_menu_closed_by_press: false,
             expanded_while_narrow: false,
             rail_width: 0.0,
+            edge_drag: None,
+            window_width: f32::MAX,
+            edge_focus: HashMap::new(),
             members_open: false,
             call_tab: CallTab::default(),
             call_panel_open: false,
-            call_panel_hidden: false,
+            call_panel_overlay: false,
+            stage_controls: crate::ui::MovedControls::default(),
+            header_fit: crate::ui::Fit::default(),
+            book_collapsed: false,
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
             invitations_newest: None,
@@ -743,6 +766,10 @@ impl Shell {
             main_taken: None,
             #[cfg(feature = "test-support")]
             draws: 0,
+            view_stale: false,
+            derived_since_drawing: false,
+            #[cfg(feature = "test-support")]
+            derivations: 0,
             #[cfg(feature = "test-support")]
             picture_draws: 0,
             share_reads: 0,
@@ -760,8 +787,10 @@ impl Shell {
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
             directs_scroll: ScrollHandle::new(),
-            members_scroll: ScrollHandle::new(),
-            call_members_scroll: ScrollHandle::new(),
+            members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
+            member_rows: None,
+            call_members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
+            call_member_rows: None,
             call_settings_scroll: ScrollHandle::new(),
             name,
             name_error: None,
@@ -772,6 +801,7 @@ impl Shell {
             join_results: 0,
             feed,
             message_pictures: feed::MessagePictures::default(),
+            viewer_reads: 0,
             code_tokens: feed::CodeTokens::default(),
             composer,
             thread_feed,
@@ -1097,6 +1127,52 @@ impl Shell {
         self.drawn.as_ref()
     }
 
+    /// How often the window derived its view from the state.
+    #[cfg(feature = "test-support")]
+    pub fn derivations(&self) -> usize {
+        self.derivations
+    }
+
+    /// Derives the view from the state once for the changes since the last drawing, and
+    /// does what a change of the view asks of the window.
+    fn take_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "test-support")]
+        {
+            self.derivations += 1;
+        }
+        let state = self.state.clone();
+        // A share that is being chosen belongs to one call, in both windows.
+        self.drop_stale_share_picker(window, cx);
+        // The call window shows the place of the call, with its chat (ADR 0772).
+        let view = if self.detached {
+            state.read(cx).call_view()
+        } else {
+            if let Some((submitted, result)) = state.update(cx, |state, _| state.take_name_result())
+            {
+                self.name_was_decided(&submitted, result, window, cx);
+            }
+            state.read(cx).view()
+        };
+        // A layer whose server is gone, or whose work is done, has nothing to show.
+        self.drop_stale_layer(&view, window, cx);
+        // The list of the members who can be invited belongs to the call that the window
+        // shows.
+        if view.lists().is_none_or(|lists| lists.call.is_none()) {
+            self.invite_open = false;
+        }
+        // A search that ended empties its field.
+        let searched = self
+            .view
+            .as_ref()
+            .is_some_and(|view| view.search_text.is_some());
+        if searched && view.search_text.is_none() {
+            self.type_search("", window, cx);
+        }
+        self.view = Some(view.clone());
+        self.take_handed_drafts(window, cx);
+        self.feed_changed(&view, window, cx);
+    }
+
     /// How often the window was drawn for any cause, how often received pictures asked
     /// for a drawing, and the width of the picture of the watched share that the window
     /// holds.
@@ -1202,13 +1278,11 @@ impl Shell {
                 }
             }
             Open::CallTab(tab) => {
-                self.call_panel_open = true;
-                self.call_panel_hidden = false;
+                self.open_call_panel(cx);
                 self.show_call_tab(tab, cx);
             }
             Open::InputDevices => {
-                self.call_panel_open = true;
-                self.call_panel_hidden = false;
+                self.open_call_panel(cx);
                 self.show_call_tab(CallTab::Settings, cx);
                 self.open_device_menu(DeviceKind::Input, window, cx);
             }
@@ -1219,8 +1293,7 @@ impl Shell {
                 cx.notify();
             }
             Open::RoomSettings => {
-                self.call_panel_open = true;
-                self.call_panel_hidden = false;
+                self.open_call_panel(cx);
                 self.show_call_tab(CallTab::Settings, cx);
                 self.call_settings_scroll.scroll_to_bottom();
             }
@@ -1228,8 +1301,7 @@ impl Shell {
                 self.open_layer(Layer::SearchFilter(kind), window, cx);
             }
             Open::MemberPicker => {
-                self.call_panel_open = true;
-                self.call_panel_hidden = false;
+                self.open_call_panel(cx);
                 self.show_call_tab(CallTab::Members, cx);
                 if !self.invite_open {
                     self.toggle_member_picker(window, cx);
@@ -1249,6 +1321,7 @@ impl Shell {
                 .update(cx, |state, _| state.set_input_test(false));
             self.stop_keybind_recording(cx);
         }
+        self.release_viewer_picture(cx);
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
@@ -1284,6 +1357,7 @@ impl Shell {
                 .update(cx, |state, _| state.set_input_test(false));
             self.stop_keybind_recording(cx);
         }
+        self.release_viewer_picture(cx);
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
         cx.notify();
@@ -1444,6 +1518,18 @@ fn logical_width(window: &Window) -> f32 {
     window.viewport_size().width / rem * theme::REM_AT_100
 }
 
+/// The rows of a list that lays out only the rows in view changed: rows are added or
+/// removed at its end, and every row is measured again, with the place of the list kept.
+pub(crate) fn changed_rows(list: &gpui::ListState, count: usize) {
+    let before = list.item_count();
+    if count > before {
+        list.splice(before..before, count - before);
+    } else if count < before {
+        list.splice(count..before, 0);
+    }
+    list.remeasure_items(0..count);
+}
+
 /// The height of the window in pixels of the design.
 fn logical_height(window: &Window) -> f32 {
     let rem = window.rem_size();
@@ -1459,6 +1545,10 @@ impl Render for Shell {
         }
         self.message_pictures.drawing_starts();
         self.notice_list.frame_starts();
+        if std::mem::take(&mut self.view_stale) {
+            self.take_state(window, cx);
+        }
+        self.derived_since_drawing = false;
         if self.detached {
             return self.render_detached(window, cx);
         }
@@ -1511,11 +1601,22 @@ impl Render for Shell {
                 this.keep_focus_in_window(window, cx)
             });
         }
+        self.window_width = logical_width(window);
+        self.book_collapsed = collapsed;
         self.rail_width = if collapsed {
             theme.metrics.rail_collapsed_width
         } else {
-            theme.metrics.rail_width
+            self.panel_width(
+                junto_client_core::settings::Panel::ServerBook,
+                theme.metrics.rail_width,
+                cx,
+            )
         };
+        let channels_width = self.panel_width(
+            junto_client_core::settings::Panel::Channels,
+            theme.metrics.channel_column_width,
+            cx,
+        );
         let frame = title_bar::draws_frame(window, true, cx);
         // A layer covers the columns and not the strip of the window buttons, which stay
         // usable while a dialog is open.
@@ -1528,6 +1629,26 @@ impl Render for Shell {
             .child(self.render_rail(&view, collapsed, narrow, window, cx))
             .child(self.render_channel_column(&view, window, cx))
             .child(self.render_main(&view, narrow, window, cx))
+            // The edges of the two columns lie over them, after them (ADR 0703).
+            .when(!collapsed, |body| {
+                body.child(self.panel_edge(
+                    junto_client_core::settings::Panel::ServerBook,
+                    edges::Side::Right,
+                    self.rail_width,
+                    theme.metrics.rail_width,
+                    window,
+                    cx,
+                ))
+            })
+            .child(self.panel_edge(
+                junto_client_core::settings::Panel::Channels,
+                edges::Side::Right,
+                self.rail_width + channels_width,
+                theme.metrics.channel_column_width,
+                window,
+                cx,
+            ))
+            .children(self.edge_drag_tracking(cx))
             .when(!matches!(self.layer, Layer::None), |body| {
                 body.child(self.render_layer(&view, window, cx))
             });
@@ -1577,7 +1698,7 @@ impl Render for Shell {
             .children(self.render_invitation_cards(
                 &view,
                 theme.metrics.header_height + 8.0,
-                self.rail_width + theme.metrics.channel_column_width,
+                self.rail_width + channels_width,
                 window,
                 cx,
             ))
@@ -1735,6 +1856,7 @@ impl Shell {
                 .as_ref()
                 .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
+            Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1788,6 +1910,7 @@ impl Shell {
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::NewDirect => self.render_new_direct(cx),
+            Layer::Picture(_) => self.render_picture_viewer(window, cx),
         }
     }
 }

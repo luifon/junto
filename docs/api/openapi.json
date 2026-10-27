@@ -11604,6 +11604,15 @@
             "format": "int64",
             "minimum": 0
           },
+          "frames": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The frames of an animated picture (GIF, animated WebP or animated PNG), at least 2.\nAbsent for a still picture and for every other file.",
+            "minimum": 0
+          },
           "height": {
             "type": [
               "integer",

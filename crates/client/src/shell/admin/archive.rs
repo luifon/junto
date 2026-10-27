@@ -274,7 +274,10 @@ impl Shell {
                 ))
                 .into_any_element(),
         };
+        // Each number of days has an element id of its own, so the places of their
+        // refusals keep their own heights (ADR 0730).
         div()
+            .id(SharedString::from(format!("days-{what:?}")))
             .flex()
             .flex_col()
             .flex_none()

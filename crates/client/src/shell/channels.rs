@@ -18,6 +18,8 @@ use crate::state::view::{
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
+use junto_client_core::settings::Panel;
+
 use crate::ui::{
     Avatar, Band, BandKind, Button, ButtonKind, CategoryHeader, ChannelRow, ChannelState,
     OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
@@ -175,7 +177,22 @@ impl Shell {
             (Some(server), Some(lists)) => self
                 .render_channel_list(view, server, lists, &theme, window, cx)
                 .into_any_element(),
-            _ => div().flex_1().into_any_element(),
+            // Without the lists of a server the column says why it lists nothing.
+            (selected, _) => div()
+                .relative()
+                .flex_1()
+                .px(u(14.0))
+                .pt(u(12.0))
+                .typeface(theme.types.small, &theme)
+                .ink(colors.ink_2)
+                .debug_selector(|| "no-channel-list".to_owned())
+                .child(if selected.is_some() {
+                    text::CHANNELS_AFTER_ANSWER
+                } else {
+                    text::NO_SERVER_CHANNELS
+                })
+                .child(crate::ui::area("channel-column-empty"))
+                .into_any_element(),
         };
         let stale = view
             .selected
@@ -189,7 +206,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.channel_column_width))
+            .w(u(self.panel_width(
+                Panel::Channels,
+                theme.metrics.channel_column_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.limestone))
             .border_r_1()
@@ -303,11 +324,16 @@ impl Shell {
             .min_h_0()
             .child(server_part)
             .child(list)
+            // The entry boxes take their height from the end of the channel list, whose rows
+            // stay in place. They scroll only when the column has no room for them, so the
+            // action of a box stays in view at every width of the column (ADR 0739).
             .child(
                 div()
                     .id("channel-entry-notices")
-                    .flex_none()
-                    .max_h(u(180.0))
+                    .debug_selector(|| "channel-entry-notices".to_owned())
+                    .flex_grow_0()
+                    .flex_shrink_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .children(entries),
             )
@@ -661,19 +687,34 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if conversations.is_empty() {
+            conversations.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .h(u(theme.metrics.channel_row_height))
+                    .px(u(14.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_3)
+                    .debug_selector(|| "no-direct-conversations".to_owned())
+                    .child(text::NO_DIRECT_CONVERSATIONS)
+                    .into_any_element(),
+            );
+        }
+        // The list has the height of its rows up to five, and scrolls beyond them. A
+        // conversation that arrives makes it taller when the pointer is not on a control
+        // that it moves (ADR 0730).
         rows.push(
-            div()
-                .flex()
-                .flex_col()
-                .flex_grow_0()
+            crate::ui::held("direct-list-part")
+                .scroll(&self.directs_scroll)
+                .label(text::DIRECT_MESSAGES)
+                .selector("direct-list")
+                .most(u(theme.metrics.channel_row_height * DIRECT_ROWS))
                 .flex_shrink_1()
-                .flex_basis(u(theme.metrics.channel_row_height * DIRECT_ROWS))
                 .min_h(u(theme.metrics.channel_row_height))
-                .child(
-                    ScrollArea::new("direct-list", &self.directs_scroll, text::DIRECT_MESSAGES)
-                        .selector("direct-list")
-                        .children(conversations),
-                )
+                .children(conversations)
+                .child(crate::ui::area("direct-list"))
                 .into_any_element(),
         );
         rows

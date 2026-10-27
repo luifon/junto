@@ -163,6 +163,7 @@ fn file(number: u32, name: &str, bytes: u64, picture: Option<(u32, u32)>) -> Att
         .to_owned(),
         width: picture.map(|size| size.0),
         height: picture.map(|size| size.1),
+        frames: None,
     }
 }
 
@@ -284,6 +285,8 @@ fn daily_chat() -> Made {
     made.system(60, "person_left", Some("Marta"), None);
     let notes = made.message("Carla", 65, "Notes from the Alpha review:");
     notes.attachments = vec![file(3, "alpha-review-notes.pdf", 96_000, None)];
+    let timings = made.message("Ana", 70, "The timeline of the mixdown:");
+    timings.attachments = vec![file(4, "mixdown-timeline.png", 1_200_000, Some((584, 144)))];
     let bruno = made.message(
         "Bruno",
         76,
@@ -363,6 +366,31 @@ fn timeline_picture() -> Vec<u8> {
     }
 }
 
+/// A picture of one colour that grows lighter from top to bottom, with a dark frame.
+fn plain_picture(width: u32, height: u32, colour: [u8; 3]) -> Vec<u8> {
+    let picture = image::RgbaImage::from_fn(width, height, |x, y| {
+        if x < 6 || y < 6 || x + 6 >= width || y + 6 >= height {
+            return image::Rgba([59, 74, 82, 255]);
+        }
+        let light = (y * 60 / height.max(1)) as u8;
+        image::Rgba([
+            colour[0].saturating_add(light),
+            colour[1].saturating_add(light),
+            colour[2].saturating_add(light),
+            255,
+        ])
+    });
+    let mut bytes = Vec::new();
+    let encoded = image::DynamicImage::ImageRgba8(picture).write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    );
+    match encoded {
+        Ok(()) => bytes,
+        Err(_) => Vec::new(),
+    }
+}
+
 pub(crate) type Fixture = (
     HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
     HashMap<(ServerId, u64), UploadProgress>,
@@ -373,6 +401,7 @@ pub(crate) type Fixture = (
 /// Shows the times in UTC, the pictures of the design, and these states of files.
 pub(crate) fn prepare(shell: &mut Shell, fixture: Fixture, cx: &mut gpui::Context<Shell>) {
     shell.show_picture(id(7001), &timeline_picture());
+    shell.show_picture(id(7004), &timeline_picture());
     let (drafts, uploads, downloads, refused) = fixture;
     shell.state().clone().update(cx, |state, cx| {
         state.show_messages_fixture(
@@ -437,6 +466,81 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         )
         .scale(150),
         |shell, _, cx| prepare(shell, none(), cx),
+    )?;
+    // The viewer of the pictures of a message (ADR 0740): the one picture of a message, and
+    // the second of the three pictures of a message at the scale of 150 in a smaller window.
+    let viewed = general();
+    let carla = viewed
+        .messages
+        .iter()
+        .find(|message| !message.attachments.is_empty())
+        .map(|message| (message.id, message.attachments.clone()));
+    if let Some((message_id, pictures)) = carla {
+        studio.draw(
+            Screen::new("messages-picture-viewer", with_timeline(viewed.timeline())),
+            move |shell, window, cx| {
+                prepare(shell, none(), cx);
+                shell.open_picture_viewer(server_id, message_id, pictures, 0, window, cx);
+            },
+        )?;
+    }
+    let mut several = general();
+    let pictures = vec![
+        file(1, "mixdown-timeline.png", 1_200_000, Some((584, 144))),
+        file(11, "room-plan.png", 640_000, Some((640, 420))),
+        file(12, "levels.png", 210_000, Some((300, 500))),
+    ];
+    let shared = several.message("Ana", 100, "The pictures of the room test.");
+    shared.attachments = pictures.clone();
+    let shared_id = shared.id;
+    studio.draw(
+        Screen::new(
+            "messages-picture-viewer-several-150",
+            with_timeline(several.timeline()),
+        )
+        .scale(150)
+        .size(900.0, 640.0),
+        move |shell, window, cx| {
+            prepare(shell, none(), cx);
+            shell.show_picture(id(7011), &plain_picture(640, 420, [143, 177, 191]));
+            shell.show_picture(id(7012), &plain_picture(300, 500, [199, 154, 69]));
+            shell.open_picture_viewer(server_id, shared_id, pictures, 1, window, cx);
+        },
+    )?;
+    // A GIF and a screenshot of a screen of 2560 by 1440 pixels in the list, each in the
+    // width of the list (ADR 0740). The GIF shows its first frame.
+    let mut large = general();
+    let mut moving = file(13, "applause.gif", 2_400_000, Some((498, 280)));
+    moving.media_type = "image/gif".to_owned();
+    moving.frames = Some(24);
+    let shared = large.message(
+        "Ana",
+        100,
+        "The screen of the mixer, and the room after it.",
+    );
+    shared.attachments = vec![
+        file(14, "mixer-screen.png", 3_100_000, Some((2560, 1440))),
+        moving,
+    ];
+    studio.draw(
+        Screen::new(
+            "messages-gif-and-screenshot",
+            with_timeline(large.timeline()),
+        ),
+        move |shell, _, cx| {
+            prepare(shell, none(), cx);
+            shell.show_picture(id(7014), &plain_picture(2560, 1440, [143, 177, 191]));
+            let mut gif = Vec::new();
+            let first = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                498,
+                280,
+                image::Rgba([199, 154, 69, 255]),
+            ))
+            .write_to(&mut std::io::Cursor::new(&mut gif), image::ImageFormat::Gif);
+            if first.is_ok() {
+                shell.show_picture(id(7013), &gif);
+            }
+        },
     )?;
     studio.draw(
         Screen::new(
@@ -740,5 +844,85 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
     let _: MessageId = id(1);
+    Ok(())
+}
+
+/// A GIF of `frames` frames of `width` by `height` pixels, each shown for `hundredths` of a
+/// second, in turn of two colours.
+fn animated_gif(width: u32, height: u32, frames: u32, hundredths: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+        let shown = (0..frames).map(|index| {
+            let colour = if index % 2 == 0 {
+                image::Rgba([199, 154, 69, 255])
+            } else {
+                image::Rgba([143, 177, 191, 255])
+            };
+            image::Frame::from_parts(
+                image::RgbaImage::from_pixel(width, height, colour),
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(hundredths * 10, 1),
+            )
+        });
+        if encoder.encode_frames(shown).is_err() {
+            return Vec::new();
+        }
+    }
+    bytes
+}
+
+/// The cost of an animation in view (review M5): the time of one drawing of the window with a
+/// GIF of 24 frames of 20 ms in the list, and the share of one processor at the most drawings
+/// that the animations of a window ask for. The window test
+/// `pictures::a_fast_animation_draws_the_window_at_most_once_in_its_least_interval` counts
+/// the drawings on a clock that it advances; in this tool the animation asked for no drawing,
+/// with and without an advance of the clock.
+pub(crate) fn measure_animation(studio: &mut Studio) -> Result<(), String> {
+    use std::time::Instant;
+    let mut room = general();
+    let mut moving = file(13, "applause.gif", 2_400_000, Some((498, 280)));
+    moving.media_type = "image/gif".to_owned();
+    moving.frames = Some(24);
+    let shared = room.message("Ana", 100, "The room after the mix.");
+    shared.attachments = vec![moving];
+    let (window, _, _) = studio.open(
+        Screen::new("gif-frames", with_timeline(room.timeline())),
+        Box::new(move |shell: &mut Shell, _, cx| {
+            prepare(shell, none(), cx);
+            shell.show_picture(id(7013), &animated_gif(498, 280, 24, 2));
+        }),
+    )?;
+    studio
+        .cx
+        .update_window(window.into(), |_, window, _| window.activate_window())
+        .map_err(|error| format!("{error:#}"))?;
+    let mut times = Vec::new();
+    for step in 0..65 {
+        let started = Instant::now();
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.refresh())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+        if step >= 5 {
+            times.push(started.elapsed());
+        }
+    }
+    times.sort();
+    let median = times[times.len() / 2];
+    let milliseconds = median.as_secs_f64() * 1_000.0;
+    let interval = junto_client::shell::ANIMATION_INTERVAL.as_secs_f64() * 1_000.0;
+    println!(
+        "a GIF of 20 ms frames in view: a drawing takes {milliseconds:.2} ms (median of 60); \
+         at most one drawing in {interval:.0} ms is {:.1} % of one processor",
+        milliseconds / interval * 100.0
+    );
+    studio
+        .cx
+        .update_window(window.into(), |_, window, _| window.remove_window())
+        .map_err(|error| format!("{error:#}"))?;
+    studio.cx.run_until_parked();
     Ok(())
 }
