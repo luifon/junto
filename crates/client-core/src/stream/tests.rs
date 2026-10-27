@@ -32,6 +32,7 @@ use crate::model::{Loadable, ServerModel};
 use crate::version::{ServerVersion, SupportedVersions};
 
 mod admin;
+mod boundary;
 mod discovery;
 mod messages;
 mod recordings;

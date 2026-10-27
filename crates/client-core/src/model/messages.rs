@@ -841,6 +841,13 @@ impl ServerModel {
         }
         self.outbox.clone_from(&before.outbox);
         self.sent_ids.clone_from(&before.sent_ids);
+        self.received_in.clone_from(&before.received_in);
+        self.withheld = before
+            .withheld
+            .iter()
+            .filter(|held| wanted.contains(&PlaceId::of_message(held)))
+            .cloned()
+            .collect();
         self.attachment_limits.clone_from(&before.attachment_limits);
         for timeline in &before.timelines {
             if wanted.contains(&timeline.place) {

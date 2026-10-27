@@ -7,6 +7,7 @@ mod admin;
 mod calls_live;
 mod departures;
 mod glossary;
+mod history;
 #[allow(dead_code)]
 mod limit;
 mod limit_tests;

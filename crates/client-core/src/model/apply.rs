@@ -171,10 +171,13 @@ impl Part {
             Self::Message(_, message_id) => {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
             }
-            Self::Messages(place, _) => {
-                matches!(event, Event::MessageChanged { place: of, .. }
-                    if PlaceId::of(of) == place.container())
-            }
+            Self::Messages(place, _) => match event {
+                Event::MessageChanged { place: of, .. } => PlaceId::of(of) == place.container(),
+                Event::ChannelHistoryWithdrawn { channel_id, .. } => {
+                    PlaceId::Channel(*channel_id) == place.container()
+                }
+                _ => false,
+            },
             Self::AttachmentLimits => matches!(event, Event::AttachmentLimitsChanged { .. }),
             Self::UnreadThreads => matches!(
                 event,
@@ -190,11 +193,13 @@ impl Part {
                 event,
                 Event::ChannelCreated { .. } | Event::ChannelDeleted { .. }
             ),
-            Self::Pins(channel_id) => matches!(
-                event,
-                Event::MessageChanged { place: of, .. }
-                    if PlaceId::of(of) == PlaceId::Channel(*channel_id)
-            ),
+            Self::Pins(channel_id) => match event {
+                Event::MessageChanged { place: of, .. } => {
+                    PlaceId::of(of) == PlaceId::Channel(*channel_id)
+                }
+                Event::ChannelHistoryWithdrawn { channel_id: of, .. } => of == channel_id,
+                _ => false,
+            },
             // An answer that was read before a deletion can hold the notices of the deleted
             // places, whose messages the state does not place any more: the first page is
             // read again (`replay_reads`).
@@ -909,6 +914,19 @@ impl ServerModel {
                 if known && matches!(id, PlaceId::Channel(_)) {
                     load.push(Part::UnreadThreads);
                 }
+                return Follow::loads(load);
+            }
+            Event::ChannelHistoryWithdrawn { channel_id, .. } => {
+                let (named, reread) = self.withdraw_history(*channel_id);
+                let load = named
+                    .into_iter()
+                    .map(Part::Named)
+                    .chain(
+                        reread
+                            .into_iter()
+                            .map(|place| Part::Messages(place, Reach::Open)),
+                    )
+                    .collect();
                 return Follow::loads(load);
             }
             Event::ThreadRead { root_id, position } => {

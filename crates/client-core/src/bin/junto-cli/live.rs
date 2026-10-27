@@ -970,6 +970,10 @@ fn event_details(event: &Event) -> String {
             "{} message={message_id} position={position} deleted={deleted}",
             message_place(place)
         ),
+        Event::ChannelHistoryWithdrawn {
+            workspace_id,
+            channel_id,
+        } => format!("workspace={workspace_id} channel={channel_id}"),
         Event::MessageRead { place, position } => {
             format!("{} position={position}", message_place(place))
         }

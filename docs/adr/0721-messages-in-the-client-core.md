@@ -40,6 +40,13 @@ Reload:
 - After a snapshot replaced the state, the timelines that readers hold stay in the new state with the mark `stale`, and the waiting messages stay. Each timeline is read again as one page that replaces its messages: the latest page when its reader follows the end, else the page from the position that the reader named last.
 - ADR 0719 discards every part at a reload. A timeline is kept for display only: its content is not trusted, the mark says so, and the page that replaces it is asked for at once. The messages that the unread threads and the notices of the new state name are kept in the same way, and each is read again (ADR 0742).
 
+Channels without read message history (ADR 0304):
+
+- The stream client numbers its connections. A connection counts once its first subscription started, because from then on the server answers the reads of the session by the start of that connection. A read of one message that returns a message of a channel whose history the account may not read notes the connection during which the read was sent.
+- The server refuses the pages of such a channel with `forbidden`. The timeline then opens without a page and without more messages before or after: it holds the messages that the events of the connections bring. A reconnect that continues from the cursor keeps them. A reload keeps the messages that such a read returned and drops the others, which came from pages read with the history.
+- `channel_history_withdrawn` keeps, in the timeline of the channel, its threads, its pin list and the named messages, only the messages that a read of the current connection returned. A withdrawn named message is read again. A `permissions_changed` puts the messages of the current connection aside before it empties the timelines; after the reload, a timeline without the history takes them back, and a page read with the history replaces them.
+- Reason: without the history the server answers no page, so the timeline held no message, and old content that was deleted or edited stayed on the screen. The connection number is exact: it names the connection that the server applied, and it compares no clock. Tests: `stream::tests::boundary`, `model::boundary_tests`, and `history` against the real server in `crates/client-core`.
+
 Read position:
 
 - A reader names the position that the person has seen. The client sends one request per place at a time, the newest position, at most one in a second. A position at or below the read one is not sent.

@@ -9,6 +9,7 @@
 
 mod admin;
 mod apply;
+mod boundary;
 mod bounds;
 mod discovery;
 mod messages;
@@ -20,6 +21,8 @@ mod recordings;
 mod admin_tests;
 #[cfg(test)]
 mod adoption_tests;
+#[cfg(test)]
+mod boundary_tests;
 #[cfg(test)]
 mod discovery_tests;
 #[cfg(test)]
@@ -411,6 +414,16 @@ pub struct ServerModel {
     pub recordings: Vec<Arc<OpenRecording>>,
     /// The highest position of each place that an event named since the snapshot.
     pub(crate) seen_positions: std::collections::BTreeMap<PlaceId, u64>,
+    /// The number that the stream client gave its connection, once the connection was
+    /// subscribed. Without `read_message_history` the server gives the messages that were
+    /// created during the connection that it has subscribed (ADR 0304).
+    pub(crate) connection: Option<u64>,
+    /// The messages that a read of one message returned while the account could not read
+    /// the history of their channel, with the connection in which the read was sent.
+    pub(crate) received_in: std::collections::HashMap<MessageId, u64>,
+    /// The messages of the current connection that a withdrawal of the state took from
+    /// the timelines, until the timeline of their place takes them again.
+    pub(crate) withheld: Vec<Arc<junto_protocol::message::Message>>,
     /// The collections of the administration that a reader has open (ADR 0760).
     pub admin: Arc<AdminModel>,
     /// What the events told of the logo of the server since the snapshot.
@@ -518,6 +531,9 @@ impl ServerModel {
             pins: Vec::new(),
             recordings: Vec::new(),
             seen_positions: std::collections::BTreeMap::new(),
+            connection: None,
+            received_in: std::collections::HashMap::new(),
+            withheld: Vec::new(),
             admin: Arc::default(),
             logo: LogoState::NotStated,
         }
@@ -545,6 +561,7 @@ impl ServerModel {
                 Arc::make_mut(workspace).members = Loadable::Loading;
             }
         }
+        self.withhold(&channels);
         for channel_id in &channels {
             let place = PlaceId::Channel(*channel_id);
             for timeline in &mut self.timelines {

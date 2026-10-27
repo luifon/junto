@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AttachmentId, ChannelId, MessageId};
 use junto_protocol::message::{Message, MessagePage, MessageState, SendMessage, ThreadState};
@@ -645,12 +646,14 @@ impl Client {
     }
 
     /// Takes the answer to a read whose content no event carries. `kept` holds the events
-    /// that arrived while the read was on its way.
+    /// that arrived while the read was on its way, and `connection` is the connection of
+    /// the stream during which the read was sent.
     pub(super) fn read_answered(
         &mut self,
         part: Part,
         result: Result<Payload, ApiError>,
         kept: &[std::sync::Arc<junto_protocol::events::Event>],
+        connection: Option<u64>,
     ) {
         if let Part::Messages(place, reach) = part {
             self.mark_reading(place, reach, false);
@@ -692,6 +695,7 @@ impl Client {
             (Part::Message(_, asked) | Part::Named(asked), Payload::Message(message)) => {
                 if message.id == asked {
                     let place = PlaceId::of_message(&message);
+                    model.note_received(&message, connection);
                     model.put_message(*message);
                     model.confirm_arrived(place);
                 } else {
@@ -715,6 +719,7 @@ impl Client {
                 if let Some((root, forks)) = pages.head {
                     model.set_thread_head(place, root, forks);
                 }
+                let mut opened = false;
                 if let Some(timeline) = model.timeline_mut(place) {
                     // A message of another place is not taken (ADR 0714), and the
                     // timeline says that its read failed.
@@ -738,6 +743,7 @@ impl Client {
                             if first {
                                 timeline.unread_after = unread_after;
                             }
+                            opened = true;
                         }
                         (PageKind::Page(mut page), Reach::Older) => {
                             of_place(&mut page.messages);
@@ -751,6 +757,9 @@ impl Client {
                     if foreign {
                         timeline.failed = Some(ReadFailure::NoAnswer);
                     }
+                }
+                if opened {
+                    model.drop_withheld(place);
                 }
                 model.confirm_arrived(place);
             }
@@ -883,6 +892,15 @@ impl Client {
                 // again: the loaded messages of its place and of the threads of its
                 // channel are not current any more.
                 self.model_changed |= model.mark_stale(place, ReadFailure::of(&error));
+            }
+            // The server answers no page of a channel whose history the account may not
+            // read (ADR 0304). Its timeline holds the messages that the connections
+            // brought.
+            Part::Messages(place, Reach::Open | Reach::End | Reach::At(_))
+                if error.code() == Some(ErrorCode::Forbidden) && model.reads_live_only(place) =>
+            {
+                self.model_changed |= model.open_live(place);
+                self.answer_opening(place, || Ok(()));
             }
             Part::Messages(place, reach) => {
                 // A page before or after the loaded messages starts at a message. The

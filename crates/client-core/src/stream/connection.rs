@@ -84,6 +84,8 @@ struct Loaded {
 struct Pending {
     ticket: u64,
     load: Load,
+    /// The connection of the stream that was subscribed when the read was sent.
+    connection: Option<u64>,
     events: Vec<Arc<Event>>,
     positions: Vec<u64>,
     bytes: usize,
@@ -125,6 +127,11 @@ enum Subscription {
 struct Link {
     incoming: mpsc::Receiver<Incoming>,
     outgoing: mpsc::Sender<String>,
+    /// The number of the connection among the connections of this client.
+    number: u64,
+    /// A subscription of this connection started. From then on the server answers the
+    /// reads of the session by the start of this connection (ADR 0304).
+    subscribed: bool,
     greeted: bool,
     /// The longest time without a frame.
     silence: Duration,
@@ -235,6 +242,8 @@ struct Client {
     /// is given to the readers: a reader that is answered finds the members in the view.
     answers: Vec<(MembersReply, Result<(), LoadError>)>,
     link: Option<Link>,
+    /// The connections that were opened.
+    links: u64,
     opening: Option<Opening>,
     /// The earliest time of the next connection attempt.
     retry_at: Option<Instant>,
@@ -318,6 +327,7 @@ pub(crate) async fn run(
         refreshed: None,
         answers: Vec::new(),
         link: None,
+        links: 0,
         opening: None,
         retry_at: None,
         backoff: Backoff::new(policy.first_delay, policy.longest_delay),
@@ -515,6 +525,22 @@ impl Client {
     fn disconnect(&mut self) {
         self.link = None;
         self.opening = None;
+        self.tell_connection();
+    }
+
+    /// The connection whose start the server applies to the reads of the session.
+    fn connection(&self) -> Option<u64> {
+        self.link
+            .as_ref()
+            .filter(|link| link.subscribed)
+            .map(|link| link.number)
+    }
+
+    fn tell_connection(&mut self) {
+        let connection = self.connection();
+        if let Some(model) = &mut self.model {
+            model.connection = connection;
+        }
     }
 
     /// Starts what is due: a snapshot, a connection, a `subscribe`.
@@ -666,9 +692,12 @@ impl Client {
         match result {
             Ok(socket) => {
                 let silence = self.policy().hello_timeout;
+                self.links += 1;
                 self.link = Some(Link {
                     incoming: socket.incoming,
                     outgoing: socket.outgoing,
+                    number: self.links,
+                    subscribed: false,
                     greeted: false,
                     silence,
                     deadline: now + silence,
@@ -857,6 +886,8 @@ impl Client {
                     level,
                     since: Instant::now(),
                 };
+                link.subscribed = true;
+                self.tell_connection();
                 self.fault = None;
                 if level == Level::Background {
                     self.covered = Level::Background;
@@ -1201,9 +1232,11 @@ impl Client {
             };
             let _ = loaded.send(Loaded { ticket, result });
         });
+        let connection = self.connection();
         self.pending.push(Pending {
             ticket,
             load,
+            connection,
             events: Vec::new(),
             positions: Vec::new(),
             bytes: 0,
@@ -1233,7 +1266,7 @@ impl Client {
             if ended {
                 self.ended(None);
             } else {
-                self.read_answered(part, loaded.result, &kept);
+                self.read_answered(part, loaded.result, &kept, pending.connection);
             }
             self.pump_message_reads();
             return;
@@ -1365,6 +1398,7 @@ impl Client {
             .filter(|workspace_id| model.workspace(*workspace_id).is_none())
             .collect();
         self.model = Some(model);
+        self.tell_connection();
         self.model_changed = true;
         self.stale = false;
         self.applied_bytes = 0;
