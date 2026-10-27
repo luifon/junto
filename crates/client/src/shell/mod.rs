@@ -254,6 +254,8 @@ pub struct Shell {
     pub(crate) stage_controls: crate::ui::MovedControls,
     /// The form of the header of this window that fits its width (ADR 0730).
     pub(crate) header_fit: crate::ui::Fit,
+    /// The server book is drawn as its row of icons in this drawing.
+    pub(crate) book_collapsed: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
@@ -660,6 +662,7 @@ impl Shell {
             call_panel_overlay: false,
             stage_controls: crate::ui::MovedControls::default(),
             header_fit: crate::ui::Fit::default(),
+            book_collapsed: false,
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
             volumes: HashMap::new(),
@@ -1270,6 +1273,7 @@ impl Render for Shell {
             });
         }
         self.window_width = logical_width(window);
+        self.book_collapsed = collapsed;
         self.rail_width = if collapsed {
             theme.metrics.rail_collapsed_width
         } else {

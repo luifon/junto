@@ -118,7 +118,11 @@ impl Shell {
                 None,
             ),
             (Some(server), Some(lists)) => match (call, channel, lists.conversation.as_ref()) {
-                (Some(panel), _, _) => self.render_call(view, panel, narrow, window, cx),
+                (Some(panel), _, _) => {
+                    // A panel that does not fit beside the stage lies over it (review M2).
+                    let over = narrow || !self.side_fits(Panel::Call, cx);
+                    self.render_call(view, panel, over, window, cx)
+                }
                 (None, Some(_), _) => (
                     self.render_feed(lists, false, notices.take().unwrap_or_default(), window, cx),
                     side_of(self, lists, window, cx),
@@ -215,15 +219,18 @@ impl Shell {
                 } else {
                     theme.metrics.side_panel_width
                 };
-                // A call panel over the content also holds its close button.
-                let close = if narrow && panel == Panel::Call {
+                // A panel that does not fit beside the main area lies over it, as in a narrow
+                // window (review M2). A call panel over the content also holds its close
+                // button.
+                let over = narrow || !self.side_fits(panel, cx);
+                let close = if over && panel == Panel::Call {
                     super::call::PANEL_CLOSE_WIDTH
                 } else {
                     0.0
                 };
                 let width = self.panel_width(panel, design, cx) + close;
                 let edge = self.panel_edge(panel, Side::Left, width, design, window, cx);
-                if narrow {
+                if over {
                     // The panel lies over the content, with a flat cover behind it.
                     split
                         .child(Self::side_cover(&theme, cx, move |this, cx| {
@@ -259,7 +266,14 @@ impl Shell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.render_main_header(view, channel, call, narrow, &theme, cx))
+            .child(self.render_main_header(
+                view,
+                channel,
+                call,
+                narrow || (call.is_some() && !self.side_fits(Panel::Call, cx)),
+                &theme,
+                cx,
+            ))
             .child(split)
     }
 

@@ -62,31 +62,76 @@ fn bounds(panel: Panel) -> (f32, f32) {
 }
 
 impl Shell {
-    /// The width of a panel in pixels of the design: the width of a drag on its way, the
-    /// width that the person gave it, or the width of the design.
-    pub(crate) fn panel_width(&self, panel: Panel, design: f32, cx: &App) -> f32 {
-        let width = match self.edge_drag {
+    /// The width that the person wants for a panel in pixels of the design: the width of a
+    /// drag on its way, the width that the person gave it, or the width of the design.
+    fn wanted_width(&self, panel: Panel, design: f32, cx: &App) -> f32 {
+        match self.edge_drag {
             Some(drag) if drag.panel == panel => drag.width,
             _ => self.state.read(cx).panel_width(panel, design),
-        };
-        width.min(self.panel_room(panel, cx)).max(design.min(width))
+        }
     }
 
-    /// The widest that a panel may be in the window as it is now, so that the main area
-    /// keeps [`MAIN_LEAST`] pixels of the design (and the stage of a separate call window
-    /// [`STAGE_LEAST`]). A panel is never narrower than its width of the design for it.
-    fn panel_room(&self, panel: Panel, cx: &App) -> f32 {
-        let window = self.window_width;
-        let stored = |panel, design| self.state.read(cx).panel_width(panel, design);
+    /// The widths of the server book and of the channel column that the window draws, in
+    /// pixels of the design. Together they leave the main area [`MAIN_LEAST`]: where the
+    /// wanted widths do not, the channel column and then the server book give up width down
+    /// to their least bounds (review M2).
+    fn column_widths(&self, cx: &App) -> (f32, f32) {
         let metrics = theme(cx).metrics;
-        let columns = self.rail_width
-            + stored(Panel::Channels, metrics.channel_column_width).min(window * 0.35);
-        match panel {
-            Panel::ServerBook => window * 0.25,
-            Panel::Channels => window * 0.35,
-            Panel::CallWindow => window - STAGE_LEAST,
-            _ => window - columns - MAIN_LEAST,
+        let mut book = if self.book_collapsed {
+            metrics.rail_collapsed_width
+        } else {
+            self.wanted_width(Panel::ServerBook, metrics.rail_width, cx)
+        };
+        let mut channels = self.wanted_width(Panel::Channels, metrics.channel_column_width, cx);
+        let mut over = book + channels - (self.window_width - MAIN_LEAST);
+        let give = (channels - bounds(Panel::Channels).0).clamp(0.0, over.max(0.0));
+        channels -= give;
+        over -= give;
+        if !self.book_collapsed {
+            book -= (book - bounds(Panel::ServerBook).0).clamp(0.0, over.max(0.0));
         }
+        (book, channels)
+    }
+
+    /// The room of a panel at the right of the main area, or of the panel of the call window,
+    /// in pixels of the design: the window less the columns and the least width of the main
+    /// area, or of the stage of the call window ([`STAGE_LEAST`]).
+    fn side_room(&self, panel: Panel, cx: &App) -> f32 {
+        match panel {
+            Panel::CallWindow => self.window_width - STAGE_LEAST,
+            _ => {
+                let (book, channels) = self.column_widths(cx);
+                self.window_width - book - channels - MAIN_LEAST
+            }
+        }
+    }
+
+    /// The width of a panel in pixels of the design. The columns at the left follow
+    /// [`Shell::column_widths`]. A panel at the right takes the width that the person wants
+    /// within its room, and gives up width down to its least bound; where even that does not
+    /// fit, it lies over the content ([`Shell::side_fits`]) at that least width or the width
+    /// of its design, whichever is smaller than the width wanted.
+    pub(crate) fn panel_width(&self, panel: Panel, design: f32, cx: &App) -> f32 {
+        let (book, channels) = self.column_widths(cx);
+        match panel {
+            Panel::ServerBook => book,
+            Panel::Channels => channels,
+            _ => {
+                let wanted = self.wanted_width(panel, design, cx);
+                let least = bounds(panel).0;
+                if self.side_fits(panel, cx) {
+                    wanted.min(self.side_room(panel, cx)).max(least)
+                } else {
+                    wanted.min(design)
+                }
+            }
+        }
+    }
+
+    /// A panel at the right fits beside the main area at its least width; otherwise the window
+    /// draws it over the content, as a narrow window does.
+    pub(crate) fn side_fits(&self, panel: Panel, cx: &App) -> bool {
+        self.side_room(panel, cx) >= bounds(panel).0
     }
 
     /// The edge of `panel`, to lie over the container of the panel at `at` pixels of the

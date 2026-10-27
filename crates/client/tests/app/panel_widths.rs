@@ -208,3 +208,41 @@ fn the_panel_of_a_call_closes_and_opens_again_and_stays_closed_after_a_restart(
             .read_with(&window.cx, |state, _| state.call_panel_closed(false))
     );
 }
+
+/// With the server book and the channel column at their widest and the member list open at
+/// its widest, the main area keeps its least width of 360 design pixels: the columns give up
+/// width, the side panel takes the room that is left, and lies over the content where even
+/// its least width does not fit (review M2).
+#[gpui::test]
+fn the_main_area_keeps_its_least_width_with_every_panel_at_its_widest(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Panels");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_panel_width(Panel::ServerBook, 360.0, cx);
+        state.set_panel_width(Panel::Channels, 420.0, cx);
+        state.set_panel_width(Panel::Members, 720.0, cx);
+    });
+    window.click("members-button");
+    for width in [1200.0, 1600.0, 2400.0, 720.0] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(px(width), px(900.0))));
+        window.settle();
+        // The message list lies in the main area beside a side panel and under one that
+        // lies over the content; its side margins are under 30 pixels each.
+        let list = window
+            .cx
+            .debug_bounds("message-list")
+            .unwrap_or_else(|| panic!("at {width} the main area has no room for the message list"));
+        assert!(
+            f32::from(list.size.width) >= 360.0 - 60.0,
+            "at {width} the message list is {} pixels wide",
+            f32::from(list.size.width)
+        );
+        let columns = window.cx.debug_bounds("channel-column").unwrap();
+        assert!(
+            columns.right() <= list.left(),
+            "at {width} the columns {columns:?} pass the message list {list:?}"
+        );
+    }
+}
