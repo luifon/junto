@@ -18,6 +18,9 @@ pub mod install;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod setup;
+#[cfg(windows)]
+pub mod setup_windows;
 // Compiled on every system: its replacement by entries uses portable file operations only,
 // and the tests of the other systems check it.
 pub mod windows;
@@ -209,6 +212,8 @@ pub enum Error {
         "the replacement stopped and could not be undone; keep the stage-* directory in .<application>.junto-update beside the application, it holds the application"
     )]
     ExchangeIncomplete,
+    #[error("the replacement stopped and could not be undone; recover the retained files from {stage}", stage = .0.display())]
+    SetupIncomplete(PathBuf),
     #[error("the source did not give the release: {0}")]
     Unavailable(String),
     #[error("the release request timed out")]
@@ -811,6 +816,24 @@ impl HttpSource {
         &self.target
     }
 
+    /// The release site whose directory `updates/` is this source (ADR 0727): its download
+    /// page. Absent for a source that is not such a directory.
+    pub fn site(&self) -> Option<url::Url> {
+        self.base
+            .path()
+            .ends_with("/updates/")
+            .then(|| self.base.join("../").ok())
+            .flatten()
+    }
+
+    /// The page of the notes of a version on the release site.
+    pub fn notes_page(&self, version: Version) -> Option<String> {
+        self.site()?
+            .join(&format!("notes/{version}.html"))
+            .ok()
+            .map(String::from)
+    }
+
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, Error> {
         if timeout.is_zero() || timeout > Duration::from_secs(600) {
             return Err(Error::Invalid("timeout"));
@@ -946,10 +969,11 @@ impl UpdateSource for HttpSource {
         let source = self.clone();
         Box::pin(async move {
             match source.check().await {
-                Ok(manifest) => Ok(Release::new(
-                    Version::parse(&manifest.version).map_err(|_| UpdateError::Invalid)?,
-                    None,
-                )),
+                Ok(manifest) => {
+                    let version =
+                        Version::parse(&manifest.version).map_err(|_| UpdateError::Invalid)?;
+                    Ok(Release::new(version, source.notes_page(version).as_deref()))
+                }
                 Err(Error::NotNewer) => Ok(Release::new(source.current, None)),
                 Err(Error::Expired) => Err(UpdateError::Expired),
                 Err(Error::UntrustedKeys) => Err(UpdateError::UntrustedKeys),

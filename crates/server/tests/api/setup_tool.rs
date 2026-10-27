@@ -4,6 +4,7 @@
 use junto_protocol::access_token::TokenAction;
 use junto_protocol::structure::Workspace;
 use junto_protocol::structure_file::{StructureExport, StructureFile};
+use junto_protocol::transcript::Glossary;
 use junto_setup::cli::{FAILURE, Invocation, SUCCESS, USAGE_ERROR, run};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -66,6 +67,7 @@ async fn state(server: &TestServer) -> String {
         "channels",
         "channel_overrides",
         "structure_identifiers",
+        "glossary_terms",
         "audit_entries",
         "events",
     ] {
@@ -132,7 +134,7 @@ async fn rule_40_export_writes_the_structure_of_the_server() {
         .await
         .ok(StatusCode::OK);
     assert_eq!(file, export.structure);
-    assert_eq!(file.format, 2);
+    assert_eq!(file.format, 3);
     assert_eq!(file.workspaces.len(), 1);
     assert_eq!(file.workspaces[0].channels.len(), 2);
     assert!(
@@ -588,7 +590,7 @@ async fn rule_48_a_file_that_cannot_be_applied_is_refused_before_any_change() {
     let main = server.default_workspace(&owner).await.id.to_string();
     let before = state(&server).await;
     let cases = [
-        (json!({ "format": 3 }), "the file has the format 3"),
+        (json!({ "format": 4 }), "the file has the format 4"),
         (json!({ "format": 1, "workspace": [] }), "unknown field"),
         (json!({ "workspaces": [] }), "missing field `format`"),
         (
@@ -679,7 +681,7 @@ async fn rule_49_the_token_and_the_address_are_given_safely() {
     ];
     let (code, out, _) = run_with(from_file, None, None).await;
     assert_eq!(code, SUCCESS);
-    assert!(out.contains("\"format\": 2"));
+    assert!(out.contains("\"format\": 3"));
 
     let (code, _, err) = run_with(vec!["export"], Some("jat_unknown"), Some(base)).await;
     assert_eq!(code, FAILURE);
@@ -810,4 +812,115 @@ async fn review_6_a_saved_plan_without_changes_is_checked_against_the_revision()
         .failed(FAILURE);
     assert!(stale.err.contains("conflict"), "{}", stale.err);
     assert!(stale.err.contains("Run `plan` again"), "{}", stale.err);
+}
+
+#[tokio::test]
+async fn rule_54_a_file_sets_the_glossary_that_it_states_and_keeps_an_absent_one() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let main = server.default_workspace(&owner).await;
+    let route = format!("/api/v1/workspaces/{}/glossary", main.id);
+    server
+        .put(&owner, &route, &json!({ "terms": ["Quorvex", "Lumitrax"] }))
+        .await
+        .ok::<Glossary>(StatusCode::OK);
+    let glossary = || {
+        let (server, owner, route) = (&server, &owner, &route);
+        async move {
+            server
+                .get(owner, route)
+                .await
+                .ok::<Glossary>(StatusCode::OK)
+                .terms
+        }
+    };
+
+    // The export states the glossary in its order of priority.
+    let printed = tool(&server, &token, &["export"]).await.succeeded();
+    let exported: Value = serde_json::from_str(&printed.out).unwrap();
+    assert_eq!(
+        exported["workspaces"][0]["glossary"],
+        json!(["Quorvex", "Lumitrax"])
+    );
+
+    // A file without a glossary keeps the glossary of the server.
+    let main_id = main.id.to_string();
+    let absent = write(
+        &scratch,
+        "absent.json",
+        &json!({ "format": 3, "workspaces": [
+            { "id": main_id, "name": "Renamed", "default": true }] }),
+    );
+    let applied = tool(&server, &token, &["apply", &absent]).await.succeeded();
+    assert!(applied.out.contains("Applied 1 change."), "{}", applied.out);
+    assert!(!applied.out.contains("glossary"), "{}", applied.out);
+    assert_eq!(glossary().await, ["Quorvex", "Lumitrax"]);
+
+    // A file with a glossary replaces the whole list, through a plan that states it.
+    let stated = write(
+        &scratch,
+        "stated.json",
+        &json!({ "format": 3, "workspaces": [
+            { "id": main_id, "name": "Renamed",
+              "glossary": ["Lumitrax", "Ysolde Varkonen"] }] }),
+    );
+    let plan = scratch.0.join("plan.json");
+    let plan = plan.to_str().unwrap();
+    let before = state(&server).await;
+    let planned = tool(&server, &token, &["plan", &stated, "--out", plan])
+        .await
+        .succeeded();
+    assert_eq!(state(&server).await, before);
+    assert!(
+        planned.out.contains(&format!(
+            "~ glossary of the workspace \"Renamed\" ({main_id}): add \"Ysolde Varkonen\"; \
+             remove \"Quorvex\"; terms in order of priority: \"Lumitrax\", \"Ysolde Varkonen\""
+        )),
+        "{}",
+        planned.out
+    );
+
+    // A change of the glossary after the plan makes the plan stale.
+    server
+        .put(&owner, &route, &json!({ "terms": ["Quorvex"] }))
+        .await
+        .ok::<Glossary>(StatusCode::OK);
+    let before = state(&server).await;
+    let refused = tool(&server, &token, &["apply", "--plan", plan])
+        .await
+        .failed(FAILURE);
+    assert!(refused.err.contains("Run `plan` again"), "{}", refused.err);
+    assert_eq!(state(&server).await, before);
+
+    let applied = tool(&server, &token, &["apply", &stated]).await.succeeded();
+    assert!(applied.out.contains("Applied 1 change."), "{}", applied.out);
+    assert_eq!(glossary().await, ["Lumitrax", "Ysolde Varkonen"]);
+    let after = state(&server).await;
+    let again = tool(&server, &token, &["apply", &stated]).await.succeeded();
+    assert!(again.out.starts_with("No changes:"), "{}", again.out);
+    assert_eq!(state(&server).await, after);
+
+    // A glossary that the server refuses applies nothing of the file.
+    let refused_file = write(
+        &scratch,
+        "refused.json",
+        &json!({ "format": 3, "workspaces": [
+            { "id": main_id, "name": "Other", "glossary": ["Quorvex", "Quorvex"] }] }),
+    );
+    let refused = tool(&server, &token, &["apply", &refused_file])
+        .await
+        .failed(FAILURE);
+    assert!(
+        refused.err.contains("change 2 (replace_glossary)"),
+        "{}",
+        refused.err
+    );
+    assert!(
+        refused.err.contains("applied none of the 2 changes"),
+        "{}",
+        refused.err
+    );
+    assert_eq!(state(&server).await, after);
 }

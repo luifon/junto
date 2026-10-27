@@ -838,7 +838,7 @@ async fn the_end_of_a_hidden_call_tells_of_at_most_fifty_recordings() {
          where id = $1",
     )
     .bind(first.id.as_uuid())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     let last = studio.record().await;

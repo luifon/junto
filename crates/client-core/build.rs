@@ -78,7 +78,7 @@ fn main() {
         println!("cargo:rustc-env=JUNTO_BUILD_{name}={value}");
     }
 
-    // The recovery program of the Windows package carries the icon of the client, which the MSVC
+    // The recovery and installer programs of the Windows package carry the icon of the client, which the MSVC
     // linker reads from a compiled resource file (ADR 0756).
     if env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
         assert!(
@@ -89,6 +89,12 @@ fn main() {
         fs::write(&resource, junto_icon::windows_resource().unwrap()).unwrap();
         println!(
             "cargo:rustc-link-arg-bin=junto-recover={}",
+            resource.display()
+        );
+        // The setup program and the uninstall program show the icon in Explorer and in the
+        // list of installed programs (ADR 0728).
+        println!(
+            "cargo:rustc-link-arg-bin=junto-installer={}",
             resource.display()
         );
     }

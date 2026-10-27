@@ -21,6 +21,7 @@ mod main_area;
 mod notices;
 mod panic_notice;
 mod people;
+mod permissions;
 mod person_drag;
 mod pictures;
 mod prepared;

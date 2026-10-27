@@ -503,6 +503,12 @@ roles. New unpositioned roles remain at the bottom. Old exports tolerate later c
 creations, and repeated apply changes nothing. Format 1 files remain readable; old tools
 must be upgraded before reading format 2 exports.
 
+Structure format 3 adds the `glossary` of each workspace, its terms in their order of
+priority. Applying a file replaces each glossary that it states with the change
+`replace_glossary`, which has the checks, limits, audit entry and event of the glossary
+route; an absent `glossary` keeps the glossary. Formats 1 and 2 remain readable; old tools
+must be upgraded before reading format 3 exports.
+
 ## Audit filters and profiles
 
 Both audit lists accept `action`, `actor_id`, `target_id`, inclusive `since` and exclusive

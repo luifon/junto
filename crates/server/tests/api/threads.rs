@@ -547,7 +547,7 @@ async fn fix_fork_copies_more_than_one_thousand_replies_and_reply_references() {
              gen_random_uuid(),place_id,position+n,author_id,created_at,document,id,id from messages cross join
              generate_series(1,1001) n where id=$1")
         .bind(root.id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     sqlx::query("update messages set reply_to=(select id from messages where thread_root=$1 order by position limit 1) where id=(select id from messages where thread_root=$1 order by position desc limit 1)").bind(root.id).execute(&server.db).await.unwrap();
@@ -753,7 +753,7 @@ async fn fix_fork_copies_more_than_one_thousand_attachments_in_batches() {
              copies.id,c.offset_bytes,c.bytes,c.sha256,c.stored from copies cross join attachment_chunks c where
              c.attachment_id=$1")
         .bind(upload.id)
-        .execute(&files.server.db)
+        .execute(&mut files.server.test_data().await)
         .await
         .unwrap();
     let copied = fork(&files.server, &files.owner, root.id, "text").await;
@@ -940,7 +940,7 @@ async fn round2_unread_threads_are_bounded_and_paged() {
     let reader = server.join(&owner, "Reader").await;
     let source = channel(&server, &owner, "text").await;
     let root = send(&server, &reader, &source, "root").await;
-    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,204) n where id=$1").bind(root.id).execute(&server.db).await.unwrap();
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,204) n where id=$1").bind(root.id).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,thread_root) select gen_random_uuid(),place_id,position+1000,$2,created_at,document,id from messages where place_id=$1 and author_id=$3").bind(source.id).bind(owner.account_id).bind(reader.account_id).execute(&server.db).await.unwrap();
     sqlx::query("with roots as (insert into messages(id,place_id,position,author_id,created_at,document)
         select gen_random_uuid(),place_id,position+2000+n,$2,created_at,document from messages
@@ -949,7 +949,7 @@ async fn round2_unread_threads_are_bounded_and_paged() {
         select gen_random_uuid(),place_id,position+1000,author_id,created_at,document,id from roots returning *)
         insert into message_mention_accounts(place_id,account_id,position,message_id,thread_root)
         select place_id,$3,position,id,thread_root from replies")
-        .bind(root.id).bind(owner.account_id).bind(reader.account_id).execute(&server.db).await.unwrap();
+        .bind(root.id).bind(owner.account_id).bind(reader.account_id).execute(&mut server.test_data().await).await.unwrap();
     let snapshot: Value = server
         .get(&reader, "/api/v1/snapshot")
         .await

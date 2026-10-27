@@ -26,6 +26,7 @@ pub mod admin;
 pub mod book;
 pub mod followed;
 pub mod people;
+pub mod permissions;
 pub mod transcripts;
 pub mod tray;
 
@@ -542,7 +543,8 @@ pub const SCREEN_ACCESS_TITLE: &str = "Junto may not record the screen yet";
 pub const SCREEN_ACCESS_HELP: &str = if cfg!(target_os = "macos") {
     "macOS gives this permission in System Settings, under Privacy & Security, Screen & \
      System Audio Recording. Turn it on for Junto there. macOS can then ask you to quit \
-     and open Junto again."
+     and open Junto again. If Junto is already turned on there, select it, remove it with \
+     the minus button, and allow it again."
 } else {
     "The system does not allow Junto to record the screen. Allow it in the settings of the \
      system."
@@ -1394,6 +1396,11 @@ pub fn flow_error(error: &FlowError) -> String {
         FlowError::NotAvailable => "This action is not available now.".to_owned(),
         FlowError::Busy => "Another action for this server is in progress.".to_owned(),
         FlowError::InvalidInput(reason) => sentence(reason),
+        FlowError::Unreachable(error) if error.is_local_network_refusal() => {
+            "macOS did not let Junto connect to the local network. Turn on Junto in System \
+             Settings, Privacy & Security, Local Network, then try again."
+                .to_owned()
+        }
         FlowError::Unreachable(error) => match error.kind {
             TransportErrorKind::Connect => "No connection to the server. Check the address \
                  and the network connection."

@@ -158,9 +158,9 @@ async fn review_m1_creation_has_constant_event_cost() {
     let workspace = server.default_workspace(&owner).await.id;
     for workspace_scope in [false, true] {
         if workspace_scope {
-            sqlx::query("insert into workspace_roles (id,workspace_id,name,permissions,created_at,position) select gen_random_uuid(),$1,'role',0,now(),n from generate_series(1,100) n").bind(workspace).execute(&server.db).await.unwrap();
+            sqlx::query("insert into workspace_roles (id,workspace_id,name,permissions,created_at,position) select gen_random_uuid(),$1,'role',0,now(),n from generate_series(1,100) n").bind(workspace).execute(&mut server.test_data().await).await.unwrap();
         } else {
-            sqlx::query("insert into server_roles (id,name,permissions,created_at,position) select gen_random_uuid(),'role',0,now(),n from generate_series(1,100) n").execute(&server.db).await.unwrap();
+            sqlx::query("insert into server_roles (id,name,permissions,created_at,position) select gen_random_uuid(),'role',0,now(),n from generate_series(1,100) n").execute(&mut server.test_data().await).await.unwrap();
         }
         let table = if workspace_scope {
             "workspace_roles"
@@ -400,14 +400,14 @@ async fn review_l7_extreme_reorder_cannot_exhaust_creation() {
 }
 
 #[tokio::test]
-async fn review_l5_export_uses_format_two() {
+async fn review_l5_export_uses_format_three() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let exported: StructureExport = server
         .get(&owner, "/api/v1/structure")
         .await
         .ok(StatusCode::OK);
-    assert_eq!(exported.structure.format, 2);
+    assert_eq!(exported.structure.format, 3);
 }
 
 #[tokio::test]
@@ -908,7 +908,7 @@ async fn review_h2_unban_checks_workspaces_beyond_the_first_page() {
     let actor = server.join(&owner, "Moderator").await;
     let target = server.join(&owner, "Target").await;
     server.grant_server(&owner, &actor, &[S::BanMembers]).await;
-    let workspaces:Vec<uuid::Uuid>=sqlx::query_scalar("insert into workspaces (id,name,created_at) select gen_random_uuid(),'restored',now() from generate_series(1,65) returning id").fetch_all(&server.db).await.unwrap();
+    let workspaces:Vec<uuid::Uuid>=sqlx::query_scalar("insert into workspaces (id,name,created_at) select gen_random_uuid(),'restored',now() from generate_series(1,65) returning id").fetch_all(&mut server.test_data().await).await.unwrap();
     for account in [actor.account_id, target.account_id] {
         sqlx::query("insert into workspace_members (workspace_id,account_id,joined_at) select unnest($1::uuid[]),$2,now()").bind(&workspaces).bind(account).execute(&server.db).await.unwrap();
     }

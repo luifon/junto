@@ -282,7 +282,7 @@ async fn rule_46_search_statement_count_is_independent_of_page_size() {
              gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join
              generate_series(1,199) n where id=$1")
         .bind(root.id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     let (mut held, role) = crate::messages_queries::measure_requests(&server).await;
@@ -392,7 +392,7 @@ async fn fix_transcript_search_uses_a_stored_indexed_vector() {
     sqlx::query("insert into transcript_lines(recording_id,line,start_ms,end_ms,segment_id,source,account_id,speaker,text,language)
         select recording_id,line+n,start_ms,end_ms,segment_id,source,account_id,speaker,'ordinary',language
         from transcript_lines cross join generate_series(1,5000) n where recording_id=$1 and line=0")
-        .bind(done.recording.id).execute(&server.db).await.unwrap();
+        .bind(done.recording.id).execute(&mut server.test_data().await).await.unwrap();
     let root = send(server, owner, &studio.scene.voice, "quartz").await;
     sqlx::query(
         "insert into messages(id,place_id,position,author_id,created_at,document)
@@ -401,7 +401,7 @@ async fn fix_transcript_search_uses_a_stored_indexed_vector() {
     )
     .bind(root.id)
     .bind(sqlx::types::Json(text("ordinary")["document"].clone()))
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::raw_sql("analyze messages; analyze transcript_lines")

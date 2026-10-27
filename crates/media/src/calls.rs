@@ -704,6 +704,42 @@ impl Calls {
         self.inner.options.capture.open_settings();
     }
 
+    /// Makes the system list this application for the screen permission and show its
+    /// question when it has not shown it before, without opening its settings (ADR 0708).
+    pub fn request_screen_access(&self) {
+        self.inner.options.capture.request_access();
+    }
+
+    /// The camera permission of the system now. The call shows no question.
+    pub fn camera_access(&self) -> crate::camera::CameraAccess {
+        self.inner.options.camera.access()
+    }
+
+    /// Makes the system ask the person for the camera when it has not asked yet, and
+    /// returns the state after the answer. The question runs in a task of the runtime of
+    /// the client (ADR 0733).
+    pub fn request_camera_access(&self) -> Pending<crate::camera::CameraAccess> {
+        let camera = self.inner.options.camera.clone();
+        let asking = crate::executor::on_runtime(&self.inner.runtime, async move {
+            camera.request_access().await
+        });
+        let now = self.inner.options.camera.clone();
+        Box::pin(async move { asking.await.unwrap_or_else(|_| now.access()) })
+    }
+
+    /// Makes the system ask the person for the microphone when it has not asked yet, and
+    /// returns the state after the answer.
+    pub fn request_microphone_access(&self) -> Pending<MicrophoneAccess> {
+        let permission = self.inner.options.permission.clone();
+        let asking =
+            crate::executor::on_runtime(
+                &self.inner.runtime,
+                async move { permission.request().await },
+            );
+        let now = self.inner.options.permission.clone();
+        Box::pin(async move { asking.await.unwrap_or_else(|_| now.state()) })
+    }
+
     /// The screens, windows and applications that can be shared now. The capture reads
     /// them in a task of the runtime of the client: the capture of each system waits with
     /// Tokio, and the window polls the returned future on an executor without a runtime

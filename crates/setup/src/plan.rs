@@ -141,6 +141,46 @@ impl Differences {
     }
 }
 
+fn quoted(terms: &[&String]) -> String {
+    let quoted: Vec<String> = terms.iter().map(|term| format!("{term:?}")).collect();
+    listed(&quoted)
+}
+
+/// Replaces the glossary of a workspace when the file states one that differs. The tool
+/// removes the space around each term as the server does, and leaves every other check of
+/// the terms to the server.
+fn glossary(
+    planner: &mut Planner<'_>,
+    workspace: StructureId,
+    name: &str,
+    from: &[String],
+    to: Option<&[String]>,
+) {
+    let Some(to) = to else {
+        return;
+    };
+    let to: Vec<String> = to.iter().map(|term| term.trim().to_owned()).collect();
+    if to.as_slice() == from {
+        return;
+    }
+    let added: Vec<&String> = to.iter().filter(|term| !from.contains(term)).collect();
+    let removed: Vec<&String> = from.iter().filter(|term| !to.contains(term)).collect();
+    let line = format!(
+        "~ glossary of the workspace {name:?} ({workspace}): add {}; remove {}; terms in order \
+         of priority: {}",
+        quoted(&added),
+        quoted(&removed),
+        quoted(&to.iter().collect::<Vec<_>>())
+    );
+    planner.add(
+        StructureChange::ReplaceGlossary {
+            workspace,
+            terms: to,
+        },
+        line,
+    );
+}
+
 fn limit(value: Option<u32>) -> String {
     value.map_or_else(|| "none".to_owned(), |limit| limit.to_string())
 }
@@ -638,6 +678,8 @@ fn existing_workspace(
             }
         }
     }
+    let stored = found.glossary.as_deref().unwrap_or_default();
+    glossary(planner, id, &found.name, stored, entry.glossary.as_deref());
 }
 
 /// States the problem of an entry whose identifier names an entry of another workspace.
@@ -727,6 +769,13 @@ fn new_workspace(planner: &mut Planner<'_>, places: &Places<'_>, entry: &Workspa
             create_channel(planner, id, channel, &role_names);
         }
     }
+    glossary(
+        planner,
+        id,
+        entry.name.trim(),
+        &[],
+        entry.glossary.as_deref(),
+    );
 }
 
 fn references_exist(

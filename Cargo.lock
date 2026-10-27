@@ -3842,6 +3842,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "proc-macro2",
  "raw-window-handle",
  "serde",
  "serde_json",
@@ -3865,6 +3866,7 @@ name = "junto-client-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "block2 0.6.2",
  "bytes",
  "ed25519-dalek",
  "futures-executor",
@@ -3877,6 +3879,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "reqwest 0.12.28",
  "rustix",
  "semver",

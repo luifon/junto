@@ -12,6 +12,7 @@ mod linux;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui::{App, SystemNotification};
+use junto_client_core::notification_access::{self, NotificationAccess};
 
 use crate::state::notices::Alert;
 
@@ -170,5 +171,81 @@ impl SystemNotifier for KeptNotifier {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         kept.shown.retain(|held| held.tag != tag);
         kept.dismissed.push(tag.to_owned());
+    }
+}
+
+/// The permission of the system to show notifications of the application (ADR 0708).
+pub trait NotificationPermission: 'static {
+    /// The state now. It shows no question.
+    fn read(&self) -> notification_access::Answer;
+    /// Makes the system ask the person when it has not asked yet, and returns the state
+    /// after the answer.
+    fn request(&self) -> notification_access::Answer;
+}
+
+/// The permission as the system holds it. On macOS a process that does not run as an
+/// application bundle has no notifications: its state is "refused", and nothing is asked.
+pub struct PlatformPermission;
+
+impl NotificationPermission for PlatformPermission {
+    fn read(&self) -> notification_access::Answer {
+        if !PlatformNotifier::available() {
+            return Box::pin(std::future::ready(NotificationAccess::Refused));
+        }
+        notification_access::read()
+    }
+
+    fn request(&self) -> notification_access::Answer {
+        if !PlatformNotifier::available() {
+            return Box::pin(std::future::ready(NotificationAccess::Refused));
+        }
+        notification_access::request()
+    }
+}
+
+/// A permission with a fixed state and a fixed answer to the question, which a test and
+/// the screen tool change as a person does in the settings of the system.
+#[derive(Debug, Clone)]
+pub struct FixedNotificationPermission {
+    held: Arc<Mutex<(NotificationAccess, NotificationAccess, u32)>>,
+}
+
+impl Default for FixedNotificationPermission {
+    fn default() -> Self {
+        Self::new(NotificationAccess::Allowed, NotificationAccess::Allowed)
+    }
+}
+
+impl FixedNotificationPermission {
+    /// `state` is what the system holds, and `answer` what the person answers when asked.
+    pub fn new(state: NotificationAccess, answer: NotificationAccess) -> Self {
+        Self {
+            held: Arc::new(Mutex::new((state, answer, 0))),
+        }
+    }
+
+    pub fn set(&self, state: NotificationAccess) {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).0 = state;
+    }
+
+    /// How often the system was made to ask.
+    pub fn asked(&self) -> u32 {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).2
+    }
+}
+
+impl NotificationPermission for FixedNotificationPermission {
+    fn read(&self) -> notification_access::Answer {
+        let state = self.held.lock().unwrap_or_else(PoisonError::into_inner).0;
+        Box::pin(std::future::ready(state))
+    }
+
+    fn request(&self) -> notification_access::Answer {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.0 == NotificationAccess::NotAsked {
+            held.2 += 1;
+            held.0 = held.1;
+        }
+        Box::pin(std::future::ready(held.0))
     }
 }

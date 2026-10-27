@@ -45,6 +45,7 @@ Quiet times:
 System notifications:
 
 - The state of the application decides what is shown with one function without side effects, and tells it to an interface with two operations: show, and take away by a tag. The binary gives the interface of gpui. Every other start of the application state, such as a test and the tool that draws the screens, gets one that keeps what it was told. No automated run shows a notification or makes the system ask for a permission.
+- The permission of the system for the notifications is read and asked for by ADR 0708: macOS asks at the first start, and the section "Notifications" states a refusal of the system with the button of its page of settings.
 - A notice gets a system notification when all of this holds:
   1. it appeared after the first state of its server in this run of the application, is unread, and is newer than every notice that was seen before;
   2. the account of that server is not in its quiet time now, the state in which the notice appeared is not the one in which "do not disturb" ended, and the notice was not made inside the daily quiet time;

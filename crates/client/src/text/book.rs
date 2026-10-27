@@ -56,6 +56,88 @@ pub fn server_release_available(version: Version) -> String {
     format!("Version {version} is available")
 }
 
+// The version of this copy of Junto, below "Add server" in the server book.
+/// The version line: the name and the version of this build.
+pub fn client_version(build: Version) -> String {
+    format!(
+        "Junto {}",
+        junto_client_core::release_configuration::label(
+            &build.to_string(),
+            junto_client_core::releases::TEST_CONFIGURATION
+        )
+    )
+}
+/// The version number alone, in the collapsed server book.
+pub fn client_version_number(build: Version) -> String {
+    build.to_string()
+}
+pub const UP_TO_DATE: &str = "Up to date.";
+pub const LOOKING: &str = "Looking for a newer version…";
+pub const NO_SOURCE: &str = "This build does not look for newer versions.";
+pub const NOT_LOOKED: &str = "Not checked for a newer version yet.";
+pub const NOT_FOUND_OUT: &str = "Could not check for a newer version.";
+pub const RESTART: &str = "Restart";
+pub const RESTART_JUNTO: &str = "Restart Junto";
+pub const COPY_COMMAND: &str = "Copy command";
+pub const DOWNLOAD_PAGE: &str = "Address of the download page";
+
+/// The name of the Debian package of a version, as the release site offers it (ADR 0727).
+pub fn deb_name(version: Version) -> String {
+    format!("junto_{version}_amd64.deb")
+}
+
+/// The command that installs the Debian package of a version from the folder of the
+/// download.
+pub fn deb_command(version: Version) -> String {
+    format!("sudo apt install ./{}", deb_name(version))
+}
+
+/// The short sentence of an available version in the server book, by the way this copy
+/// gets it.
+pub fn available_way(version: Version, way: &crate::state::update_install::UpdateWay) -> String {
+    use crate::state::update_install::UpdateWay;
+    match way {
+        UpdateWay::InApp | UpdateWay::NoSource => update_available(version),
+        UpdateWay::MoveFirst => format!(
+            "Junto {version} is available. Move Junto to a folder of your account that it can write, then update."
+        ),
+        UpdateWay::SystemPackage => format!(
+            "Junto {version} is available. Install {} from the download page.",
+            deb_name(version)
+        ),
+        UpdateWay::NotAPackage => format!(
+            "Junto {version} is available. This copy was not installed from a package: install a package from the download page."
+        ),
+    }
+}
+
+/// The steps of a newer version for a copy that does not install it itself, in the
+/// section "Version" of the settings.
+pub fn update_steps(
+    version: Version,
+    way: &crate::state::update_install::UpdateWay,
+) -> Option<String> {
+    use crate::state::update_install::UpdateWay;
+    match way {
+        UpdateWay::SystemPackage => Some(format!(
+            "Junto installed from a .deb package is updated by the package manager of the system. Download {} from the download page, run this command in the folder of the download, then restart Junto:",
+            deb_name(version)
+        )),
+        UpdateWay::MoveFirst => Some(
+            "Junto cannot write the folder that holds it, or macOS runs it from a temporary copy. Move Junto into a folder of your account (on macOS: Applications, by dragging it there in the Finder), open it from there, then choose Update.".to_owned(),
+        ),
+        UpdateWay::NotAPackage => Some(
+            "This copy of Junto was not installed from a package, so it does not update itself. Install the package of your system from the download page; it keeps your servers and settings.".to_owned(),
+        ),
+        UpdateWay::InApp | UpdateWay::NoSource => None,
+    }
+}
+
+/// The sentence after an installed update, below "Add server".
+pub fn restart_to_use(version: Version) -> String {
+    format!("Junto {version} is installed. Restart Junto to use it.")
+}
+
 // The section "Version" of the settings.
 pub const VERSION: &str = "Version";
 pub const NOT_CONFIGURED: &str = "This version of Junto does not look for newer versions.";
@@ -71,6 +153,7 @@ pub const ADDRESS_COPIED: &str = "Copied";
 pub const CHECK_NOW: &str = "Check now";
 pub const CHECKING: &str = "Checking…";
 pub const NO_INSTALL: &str = "This version of Junto does not install updates by itself.";
+pub const INSTALLS_ITSELF: &str = "When a newer version is available, Junto downloads and installs it on Update, and starts it on Restart.";
 
 pub fn this_build(build: Version) -> String {
     format!(
@@ -118,10 +201,10 @@ pub fn installed(previous: &junto_client_core::releases::install::Previous) -> S
     use junto_client_core::releases::install::Previous;
     match previous {
         Previous::Kept(version) => format!(
-            "Update installed. Quit Junto and reopen it to use the new version. Version {version} is kept for a rollback."
+            "Update installed. Restart Junto to use the new version. Version {version} is kept for a rollback."
         ),
         Previous::Missing(reason) => format!(
-            "Update installed. Quit Junto and reopen it to use the new version. No previous version is kept for a rollback: {reason}."
+            "Update installed. Restart Junto to use the new version. No previous version is kept for a rollback: {reason}."
         ),
     }
 }

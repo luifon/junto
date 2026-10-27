@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <clipPath id="m-a"><circle cx="512.0" cy="400.0" r="196"/></clipPath>
+  <clipPath id="m-b"><circle cx="622.9" cy="592.0" r="196"/></clipPath>
+  <clipPath id="m-c"><circle cx="401.1" cy="592.0" r="196"/></clipPath>
+  <clipPath id="m-ab" clip-path="url(#m-a)"><circle cx="622.9" cy="592.0" r="196"/></clipPath>
+</defs>
+<circle cx="512.0" cy="400.0" r="196" fill="#B4532F"/>
+<circle cx="622.9" cy="592.0" r="196" fill="#C79A45"/>
+<circle cx="401.1" cy="592.0" r="196" fill="#2F4B3C"/>
+<circle cx="622.9" cy="592.0" r="196" fill="#8A4A22" clip-path="url(#m-a)"/>
+<circle cx="401.1" cy="592.0" r="196" fill="#4F5A2E" clip-path="url(#m-b)"/>
+<circle cx="512.0" cy="400.0" r="196" fill="#5A3022" clip-path="url(#m-c)"/>
+<circle cx="401.1" cy="592.0" r="196" fill="#FAF5EA" clip-path="url(#m-ab)"/>
+</svg>

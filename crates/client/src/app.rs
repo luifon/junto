@@ -106,6 +106,10 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
         state.set_notifier(notifier);
         state.set_uses_system_applications(true);
         state.set_tray(tray, cx);
+        // The permissions of the system, and the question of macOS for the notifications
+        // at the first start (ADR 0708).
+        state.use_system_permissions(cx);
+        state.ask_for_notifications_once(cx);
     });
     state
 }

@@ -83,7 +83,9 @@ class Check:
                                        icon_tool=self.icon_tool, build=TARGET)
         self.tarball = self.packages / f"junto-1.0.0-linux-{self.architecture}.tar.gz"
         self.appimage = self.packages / f"Junto-1.0.0-{self.architecture}.AppImage"
-        expect(self.tarball.is_file() and self.appimage.is_file(), "a package file is missing")
+        self.deb = self.packages / linux.deb_name("1.0.0", self.architecture)
+        expect(self.tarball.is_file() and self.appimage.is_file() and self.deb.is_file(),
+               "a package file is missing")
 
     @step("the tarball holds the program, its libraries, the menu entry, the icons and the licences")
     def tarball_contents(self):
@@ -172,6 +174,41 @@ class Check:
         entry = (home / f".local/share/applications/{linux.APPLICATION_ID}.desktop").read_text()
         expect(f'Exec="{self.installed}/junto"' in entry and f"Icon={linux.APPLICATION_ID}" in entry, entry)
         self.icon_theme(home / ".local")
+
+    @step("the Debian package holds the program of the tarball, names its dependencies, and its program starts")
+    def debian_package(self):
+        result = ran(["dpkg-deb", "--field", self.deb, "Package", "Version", "Architecture", "Depends"])
+        expect(result.returncode == 0, "dpkg-deb cannot read the package", result)
+        fields = dict(line.split(": ", 1) for line in result.stdout.splitlines())
+        expect(fields.get("Package") == "junto" and fields.get("Version") == "1.0.0"
+               and fields.get("Architecture") == linux.DEB_ARCHITECTURES[self.architecture], f"fields: {fields}")
+        # Each dependency names a package that this Debian release has: the first name of each
+        # alternative is installed in the build image, which runs the program.
+        for dependency in fields["Depends"].split(", "):
+            name = dependency.split(" | ")[0].split(" ")[0]
+            found = ran(["dpkg-query", "-W", "-f", "${Status}", name])
+            expect("install ok installed" in found.stdout, f"the dependency {name} is not a package of the image",
+                   found)
+        extracted = self.root / "deb"
+        result = ran(["dpkg-deb", "-x", self.deb, extracted])
+        expect(result.returncode == 0, "dpkg-deb cannot extract the package", result)
+        program = extracted / "usr/lib/junto"
+        description = json.loads((program / "junto-package.json").read_text())
+        expect(description == {"format": 1, "version": "1.0.0", "system": "linux", "package": "deb",
+                               "architecture": self.architecture}, f"description: {description}")
+        expect(os.readlink(extracted / "usr/bin/junto") == "../lib/junto/junto", "the link of the program")
+        expect((program / "junto").read_bytes() == (self.installed / "junto").read_bytes(),
+               "the program of the Debian package differs from the one of the tarball")
+        libraries = {path.name for path in (program / "lib").iterdir()}
+        expect(libraries == linux.BUNDLED, f"bundled libraries: {sorted(libraries)}")
+        entry = (extracted / f"usr/share/applications/{linux.APPLICATION_ID}.desktop").read_text()
+        expect("Exec=junto" in entry, entry)
+        self.icon_theme(extracted / "usr")
+        expect((extracted / "usr/share/doc/junto/copyright").is_file(), "the copyright file is missing")
+        expect(not (program / "junto-recover").exists() and not (program / "install-menu-entry").exists(),
+               "the Debian package holds the update tools of the directory package")
+        for backend in ["x11", "wayland"]:
+            started(extracted / "usr/bin/junto", backend, self.root / f"data-deb-{backend}")
 
     @step("the AppImage holds the same program and libraries, the menu entry and the icon")
     def appimage_contents(self):

@@ -642,7 +642,7 @@ async fn round3_retention_continuation_does_not_revisit_earlier_places() {
     files.attach(&[item.id]).await;
     let server = &files.server;
     sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned,retention_at,position) select gen_random_uuid(),storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned,retention_at,n from attachments cross join generate_series(1,5) n where id=$1")
-        .bind(item.id).execute(&server.db).await.unwrap();
+        .bind(item.id).execute(&mut server.test_data().await).await.unwrap();
     server
         .put(
             &files.owner,

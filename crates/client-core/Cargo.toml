@@ -71,6 +71,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
+    # The notification setting of the application (ADR 0708).
+    "UI_Notifications",
+    # The setup program: the instances of Junto that run (ADR 0728).
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -101,11 +105,21 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
+    "NSError",
     "NSData",
     "NSGeometry",
     "NSObject",
     "NSString",
     "objc2-core-foundation",
+] }
+# The notification permission of the application (ADR 0708), in the versions that gpui uses.
+block2 = "0.6"
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "UNNotificationSettings",
+    "UNUserNotificationCenter",
 ] }
 
 [dev-dependencies]

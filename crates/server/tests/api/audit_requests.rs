@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use crate::support::{TestServer, fixture_batches};
+use crate::support::TestServer;
 
 #[tokio::test]
 async fn filters_and_continuations_select_only_matching_entries() {
@@ -161,20 +161,19 @@ async fn filter_queries_use_indexes() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let other = server.join(&owner, "Other").await;
-    for (first, last) in fixture_batches(10_000) {
-        sqlx::query(
-            "insert into audit_entries (id, occurred_at, actor_id, action, event)
-        select gen_random_uuid(), '2020-01-01'::timestamptz, $1, 'owner_claimed',
-               jsonb_build_object('action','owner_claimed','account_id',gen_random_uuid())
-        from generate_series($2::int,$3::int)",
-        )
-        .bind(owner.account_id)
-        .bind(first)
-        .bind(last)
-        .execute(&server.db)
-        .await
-        .unwrap();
-    }
+    let (first, last) = (1, 10_000);
+    sqlx::query(
+        "insert into audit_entries (id, occurred_at, actor_id, action, event)
+    select gen_random_uuid(), '2020-01-01'::timestamptz, $1, 'owner_claimed',
+           jsonb_build_object('action','owner_claimed','account_id',gen_random_uuid())
+    from generate_series($2::int,$3::int)",
+    )
+    .bind(owner.account_id)
+    .bind(first)
+    .bind(last)
+    .execute(&mut server.test_data().await)
+    .await
+    .unwrap();
     let id = junto_protocol::ids::AuditEntryId::generate();
     sqlx::query("insert into audit_entries (id, occurred_at, actor_id, action, event)
         values ($1, '2021-01-01', $2, 'owner_assigned', jsonb_build_object('action','owner_assigned','account_id',$2::uuid))")

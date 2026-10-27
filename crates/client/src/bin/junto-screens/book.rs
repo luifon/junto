@@ -290,6 +290,105 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
         )?;
     }
 
+    // The version of this copy below "Add server" in each state and each way of its
+    // update, expanded and collapsed (ADR 0780).
+    {
+        use junto_client::state::update_install::UpdateWay;
+        const SITE: &str = "https://releases.example.test/junto/";
+        let ways: [(&'static str, UpdatesKnown, UpdateWay, bool); 9] = [
+            (
+                "book-version-current",
+                checked(UpdateState::Current),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-no-source",
+                UpdatesKnown {
+                    build: BUILD,
+                    ..UpdatesKnown::default()
+                },
+                UpdateWay::NoSource,
+                false,
+            ),
+            (
+                "book-version-failed",
+                checked(UpdateState::Failed),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-available",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-installed",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                true,
+            ),
+            (
+                "book-version-deb",
+                available(Some(PAGE)),
+                UpdateWay::SystemPackage,
+                false,
+            ),
+            (
+                "book-version-move-first",
+                available(Some(PAGE)),
+                UpdateWay::MoveFirst,
+                false,
+            ),
+            (
+                "book-version-not-a-package",
+                available(Some(PAGE)),
+                UpdateWay::NotAPackage,
+                false,
+            ),
+            (
+                "book-version-available-collapsed",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                false,
+            ),
+        ];
+        for (name, updates, way, installed) in ways {
+            let collapsed = name.ends_with("-collapsed");
+            studio.draw(Screen::new(name, three_servers(0)), move |shell, _, cx| {
+                show_updates(shell, updates, cx);
+                shell.state().clone().update(cx, |state, cx| {
+                    state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                    if collapsed {
+                        state.set_server_book_collapsed(true, cx);
+                    }
+                });
+            })?;
+        }
+        for (name, way, installed) in [
+            ("settings-version-deb", UpdateWay::SystemPackage, false),
+            ("settings-version-move-first", UpdateWay::MoveFirst, false),
+            (
+                "settings-version-not-a-package",
+                UpdateWay::NotAPackage,
+                false,
+            ),
+            ("settings-version-installed", UpdateWay::InApp, true),
+        ] {
+            studio.draw(
+                Screen::new(name, three_servers(0)),
+                move |shell, window, cx| {
+                    show_updates(shell, available(Some(PAGE)), cx);
+                    shell.state().clone().update(cx, |state, cx| {
+                        state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                    });
+                    shell.open_version_settings(window, cx);
+                },
+            )?;
+        }
+    }
+
     // A server that needs a newer client, with the newer version that is known and
     // without one.
     let too_old = || {

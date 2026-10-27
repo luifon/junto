@@ -104,9 +104,14 @@ fn release_tool_generates_external_keys_and_publishes_verifiable_files() {
             .arg(&secret)
             .output()
             .unwrap();
+        // A build without a source refuses to publish: with the tracked keys for the missing
+        // source, with empty trust files (a test configuration) for the missing keys.
         assert!(!result.status.success());
+        let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains("release and freshness trust sets")
+            stderr.contains("no build-time update source")
+                || stderr.contains("release and freshness trust sets"),
+            "{stderr}"
         );
     }
 }

@@ -69,6 +69,7 @@ mod search;
 mod servers;
 mod settings;
 mod states;
+mod system_permissions;
 mod thread_actions;
 mod threads;
 mod transcripts;

@@ -255,14 +255,14 @@
       },
       "StructureFile": {
         "additionalProperties": false,
-        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and overrides.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels, overrides and glossaries.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
         "properties": {
           "delete": {
             "$ref": "#/components/schemas/Deletions",
             "description": "The entries that applying the file deletes. Nothing else is deleted."
           },
           "format": {
-            "description": "The version of the file format: 2. This tool also reads format 1.",
+            "description": "The version of the file format: 3. This tool also reads the formats 1 and 2.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -309,6 +309,16 @@
             "description": "True for the default workspace. An entry with this mark whose identifier the server\ndoes not know stands for the default workspace of the server.",
             "type": "boolean"
           },
+          "glossary": {
+            "description": "The terms of the glossary, most important first (ADR 0603). The list replaces the\nwhole glossary; an empty list removes every term. Absent: a new workspace has no\nterm, an existing workspace keeps its glossary.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "id": {
             "$ref": "#/components/schemas/StructureId"
           },
@@ -353,6 +363,6 @@
       }
     }
   },
-  "description": "The structure of a Junto server as the setup tool writes it: format 2. The tool reads the formats 1 to 2. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
+  "description": "The structure of a Junto server as the setup tool writes it: format 3. The tool reads the formats 1 to 3. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
   "title": "Junto structure file"
 }

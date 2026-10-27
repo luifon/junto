@@ -607,6 +607,9 @@ struct Held {
 struct ServerState {
     entry: ServerEntry,
     reach: Reach,
+    /// The last request got no answer because macOS refused a connection to the local
+    /// network (ADR 0708). An answer clears it.
+    local_network_refused: bool,
     access: AccessState,
     in_progress: Option<ActionKind>,
     error: Option<FlowError>,
@@ -672,6 +675,13 @@ impl ServerHandle {
 
     pub fn reach(&self) -> Reach {
         lock(&self.server.state).reach
+    }
+
+    /// The last request to the server got no answer because macOS refused a connection to
+    /// the local network: the person has not allowed Junto in the Local Network settings
+    /// (ADR 0708).
+    pub fn local_network_refused(&self) -> bool {
+        lock(&self.server.state).local_network_refused
     }
 
     /// The access flow: its state, its actions, the running action and the last error.
@@ -1200,6 +1210,7 @@ impl Server {
                 access: access::initial(&entry.membership, entry.logged_out),
                 entry,
                 reach: Reach::Unknown,
+                local_network_refused: false,
                 in_progress: None,
                 error: None,
                 api: None,
@@ -1612,7 +1623,11 @@ impl Server {
     fn note(&self, error: &ApiError) {
         tracing::debug!(server = %self.id, %error, "a request failed");
         match error {
-            ApiError::Unreachable(_) | ApiError::OutcomeUnknown => self.unanswered(),
+            ApiError::Unreachable(transport) => {
+                lock(&self.state).local_network_refused = transport.is_local_network_refusal();
+                self.unanswered();
+            }
+            ApiError::OutcomeUnknown => self.unanswered(),
             ApiError::InvalidResponse { status, .. } if *status >= 500 => self.unanswered(),
             ApiError::Rejected(_) | ApiError::InvalidResponse { .. } => self.answered(),
             _ => {}
@@ -1626,6 +1641,7 @@ impl Server {
     /// The server answered, so it is reachable again after a failure.
     fn answered(&self) {
         let mut state = lock(&self.state);
+        state.local_network_refused = false;
         if let (Some(api), Reach::Unreachable | Reach::Unknown) = (&state.api, state.reach) {
             state.reach = Reach::Reachable {
                 version: api.version(),

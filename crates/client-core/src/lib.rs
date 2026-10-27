@@ -11,6 +11,7 @@ pub mod book;
 pub mod console;
 pub mod events;
 pub mod flow;
+pub mod input_monitoring;
 pub mod keys;
 pub mod link;
 pub mod live;
@@ -18,6 +19,7 @@ pub mod manager;
 #[cfg(target_os = "macos")]
 pub mod menu_bar;
 pub mod model;
+pub mod notification_access;
 #[cfg(windows)]
 pub mod notification_area;
 pub mod paths;

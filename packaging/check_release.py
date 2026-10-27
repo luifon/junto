@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 
+import check_dmg
 from check_signing import requirement
 from create_identity import create, run
 from keychains import cleanup, signals
@@ -60,6 +61,9 @@ def check():
                 subprocess.run(["sh", "packaging/release_locked.sh", str(root / f"v{number}")], cwd=repository, env=environment, check=True)
                 binary = root / f"v{number}/Junto.app/Contents/MacOS/junto"
                 assert run(str(binary), "--version").strip() == version + " (test configuration)"
+                # The disk image beside the ZIP, signed with the same identity (ADR 0728).
+                check_dmg.check(root / f"v{number}/Junto-{version}-macos-{architecture}.dmg",
+                                requirement(root / f"v{number}/Junto.app"), identity)
                 if number == 1:
                     shutil.copy2(repository / "target/release/junto-release", root / "updater-v1")
             other_identity = create(root / "other-identity")

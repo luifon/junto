@@ -1638,7 +1638,7 @@ async fn rule_e17_the_statements_of_exports_read_through_indexes() {
     )
     .bind(desk.workspace_id)
     .bind(server.clock.now())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query("analyze exports")
@@ -2193,7 +2193,7 @@ async fn rule_e24_a_raised_reservation_needs_the_space_of_what_is_written_later(
     )
     .bind(first.id)
     .bind(page)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
 

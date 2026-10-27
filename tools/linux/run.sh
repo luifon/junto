@@ -65,7 +65,14 @@ DOCKER_BUILDKIT=0 docker build --force-rm --label "junto-linux-image=$prefix" \
     --cpuset-cpus "$build_set" --memory "$memory" --memory-swap "$memory" \
     --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" \
     -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
-docker image prune -f --filter "label=junto-linux-image=$prefix" >/dev/null
+# The replaced images of this runner are removed by their identifiers: the daemon runs one
+# prune at a time, so `docker image prune` fails while any other prune runs on the host. An
+# image that a container still uses stays, as a prune would leave it.
+replaced=$(docker image ls -q --filter dangling=true --filter "label=junto-linux-image=$prefix")
+if [ -n "$replaced" ]; then
+    # shellcheck disable=SC2086
+    docker image rm $replaced >/dev/null || echo "some replaced images of $prefix are still in use" >&2
+fi
 docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null
 docker network create "$network" >/dev/null

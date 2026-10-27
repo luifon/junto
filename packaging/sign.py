@@ -9,6 +9,8 @@ from keychains import run, session
 
 
 def sign(bundle):
+    """Signs `Junto.app` and its recovery program, or a disk image of the release (ADR 0728),
+    with the project certificate, and requires the certificate in the designated requirement."""
     identity = os.environ.get("JUNTO_CODESIGN_IDENTITY", "")
     if identity in ("", "-"):
         raise ValueError("a code-signing certificate is required")
@@ -22,7 +24,10 @@ def sign(bundle):
         if recovery.is_file():
             run("/usr/bin/codesign", "--force", "--timestamp=none", "--keychain", keychain, "--sign", identity, str(recovery))
         run("/usr/bin/codesign", "--force", "--timestamp=none", "--keychain", keychain, "--sign", identity, bundle)
-        run("/usr/bin/codesign", "--verify", "--deep", "--strict", bundle)
+        if str(bundle).endswith(".dmg"):
+            run("/usr/bin/codesign", "--verify", "--strict", bundle)
+        else:
+            run("/usr/bin/codesign", "--verify", "--deep", "--strict", bundle)
         required = run("/usr/bin/codesign", "-d", "-r-", bundle).lower()
         if f'certificate leaf = h"{pin.lower()}"' not in required:
             raise ValueError("the signature differs from the project certificate")
@@ -30,7 +35,7 @@ def sign(bundle):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        sys.exit("usage: packaging/sign.py <Junto.app>")
+        sys.exit("usage: packaging/sign.py <Junto.app | image.dmg>")
     try:
         sign(sys.argv[1])
     except (RuntimeError, ValueError, KeyError) as error:

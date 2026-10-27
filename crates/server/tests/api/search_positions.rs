@@ -115,7 +115,7 @@ async fn long_transcript(studio: &Studio, worker: &FakeWorker) -> RecordingId {
          where recording_id = $1 and line = 0",
     )
     .bind(done.recording.id)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     done.recording.id

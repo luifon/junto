@@ -181,9 +181,9 @@ async fn override_and_membership_changes_use_their_indexes() {
     let channel = server.channel(&owner, workspace.id, "text").await;
     let role = server.everyone_role(&owner, workspace.id).await;
     sqlx::query("with people as (insert into accounts(id,name,status,created_at) select gen_random_uuid(),'filler','active',$2 from generate_series(1,10000) returning id) insert into workspace_members(workspace_id,account_id,joined_at) select $1,id,$2 from people")
-        .bind(workspace.id).bind(server.clock.now()).execute(&server.db).await.unwrap();
+        .bind(workspace.id).bind(server.clock.now()).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("with copies as (insert into channels(id,workspace_id,kind,name,position,created_at) select gen_random_uuid(),workspace_id,kind,name,position+n,created_at from channels cross join generate_series(1,10000) n where id=$1 returning id,workspace_id) insert into channel_overrides(channel_id,role_id,workspace_id,allow,deny) select id,$2,workspace_id,0,1 from copies")
-        .bind(channel.id).bind(role.id).execute(&server.db).await.unwrap();
+        .bind(channel.id).bind(role.id).execute(&mut server.test_data().await).await.unwrap();
     analyze(&server.db, &["workspace_members", "channel_overrides"]).await;
     let membership: Value = sqlx::query_scalar(explained(
         "delete from workspace_members where workspace_id=$1 and account_id=$2",

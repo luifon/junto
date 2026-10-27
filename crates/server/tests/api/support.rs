@@ -36,7 +36,6 @@ use tokio::sync::oneshot;
 
 use crate::postgres_proxy::PostgresProxy;
 
-/// Bounded statements prepare large fixtures under the normal database time limits.
 /// The directory of this package in the checkout that runs the test: `cargo test` sets it at
 /// run time, while a path compiled into the binary can name another checkout whose build the
 /// shared target directory reused.
@@ -44,12 +43,6 @@ pub fn package_directory() -> PathBuf {
     std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test"))
-}
-
-pub fn fixture_batches(rows: i32) -> impl Iterator<Item = (i32, i32)> {
-    (1..=rows)
-        .step_by(500)
-        .map(move |first| (first, (first + 499).min(rows)))
 }
 
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
@@ -783,6 +776,25 @@ impl TestServer {
         self.database.clone()
     }
 
+    /// A connection with finite fixture limits, separate from the limits of a request,
+    /// for the inserts of large test data; the queries under test use `db` (ADR 0904).
+    pub async fn test_data(&self) -> sqlx::PgConnection {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            self.database
+                .clone()
+                .options([
+                    ("statement_timeout", "120s"),
+                    ("lock_timeout", "10s"),
+                    ("idle_in_transaction_session_timeout", "60s"),
+                ])
+                .connect()
+                .await
+                .unwrap()
+        })
+        .await
+        .expect("fixture connection did not open within 15 seconds")
+    }
+
     /// Connects to the database of this server as a server process with a changed
     /// configuration does, and starts no process.
     pub async fn database_with(&self, configure: impl FnOnce(&mut Config)) -> Database {
@@ -1357,4 +1369,49 @@ pub fn member(key: DeviceKey, session: SessionCreated) -> Member {
         device_id: session.device_id,
         token: session.token.expose().to_owned(),
     }
+}
+
+#[tokio::test]
+async fn fixture_statements_cancel_when_another_transaction_keeps_their_lock() {
+    let server = TestServer::start().await;
+    let mut owner = server.test_data().await;
+    sqlx::query("create table fixture_lock (value integer)")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    let mut transaction = owner.begin().await.unwrap();
+    sqlx::query("lock table fixture_lock in access exclusive mode")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    let mut fixture = server.test_data().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        sqlx::query("insert into fixture_lock values (1)").execute(&mut fixture),
+    )
+    .await;
+    transaction.rollback().await.unwrap();
+    let error = result
+        .expect("fixture INSERT waited more than 15 seconds for a lock")
+        .expect_err("fixture INSERT ignored the exclusive lock");
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("55P03")
+    );
+    sqlx::query("insert into fixture_lock values (2)")
+        .execute(&mut fixture)
+        .await
+        .unwrap();
+    let unbounded: Vec<String> = sqlx::query_scalar(
+        "select name from pg_settings where name in \
+         ('statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout') \
+         and setting::bigint = 0",
+    )
+    .fetch_all(&mut fixture)
+    .await
+    .unwrap();
+    assert!(
+        unbounded.is_empty(),
+        "fixture limits were disabled: {unbounded:?}"
+    );
 }

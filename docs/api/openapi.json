@@ -8880,7 +8880,7 @@
         "tags": [
           "structure"
         ],
-        "summary": "The workspaces, roles, categories, channels and overrides of the server, with the\nrevision of that structure. The caller needs the administrator permission.",
+        "summary": "The workspaces, roles, categories, channels, overrides and glossaries of the server,\nwith the revision of that structure. The caller needs the administrator permission.",
         "operationId": "get_structure",
         "responses": {
           "200": {
@@ -18414,6 +18414,32 @@
           },
           {
             "type": "object",
+            "description": "Replaces the whole glossary of a workspace with `terms`, most important first. The\nchange has the checks, the limits, the audit entry and the event of the glossary\nroute (ADR 0603).",
+            "required": [
+              "workspace",
+              "terms",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "replace_glossary"
+                ]
+              },
+              "terms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "id",
               "change"
@@ -18525,7 +18551,7 @@
       },
       "StructureFile": {
         "type": "object",
-        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and overrides.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels, overrides and glossaries.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
         "required": [
           "format"
         ],
@@ -18537,7 +18563,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 2. This tool also reads format 1.",
+            "description": "The version of the file format: 3. This tool also reads the formats 1 and 2.",
             "minimum": 0
           },
           "server_roles": {
@@ -19274,6 +19300,16 @@
           "default": {
             "type": "boolean",
             "description": "True for the default workspace. An entry with this mark whose identifier the server\ndoes not know stands for the default workspace of the server."
+          },
+          "glossary": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The terms of the glossary, most important first (ADR 0603). The list replaces the\nwhole glossary; an empty list removes every term. Absent: a new workspace has no\nterm, an existing workspace keeps its glossary."
           },
           "id": {
             "$ref": "#/components/schemas/StructureId"

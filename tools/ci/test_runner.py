@@ -321,13 +321,21 @@ class Ended(unittest.TestCase):
             finally:
                 process.kill()
             here = directory / "runs" / "sample-run"
-            self.assertEqual(process.returncode, 143, output)
+            # Every file of the run, for the message of a failed assertion: the test failed now
+            # and then without a record of why (CD9).
+            files = "\n".join(f"--- {path.relative_to(root)}\n{path.read_text(errors='replace')}"
+                              for path in sorted([*here.rglob("*"), root / "ended"])
+                              if path.is_file() and path.stat().st_size < 65536)
+            context = f"output of the runner:\n{output}\nfiles:\n{files}"
+            self.assertEqual(process.returncode, 143, context)
+            self.assertTrue((root / "ended").exists(), "the child of the job did not end by its TERM\n" + context)
             self.assertEqual((root / "ended").read_text(), "held free",
-                             "the run lock was free, or the lock of JUNTO_HEAVY_LOCK was taken, while the job ran")
+                             "the run lock was free, or the lock of JUNTO_HEAVY_LOCK was taken, while the job ran\n"
+                             + context)
             # The check after the run saw the file that the child wrote at its end.
             self.assertRegex((here / "caches.log").read_text(),
-                             r"after: cache [a-z-]+: 2048 KiB, above its cap of 0 KiB")
-            self.assertEqual((here / "finished").read_text(), "143\n")
+                             r"after: cache [a-z-]+: 2048 KiB, above its cap of 0 KiB", context)
+            self.assertEqual((here / "finished").read_text(), "143\n", context)
             self.assertTrue((directory / "checkout" / "tracked.txt").exists())
             self.assertFalse((here / "commit.git").exists())
             self.assertFalse((here / "lock").exists())

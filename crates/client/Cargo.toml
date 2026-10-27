@@ -173,6 +173,8 @@ junto-alloc-count = { path = "../alloc-count" }
 serde_json = { workspace = true }
 # The server inside the test process, for the tests that need its recorder in memory.
 junto-server = { path = "../server" }
+# The tokens of the source files, for the check that no code names `chrono::Local`.
+proc-macro2 = "1"
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }

@@ -1,6 +1,6 @@
 //! Read cost is bounded independently of the number of messages or channels.
 use crate::messages_support::*;
-use crate::support::{TestServer, fixture_batches};
+use crate::support::TestServer;
 use junto_protocol::message::MessagePage;
 use reqwest::StatusCode;
 
@@ -38,7 +38,7 @@ async fn history_and_snapshot_statement_counts_do_not_grow_with_messages_or_chan
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "content").await;
-    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,199) n where id=$1").bind(root.id).execute(&server.db).await.unwrap();
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,199) n where id=$1").bind(root.id).execute(&mut server.test_data().await).await.unwrap();
     let (mut held, role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     let route = format!("/api/v1/channels/{}/messages", channel.id);
@@ -87,7 +87,7 @@ async fn unread_count_is_exact_below_one_hundred_and_capped_above_it() {
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "content").await;
     sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,299) n where id=$1")
-        .bind(root.id).execute(&server.db).await.unwrap();
+        .bind(root.id).execute(&mut server.test_data().await).await.unwrap();
     let route = format!("/api/v1/channels/{}/messages/read", channel.id);
     let state: junto_protocol::message::MessageState =
         server.get(&reader, &route).await.ok(StatusCode::OK);
@@ -226,10 +226,9 @@ async fn unread_query_reads_only_the_indexed_unread_tail_of_a_large_history() {
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "content").await;
-    for (first, last) in fixture_batches(29999) {
-        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series($2::int,$3::int) n where id=$1")
-        .bind(root.id).bind(first).bind(last).execute(&server.db).await.unwrap();
-    }
+    let (first, last) = (1, 29999);
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series($2::int,$3::int) n where id=$1")
+    .bind(root.id).bind(first).bind(last).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("insert into message_reads(place_id,account_id,position) values($1,$2,29992)")
         .bind(channel.id)
         .bind(reader.account_id)
@@ -261,10 +260,9 @@ async fn maintenance_does_not_scan_live_attachments() {
     let files = Files::open().await;
     let root = send(&files.server, &files.owner, &files.channel, "content").await;
     let pending = files.start(b"content").await;
-    for (first, last) in fixture_batches(20000) {
-        sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned,position) select gen_random_uuid(),storage_id,place_id,owner_id,$2,name,bytes,bytes,sha256,true,expires_at,touched_at,true,true,n from attachments cross join generate_series($3::int,$4::int) n where id=$1")
-        .bind(pending.id).bind(root.id).bind(first).bind(last).execute(&files.server.db).await.unwrap();
-    }
+    let (first, last) = (1, 20000);
+    sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned,position) select gen_random_uuid(),storage_id,place_id,owner_id,$2,name,bytes,bytes,sha256,true,expires_at,touched_at,true,true,n from attachments cross join generate_series($3::int,$4::int) n where id=$1")
+    .bind(pending.id).bind(root.id).bind(first).bind(last).execute(&mut files.server.test_data().await).await.unwrap();
     sqlx::query("analyze attachments")
         .execute(&files.server.db)
         .await
@@ -321,15 +319,14 @@ async fn unread_query_does_not_read_every_own_message_after_the_read_position() 
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "content").await;
-    for (first, last) in fixture_batches(19_999) {
-        sqlx::query(COPIES)
-            .bind(root.id)
-            .bind(first)
-            .bind(last)
-            .execute(&server.db)
-            .await
-            .unwrap();
-    }
+    let (first, last) = (1, 19_999);
+    sqlx::query(COPIES)
+        .bind(root.id)
+        .bind(first)
+        .bind(last)
+        .execute(&mut server.test_data().await)
+        .await
+        .unwrap();
     sqlx::query("update message_places set head=(select max(position) from messages where place_id=$1) where id=$1")
         .bind(channel.id).execute(&server.db).await.unwrap();
     let last = send(&server, &owner, &channel, "last own message").await;
@@ -360,15 +357,14 @@ async fn unread_query_does_not_read_every_mention_of_other_accounts_after_the_re
     let other = server.join(&owner, "Other").await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "content").await;
-    for (first, last) in fixture_batches(19_999) {
-        sqlx::query(COPIES)
-            .bind(root.id)
-            .bind(first)
-            .bind(last)
-            .execute(&server.db)
-            .await
-            .unwrap();
-    }
+    let (first, last) = (1, 19_999);
+    sqlx::query(COPIES)
+        .bind(root.id)
+        .bind(first)
+        .bind(last)
+        .execute(&mut server.test_data().await)
+        .await
+        .unwrap();
     sqlx::query(
         "insert into message_mentions(place_id,position,message_id,account_id)
          select place_id,position,id,$2 from messages where place_id=$1",
@@ -410,7 +406,7 @@ async fn round2_read_mentions_do_not_scan_the_read_history() {
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     let root = crate::discovery_support::mention(&server, &owner, &channel, &reader).await;
-    sqlx::query("with copied as (insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,5000) n where id=$1 returning *) insert into message_mention_accounts(place_id,account_id,position,message_id) select place_id,$2,position,id from copied").bind(root.id).bind(reader.account_id).execute(&server.db).await.unwrap();
+    sqlx::query("with copied as (insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,5000) n where id=$1 returning *) insert into message_mention_accounts(place_id,account_id,position,message_id) select place_id,$2,position,id from copied").bind(root.id).bind(reader.account_id).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("insert into message_reads(place_id,account_id,position) values($1,$2,99999)")
         .bind(channel.id)
         .bind(reader.account_id)
@@ -418,7 +414,7 @@ async fn round2_read_mentions_do_not_scan_the_read_history() {
         .await
         .unwrap();
     sqlx::query("with copied as (insert into messages(id,place_id,position,author_id,created_at,document,thread_root) select gen_random_uuid(),place_id,position+n+5000,author_id,created_at,document,id from messages cross join generate_series(1,1001) n where id=$1 returning *) insert into message_mention_accounts(place_id,account_id,position,message_id,thread_root,unread) select place_id,$2,position,id,thread_root,false from copied")
-        .bind(root.id).bind(reader.account_id).execute(&server.db).await.unwrap();
+        .bind(root.id).bind(reader.account_id).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("analyze message_mention_accounts")
         .execute(&server.db)
         .await

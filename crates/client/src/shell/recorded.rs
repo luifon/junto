@@ -290,14 +290,33 @@ impl Shell {
                     .child(forget("forget-recorded", text::DISMISS, cx))
                     .into_any_element()
             }
-            DownloadStage::Failed(failure) => row
-                .child(icon(Icon::Warning, 14.0, colors.cinnabar))
-                .child(small(
-                    text::transfer_failure(*failure).into(),
-                    colors.cinnabar_ink,
-                ))
-                .child(forget("forget-recorded", text::DISMISS, cx))
-                .into_any_element(),
+            DownloadStage::Failed(failure) => {
+                // The system did not let Junto write into the download directory (ADR 0708).
+                let refused = *failure
+                    == junto_client_core::transfers::TransferFailure::File(
+                        std::io::ErrorKind::PermissionDenied,
+                    );
+                let system = self.state.read(cx).permission_system();
+                let sentence = if refused {
+                    crate::text::permissions::download_refused(system)
+                } else {
+                    text::transfer_failure(*failure)
+                };
+                let permission = if refused {
+                    self.permission_button(
+                        "recorded-download-permission-action",
+                        crate::permissions::Permission::Downloads,
+                        cx,
+                    )
+                } else {
+                    None
+                };
+                row.child(icon(Icon::Warning, 14.0, colors.cinnabar))
+                    .child(small(sentence.into(), colors.cinnabar_ink))
+                    .children(permission)
+                    .child(forget("forget-recorded", text::DISMISS, cx))
+                    .into_any_element()
+            }
             DownloadStage::Cancelled => div().into_any_element(),
         }
     }

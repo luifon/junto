@@ -45,12 +45,12 @@ variable may be set. Run heavy commands through the machine lock; the Linux rele
 wrapper takes that lock itself.
 
 - On macOS, `packaging/release.sh` builds and signs the bundle and prepares its first-install
-  ZIP and signed update files. Follow [the macOS commands](../packaging/README.md#macos).
-- On x86-64 Linux, `packaging/release_linux.sh` prepares the tarball, AppImage and their
-  package directories. Use `junto-release publish` for both package kinds, as described
+  ZIP, its signed disk image and signed update files. Follow [the macOS commands](../packaging/README.md#macos).
+- On x86-64 Linux, `packaging/release_linux.sh` prepares the tarball, AppImage, Debian
+  package and the package directories of the first two. Use `junto-release publish` for both package kinds, as described
   in [the Linux commands](../packaging/README.md#linux).
-- On x86-64 Windows, build with line tables and assemble with `packaging/windows.py`, then
-  use `junto-release publish` for the directory package. The output also holds
+- On x86-64 Windows, build with line tables and assemble with `packaging/windows.py`, which
+  also writes the setup program, then use `junto-release publish` for the directory package. The output also holds
   `Junto-<version>-windows-x86_64.pdb`, the symbols of the program, which the package does
   not carry. Publish it as a file of the release with the ZIP, in the checksums: a panic
   report of a Windows client is resolved with it (ADR 0757). Follow
@@ -90,6 +90,15 @@ that they can be fetched from the chosen HTTPS source. Replace each target's `la
 only after its referenced archive is present, using an atomic replacement supported by
 the host. Retain the previous versioned files; overwriting a latest pointer does not
 replace those files. Do not upload a private key, keychain, signing password or test key.
+
+Write the release site with `packaging/site.py` from the retained release directories of
+every published version and the notes in `docs/releases/`, as described in
+[the release site](../packaging/README.md#the-release-site) and ADR 0727. Its `updates/`
+directory is the update source, `<base>updates/`, that the builds compile. Upload the site
+in the order that the command prints: every file except `updates/latest-*.json`, then the
+latest files. The GitHub release of the tag gets the files of `download/<version>/` of the
+site (the first-install files, the symbols file and `SHA256SUMS`), and the notes file
+`docs/releases/<version>.md` as its text.
 
 Test a first install and an update from the preceding supported release through the
 public source on every system. Check signature verification, the displayed version,
