@@ -653,6 +653,8 @@ pub struct LevelSlider {
     /// The live level as a share of the track, from 0 to 1, while it is known.
     level: Option<f32>,
     selector: Option<SharedString>,
+    /// The value is a percentage; else decibels.
+    percent: bool,
 }
 
 impl LevelSlider {
@@ -671,7 +673,14 @@ impl LevelSlider {
             range,
             level: None,
             selector: None,
+            percent: false,
         }
+    }
+
+    /// Writes the value as a percentage, as the zoom of a picture (ADR 0119).
+    pub fn in_percent(mut self) -> Self {
+        self.percent = true;
+        self
     }
 
     pub fn state(range: (f32, f32), value: f32) -> SliderState {
@@ -787,7 +796,11 @@ impl RenderOnce for LevelSlider {
                     .text_right()
                     .typeface(theme.types.mono_field, &theme)
                     .ink(colors.ink)
-                    .child(format!("{} dB", value.round() as i32)),
+                    .child(if self.percent {
+                        format!("{}%", value.round() as i32)
+                    } else {
+                        format!("{} dB", value.round() as i32)
+                    }),
             )
     }
 }

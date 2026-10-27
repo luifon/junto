@@ -168,6 +168,7 @@ impl Shell {
                                 text::PICTURE_ZOOM,
                                 ZOOM_PERCENT,
                             )
+                            .in_percent()
                             .selector("picture-zoom"),
                         ),
                     )
