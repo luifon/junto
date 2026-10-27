@@ -561,10 +561,12 @@ impl Shell {
             let busy = quiet.busy;
             parts.push(self.switch_row(
                 theme,
-                "notification-text",
-                text::NOTIFICATION_TEXT,
-                text::NOTIFICATION_TEXT_HELP,
-                shown,
+                Setting {
+                    selector: "notification-text",
+                    title: text::NOTIFICATION_TEXT,
+                    sentence: text::NOTIFICATION_TEXT_HELP,
+                    on: shown,
+                },
                 Box::new(move |this: &mut Shell, cx: &mut Context<Shell>| {
                     if !busy {
                         this.state
@@ -579,10 +581,12 @@ impl Shell {
             let busy = quiet.busy;
             parts.push(self.switch_row(
                 theme,
-                "hold-while-presenting",
-                text::HOLD_WHILE_PRESENTING,
-                text::HOLD_WHILE_PRESENTING_HELP,
-                on,
+                Setting {
+                    selector: "hold-while-presenting",
+                    title: text::HOLD_WHILE_PRESENTING,
+                    sentence: text::HOLD_WHILE_PRESENTING_HELP,
+                    on,
+                },
                 Box::new(move |this: &mut Shell, cx: &mut Context<Shell>| {
                     if !busy {
                         this.state
@@ -599,13 +603,16 @@ impl Shell {
     fn switch_row(
         &self,
         theme: &Theme,
-        selector: &'static str,
-        title: &'static str,
-        sentence: &'static str,
-        on: bool,
-        press: Box<dyn Fn(&mut Shell, &mut Context<Shell>)>,
+        setting: Setting,
+        press: SwitchPress,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Setting {
+            selector,
+            title,
+            sentence,
+            on,
+        } = setting;
         let colors = &theme.colors;
         div()
             .debug_selector(move || format!("{selector}-row"))
@@ -1013,4 +1020,12 @@ impl Shell {
         );
         rows
     }
+}
+
+/// The texts and the state of the switch of a setting.
+struct Setting {
+    selector: &'static str,
+    title: &'static str,
+    sentence: &'static str,
+    on: bool,
 }
