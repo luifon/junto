@@ -369,7 +369,9 @@ impl FakeWorker {
         std::fs::read_to_string(self.path(name)).unwrap()
     }
 
-    /// True when a behaviour created the file `name` in the directory of the worker.
+    /// True when a behaviour created the file `name` in the directory of the worker. Its
+    /// one test runs on Unix.
+    #[cfg(unix)]
     pub fn path_exists(&self, name: &str) -> bool {
         self.path(name).exists()
     }
