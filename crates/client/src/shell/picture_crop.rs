@@ -5,7 +5,7 @@
 
 use gpui::{
     AnyElement, AppContext, Context, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Point, ScrollWheelEvent, StatefulInteractiveElement,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Point, ScrollWheelEvent,
     Styled, Window, div,
 };
 use gpui_base::slider::SliderEvent;
