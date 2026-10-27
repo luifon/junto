@@ -70,6 +70,7 @@ Message reads:
 - Recordings and transcripts require read message history, including their files, corrections and management routes. Starting and stopping a recording retain the separate in-call and record calls requirements.
 - An attachment download uses the same creation-time bound as its message, including when permission is checked again during a running download. A reconnect can therefore end a history-free download of an older message.
 - Sending and editing return the written message without requiring read message history. Internal checks of a reply destination and updates of its root do not turn an authorized write into a history read. Direct conversations retain their participant and departure rules.
+- A change of a message that is older than the current connection, in a channel that the recipient sees without read message history, reaches the connection as `channel_history_withdrawn` with only the workspace and the channel, at most once per change and channel, in live delivery and in replay; replay counting and request receipts count it in the same way. The event of the creation of an older message and a mention send nothing, because the connection cannot hold that message. Reason: a client kept deleted or edited old content, and no event could tell the change without an old message identifier. Tests: `history_permissions::withdrawn`.
 
 Message edits:
 

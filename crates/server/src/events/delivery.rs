@@ -127,6 +127,16 @@ struct Receivable {
 
 enum Decision {
     Deliver(Box<Receivable>),
+    /// The account sees the channel without `read_message_history`, and the event changes
+    /// a message that is older than its live connection. The connection receives
+    /// [`Event::ChannelHistoryWithdrawn`] in place of the event, once per change and
+    /// channel (ADR 0304).
+    Withdrawn {
+        position: i64,
+        at: OffsetDateTime,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+    },
     Hidden,
     /// The account may receive the event, or the server cannot tell, and the event cannot be
     /// sent.
@@ -284,6 +294,7 @@ fn decide(
             workspace_id,
             channel_id,
             created_at,
+            ..
         } => Some((*workspace_id, *channel_id, Some(*created_at))),
         Audience::SystemMessage {
             workspace_id,
@@ -309,6 +320,7 @@ fn decide(
             _ => None,
         },
     };
+    let mut withdrawn = None;
     if let Some((workspace, channel, created_at)) = message_time {
         let history = standing
             .workspaces
@@ -325,7 +337,18 @@ fn decide(
                 .zip(live_since)
                 .is_some_and(|(created, since)| created > since)
         {
-            return Ok(Decision::Hidden);
+            // A connection cannot hold a message whose creation it did not receive, and a
+            // mention is no message content that a client holds.
+            let creation = matches!(
+                audience,
+                Audience::ChannelMessage { creation: true, .. }
+                    | Audience::SystemMessage { creation: true, .. }
+                    | Audience::Mention { .. }
+            );
+            if creation {
+                return Ok(Decision::Hidden);
+            }
+            withdrawn = Some((workspace, channel));
         }
     }
     if let Audience::Notification {
@@ -385,8 +408,14 @@ fn decide(
     if !(wanted && receives(recipient, audience, &in_workspace)) {
         return Ok(Decision::Hidden);
     }
-    match (candidate.class, candidate.event) {
-        (Some(_), Some(event)) => Ok(Decision::Deliver(Box::new(Receivable {
+    match (candidate.class, candidate.event, withdrawn) {
+        (Some(_), _, Some((workspace_id, channel_id))) => Ok(Decision::Withdrawn {
+            position: candidate.position,
+            at: candidate.recorded_at,
+            workspace_id,
+            channel_id,
+        }),
+        (Some(_), Some(event), None) => Ok(Decision::Deliver(Box::new(Receivable {
             position: candidate.position,
             at: candidate.recorded_at,
             event,
@@ -468,6 +497,7 @@ pub async fn subscribe(
         // ordinal.
         let mut after = (change, i32::MAX);
         let mut waiting = 0;
+        let mut withdrawn = HashSet::new();
         loop {
             let rows: Vec<CountedRow> = sqlx::query_as(addressed_query(
                 "select position, ordinal, class,
@@ -503,9 +533,18 @@ pub async fn subscribe(
             let standing =
                 Standing::load(connection, &access, &candidates, app.now(), live_since).await?;
             for candidate in candidates {
-                let decision = decide(&access, &standing, level, in_call, live_since, candidate)?;
-                if !matches!(decision, Decision::Hidden) {
-                    waiting += 1;
+                match decide(&access, &standing, level, in_call, live_since, candidate)? {
+                    Decision::Hidden => {}
+                    Decision::Withdrawn {
+                        position,
+                        channel_id,
+                        ..
+                    } => {
+                        if withdrawn.insert((position, channel_id)) {
+                            waiting += 1;
+                        }
+                    }
+                    Decision::Deliver(_) | Decision::Unsendable => waiting += 1,
                 }
             }
             if waiting > most {
@@ -623,7 +662,9 @@ pub(crate) async fn last_receivable(
         let standing = Standing::load(connection, &access, &candidates, now, live_since).await?;
         for candidate in candidates {
             match decide(&access, &standing, Level::Full, None, live_since, candidate)? {
-                Decision::Deliver(_) => return Ok(Some(log.cursor(change)?)),
+                Decision::Deliver(_) | Decision::Withdrawn { .. } => {
+                    return Ok(Some(log.cursor(change)?));
+                }
                 Decision::Hidden => {}
                 Decision::Unsendable => {
                     return Err(ApiError::internal(&"a request event cannot be delivered"));
@@ -766,6 +807,24 @@ pub async fn next_batch(
                 candidate,
             )? {
                 Decision::Deliver(receivable) => change.push(*receivable),
+                Decision::Withdrawn {
+                    position,
+                    at,
+                    workspace_id,
+                    channel_id,
+                } => {
+                    let event = Event::ChannelHistoryWithdrawn {
+                        workspace_id,
+                        channel_id,
+                    };
+                    if !change.iter().any(|held| held.event == event) {
+                        change.push(Receivable {
+                            position,
+                            at,
+                            event,
+                        });
+                    }
+                }
                 Decision::Hidden => {}
                 Decision::Unsendable => {
                     tracing::error!(position = at, "an event of the log cannot be sent");

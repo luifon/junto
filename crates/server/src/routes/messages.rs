@@ -271,7 +271,7 @@ pub(super) async fn send(
             .await?;
         }
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
-        messages::changed(connection, now, place.value, id, position as u64, false).await?;
+        messages::created(connection, now, place.value, id, position as u64).await?;
         messages::notifications::create(connection, now, id, None).await?;
         if let Some(root) = thread_root {
             messages::threads::advance(connection, now, &access, root, position).await?;

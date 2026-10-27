@@ -87,6 +87,7 @@ impl Class {
                 junto_protocol::message::MessagePlace::Direct { .. } => Self::DirectMessage,
                 _ => Self::General,
             },
+            Event::ChannelHistoryWithdrawn { .. } => Self::General,
             Event::RetentionChanged { .. }
             | Event::AccountAdded { .. }
             | Event::AccountProfileUpdated { .. }
@@ -248,6 +249,10 @@ pub enum Audience {
         channel_id: ChannelId,
         #[serde(with = "time::serde::rfc3339")]
         created_at: time::OffsetDateTime,
+        /// The event tells the creation of the message. A recipient that did not receive
+        /// it cannot hold the message (ADR 0304).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        creation: bool,
     },
     /// The accounts that could see the channel with the overrides it had at its deletion.
     DeletedChannel {
@@ -289,6 +294,8 @@ pub enum Audience {
             skip_serializing_if = "Option::is_none"
         )]
         created_at: Option<time::OffsetDateTime>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        creation: bool,
     },
     Mention {
         workspace_id: WorkspaceId,
@@ -658,7 +665,9 @@ impl Audience {
                 created_at: None,
             }),
             Event::MessageChanged { place, .. } => Some(of_call(&message_call_place(*place), None)),
-            Event::ThreadRead { .. }
+            // The server makes it for one connection when it delivers; it is never stored.
+            Event::ChannelHistoryWithdrawn { .. }
+            | Event::ThreadRead { .. }
             | Event::MessageRead { .. }
             | Event::NotificationChanged { .. }
             | Event::NotificationSettingsChanged { .. }

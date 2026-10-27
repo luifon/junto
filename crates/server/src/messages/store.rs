@@ -22,6 +22,29 @@ pub async fn changed(
     position: u64,
     deleted: bool,
 ) -> ApiResult<()> {
+    record_message(connection, now, place, message_id, position, deleted, false).await
+}
+
+/// Records the event of a message that was created in this transaction.
+pub async fn created(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    place: MessagePlace,
+    message_id: MessageId,
+    position: u64,
+) -> ApiResult<()> {
+    record_message(connection, now, place, message_id, position, false, true).await
+}
+
+async fn record_message(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    place: MessagePlace,
+    message_id: MessageId,
+    position: u64,
+    deleted: bool,
+    creation: bool,
+) -> ApiResult<()> {
     let event = Event::MessageChanged {
         place,
         message_id,
@@ -51,11 +74,13 @@ pub async fn changed(
                 call_id,
                 readers,
                 created_at: Some(created_at),
+                creation,
             },
             None => events::audience::Audience::ChannelMessage {
                 workspace_id,
                 channel_id,
                 created_at,
+                creation,
             },
         }
     } else {
@@ -421,6 +446,7 @@ pub async fn system(
                 call_id,
                 readers,
                 created_at: Some(now),
+                creation: true,
             },
             &Event::MessageChanged {
                 place: place.value,
@@ -431,7 +457,7 @@ pub async fn system(
         )
         .await
     } else {
-        changed(connection, now, place.value, id, position as u64, false).await
+        created(connection, now, place.value, id, position as u64).await
     }
 }
 

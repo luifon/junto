@@ -610,6 +610,14 @@ pub enum Event {
         position: u64,
         deleted: bool,
     },
+    /// Messages of the channel that are older than the current connection of the
+    /// recipient changed, and the recipient may not read the history of the channel. The
+    /// event names no message. The recipient keeps only the messages of the channel that
+    /// it received during this connection (ADR 0304).
+    ChannelHistoryWithdrawn {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+    },
     NotificationChanged {
         message_id: crate::ids::MessageId,
     },
@@ -765,6 +773,7 @@ impl Event {
         "transcript_speaker_renamed",
         "glossary_replaced",
         "message_changed",
+        "channel_history_withdrawn",
         "thread_read",
         "message_read",
         "message_mentioned",
@@ -859,6 +868,7 @@ impl Event {
             Self::TranscriptSpeakerRenamed { .. } => "transcript_speaker_renamed",
             Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::MessageChanged { .. } => "message_changed",
+            Self::ChannelHistoryWithdrawn { .. } => "channel_history_withdrawn",
             Self::MessageRead { .. } => "message_read",
             Self::ThreadRead { .. } => "thread_read",
             Self::NotificationChanged { .. } => "notification_changed",
@@ -1417,6 +1427,10 @@ mod tests {
                 message_id: crate::ids::MessageId::generate(),
                 position: 1,
                 deleted: false,
+            },
+            Event::ChannelHistoryWithdrawn {
+                workspace_id,
+                channel_id,
             },
             Event::ThreadRead {
                 root_id: crate::ids::MessageId::generate(),

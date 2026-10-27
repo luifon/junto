@@ -5,6 +5,7 @@ mod notices;
 mod recordings;
 mod streams;
 mod summaries;
+mod withdrawn;
 
 use crate::messages_support::{channel, message, send, text};
 use crate::support::{Member, TestServer};

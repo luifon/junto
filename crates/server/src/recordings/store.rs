@@ -459,6 +459,7 @@ async fn remove_notes(
                 call_id: recording.call_id,
                 readers,
                 created_at: Some(created_at),
+                creation: false,
             },
             &Event::MessageChanged {
                 place: junto_protocol::message::MessagePlace::Channel {
