@@ -133,7 +133,8 @@ fn the_bindings_are_written_by_name_and_a_file_is_checked_when_it_is_read() {
         checked.get(KeyAction::Notices),
         Binding {
             keys: Some(combo("control+n")),
-            outside: false
+            outside: false,
+            inherited: false,
         }
     );
 }

@@ -284,6 +284,8 @@ pub struct Binding {
     pub keys: Option<KeyCombo>,
     #[serde(default)]
     pub outside: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inherited: bool,
 }
 
 /// The bindings that the person changed. An action that is not here has its default.
@@ -302,6 +304,7 @@ impl Keybinds {
         Binding {
             keys: action.default_keys(cfg!(target_os = "macos")),
             outside: action.outside_by_default(),
+            inherited: action == KeyAction::PushToTalk,
         }
     }
 
@@ -336,7 +339,14 @@ impl Keybinds {
             return Err(KeybindError::NeedsModifier);
         }
         let outside = self.get(action).outside;
-        self.store(action, Binding { keys, outside });
+        self.store(
+            action,
+            Binding {
+                keys,
+                outside,
+                inherited: false,
+            },
+        );
         Ok(())
     }
 
@@ -346,8 +356,9 @@ impl Keybinds {
         if outside && !action.may_work_outside() {
             return Err(KeybindError::NotOutside);
         }
-        let keys = self.get(action).keys;
-        self.store(action, Binding { keys, outside });
+        let mut binding = self.get(action);
+        binding.outside = outside;
+        self.store(action, binding);
         Ok(())
     }
 
@@ -403,6 +414,7 @@ impl Keybinds {
         });
         for (action, binding) in &mut self.changed {
             binding.outside &= action.may_work_outside();
+            binding.inherited &= *action == KeyAction::PushToTalk && binding.keys.is_none();
         }
         self
     }

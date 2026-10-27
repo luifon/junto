@@ -8,7 +8,7 @@ use crate::keybinds::Keybinds;
 use crate::paths::{DataDir, SETTINGS_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 2;
+pub const SETTINGS_FORMAT_VERSION: u32 = 3;
 
 /// The narrowest and the widest interface scale, in percent (ADR 0703).
 pub const SCALE_MIN_PERCENT: u32 = 90;
@@ -18,7 +18,7 @@ const SETTINGS: Versioned = Versioned {
     name: SETTINGS_FILE,
     kind: "settings",
     version: SETTINGS_FORMAT_VERSION,
-    migrations: &[key_bindings],
+    migrations: &[key_bindings, inherited_talk_key],
     limit: 64 * 1024,
 };
 
@@ -29,6 +29,21 @@ fn key_bindings(mut value: serde_json::Value) -> Result<serde_json::Value, Strin
         .ok_or("the settings are not an object")?
         .entry("keybinds")
         .or_insert(serde_json::json!({}));
+    Ok(value)
+}
+
+fn inherited_talk_key(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let object = value
+        .as_object_mut()
+        .ok_or("the settings are not an object")?;
+    if let Some(binding) = object
+        .get_mut("keybinds")
+        .and_then(|bindings| bindings.get_mut("push_to_talk"))
+        .and_then(serde_json::Value::as_object_mut)
+        && binding.get("keys").is_none_or(serde_json::Value::is_null)
+    {
+        binding.insert("inherited".to_owned(), serde_json::Value::Bool(true));
+    }
     Ok(value)
 }
 
@@ -194,7 +209,7 @@ mod tests {
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
         let text = fs::read_to_string(data_dir.root().join(SETTINGS_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 2"), "{text}");
+        assert!(text.contains("\"format_version\": 3"), "{text}");
     }
 
     #[test]
@@ -223,13 +238,13 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(SETTINGS_FILE);
-        let newer = r#"{"format_version":3,"scale_percent":110,"later":true}"#;
+        let newer = r#"{"format_version":4,"scale_percent":110,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
             Err(StorageError::NewerFormat {
-                found: 3,
-                supported: 2,
+                found: 4,
+                supported: 3,
                 ..
             })
         ));
@@ -251,7 +266,7 @@ mod tests {
         let file = data_dir.root().join(SETTINGS_FILE);
         // A file of a later format that holds more than this client reads of a settings file.
         let later = format!(
-            r#"{{"format_version":3,"scale_percent":110,"later":"{}"}}"#,
+            r#"{{"format_version":4,"scale_percent":110,"later":"{}"}}"#,
             "x".repeat(70 * 1024)
         );
         fs::write(&file, &later).unwrap();
@@ -285,7 +300,7 @@ mod tests {
             })
             .unwrap();
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 2"), "{text}");
+        assert!(text.contains("\"format_version\": 3"), "{text}");
         assert!(text.contains("\"toggle_camera\""), "{text}");
         let settings = store.load().unwrap();
         assert_eq!(
@@ -306,6 +321,28 @@ mod tests {
                 .get(KeyAction::ToggleCamera)
                 .keys,
             Some(keys)
+        );
+    }
+
+    #[test]
+    fn version_two_outside_only_push_to_talk_keeps_inheritance() {
+        use crate::keybinds::KeyAction;
+        let (_directory, data_dir, store) = store();
+        fs::write(data_dir.root().join(SETTINGS_FILE),
+            r#"{"format_version":2,"scale_percent":100,"keybinds":{"push_to_talk":{"keys":null,"outside":false}}}"#).unwrap();
+        let binding = store.load_keybinds().unwrap().get(KeyAction::PushToTalk);
+        assert!(binding.inherited);
+        assert!(!binding.outside);
+        store
+            .update_keybinds(|keys| keys.set(KeyAction::PushToTalk, None).unwrap())
+            .unwrap();
+        let reopened = SettingsStore::new(data_dir);
+        assert!(
+            !reopened
+                .load_keybinds()
+                .unwrap()
+                .get(KeyAction::PushToTalk)
+                .inherited
         );
     }
 

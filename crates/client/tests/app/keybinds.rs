@@ -71,6 +71,61 @@ fn open_keybinds(window: &mut Window) {
 }
 
 #[gpui::test]
+fn push_to_talk_outside_switch_preserves_the_inherited_key(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = open(cx, directory.path());
+    let inherited = window
+        .state
+        .read_with(&window.cx, |state, _| state.talk_keys());
+    for outside in [false, true] {
+        window.state.update(&mut window.cx, |state, cx| {
+            state
+                .change_keybinds(KeybindChange::Outside(KeyAction::PushToTalk, outside), cx)
+                .unwrap();
+            assert_eq!(state.talk_keys(), inherited);
+        });
+    }
+}
+
+#[gpui::test]
+fn removing_push_to_talk_survives_restart_and_reset_restores_inheritance(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = open(cx, directory.path());
+    let inherited = window
+        .state
+        .read_with(&window.cx, |state, _| state.talk_keys());
+    window.state.update(&mut window.cx, |state, cx| {
+        state
+            .change_keybinds(KeybindChange::Set(KeyAction::PushToTalk, None), cx)
+            .unwrap();
+        assert_eq!(state.talk_keys(), None);
+    });
+    let store = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().settings());
+    window.until("the removed binding is written", |_| {
+        store
+            .load_keybinds()
+            .unwrap()
+            .is_changed(KeyAction::PushToTalk)
+    });
+    window.close();
+    let mut again = open(cx, directory.path());
+    again.state.update(&mut again.cx, |state, cx| {
+        assert_eq!(state.talk_keys(), None);
+        state
+            .change_keybinds(KeybindChange::Reset(KeyAction::PushToTalk), cx)
+            .unwrap();
+        assert_eq!(state.talk_keys(), inherited);
+        state
+            .change_keybinds(KeybindChange::Set(KeyAction::PushToTalk, None), cx)
+            .unwrap();
+        state.change_keybinds(KeybindChange::ResetAll, cx).unwrap();
+        assert_eq!(state.talk_keys(), inherited);
+    });
+}
+
+#[gpui::test]
 fn a_binding_is_recorded_its_conflict_shown_and_reset_and_a_second_start_keeps_it(
     cx: &mut TestAppContext,
 ) {

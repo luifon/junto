@@ -177,10 +177,11 @@ impl AppState {
     /// The keys of push to talk: the binding of the person, or the key of the sound settings
     /// while the person did not change the binding (ADR 0507, ADR 0777).
     pub fn talk_keys(&self) -> Option<KeyCombo> {
-        if self.keybinds.is_changed(KeyAction::PushToTalk) {
-            self.keybinds.get(KeyAction::PushToTalk).keys
-        } else {
+        let binding = self.keybinds.get(KeyAction::PushToTalk);
+        if binding.inherited {
             Some(self.voice().talk_key.combo())
+        } else {
+            binding.keys
         }
     }
 
