@@ -1,7 +1,8 @@
 //! The collections of the administration (ADR 0760): what the snapshot does not carry and
 //! a person with the permissions reads and changes: accounts, invites, join requests,
-//! access tokens, exports, server roles, the rules of a channel, the archived channels
-//! and the settings of a workspace.
+//! access tokens, exports, server roles, the rules of a channel and of a category, the
+//! permissions of one member and of one account, the archived channels and the settings of
+//! a workspace.
 //!
 //! A collection is read from its route when a reader opens it, follows the events from
 //! then on, and is read again after a reload of the state (ADR 0207).
@@ -15,12 +16,17 @@ use junto_protocol::account::{AccountSummary, ListedAccount};
 use junto_protocol::discovery::Retention;
 use junto_protocol::events::Event;
 use junto_protocol::export::Export;
-use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::ids::{
+    AccountId, CategoryId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
+};
 use junto_protocol::invite::{Invite, JoinRequest, JoinRequestState};
 use junto_protocol::message::AttachmentLimits;
-use junto_protocol::roles::{ListedServerRole, ListedWorkspaceRole, RoleActions, ServerRole};
+use junto_protocol::roles::{
+    ListedServerRole, ListedWorkspaceRole, RoleActions, ServerPersonPermissions, ServerRole,
+};
 use junto_protocol::structure::{
-    ArchivePeriod, ArchivedChannel, Channel, ChannelRules, PermissionRule, RulePlace, RuleSubject,
+    ArchivePeriod, ArchivedChannel, CategoryRules, Channel, ChannelPermissions, ChannelRules,
+    PermissionRule, PersonPermissions, RulePlace, RuleSubject,
 };
 
 use super::rank::sort_server_roles;
@@ -124,6 +130,15 @@ pub enum AdminPart {
     RoleActions(WorkspaceId),
     /// The glossary of one workspace (ADR 0603). Every member reads it.
     Glossary(WorkspaceId),
+    /// The rules of one category, which its synced channels take (ADR 0304).
+    CategoryRules(WorkspaceId, CategoryId),
+    /// The workspace permissions that are allowed to or denied to one member (ADR 0306).
+    MemberPermissions(WorkspaceId, AccountId),
+    /// What one member can use in each channel of the workspace that the account sees
+    /// (ADR 0304).
+    MemberAccess(WorkspaceId, AccountId),
+    /// The server permissions that are allowed to or denied to one account (ADR 0306).
+    ServerPermissions(AccountId),
 }
 
 /// The glossary of a workspace as the client holds it.
@@ -165,7 +180,18 @@ pub(crate) enum AdminPayload {
     ChannelPermissions(Vec<WorkspacePermission>),
     RoleActions(Vec<ListedWorkspaceRole>),
     Glossary(Vec<String>),
+    CategoryRules(CategoryRules),
+    MemberPermissions(PersonPermissions),
+    MemberAccess(Vec<ChannelPermissions>),
+    ServerPermissions(ServerPersonPermissions),
 }
+
+/// What each member that a reader asked for can use, by channel, keyed by its workspace and
+/// its account.
+pub type MemberAccessList = Vec<(
+    (WorkspaceId, AccountId),
+    Collection<Vec<ChannelPermissions>>,
+)>;
 
 /// What the account may do with each role of one workspace or of the server, by role.
 pub type RoleActionList<R> = Vec<(R, RoleActions)>;
@@ -214,6 +240,15 @@ pub struct AdminModel {
     pub role_actions: Vec<(WorkspaceId, Collection<RoleActionList<WorkspaceRoleId>>)>,
     /// The glossaries of the workspaces that a reader asked for.
     pub glossaries: Vec<(WorkspaceId, Collection<GlossaryList>)>,
+    /// The rules of the categories that a reader asked for.
+    pub category_rules: Vec<((WorkspaceId, CategoryId), Collection<CategoryRules>)>,
+    /// The workspace permissions of the members that a reader asked for.
+    pub member_permissions: Vec<((WorkspaceId, AccountId), Collection<PersonPermissions>)>,
+    /// What the members that a reader asked for can use, by channel, in the order of the
+    /// channels of the answer.
+    pub member_access: MemberAccessList,
+    /// The server permissions of the accounts that a reader asked for.
+    pub server_permissions: Vec<(AccountId, Collection<ServerPersonPermissions>)>,
     /// When the newest read of each collection started, and when the read that the
     /// collection shows started. A reader that changed a collection knows from them whether
     /// the collection shows a read that started after its change was answered.
@@ -333,6 +368,42 @@ impl AdminModel {
         keyed(&self.role_actions, workspace_id)
     }
 
+    /// The rules of a category, while a reader has them open.
+    pub fn category_rules(
+        &self,
+        workspace_id: WorkspaceId,
+        category_id: CategoryId,
+    ) -> &Collection<CategoryRules> {
+        keyed(&self.category_rules, (workspace_id, category_id))
+    }
+
+    /// The workspace permissions of one member, while a reader has them open.
+    pub fn member_permissions(
+        &self,
+        workspace_id: WorkspaceId,
+        account_id: AccountId,
+    ) -> &Collection<PersonPermissions> {
+        keyed(&self.member_permissions, (workspace_id, account_id))
+    }
+
+    /// What one member can use in the channels that the account sees, while a reader has
+    /// it open.
+    pub fn member_access(
+        &self,
+        workspace_id: WorkspaceId,
+        account_id: AccountId,
+    ) -> &Collection<Vec<ChannelPermissions>> {
+        keyed(&self.member_access, (workspace_id, account_id))
+    }
+
+    /// The server permissions of one account, while a reader has them open.
+    pub fn server_permissions(
+        &self,
+        account_id: AccountId,
+    ) -> &Collection<ServerPersonPermissions> {
+        keyed(&self.server_permissions, account_id)
+    }
+
     /// When the reads of a collection started.
     pub fn read_times(&self, part: AdminPart) -> ReadTimes {
         self.read_times
@@ -427,6 +498,18 @@ impl AdminModel {
             }
             AdminPart::RoleActions(workspace_id) => state_of(self.role_actions(workspace_id)),
             AdminPart::Glossary(workspace_id) => state_of(self.glossary(workspace_id)),
+            AdminPart::CategoryRules(workspace_id, category_id) => {
+                state_of(self.category_rules(workspace_id, category_id))
+            }
+            AdminPart::MemberPermissions(workspace_id, account_id) => {
+                state_of(self.member_permissions(workspace_id, account_id))
+            }
+            AdminPart::MemberAccess(workspace_id, account_id) => {
+                state_of(self.member_access(workspace_id, account_id))
+            }
+            AdminPart::ServerPermissions(account_id) => {
+                state_of(self.server_permissions(account_id))
+            }
         }
     }
 
@@ -469,6 +552,7 @@ impl AdminModel {
             reading(&mut self.exports);
             reading(&mut self.server_roles);
             reading(&mut self.direct_retention);
+            reading_keyed(&mut self.server_permissions, |_| true);
         }
         let in_scope = |workspace_id: WorkspaceId| scope.is_none_or(|scope| scope == workspace_id);
         // The archived channels are structure, which stays until the snapshot: the ones
@@ -497,6 +581,15 @@ impl AdminModel {
         // there (ADR 0764).
         reading_keyed(&mut self.role_actions, in_scope);
         reading_keyed(&mut self.glossaries, in_scope);
+        reading_keyed(&mut self.category_rules, |(workspace_id, _)| {
+            in_scope(workspace_id)
+        });
+        reading_keyed(&mut self.member_permissions, |(workspace_id, _)| {
+            in_scope(workspace_id)
+        });
+        reading_keyed(&mut self.member_access, |(workspace_id, _)| {
+            in_scope(workspace_id)
+        });
         reading_keyed(&mut self.rules, |channel_id| channels.contains(&channel_id));
         reading_keyed(&mut self.channel_permissions, |channel_id| {
             channels.contains(&channel_id)
@@ -559,6 +652,18 @@ impl AdminModel {
                 }
                 AdminPart::Glossary(workspace_id) => {
                     mark_keyed_loading(&mut self.glossaries, workspace_id);
+                }
+                AdminPart::CategoryRules(workspace_id, category_id) => {
+                    mark_keyed_loading(&mut self.category_rules, (workspace_id, category_id));
+                }
+                AdminPart::MemberPermissions(workspace_id, account_id) => {
+                    mark_keyed_loading(&mut self.member_permissions, (workspace_id, account_id));
+                }
+                AdminPart::MemberAccess(workspace_id, account_id) => {
+                    mark_keyed_loading(&mut self.member_access, (workspace_id, account_id));
+                }
+                AdminPart::ServerPermissions(account_id) => {
+                    mark_keyed_loading(&mut self.server_permissions, account_id);
                 }
             }
             return;
@@ -716,6 +821,55 @@ impl AdminModel {
                 });
                 set_keyed(&mut self.glossaries, workspace_id, collection);
             }
+            AdminPart::CategoryRules(workspace_id, category_id) => {
+                // A server is not trusted to answer for the category that was asked for
+                // (ADR 0714).
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::CategoryRules(mut rules) if rules.category_id == category_id => {
+                        rules.rules.sort_by_key(|held| held.subject);
+                        Some(rules)
+                    }
+                    _ => None,
+                });
+                set_keyed(
+                    &mut self.category_rules,
+                    (workspace_id, category_id),
+                    collection,
+                );
+            }
+            AdminPart::MemberPermissions(workspace_id, account_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::MemberPermissions(held) if held.account_id == account_id => {
+                        Some(held)
+                    }
+                    _ => None,
+                });
+                set_keyed(
+                    &mut self.member_permissions,
+                    (workspace_id, account_id),
+                    collection,
+                );
+            }
+            AdminPart::MemberAccess(workspace_id, account_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::MemberAccess(channels) => Some(channels),
+                    _ => None,
+                });
+                set_keyed(
+                    &mut self.member_access,
+                    (workspace_id, account_id),
+                    collection,
+                );
+            }
+            AdminPart::ServerPermissions(account_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::ServerPermissions(held) if held.account_id == account_id => {
+                        Some(held)
+                    }
+                    _ => None,
+                });
+                set_keyed(&mut self.server_permissions, account_id, collection);
+            }
         }
     }
 
@@ -794,6 +948,26 @@ impl AdminModel {
             AdminPart::Glossary(workspace_id) => {
                 by_key(&mut self.glossaries, &before.glossaries, workspace_id)
             }
+            AdminPart::CategoryRules(workspace_id, category_id) => by_key(
+                &mut self.category_rules,
+                &before.category_rules,
+                (workspace_id, category_id),
+            ),
+            AdminPart::MemberPermissions(workspace_id, account_id) => by_key(
+                &mut self.member_permissions,
+                &before.member_permissions,
+                (workspace_id, account_id),
+            ),
+            AdminPart::MemberAccess(workspace_id, account_id) => by_key(
+                &mut self.member_access,
+                &before.member_access,
+                (workspace_id, account_id),
+            ),
+            AdminPart::ServerPermissions(account_id) => by_key(
+                &mut self.server_permissions,
+                &before.server_permissions,
+                account_id,
+            ),
         };
         if !carried {
             return;
@@ -851,6 +1025,11 @@ impl AdminModel {
                 held.rules.retain(|rule| rule.subject != subject);
             }
         }
+        for (_, held) in &mut self.category_rules {
+            if let Some(held) = held.loaded_mut() {
+                held.rules.retain(|rule| rule.subject != subject);
+            }
+        }
     }
 
     fn forget_workspace(&mut self, workspace_id: WorkspaceId, channels: &[ChannelId]) {
@@ -858,6 +1037,12 @@ impl AdminModel {
         self.role_actions.retain(|(held, _)| *held != workspace_id);
         self.glossaries.retain(|(held, _)| *held != workspace_id);
         self.settings.retain(|(held, _)| *held != workspace_id);
+        self.category_rules
+            .retain(|((held, _), _)| *held != workspace_id);
+        self.member_permissions
+            .retain(|((held, _), _)| *held != workspace_id);
+        self.member_access
+            .retain(|((held, _), _)| *held != workspace_id);
         self.rules.retain(|(held, _)| !channels.contains(held));
         self.channel_permissions
             .retain(|(held, _)| !channels.contains(held));
@@ -1058,14 +1243,51 @@ impl AdminModel {
                     })
                 });
                 for held in held {
-                    held.rules.retain(|rule| rule.subject != *subject);
-                    if !allow.is_empty() || !deny.is_empty() {
-                        held.rules.push(PermissionRule {
-                            subject: *subject,
-                            allow: allow.clone(),
-                            deny: deny.clone(),
+                    put_rule(&mut held.rules, *subject, allow, deny);
+                }
+                if let RulePlace::Category { category_id } = place {
+                    let held = self
+                        .category_rules
+                        .iter_mut()
+                        .filter_map(|((_, of), held)| {
+                            held.loaded_mut().filter(|_| of == category_id)
                         });
-                        held.rules.sort_by_key(|rule| rule.subject);
+                    for held in held {
+                        put_rule(&mut held.rules, *subject, allow, deny);
+                    }
+                }
+            }
+            Event::WorkspacePersonPermissionsSet {
+                workspace_id,
+                account_id,
+                allow,
+                deny,
+            } => {
+                let key = (*workspace_id, *account_id);
+                for (_, held) in self
+                    .member_permissions
+                    .iter_mut()
+                    .filter(|(of, _)| *of == key)
+                {
+                    if let Some(held) = held.loaded_mut() {
+                        held.allow.clone_from(allow);
+                        held.deny.clone_from(deny);
+                    }
+                }
+            }
+            Event::ServerPersonPermissionsSet {
+                account_id,
+                allow,
+                deny,
+            } => {
+                for (_, held) in self
+                    .server_permissions
+                    .iter_mut()
+                    .filter(|(of, _)| of == account_id)
+                {
+                    if let Some(held) = held.loaded_mut() {
+                        held.allow.clone_from(allow);
+                        held.deny.clone_from(deny);
                     }
                 }
             }
@@ -1151,6 +1373,24 @@ impl AdminPart {
             // No event carries the list: a change of it is `permissions_changed`, which
             // replaces the state, and every open collection is read again then.
             Self::ChannelPermissions(_) => false,
+            Self::CategoryRules(_, category_id) => match event {
+                Event::PermissionRuleSet {
+                    place: RulePlace::Category { category_id: of },
+                    ..
+                } => of == category_id,
+                Event::WorkspaceRoleDeleted { .. } => true,
+                _ => false,
+            },
+            Self::MemberPermissions(workspace_id, account_id) => matches!(
+                event,
+                Event::WorkspacePersonPermissionsSet { workspace_id: of, account_id: who, .. }
+                    if of == workspace_id && who == account_id
+            ),
+            Self::ServerPermissions(account_id) => matches!(
+                event,
+                Event::ServerPersonPermissionsSet { account_id: who, .. } if who == account_id
+            ),
+            Self::MemberAccess(..) => self.is_stale_after(event),
         }
     }
 
@@ -1186,6 +1426,9 @@ impl AdminPart {
                 of == channel_id
             }
             (Self::Accounts | Self::ServerRoles, _) => server_order,
+            (Self::MemberAccess(workspace_id, account_id), event) => {
+                server_order || changes_access(event, *workspace_id, *account_id)
+            }
             (Self::RoleActions(workspace_id), event) => {
                 server_order
                     || match event {
@@ -1224,7 +1467,10 @@ impl AdminPart {
             Self::Archived(workspace_id)
             | Self::WorkspaceSettings(workspace_id)
             | Self::RoleActions(workspace_id)
-            | Self::Glossary(workspace_id) => Some(*workspace_id),
+            | Self::Glossary(workspace_id)
+            | Self::CategoryRules(workspace_id, _)
+            | Self::MemberPermissions(workspace_id, _)
+            | Self::MemberAccess(workspace_id, _) => Some(*workspace_id),
             _ => None,
         }
     }
@@ -1441,7 +1687,12 @@ impl ServerModel {
                 }) || (matches!(
                     event,
                     Event::PermissionRuleSet { .. } | Event::WorkspaceRoleDeleted { .. }
-                ) && !self.admin.rules.is_empty());
+                ) && (!self.admin.rules.is_empty()
+                    || !self.admin.category_rules.is_empty()))
+                    || (matches!(event, Event::WorkspacePersonPermissionsSet { .. })
+                        && !self.admin.member_permissions.is_empty())
+                    || (matches!(event, Event::ServerPersonPermissionsSet { .. })
+                        && !self.admin.server_permissions.is_empty());
                 if touched {
                     self.admin_mut().apply(event);
                 }
@@ -1474,6 +1725,14 @@ impl ServerModel {
                 .map(|(of, _)| AdminPart::Glossary(*of)),
         )
         .chain(self.admin.rules.iter().map(|(of, _)| AdminPart::Rules(*of)))
+        .chain(
+            self.admin
+                .member_access
+                .iter()
+                .map(|((workspace_id, account_id), _)| {
+                    AdminPart::MemberAccess(*workspace_id, *account_id)
+                }),
+        )
         .collect();
         for part in parts {
             if part.is_stale_after(event)
@@ -1500,6 +1759,71 @@ impl ServerModel {
         channels: &[ChannelId],
     ) {
         self.admin_mut().forget_workspace(workspace_id, channels);
+    }
+}
+
+/// Puts the rule of `subject` into a list of rules in the order of the subjects. Two empty
+/// sets remove it (ADR 0304).
+fn put_rule(
+    rules: &mut Vec<PermissionRule>,
+    subject: RuleSubject,
+    allow: &[WorkspacePermission],
+    deny: &[WorkspacePermission],
+) {
+    rules.retain(|rule| rule.subject != subject);
+    if !allow.is_empty() || !deny.is_empty() {
+        rules.push(PermissionRule {
+            subject,
+            allow: allow.to_vec(),
+            deny: deny.to_vec(),
+        });
+        rules.sort_by_key(|rule| rule.subject);
+    }
+}
+
+/// True when `event` can change what a member of a workspace can use in its channels: a
+/// rule, a sync, the workspace permissions of a member, a role or the roles of a member,
+/// the channels of the workspace, and the server permissions or server roles of the
+/// member (ADR 0304). The event does not carry the result, so the list is read again.
+fn changes_access(event: &Event, workspace_id: WorkspaceId, account_id: AccountId) -> bool {
+    match event {
+        Event::PermissionRuleSet {
+            workspace_id: of, ..
+        }
+        | Event::ChannelRulesSynced {
+            workspace_id: of, ..
+        }
+        | Event::WorkspacePersonPermissionsSet {
+            workspace_id: of, ..
+        }
+        | Event::WorkspaceRoleDeleted {
+            workspace_id: of, ..
+        }
+        | Event::WorkspaceRolePositionsShifted {
+            workspace_id: of, ..
+        }
+        | Event::WorkspaceMemberRolesChanged {
+            workspace_id: of, ..
+        }
+        | Event::ChannelDeleted {
+            workspace_id: of, ..
+        }
+        | Event::CategoryDeleted {
+            workspace_id: of, ..
+        } => *of == workspace_id,
+        Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
+            role.workspace_id == workspace_id
+        }
+        Event::ChannelCreated { channel } | Event::ChannelUpdated { channel } => {
+            channel.workspace_id == workspace_id
+        }
+        Event::ServerPersonPermissionsSet {
+            account_id: who, ..
+        }
+        | Event::AccountServerRolesChanged {
+            account_id: who, ..
+        } => *who == account_id,
+        _ => false,
     }
 }
 

@@ -131,6 +131,28 @@ impl ServerModel {
         Some(role_rank(false, &server, Some(&positions)))
     }
 
+    /// Where a member of a workspace stands at least, by its roles of the workspace
+    /// alone: a server role with the administrator permission and the position of the
+    /// server owner can only raise it (ADR 0309). For a person who cannot read the server
+    /// roles of the member: when this already stands at or above the person, role order
+    /// refuses an action on the member. `None` for a workspace that the state does not
+    /// hold, and when the workspace does not list one of the roles.
+    pub fn workspace_rank_by_roles(
+        &self,
+        workspace_id: WorkspaceId,
+        role_ids: &[WorkspaceRoleId],
+    ) -> Option<RoleRank> {
+        let workspace = self.workspace(workspace_id)?;
+        let mut positions = Vec::new();
+        for role_id in role_ids {
+            let role = workspace.roles.iter().find(|role| role.id == *role_id)?;
+            if !role.is_everyone {
+                positions.push(role.position);
+            }
+        }
+        Some(role_rank(false, &[], Some(&positions)))
+    }
+
     /// The server role with the identifier, while the server roles are loaded.
     pub fn server_role(&self, role_id: ServerRoleId) -> Option<&ServerRole> {
         self.admin

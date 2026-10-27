@@ -119,6 +119,22 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             }
             Ok(AdminPayload::Glossary(glossary.terms))
         }
+        AdminPart::CategoryRules(workspace_id, category_id) => api
+            .category_rules(workspace_id, category_id)
+            .await
+            .map(AdminPayload::CategoryRules),
+        AdminPart::MemberPermissions(workspace_id, account_id) => api
+            .member_permissions(workspace_id, account_id)
+            .await
+            .map(AdminPayload::MemberPermissions),
+        AdminPart::MemberAccess(workspace_id, account_id) => api
+            .member_access(workspace_id, account_id)
+            .await
+            .map(AdminPayload::MemberAccess),
+        AdminPart::ServerPermissions(account_id) => api
+            .server_permissions(account_id)
+            .await
+            .map(AdminPayload::ServerPermissions),
     }
 }
 
@@ -127,6 +143,14 @@ fn in_state(model: &ServerModel, part: AdminPart) -> bool {
     match part {
         AdminPart::Rules(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
             model.readable_channel(channel_id).is_some()
+        }
+        AdminPart::CategoryRules(workspace_id, category_id) => {
+            model.workspace(workspace_id).is_some_and(|workspace| {
+                workspace
+                    .categories
+                    .iter()
+                    .any(|category| category.id == category_id)
+            })
         }
         part => part
             .workspace()

@@ -1251,3 +1251,190 @@ fn a_collection_states_when_the_read_that_it_shows_started() {
     model.set_admin(part, AdminSet::Loaded(AdminPayload::Glossary(Vec::new())));
     assert_eq!(model.admin.read_times(part).shown, second.started);
 }
+
+#[test]
+fn the_rules_of_a_category_follow_their_events_and_a_wrong_answer_is_refused() {
+    let scene = scene();
+    let mut model = scene.model();
+    let category_id = CategoryId::generate();
+    let part = AdminPart::CategoryRules(scene.workspace_id, category_id);
+    // An answer about another category is no answer to the read.
+    loaded(
+        &mut model,
+        part,
+        AdminPayload::CategoryRules(junto_protocol::structure::CategoryRules {
+            category_id: CategoryId::generate(),
+            rules: Vec::new(),
+        }),
+    );
+    assert_eq!(
+        model.admin.state(part),
+        CollectionState::Failed(LoadFailure::NoAnswer)
+    );
+    loaded(
+        &mut model,
+        part,
+        AdminPayload::CategoryRules(junto_protocol::structure::CategoryRules {
+            category_id,
+            rules: Vec::new(),
+        }),
+    );
+    let helpers = RuleSubject::Role {
+        role_id: scene.helpers,
+    };
+    let event = Event::PermissionRuleSet {
+        workspace_id: scene.workspace_id,
+        place: RulePlace::Category { category_id },
+        subject: helpers,
+        allow: vec![WorkspacePermission::RecordCalls],
+        deny: Vec::new(),
+    };
+    assert!(part.concerns(&event));
+    model.apply(&event);
+    // A rule of another category does not change this one.
+    model.apply(&Event::PermissionRuleSet {
+        workspace_id: scene.workspace_id,
+        place: RulePlace::Category {
+            category_id: CategoryId::generate(),
+        },
+        subject: helpers,
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::ViewChannel],
+    });
+    assert_eq!(
+        model
+            .admin
+            .category_rules(scene.workspace_id, category_id)
+            .loaded()
+            .unwrap()
+            .rules,
+        [role_rule(
+            scene.helpers,
+            vec![WorkspacePermission::RecordCalls],
+            Vec::new()
+        )]
+    );
+    // A deleted role leaves the rules.
+    model.apply(&Event::WorkspaceRoleDeleted {
+        workspace_id: scene.workspace_id,
+        role_id: scene.helpers,
+    });
+    assert!(
+        model
+            .admin
+            .category_rules(scene.workspace_id, category_id)
+            .loaded()
+            .unwrap()
+            .rules
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_permissions_of_a_member_and_of_an_account_follow_their_events() {
+    let scene = scene();
+    let mut model = scene.model();
+    let reader = AccountId::generate();
+    let member_part = AdminPart::MemberPermissions(scene.workspace_id, reader);
+    let server_part = AdminPart::ServerPermissions(reader);
+    loaded(
+        &mut model,
+        member_part,
+        AdminPayload::MemberPermissions(junto_protocol::structure::PersonPermissions {
+            account_id: reader,
+            allow: Vec::new(),
+            deny: Vec::new(),
+        }),
+    );
+    loaded(
+        &mut model,
+        server_part,
+        AdminPayload::ServerPermissions(junto_protocol::roles::ServerPersonPermissions {
+            account_id: reader,
+            allow: Vec::new(),
+            deny: Vec::new(),
+        }),
+    );
+    let set = Event::WorkspacePersonPermissionsSet {
+        workspace_id: scene.workspace_id,
+        account_id: reader,
+        allow: vec![WorkspacePermission::MentionEveryone],
+        deny: vec![WorkspacePermission::SendMessages],
+    };
+    assert!(member_part.concerns(&set));
+    assert!(
+        !AdminPart::MemberPermissions(scene.workspace_id, AccountId::generate()).concerns(&set)
+    );
+    model.apply(&set);
+    let held = model
+        .admin
+        .member_permissions(scene.workspace_id, reader)
+        .loaded()
+        .unwrap();
+    assert_eq!(held.allow, [WorkspacePermission::MentionEveryone]);
+    assert_eq!(held.deny, [WorkspacePermission::SendMessages]);
+    let server = Event::ServerPersonPermissionsSet {
+        account_id: reader,
+        allow: vec![ServerPermission::CreateInvites],
+        deny: vec![ServerPermission::Administrator],
+    };
+    assert!(server_part.concerns(&server));
+    model.apply(&server);
+    let held = model.admin.server_permissions(reader).loaded().unwrap();
+    assert_eq!(held.allow, [ServerPermission::CreateInvites]);
+    assert_eq!(held.deny, [ServerPermission::Administrator]);
+}
+
+#[test]
+fn what_a_member_can_use_is_read_again_after_a_change_of_its_rules_or_roles() {
+    let scene = scene();
+    let mut model = scene.model();
+    let reader = AccountId::generate();
+    let part = AdminPart::MemberAccess(scene.workspace_id, reader);
+    loaded(&mut model, part, AdminPayload::MemberAccess(Vec::new()));
+    let changes = [
+        Event::PermissionRuleSet {
+            workspace_id: scene.workspace_id,
+            place: RulePlace::Channel {
+                channel_id: scene.general,
+            },
+            subject: RuleSubject::Person { account_id: reader },
+            allow: Vec::new(),
+            deny: vec![WorkspacePermission::SendMessages],
+        },
+        Event::ChannelRulesSynced {
+            workspace_id: scene.workspace_id,
+            channel_id: scene.general,
+            synced: true,
+        },
+        Event::WorkspacePersonPermissionsSet {
+            workspace_id: scene.workspace_id,
+            account_id: AccountId::generate(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+        },
+        Event::ServerPersonPermissionsSet {
+            account_id: reader,
+            allow: Vec::new(),
+            deny: Vec::new(),
+        },
+    ];
+    for event in &changes {
+        assert!(part.is_stale_after(event), "{event:?}");
+        assert!(model.apply_admin(event).contains(&part), "{event:?}");
+    }
+    // A change in another workspace, or of another account on the server, is not one.
+    let other = Event::WorkspacePersonPermissionsSet {
+        workspace_id: WorkspaceId::generate(),
+        account_id: reader,
+        allow: Vec::new(),
+        deny: Vec::new(),
+    };
+    assert!(!part.is_stale_after(&other));
+    let other = Event::ServerPersonPermissionsSet {
+        account_id: AccountId::generate(),
+        allow: Vec::new(),
+        deny: Vec::new(),
+    };
+    assert!(!part.is_stale_after(&other));
+}
