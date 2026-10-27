@@ -35,6 +35,8 @@ case "$*" in
     "info "*) if [ "$SCENARIO" = two_processors ]; then echo 2; else echo 16; fi; exit 0 ;;
     "network create "*) [ "$SCENARIO" != stale_network ]; exit $? ;;
     "cp "*) exit 1 ;;
+    "image prune "*) echo "Error response from daemon: a prune operation is already running" >&2; exit 1 ;;
+    "image ls "*) [ "$SCENARIO" = replaced_image ] && echo 0123456789ab; exit 0 ;;
     "run --name junto-linux-build "*)
         if [ -d "$CHECKOUT/spikes/test-participant/target" ]; then echo present >> "$COMMAND_LOG.participant"; fi
         exit 37 ;;
@@ -86,6 +88,15 @@ exit 0
     def test_an_artifact_failure_preserves_the_command_failure(self):
         result = self.run_script("artifact_failure")
         self.assertEqual(result.returncode, 37, result.stderr)
+
+    def test_a_replaced_image_is_removed_without_a_prune_of_the_daemon(self):
+        # The daemon refuses a prune while another one runs on the host.
+        result = self.run_script("replaced_image")
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertIn("image ls -q --filter dangling=true --filter label=junto-linux-image=junto-linux\n",
+                      result.commands)
+        self.assertIn("image rm 0123456789ab\n", result.commands)
+        self.assertNotIn("image prune", result.commands)
 
     def test_a_leftover_network_has_an_actionable_error(self):
         result = self.run_script("stale_network")
