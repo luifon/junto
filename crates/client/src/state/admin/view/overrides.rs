@@ -407,7 +407,7 @@ mod tests {
                 WorkspacePermission::ALL
             );
         }
-        assert_eq!(WorkspacePermission::ALL.len(), 17);
+        assert_eq!(WorkspacePermission::ALL.len(), 31);
     }
 
     #[test]

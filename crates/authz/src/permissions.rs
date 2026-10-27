@@ -150,6 +150,20 @@ permission_set! {
     RunMeetingMode = 14 => "run_meeting_mode",
     ViewAuditEntries = 15 => "view_audit_entries",
     AdmitToFullCall = 16 => "admit_to_full_call",
+    SendMessages = 17 => "send_messages",
+    SendMessagesInThreads = 18 => "send_messages_in_threads",
+    CreateThreads = 19 => "create_threads",
+    ReadMessageHistory = 20 => "read_message_history",
+    AttachFiles = 21 => "attach_files",
+    AddReactions = 22 => "add_reactions",
+    MentionRoles = 23 => "mention_roles",
+    Connect = 24 => "connect",
+    Speak = 25 => "speak",
+    Video = 26 => "video",
+    ShareScreen = 27 => "share_screen",
+    UseVoiceActivity = 28 => "use_voice_activity",
+    SetCallUserLimit = 29 => "set_call_user_limit",
+    SetVoiceChannelStatus = 30 => "set_voice_channel_status",
 }
 
 impl WorkspacePermissions {
@@ -215,6 +229,20 @@ mod tests {
                 (1 << 14, "run_meeting_mode"),
                 (1 << 15, "view_audit_entries"),
                 (1 << 16, "admit_to_full_call"),
+                (1 << 17, "send_messages"),
+                (1 << 18, "send_messages_in_threads"),
+                (1 << 19, "create_threads"),
+                (1 << 20, "read_message_history"),
+                (1 << 21, "attach_files"),
+                (1 << 22, "add_reactions"),
+                (1 << 23, "mention_roles"),
+                (1 << 24, "connect"),
+                (1 << 25, "speak"),
+                (1 << 26, "video"),
+                (1 << 27, "share_screen"),
+                (1 << 28, "use_voice_activity"),
+                (1 << 29, "set_call_user_limit"),
+                (1 << 30, "set_voice_channel_status"),
             ]
         );
     }
@@ -231,10 +259,10 @@ mod tests {
         );
         assert_eq!(ServerPermissions::from_bits(64), None);
         assert_eq!(
-            WorkspacePermissions::from_bits(0x1_FFFF),
+            WorkspacePermissions::from_bits(0x7FFF_FFFF),
             Some(WorkspacePermissions::ALL)
         );
-        assert_eq!(WorkspacePermissions::from_bits(0x2_0000), None);
+        assert_eq!(WorkspacePermissions::from_bits(0x8000_0000), None);
     }
 
     #[test]

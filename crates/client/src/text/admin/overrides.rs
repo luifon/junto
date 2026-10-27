@@ -76,6 +76,20 @@ pub const fn name(permission: WorkspacePermission) -> &'static str {
         WorkspacePermission::RunMeetingMode => "Run meeting mode",
         WorkspacePermission::ViewAuditEntries => "View audit entries",
         WorkspacePermission::AdmitToFullCall => "Admit to full call",
+        WorkspacePermission::SendMessages => "Send messages",
+        WorkspacePermission::SendMessagesInThreads => "Send messages in threads",
+        WorkspacePermission::CreateThreads => "Create threads",
+        WorkspacePermission::ReadMessageHistory => "Read message history",
+        WorkspacePermission::AttachFiles => "Attach files",
+        WorkspacePermission::AddReactions => "Add reactions",
+        WorkspacePermission::MentionRoles => "Mention roles",
+        WorkspacePermission::Connect => "Connect",
+        WorkspacePermission::Speak => "Speak",
+        WorkspacePermission::Video => "Video",
+        WorkspacePermission::ShareScreen => "Share screen",
+        WorkspacePermission::UseVoiceActivity => "Use voice activity",
+        WorkspacePermission::SetCallUserLimit => "Set call user limit",
+        WorkspacePermission::SetVoiceChannelStatus => "Set voice channel status",
     }
 }
 
@@ -90,6 +104,26 @@ fn quoted(permission: WorkspacePermission) -> String {
 /// holds "view audit entries" in the workspace and in the channel.
 pub const fn help(permission: WorkspacePermission) -> &'static str {
     match permission {
+        WorkspacePermission::SendMessages => "Send messages in the channel.",
+        WorkspacePermission::SendMessagesInThreads => "Send replies in threads.",
+        WorkspacePermission::CreateThreads => "Start threads in this channel.",
+        WorkspacePermission::ReadMessageHistory => "Read stored messages, threads and pins.",
+        WorkspacePermission::AttachFiles => "Attach files to messages you may send.",
+        WorkspacePermission::AddReactions => "Add reactions to messages.",
+        WorkspacePermission::MentionRoles => "Mention workspace roles in messages you may send.",
+        WorkspacePermission::Connect => "Join the call in this channel.",
+        WorkspacePermission::Speak => "Publish microphone sound in the call.",
+        WorkspacePermission::Video => "Publish your camera in the call.",
+        WorkspacePermission::ShareScreen => "Share a screen or window, including its sound.",
+        WorkspacePermission::UseVoiceActivity => {
+            "Use the microphone without holding the push-to-talk key."
+        }
+        WorkspacePermission::SetCallUserLimit => {
+            "Change the number of people who may join the call."
+        }
+        WorkspacePermission::SetVoiceChannelStatus => {
+            "Change the status text of the voice channel."
+        }
         WorkspacePermission::ViewChannel => {
             "See this channel and read it; every other permission in the channel needs it."
         }

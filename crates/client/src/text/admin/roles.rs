@@ -226,6 +226,20 @@ fn workspace_help_of(permission: junto_client_core::protocol::WorkspacePermissio
     use junto_client_core::protocol::WorkspacePermission as P;
     match permission {
         P::ViewChannel => "See the channels of the workspace, and read and write in them.",
+        P::SendMessages => "Send messages in the channel.",
+        P::SendMessagesInThreads => "Send replies in threads.",
+        P::CreateThreads => "Start threads in this channel.",
+        P::ReadMessageHistory => "Read stored messages, threads and pins.",
+        P::AttachFiles => "Attach files to messages you may send.",
+        P::AddReactions => "Add reactions to messages.",
+        P::MentionRoles => "Mention workspace roles in messages you may send.",
+        P::Connect => "Join the call in this channel.",
+        P::Speak => "Publish microphone sound in the call.",
+        P::Video => "Publish your camera in the call.",
+        P::ShareScreen => "Share a screen or window, including its sound.",
+        P::UseVoiceActivity => "Use the microphone without holding the push-to-talk key.",
+        P::SetCallUserLimit => "Change the number of people who may join the call.",
+        P::SetVoiceChannelStatus => "Change the status text of a voice channel.",
         P::ManageRoles => {
             "Create, change, delete, give and take the roles below the own highest role."
         }
