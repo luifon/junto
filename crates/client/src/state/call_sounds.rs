@@ -226,13 +226,11 @@ pub(crate) fn sounds(before: &Heard, after: &Heard) -> Vec<Sound> {
         sounds.push(Sound::ShareStarted);
     }
     if listed_before.iter().any(|(id, shared)| {
-        listed_after
-            .get(id)
-            .is_some_and(|shares| {
-                shared
-                    .iter()
-                    .any(|(slot, _)| !shares.iter().any(|(held, _)| held == slot))
-            })
+        listed_after.get(id).is_some_and(|shares| {
+            shared
+                .iter()
+                .any(|(slot, _)| !shares.iter().any(|(held, _)| held == slot))
+        })
     }) {
         sounds.push(Sound::ShareEnded);
     }

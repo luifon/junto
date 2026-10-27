@@ -197,7 +197,10 @@ fn the_unread_mentions_add_the_mark_and_keep_the_menu(cx: &mut TestAppContext) {
     let marked = shown(&mut window);
     assert_eq!(
         marked.tooltip(),
-        format!("{}, 1 unread mention or direct message", text::NOT_IN_A_CALL)
+        format!(
+            "{}, 1 unread mention or direct message",
+            text::NOT_IN_A_CALL
+        )
     );
     assert_eq!(marked.generation, before.generation);
     admin.mention(&world, plans, "And the agenda, ", luca);

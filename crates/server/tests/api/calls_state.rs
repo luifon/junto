@@ -2315,9 +2315,7 @@ async fn the_share_that_a_person_watches_is_stated_on_the_participant() {
     // With several shares the watch names the slot: a new share in another slot keeps it,
     // a report of the same share keeps it, and a new share in the watched slot (another
     // identifier) ends it (ADR 0510).
-    let share = |slot: u8, id: uuid::Uuid| {
-        json!({ "audio": "none", "slot": slot, "kind": "screen", "share_id": id })
-    };
+    let share = |slot: u8, id: uuid::Uuid| json!({ "audio": "none", "slot": slot, "kind": "screen", "share_id": id });
     let first = uuid::Uuid::now_v7();
     server
         .put(ann, "/api/v1/call/screen-share", &share(1, first))
@@ -2340,7 +2338,11 @@ async fn the_share_that_a_person_watches_is_stated_on_the_participant() {
         assert_eq!((watching.account_id, watching.slot), (ann.account_id, 1));
     }
     server
-        .put(ann, "/api/v1/call/screen-share", &share(1, uuid::Uuid::now_v7()))
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &share(1, uuid::Uuid::now_v7()),
+        )
         .await
         .empty(StatusCode::NO_CONTENT);
     assert_eq!(
