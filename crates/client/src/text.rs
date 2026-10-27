@@ -8,6 +8,7 @@
 use junto_client_core::api::{TransportErrorKind, code_name};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::Notice;
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
@@ -1960,6 +1961,45 @@ pub const FILES_BEING_READ: &str = "reading the files…";
 /// A new message was not sent while files attached to it were still being read.
 pub const FILES_STILL_ATTACHING: &str =
     "Not sent: the attached files are still being read. Send the message when they are shown.";
+
+/// Why a control of a channel is not available: the permission that the person does not
+/// hold in the channel (ADR 0790).
+pub const fn not_permitted(permission: WorkspacePermission) -> &'static str {
+    match permission {
+        WorkspacePermission::SendMessages => "You cannot send messages in this channel.",
+        WorkspacePermission::SendMessagesInThreads => {
+            "You cannot send messages in the threads of this channel."
+        }
+        WorkspacePermission::CreateThreads => "You cannot create threads in this channel.",
+        WorkspacePermission::ReadMessageHistory => {
+            "You cannot read the message history of this channel."
+        }
+        WorkspacePermission::AttachFiles => "You cannot attach files in this channel.",
+        WorkspacePermission::AddReactions => "You cannot add reactions in this channel.",
+        WorkspacePermission::MentionRoles => "You cannot mention roles in this channel.",
+        WorkspacePermission::MentionEveryone => "You cannot mention everyone in this channel.",
+        WorkspacePermission::Connect => "You cannot join the call of this channel.",
+        WorkspacePermission::Speak => "You cannot speak in the call of this channel.",
+        WorkspacePermission::Video => "You cannot turn on your camera in this channel.",
+        WorkspacePermission::ShareScreen => "You cannot share your screen in this channel.",
+        WorkspacePermission::UseVoiceActivity => {
+            "This channel requires push-to-talk: your microphone sends only while you hold \
+             the key."
+        }
+        WorkspacePermission::SetCallUserLimit => {
+            "You cannot change the user limit of this channel."
+        }
+        _ => "You do not have the permission for this in this channel.",
+    }
+}
+
+/// The sound of a share in a channel in which the person may not speak.
+pub const SHARE_SOUND_NOT_PERMITTED: &str =
+    "You cannot speak in this channel, so the share sends no sound.";
+
+/// The earlier messages of a channel whose history the person may not read.
+pub const HISTORY_NOT_PERMITTED: &str =
+    "Earlier messages are not available: you cannot read the message history of this channel.";
 
 /// Why a file was not attached to a message.
 pub fn attach_refusal(refusal: &crate::state::AttachRefusal) -> String {

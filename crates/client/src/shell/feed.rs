@@ -18,6 +18,7 @@ use gpui::{
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::Departure;
 #[cfg(feature = "test-support")]
 use junto_client_core::protocol::ids::AttachmentId;
@@ -37,7 +38,7 @@ use crate::state::feed::{
     can_send_again,
 };
 use crate::state::people::ServerFaces;
-use crate::state::view::{DraftFile, ServerLists, ShellView, WorkspaceView};
+use crate::state::view::{DraftFile, ServerLists, ShellView, WorkspaceView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -316,6 +317,8 @@ pub(crate) struct PaneShown<'a> {
     pub permanent: bool,
     pub gone: &'static str,
     pub empty: &'static str,
+    /// What the person may put into a message of the pane (ADR 0790).
+    pub writing: Writing,
 }
 
 /// How a message is drawn.
@@ -988,6 +991,7 @@ impl Shell {
             permanent,
             gone,
             empty,
+            writing: lists.writing,
         };
         self.render_pane(Pane::Main, &shown, notices, window, cx)
     }
@@ -1131,9 +1135,18 @@ impl Shell {
                 (Some(archived), _) => self.render_archived_bar(pane, archived, cx),
                 // Nor does a conversation with a departed account (ADR 0121).
                 (None, Some(departure)) => self.render_departed_bar(pane, departure, cx),
-                (None, None) => {
-                    self.render_composer(pane, shown.draft, compact, shown.permanent, cx)
-                }
+                // Nor does a channel in which the person may not send (ADR 0790).
+                (None, None) => match shown.writing.refused {
+                    Some(permission) => self.render_read_only_bar(pane, permission, cx),
+                    None => self.render_composer(
+                        pane,
+                        shown.draft,
+                        compact,
+                        shown.permanent,
+                        shown.writing,
+                        cx,
+                    ),
+                },
             })
             .into_any_element()
     }
@@ -1182,6 +1195,42 @@ impl Shell {
                     .typeface(theme.types.control_strong, &theme)
                     .ink(colors.ink)
                     .child(text::departed_conversation(departure)),
+            )
+            .into_any_element()
+    }
+
+    /// The statement in place of the composer of a place in which the person may not
+    /// write: the permission that the person does not hold there (ADR 0790).
+    fn render_read_only_bar(
+        &mut self,
+        pane: Pane,
+        permission: WorkspacePermission,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = crate::theme::theme(cx);
+        let colors = theme.colors;
+        div()
+            .id(pane.id("read-only-bar"))
+            .debug_selector(move || pane.id("read-only-bar").to_owned())
+            .role(Role::Status)
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(10.0))
+            .min_h(u(44.0))
+            .py(u(8.0))
+            .px(u(16.0))
+            .border_t_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.limestone))
+            .child(icon(Icon::Lock, 16.0, colors.ink_2))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .typeface(theme.types.control_strong, &theme)
+                    .ink(colors.ink)
+                    .child(text::not_permitted(permission)),
             )
             .into_any_element()
     }
@@ -1647,8 +1696,10 @@ impl Shell {
         if message.reactions.is_empty() {
             return None;
         }
-        // A message that takes no reaction shows its reactions without a control.
+        // A message that takes no reaction shows its reactions without a control. Without
+        // "add reactions" a person removes an own reaction only (ADR 0790).
         let can_react = row.can_react;
+        let may_add = can_react && !row.react_refused;
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
         let drawings = Drawings::of(cx);
@@ -1659,6 +1710,9 @@ impl Shell {
             let label: SharedString = text::reaction_label(&shown, count, own).into();
             let sent = emoji.clone();
             let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+            let acts = can_react && (own || may_add);
+            let reason = (can_react && !acts)
+                .then(|| text::not_permitted(WorkspacePermission::AddReactions));
             div()
                 .id(("reaction", index))
                 .role(if can_react { Role::Button } else { Role::Note })
@@ -1684,8 +1738,14 @@ impl Shell {
                 }))
                 .text_size(u(13.0))
                 .line_height(u(17.0))
-                .tooltip(tooltip(label.clone()))
-                .when(can_react, |chip| {
+                .tooltip(tooltip(match reason {
+                    Some(reason) => SharedString::from(format!("{label} {reason}")),
+                    None => label.clone(),
+                }))
+                .when_some(reason, |chip, reason| {
+                    chip.aria_description(reason).cursor_not_allowed()
+                })
+                .when(acts, |chip| {
                     chip.cursor_pointer()
                         .focusable()
                         .tab_stop(true)
@@ -1721,7 +1781,29 @@ impl Shell {
                 .gap(u(5.0))
                 .mt(u(4.0))
                 .children(chips)
-                .when(can_react, |row| {
+                .when(can_react && !may_add, |row| {
+                    let refused = text::not_permitted(WorkspacePermission::AddReactions);
+                    row.child(
+                        div()
+                            .id("add-reaction-refused")
+                            .role(Role::Button)
+                            .aria_label(text::REACT)
+                            .aria_description(refused)
+                            .debug_selector(move || format!("add-reaction-refused:{message_id}"))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .h(u(23.0))
+                            .px(u(5.0))
+                            .rounded(u(theme.metrics.radius))
+                            .border_1()
+                            .border_color(Hsla::from(colors.rule_soft))
+                            .cursor_not_allowed()
+                            .tooltip(tooltip(refused))
+                            .child(icon(Icon::SmilePlus, 14.0, colors.ink_3)),
+                    )
+                })
+                .when(may_add, |row| {
                     row.child(
                         div()
                             .id("add-reaction")
@@ -2149,6 +2231,25 @@ impl Shell {
                 .tooltip(tooltip(label))
                 .child(icon(shown, 15.0, colors.ink_2))
         };
+        // An action that the permissions of the channel do not allow: drawn without its
+        // act, with the reason (ADR 0790).
+        let refused = |id: &'static str, shown: Icon, label: &'static str, reason: &'static str| {
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(label)
+                .aria_description(reason)
+                .debug_selector(move || format!("{id}-refused:{message_id}"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(u(26.0))
+                .h(u(22.0))
+                .rounded(u(theme.metrics.radius_small))
+                .cursor_not_allowed()
+                .tooltip(tooltip(reason))
+                .child(icon(shown, 15.0, colors.ink_3))
+        };
         div()
             .debug_selector(move || format!("message-actions:{message_id}"))
             .absolute()
@@ -2164,7 +2265,15 @@ impl Shell {
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
             .shadow(ledge(colors.rule))
-            .when(row.can_react, |bar| {
+            .when(row.can_react && row.react_refused, |bar| {
+                bar.child(refused(
+                    "react",
+                    Icon::SmilePlus,
+                    text::REACT,
+                    text::not_permitted(WorkspacePermission::AddReactions),
+                ))
+            })
+            .when(row.can_react && !row.react_refused, |bar| {
                 bar.child(
                     action("react", Icon::SmilePlus, text::REACT).on_click(cx.listener(
                         move |this, _, window, cx| {
@@ -2183,7 +2292,21 @@ impl Shell {
                 )
             })
             .when_some(
-                channel_id.filter(|_| row.can_thread && pane == Pane::Main),
+                row.thread_refused
+                    .filter(|_| row.can_thread && pane == Pane::Main),
+                |bar, permission| {
+                    bar.child(refused(
+                        "thread",
+                        Icon::Chat,
+                        text::REPLY_IN_THREAD,
+                        text::not_permitted(permission),
+                    ))
+                },
+            )
+            .when_some(
+                channel_id.filter(|_| {
+                    row.can_thread && row.thread_refused.is_none() && pane == Pane::Main
+                }),
                 |bar, channel_id| {
                     bar.child(
                         action("thread", Icon::Chat, text::REPLY_IN_THREAD).on_click(cx.listener(
@@ -2324,7 +2447,18 @@ impl Shell {
                         .border_color(Hsla::from(colors.rule))
                         .bg(Hsla::from(colors.travertine_hi))
                         .text_size(u(13.0))
-                        .when(row.can_thread, |chip| {
+                        // A thread whose replies the person may not read is shown without
+                        // its act, with the reason (ADR 0790).
+                        .when_some(
+                            row.thread_refused.filter(|_| row.can_thread),
+                            |chip, permission| {
+                                let reason = text::not_permitted(permission);
+                                chip.aria_description(reason)
+                                    .cursor_not_allowed()
+                                    .tooltip(tooltip(reason))
+                            },
+                        )
+                        .when(row.can_thread && row.thread_refused.is_none(), |chip| {
                             chip.cursor_pointer()
                                 .focusable()
                                 .tab_stop(true)
@@ -2336,7 +2470,7 @@ impl Shell {
                                     ))
                                 })
                         })
-                        .when(row.can_thread, |chip| {
+                        .when(row.can_thread && row.thread_refused.is_none(), |chip| {
                             chip.tooltip(tooltip(text::OPEN_THREAD))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_thread(server_id, channel_id, message_id, window, cx);
@@ -2893,7 +3027,16 @@ impl Shell {
         let pane = Pane::of(feed.place);
         let pinned = row.message.pinned;
         let mut items = Vec::new();
-        if row.can_react {
+        if row.can_react && row.react_refused {
+            items.push(
+                MenuItem::new("message-react", text::REACT)
+                    .icon(Icon::SmilePlus)
+                    .selector("message-react-refused")
+                    .disabled(true)
+                    .detail(text::not_permitted(WorkspacePermission::AddReactions))
+                    .into_any_element(),
+            );
+        } else if row.can_react {
             items.push(
                 MenuItem::new("message-react", text::REACT)
                     .icon(Icon::SmilePlus)
@@ -2917,7 +3060,19 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(channel_id) = crate::state::feed::channel_of(feed.place)
+        if let Some(permission) = row
+            .thread_refused
+            .filter(|_| row.can_thread && pane == Pane::Main)
+        {
+            items.push(
+                MenuItem::new("message-thread", text::REPLY_IN_THREAD)
+                    .icon(Icon::Chat)
+                    .selector("message-thread-refused")
+                    .disabled(true)
+                    .detail(text::not_permitted(permission))
+                    .into_any_element(),
+            );
+        } else if let Some(channel_id) = crate::state::feed::channel_of(feed.place)
             .filter(|_| row.can_thread && pane == Pane::Main)
         {
             items.push(

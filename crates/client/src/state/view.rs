@@ -468,6 +468,8 @@ pub struct ThreadPanel {
     pub permanent: bool,
     /// Whether the account follows the thread. Absent until the server has told it.
     pub follow: Option<FollowControl>,
+    /// What the person may put into a reply.
+    pub writing: Writing,
 }
 
 /// The pinned messages of the shown channel, as the side panel shows them.
@@ -837,6 +839,73 @@ pub struct Allowed {
     pub move_members: bool,
     /// Remove a recording with its files and its transcript.
     pub manage_recordings: bool,
+    /// Send a message outside a thread.
+    pub send: bool,
+    pub send_in_threads: bool,
+    pub create_threads: bool,
+    /// Read the messages that were sent before the live connection of this device.
+    pub read_history: bool,
+    pub attach: bool,
+    pub react: bool,
+    pub mention_roles: bool,
+    /// Join the call of a voice channel.
+    pub connect: bool,
+    pub speak: bool,
+    pub video: bool,
+    pub share_screen: bool,
+    /// Send the microphone without the push-to-talk key.
+    pub voice_activity: bool,
+    pub set_user_limit: bool,
+}
+
+/// What the person may put into the next message of a place (ADR 0790). A direct
+/// conversation takes every part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Writing {
+    /// The permission that the person does not hold and without which the place takes no
+    /// message from the person. Absent: the composer is shown.
+    pub refused: Option<WorkspacePermission>,
+    pub attach: bool,
+    pub mention_roles: bool,
+    pub mention_everyone: bool,
+}
+
+impl Writing {
+    /// A place that takes every part of a message: a direct conversation.
+    pub const OPEN: Self = Self {
+        refused: None,
+        attach: true,
+        mention_roles: true,
+        mention_everyone: true,
+    };
+
+    /// The writing of a channel, outside a thread.
+    pub fn channel(allowed: &Allowed) -> Self {
+        Self {
+            refused: (!allowed.send).then_some(WorkspacePermission::SendMessages),
+            attach: allowed.attach,
+            mention_roles: allowed.mention_roles,
+            mention_everyone: allowed.mention_everyone,
+        }
+    }
+
+    /// The writing of a thread of a channel. A thread without replies is created by its
+    /// first reply, which needs "create threads" too.
+    pub fn thread(allowed: &Allowed, created: bool) -> Self {
+        let refused = if !allowed.send_in_threads {
+            Some(WorkspacePermission::SendMessagesInThreads)
+        } else if !created && !allowed.create_threads {
+            Some(WorkspacePermission::CreateThreads)
+        } else {
+            None
+        };
+        Self {
+            refused,
+            attach: allowed.attach,
+            mention_roles: allowed.mention_roles,
+            mention_everyone: allowed.mention_everyone,
+        }
+    }
 }
 
 /// Whether the person can turn meeting mode on in the call of this device (ADR 0512).
@@ -1069,6 +1138,8 @@ pub struct ServerLists {
     /// The files that the person attached to the next message of the place of the main
     /// area.
     pub draft: Vec<DraftFile>,
+    /// What the person may put into the next message of the place of the main area.
+    pub writing: Writing,
     /// The uploads of the messages that wait to be sent, by the number of the upload.
     pub uploads: Arc<HashMap<u64, UploadProgress>>,
     /// The notices of the server that the side panel shows.
@@ -2288,6 +2359,8 @@ fn read_only_feed(mut feed: Feed) -> Feed {
             row.can_delete = false;
             row.can_pin = false;
             row.can_thread = false;
+            row.react_refused = false;
+            row.thread_refused = None;
         }
     }
     feed
@@ -2380,6 +2453,7 @@ fn server_lists(
                 open_thread: None,
                 target: target_of_jump(server_id, timeline, known),
                 threads: true,
+                writes: feed::Writes::ALL,
                 quoted: &known.quoted,
                 zone: known.zone,
                 today: known.today,
@@ -2415,6 +2489,10 @@ fn server_lists(
                 })
         })
         .map(|_| super::notices::notices_panel(server_id, model, known));
+    let writing = match (&conversation, &shown) {
+        (None, Some(view)) => Writing::channel(&view.allowed),
+        _ => Writing::OPEN,
+    };
     ServerLists {
         workspace: shown,
         directs,
@@ -2437,6 +2515,7 @@ fn server_lists(
         draft: place
             .and_then(|place| known.drafts.get(&(server_id, place)).cloned())
             .unwrap_or_default(),
+        writing,
         uploads: Arc::new(uploads_of(server_id, known)),
         notices,
         unread_notices: super::notices::unread_notices(model),
@@ -2633,6 +2712,13 @@ fn workspace_view(
         open_thread: open_thread.map(|(_, root_id)| root_id),
         target: target_of_jump(server_id, timeline, known),
         threads: call.is_none(),
+        writes: feed::Writes {
+            send: allowed.send,
+            send_in_threads: allowed.send_in_threads,
+            create_threads: allowed.create_threads,
+            react: allowed.react,
+            read_history: allowed.read_history,
+        },
         quoted: &known.quoted,
         zone: known.zone,
         today: known.today,
@@ -2653,6 +2739,8 @@ fn workspace_view(
             row.can_delete = false;
             row.can_pin = false;
             row.can_thread = false;
+            row.react_refused = false;
+            row.thread_refused = None;
         }
         row
     };
@@ -2724,6 +2812,16 @@ fn workspace_view(
                     .map(|asked| asked.state.clone()),
                 permanent: row.permanent,
                 follow: known.followed.thread.control(server_id, root_id, read_only),
+                writing: Writing::thread(
+                    &allowed,
+                    timeline.is_some_and(|timeline| {
+                        !timeline.messages.is_empty()
+                            || timeline
+                                .root
+                                .as_ref()
+                                .is_some_and(|root| root.reply_count > 0)
+                    }),
+                ),
             }
         });
     let pins = selection
@@ -3219,6 +3317,19 @@ fn allowed(held: &[WorkspacePermission]) -> Allowed {
         disconnect: may(WorkspacePermission::DisconnectMembers),
         move_members: may(WorkspacePermission::MoveMembers),
         manage_recordings: may(WorkspacePermission::ManageRecordings),
+        send: may(WorkspacePermission::SendMessages),
+        send_in_threads: may(WorkspacePermission::SendMessagesInThreads),
+        create_threads: may(WorkspacePermission::CreateThreads),
+        read_history: may(WorkspacePermission::ReadMessageHistory),
+        attach: may(WorkspacePermission::AttachFiles),
+        react: may(WorkspacePermission::AddReactions),
+        mention_roles: may(WorkspacePermission::MentionRoles),
+        connect: may(WorkspacePermission::Connect),
+        speak: may(WorkspacePermission::Speak),
+        video: may(WorkspacePermission::Video),
+        share_screen: may(WorkspacePermission::ShareScreen),
+        voice_activity: may(WorkspacePermission::UseVoiceActivity),
+        set_user_limit: may(WorkspacePermission::SetCallUserLimit),
     }
 }
 

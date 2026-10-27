@@ -15,6 +15,7 @@ use gpui_base::input::{
     TextareaState,
 };
 use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId};
 use junto_client_core::protocol::message::{Document, Message};
 use junto_client_core::protocol::structure::ChannelKind;
@@ -25,7 +26,7 @@ use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
 use crate::emoji::{Drawing, Drawings};
 use crate::state::feed::{Feed, FeedRow, plain_text};
-use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView};
+use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView, Writing};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
@@ -201,6 +202,7 @@ fn rank(candidate: &Candidate, query: &str) -> Option<u8> {
 /// The members and roles whose names start with the query, and then those that hold it.
 fn candidates(
     workspace: &WorkspaceView,
+    writing: Writing,
     own: Option<junto_client_core::protocol::ids::AccountId>,
     query: &str,
 ) -> Vec<Candidate> {
@@ -218,12 +220,16 @@ fn candidates(
                 }),
         );
     }
-    all.extend(workspace.roles.iter().map(|(role_id, name)| Candidate {
-        target: MentionTarget::Role(*role_id),
-        name: name.clone(),
-        detail: text::ROLE,
-    }));
-    if workspace.allowed.mention_everyone {
+    // The server takes a mention of a role from a person with "mention roles", and of
+    // everyone from a person with "mention everyone" (ADR 0790).
+    if writing.mention_roles {
+        all.extend(workspace.roles.iter().map(|(role_id, name)| Candidate {
+            target: MentionTarget::Role(*role_id),
+            name: name.clone(),
+            detail: text::ROLE,
+        }));
+    }
+    if writing.mention_everyone {
         all.push(Candidate {
             target: MentionTarget::Everyone,
             name: text::EVERYONE.to_owned(),
@@ -480,6 +486,16 @@ impl Shell {
         self.pane_feed(pane)
     }
 
+    /// What the person may put into a message of the place of a pane (ADR 0790).
+    pub(crate) fn pane_writing(&self, pane: Pane) -> Writing {
+        let view = self.view.as_ref();
+        match pane {
+            Pane::Main => view.and_then(|view| Some(view.lists()?.writing)),
+            Pane::Thread => view.and_then(|view| Some(view.workspace()?.thread.as_ref()?.writing)),
+        }
+        .unwrap_or(Writing::OPEN)
+    }
+
     /// Each composer holds the text of the place that its pane shows: the place of the
     /// main area, and the thread of the side panel. The text of the place before stays
     /// with that place.
@@ -619,7 +635,14 @@ impl Shell {
                 .unwrap_or_default(),
             _ => view
                 .workspace()
-                .map(|workspace| candidates(workspace, view.person.account_id, &open.query))
+                .map(|workspace| {
+                    candidates(
+                        workspace,
+                        self.pane_writing(pane),
+                        view.person.account_id,
+                        &open.query,
+                    )
+                })
                 .unwrap_or_default(),
         }
     }
@@ -767,6 +790,13 @@ impl Shell {
         let Some(owner) = self.state.read(cx).owner(asked.0) else {
             return;
         };
+        // A file from the dialog, a drop or the clipboard is refused alike.
+        if !self.pane_writing(pane).attach {
+            self.pen_mut(pane).problem =
+                Some(text::not_permitted(WorkspacePermission::AttachFiles).to_owned());
+            cx.notify();
+            return;
+        }
         let pen = self.pen_mut(pane);
         let number = pen.next_attaching;
         pen.next_attaching += 1;
@@ -1083,6 +1113,13 @@ impl Shell {
                 Pane::Thread => Some(view.workspace()?.thread.as_ref()?.draft.clone()),
             })
             .unwrap_or_default();
+        // Files attached before the permission was taken are not sent.
+        if editing.is_none() && !draft.is_empty() && !self.pane_writing(pane).attach {
+            self.pen_mut(pane).problem =
+                Some(text::not_permitted(WorkspacePermission::AttachFiles).to_owned());
+            cx.notify();
+            return;
+        }
         if draft
             .iter()
             .any(|file| matches!(file.progress.stage, UploadStage::Failed(_)))
@@ -1314,6 +1351,7 @@ impl Shell {
         draft: &[DraftFile],
         compact: bool,
         permanent: bool,
+        writing: Writing,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1447,10 +1485,31 @@ impl Shell {
                 )),
             )
             .child(divider())
-            .child(
+            .child(if writing.attach {
                 tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
-                    .on_click(cx.listener(move |this, _, _, cx| this.choose_files(pane, cx))),
-            )
+                    .on_click(cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)))
+                    .into_any_element()
+            } else {
+                // Not available: the control states why (ADR 0790).
+                let refused = text::not_permitted(WorkspacePermission::AttachFiles);
+                div()
+                    .id("attach-file-refused")
+                    .role(Role::Button)
+                    .aria_label(text::ATTACH_FILE)
+                    .aria_description(refused)
+                    .debug_selector(|| "attach-file-refused".to_owned())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .w(u(26.0))
+                    .h(u(22.0))
+                    .rounded(u(radius_small))
+                    .cursor_not_allowed()
+                    .tooltip(tooltip(refused))
+                    .child(icon(Icon::Clip, 15.0, colors.ink_3))
+                    .into_any_element()
+            })
             .child(
                 tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(cx.listener(
                     move |this, _, window, cx| {

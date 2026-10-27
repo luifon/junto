@@ -208,6 +208,19 @@ fn studio() -> WorkspaceState {
         WorkspacePermission::ViewChannel,
         WorkspacePermission::LockRoom,
         WorkspacePermission::RunMeetingMode,
+        WorkspacePermission::SendMessages,
+        WorkspacePermission::SendMessagesInThreads,
+        WorkspacePermission::CreateThreads,
+        WorkspacePermission::ReadMessageHistory,
+        WorkspacePermission::AttachFiles,
+        WorkspacePermission::AddReactions,
+        WorkspacePermission::MentionRoles,
+        WorkspacePermission::Connect,
+        WorkspacePermission::Speak,
+        WorkspacePermission::Video,
+        WorkspacePermission::ShareScreen,
+        WorkspacePermission::UseVoiceActivity,
+        WorkspacePermission::SetVoiceChannelStatus,
     ];
     studio.roles = vec![everyone, role(21, "Leads", 2), role(22, "Engineers", 1)];
     let voice = |number, name: &str| channel(number, workspace_id, ChannelKind::Voice, name);

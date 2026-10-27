@@ -2638,6 +2638,19 @@ pub(super) mod calls {
                 disconnect: true,
                 move_members: true,
                 manage_recordings: true,
+                send: true,
+                send_in_threads: true,
+                create_threads: true,
+                read_history: true,
+                attach: true,
+                react: true,
+                mention_roles: true,
+                connect: true,
+                speak: true,
+                video: true,
+                share_screen: true,
+                voice_activity: true,
+                set_user_limit: true,
             }
         );
     }

@@ -30,6 +30,7 @@ mod admin;
 mod admin_pages;
 mod call_notices;
 mod calls;
+mod channel_use;
 mod composing;
 mod contacts;
 mod data_directory;

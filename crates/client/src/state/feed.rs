@@ -15,6 +15,7 @@ use super::recorded::{self, RecordingCard};
 use junto_client_core::model::{
     PendingMessage, PlaceId, ReadFailure, Reading, SendState, ServerModel, Timeline,
 };
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::ids::{
     AccountId, ChannelId, MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceRoleId,
@@ -231,9 +232,15 @@ pub struct MessageRow {
     pub can_delete: bool,
     /// The message can be pinned or unpinned, and the roles of the person allow it.
     pub can_pin: bool,
+    /// The control of a reaction is drawn, and the person does not hold "add reactions":
+    /// it is not available, and an own reaction can still be removed.
+    pub react_refused: bool,
     /// The message can have a thread: an authored message of a channel that is no reply
     /// in a thread itself.
     pub can_thread: bool,
+    /// The thread control is drawn and is not available: the permission that the person
+    /// does not hold for it.
+    pub thread_refused: Option<WorkspacePermission>,
     /// The thread under the message, when it has replies.
     pub thread: Option<ThreadMark>,
     /// The person went to this message from a notice or a search result.
@@ -255,6 +262,8 @@ impl PartialEq for MessageRow {
             && self.can_delete == other.can_delete
             && self.can_pin == other.can_pin
             && self.can_thread == other.can_thread
+            && self.react_refused == other.react_refused
+            && self.thread_refused == other.thread_refused
             && self.thread == other.thread
             && self.target == other.target
     }
@@ -457,11 +466,36 @@ pub struct Source<'a> {
     /// The list offers the thread of a message. The chat of the call of this device does
     /// not: its side panel is the panel of the call.
     pub threads: bool,
+    /// What the permissions of the channel allow with the messages of the list.
+    pub writes: Writes,
     pub quoted: &'a HashMap<(ServerId, MessageId), Quoted>,
     pub zone: Zone,
     pub today: Option<Date>,
     /// The list shows a finished recording as a card. Absent: as a system line.
     pub cards: Option<&'a Cards<'a>>,
+}
+
+/// What the person may do with the messages of a list, as the permissions of the channel
+/// state it (ADR 0790). A direct conversation allows each of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Writes {
+    pub send: bool,
+    pub send_in_threads: bool,
+    pub create_threads: bool,
+    pub react: bool,
+    /// Read the messages of the channel before the live connection: a thread of a message
+    /// is read from the history.
+    pub read_history: bool,
+}
+
+impl Writes {
+    pub const ALL: Self = Self {
+        send: true,
+        send_in_threads: true,
+        create_threads: true,
+        react: true,
+        read_history: true,
+    };
 }
 
 fn clock(at: OffsetDateTime) -> String {
@@ -753,6 +787,34 @@ pub fn message_row<'a>(
     );
     let has_thread = changeable && in_channel && message.thread_root.is_none();
     let can_thread = has_thread && source.threads;
+    let writes = source.writes;
+    // A reply of the list goes into the place of the list; an edit stays in the place of
+    // the message. The server takes either only from a person who may send there.
+    let in_thread_list = matches!(source.timeline.place, PlaceId::Thread { .. });
+    let sends_here = if in_thread_list {
+        writes.send_in_threads
+    } else {
+        writes.send
+    };
+    let sends_there = if message.thread_root.is_some() {
+        writes.send_in_threads
+    } else {
+        writes.send
+    };
+    // A thread is read from the history, also one that has no reply yet.
+    let thread_refused = if !can_thread {
+        None
+    } else if !writes.read_history {
+        Some(WorkspacePermission::ReadMessageHistory)
+    } else if message.reply_count > 0 {
+        None
+    } else if !writes.send_in_threads {
+        Some(WorkspacePermission::SendMessagesInThreads)
+    } else if !writes.create_threads {
+        Some(WorkspacePermission::CreateThreads)
+    } else {
+        None
+    };
     MessageRow {
         author: author_name(message, names),
         time: clock(local),
@@ -764,8 +826,9 @@ pub fn message_row<'a>(
             .is_some_and(|document| mentions(document, own, source.own_roles)),
         reply: message.reply_to.map(|id| quote(source, loaded, id)),
         can_react: changeable,
-        can_reply: changeable,
-        can_edit: changeable && is_own && !message.permanent,
+        react_refused: changeable && !writes.react,
+        can_reply: changeable && sends_here,
+        can_edit: changeable && is_own && !message.permanent && sends_there,
         // A permanent message is deleted by an administrator only, also its author's
         // (ADR 0402).
         can_delete: changeable
@@ -776,6 +839,7 @@ pub fn message_row<'a>(
             },
         can_pin: changeable && in_channel && source.may_manage,
         can_thread,
+        thread_refused,
         thread: has_thread
             .then(|| thread_mark(source, message, loaded))
             .flatten(),
@@ -1173,6 +1237,7 @@ mod tests {
                 open_thread: None,
                 target: None,
                 threads: true,
+                writes: Writes::ALL,
                 quoted: &self.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
                 today: Some(morning().date()),
@@ -1270,6 +1335,7 @@ mod tests {
                 open_thread: None,
                 target: None,
                 threads: true,
+                writes: Writes::ALL,
                 quoted: &scene.quoted,
                 zone: Zone::Fixed(UtcOffset::from_hms(hours, 0, 0).unwrap()),
                 today: Some(morning().date()),
@@ -1320,6 +1386,7 @@ mod tests {
                 open_thread,
                 target: None,
                 threads,
+                writes: Writes::ALL,
                 quoted: &scene.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
                 today: None,
@@ -1419,6 +1486,7 @@ mod tests {
             open_thread: None,
             target: None,
             threads: true,
+            writes: Writes::ALL,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::from_hms(14, 55, 0).unwrap()),
             today: None,
@@ -1471,6 +1539,7 @@ mod tests {
             open_thread: None,
             target: None,
             threads: true,
+            writes: Writes::ALL,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::UTC),
             today: None,
@@ -1729,6 +1798,7 @@ mod tests {
             open_thread: None,
             target: None,
             threads: true,
+            writes: Writes::ALL,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::UTC),
             today: None,

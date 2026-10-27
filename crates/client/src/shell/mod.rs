@@ -151,6 +151,7 @@ impl Pane {
             (Self::Thread, "send-message") => "thread-send-message",
             (Self::Thread, "messages-state") => "thread-messages-state",
             (Self::Thread, "no-messages") => "thread-no-messages",
+            (Self::Thread, "read-only-bar") => "thread-read-only-bar",
             (Self::Thread, part) => part,
         }
     }

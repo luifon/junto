@@ -460,3 +460,154 @@ fn an_archived_channel_offers_its_restore_when_its_own_list_is_read() {
         Some(false)
     );
 }
+
+#[test]
+fn the_composer_and_the_message_actions_follow_the_permissions_of_using_the_channel() {
+    use WorkspacePermission::{
+        AddReactions, AttachFiles, CreateThreads, MentionRoles, ReadMessageHistory, SendMessages,
+        SendMessagesInThreads,
+    };
+    let mut scene = scene();
+    let ana = AccountId::generate();
+    let place = MessagePlace::Channel {
+        workspace_id: scene.studio,
+        channel_id: scene.general,
+    };
+    let own = message(place, 2, scene.own, "Mine");
+    let plain = message(place, 3, ana, "No thread");
+    let mut threaded = message(place, 4, ana, "A thread");
+    threaded.reply_count = 2;
+    let derived = |scene: &Scene| {
+        let mut model = stated_by_the_server(scene);
+        model.timelines.push(Arc::new(Timeline {
+            place: PlaceId::Channel(scene.general),
+            messages: vec![
+                Arc::new(own.clone()),
+                Arc::new(plain.clone()),
+                Arc::new(threaded.clone()),
+            ],
+            more_before: false,
+            more_after: false,
+            reading: Reading::default(),
+            loaded: true,
+            failed: None,
+            stale: false,
+            unread_after: None,
+            root: None,
+            forks: Vec::new(),
+            anchor: None,
+        }));
+        let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
+        derive(
+            std::slice::from_ref(&server),
+            &shown(server.id, scene, scene.general),
+            &Known::default(),
+        )
+    };
+    let rows = |view: &ShellView| -> Vec<feed::MessageRow> {
+        view.lists()
+            .unwrap()
+            .feed
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                FeedRow::Message(row) => Some(row.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let all = [
+        ViewChannel,
+        SendMessages,
+        SendMessagesInThreads,
+        CreateThreads,
+        ReadMessageHistory,
+        AttachFiles,
+        AddReactions,
+        MentionRoles,
+    ];
+    scene.states(&all);
+    let view = derived(&scene);
+    assert_eq!(
+        view.lists().unwrap().writing,
+        Writing {
+            refused: None,
+            attach: true,
+            mention_roles: true,
+            mention_everyone: false,
+        }
+    );
+    let held = rows(&view);
+    assert!(held[0].can_edit && held[1].can_reply && !held[1].react_refused);
+    assert_eq!(
+        (held[1].thread_refused, held[2].thread_refused),
+        (None, None)
+    );
+
+    // Without "send messages": no composer, no reply, no edit of the own message.
+    scene.states_in(
+        scene.general,
+        &[
+            ViewChannel,
+            SendMessagesInThreads,
+            CreateThreads,
+            ReadMessageHistory,
+        ],
+    );
+    let view = derived(&scene);
+    let writing = view.lists().unwrap().writing;
+    assert_eq!(writing.refused, Some(SendMessages));
+    assert!(!writing.attach && !writing.mention_roles);
+    let held = rows(&view);
+    assert!(!held[0].can_edit && held[0].can_delete && !held[1].can_reply);
+    assert!(held[1].react_refused && held[1].can_react);
+    assert_eq!(held[1].thread_refused, None);
+
+    // A new thread needs "create threads" and "send messages in threads"; every thread is
+    // read from the history.
+    let history = [ViewChannel, SendMessages, ReadMessageHistory];
+    scene.states_in(
+        scene.general,
+        &[&history[..], &[SendMessagesInThreads]].concat(),
+    );
+    let held = rows(&derived(&scene));
+    assert_eq!(
+        (held[1].thread_refused, held[2].thread_refused),
+        (Some(CreateThreads), None)
+    );
+    scene.states_in(scene.general, &[&history[..], &[CreateThreads]].concat());
+    let held = rows(&derived(&scene));
+    assert_eq!(held[1].thread_refused, Some(SendMessagesInThreads));
+    scene.states_in(
+        scene.general,
+        &[
+            ViewChannel,
+            SendMessages,
+            SendMessagesInThreads,
+            CreateThreads,
+        ],
+    );
+    let held = rows(&derived(&scene));
+    assert_eq!(
+        (held[1].thread_refused, held[2].thread_refused),
+        (Some(ReadMessageHistory), Some(ReadMessageHistory))
+    );
+
+    // The writing of a thread.
+    let allowed = |held: &[WorkspacePermission]| super::allowed(held);
+    assert_eq!(
+        Writing::thread(&allowed(&[SendMessagesInThreads]), false).refused,
+        Some(CreateThreads)
+    );
+    assert_eq!(
+        Writing::thread(&allowed(&[SendMessagesInThreads]), true).refused,
+        None
+    );
+    assert_eq!(
+        Writing::thread(&allowed(&[SendMessages, CreateThreads]), true).refused,
+        Some(SendMessagesInThreads)
+    );
+    assert_eq!(Writing::OPEN.refused, None);
+}
