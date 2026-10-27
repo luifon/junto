@@ -984,12 +984,33 @@ impl Standing {
                     })
                     .collect()
             };
+            let category_ids: Vec<_> = candidates
+                .iter()
+                .filter_map(|candidate| match candidate.audience.as_ref() {
+                    Some(Audience::Category {
+                        workspace_id: id,
+                        category_id,
+                    }) if *id == workspace_id => Some(*category_id),
+                    _ => None,
+                })
+                .collect();
+            let categories = if category_ids.is_empty() {
+                HashMap::new()
+            } else {
+                access
+                    .categories_with_children(connection, workspace_id, &scope, &category_ids)
+                    .await?
+                    .into_iter()
+                    .map(|(category, scope, child)| (category.id, (scope, child)))
+                    .collect()
+            };
             workspaces.insert(
                 workspace_id,
                 WorkspaceStanding {
                     scope,
                     everyone_role_id,
                     channels,
+                    categories,
                 },
             );
         }

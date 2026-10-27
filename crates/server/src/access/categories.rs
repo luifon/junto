@@ -27,25 +27,47 @@ impl Access {
     ) -> ApiResult<(Category, ChannelScope)> {
         let workspace = self.workspace(connection, workspace_id).await?;
         self.require(Request::ViewWorkspace(&workspace))?;
-        let category = self
-            .categories(connection, workspace_id, &workspace, Some(&[category_id]))
+        self.categories_with_children(connection, workspace_id, &workspace, &[category_id])
             .await?
-            .pop();
-        let children: Vec<ChannelId> = sqlx::query_scalar(
-            "select id from channels where category_id=$1 and workspace_id=$2 and deleted_at is null",
-        ).bind(category_id).bind(workspace_id).fetch_all(&mut *connection).await?;
-        let children = self
-            .named_channels(connection, workspace_id, &workspace, &children)
-            .await?;
-        let visible_child = children.iter().any(|(_, scope)| {
-            self.allows(Request::Channel {
-                scope,
-                permission: WorkspacePermission::ViewChannel,
-            })
-        });
-        category
-            .filter(|(_, scope)| self.category_visible(scope, visible_child))
+            .into_iter()
+            .find(|(_, scope, child)| self.category_visible(scope, *child))
+            .map(|(category, scope, _)| (category, scope))
             .ok_or_else(ApiError::not_found)
+    }
+
+    pub async fn categories_with_children(
+        &self,
+        connection: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        workspace: &WorkspaceScope,
+        ids: &[CategoryId],
+    ) -> ApiResult<Vec<(Category, ChannelScope, bool)>> {
+        let categories = self
+            .categories(connection, workspace_id, workspace, Some(ids))
+            .await?;
+        let children: Vec<ChannelId> = sqlx::query_scalar(
+            "select id from channels where category_id=any($1) and workspace_id=$2 and deleted_at is null",
+        ).bind(ids).bind(workspace_id).fetch_all(&mut *connection).await?;
+        let children = self
+            .named_channels(connection, workspace_id, workspace, &children)
+            .await?;
+        let visible: std::collections::HashSet<_> = children
+            .into_iter()
+            .filter(|(_, scope)| {
+                self.allows(Request::Channel {
+                    scope,
+                    permission: WorkspacePermission::ViewChannel,
+                })
+            })
+            .filter_map(|(record, _)| record.channel.category_id)
+            .collect();
+        Ok(categories
+            .into_iter()
+            .map(|(category, scope)| {
+                let child = visible.contains(&category.id);
+                (category, scope, child)
+            })
+            .collect())
     }
 
     pub async fn categories(

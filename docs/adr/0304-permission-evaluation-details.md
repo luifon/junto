@@ -70,4 +70,5 @@ Stored sets:
 - Role changes and server moderation also obey the order of ADR 0309. A person with "manage roles" changes only roles below their highest role, with the permission-grant ceiling above.
 - A person with "create workspace" and no administrator permission gets an empty workspace that an administrator has to give roles to.
 - A category is listed only when a person sees a channel in it or can manage the category. Its management permission is evaluated with its role and person overrides. Renaming or deleting a hidden category, and creating or moving a channel into one, answers as for a missing category. A person who can manage one category can create channels there without workspace-wide management permission.
+- Category creation and rename events use the current category visibility at delivery and replay. A category deletion sends a workspace permission refresh without its identifier, so a person who never saw it learns no hidden name or identifier.
 - The number of a permission bit cannot be reused for another permission.

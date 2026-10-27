@@ -16,6 +16,7 @@ mod calls_review3;
 mod calls_rooms;
 mod calls_state;
 mod calls_support;
+mod category_events;
 mod category_inheritance;
 mod category_visibility;
 mod change_positions;

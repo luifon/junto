@@ -840,11 +840,13 @@ pub(crate) async fn delete_category_in(
         &AuditEvent::CategoryDeleted { category_id, name },
     )
     .await?;
-    let deleted = Event::CategoryDeleted {
-        workspace_id,
-        category_id,
-    };
-    events::publish(connection, now, &deleted).await
+    events::permissions_changed(
+        connection,
+        now,
+        Affected::Workspace(workspace_id),
+        Some(workspace_id),
+    )
+    .await
 }
 
 /// The role overrides of a channel.

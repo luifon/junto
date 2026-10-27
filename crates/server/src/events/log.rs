@@ -130,6 +130,7 @@ pub async fn tell_of_recording(
 /// Whose permissions a change can have altered.
 #[derive(Debug, Clone, Copy)]
 pub enum Affected {
+    Workspace(WorkspaceId),
     Account(AccountId),
     ServerRoleHolders(junto_protocol::ids::ServerRoleId),
     WorkspaceRoleHolders(WorkspaceId, WorkspaceRoleId),
@@ -145,6 +146,7 @@ pub async fn permissions_changed(
     workspace_id: Option<WorkspaceId>,
 ) -> ApiResult<()> {
     let audience = match affected {
+        Affected::Workspace(workspace_id) => Audience::Workspace { workspace_id },
         Affected::Account(account_id) => Audience::Account { account_id },
         Affected::ServerRoleHolders(role_id) => Audience::ServerRoleHolders { role_id },
         Affected::WorkspaceRoleHolders(workspace_id, role_id) => Audience::WorkspaceRoleHolders {

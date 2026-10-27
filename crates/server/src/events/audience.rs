@@ -9,7 +9,7 @@ use junto_protocol::account::AccountStatus;
 use junto_protocol::call::CallPlace;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{
-    AccountId, CallId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
+    AccountId, CallId, CategoryId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -228,6 +228,10 @@ pub enum Audience {
     },
     Workspace {
         workspace_id: WorkspaceId,
+    },
+    Category {
+        workspace_id: WorkspaceId,
+        category_id: CategoryId,
     },
     /// The members of the workspace who hold the role; every member for the "everyone" role.
     WorkspaceRoleHolders {
@@ -518,6 +522,7 @@ impl Audience {
             | Self::SystemMessage { workspace_id, .. }
             | Self::Mention { workspace_id, .. }
             | Self::Workspace { workspace_id }
+            | Self::Category { workspace_id, .. }
             | Self::WorkspaceRoleHolders { workspace_id, .. }
             | Self::Channel { workspace_id, .. }
             | Self::DeletedChannel { workspace_id, .. }
@@ -650,6 +655,7 @@ impl Audience {
             | Event::AccountRecovered { .. }
             | Event::PermissionsChanged { .. }
             | Event::ChannelDeleted { .. }
+            | Event::CategoryDeleted { .. }
             | Event::CallEntryRequested { .. }
             | Event::CallEntryResolved { .. }
             | Event::CallEntryAnswered { .. }
@@ -676,8 +682,7 @@ impl Audience {
                     permission: WorkspacePermission::ViewChannel,
                 })
             }
-            Event::CategoryDeleted { workspace_id, .. }
-            | Event::WorkspaceRoleDeleted { workspace_id, .. } => workspace(*workspace_id),
+            Event::WorkspaceRoleDeleted { workspace_id, .. } => workspace(*workspace_id),
             Event::GlossaryReplaced { workspace_id } => workspace(*workspace_id),
             Event::CallStarted { place, .. } | Event::CallEnded { place, .. } => {
                 Some(of_call(place, None))
@@ -726,7 +731,10 @@ impl Audience {
                 workspace(role.workspace_id)
             }
             Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
-                workspace(category.workspace_id)
+                Some(Self::Category {
+                    workspace_id: category.workspace_id,
+                    category_id: category.id,
+                })
             }
             Event::ChannelCreated { channel }
             | Event::ChannelUpdated { channel }
@@ -1025,6 +1033,7 @@ pub struct WorkspaceStanding {
     pub scope: WorkspaceScope,
     pub everyone_role_id: WorkspaceRoleId,
     pub channels: std::collections::HashMap<ChannelId, ChannelStanding>,
+    pub categories: HashMap<CategoryId, (ChannelScope, bool)>,
 }
 
 impl WorkspaceStanding {
@@ -1149,6 +1158,19 @@ pub fn receives<'a>(
         Audience::Workspace { .. } => {
             workspace.is_some_and(|standing| allows(Request::ViewWorkspace(&standing.scope)))
         }
+        Audience::Category { category_id, .. } => workspace.is_some_and(|standing| {
+            allows(Request::ViewWorkspace(&standing.scope))
+                && standing
+                    .categories
+                    .get(category_id)
+                    .is_some_and(|(scope, child)| {
+                        *child
+                            || allows(Request::Channel {
+                                scope,
+                                permission: WorkspacePermission::ManageChannel,
+                            })
+                    })
+        }),
         Audience::WorkspaceRoleHolders { role_id, .. } => workspace.is_some_and(|standing| {
             standing.holds(*role_id) && allows(Request::ViewWorkspace(&standing.scope))
         }),
@@ -1358,6 +1380,7 @@ mod tests {
             scope,
             everyone_role_id: place.everyone_role_id,
             channels: HashMap::from([(place.channel_id, channel)]),
+            categories: HashMap::new(),
         }
     }
 

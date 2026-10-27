@@ -596,9 +596,8 @@ async fn rule_d06_a_deleted_category_leaves_its_channels() {
     );
     assert_eq!(
         events_of(&server, &plain, &mut of_plain).await,
-        [Event::CategoryDeleted {
-            workspace_id: home.id,
-            category_id: projects.id
+        [Event::PermissionsChanged {
+            workspace_id: Some(home.id)
         }]
     );
     let entries = workspace_audit(&server, &owner, home.id).await;
