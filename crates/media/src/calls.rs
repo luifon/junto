@@ -1442,19 +1442,14 @@ impl<T: PartialEq + Clone> Reporter<T> {
         self.in_flight = true;
     }
 
-    /// The server states that it holds `value`. A wanted value that differs is sent again;
-    /// a statement during a request is not taken, since the request can change it.
+    /// Retains statements received during a request: a later reset can precede its answer.
     pub(crate) fn stated(&mut self, value: T) {
-        if !self.in_flight {
-            self.sent = Some(value);
-        }
+        self.sent = Some(value);
     }
 
     /// The events that state the value were lost: the wanted value is sent again.
     pub(crate) fn untold(&mut self) {
-        if !self.in_flight {
-            self.sent = None;
-        }
+        self.sent = None;
     }
 
     /// The request has ended. A value that the server did not take is sent again, not
@@ -3787,11 +3782,11 @@ mod tests {
         let mut reporter: Reporter<Option<u8>> = Reporter::holding(spacing, None);
         let start = Instant::now();
         reporter.sending(Some(1), start);
-        // A statement during the request is not taken.
+        // A reset after the report committed can precede its HTTP response.
         reporter.stated(None);
         reporter.done(true, REPORT_RETRY, start);
         let later = start + spacing;
-        assert_eq!(reporter.step(&Some(1), false, later), Step::Idle);
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
         // The server ended the watch: the wanted value is sent again.
         reporter.stated(None);
         assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
@@ -3799,6 +3794,24 @@ mod tests {
         reporter.done(true, REPORT_RETRY, later);
         reporter.stated(Some(1));
         assert_eq!(reporter.step(&Some(1), false, later + spacing), Step::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reload_during_a_report_resends_the_wanted_value() {
+        let spacing = Duration::from_millis(700);
+        let mut reporter = Reporter::holding(spacing, None);
+        let start = Instant::now();
+        reporter.sending(Some(1u8), start);
+        reporter.untold();
+        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Idle);
+        reporter.done(true, REPORT_RETRY, start);
+        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Send);
+        reporter.sending(Some(1), start + spacing);
+        reporter.done(true, REPORT_RETRY, start + spacing);
+        assert_eq!(
+            reporter.step(&Some(1), false, start + spacing * 2),
+            Step::Idle
+        );
     }
 
     #[test]
