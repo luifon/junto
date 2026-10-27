@@ -1024,7 +1024,7 @@ fn the_zone_of_the_newest_reading_is_shown_when_readings_end_in_another_order(
 /// Clippy refuses `chrono::Local` in a type position and in `use`, but not as a value
 /// (`chrono::Local.timestamp_opt(..)`, `with_timezone(&chrono::Local)`), and each of these
 /// reads `/etc/localtime` on the thread that asks (ADR 0730, ADR 0798). No file of the code
-/// of the crate uses the name `Local`.
+/// of the crate has the identifier `Local`.
 #[test]
 fn no_code_of_the_application_names_the_local_zone_of_chrono() {
     fn files(directory: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
@@ -1048,19 +1048,24 @@ fn no_code_of_the_application_names_the_local_zone_of_chrono() {
     let mut found = Vec::new();
     files(&package.join("src"), &mut found);
     assert!(found.len() > 50, "{found:?}");
+    // The identifiers of the code: a text or a comment that contains the word does not count.
+    fn names_local(tokens: proc_macro2::TokenStream) -> bool {
+        tokens.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(ident) => ident == "Local",
+            proc_macro2::TokenTree::Group(group) => names_local(group.stream()),
+            _ => false,
+        })
+    }
     let named: Vec<String> = found
         .iter()
-        .flat_map(|path| {
+        .filter(|path| {
             let text = std::fs::read_to_string(path).unwrap();
-            text.lines()
-                .enumerate()
-                .filter(|(_, line)| {
-                    line.split(|letter: char| !(letter.is_alphanumeric() || letter == '_'))
-                        .any(|word| word == "Local")
-                })
-                .map(|(number, line)| format!("{}:{}: {line}", path.display(), number + 1))
-                .collect::<Vec<_>>()
+            let tokens: proc_macro2::TokenStream = text
+                .parse()
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            names_local(tokens)
         })
+        .map(|path| path.display().to_string())
         .collect();
     assert!(
         named.is_empty(),
