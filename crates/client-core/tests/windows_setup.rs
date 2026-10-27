@@ -129,7 +129,7 @@ fn the_setup_installs_for_the_account_and_a_second_setup_replaces_the_folder() {
     let installed = setup::install(&first, &places, false, &system).unwrap();
     assert_eq!(installed.version, Version::new(0, 1, 0));
     assert_eq!(installed.replaced, None);
-    let folder = root.path().join("Local/Programs/Junto");
+    let folder = root.path().join("Local").join("Programs").join("Junto");
     assert_eq!(places.folder(), folder);
     assert_eq!(
         fs::read_to_string(folder.join("junto.exe")).unwrap(),
@@ -157,11 +157,14 @@ fn the_setup_installs_for_the_account_and_a_second_setup_replaces_the_folder() {
     assert_eq!(value("DisplayVersion"), "0.1.0");
     assert_eq!(
         value("UninstallString"),
-        format!("\"{}\"", folder.join("uninstall.exe").display())
+        format!("\"{}\" --uninstall", folder.join("uninstall.exe").display())
     );
     assert_eq!(
         value("QuietUninstallString"),
-        format!("\"{}\" --quiet", folder.join("uninstall.exe").display())
+        format!(
+            "\"{}\" --uninstall --quiet",
+            folder.join("uninstall.exe").display()
+        )
     );
     assert!(entry.numbers.contains(&("NoModify", 1)));
     // The update directory of ADR 0726 holds no staging directory after the setup.
@@ -210,7 +213,9 @@ fn the_removal_takes_away_every_part_and_keeps_the_data_unless_asked() {
     assert!(system.entry.borrow().is_none());
     assert_eq!(*system.unregistered.borrow(), 1);
     assert!(places.data.join("book.json").is_file());
-    // A second removal finds nothing and succeeds; with the data it removes the data.
+    // A second removal refuses an absent installation; a new installation can remove data.
+    assert!(setup::uninstall(&places, true, &system).is_err());
+    setup::install(&archive, &places, false, &system).unwrap();
     setup::uninstall(&places, true, &system).unwrap();
     assert!(!places.data.exists());
 }
@@ -228,8 +233,8 @@ fn a_copy_extracted_elsewhere_keeps_the_entries_of_the_installation_of_the_setup
         &root.path().join("Local"),
         &root.path().join("Roaming"),
     );
-    fs::create_dir_all(other.folder()).unwrap();
-    fs::write(other.folder().join("junto.exe"), "copy").unwrap();
+    fs::create_dir_all(other.programs()).unwrap();
+    fs::rename(package(root.path(), "0.2.0").join("Junto"), other.folder()).unwrap();
     setup::uninstall(&other, false, &system).unwrap();
     assert!(!other.folder().exists());
     assert!(system.entry.borrow().is_some());
@@ -250,4 +255,17 @@ fn a_folder_that_a_person_extracted_elsewhere_has_its_update_directory_beside_it
         root.path().join("Apps/.Junto copy.junto-update")
     );
     assert_eq!(places.data, root.path().join("Local/Junto"));
+}
+
+#[test]
+fn uninstall_refuses_a_folder_without_a_windows_installation() {
+    let root = tempfile::tempdir().unwrap();
+    let places = places(root.path());
+    let system = Recorded::default();
+    fs::create_dir_all(places.folder()).unwrap();
+    let personal = places.folder().join("personal.txt");
+    fs::write(&personal, "keep").unwrap();
+    assert!(setup::uninstall(&places, true, &system).is_err());
+    assert_eq!(fs::read_to_string(personal).unwrap(), "keep");
+    assert_eq!(*system.unregistered.borrow(), 0);
 }

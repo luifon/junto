@@ -226,10 +226,13 @@ pub fn uninstall_entry(places: &Places, version: Version, bytes: u64) -> Uninsta
                 format!("{},0", folder.join(PROGRAM).display()),
             ),
             ("InstallLocation", folder.display().to_string()),
-            ("UninstallString", format!("\"{}\"", uninstaller.display())),
+            (
+                "UninstallString",
+                format!("\"{}\" --uninstall", uninstaller.display()),
+            ),
             (
                 "QuietUninstallString",
-                format!("\"{}\" --quiet", uninstaller.display()),
+                format!("\"{}\" --uninstall --quiet", uninstaller.display()),
             ),
         ],
         numbers: vec![
@@ -357,6 +360,26 @@ fn finish(updates: &Path, stage: &Path) {
     }
 }
 
+/// Refuses removal unless the folder holds a complete Windows installation.
+pub fn validate_removal(places: &Places) -> std::io::Result<()> {
+    let invalid = || std::io::Error::other("this folder is not a Junto Windows installation");
+    let folder = &places.folder;
+    if !fs::symlink_metadata(folder)?.is_dir() || described(folder).is_err() {
+        return Err(invalid());
+    }
+    for name in [
+        PROGRAM,
+        UNINSTALLER,
+        "junto-recover.exe",
+        install::DESCRIPTION,
+    ] {
+        if !fs::symlink_metadata(folder.join(name))?.is_file() {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
 /// Removes Junto from the account: the registration of its notifications, the folder and
 /// the directory of its updates, and with `remove_data` the data directory. The Start menu
 /// entry and the entry of the list of installed programs are removed when the entry names
@@ -368,6 +391,7 @@ pub fn uninstall(
     remove_data: bool,
     system: &impl SetupSystem,
 ) -> std::io::Result<()> {
+    validate_removal(places)?;
     let absent = |result: std::io::Result<()>| match result {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,

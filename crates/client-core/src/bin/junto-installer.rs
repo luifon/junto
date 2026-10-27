@@ -1,6 +1,6 @@
 //! The setup program of Windows and the uninstall program of the installed folder
 //! (ADR 0728). With an archive at its end it installs Junto for the account and starts it;
-//! without one, as `uninstall.exe` of the folder, it removes Junto. It opens no console.
+//! with `--uninstall`, as `uninstall.exe` of the folder, it removes Junto. It opens no console.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -32,9 +32,10 @@ mod windows_main {
     const TITLE: &str = "Junto";
     const USAGE: &str =
         "usage: Junto-<version>-windows-x86_64-setup.exe [--quiet] [--no-start] [--allow-older]
-       uninstall.exe [--quiet] [--remove-data]";
+       uninstall.exe --uninstall [--quiet] [--remove-data]";
 
     struct Options {
+        uninstall: bool,
         quiet: bool,
         no_start: bool,
         allow_older: bool,
@@ -46,6 +47,7 @@ mod windows_main {
 
     fn options() -> Result<Options, String> {
         let mut options = Options {
+            uninstall: false,
             quiet: false,
             no_start: false,
             allow_older: false,
@@ -55,6 +57,7 @@ mod windows_main {
         let mut arguments = std::env::args_os().skip(1);
         while let Some(argument) = arguments.next() {
             match argument.to_str() {
+                Some("--uninstall") => options.uninstall = true,
                 Some("--quiet") => options.quiet = true,
                 Some("--no-start") => options.no_start = true,
                 Some("--allow-older") => options.allow_older = true,
@@ -69,6 +72,9 @@ mod windows_main {
                 }
                 _ => return Err(USAGE.to_owned()),
             }
+        }
+        if options.copy_of.is_some() && !options.uninstall {
+            return Err("--from-copy requires --uninstall".to_owned());
         }
         Ok(options)
     }
@@ -109,10 +115,10 @@ mod windows_main {
         };
         let result = if let Some((process, folder)) = options.copy_of.clone() {
             remove_as_copy(&options, process, &folder, &program)
-        } else if setup::holds_payload(&program) {
-            install(&options, &program)
-        } else {
+        } else if options.uninstall {
             uninstall(&options, &program)
+        } else {
+            install(&options, &program)
         };
         match result {
             Ok(()) => ExitCode::SUCCESS,
@@ -162,6 +168,7 @@ mod windows_main {
             .to_owned();
         let (local, roaming) = account()?;
         let places = Places::of_folder(&folder, &local, &roaming);
+        setup::validate_removal(&places).map_err(|error| error.to_string())?;
         let mut remove_data = options.remove_data;
         if !options.quiet {
             let text = "Remove Junto from this account? This removes the program, its Start menu entry and its entry in the list of installed programs.";
@@ -182,6 +189,7 @@ mod windows_main {
             .map_err(|error| format!("Junto was not removed: {error}."))?;
         let process = std::process::id().to_string();
         let mut arguments: Vec<&OsStr> = vec![
+            OsStr::new("--uninstall"),
             OsStr::new("--from-copy"),
             OsStr::new(&process),
             folder.as_os_str(),

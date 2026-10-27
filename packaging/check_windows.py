@@ -244,6 +244,21 @@ class Check:
         left = [path.name for path in update.iterdir() if path.name.startswith(("stage-", "finished-"))]
         expect(not left, f"staging directories were left: {left}")
 
+    @step("damaged setup programs refuse removal and preserve their containing folder")
+    def damaged_setup(self):
+        directory = self.root / "downloads"
+        directory.mkdir()
+        sentinel = directory / "personal.txt"
+        sentinel.write_text("keep")
+        for name, content in [("truncated.exe", self.setup.read_bytes()[:-10]),
+                              ("missing.exe", (TARGET / "junto-installer.exe").read_bytes())]:
+            program = directory / name
+            program.write_bytes(content)
+            for arguments in (["--quiet"], ["--uninstall", "--quiet"]):
+                result = ran([program, *arguments])
+                expect(result.returncode != 0, "a damaged setup program accepted removal", result)
+                expect(sentinel.read_text() == "keep", "the containing folder was removed")
+
     @step("the setup program installs for the account, and its uninstall program removes it (ADR 0728)")
     def setup_program(self):
         expect(windows.subsystem(self.setup.read_bytes()) == windows.WINDOWS_SUBSYSTEM,
@@ -268,7 +283,7 @@ class Check:
                 entry = window_frame.uninstall_entry()
                 expect(entry is not None, "the setup program wrote no entry of the installed programs")
                 expect(entry["DisplayVersion"][0] == "1.0.0", f"the entry states {entry}")
-                expect(entry["UninstallString"][0] == f'"{folder / "uninstall.exe"}"', f"the entry states {entry}")
+                expect(entry["UninstallString"][0] == f'"{folder / "uninstall.exe"}" --uninstall', f"the entry states {entry}")
                 expect(entry["InstallLocation"][0] == str(folder), f"the entry states {entry}")
                 # The program states the version of its build, not the version of the test package.
                 result = ran([folder / "junto.exe", "--version"], env=environment)
@@ -281,7 +296,7 @@ class Check:
                 data = local / "Junto"
                 data.mkdir(exist_ok=True)
                 (data / "kept.txt").write_text("data")
-                arguments = [folder / "uninstall.exe", "--quiet"] + (["--remove-data"] if remove_data else [])
+                arguments = [folder / "uninstall.exe", "--uninstall", "--quiet"] + (["--remove-data"] if remove_data else [])
                 result = ran(arguments, env=environment, timeout=60)
                 expect(result.returncode == 0, "the uninstall program failed", result)
                 # A copy outside the folder removes it after the uninstall program ended, then
