@@ -985,7 +985,7 @@ async fn role_order_setup_binary() {
 async fn role_order_bounds_and_server_constraint() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
-    sqlx::query("insert into server_roles (id, name, permissions, created_at, position) select gen_random_uuid(), 'role', 0, now(), n from generate_series(1, 251) n").execute(&server.db).await.unwrap();
+    sqlx::query("insert into server_roles (id, name, permissions, created_at, position) select gen_random_uuid(), 'role', 0, now(), n from generate_series(1, 251) n").execute(&mut server.test_data().await).await.unwrap();
     server
         .post(
             &owner,

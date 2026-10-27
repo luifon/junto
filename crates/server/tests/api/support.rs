@@ -46,12 +46,6 @@ pub fn package_directory() -> PathBuf {
         .unwrap_or_else(|| panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test"))
 }
 
-pub fn fixture_batches(rows: i32) -> impl Iterator<Item = (i32, i32)> {
-    (1..=rows)
-        .step_by(500)
-        .map(move |first| (first, (first + 499).min(rows)))
-}
-
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 
 /// The public origin of every test server: the address that a device connected to and signs.
@@ -781,6 +775,20 @@ impl TestServer {
     /// The options of the database of this server.
     pub fn database_options(&self) -> PgConnectOptions {
         self.database.clone()
+    }
+
+    /// A connection to the database of this server without the time limits of a request,
+    /// for the inserts of large test data; the queries under test use `db` (ADR 0904).
+    pub async fn test_data(&self) -> sqlx::PgConnection {
+        let mut connection = self.database.connect().await.unwrap();
+        for limit in [
+            "set statement_timeout = 0",
+            "set lock_timeout = 0",
+            "set idle_in_transaction_session_timeout = 0",
+        ] {
+            sqlx::query(limit).execute(&mut connection).await.unwrap();
+        }
+        connection
     }
 
     /// Connects to the database of this server as a server process with a changed

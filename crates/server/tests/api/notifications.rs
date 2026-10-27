@@ -745,7 +745,7 @@ async fn fix_notice_maintenance_keeps_only_the_newest_500_and_90_days() {
              notifications(id,account_id,message_id,kind,created_at) select id,$2,id, 'thread' ,created_at from copied")
         .bind(recent.id)
         .bind(reader.account_id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     // Three empty retention transactions, the age trim, then one cap batch.

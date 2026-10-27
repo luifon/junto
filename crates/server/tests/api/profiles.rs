@@ -465,7 +465,7 @@ async fn profile_metadata_reads_follow_the_members() {
         "insert into accounts(id,name,status,created_at)
         select lpad(to_hex(i),32,'0')::uuid,'Other','active',now() from generate_series(1,10000) i",
     )
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query("insert into account_avatars(account_id,media_type,content,hash,width,height,updated_at)

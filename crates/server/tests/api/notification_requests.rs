@@ -241,32 +241,31 @@ async fn marking_all_read_reads_the_index_of_unread_notices() {
          returning id",
     )
     .bind(server.clock.now())
-    .fetch_all(&server.db)
+    .fetch_all(&mut server.test_data().await)
     .await
     .unwrap();
-    for (first, last) in crate::support::fixture_batches(2_000) {
-        sqlx::query(
-            "with copies as (
-             insert into messages (id, place_id, position, author_id, created_at, document)
-             select gen_random_uuid(), place_id, position + n, author_id, created_at, document
-             from messages cross join generate_series($4::int, $5::int) n where id = $1
-             returning id, created_at),
-         people as (select unnest($3::uuid[]) as id),
-         theirs as (
-             insert into notifications (id, account_id, message_id, kind, created_at)
-             select c.id, p.id, c.id, 'message', c.created_at from copies c cross join people p)
-         insert into notifications (id, account_id, message_id, kind, created_at, read_at)
-         select id, $2, id, 'message', created_at, created_at from copies",
-        )
-        .bind(root.id)
-        .bind(reader.account_id)
-        .bind(&others)
-        .bind(first)
-        .bind(last)
-        .execute(&server.db)
-        .await
-        .unwrap();
-    }
+    let (first, last) = (1, 2_000);
+    sqlx::query(
+        "with copies as (
+         insert into messages (id, place_id, position, author_id, created_at, document)
+         select gen_random_uuid(), place_id, position + n, author_id, created_at, document
+         from messages cross join generate_series($4::int, $5::int) n where id = $1
+         returning id, created_at),
+     people as (select unnest($3::uuid[]) as id),
+     theirs as (
+         insert into notifications (id, account_id, message_id, kind, created_at)
+         select c.id, p.id, c.id, 'message', c.created_at from copies c cross join people p)
+     insert into notifications (id, account_id, message_id, kind, created_at, read_at)
+     select id, $2, id, 'message', created_at, created_at from copies",
+    )
+    .bind(root.id)
+    .bind(reader.account_id)
+    .bind(&others)
+    .bind(first)
+    .bind(last)
+    .execute(&mut server.test_data().await)
+    .await
+    .unwrap();
     analyze(&server.db, &["notifications", "messages"]).await;
 
     let statement = junto_server::messages::notifications::mark_all_read_statement();
@@ -1332,7 +1331,7 @@ async fn the_read_boundary_is_an_indexed_account_lookup() {
     let owner = server.owner().await;
     mark_all(&server, &owner, json!({})).await;
     sqlx::query("with people as (insert into accounts(id,name,status,created_at) select gen_random_uuid(),'filler','active',$1 from generate_series(1,10000) returning id) insert into notification_read_boundaries(account_id,read_until,read_at) select id,$1,$1 from people")
-        .bind(server.clock.now()).execute(&server.db).await.unwrap();
+        .bind(server.clock.now()).execute(&mut server.test_data().await).await.unwrap();
     analyze(&server.db, &["notification_read_boundaries"]).await;
     let plan: Value = sqlx::query_scalar(explained(
         "select read_at from notification_read_boundaries where account_id=$1 and read_until >= $2",

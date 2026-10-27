@@ -354,7 +354,7 @@ async fn rule_60_concurrent_pins_preserve_limit_and_rollback_refused_events() {
              generate_series(1,99) n where id=$1 returning id,place_id,author_id,created_at) insert into message_pins
              select id,place_id,author_id,created_at from copied")
         .bind(root.id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     sqlx::query("update message_places set head=head+99 where id=$1")

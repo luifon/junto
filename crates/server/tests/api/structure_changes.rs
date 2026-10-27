@@ -828,7 +828,7 @@ async fn rule_25_each_change_keeps_the_limits_of_its_own_route() {
     .bind(workspace.id.as_uuid())
     .bind(server.clock.now())
     .bind(most - 6)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     let revision = server.structure(&owner).await.revision;
@@ -1240,7 +1240,7 @@ async fn rule_29_the_export_runs_a_fixed_number_of_statements_and_skips_deleted_
          select gen_random_uuid(), 'w' || n, $1 from generate_series(1, 40) as n",
     )
     .bind(server.clock.now())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query(
@@ -1251,7 +1251,7 @@ async fn rule_29_the_export_runs_a_fixed_number_of_statements_and_skips_deleted_
     )
     .bind(workspace.id)
     .bind(server.clock.now())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query("analyze").execute(&server.db).await.unwrap();

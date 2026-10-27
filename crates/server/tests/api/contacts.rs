@@ -345,7 +345,7 @@ async fn the_contacts_of_a_member_read_the_candidates_and_not_the_hidden_account
          select lpad(to_hex(i),32,'0')::uuid,'Hidden','active',now()
          from generate_series(1,10000) i",
     )
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query(

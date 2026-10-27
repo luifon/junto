@@ -420,7 +420,8 @@ async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let mut stream = server.subscribed(&owner, Level::Full).await;
-    let mut transaction = server.db.begin().await.unwrap();
+    let mut data = server.test_data().await;
+    let mut transaction = sqlx::Connection::begin(&mut data).await.unwrap();
     let event = Event::DeviceRenamed {
         device_id: owner.device_id,
         name: "many".to_owned(),

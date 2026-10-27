@@ -275,7 +275,7 @@ async fn two_requests_that_together_pass_a_ceiling_do_not_both_commit() {
     .bind(workspace.id)
     .bind(guest.account_id)
     .bind(most_held - 1)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     let path = |role: &WorkspaceRole| {
@@ -318,7 +318,7 @@ async fn two_requests_that_together_pass_a_ceiling_do_not_both_commit() {
     )
     .bind(workspace.id)
     .bind(most_roles - existing - 1)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
 

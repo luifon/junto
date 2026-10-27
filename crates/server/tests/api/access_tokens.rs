@@ -202,7 +202,7 @@ async fn rule_04_a_creator_holds_at_most_one_hundred_tokens() {
     .bind(owner.account_id)
     .bind(server.clock.now())
     .bind(server.clock.now() + Duration::days(1))
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
 
@@ -937,7 +937,7 @@ async fn rule_16_the_statements_of_tokens_read_through_indexes() {
     .bind(owner.account_id)
     .bind(server.clock.now())
     .bind(server.clock.now() + Duration::days(1))
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query("analyze access_tokens")

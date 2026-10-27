@@ -826,20 +826,19 @@ async fn the_unread_count_reads_missed_calls_by_an_index() {
             .fetch_all(&server.db)
             .await
             .unwrap();
-    for (first, last) in crate::support::fixture_batches(20_000) {
-        sqlx::query(
-            "insert into messages (id, place_id, position, created_at, system, notifies)
-         select gen_random_uuid(), m.place_id, m.position + n, m.created_at, m.system, m.notifies
-         from messages m cross join generate_series($2::int, $3::int) n
-         where m.id = any($1)",
-        )
-        .bind(&originals)
-        .bind(first)
-        .bind(last)
-        .execute(&server.db)
-        .await
-        .unwrap();
-    }
+    let (first, last) = (1, 20_000);
+    sqlx::query(
+        "insert into messages (id, place_id, position, created_at, system, notifies)
+     select gen_random_uuid(), m.place_id, m.position + n, m.created_at, m.system, m.notifies
+     from messages m cross join generate_series($2::int, $3::int) n
+     where m.id = any($1)",
+    )
+    .bind(&originals)
+    .bind(first)
+    .bind(last)
+    .execute(&mut server.test_data().await)
+    .await
+    .unwrap();
     analyze(&server.db, &["messages"]).await;
 
     assert_eq!(

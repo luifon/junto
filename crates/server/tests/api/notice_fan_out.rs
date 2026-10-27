@@ -65,7 +65,7 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
     .bind(room.workspace_id)
     .bind(first.state.now())
     .bind(members)
-    .execute(&first.db)
+    .execute(&mut first.test_data().await)
     .await
     .unwrap();
     first
