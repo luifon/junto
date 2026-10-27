@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, ElementId, InteractiveElement, IntoElement,
@@ -64,6 +65,13 @@ impl MovedControls {
     }
 }
 
+/// The longest time that a change of height waits for the pointer: then it takes effect
+/// with the pointer where it is (review M1).
+pub const WAIT_BOUND: Duration = Duration::from_millis(1000);
+/// After a change that took effect under a resting pointer, a press in the part that it
+/// moved is refused for this time: the person aimed at what was there before.
+pub const MOVED_GUARD: Duration = Duration::from_millis(400);
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Heights {
     /// The height that the part has on the screen; none before its first drawing.
@@ -76,6 +84,13 @@ struct Heights {
     changes: u8,
     /// A button of the pointer is pressed: a change waits until it is released.
     pressed: bool,
+    /// The number of the wait that a timer bounds, while a change waits.
+    waiting: Option<u32>,
+    waits: u32,
+    /// The timer of the wait ended: the change takes effect where the pointer is.
+    due: bool,
+    /// When a change last took effect under the pointer, on the clock of the executor.
+    moved_at: Option<Instant>,
 }
 
 /// The most frames in a row in which a part asks for a new frame to change its height. Two
@@ -249,14 +264,23 @@ impl RenderOnce for Held {
                         let resized = now.window.is_some_and(|before| before != size);
                         now.window = Some(size);
                         // A change waits while a button of the pointer is pressed: a press
-                        // ends on the control where it started.
+                        // ends on the control where it started. It waits for the pointer at
+                        // most `WAIT_BOUND`, and not at all in a window that is not active.
+                        let covered = moves.covers(bounds, window.mouse_position());
                         if now.shown == Some(target) {
                             now.changes = 0;
+                            now.waiting = None;
+                            now.due = false;
                         } else if now.shown.is_none()
                             || resized
                             || (grows_at_once && now.shown.is_some_and(|shown| target > shown))
-                            || (!now.pressed && !moves.covers(bounds, window.mouse_position()))
+                            || (!now.pressed && (!covered || now.due || !window.is_window_active()))
                         {
+                            if covered && now.shown.is_some() {
+                                now.moved_at = Some(cx.background_executor().now());
+                            }
+                            now.waiting = None;
+                            now.due = false;
                             now.shown = Some(target);
                             now.changes = now.changes.saturating_add(1);
                             // At its first drawing the part was laid out at the height of
@@ -272,15 +296,45 @@ impl RenderOnce for Held {
                                 record::unsettled(&id);
                             }
                         }
+                        if now.shown != Some(target) && now.waiting.is_none() {
+                            now.waits = now.waits.wrapping_add(1);
+                            let wait = now.waits;
+                            now.waiting = Some(wait);
+                            let bound = decided.clone();
+                            window
+                                .spawn(cx, async move |cx| {
+                                    cx.background_executor().timer(WAIT_BOUND).await;
+                                    let _ = cx.update(|window, _| {
+                                        let mut now = bound.get();
+                                        if now.waiting == Some(wait) {
+                                            now.due = true;
+                                            bound.set(now);
+                                            window.refresh();
+                                        }
+                                    });
+                                })
+                                .detach();
+                        }
                         decided.set(now);
                         bounds
                     },
                     move |_, bounds, window, _| {
                         let moves = waits.clone();
                         let pressing = waiting.clone();
-                        window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
+                        let guarded = moves.clone();
+                        window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {
                                 let mut now = pressing.get();
+                                // A press just after a change moved the part under a resting
+                                // pointer is refused.
+                                let moved = now.moved_at.is_some_and(|at| {
+                                    cx.background_executor().now().saturating_duration_since(at)
+                                        < MOVED_GUARD
+                                });
+                                if moved && guarded.covers(bounds, event.position) {
+                                    cx.stop_propagation();
+                                    return;
+                                }
                                 now.pressed = true;
                                 pressing.set(now);
                             }
@@ -307,6 +361,8 @@ impl RenderOnce for Held {
                                 && event.pressed_button.is_none()
                                 && !moves.covers(bounds, event.position)
                             {
+                                now.waiting = None;
+                                now.due = false;
                                 now.shown = Some(target);
                                 waiting.set(now);
                                 window.refresh();

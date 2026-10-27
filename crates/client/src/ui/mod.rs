@@ -45,7 +45,7 @@ pub use fit::Fit;
 pub use form_space::{FormSpace, NewRow};
 #[cfg(feature = "test-support")]
 pub use held::take_unsettled;
-pub use held::{Held, MovedControls, Moves, held};
+pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};

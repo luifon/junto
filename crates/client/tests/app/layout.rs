@@ -79,7 +79,8 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
         .cx
         .debug_bounds(crate::harness::selector(selector.clone()))
         .unwrap();
-    // The person points at the control when the notice arrives.
+    // The person points at the control of the active window when the notice arrives.
+    window.cx.update(|window, _| window.activate_window());
     window.move_pointer(before.center());
     world
         .run(api.remove_workspace_member(other.id, own, &Statement::default()))
@@ -108,6 +109,103 @@ fn moderation_notice_keeps_controls(cx: &mut TestAppContext, direct: bool) {
         );
         assert!(moved.top() > viewport.top());
     }
+}
+
+/// A window with a channel of 30 messages, the pointer resting on its message list, and a
+/// late moderation notice that waits for the pointer above the list.
+fn notice_under_a_resting_pointer(
+    cx: &mut TestAppContext,
+    active: bool,
+) -> (
+    World,
+    impl Sized,
+    crate::harness::Window,
+    gpui::Bounds<gpui::Pixels>,
+) {
+    let world = World::new();
+    let server = world.server("Layout");
+    let admin = world.owner(&server);
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let api = admin.handle.api();
+    let own = window.own_account();
+    let other = world.run(api.create_workspace("Other".to_owned())).unwrap();
+    world.run(api.add_workspace_member(other.id, own)).unwrap();
+    window.until("both workspaces are shown", |window| {
+        window.view().servers[0].workspaces.len() == 2
+    });
+    let channel = window.selected_channel();
+    for index in 0..30 {
+        admin.send(&world, channel, document(&format!("Message {index}")));
+    }
+    window.until_message("Message 29");
+    let viewport = window.cx.debug_bounds("message-list").unwrap();
+    // A change waits for the pointer only in the active window (review M1).
+    if active {
+        window.cx.update(|window, _| window.activate_window());
+    } else {
+        window.simulate(|cx| cx.deactivate_window());
+    }
+    window.move_pointer(viewport.center());
+    world
+        .run(api.remove_workspace_member(other.id, own, &Statement::default()))
+        .unwrap();
+    window.until("the late notice is drawn", |window| {
+        window.shows("moderation-notice")
+    });
+    window.settle();
+    (world, directory, window, viewport)
+}
+
+/// A late notice waits for the pointer at most a bound (review M1): with the pointer resting
+/// on the message list, the notice takes its place above the list after the bound. A press
+/// at once after that move is refused, and the same press later goes to its control.
+#[gpui::test]
+fn a_late_notice_takes_its_place_after_a_bound_while_the_pointer_rests(cx: &mut TestAppContext) {
+    let (_world, _directory, mut window, viewport) = notice_under_a_resting_pointer(cx, true);
+    assert_eq!(
+        window.cx.debug_bounds("message-list").unwrap(),
+        viewport,
+        "the notice waits while the pointer rests on the list"
+    );
+    window
+        .cx
+        .executor()
+        .advance_clock(junto_client::ui::WAIT_BOUND + std::time::Duration::from_millis(50));
+    window.settle();
+    let moved = window.cx.debug_bounds("message-list").unwrap();
+    let notice = window.cx.debug_bounds("moderation-notice").unwrap();
+    assert!(
+        moved.top() >= notice.bottom() && moved.top() > viewport.top(),
+        "after the bound the notice {notice:?} takes its place above the list {moved:?}"
+    );
+    let seen = window.cx.debug_bounds("moderation-seen").unwrap().center();
+    window.press_at(seen, gpui::MouseButton::Left);
+    window.settle();
+    assert!(
+        window.shows("moderation-notice"),
+        "a press at once after the move reached the control that moved under the pointer"
+    );
+    window
+        .cx
+        .executor()
+        .advance_clock(junto_client::ui::MOVED_GUARD);
+    window.press_at(seen, gpui::MouseButton::Left);
+    window.until("the notice is put away", |window| {
+        !window.shows("moderation-notice")
+    });
+}
+
+/// A window that is not active shows a late notice at once: its last pointer position is not
+/// a person pointing at the list (review M1).
+#[gpui::test]
+fn a_window_that_is_not_active_shows_a_late_notice_at_once(cx: &mut TestAppContext) {
+    let (_world, _directory, mut window, viewport) = notice_under_a_resting_pointer(cx, false);
+    let moved = window.cx.debug_bounds("message-list").unwrap();
+    let notice = window.cx.debug_bounds("moderation-notice").unwrap();
+    assert!(
+        moved.top() >= notice.bottom() && moved.top() > viewport.top(),
+        "the notice {notice:?} takes its place above the list {moved:?} at once"
+    );
 }
 
 /// A system line longer than the message list is wide wraps inside the list, at every width

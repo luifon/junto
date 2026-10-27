@@ -1463,7 +1463,9 @@ fn a_late_entry_notice_waits_while_the_pointer_is_on_the_call_tile(cx: &mut Test
         .cx
         .debug_bounds(crate::harness::selector(selector.clone()))
         .unwrap();
-    // The pointer rests on the tile: the notice waits, and the tile keeps its place.
+    // The pointer rests on the tile of the active window: the notice waits, and the tile
+    // keeps its place.
+    scene.window.cx.update(|window, _| window.activate_window());
     scene.window.move_pointer(before.center());
     scene
         .world
