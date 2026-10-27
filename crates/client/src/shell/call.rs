@@ -2090,8 +2090,9 @@ impl Shell {
     pub(crate) fn open_call_panel(&mut self, cx: &mut Context<Self>) {
         self.call_panel_open = true;
         let detached = self.detached;
-        self.state
-            .update(cx, |state, cx| state.set_call_panel_closed(detached, false, cx));
+        self.state.update(cx, |state, cx| {
+            state.set_call_panel_closed(detached, false, cx)
+        });
         cx.notify();
     }
 
@@ -2101,8 +2102,9 @@ impl Shell {
             self.call_panel_open = false;
         } else {
             let detached = self.detached;
-            self.state
-                .update(cx, |state, cx| state.set_call_panel_closed(detached, true, cx));
+            self.state.update(cx, |state, cx| {
+                state.set_call_panel_closed(detached, true, cx)
+            });
         }
         cx.notify();
     }

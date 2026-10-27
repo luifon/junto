@@ -169,7 +169,10 @@ fn the_panel_of_a_call_closes_and_opens_again_and_stays_closed_after_a_restart(
 
     window.click("close-call-panel");
     window.until("the panel is closed", |window| !window.shows("call-panel"));
-    assert!(width(&mut window, "call-stage") > stage, "the stage keeps its width");
+    assert!(
+        width(&mut window, "call-stage") > stage,
+        "the stage keeps its width"
+    );
     assert!(window.shows("open-call-chat"));
     assert_eq!(
         window
@@ -180,16 +183,18 @@ fn the_panel_of_a_call_closes_and_opens_again_and_stays_closed_after_a_restart(
     // A message of the chat while the panel is closed is counted on its button.
     admin.send(&world, daily, document("Are we starting?"));
     window.until("the chat button counts the message", |window| {
-        window
-            .feed()
-            .is_some_and(|feed| feed.unread == 1)
+        window.feed().is_some_and(|feed| feed.unread == 1)
     });
     assert!(window.shows("open-call-chat"));
 
     window.click("open-call-chat");
-    window.until("the panel is open again", |window| window.shows("call-panel"));
+    window.until("the panel is open again", |window| {
+        window.shows("call-panel")
+    });
     window.click("close-call-panel");
-    window.until("the panel is closed again", |window| !window.shows("call-panel"));
+    window.until("the panel is closed again", |window| {
+        !window.shows("call-panel")
+    });
     window.run_tasks();
     let stored = std::fs::read_to_string(directory.path().join("junto").join("settings.json"))
         .expect("the settings are written");
@@ -198,7 +203,9 @@ fn the_panel_of_a_call_closes_and_opens_again_and_stays_closed_after_a_restart(
 
     let mut window = open(cx, directory.path());
     window.until_ready();
-    assert!(window
-        .state
-        .read_with(&window.cx, |state, _| state.call_panel_closed(false)));
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.call_panel_closed(false))
+    );
 }
