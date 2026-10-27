@@ -306,3 +306,45 @@ async fn a_pin_and_a_rename_have_lines_and_renames_in_a_row_are_one_line() {
         3
     );
 }
+
+/// A device that runs several shares ends each with its slot: each start and each end has
+/// its line (ADR 0510).
+#[tokio::test]
+async fn each_share_that_ends_by_its_slot_has_its_line() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let start = latest(server, ann, voice).await;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    for slot in [0, 1] {
+        let report = json!({
+            "audio": "none",
+            "slot": slot,
+            "kind": "screen",
+            "share_id": uuid::Uuid::now_v7(),
+        });
+        server
+            .put(ben, "/api/v1/call/screen-share", &report)
+            .await
+            .empty(StatusCode::NO_CONTENT);
+    }
+    for slot in [0, 1] {
+        server
+            .delete(ben, &format!("/api/v1/call/screen-share?slot={slot}"))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+    }
+    let ben_id = Some(ben.account_id);
+    assert_eq!(
+        lines_after(server, ann, voice, start).await,
+        [
+            line("call_started", Some(ann.account_id), None),
+            line("person_joined", ben_id, None),
+            line("screen_share_started", ben_id, None),
+            line("screen_share_started", ben_id, None),
+            line("screen_share_ended", ben_id, None),
+            line("screen_share_ended", ben_id, None),
+        ]
+    );
+}

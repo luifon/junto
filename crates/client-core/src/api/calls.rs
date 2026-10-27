@@ -99,11 +99,12 @@ impl ServerApi {
 
     /// Reports the end of the share in `slot`, or of every share of the person without one.
     pub async fn end_screen_share(&self, slot: Option<u8>) -> Result<(), ApiError> {
-        let path = match slot {
-            Some(slot) => format!("/call/screen-share?slot={slot}"),
-            None => "/call/screen-share".to_owned(),
-        };
-        self.act(Method::Delete, path).await
+        let query = slot
+            .map(|slot| vec![("slot", slot.to_string())])
+            .unwrap_or_default();
+        self.call(Method::Delete, "/call/screen-share".to_owned(), query, None)
+            .await
+            .map(|_| ())
     }
 
     /// Reports which share of another person the person watches now, or none (ADR 0502).
@@ -523,6 +524,22 @@ mod tests {
             timeline_started_at: Some(at),
             transcript: TranscriptState::Ready,
             transcript_lines: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_end_of_one_share_names_its_slot_in_the_query() {
+        for (slot, query) in [(Some(1), Some("slot=1")), (None, None)] {
+            let (seen, api) = server(&serde_json::Value::Null);
+            api.end_screen_share(slot).await.unwrap();
+            assert_eq!(
+                seen.request(),
+                (
+                    Method::Delete,
+                    "/api/v1/call/screen-share".to_owned(),
+                    query.map(str::to_owned)
+                )
+            );
         }
     }
 
