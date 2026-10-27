@@ -341,8 +341,12 @@ async fn review2_actual_audit_queries_bound_time_ranges_and_combined_filters() {
     let other = server.join(&owner, "Other").await;
     let workspace = server.default_workspace(&owner).await;
     let channel = server.channel(&owner, workspace.id, "text").await;
-    sqlx::query("insert into audit_entries(id,occurred_at,actor_id,workspace_id,channel_id,action,event) select ('00000000-0000-7000-8000-'||lpad(to_hex(n),12,'0'))::uuid,$1 - case when n>5000 then interval '60 days' else interval '1 day' end,case when n%2=0 then $2 else $3 end,$4,$5,case when n%2=0 then 'channel_created' else 'channel_updated' end,jsonb_build_object('action',case when n%2=0 then 'channel_created' else 'channel_updated' end,'name','example') from generate_series(1,10000) n")
-        .bind(server.clock.now()).bind(owner.account_id).bind(other.account_id).bind(workspace.id).bind(channel.id).execute(&server.db).await.unwrap();
+    // Ten statements of 1,000 rows: one statement of 10,000 passed the statement time limit
+    // of 10 seconds of the server when other test runs shared the machine.
+    for first in (1..=10_000).step_by(1_000) {
+        sqlx::query("insert into audit_entries(id,occurred_at,actor_id,workspace_id,channel_id,action,event) select ('00000000-0000-7000-8000-'||lpad(to_hex(n),12,'0'))::uuid,$1 - case when n>5000 then interval '60 days' else interval '1 day' end,case when n%2=0 then $2 else $3 end,$4,$5,case when n%2=0 then 'channel_created' else 'channel_updated' end,jsonb_build_object('action',case when n%2=0 then 'channel_created' else 'channel_updated' end,'name','example') from generate_series($6::int,$7::int) n")
+            .bind(server.clock.now()).bind(owner.account_id).bind(other.account_id).bind(workspace.id).bind(channel.id).bind(first).bind(first + 999).execute(&server.db).await.unwrap();
+    }
     analyze(&server.db, &["audit_entries", "audit_entry_targets"]).await;
     let queries = [
         AuditFilterQuery {
