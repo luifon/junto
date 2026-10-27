@@ -534,7 +534,12 @@ impl Access {
         let workspace_id = row
             .as_ref()
             .map_or(WorkspaceId::from_uuid(Uuid::nil()), |row| row.1);
-        let workspace = self.workspace(&mut *connection, workspace_id).await;
+        // Only the absence of the workspace waits for the end; a failure of the database
+        // ends the request at once, before a later statement runs on the failed transaction.
+        let workspace = match self.workspace(&mut *connection, workspace_id).await {
+            Err(error) if error.code() != ErrorCode::NotFound => return Err(error),
+            workspace => workspace,
+        };
         let overrides: Vec<OverrideRow> = sqlx::query_as(
             "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
              from channel_overrides o

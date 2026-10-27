@@ -338,3 +338,37 @@ async fn a_connection_terminated_during_a_statement_is_unavailable() {
         .await
         .ok::<Workspace>(StatusCode::OK);
 }
+
+/// The read of the workspace of a channel that fails at the lock time limit answers with
+/// that failure: a later statement on the failed transaction must not replace it (ADR 0304).
+#[tokio::test]
+async fn a_channel_whose_workspace_read_waits_too_long_gets_the_timeout_error() {
+    let prepared = TestServer::start().await;
+    let owner = prepared.owner().await;
+    let channel = crate::messages_support::channel(&prepared, &owner, "text").await;
+    let server = prepared
+        .strict(|config| config.limits.database.lock = Duration::milliseconds(300))
+        .await;
+    let path = format!("/api/v1/channels/{}/messages", channel.id);
+    for send in [false, true] {
+        let mut lock = server.db.begin().await.unwrap();
+        sqlx::query("lock table workspace_roles in access exclusive mode")
+            .execute(&mut *lock)
+            .await
+            .unwrap();
+        let request = async {
+            if send {
+                server
+                    .post(&owner, &path, &crate::messages_support::text("blocked"))
+                    .await
+            } else {
+                server.get(&owner, &path).await
+            }
+        };
+        let reply = tokio::time::timeout(PATIENCE, request)
+            .await
+            .expect("the blocked request did not return");
+        lock.rollback().await.unwrap();
+        reply.error(ErrorCode::Timeout);
+    }
+}
