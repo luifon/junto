@@ -2188,6 +2188,40 @@ mod events {
     }
 
     #[test]
+    fn each_transcript_retry_tells_its_outcome_once() {
+        let scene = scene();
+        let mut seen = Seen::default();
+        let mut recording = scene.recording(scene.own, RecordingState::Ready);
+        let mut when = tell(scene.server_id);
+        for state in [
+            TranscriptState::Failed,
+            TranscriptState::Waiting,
+            TranscriptState::Running,
+            TranscriptState::Failed,
+            TranscriptState::Waiting,
+            TranscriptState::Running,
+            TranscriptState::Ready,
+        ] {
+            recording.transcript = state;
+            let event = Event::RecordingUpdated {
+                recording: Box::new(recording.clone()),
+            };
+            let fact = scene.fact(&event, None).unwrap();
+            when.now += time::Duration::seconds(11);
+            let told = event_alert(&mut seen, &when, &fact, Some(&event));
+            if matches!(state, TranscriptState::Failed | TranscriptState::Ready) {
+                assert_eq!(told.show.len(), 1, "{state:?}");
+                assert!(told.show[0].0.title.contains("transcript"));
+            }
+            assert!(
+                event_alert(&mut seen, &when, &fact, Some(&event))
+                    .show
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn an_export_a_device_a_recovery_and_a_workspace_are_told() {
         let scene = scene();
         let export = |state| Event::ExportUpdated {

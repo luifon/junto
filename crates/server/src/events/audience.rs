@@ -54,6 +54,12 @@ impl Class {
     pub const fn of(event: &Event) -> Self {
         match event {
             Event::DeviceAdded { .. }
+            | Event::JoinRequestCreated { .. }
+            | Event::JoinRequestDecided { .. }
+            | Event::JoinRequestWithdrawn { .. }
+            | Event::WorkspaceMemberAdded { .. }
+            | Event::CallStarted { .. }
+            | Event::RecordingUpdated { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
             | Event::DeviceLoggedIn { .. }
@@ -106,12 +112,8 @@ impl Class {
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
             | Event::InvitesOfCreatorRevoked { .. }
-            | Event::JoinRequestCreated { .. }
-            | Event::JoinRequestDecided { .. }
-            | Event::JoinRequestWithdrawn { .. }
             | Event::WorkspaceCreated { .. }
             | Event::WorkspaceUpdated { .. }
-            | Event::WorkspaceMemberAdded { .. }
             | Event::WorkspaceMemberRolesChanged { .. }
             | Event::WorkspaceRoleCreated { .. }
             | Event::WorkspaceRoleUpdated { .. }
@@ -120,7 +122,6 @@ impl Class {
             | Event::ChannelCreated { .. }
             | Event::ChannelUpdated { .. }
             | Event::ChannelOverrideSet { .. }
-            | Event::CallStarted { .. }
             | Event::CallEnded { .. }
             | Event::CallParticipantJoined { .. }
             | Event::CallParticipantUpdated { .. }
@@ -132,7 +133,6 @@ impl Class {
             | Event::CallEntryRequested { .. }
             | Event::CallEntryResolved { .. }
             | Event::RecordingStarted { .. }
-            | Event::RecordingUpdated { .. }
             | Event::RecordingRemoved { .. }
             | Event::TranscriptLineCorrected { .. }
             | Event::TranscriptSpeakerRenamed { .. }

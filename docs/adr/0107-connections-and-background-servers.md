@@ -28,7 +28,7 @@ Calls and devices:
 
 ## Consequences
 
-- The server filters the events of a background connection, so that connection carries only direct messages, mentions, call invites and control events.
+- The server filters the events of a background connection, so that connection carries only direct messages, mentions, call invites, control events, and the events that give a system notification (ADR 0742): a join request that is created, decided or withdrawn, an addition of the person to a workspace, a call that starts, and a change of a recording. Each of these has the audience that it has on a full connection; the background level only adds the class. The tests `stream_access::the_background_level_receives_the_events_of_system_notifications`, `calls_state::a_background_connection_of_an_account_in_a_call_receives_the_events_of_that_call` and `recordings::a_participant_with_the_permission_starts_a_recording_with_one_job_per_audio_track` cover them, and the window tests `event_alerts::a_workspace_addition_reaches_a_window_viewing_another_server`, `event_alerts::a_join_request_reaches_an_owner_viewing_another_server` and `live::rules::the_events_of_a_call_are_system_notifications_while_no_window_is_active` show them from a server that is not selected.
 - A client learns of a permission change, a removal, a ban or a deletion on every saved server, selected or not.
 - A server in the mode "connect only when selected" delivers no direct message, mention or call invite to that client while another server is selected.
 - After a long disconnection the client receives a snapshot, not the full list of missed events.

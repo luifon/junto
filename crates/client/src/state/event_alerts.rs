@@ -430,6 +430,14 @@ pub fn event_alert(
     event: Option<&Event>,
 ) -> Alerts {
     let mut alerts = Alerts::default();
+    if let Some(Event::RecordingUpdated { recording }) = event
+        && matches!(
+            recording.transcript,
+            TranscriptState::Waiting | TranscriptState::Running
+        )
+    {
+        seen.forget_outcome(&format!("transcript:{}", recording.id));
+    }
     if let Some(key) = event.and_then(|event| key_of(fact, event))
         && !seen.tell_once(key)
     {

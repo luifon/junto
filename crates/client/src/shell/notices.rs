@@ -965,6 +965,32 @@ impl Shell {
         }))
         .child(help(about_level));
 
+        if let Some(hidden) = panel.hide_text {
+            dialog = dialog.child(
+                div()
+                    .mt(u(12.0))
+                    .flex()
+                    .justify_between()
+                    .child(text::NOTIFICATION_TEXT)
+                    .child(
+                        Toggle::new(
+                            "server-notification-text",
+                            text::NOTIFICATION_TEXT,
+                            !hidden,
+                            (text::ON, text::OFF),
+                        )
+                        .selector("server-notification-text")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !busy {
+                                this.state.update(cx, |state, cx| {
+                                    state.set_server_hide_text(server_id, !hidden, cx)
+                                });
+                            }
+                        })),
+                    ),
+            );
+        }
+
         if let (Some(channel), SettingsScope::Channel(channel_id)) = (&panel.channel, scope) {
             let switches = [
                 (

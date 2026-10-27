@@ -582,6 +582,17 @@ impl AppState {
         .detach();
     }
 
+    pub fn set_server_hide_text(
+        &mut self,
+        server_id: ServerId,
+        hide: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_scope(server_id, SettingsScope::Account, cx, |settings| {
+            settings.hide_text = hide
+        });
+    }
+
     /// Sets the level of a scope. `None` takes the level of the scope above it.
     pub fn set_notify_level(
         &mut self,
@@ -747,9 +758,15 @@ impl AppState {
     pub(super) fn holds_for_presenting(
         &self,
         server_id: ServerId,
-        model: &junto_client_core::model::ServerModel,
+        model: Option<&junto_client_core::model::ServerModel>,
     ) -> bool {
-        let Some(call) = self.known.media.calls.call.as_ref() else {
+        let calls = &self.known.media.calls;
+        #[cfg(feature = "test-support")]
+        let calls = self
+            .media_fixture
+            .as_ref()
+            .map_or(calls, |media| &media.calls);
+        let Some(call) = calls.call.as_ref() else {
             return false;
         };
         let sharing = matches!(call.share, junto_media::engine::ShareState::Running(_));
@@ -762,12 +779,16 @@ impl AppState {
                     .and_then(|held_call| held_call.meeting.as_ref())
                     .is_some_and(|meeting| meeting.presenter == held.account.id)
             });
-        let settings = super::notices::stored_settings(
-            server_id,
-            junto_client_core::api::SettingsScope::Account,
-            model,
-            &self.known,
-        );
+        let settings = model
+            .map(|model| {
+                super::notices::stored_settings(
+                    server_id,
+                    junto_client_core::api::SettingsScope::Account,
+                    model,
+                    &self.known,
+                )
+            })
+            .unwrap_or_default();
         (sharing || presents) && super::notices::holds_while_presenting(&settings)
     }
 
@@ -982,7 +1003,7 @@ impl AppState {
             let Some(model) = super::view::shown_model(server) else {
                 continue;
             };
-            let presenting = self.holds_for_presenting(server.id, model);
+            let presenting = self.holds_for_presenting(server.id, Some(model));
             let seen = self.seen.entry(server.id).or_default();
             let told = alerts(
                 seen,
@@ -1132,7 +1153,7 @@ impl AppState {
         let now = OffsetDateTime::now_utc();
         let several_servers = self.client.servers().len() > 1;
         let name = server.entry().name;
-        let presenting = self.holds_for_presenting(server_id, &model);
+        let presenting = self.holds_for_presenting(server_id, Some(&model));
         let seen = self.seen.entry(server_id).or_default();
         let told = event_alert(
             seen,
@@ -1215,9 +1236,7 @@ impl AppState {
                 continue;
             };
             let model = server.live().view().model;
-            let presenting = model
-                .as_deref()
-                .is_some_and(|model| self.holds_for_presenting(server.id(), model));
+            let presenting = self.holds_for_presenting(server.id(), model.as_deref());
             let quiet = quiet_now(model.as_deref(), now) || presenting;
             let seen = self.join_seen.entry(server.id()).or_default();
             let told = event_alert(

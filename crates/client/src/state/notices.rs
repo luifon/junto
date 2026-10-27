@@ -560,6 +560,7 @@ pub struct NotifyPanel {
     /// The name of the server, of the workspace or of the channel.
     pub name: String,
     pub level: LevelView,
+    pub hide_text: Option<bool>,
     /// Present for a channel.
     pub channel: Option<ChannelNotify>,
     /// Present for a workspace.
@@ -673,6 +674,7 @@ pub fn notify_panel(
             stored: settings.level,
             inherited: inherited_level(server_id, scope, model, known),
         },
+        hide_text: (scope == SettingsScope::Account).then_some(settings.hide_text),
         channel,
         workspace_default,
         busy: known.notify_busy.contains(&key),
@@ -867,6 +869,10 @@ struct ShownAlert {
 }
 
 impl Seen {
+    pub(super) fn forget_outcome(&mut self, key: &str) {
+        self.told.retain(|held| held != key);
+    }
+
     /// True the first time a key is told: an end of a recording, of a transcript or of an
     /// export is told once.
     pub(super) fn tell_once(&mut self, key: String) -> bool {

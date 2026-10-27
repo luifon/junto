@@ -1233,7 +1233,11 @@ async fn a_background_connection_of_an_account_in_a_call_receives_the_events_of_
 
     server.enter_call(ann, voice).await;
     server.enter_call(owner, other).await;
-    assert!(server.call_events(ben, &mut background).await.is_empty());
+    // The start of a call reaches a background connection for its system notification
+    // (ADR 0107); nothing else of a call that Ben is outside of reaches it.
+    let outside = server.call_events(ben, &mut background).await;
+    let outside: Vec<&str> = outside.iter().map(|event| event.name()).collect();
+    assert_eq!(outside, ["call_started", "call_started"]);
 
     server.enter_call(ben, voice).await;
     report_state(server, ann, true, false)

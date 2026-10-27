@@ -1678,6 +1678,12 @@ fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
     let told =
         |window: &mut Window, title: &str| window.shown_titles().iter().any(|shown| shown == title);
 
+    let second = scene.world.server("Harbor");
+    let second_owner = scene.world.owner(&second);
+    scene
+        .window
+        .join_further(&scene.world, &second, &second_owner);
+
     // Ada starts a call in the room.
     enter(&scene.world, &scene.caller, scene.target);
     scene
@@ -1685,6 +1691,13 @@ fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
         .until("the start of the call is told", |window| {
             told(window, &format!("A call started in {ROOM}"))
         });
+
+    scene
+        .window
+        .press_alert(&format!("A call started in {ROOM}"));
+    scene.window.until("the notified channel opens", |window| {
+        window.selected_channel() == voice
+    });
 
     // The room is locked; the people inside deny the request of Luca, then let Luca in.
     scene.world.run(api.lock_call(voice)).unwrap();

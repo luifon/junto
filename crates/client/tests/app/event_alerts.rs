@@ -315,3 +315,116 @@ fn a_recording_an_export_and_a_device_are_told_and_lead_to_their_place(cx: &mut 
     );
     assert_eq!(window.kept().told.len(), 5);
 }
+
+#[gpui::test]
+fn a_workspace_addition_reaches_a_window_viewing_another_server(cx: &mut TestAppContext) {
+    let world = World::new();
+    let first = world.server("Studio");
+    let second = world.server("Harbor");
+    let owner = world.owner(&first);
+    let other_owner = world.owner(&second);
+    let (_directory, mut window) = member(cx, &world, &first.address(), &owner, "Reader");
+    let own = window.own_account();
+    window.join_further(&world, &second, &other_owner);
+    let lab = world
+        .run(owner.handle.api().create_workspace("Lab".to_owned()))
+        .unwrap();
+    world
+        .run(owner.handle.api().add_workspace_member(lab.id, own))
+        .unwrap();
+    window.until("the background workspace addition is told", |window| {
+        window
+            .shown_titles()
+            .contains(&"You were added to Lab".to_owned())
+    });
+    window.press_alert("You were added to Lab");
+    window.until("the background workspace opens", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.id == lab.id)
+    });
+}
+
+#[gpui::test]
+fn join_answers_are_held_while_sharing_on_another_server(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_media::engine::{ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    for approve in [false, true] {
+        let world = World::new();
+        let first = world.server("Studio");
+        let second = world.server("Harbor");
+        let owner = world.owner(&first);
+        let other_owner = world.owner(&second);
+        let (_directory, mut window) = member(cx, &world, &first.address(), &owner, "Reader");
+        voice_channel(&world, &owner, &mut window, "Daily");
+        let mut call = crate::calls::connected_call(&mut window, "Daily");
+        call.share = ShareState::Running(ShareInfo {
+            kind: ShareKind::Screen,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size: (64, 36),
+            frame_rate: 30,
+        });
+        crate::calls::show_call(&mut window, call);
+        window.find_server(&second.address());
+        window.click("request-access");
+        window.until("request waiting", |window| {
+            matches!(
+                window.status(),
+                Some(ServerStatus::WaitingForApproval { .. })
+            )
+        });
+        let requests = world.run(other_owner.handle.api().join_requests()).unwrap();
+        if approve {
+            world
+                .run(
+                    other_owner
+                        .handle
+                        .api()
+                        .approve_join_request(requests[0].id, &ApproveJoinRequest::default()),
+                )
+                .unwrap();
+            window.until_ready();
+        } else {
+            world
+                .run(other_owner.handle.api().deny_join_request(requests[0].id))
+                .unwrap();
+            window.until("request refused", |window| {
+                matches!(window.status(), Some(ServerStatus::NoAccount(_)))
+            });
+        }
+        assert!(
+            !window
+                .shown_titles()
+                .iter()
+                .any(|title| title.starts_with("Your request to join Harbor"))
+        );
+    }
+}
+
+#[gpui::test]
+fn a_join_request_reaches_an_owner_viewing_another_server(cx: &mut TestAppContext) {
+    let world = World::new();
+    let first = world.server("Studio");
+    let (_directory, mut window, _owner) = crate::admin_pages::owner_window(cx, &first);
+    let second = world.server("Harbor");
+    let second_owner = world.owner(&second);
+    window.join_further(&world, &second, &second_owner);
+    let (_applicant_directory, mut applicant) = named(cx, "Reader");
+    applicant.find_server(&first.address());
+    applicant.click("request-access");
+    applicant.until("the request waits", |window| {
+        matches!(
+            window.status(),
+            Some(ServerStatus::WaitingForApproval { .. })
+        )
+    });
+    window.until("the background join request is told", |window| {
+        window
+            .shown_titles()
+            .iter()
+            .any(|title| title == "Reader asks to join")
+    });
+}

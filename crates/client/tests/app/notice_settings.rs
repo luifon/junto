@@ -806,3 +806,80 @@ fn the_text_of_a_message_can_be_left_out_of_its_system_notification(cx: &mut Tes
     assert_eq!(hidden.title, title);
     assert_eq!(hidden.body, junto_client::text::ALERT_TEXT_HIDDEN);
 }
+
+#[gpui::test]
+fn notification_text_is_configured_for_one_server(cx: &mut TestAppContext) {
+    let world = World::new();
+    let first = world.server("Studio");
+    let second = world.server("Harbor");
+    let owner = world.owner(&first);
+    let other_owner = world.owner(&second);
+    let (_directory, mut window) = member(cx, &world, &first.address(), &owner, "Reader");
+    let first_id = window.view().selected.unwrap().id;
+    window.join_further(&world, &second, &other_owner);
+    let second_id = window.view().selected.unwrap().id;
+    window.in_shell(|shell, window, cx| {
+        shell.open_notify_settings(first_id, SettingsScope::Account, window, cx)
+    });
+    window.click("server-notification-text");
+    window.until("the server preference is saved", |window| {
+        window.view().notify.is_some_and(|panel| !panel.busy)
+    });
+    for (id, hidden) in [(first_id, true), (second_id, false)] {
+        let server = window
+            .state
+            .read_with(&window.cx, |state, _| state.server(id))
+            .unwrap();
+        assert_eq!(
+            world
+                .run(server.api().notification_settings(SettingsScope::Account))
+                .unwrap()
+                .hide_text,
+            hidden
+        );
+    }
+}
+
+/// While the call of this device runs a share, a mention gives no system notification; the
+/// notice stays in the list and is not shown when the share ends, and the next mention is
+/// told again (ADR 0742).
+#[gpui::test]
+fn a_running_share_holds_the_notification_of_a_mention(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_media::engine::{ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (general, own) = (window.selected_channel(), window.own_account());
+    crate::calls::voice_channel(&world, &admin, &mut window, "Daily");
+    admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    let mut call = crate::calls::connected_call(&mut window, "Daily");
+    call.share = ShareState::Running(ShareInfo {
+        kind: ShareKind::Screen,
+        sound: ShareAudio::None,
+        sound_held: false,
+        size: (64, 36),
+        frame_rate: 30,
+    });
+    crate::calls::show_call(&mut window, call.clone());
+
+    admin.mention(&world, general, "during the share, ", own);
+    window.until("the notice is listed", |window| {
+        window.unread_notices() == 1
+    });
+    window.settle();
+    assert!(window.kept().told.is_empty());
+
+    call.share = ShareState::Off;
+    crate::calls::show_call(&mut window, call);
+    window.settle();
+    assert!(window.kept().told.is_empty());
+    admin.mention(&world, general, "after the share, ", own);
+    window.until("the mention after the share is told", |window| {
+        window.kept().told.len() == 1
+    });
+    assert!(window.kept().told[0].body.contains("after the share"));
+}

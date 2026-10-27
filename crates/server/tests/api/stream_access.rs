@@ -77,6 +77,52 @@ async fn role(
         .ok(StatusCode::CREATED)
 }
 
+/// The events that give a system notification reach a background connection, each with the
+/// audience that it has on a full connection (ADR 0107, ADR 0742). The start of a call is
+/// checked in `calls_state`, with the fake media server.
+#[tokio::test]
+async fn the_background_level_receives_the_events_of_system_notifications() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let mut owner_background = server.subscribed(&owner, Level::Background).await;
+    let mut background = server.subscribed(&member, Level::Background).await;
+
+    let lab: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Lab" }))
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .put_empty(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}",
+                lab.id, member.account_id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let proof = server
+        .proof(&DeviceKey::generate(), ChallengeOperation::RequestToJoin)
+        .await;
+    server
+        .open(
+            "/api/v1/join-requests",
+            &json!({ "proof": proof, "name": "Waiting" }),
+        )
+        .await
+        .ok::<JoinRequest>(StatusCode::CREATED);
+
+    let received = server.traffic(&member, &mut background).await;
+    let received = types(&received);
+    assert!(received.contains(&"workspace_member_added"), "{received:?}");
+    // A member without the permission to decide join requests is not told of one.
+    assert!(!received.contains(&"join_request_created"), "{received:?}");
+    let received = server.traffic(&owner, &mut owner_background).await;
+    let received = types(&received);
+    assert!(received.contains(&"join_request_created"), "{received:?}");
+}
+
 #[tokio::test]
 async fn the_background_level_receives_control_events_only() {
     let server = TestServer::start().await;
