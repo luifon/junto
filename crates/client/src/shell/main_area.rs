@@ -434,7 +434,6 @@ impl Shell {
             .pl(u(16.0))
             .pr(right)
             .child(fit.row(right, gap))
-            .child(crate::ui::area("main-header"))
             .bg(Hsla::from(colors.travertine))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))

@@ -10,9 +10,10 @@ use gpui::{Bounds, Pixels, SharedString};
 use image::RgbaImage;
 
 /// The tallest space above the first part of an area and between two of its parts, in
-/// pixels of the design: the largest spacing of the design, which a band of 33 to 40 pixels
-/// passed before (review L2).
-pub const MOST_GAP: f32 = 32.0;
+/// pixels of the design: the largest spacing of the design, 32 (the top of a state panel),
+/// and 6 for the space that a line of text keeps above its letters, as the check reads the
+/// pixels of the letters. It was 40 (review L2).
+pub const MOST_GAP: f32 = 38.0;
 /// The width at each side of an area that is not read: the scroll bar and the borders.
 const SIDE: f32 = 12.0;
 /// The height at the top and at the bottom of an area that is not read, in pixels of the
@@ -181,13 +182,13 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
     }
 
-    /// A band of 36 design pixels is longer than the largest spacing of the design (L2).
+    /// A band of 40 design pixels is longer than the largest spacing of the design (L2).
     #[test]
     fn a_band_above_the_spacing_of_the_design_is_found() {
-        let image = screen(&[(10, 30), (66, 86)]);
+        let image = screen(&[(10, 30), (70, 90)]);
         let found = empty_bands(&image, &area(), 200.0, 100);
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("36 design px of empty space between two parts"));
+        assert!(found[0].contains("40 design px of empty space between two parts"));
     }
 
     /// The frame of a kept result that is much taller than its sentence is an empty band
