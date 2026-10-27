@@ -1348,6 +1348,9 @@ async fn a_mute_with_a_later_end_is_not_asked_for_before_that_end() {
 async fn a_burst_of_replies_keeps_the_notices_and_the_unread_threads_without_reading_them() {
     const BURST: u64 = 30;
     let room = room().await;
+    // The server sends a frame at each heartbeat: the minute without a read below is no
+    // silence of two heartbeats, after which the client would end the connection.
+    room.peer.beat(Duration::from_secs(25));
     let rig = &room.rig;
     let root = root_of(&room);
     let lists = || (rig.http.count("/notifications"), room.sent_to(UNREAD));
