@@ -127,10 +127,7 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     let long = window.cx.debug_bounds("dissolve-group-detail").unwrap();
     let short = window.cx.debug_bounds("group-move-down-detail").unwrap();
     assert!(long.right() <= menu.right(), "{long:?} {menu:?}");
-    assert!(
-        long.size.height > short.size.height,
-        "{long:?} {short:?}"
-    );
+    assert!(long.size.height > short.size.height, "{long:?} {short:?}");
     window.click("rename-group");
     assert!(window.shows("rename-group-dialog"));
     window.type_into("group-name", "Work");

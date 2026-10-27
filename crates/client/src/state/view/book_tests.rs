@@ -416,7 +416,7 @@ mod arrangement {
             model.message_states = vec![summary(general, 4, 1)];
             model
         };
-        let servers = vec![
+        let servers = [
             server(
                 "Acme",
                 Some(scene.model()),
