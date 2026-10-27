@@ -102,10 +102,19 @@ impl ChannelScope {
     /// What a member can use in the channel: nothing without sight of the channel.
     pub fn usable_permissions(&self) -> WorkspacePermissions {
         let effective = self.effective_permissions();
-        if effective.contains(WorkspacePermission::ViewChannel) {
+        if !effective.contains(WorkspacePermission::ViewChannel) {
+            return WorkspacePermissions::EMPTY;
+        }
+        if effective.contains(WorkspacePermission::Connect) {
             effective
         } else {
-            WorkspacePermissions::EMPTY
+            effective.difference(
+                WorkspacePermissions::EMPTY
+                    .with(WorkspacePermission::Speak)
+                    .with(WorkspacePermission::Video)
+                    .with(WorkspacePermission::ShareScreen)
+                    .with(WorkspacePermission::UseVoiceActivity),
+            )
         }
     }
 

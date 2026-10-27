@@ -1149,7 +1149,7 @@ fn channel_person_overrides_follow_everyone_and_role_overrides() {
     for permission in W::ALL {
         let mut scope = channel(
             workspace(
-                &[W::ViewChannel, *permission],
+                &[W::ViewChannel, W::Connect, *permission],
                 vec![role(1, &[]), role(2, &[])],
             ),
             rule(&[], &[*permission]),
@@ -1201,5 +1201,36 @@ fn channel_person_overrides_follow_everyone_and_role_overrides() {
             ),
             Allow
         );
+    }
+}
+
+#[test]
+fn publishing_requires_connect_even_when_a_person_is_allowed_the_source() {
+    for permission in [W::Speak, W::Video, W::ShareScreen, W::UseVoiceActivity] {
+        let mut scope = channel(workspace(&[W::ViewChannel], vec![]), Override::NONE, vec![]);
+        scope.person_override = rule(&[permission], &[]);
+        let request = Request::Channel {
+            scope: &scope,
+            permission,
+        };
+        assert!(
+            !authorize(&plain(), &request).is_allowed(),
+            "{}",
+            permission.name()
+        );
+        assert!(!scope.usable_permissions().contains(permission));
+        assert!(authorize(&administrator(), &request).is_allowed());
+        scope.workspace.everyone = scope.workspace.everyone.with(W::Connect);
+        assert!(
+            authorize(
+                &plain(),
+                &Request::Channel {
+                    scope: &scope,
+                    permission
+                }
+            )
+            .is_allowed()
+        );
+        assert!(scope.usable_permissions().contains(permission));
     }
 }

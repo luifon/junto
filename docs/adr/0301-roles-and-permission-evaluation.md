@@ -60,7 +60,7 @@ visibility; both @everyone and @channel require mention everyone. Invite links u
 The voice user limit has its own permission; other channel settings retain manage channel.
 
 Connecting requires view channel and connect. Microphone, camera and screen publication each
-require connect and their corresponding permission. Recording retains record calls and the
+require connect and their corresponding permission; use voice activity also requires connect. Recording retains record calls and the
 in-call rules. The media server restricts track sources. Without use voice activity the supported
 client forces push-to-talk; a media server cannot prove that audio came from a physical key press.
 Priority-speaker attenuation, link previews, external emoji, stickers, soundboards, webhooks,

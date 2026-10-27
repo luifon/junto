@@ -227,7 +227,7 @@ fn apply_roles(actor: &Actor, check: &Check<'_>) -> Option<Denial> {
             permission,
             granting,
         } => membership(&scope.workspace).or_else(|| {
-            let held = scope.effective_permissions();
+            let held = scope.usable_permissions();
             holds(
                 held,
                 WorkspacePermission::ViewChannel,
