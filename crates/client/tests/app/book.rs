@@ -353,7 +353,12 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
         !window.view().servers[0].workspaces_collapsed
     });
     window.press("escape");
-    assert!(!window.shows("server-head-unread-0"));
+    // Expanded, the head keeps the count of the messages for the person on the whole
+    // server, as the collapsed server book and Discord draw it (ADR 0741).
+    assert_eq!(
+        window.drawn_number("server-head-unread-0").as_deref(),
+        Some("1")
+    );
     let lab = window.workspace_row("Lab");
     window.right_click_named(lab);
     window.click("mark-workspace-read");
@@ -362,6 +367,9 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
             .workspaces
             .iter()
             .any(|workspace| workspace.unread.any())
+    });
+    window.until("the head of the server holds no mark", |window| {
+        !window.shows("server-head-unread-0")
     });
 
     // One control collapses every server and group, and expands them again.
