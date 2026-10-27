@@ -280,6 +280,8 @@ pub struct Shell {
     draws: usize,
     /// A change of the state came since the view was last derived (review M8).
     view_stale: bool,
+    /// The view was derived from the state since the last drawing.
+    derived_since_drawing: bool,
     /// How often the view was derived from the state. A test reads it.
     #[cfg(feature = "test-support")]
     derivations: usize,
@@ -554,15 +556,21 @@ impl Shell {
                     }
                 }
             }),
-            // A change of the state marks the view as stale; the next drawing derives it once,
-            // however many changes came since the last drawing (review M8: each answer of a
-            // profile derived the whole view).
-            cx.observe(&state, |this, _, cx| {
+            // The first change of the state after a drawing derives the view at once; a later
+            // change before the next drawing marks it as stale, and that drawing derives it
+            // once, however many changes came (review M8: each answer of a profile derived the
+            // whole view).
+            cx.observe_in(&state, window, |this, _, window, cx| {
                 #[cfg(feature = "test-support")]
                 crate::panics::test_support::reached(
                     crate::panics::test_support::Handler::StateObserver,
                 );
-                this.view_stale = true;
+                if this.derived_since_drawing {
+                    this.view_stale = true;
+                } else {
+                    this.derived_since_drawing = true;
+                    this.take_state(window, cx);
+                }
                 cx.notify();
             }),
             // Only the main window shows the administration.
@@ -670,6 +678,7 @@ impl Shell {
             #[cfg(feature = "test-support")]
             draws: 0,
             view_stale: false,
+            derived_since_drawing: false,
             #[cfg(feature = "test-support")]
             derivations: 0,
             #[cfg(feature = "test-support")]
@@ -1268,6 +1277,7 @@ impl Render for Shell {
         if std::mem::take(&mut self.view_stale) {
             self.take_state(window, cx);
         }
+        self.derived_since_drawing = false;
         if self.detached {
             return self.render_detached(window, cx);
         }
