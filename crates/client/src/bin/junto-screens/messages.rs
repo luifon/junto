@@ -872,17 +872,20 @@ fn animated_gif(width: u32, height: u32, frames: u32, hundredths: u32) -> Vec<u8
 }
 
 /// The cost of an animation in view (review M5): the time of one drawing of the window with a
-/// GIF of 24 frames of 20 ms in the list, and the drawings in one second while it plays. The
-/// share of one processor is the time of a drawing times the drawings in a second.
+/// GIF of 24 frames of 20 ms in the list, and the share of one processor at the most drawings
+/// that the animations of a window ask for. The window test
+/// `pictures::a_fast_animation_draws_the_window_at_most_once_in_its_least_interval` counts
+/// the drawings on a clock that it advances; in this tool the animation asked for no drawing,
+/// with and without an advance of the clock.
 pub(crate) fn measure_animation(studio: &mut Studio) -> Result<(), String> {
-    use std::time::{Duration as Wait, Instant};
+    use std::time::Instant;
     let mut room = general();
     let mut moving = file(13, "applause.gif", 2_400_000, Some((498, 280)));
     moving.media_type = "image/gif".to_owned();
     moving.frames = Some(24);
     let shared = room.message("Ana", 100, "The room after the mix.");
     shared.attachments = vec![moving];
-    let (window, shell, _) = studio.open(
+    let (window, _, _) = studio.open(
         Screen::new("gif-frames", with_timeline(room.timeline())),
         Box::new(move |shell: &mut Shell, _, cx| {
             prepare(shell, none(), cx);
@@ -907,19 +910,11 @@ pub(crate) fn measure_animation(studio: &mut Studio) -> Result<(), String> {
     }
     times.sort();
     let median = times[times.len() / 2];
-    let before = studio.cx.update(|cx| shell.read(cx).draws().0);
-    let started = Instant::now();
-    while started.elapsed() < Wait::from_secs(1) {
-        studio.cx.run_until_parked();
-        std::thread::sleep(Wait::from_millis(1));
-    }
-    let drawn = studio.cx.update(|cx| shell.read(cx).draws().0) - before;
     let milliseconds = median.as_secs_f64() * 1_000.0;
     let interval = junto_client::shell::ANIMATION_INTERVAL.as_secs_f64() * 1_000.0;
     println!(
         "a GIF of 20 ms frames in view: a drawing takes {milliseconds:.2} ms (median of 60); \
-         {drawn} drawings in one second of play; at most one drawing in {interval:.0} ms is \
-         {:.1} % of one processor",
+         at most one drawing in {interval:.0} ms is {:.1} % of one processor",
         milliseconds / interval * 100.0
     );
     studio
