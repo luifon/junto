@@ -4,9 +4,8 @@
 
 use gpui::{
     AnyElement, App, Context, CursorStyle, DispatchPhase, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, Role, StatefulInteractiveElement, Styled, Window, canvas, div, prelude::FluentBuilder,
-    px,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Role, StatefulInteractiveElement, Styled, Window, canvas, div, prelude::FluentBuilder, px,
 };
 use junto_client_core::settings::Panel;
 

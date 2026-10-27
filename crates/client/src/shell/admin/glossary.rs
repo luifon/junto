@@ -301,7 +301,9 @@ impl Shell {
                 // does not choose: the row keeps the height of the form until the person
                 // acts (ADR 0730).
                 if let Some(mode) = self.admin.mode.take() {
-                    self.admin.space.keep(mode, text::admin::done::TERM_CHANGED_ELSEWHERE);
+                    self.admin
+                        .space
+                        .keep(mode, text::admin::done::TERM_CHANGED_ELSEWHERE);
                 }
                 self.admin.opened_term = None;
                 self.admin.invalid = None;

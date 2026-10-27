@@ -466,9 +466,11 @@ impl Shell {
             );
         // The error follows every control of the dialog, whose top stays: it moves no
         // control (ADR 0730).
-        let error_slot = crate::ui::notice_slot("join-error-slot").children(
-            error.map(|error| div().mt(u(12.0)).child(Notice::error(error).selector("join-error"))),
-        );
+        let error_slot = crate::ui::notice_slot("join-error-slot").children(error.map(|error| {
+            div()
+                .mt(u(12.0))
+                .child(Notice::error(error).selector("join-error"))
+        }));
         let busy = running.is_some() || cancelling;
         match body {
             Body::Paths { .. } => {

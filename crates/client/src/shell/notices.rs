@@ -369,20 +369,25 @@ impl Shell {
                 String::new()
             })
             .trailing(
-                div().flex().items_center().gap(u(4.0)).children(mark_all).child(
-                Button::new("close-notices")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_NOTIFICATIONS)
-                    .selector("close-notices")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if in_call {
-                            this.close_call_notices(cx);
-                        } else {
-                            this.state.update(cx, |state, cx| state.close_notices(cx));
-                        }
-                    })),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(4.0))
+                    .children(mark_all)
+                    .child(
+                        Button::new("close-notices")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::X)
+                            .tooltip(text::CLOSE_NOTIFICATIONS)
+                            .selector("close-notices")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if in_call {
+                                    this.close_call_notices(cx);
+                                } else {
+                                    this.state.update(cx, |state, cx| state.close_notices(cx));
+                                }
+                            })),
+                    ),
             );
         let failed = panel.failed.clone().map(|reason| {
             div().flex_none().px(u(14.0)).pt(u(10.0)).child(

@@ -1,4 +1,6 @@
-use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, TestAppContext, px};
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, TestAppContext, px,
+};
 use junto_client_core::settings::Panel;
 
 use crate::harness::{Window, World, member, open};
@@ -47,9 +49,9 @@ fn width(window: &mut Window, selector: &'static str) -> f32 {
 }
 
 fn kept(window: &mut Window, panel: Panel) -> Option<u16> {
-    window
-        .state
-        .read_with(&window.cx, |state, _| state.settings().panel_widths.get(panel))
+    window.state.read_with(&window.cx, |state, _| {
+        state.settings().panel_widths.get(panel)
+    })
 }
 
 /// The server book, the channel list and a side panel are made wider and narrower by a
@@ -69,14 +71,19 @@ fn the_edge_of_a_panel_changes_its_width_within_its_bounds_and_the_width_is_kept
     let book = width(&mut window, "server-book");
     drag(&mut window, "edge-server-book", 60.0);
     assert_eq!(width(&mut window, "server-book"), book + 60.0);
-    assert_eq!(kept(&mut window, Panel::ServerBook), Some((book + 60.0) as u16));
+    assert_eq!(
+        kept(&mut window, Panel::ServerBook),
+        Some((book + 60.0) as u16)
+    );
 
     let channels = width(&mut window, "channel-column");
     drag(&mut window, "edge-channels", 40.0);
     assert_eq!(width(&mut window, "channel-column"), channels + 40.0);
 
     window.click("members-button");
-    window.until("the member list is open", |window| window.shows("side-panel"));
+    window.until("the member list is open", |window| {
+        window.shows("side-panel")
+    });
     let members = width(&mut window, "side-panel");
     // The edge of a panel at the right of the main area is its left edge.
     drag(&mut window, "edge-members", -100.0);
@@ -94,7 +101,9 @@ fn the_edge_of_a_panel_changes_its_width_within_its_bounds_and_the_width_is_kept
     // Another side panel keeps its own width.
     window.click("members-button");
     window.click("notices-row");
-    window.until("the notices are open", |window| window.shows("notices-panel"));
+    window.until("the notices are open", |window| {
+        window.shows("notices-panel")
+    });
     assert_eq!(width(&mut window, "notices-panel"), members);
 
     window.run_tasks();
@@ -109,7 +118,9 @@ fn the_edge_of_a_panel_changes_its_width_within_its_bounds_and_the_width_is_kept
     assert_eq!(width(&mut window, "server-book"), book + 60.0);
     assert_eq!(width(&mut window, "channel-column"), channels + 40.0);
     window.click("members-button");
-    window.until("the member list is open", |window| window.shows("side-panel"));
+    window.until("the member list is open", |window| {
+        window.shows("side-panel")
+    });
     assert_eq!(width(&mut window, "side-panel"), chosen);
 }
 

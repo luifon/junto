@@ -430,7 +430,10 @@ impl Shell {
                 ui.removing = None;
                 // The row of the export stays until the state of the server removes it:
                 // until then it keeps the height of its question.
-                ui.space.keep(Open::RemoveExport(export_id), text::admin::done::EXPORT_REMOVED);
+                ui.space.keep(
+                    Open::RemoveExport(export_id),
+                    text::admin::done::EXPORT_REMOVED,
+                );
             }
         }
     }

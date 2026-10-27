@@ -585,7 +585,10 @@ impl Shell {
             // A change of the state closes the form: the row keeps its height, as after
             // an answer.
             if let Some(open) = self.admin.roles.open.take() {
-                self.admin.roles.space.keep(open, text::admin::done::ROLE_CHANGED_ELSEWHERE);
+                self.admin
+                    .roles
+                    .space
+                    .keep(open, text::admin::done::ROLE_CHANGED_ELSEWHERE);
             }
             self.admin.roles.sent = None;
         }

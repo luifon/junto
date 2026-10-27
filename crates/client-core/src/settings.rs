@@ -274,7 +274,10 @@ mod tests {
         let loaded = store.load().unwrap().panel_widths;
         assert_eq!(loaded.get(Panel::Call), Some(420));
         // A width beyond the bounds of its panel is kept as the nearest bound.
-        assert_eq!(loaded.get(Panel::ServerBook), Some(Panel::ServerBook.bounds().1));
+        assert_eq!(
+            loaded.get(Panel::ServerBook),
+            Some(Panel::ServerBook.bounds().1)
+        );
         assert_eq!(loaded.get(Panel::Thread), None);
         let text = fs::read_to_string(data_dir.root().join(SETTINGS_FILE)).unwrap();
         assert!(text.contains("\"format_version\": 1"), "{text}");

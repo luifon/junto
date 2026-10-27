@@ -3,9 +3,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, ElementId, InteractiveElement, IntoElement,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Refineable, Rems, RenderOnce, ScrollHandle, Size,
-    Role, StatefulInteractiveElement, StyleRefinement, Styled, Window, canvas, div,
-    prelude::FluentBuilder,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Refineable, Rems,
+    RenderOnce, Role, ScrollHandle, Size, StatefulInteractiveElement, StyleRefinement, Styled,
+    Window, canvas, div, prelude::FluentBuilder,
 };
 
 use crate::text;
@@ -139,7 +139,9 @@ impl RenderOnce for Held {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (heights, scroll) = window.with_element_namespace(self.id.clone(), |window| {
             let heights = window
-                .use_keyed_state("held-heights", cx, |_, _| Rc::new(Cell::new(Heights::default())))
+                .use_keyed_state("held-heights", cx, |_, _| {
+                    Rc::new(Cell::new(Heights::default()))
+                })
                 .read(cx)
                 .clone();
             let scroll = window

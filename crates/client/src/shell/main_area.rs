@@ -3,8 +3,8 @@
 //! side panel with the members of the workspace.
 
 use gpui::{
-    AnyElement, App, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
-    SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
+    AnyElement, App, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Role, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
 use junto_client_core::protocol::ids::AccountId;
@@ -106,7 +106,8 @@ impl Shell {
                 .after_actions(notices.take().unwrap_or_default())
                 .into_any_element()
         };
-        let (body, side): (AnyElement, Option<(Panel, AnyElement)>) = match (&view.selected, lists) {
+        let (body, side): (AnyElement, Option<(Panel, AnyElement)>) = match (&view.selected, lists)
+        {
             (None, _) => (
                 stated(
                     StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER).selector("no-server"),

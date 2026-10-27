@@ -1928,9 +1928,10 @@ fn draw_page_states(studio: &mut Studio) -> Result<(), String> {
                 .collect(),
         ))
     };
-    studio.draw(Screen::new("admin-people-one", only_self()), |shell, window, cx| {
-        open_page(shell, AdminPage::People, window, cx)
-    })?;
+    studio.draw(
+        Screen::new("admin-people-one", only_self()),
+        |shell, window, cx| open_page(shell, AdminPage::People, window, cx),
+    )?;
     studio.draw_answered(
         Screen::new(
             "admin-people-banned",

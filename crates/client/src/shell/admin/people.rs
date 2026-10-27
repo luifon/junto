@@ -673,7 +673,10 @@ impl Shell {
     /// after an answer.
     fn put_away_people_open(&mut self) {
         if let Some(open) = self.admin.people.open.take() {
-            self.admin.people.space.keep(open, text::admin::done::ACCOUNT_CHANGED_ELSEWHERE);
+            self.admin
+                .people
+                .space
+                .keep(open, text::admin::done::ACCOUNT_CHANGED_ELSEWHERE);
         }
         self.admin.people.sent = None;
     }

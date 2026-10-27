@@ -590,7 +590,9 @@ impl Shell {
             {
                 self.admin.sent = None;
                 if let Some(mode) = self.admin.mode.take() {
-                    self.admin.space.keep(mode, text::admin::done::CHANNEL_NOT_MOVED);
+                    self.admin
+                        .space
+                        .keep(mode, text::admin::done::CHANNEL_NOT_MOVED);
                 }
                 self.admin.move_group = None;
             }
@@ -712,7 +714,10 @@ impl Shell {
             self.admin.space.keep(mode, mode.done());
         }
         if let Some(open) = self.admin.people.open.take() {
-            let done = view.as_ref().map(|view| open.done(view)).unwrap_or_default();
+            let done = view
+                .as_ref()
+                .map(|view| open.done(view))
+                .unwrap_or_default();
             self.admin.people.space.keep(open, done);
         }
         if let Some(open) = self.admin.roles.open.take() {

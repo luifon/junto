@@ -357,37 +357,38 @@ impl Shell {
                 .then(|| self.render_call_notices_alone(&view, cx))
                 .flatten(),
         };
-        body = body.child(
-            div()
-                .relative()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .child(column)
-                .when_some(side, |middle, side| {
-                    // The panel holds its close button beside the tabs (`PANEL_CLOSE_WIDTH`).
-                    let width = self.call_panel_width(cx) + super::call::PANEL_CLOSE_WIDTH;
-                    let edge = self.panel_edge(
-                        Panel::CallWindow,
-                        super::edges::Side::Left,
-                        width,
-                        theme.metrics.call_panel_width,
-                        window,
-                        cx,
-                    );
-                    if beside {
-                        middle.child(side).child(edge)
-                    } else {
-                        middle
-                            .child(Self::side_cover(&theme, cx, |this, _| {
-                                this.call_panel_open = false;
-                            }))
-                            .child(Self::side_overlay(&theme, side))
-                            .child(edge)
-                    }
-                }),
-        )
-        .children(self.edge_drag_tracking(cx));
+        body = body
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(column)
+                    .when_some(side, |middle, side| {
+                        // The panel holds its close button beside the tabs (`PANEL_CLOSE_WIDTH`).
+                        let width = self.call_panel_width(cx) + super::call::PANEL_CLOSE_WIDTH;
+                        let edge = self.panel_edge(
+                            Panel::CallWindow,
+                            super::edges::Side::Left,
+                            width,
+                            theme.metrics.call_panel_width,
+                            window,
+                            cx,
+                        );
+                        if beside {
+                            middle.child(side).child(edge)
+                        } else {
+                            middle
+                                .child(Self::side_cover(&theme, cx, |this, _| {
+                                    this.call_panel_open = false;
+                                }))
+                                .child(Self::side_overlay(&theme, side))
+                                .child(edge)
+                        }
+                    }),
+            )
+            .children(self.edge_drag_tracking(cx));
         let controls = div()
             .flex()
             .flex_wrap()

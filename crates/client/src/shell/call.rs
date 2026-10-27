@@ -830,7 +830,9 @@ impl Shell {
             .flex_col()
             .flex_none()
             // A panel over the content also holds its close button beside the tabs.
-            .w(u(self.call_panel_width(cx) + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }))
+            .w(u(
+                self.call_panel_width(cx) + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }
+            ))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -1989,8 +1991,12 @@ impl Shell {
         } else {
             self.render_call_stage(panel, &theme, cx)
         };
-        let side = (!narrow || self.call_panel_open)
-            .then(|| (Panel::Call, self.render_call_panel(view, panel, narrow, window, cx)));
+        let side = (!narrow || self.call_panel_open).then(|| {
+            (
+                Panel::Call,
+                self.render_call_panel(view, panel, narrow, window, cx),
+            )
+        });
         (stage, side)
     }
 

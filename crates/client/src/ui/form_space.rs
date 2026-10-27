@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement, Pixels,
-    RenderOnce, SharedString, Styled, Window, canvas, div, prelude::FluentBuilder,
+    App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement,
+    Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, prelude::FluentBuilder,
 };
 
 use super::{StyleExt, icon};
@@ -73,14 +73,17 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
                     .find(|(row, _)| *row == key)
                     .map(|(_, height)| *height)
             });
-            return space.relative().when_some(closed, |space, height| space.min_h(height)).child(
-                canvas(
-                    move |bounds, _, _| drawn.set(Some((open, bounds.size.height))),
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            );
+            return space
+                .relative()
+                .when_some(closed, |space, height| space.min_h(height))
+                .child(
+                    canvas(
+                        move |bounds, _, _| drawn.set(Some((open, bounds.size.height))),
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                );
         }
         match self.kept.get() {
             Some((kept, height)) if modes.contains(&kept) => {
@@ -103,27 +106,27 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
                             .child(KeptResult { sentence: result }),
                     )
                     .child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, (), window, _| {
-                            window.on_mouse_event(
-                                move |event: &MouseMoveEvent, phase, window, _| {
-                                    let at = event.position;
-                                    let beside = at.x < bounds.left() || at.x > bounds.right();
-                                    if phase == DispatchPhase::Bubble
-                                        && (at.y < bounds.top() || beside)
-                                        && held.get().is_some()
-                                    {
-                                        held.set(None);
-                                        window.refresh();
-                                    }
-                                },
-                            );
-                        },
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, (), window, _| {
+                                window.on_mouse_event(
+                                    move |event: &MouseMoveEvent, phase, window, _| {
+                                        let at = event.position;
+                                        let beside = at.x < bounds.left() || at.x > bounds.right();
+                                        if phase == DispatchPhase::Bubble
+                                            && (at.y < bounds.top() || beside)
+                                            && held.get().is_some()
+                                        {
+                                            held.set(None);
+                                            window.refresh();
+                                        }
+                                    },
+                                );
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
                     )
-                    .absolute()
-                    .size_full(),
-                )
             }
             _ => match key {
                 Some(key) => {

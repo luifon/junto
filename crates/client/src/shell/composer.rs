@@ -1457,8 +1457,7 @@ impl Shell {
                         this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
                     },
                 )),
-            )
-            ;
+            );
 
         // The state above the box: a reply or an edit, with the control that ends it.
         let drawings = Drawings::of(cx);

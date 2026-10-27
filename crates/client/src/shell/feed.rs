@@ -1960,8 +1960,7 @@ impl Shell {
             .iter()
             .enumerate()
             .map(|(index, attachment)| {
-                let download =
-                    self.download_control(server_id, attachment, index, "", theme, cx);
+                let download = self.download_control(server_id, attachment, index, "", theme, cx);
                 let name: SharedString = text::label(&attachment.name).into();
                 let size: SharedString = text::file_size(attachment.bytes).into();
                 if is_picture(attachment) {

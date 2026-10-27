@@ -604,14 +604,14 @@ impl Shell {
                 cx,
             ),
         )
-            .child(header)
-            .child(filters)
-            .child(
-                crate::ui::notice_slot("search-go-failed-slot")
-                    .children(go_failed)
-                    .children(archive_failed),
-            )
-            .child(body)
-            .into_any_element()
+        .child(header)
+        .child(filters)
+        .child(
+            crate::ui::notice_slot("search-go-failed-slot")
+                .children(go_failed)
+                .children(archive_failed),
+        )
+        .child(body)
+        .into_any_element()
     }
 }

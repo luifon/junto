@@ -1659,8 +1659,8 @@ impl Shell {
                 cx,
             ),
         )
-            .child(header)
-            .child(body)
-            .into_any_element()
+        .child(header)
+        .child(body)
+        .into_any_element()
     }
 }

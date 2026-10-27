@@ -19,8 +19,8 @@ use junto_client_core::protocol::message::Attachment;
 use super::feed::{LIST_PICTURE_SIDE, decode, picture_pixels};
 use super::{Layer, Shell};
 use crate::assets::Icon;
-use crate::state::feed::{Feed, FeedRow};
 use crate::state::AppState;
+use crate::state::feed::{Feed, FeedRow};
 use crate::state::view::ShellView;
 use crate::text;
 use crate::theme::{REM_AT_100, Theme, theme, u};
@@ -265,7 +265,12 @@ impl Shell {
         let picture = Self::render_viewer_picture(&attachment, image, failed, area, &theme, window);
         let arrows = (count > 1).then(|| {
             [
-                ("viewer-previous", Icon::ChevronLeft, text::PREVIOUS_PICTURE, -1),
+                (
+                    "viewer-previous",
+                    Icon::ChevronLeft,
+                    text::PREVIOUS_PICTURE,
+                    -1,
+                ),
                 ("viewer-next", Icon::ChevronRight, text::NEXT_PICTURE, 1),
             ]
             .map(|(id, shape, label, step)| {
@@ -352,73 +357,78 @@ impl Shell {
             Layer::Picture(viewer) => viewer.server_id,
             _ => return div().into_any_element(),
         };
-        let download =
-            self.download_control(server_id, attachment, shown, "viewer-", theme, cx);
+        let download = self.download_control(server_id, attachment, shown, "viewer-", theme, cx);
         let name: SharedString = text::label(&attachment.name).into();
         let file_size: SharedString = text::file_size(attachment.bytes).into();
         let top = super::title_bar::cover_top(window, cx);
-        div().flex_none().pt(u(top)).px(u(16.0)).child(
-            div()
-                .flex()
-                .items_center()
-                .gap(u(10.0))
-                .h(u(BAR_HEIGHT))
-                .px(u(12.0))
-                .rounded(u(theme.metrics.radius_dialog))
-                .border_1()
-                .border_color(Hsla::from(colors.rule))
-                .bg(Hsla::from(colors.travertine))
-                .shadow(float_shadow(colors.shadow_deep, 14.0, 40.0))
-                // A press on the bar does not close the viewer.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(icon(Icon::Picture, 16.0, colors.ink_2))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(u(14.0))
-                                .font_weight(FontWeight::BOLD)
-                                .ink(colors.ink)
-                                .debug_selector(|| "viewer-name".to_owned())
-                                .child(paint_text(name, None)),
-                        )
-                        .child(
-                            div()
-                                .text_size(u(12.5))
-                                .ink(colors.ink_3)
-                                .debug_selector(|| "viewer-size".to_owned())
-                                .child(paint_text(file_size, None)),
-                        ),
-                )
-                .when(count > 1, |bar| {
-                    bar.child(
+        div()
+            .flex_none()
+            .pt(u(top))
+            .px(u(16.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(10.0))
+                    .h(u(BAR_HEIGHT))
+                    .px(u(12.0))
+                    .rounded(u(theme.metrics.radius_dialog))
+                    .border_1()
+                    .border_color(Hsla::from(colors.rule))
+                    .bg(Hsla::from(colors.travertine))
+                    .shadow(float_shadow(colors.shadow_deep, 14.0, 40.0))
+                    // A press on the bar does not close the viewer.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(icon(Icon::Picture, 16.0, colors.ink_2))
+                    .child(
                         div()
-                            .flex_none()
-                            .text_size(u(13.0))
-                            .ink(colors.ink_2)
-                            .debug_selector(|| "viewer-position".to_owned())
-                            .child(paint_text(
-                                text::picture_position(shown + 1, count).into(),
-                                None,
-                            )),
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(u(14.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .ink(colors.ink)
+                                    .debug_selector(|| "viewer-name".to_owned())
+                                    .child(paint_text(name, None)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(u(12.5))
+                                    .ink(colors.ink_3)
+                                    .debug_selector(|| "viewer-size".to_owned())
+                                    .child(paint_text(file_size, None)),
+                            ),
                     )
-                })
-                .child(download)
-                .child(
-                    Button::new("close-picture")
-                        .kind(ButtonKind::Ghost)
-                        .icon(Icon::X)
-                        .tooltip(text::CLOSE_PICTURE)
-                        .selector("close-picture")
-                        .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx))),
-                ),
-        )
-        .into_any_element()
+                    .when(count > 1, |bar| {
+                        bar.child(
+                            div()
+                                .flex_none()
+                                .text_size(u(13.0))
+                                .ink(colors.ink_2)
+                                .debug_selector(|| "viewer-position".to_owned())
+                                .child(paint_text(
+                                    text::picture_position(shown + 1, count).into(),
+                                    None,
+                                )),
+                        )
+                    })
+                    .child(download)
+                    .child(
+                        Button::new("close-picture")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::X)
+                            .tooltip(text::CLOSE_PICTURE)
+                            .selector("close-picture")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_layer(window, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// The picture, fitted to its place with its proportions, and never larger than its own

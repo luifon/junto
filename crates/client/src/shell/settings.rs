@@ -195,13 +195,13 @@ impl Shell {
                 .on_click(cx.listener(|this, _, window, cx| this.submit_name(window, cx)))
                 .into_any_element()]))
             .child(
-                crate::ui::notice_slot("name-error-slot").children(
-                    self.name_error.clone().map(|error| {
+                crate::ui::notice_slot("name-error-slot").children(self.name_error.clone().map(
+                    |error| {
                         div()
                             .mt(u(12.0))
                             .child(Notice::error(error).selector("name-error"))
-                    }),
-                ),
+                    },
+                )),
             )
     }
 

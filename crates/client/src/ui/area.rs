@@ -37,9 +37,11 @@ mod record {
 
     use gpui::{Bounds, Pixels, SharedString};
 
+    /// The name and the bounds of each area that a drawing recorded.
+    pub type Areas = Vec<(SharedString, Bounds<Pixels>)>;
+
     thread_local! {
-        static AREAS: RefCell<Option<Vec<(SharedString, Bounds<Pixels>)>>> =
-            const { RefCell::new(None) };
+        static AREAS: RefCell<Option<Areas>> = const { RefCell::new(None) };
     }
 
     pub(super) fn push(name: SharedString, bounds: Bounds<Pixels>) {
@@ -56,7 +58,7 @@ mod record {
     }
 
     /// The areas that the drawings recorded since [`record_areas`]; the recording ends.
-    pub fn take_areas() -> Vec<(SharedString, Bounds<Pixels>)> {
+    pub fn take_areas() -> Areas {
         AREAS.with(|areas| areas.borrow_mut().take().unwrap_or_default())
     }
 }

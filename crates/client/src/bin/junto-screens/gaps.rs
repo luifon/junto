@@ -33,9 +33,9 @@ pub fn empty_bands(
     // An area drawn before a layer that covers it is not seen; the areas of the layer are
     // drawn after its cover.
     let covered = |index: usize, bounds: &Bounds<Pixels>| {
-        areas[index + 1..]
-            .iter()
-            .any(|(name, cover)| name.as_ref() == junto_client::ui::COVER && cover.intersects(bounds))
+        areas[index + 1..].iter().any(|(name, cover)| {
+            name.as_ref() == junto_client::ui::COVER && cover.intersects(bounds)
+        })
     };
     for (index, (name, bounds)) in areas.iter().enumerate() {
         if name.as_ref() == junto_client::ui::COVER || covered(index, bounds) {
@@ -146,7 +146,10 @@ mod tests {
     #[test]
     fn parts_at_the_spacing_of_the_design_have_no_empty_band() {
         let image = screen(&[(10, 30), (50, 70), (100, 120)]);
-        assert_eq!(empty_bands(&image, &area(), 200.0, 100), Vec::<String>::new());
+        assert_eq!(
+            empty_bands(&image, &area(), 200.0, 100),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -168,6 +171,9 @@ mod tests {
     #[test]
     fn the_space_after_the_last_part_ends_the_area() {
         let image = screen(&[(10, 30)]);
-        assert_eq!(empty_bands(&image, &area(), 200.0, 100), Vec::<String>::new());
+        assert_eq!(
+            empty_bands(&image, &area(), 200.0, 100),
+            Vec::<String>::new()
+        );
     }
 }
