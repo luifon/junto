@@ -195,7 +195,7 @@ impl AppState {
         let in_call = self.known.media.calls.call.is_some();
         let ringing = snapshots.iter().any(|server| {
             super::view::shown_model(server)
-                .is_some_and(|model| !model.incoming_invitations().is_empty())
+                .is_some_and(|model| model.incoming_invitations().next().is_some())
         });
         if !in_call && !ringing {
             return None;

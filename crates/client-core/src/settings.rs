@@ -194,7 +194,7 @@ mod tests {
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
         let text = fs::read_to_string(data_dir.root().join(SETTINGS_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 1"), "{text}");
+        assert!(text.contains("\"format_version\": 2"), "{text}");
     }
 
     #[test]

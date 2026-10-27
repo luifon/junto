@@ -1,7 +1,10 @@
 //! The key bindings in the window (ADR 0777): what each action does, and the Keybinds section
 //! of the settings, where the person records the keys of each action.
 
-use gpui::{AnyElement, Context, IntoElement, Modifiers, ParentElement, Styled, Window, div};
+use gpui::{
+    AnyElement, Context, InteractiveElement, IntoElement, Modifiers, ParentElement, Styled, Window,
+    div,
+};
 use junto_client_core::global_keys::{Key, KeysState, Permission, ReadError};
 use junto_client_core::keybinds::{ActionGroup, KeyAction};
 
