@@ -488,9 +488,10 @@ impl Access {
                 });
             }
         }
+        let person_override = self.workspace_person(connection, workspace_id).await?;
         let everyone = everyone.ok_or_else(ApiError::not_found)?;
         Ok(WorkspaceScope {
-            person_override: self.workspace_person(connection, workspace_id).await?,
+            person_override,
             membership: if is_member {
                 Membership::Member
             } else {
@@ -534,10 +535,10 @@ impl Access {
         .bind(channel_id)
         .fetch_optional(&mut *connection)
         .await?;
-        let record = channel_record(row.ok_or_else(ApiError::not_found)?)?;
-        let workspace = self
-            .workspace(&mut *connection, record.channel.workspace_id)
-            .await?;
+        let workspace_id = row
+            .as_ref()
+            .map_or(WorkspaceId::from_uuid(Uuid::nil()), |row| row.1);
+        let workspace = self.workspace(&mut *connection, workspace_id).await;
         let overrides: Vec<OverrideRow> = sqlx::query_as(
             "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
              from effective_channel_overrides o
@@ -547,12 +548,10 @@ impl Access {
         .bind(channel_id)
         .fetch_all(&mut *connection)
         .await?;
-        let mut scope = channel_scope(workspace, &overrides)?;
-        scope.person_override = self
-            .channel_people(connection, &[channel_id])
-            .await?
-            .remove(&channel_id)
-            .unwrap_or_default();
+        let people = self.channel_people(connection, &[channel_id]).await?;
+        let record = channel_record(row.ok_or_else(ApiError::not_found)?)?;
+        let mut scope = channel_scope(workspace?, &overrides)?;
+        scope.person_override = people.get(&channel_id).copied().unwrap_or_default();
         Ok((record, scope))
     }
 
