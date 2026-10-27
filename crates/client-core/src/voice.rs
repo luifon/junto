@@ -13,7 +13,7 @@ use crate::global_keys::{Key, KeyCombo};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 5;
+pub const VOICE_FORMAT_VERSION: u32 = 4;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -35,7 +35,6 @@ const VOICE: Versioned = Versioned {
         settings_of_shares,
         settings_of_camera,
         settings_of_call_sounds,
-        key_that_mutes,
     ],
     limit: 512 * 1024,
 };
@@ -86,16 +85,6 @@ fn settings_of_call_sounds(mut value: serde_json::Value) -> Result<serde_json::V
     Ok(value)
 }
 
-/// Version 4 had no key that mutes (ADR 0776). A file of version 4 has none.
-fn key_that_mutes(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
-    value
-        .as_object_mut()
-        .ok_or("the sound settings are not an object")?
-        .entry("mute_key")
-        .or_insert(serde_json::Value::Null);
-    Ok(value)
-}
-
 /// The largest picture that a share of this device sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,7 +120,7 @@ pub enum TalkKey {
 }
 
 impl TalkKey {
-    /// The key as a key of a call (ADR 0776).
+    /// The key as a key binding (ADR 0776): the default key of push to talk.
     pub fn combo(self) -> KeyCombo {
         let key = match self {
             TalkKey::Alt => Key::Alt,
@@ -152,9 +141,6 @@ pub struct VoiceSettings {
     pub automatic_gain: bool,
     pub input_mode: InputMode,
     pub talk_key: TalkKey,
-    /// The key that mutes and unmutes the microphone in a call, also while another
-    /// application is in front (ADR 0776). Absent: no key.
-    pub mute_key: Option<KeyCombo>,
     /// The volume in percent that the person set for an account of a server, from 0 to
     /// 200. An account without an entry has 100.
     pub volumes: BTreeMap<ServerId, BTreeMap<AccountId, u16>>,
@@ -190,7 +176,6 @@ impl Default for VoiceSettings {
             automatic_gain: true,
             input_mode: InputMode::default(),
             talk_key: TalkKey::default(),
-            mute_key: None,
             volumes: BTreeMap::new(),
             share_resolution: ShareResolution::default(),
             share_frame_rate: SHARE_FRAME_RATE_DEFAULT,
@@ -253,7 +238,6 @@ impl VoiceSettings {
             self.share_frame_rate = SHARE_FRAME_RATE_DEFAULT;
         }
         self.share_volume = self.share_volume.min(VOLUME_MAX_PERCENT);
-        self.mute_key = self.mute_key.filter(KeyCombo::is_shortcut);
         self.voice_threshold = self
             .voice_threshold
             .map(|threshold| threshold.clamp(THRESHOLD_RANGE.0, THRESHOLD_RANGE.1));
@@ -275,8 +259,6 @@ struct VoiceFile {
     automatic_gain: bool,
     input_mode: InputMode,
     talk_key: TalkKey,
-    #[serde(default)]
-    mute_key: Option<KeyCombo>,
     #[serde(default)]
     volumes: BTreeMap<ServerId, BTreeMap<AccountId, u16>>,
     share_resolution: ShareResolution,
@@ -312,7 +294,6 @@ impl VoiceStore {
             automatic_gain: file.automatic_gain,
             input_mode: file.input_mode,
             talk_key: file.talk_key,
-            mute_key: file.mute_key,
             volumes: file.volumes,
             share_resolution: file.share_resolution,
             share_frame_rate: file.share_frame_rate,
@@ -353,7 +334,6 @@ impl VoiceStore {
                 automatic_gain: settings.automatic_gain,
                 input_mode: settings.input_mode,
                 talk_key: settings.talk_key,
-                mute_key: settings.mute_key.clone(),
                 volumes: settings.volumes.clone(),
                 share_resolution: settings.share_resolution,
                 share_frame_rate: settings.share_frame_rate,
@@ -407,7 +387,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 5"), "{text}");
+        assert!(text.contains("\"format_version\": 4"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -464,11 +444,11 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":6,"later":true}"#;
+        let newer = r#"{"format_version":5,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 6, .. })
+            Err(StorageError::NewerFormat { found: 5, .. })
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -524,7 +504,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 5"), "{text}");
+        assert!(text.contains("\"format_version\": 4"), "{text}");
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
     }
 
@@ -550,35 +530,6 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         let text = fs::read_to_string(&file).unwrap();
         assert!(text.contains("\"call_sounds\": false"), "{text}");
-    }
-
-    #[test]
-    fn a_file_of_version_4_has_no_key_that_mutes_and_one_is_kept() {
-        let (_directory, data_dir, store) = store();
-        let file = data_dir.root().join(VOICE_FILE);
-        let fourth = r#"{"format_version":4,"camera_device":null,"input_device":null,
-            "output_device":null,"echo_cancellation":true,"noise_suppression":true,
-            "automatic_gain":true,"input_mode":"push_to_talk","talk_key":"control",
-            "volumes":{},"share_resolution":"p1080","share_frame_rate":30,
-            "share_volume":100,"hide_people_without_video":false,"call_sounds":true}"#;
-        fs::write(&file, fourth).unwrap();
-        let read = store.load().unwrap();
-        assert_eq!(read.mute_key, None);
-        assert_eq!(read.talk_key, TalkKey::Control);
-        let key: KeyCombo = "control+shift+m".parse().unwrap();
-        let written = store
-            .update(|settings| settings.mute_key = Some(key.clone()))
-            .unwrap();
-        assert_eq!(written.mute_key, Some(key.clone()));
-        let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"mute_key\": \"control+shift+m\""), "{text}");
-        assert!(text.contains("\"format_version\": 5"), "{text}");
-        assert_eq!(store.load().unwrap().mute_key, Some(key));
-        // A key that does not fire on purpose alone is not kept.
-        let written = store
-            .update(|settings| settings.mute_key = Some("m".parse().unwrap()))
-            .unwrap();
-        assert_eq!(written.mute_key, None);
     }
 
     #[test]

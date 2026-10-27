@@ -19,6 +19,18 @@ fn codes(key: Key) -> Vec<i32> {
         Key::Letter(letter) => vec![letter as i32],
         Key::Digit(digit) => vec![i32::from(b'0' + digit)],
         Key::Function(number) => vec![i32::from(VK_F1) + i32::from(number) - 1],
+        Key::Up => vec![0x26],
+        Key::Down => vec![0x28],
+        Key::Left => vec![0x25],
+        Key::Right => vec![0x27],
+        Key::Enter => vec![0x0D],
+        Key::Escape => vec![0x1B],
+        Key::Backspace => vec![0x08],
+        Key::PageUp => vec![0x21],
+        Key::PageDown => vec![0x22],
+        // VK_OEM_COMMA, and VK_OEM_2, the key of the slash on a US keyboard.
+        Key::Comma => vec![0xBC],
+        Key::Slash => vec![0xBF],
     }
 }
 

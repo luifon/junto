@@ -14,11 +14,7 @@ use zbus::Connection;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use super::{CallKeys, Key, KeyCombo, KeyEvent};
-
-/// The name of the shortcut of push to talk.
-pub const TALK: &str = "push-to-talk";
-/// The name of the shortcut that mutes and unmutes.
-pub const MUTE: &str = "toggle-mute";
+use crate::keybinds::KeyAction;
 /// How long Junto waits for the answer of the desktop, which can show a dialog.
 const ANSWER: Duration = Duration::from_secs(120);
 
@@ -119,6 +115,17 @@ pub fn trigger(combo: &KeyCombo) -> String {
             Key::Letter(letter) => letter.to_ascii_lowercase().to_string(),
             Key::Digit(digit) => digit.to_string(),
             Key::Function(number) => format!("F{number}"),
+            Key::Up => "Up".to_owned(),
+            Key::Down => "Down".to_owned(),
+            Key::Left => "Left".to_owned(),
+            Key::Right => "Right".to_owned(),
+            Key::Enter => "Return".to_owned(),
+            Key::Escape => "Escape".to_owned(),
+            Key::Backspace => "BackSpace".to_owned(),
+            Key::PageUp => "Page_Up".to_owned(),
+            Key::PageDown => "Page_Down".to_owned(),
+            Key::Comma => "comma".to_owned(),
+            Key::Slash => "slash".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("+")
@@ -192,22 +199,26 @@ async fn bind(
             })
         })
         .ok_or_else(|| PortalError::Failed("the session has no handle".to_owned()))?;
-    let mut shortcuts: Vec<(&str, HashMap<&str, Value<'_>>)> = Vec::new();
-    let described = |description: &'static str, combo: &KeyCombo| {
-        HashMap::from([
-            ("description", Value::from(description)),
-            ("preferred_trigger", Value::from(trigger(combo))),
-        ])
-    };
-    if let Some(talk) = &keys.talk {
-        shortcuts.push((TALK, described("Push to talk in a call of Junto", talk)));
-    }
-    if let Some(mute) = &keys.mute {
-        shortcuts.push((
-            MUTE,
-            described("Mute or unmute the microphone in a call of Junto", mute),
-        ));
-    }
+    // Each shortcut is named by its action, as the settings file names it.
+    let names: Vec<String> = keys
+        .bindings
+        .iter()
+        .map(|(action, _)| action.name())
+        .collect();
+    let shortcuts: Vec<(&str, HashMap<&str, Value<'_>>)> = keys
+        .bindings
+        .iter()
+        .zip(&names)
+        .map(|((action, combo), name)| {
+            (
+                name.as_str(),
+                HashMap::from([
+                    ("description", Value::from(action.description())),
+                    ("preferred_trigger", Value::from(trigger(combo))),
+                ]),
+            )
+        })
+        .collect();
     let bound_token = format!("{token}_bind");
     ask(
         connection,
@@ -236,7 +247,7 @@ async fn close(connection: &Connection, session: OwnedObjectPath) {
 
 /// Gives the events of the shortcuts while a call needs them, until `wanted` ends. The keys
 /// are bound when a call first needs them and again when they change. A press outside a call
-/// gives nothing; a hold of push to talk ends with the call.
+/// gives nothing; a hold of push to talk or push to mute ends with the call.
 pub async fn run(
     connection: Connection,
     mut wanted: watch::Receiver<Option<CallKeys>>,
@@ -249,7 +260,7 @@ pub async fn run(
     let mut deactivated = portal.receive_deactivated().await.map_err(failed)?;
     let mut bound: Option<(CallKeys, OwnedObjectPath)> = None;
     let mut number = 0;
-    let mut talking = false;
+    let mut holding: Vec<KeyAction> = Vec::new();
     loop {
         let keys = wanted.borrow_and_update().clone();
         if let Some(keys) = &keys
@@ -272,30 +283,41 @@ pub async fn run(
                 if changed.is_err() {
                     return Ok(());
                 }
-                if wanted.borrow().is_none() && std::mem::take(&mut talking) {
-                    events(KeyEvent::Talk(false));
+                if wanted.borrow().is_none() {
+                    for action in std::mem::take(&mut holding) {
+                        events(KeyEvent::Held(action, false));
+                    }
                 }
             }
             signal = activated.next() => {
                 let signal = signal.ok_or_else(|| PortalError::Failed("the bus ended".to_owned()))?;
                 let args = signal.args().map_err(failed)?;
-                if keys.is_some() && ours(&args.session_handle) {
-                    match args.shortcut_id {
-                        TALK if !talking => {
-                            talking = true;
-                            events(KeyEvent::Talk(true));
+                let action = keys.as_ref().filter(|_| ours(&args.session_handle)).and_then(|keys| {
+                    keys.bindings
+                        .iter()
+                        .map(|(action, _)| *action)
+                        .find(|action| action.name() == args.shortcut_id)
+                });
+                match action {
+                    Some(action) if action.holds() => {
+                        if !holding.contains(&action) {
+                            holding.push(action);
+                            events(KeyEvent::Held(action, true));
                         }
-                        MUTE => events(KeyEvent::ToggleMute),
-                        _ => {}
                     }
+                    Some(action) => events(KeyEvent::Pressed(action)),
+                    None => {}
                 }
             }
             signal = deactivated.next() => {
                 let signal = signal.ok_or_else(|| PortalError::Failed("the bus ended".to_owned()))?;
                 let args = signal.args().map_err(failed)?;
-                if ours(&args.session_handle) && args.shortcut_id == TALK && talking {
-                    talking = false;
-                    events(KeyEvent::Talk(false));
+                if ours(&args.session_handle)
+                    && let Some(at) = holding
+                        .iter()
+                        .position(|action| action.name() == args.shortcut_id)
+                {
+                    events(KeyEvent::Held(holding.remove(at), false));
                 }
             }
         }

@@ -854,7 +854,7 @@ impl Shell {
     /// Opens the file dialog for the next message of the place that the composer writes
     /// to. The dialog does not stop the window: the person, and an event of a server, can
     /// change what the composer shows before the dialog is answered.
-    fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
+    pub(crate) fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
         let Some(asked) = self.pen(pane).place else {
             return;
         };

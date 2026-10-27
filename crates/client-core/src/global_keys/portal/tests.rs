@@ -9,6 +9,10 @@ use zbus::object_server::SignalEmitter;
 
 use super::*;
 
+/// The names of the shortcuts of push to talk and of the key that mutes.
+const TALK: &str = "push_to_talk";
+const MUTE: &str = "toggle_mute";
+
 struct Bus {
     process: Child,
     address: String,
@@ -237,8 +241,10 @@ async fn next(events: &mut mpsc::UnboundedReceiver<KeyEvent>) -> KeyEvent {
 
 fn keys() -> CallKeys {
     CallKeys {
-        talk: Some("alt".parse().unwrap()),
-        mute: Some("control+shift+m".parse().unwrap()),
+        bindings: vec![
+            (KeyAction::PushToTalk, "alt".parse().unwrap()),
+            (KeyAction::ToggleMute, "control+shift+m".parse().unwrap()),
+        ],
     }
 }
 
@@ -267,26 +273,41 @@ async fn the_shortcuts_are_bound_when_a_call_needs_them_and_their_presses_reach_
     assert_eq!(
         bound.lock().unwrap()[0],
         [
-            (TALK.to_owned(), "ALT".to_owned()),
-            (MUTE.to_owned(), "CTRL+SHIFT+m".to_owned())
+            ("push_to_talk".to_owned(), "ALT".to_owned()),
+            ("toggle_mute".to_owned(), "CTRL+SHIFT+m".to_owned())
         ]
     );
     // The binding has its answer before the presses come.
     tokio::time::sleep(Duration::from_millis(200)).await;
     press(&desktop, &client, TALK, true).await;
-    assert_eq!(next(&mut events).await, KeyEvent::Talk(true));
+    assert_eq!(
+        next(&mut events).await,
+        KeyEvent::Held(KeyAction::PushToTalk, true)
+    );
     press(&desktop, &client, TALK, false).await;
-    assert_eq!(next(&mut events).await, KeyEvent::Talk(false));
+    assert_eq!(
+        next(&mut events).await,
+        KeyEvent::Held(KeyAction::PushToTalk, false)
+    );
     press(&desktop, &client, MUTE, true).await;
-    assert_eq!(next(&mut events).await, KeyEvent::ToggleMute);
+    assert_eq!(
+        next(&mut events).await,
+        KeyEvent::Pressed(KeyAction::ToggleMute)
+    );
     press(&desktop, &client, MUTE, false).await;
 
     // The call ends while the key of push to talk is held: the hold ends with it, and a
     // press outside a call gives nothing.
     press(&desktop, &client, TALK, true).await;
-    assert_eq!(next(&mut events).await, KeyEvent::Talk(true));
+    assert_eq!(
+        next(&mut events).await,
+        KeyEvent::Held(KeyAction::PushToTalk, true)
+    );
     wanted.send(None).unwrap();
-    assert_eq!(next(&mut events).await, KeyEvent::Talk(false));
+    assert_eq!(
+        next(&mut events).await,
+        KeyEvent::Held(KeyAction::PushToTalk, false)
+    );
     press(&desktop, &client, MUTE, true).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(events.try_recv().is_err());
@@ -333,4 +354,9 @@ fn a_key_of_a_call_is_suggested_in_the_form_of_the_desktop() {
     assert_eq!(trigger(&combo("alt")), "ALT");
     assert_eq!(trigger(&combo("meta+shift+f13")), "SHIFT+LOGO+F13");
     assert_eq!(trigger(&combo("control+7")), "CTRL+7");
+    assert_eq!(trigger(&combo("control+alt+up")), "CTRL+ALT+Up");
+    assert_eq!(
+        trigger(&combo("control+shift+backspace")),
+        "CTRL+SHIFT+BackSpace"
+    );
 }

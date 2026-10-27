@@ -9,6 +9,7 @@ pub mod account;
 pub mod admin;
 pub mod book;
 mod call_keys;
+pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
 pub mod feed;
@@ -424,6 +425,13 @@ pub struct AppState {
     /// The keys of a call in every application, and what they were told last.
     global_keys: junto_client_core::global_keys::GlobalKeys,
     call_keys_told: Option<junto_client_core::global_keys::CallKeys>,
+    /// The key bindings of the person (ADR 0777), and why their last change was not written.
+    keybinds: junto_client_core::keybinds::Keybinds,
+    keybinds_error: Option<String>,
+    /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
+    /// keys of push to mute, and whether their hold closed the microphone.
+    mute_holds: HashSet<Option<gpui::EntityId>>,
+    muted_by_hold: bool,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
     /// What the call window does before it closes: it gives the text of its composer to
     /// the main window (ADR 0772).
@@ -703,6 +711,10 @@ impl AppState {
             }
         };
         theme::apply(settings.theme, cx);
+        let keybinds = client.settings().load_keybinds().unwrap_or_else(|error| {
+            tracing::warn!(%error, "the key bindings were not read");
+            junto_client_core::keybinds::Keybinds::default()
+        });
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {
@@ -863,6 +875,10 @@ impl AppState {
             talking_globally: false,
             global_keys: junto_client_core::global_keys::GlobalKeys::none(),
             call_keys_told: None,
+            keybinds,
+            keybinds_error: None,
+            mute_holds: HashSet::new(),
+            muted_by_hold: false,
             call_window: None,
             call_window_closing: None,
             call_window_settings,
@@ -2460,7 +2476,7 @@ impl AppState {
         self.keep_logos(cx);
         self.follow_updates();
         self.follow_arrangement();
-        self.follow_call_keys();
+        self.follow_call_keys(&snapshots);
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {

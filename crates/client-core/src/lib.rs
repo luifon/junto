@@ -13,6 +13,7 @@ pub mod console;
 pub mod events;
 pub mod flow;
 pub mod global_keys;
+pub mod keybinds;
 pub mod keys;
 pub mod link;
 pub mod live;

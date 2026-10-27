@@ -1026,15 +1026,95 @@ pub fn push_to_talk_question(key: TalkKey) -> String {
     )
 }
 
-// The key that mutes, and how the keys of a call reach Junto (ADR 0776).
-pub const MUTE_KEY: &str = "Mute key";
-pub const NO_MUTE_KEY: &str = "None";
-pub const SET_MUTE_KEY: &str = "Set key";
-pub const CHANGE_MUTE_KEY: &str = "Change key";
-pub const REMOVE_MUTE_KEY: &str = "Remove";
-pub const PRESS_MUTE_KEY: &str = "Press the keys: Control, Alt, Shift or the system key, with a letter, a digit or a function \
-     key. Escape stops.";
-pub const MUTE_KEY_HELP: &str = "Mutes and unmutes your microphone in a call.";
+// The key bindings (ADR 0777) and how the keys of a call reach Junto (ADR 0776).
+pub const KEYBINDS: &str = "Keybinds";
+pub const KEYBINDS_HELP: &str = "Each action can have a key combination. Set records the next keys \
+     that you press; Escape stops. Every binding works while Junto is in front.";
+pub const RESET_ALL_KEYBINDS: &str = "Reset all";
+pub const PRESS_KEYS: &str = "Press the keys…";
+pub const NO_KEYS: &str = "None";
+pub const SET_KEYS: &str = "Set";
+pub const CHANGE_KEYS: &str = "Change";
+pub const REMOVE_KEYS: &str = "Remove";
+pub const RESET_KEYS: &str = "Reset";
+pub const KEYBIND_OUTSIDE: &str = "Also while another application is in front";
+pub const TALK_KEY_FROM_VOICE: &str =
+    "The key of the sound settings, until you set another one here.";
+pub const CALL_KEYS_IN_KEYBINDS: &str =
+    "The mute key, push to mute and the other keys of a call are in Keybinds.";
+
+/// The name of a group of actions in the Keybinds section.
+pub fn keybind_group(group: junto_client_core::keybinds::ActionGroup) -> &'static str {
+    use junto_client_core::keybinds::ActionGroup;
+    match group {
+        ActionGroup::Call => "Call",
+        ActionGroup::Navigation => "Navigation",
+        ActionGroup::Messages => "Messages",
+        ActionGroup::App => "Junto",
+    }
+}
+
+/// The name of an action in the Keybinds section.
+pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'static str {
+    use junto_client_core::keybinds::KeyAction::*;
+    match action {
+        ToggleMute => "Mute or unmute",
+        ToggleSoundOff => "Turn the sound off or on",
+        PushToTalk => "Push to talk",
+        PushToMute => "Push to mute",
+        ToggleCamera => "Turn the camera on or off",
+        ShareScreen => "Share a screen or a window",
+        LeaveCall => "Leave the call",
+        AnswerCall => "Answer a call",
+        DeclineCall => "Decline a call",
+        ShowCall => "Show the call",
+        PreviousServer => "Previous server",
+        NextServer => "Next server",
+        PreviousWorkspace => "Previous workspace",
+        NextWorkspace => "Next workspace",
+        PreviousChannel => "Previous channel",
+        NextChannel => "Next channel",
+        PreviousUnreadChannel => "Previous unread channel",
+        NextUnreadChannel => "Next unread channel",
+        ToggleServerBook => "Collapse or expand the server book",
+        Search => "Search",
+        Notices => "Notices",
+        JumpToNewest => "Jump to the newest message",
+        MembersList => "Members",
+        PinnedMessages => "Pinned messages",
+        MarkChannelRead => "Mark the channel as read",
+        MarkServerRead => "Mark the server as read",
+        ReplyToNewest => "Reply to the newest message",
+        UploadFile => "Upload a file",
+        OpenSettings => "Settings",
+        OpenAdministration => "Administration",
+        OpenKeybinds => "Keybinds",
+    }
+}
+
+/// The other actions that have the same keys.
+pub fn keybind_conflict(others: &[junto_client_core::keybinds::KeyAction]) -> String {
+    let names: Vec<&str> = others
+        .iter()
+        .map(|action| keybind_action(*action))
+        .collect();
+    format!(
+        "Also the keys of {}. A press does the first action in this list.",
+        names.join(", ")
+    )
+}
+
+/// Why recorded keys were not kept.
+pub fn keybind_refused(error: &junto_client_core::keybinds::KeybindError) -> String {
+    use junto_client_core::keybinds::KeybindError;
+    match error {
+        KeybindError::NeedsModifier => {
+            "Add Control, Alt, Shift or the system key, so that typing does not do the action."
+                .to_owned()
+        }
+        KeybindError::NotOutside => "This action works only while Junto is in front.".to_owned(),
+    }
+}
 pub const KEYS_EVERYWHERE: &str =
     "The key of push to talk and the mute key work also while another application is in front.";
 pub const KEYS_NEED_PERMISSION: &str = "To use the key of push to talk and the mute key while \
@@ -1059,7 +1139,7 @@ pub fn keys_portal_failed(reason: &str) -> String {
     )
 }
 
-/// A key of a call as the settings name it.
+/// The keys of a binding as the settings name them.
 pub fn key_combo(combo: &junto_client_core::global_keys::KeyCombo) -> String {
     use junto_client_core::global_keys::Key;
     combo
@@ -1076,6 +1156,19 @@ pub fn key_combo(combo: &junto_client_core::global_keys::KeyCombo) -> String {
             Key::Letter(letter) => letter.to_string(),
             Key::Digit(digit) => digit.to_string(),
             Key::Function(number) => format!("F{number}"),
+            Key::Up => "Up".to_owned(),
+            Key::Down => "Down".to_owned(),
+            Key::Left => "Left".to_owned(),
+            Key::Right => "Right".to_owned(),
+            Key::Enter if cfg!(target_os = "macos") => "Return".to_owned(),
+            Key::Enter => "Enter".to_owned(),
+            Key::Escape => "Esc".to_owned(),
+            Key::Backspace if cfg!(target_os = "macos") => "Delete".to_owned(),
+            Key::Backspace => "Backspace".to_owned(),
+            Key::PageUp => "Page Up".to_owned(),
+            Key::PageDown => "Page Down".to_owned(),
+            Key::Comma => ",".to_owned(),
+            Key::Slash => "/".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("+")
@@ -1100,8 +1193,8 @@ pub const USE_PUSH_TO_TALK: &str = "Use push to talk";
 pub const KEEP_VOICE_ACTIVATION: &str = "Keep voice activation";
 
 /// The input mode in the call strip while push to talk is on.
-pub fn push_to_talk_mark(key: TalkKey) -> String {
-    format!("Push to talk: hold {} to speak", talk_key(key))
+pub fn push_to_talk_mark(keys: &junto_client_core::global_keys::KeyCombo) -> String {
+    format!("Push to talk: hold {} to speak", key_combo(keys))
 }
 pub const PUSH_TO_TALK_MARK_HELP: &str = "Change the input mode in Settings, under Voice.";
 

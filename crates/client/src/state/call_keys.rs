@@ -1,14 +1,19 @@
-//! The keys of a call in every application (ADR 0776): the state gives the source of the
-//! keys the keys that the call needs, and does what each key does. A window that is in front
-//! gives the key of push to talk and the key that mutes too, so that they work where the
+//! The key bindings of the person (ADR 0777) and the keys of a call in every application
+//! (ADR 0776): the state keeps the bindings, gives the source of the keys of the system the
+//! bindings that work while another application is in front, and does the call actions of
+//! the keys. A window that is in front gives every binding too, so that each works where the
 //! system has no source.
 
 use futures_util::StreamExt as _;
 use gpui::Context;
 use junto_client_core::global_keys::{CallKeys, GlobalKeys, KeyCombo, KeyEvent, KeysState};
+use junto_client_core::keybinds::{KeyAction, KeybindError, Keybinds};
 use junto_client_core::voice::InputMode;
 
 use super::AppState;
+use super::view::ServerSnapshot;
+use crate::text;
+use junto_client_core::flow::FlowError;
 
 impl AppState {
     /// Uses the keys of the system: the reader of its keyboard, or the global shortcuts
@@ -56,17 +61,21 @@ impl AppState {
             }
         })
         .detach();
-        self.follow_call_keys();
+        let snapshots = self.snapshots();
+        self.follow_call_keys(&snapshots);
         cx.notify();
     }
 
     fn global_key(&mut self, event: KeyEvent, cx: &mut Context<Self>) {
         match event {
-            KeyEvent::Talk(held) => {
+            KeyEvent::Held(KeyAction::PushToTalk, held) => {
                 self.talking_globally = held;
                 self.sync_talking();
             }
-            KeyEvent::ToggleMute => self.toggle_mute(),
+            KeyEvent::Held(action, held) => self.hold_action(None, action, held),
+            KeyEvent::Pressed(action) => {
+                self.perform_call_action(action, cx);
+            }
         }
         cx.notify();
     }
@@ -86,35 +95,139 @@ impl AppState {
         }
     }
 
-    /// The window that is in front gives the key that mutes while no source of the system
-    /// gives it: a window would toggle a second time what the source toggled.
-    pub fn window_mute_key(&mut self, pressed: &KeyCombo) {
+    /// Does a call action of a key: the actions that need no window. Returns false for
+    /// another action, which a window does.
+    pub fn perform_call_action(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
+        match action {
+            KeyAction::ToggleMute => self.toggle_mute(),
+            KeyAction::ToggleSoundOff => {
+                let off = self.calls.view().deafened;
+                self.set_sound_off(!off);
+            }
+            KeyAction::ToggleCamera => {
+                if let Some(camera) = self.camera_action() {
+                    self.use_camera(&camera, cx);
+                }
+            }
+            KeyAction::LeaveCall => {
+                if self.calls.view().call.is_some() {
+                    self.leave_call(cx);
+                }
+            }
+            KeyAction::AnswerCall | KeyAction::DeclineCall => {
+                if let Some(invited) = self.view().invitations.first().cloned() {
+                    if action == KeyAction::AnswerCall {
+                        self.accept_invitation(&invited, cx);
+                    } else {
+                        self.decline_invitation(&invited, cx);
+                    }
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The keys of push to mute are held or let go in a window (`Some`) or on the keyboard
+    /// of the system (`None`): while any holds them, an open microphone of the call is
+    /// closed, and it opens again when the last one lets them go. Push to talk is
+    /// [`AppState::window_talking`].
+    pub fn hold_action(&mut self, window: Option<gpui::EntityId>, action: KeyAction, held: bool) {
+        if action != KeyAction::PushToMute {
+            return;
+        }
+        if held {
+            self.mute_holds.insert(window);
+        } else {
+            self.mute_holds.remove(&window);
+        }
+        let calls = self.calls.view();
+        let Some(call) = &calls.call else {
+            self.mute_holds.clear();
+            self.muted_by_hold = false;
+            return;
+        };
+        if !self.mute_holds.is_empty() && !calls.muted {
+            self.calls.mute();
+            self.muted_by_hold = true;
+        } else if self.mute_holds.is_empty() && std::mem::take(&mut self.muted_by_hold) {
+            self.calls.unmute_in(Some(&call.seat()));
+        }
+    }
+
+    /// True when the keyboard of the system gives the keys of `action` now: a window then
+    /// does not do the action a second time at the same press.
+    pub fn system_gives(&self, action: KeyAction) -> bool {
         let source = matches!(
             self.global_keys.state(),
             KeysState::Reading | KeysState::Portal
         );
-        if !source && self.voice().mute_key.as_ref() == Some(pressed) {
-            self.toggle_mute();
+        source
+            && self
+                .call_keys_told
+                .as_ref()
+                .is_some_and(|keys| keys.bindings.iter().any(|(bound, _)| *bound == action))
+    }
+
+    /// The keys of push to talk: the binding of the person, or the key of the sound settings
+    /// while the person did not change the binding (ADR 0507, ADR 0777).
+    pub fn talk_keys(&self) -> Option<KeyCombo> {
+        if self.keybinds.is_changed(KeyAction::PushToTalk) {
+            self.keybinds.get(KeyAction::PushToTalk).keys
+        } else {
+            Some(self.voice().talk_key.combo())
         }
     }
 
-    /// The keys that the call needs: the key of push to talk while push to talk is on, and
-    /// the key that mutes. None outside a call.
-    fn call_keys(&self) -> Option<CallKeys> {
-        self.known.media.calls.call.as_ref()?;
-        let voice = self.voice();
-        let keys = CallKeys {
-            talk: (voice.input_mode == InputMode::PushToTalk).then(|| voice.talk_key.combo()),
-            mute: voice.mute_key.clone(),
-        };
-        (keys.talk.is_some() || keys.mute.is_some()).then_some(keys)
+    /// The keys of `action` as they work now.
+    pub fn keys_of(&self, action: KeyAction) -> Option<KeyCombo> {
+        if action == KeyAction::PushToTalk {
+            self.talk_keys()
+        } else {
+            self.keybinds.get(action).keys
+        }
     }
 
-    /// Tells the source the keys that the call needs now, when they changed.
-    pub(super) fn follow_call_keys(&mut self) {
-        let wanted = self.call_keys();
+    /// The bindings that the keyboard of the system reads now: those that work while
+    /// another application is in front, while this device is in a call or a call rings for
+    /// it. Push to talk only while push to talk is on. None while nothing needs them.
+    fn call_keys(&self, snapshots: &[ServerSnapshot]) -> Option<CallKeys> {
+        let in_call = self.known.media.calls.call.is_some();
+        let ringing = snapshots.iter().any(|server| {
+            super::view::shown_model(server)
+                .is_some_and(|model| !model.incoming_invitations().is_empty())
+        });
+        if !in_call && !ringing {
+            return None;
+        }
+        let voice = self.voice();
+        let bindings: Vec<(KeyAction, KeyCombo)> = KeyAction::ALL
+            .into_iter()
+            .filter(|action| {
+                let binding = self.keybinds.get(*action);
+                action.may_work_outside() && binding.outside
+            })
+            .filter(|action| match action {
+                KeyAction::AnswerCall | KeyAction::DeclineCall => ringing,
+                KeyAction::PushToTalk => in_call && voice.input_mode == InputMode::PushToTalk,
+                _ => in_call,
+            })
+            .filter_map(|action| self.keys_of(action).map(|keys| (action, keys)))
+            .collect();
+        let keys = CallKeys { bindings };
+        (!keys.is_empty()).then_some(keys)
+    }
+
+    /// Tells the source the keys that the calls need now, when they changed.
+    pub(super) fn follow_call_keys(&mut self, snapshots: &[ServerSnapshot]) {
+        let wanted = self.call_keys(snapshots);
         if self.call_keys_told != wanted {
-            if wanted.is_none() {
+            let talks = wanted.as_ref().is_some_and(|keys| {
+                keys.bindings
+                    .iter()
+                    .any(|(action, _)| *action == KeyAction::PushToTalk)
+            });
+            if !talks && self.talking_globally {
                 self.talking_globally = false;
                 self.sync_talking();
             }
@@ -128,16 +241,69 @@ impl AppState {
         self.global_keys.state()
     }
 
-    /// Changes the key that mutes. Absent: no key.
-    pub fn set_mute_key(&mut self, key: Option<KeyCombo>, cx: &mut Context<Self>) {
-        self.change_voice(cx, move |voice| voice.mute_key = key.clone());
-        self.follow_call_keys();
-    }
-
     /// The calls send the microphone with push to talk while a window or the source of the
     /// system holds the key.
     pub(super) fn sync_talking(&mut self) {
         self.calls
             .set_talking(!self.talking_windows.is_empty() || self.talking_globally);
+    }
+
+    pub fn keybinds(&self) -> &Keybinds {
+        &self.keybinds
+    }
+
+    /// Changes the key bindings, uses them at once and writes the change to the settings
+    /// file on a background thread. Only this change is written, so that a second program
+    /// that changed another binding keeps it.
+    pub fn change_keybinds(
+        &mut self,
+        change: KeybindChange,
+        cx: &mut Context<Self>,
+    ) -> Result<(), KeybindError> {
+        change.apply(&mut self.keybinds)?;
+        let store = self.client.settings();
+        Self::queue_write(
+            cx,
+            move || store.update_keybinds(|stored| drop(change.apply(stored))),
+            |this, result, cx| {
+                this.keybinds_error = result
+                    .err()
+                    .map(|error| text::flow_error(&FlowError::Storage(error.to_string())));
+                cx.notify();
+            },
+        );
+        self.changed(cx);
+        Ok(())
+    }
+
+    /// Why the last change of the key bindings was not written.
+    pub fn keybinds_error(&self) -> Option<&str> {
+        self.keybinds_error.as_deref()
+    }
+}
+
+/// A change of the key bindings (ADR 0777).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeybindChange {
+    Set(KeyAction, Option<KeyCombo>),
+    Outside(KeyAction, bool),
+    Reset(KeyAction),
+    ResetAll,
+}
+
+impl KeybindChange {
+    fn apply(&self, keybinds: &mut Keybinds) -> Result<(), KeybindError> {
+        match self {
+            KeybindChange::Set(action, keys) => keybinds.set(*action, keys.clone()),
+            KeybindChange::Outside(action, outside) => keybinds.set_outside(*action, *outside),
+            KeybindChange::Reset(action) => {
+                keybinds.reset(*action);
+                Ok(())
+            }
+            KeybindChange::ResetAll => {
+                keybinds.reset_all();
+                Ok(())
+            }
+        }
     }
 }

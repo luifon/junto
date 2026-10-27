@@ -33,6 +33,8 @@ pub enum SettingsSection {
     Picture,
     Interface,
     Voice,
+    /// The key bindings (ADR 0777).
+    Keybinds,
     Quiet,
     Notifications,
     Devices,
@@ -40,11 +42,12 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
         Self::Voice,
+        Self::Keybinds,
         Self::Quiet,
         Self::Notifications,
         Self::Devices,
@@ -57,6 +60,7 @@ impl SettingsSection {
             Self::Picture => text::PICTURE,
             Self::Interface => text::INTERFACE,
             Self::Voice => text::VOICE,
+            Self::Keybinds => text::KEYBINDS,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
             Self::Devices => text::account::DEVICES_SECTION,
@@ -70,6 +74,7 @@ impl SettingsSection {
             Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
             Self::Voice => Icon::Microphone,
+            Self::Keybinds => Icon::Keyboard,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
             Self::Devices => Icon::Devices,
@@ -84,6 +89,7 @@ impl SettingsSection {
             Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
             Self::Voice => "settings-section-voice",
+            Self::Keybinds => "settings-section-keybinds",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
             Self::Devices => "settings-section-devices",
@@ -102,7 +108,7 @@ fn row_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(label)
 }
 
-fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mb(u(5.0))
         .typeface(theme.types.label, theme)
@@ -110,7 +116,7 @@ fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(label)
 }
 
-fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mt(u(5.0))
         .typeface(theme.types.small, theme)
@@ -118,7 +124,7 @@ fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(sentence)
 }
 
-fn help_owned(sentence: String, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn help_owned(sentence: String, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mt(u(5.0))
         .typeface(theme.types.small, theme)
@@ -265,6 +271,7 @@ impl Shell {
                 parts.extend(self.render_voice_settings(&theme, window, cx));
                 parts
             }
+            SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
             SettingsSection::Quiet => {
                 let quiet = self
                     .view
@@ -618,146 +625,6 @@ impl Shell {
         column.into_any_element()
     }
 
-    /// The key that mutes, with its recording, and how the keys of a call reach Junto on
-    /// this system (ADR 0776).
-    fn render_mute_key(
-        &mut self,
-        voice: &junto_client_core::voice::VoiceSettings,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        use junto_client_core::global_keys::{KeysState, Permission, ReadError};
-        let colors = theme.colors;
-        let recording = self.recording_mute_key;
-        let shown = match (&voice.mute_key, recording) {
-            (_, true) => text::PRESS_MUTE_KEY.to_owned(),
-            (Some(key), false) => text::key_combo(key),
-            (None, false) => text::NO_MUTE_KEY.to_owned(),
-        };
-        let mut row = div()
-            .flex()
-            .items_center()
-            .gap(u(10.0))
-            .mt(u(10.0))
-            .child(
-                div()
-                    .flex_none()
-                    .w(u(84.0))
-                    .typeface(theme.types.control, theme)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .ink(colors.ink)
-                    .child(text::MUTE_KEY),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .typeface(theme.types.control, theme)
-                    .ink(if recording {
-                        colors.terracotta_deep
-                    } else {
-                        colors.ink
-                    })
-                    .debug_selector(|| "mute-key".to_owned())
-                    .child(shown),
-            );
-        if !recording {
-            row = row.child(
-                Button::new("set-mute-key")
-                    .label(if voice.mute_key.is_some() {
-                        text::CHANGE_MUTE_KEY
-                    } else {
-                        text::SET_MUTE_KEY
-                    })
-                    .selector("set-mute-key")
-                    .h(u(28.0))
-                    .px(u(10.0))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.recording_mute_key = true;
-                        cx.notify();
-                    })),
-            );
-            if voice.mute_key.is_some() {
-                row = row.child(
-                    Button::new("remove-mute-key")
-                        .label(text::REMOVE_MUTE_KEY)
-                        .selector("remove-mute-key")
-                        .h(u(28.0))
-                        .px(u(10.0))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.set_mute_key(None, cx));
-                        })),
-                );
-            }
-        }
-        let mut rows = vec![
-            row.into_any_element(),
-            help(text::MUTE_KEY_HELP, theme).into_any_element(),
-        ];
-        let state = self.state.read(cx).global_keys_state();
-        let permission = junto_client_core::global_keys::input_monitoring();
-        let (reach, asks): (String, bool) = match state {
-            KeysState::Reading if cfg!(target_os = "macos") => {
-                (text::KEYS_ALLOWED.to_owned(), false)
-            }
-            KeysState::Reading => (text::KEYS_EVERYWHERE.to_owned(), false),
-            KeysState::Failed(ReadError::NotAllowed) => {
-                (text::KEYS_NEED_PERMISSION.to_owned(), true)
-            }
-            KeysState::Failed(ReadError::Failed(reason)) => {
-                (text::keys_portal_failed(&reason), false)
-            }
-            KeysState::Portal => (text::KEYS_PORTAL.to_owned(), false),
-            KeysState::PortalFailed(reason) => (text::keys_portal_failed(&reason), false),
-            KeysState::WindowOnly
-                if cfg!(target_os = "macos") && permission == Permission::NotGranted =>
-            {
-                (text::KEYS_NEED_PERMISSION.to_owned(), true)
-            }
-            KeysState::WindowOnly => (text::KEYS_WINDOW_ONLY.to_owned(), false),
-        };
-        rows.push(
-            div()
-                .debug_selector(|| "keys-reach".to_owned())
-                .child(help_owned(reach, theme))
-                .into_any_element(),
-        );
-        if asks && cfg!(target_os = "macos") {
-            rows.push(
-                div()
-                    .flex()
-                    .gap(u(8.0))
-                    .mt(u(6.0))
-                    .child(
-                        Button::new("allow-input-monitoring")
-                            .label(text::ALLOW_INPUT_MONITORING)
-                            .selector("allow-input-monitoring")
-                            .h(u(28.0))
-                            .px(u(10.0))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                junto_client_core::global_keys::request_input_monitoring();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("open-input-monitoring")
-                            .label(text::OPEN_INPUT_MONITORING)
-                            .selector("open-input-monitoring")
-                            .h(u(28.0))
-                            .px(u(10.0))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.open_url(
-                                    junto_client_core::global_keys::INPUT_MONITORING_SETTINGS,
-                                );
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
-        rows
-    }
-
     /// The sound settings that hold for every call: when the microphone is sent, the
     /// processing of the microphone, and the tones of call events (ADR 0507, ADR 0701,
     /// ADR 0707).
@@ -905,7 +772,32 @@ impl Shell {
             );
         }
         rows.push(help(text::INPUT_MODE_HELP, theme).into_any_element());
-        rows.extend(self.render_mute_key(&voice, theme, cx));
+        // The key that mutes, push to mute and the other keys of a call are in the Keybinds
+        // section (ADR 0777).
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .mt(u(10.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(help(text::CALL_KEYS_IN_KEYBINDS, theme)),
+                )
+                .child(
+                    Button::new("open-keybinds")
+                        .label(text::KEYBINDS)
+                        .selector("open-keybinds")
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_settings_section(SettingsSection::Keybinds, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        );
         if voice.input_mode == InputMode::VoiceActivation {
             rows.push(self.render_voice_threshold(voice.voice_threshold, theme, window, cx));
         }

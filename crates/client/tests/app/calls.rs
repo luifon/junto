@@ -1429,9 +1429,9 @@ fn the_tiles_of_the_people_fill_the_stage(cx: &mut TestAppContext) {
     }
 }
 
-/// The keys of a call (ADR 0776): the source of the system reads them only in a call; its key
-/// of push to talk sends the microphone, its key that mutes closes it; a window gives the key
-/// that mutes only while no source gives it.
+/// The keys of a call (ADR 0776, ADR 0777): the source of the system reads them only in a call;
+/// its key of push to talk sends the microphone, the default key that mutes (Control+Shift+M)
+/// closes it; a window gives the key that mutes only while no source gives it.
 #[gpui::test]
 fn the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window(cx: &mut TestAppContext) {
     use junto_client_core::global_keys::{HeldKeys, Key};
@@ -1447,7 +1447,6 @@ fn the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window(cx: &mu
     window.state.update(&mut window.cx, |state, cx| {
         state.install_held_keys(held.clone(), cx);
         state.set_input_mode(InputMode::PushToTalk, cx);
-        state.set_mute_key(Some("control+shift+m".parse().unwrap()), cx);
     });
     window.settle();
     let calls = window
@@ -1506,9 +1505,6 @@ fn the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window(cx: &mu
     // A start without a source: the window that is in front gives the key that mutes.
     let (_other_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
     window.click_channel("Daily");
-    window.state.update(&mut window.cx, |state, cx| {
-        state.set_mute_key(Some("control+shift+m".parse().unwrap()), cx);
-    });
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());

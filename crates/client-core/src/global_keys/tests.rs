@@ -1,4 +1,5 @@
 use super::*;
+use crate::keybinds::KeyAction::{PushToTalk, ToggleCamera, ToggleMute};
 
 fn combo(text: &str) -> KeyCombo {
     text.parse().unwrap()
@@ -24,61 +25,100 @@ fn a_combination_is_written_in_one_order_and_read_back() {
         assert!(text.parse::<KeyCombo>().is_err(), "{text}");
     }
     assert!(serde_json::from_str::<KeyCombo>("\"a+b\"").is_err());
-    assert_eq!(Key::all().count(), 4 + 26 + 10 + 24);
+    assert_eq!(
+        combo("control+alt+up").keys(),
+        [Key::Control, Key::Alt, Key::Up]
+    );
+    assert_eq!(combo("meta+,").to_string(), "meta+comma");
+    assert_eq!(combo("shift+pagedown").keys(), [Key::Shift, Key::PageDown]);
+    assert_eq!(Key::all().count(), 4 + 26 + 10 + 24 + 11);
+}
+
+/// When the held keys hold two bound combinations and one holds the other, only the larger
+/// one is a press.
+#[test]
+fn of_two_combinations_where_one_holds_the_other_only_the_larger_is_a_press() {
+    let keys = CallKeys {
+        bindings: vec![
+            (ToggleCamera, combo("shift+m")),
+            (ToggleMute, combo("control+shift+m")),
+        ],
+    };
+    let mut edges = Edges::default();
+    let (control, shift, m) = (Key::Control, Key::Shift, Key::Letter('M'));
+    assert_eq!(
+        edges.read(&keys, &[control, shift, m]),
+        [KeyEvent::Pressed(ToggleMute)]
+    );
+    assert_eq!(edges.read(&keys, &[shift, m]), []);
+    assert_eq!(edges.read(&keys, &[]), []);
+    assert_eq!(
+        edges.read(&keys, &[shift, m]),
+        [KeyEvent::Pressed(ToggleCamera)]
+    );
 }
 
 #[test]
 fn a_held_key_of_push_to_talk_gives_its_start_and_its_end() {
     let keys = CallKeys {
-        talk: Some(combo("alt")),
-        mute: None,
+        bindings: vec![(PushToTalk, combo("alt"))],
     };
     let mut edges = Edges::default();
     assert_eq!(edges.read(&keys, &[]), []);
-    assert_eq!(edges.read(&keys, &[Key::Alt]), [KeyEvent::Talk(true)]);
+    assert_eq!(
+        edges.read(&keys, &[Key::Alt]),
+        [KeyEvent::Held(PushToTalk, true)]
+    );
     // Held: nothing new, also with another key held beside it.
     assert_eq!(edges.read(&keys, &[Key::Alt, Key::Letter('K')]), []);
     assert_eq!(
         edges.read(&keys, &[Key::Letter('K')]),
-        [KeyEvent::Talk(false)]
+        [KeyEvent::Held(PushToTalk, false)]
     );
-    assert_eq!(edges.read(&keys, &[Key::Alt]), [KeyEvent::Talk(true)]);
+    assert_eq!(
+        edges.read(&keys, &[Key::Alt]),
+        [KeyEvent::Held(PushToTalk, true)]
+    );
     // The readings end while the key is held: the hold ends.
-    assert_eq!(edges.end(), [KeyEvent::Talk(false)]);
+    assert_eq!(edges.end(), [KeyEvent::Held(PushToTalk, false)]);
     assert_eq!(edges.end(), []);
 }
 
 #[test]
 fn the_key_that_mutes_fires_once_for_each_press() {
     let keys = CallKeys {
-        talk: None,
-        mute: Some(combo("control+shift+m")),
+        bindings: vec![(ToggleMute, combo("control+shift+m"))],
     };
     let mut edges = Edges::default();
     let (control, shift, m) = (Key::Control, Key::Shift, Key::Letter('M'));
     assert_eq!(edges.read(&keys, &[control, shift]), []);
     assert_eq!(
         edges.read(&keys, &[control, shift, m]),
-        [KeyEvent::ToggleMute]
+        [KeyEvent::Pressed(ToggleMute)]
     );
     assert_eq!(edges.read(&keys, &[control, shift, m]), []);
     assert_eq!(edges.read(&keys, &[control, shift]), []);
     assert_eq!(
         edges.read(&keys, &[control, shift, m]),
-        [KeyEvent::ToggleMute]
+        [KeyEvent::Pressed(ToggleMute)]
     );
     // The letter alone, or with one of the modifiers, is no press.
     assert_eq!(edges.read(&keys, &[m]), []);
     assert_eq!(edges.read(&keys, &[control, m]), []);
     // Both keys of a call in one reading.
     let both = CallKeys {
-        talk: Some(combo("alt")),
-        mute: Some(combo("control+shift+m")),
+        bindings: vec![
+            (PushToTalk, combo("alt")),
+            (ToggleMute, combo("control+shift+m")),
+        ],
     };
     let mut edges = Edges::default();
     assert_eq!(
         edges.read(&both, &[Key::Alt, control, shift, m]),
-        [KeyEvent::Talk(true), KeyEvent::ToggleMute]
+        [
+            KeyEvent::Held(PushToTalk, true),
+            KeyEvent::Pressed(ToggleMute)
+        ]
     );
     assert_eq!(both.keys(), [control, Key::Alt, shift, m]);
 }
@@ -117,24 +157,26 @@ fn the_poller_reads_only_while_a_call_needs_the_keys_and_tells_a_refusal() {
     assert_eq!(reader.readings(), 0);
 
     poller.set(Some(CallKeys {
-        talk: Some(combo("alt")),
-        mute: Some(combo("control+m")),
+        bindings: vec![(PushToTalk, combo("alt")), (ToggleMute, combo("control+m"))],
     }));
-    assert_eq!(until_events(&events, 1), [KeyEvent::Talk(true)]);
+    assert_eq!(until_events(&events, 1), [KeyEvent::Held(PushToTalk, true)]);
     reader.hold(Ok(vec![Key::Control, Key::Letter('M')]));
     assert_eq!(
         until_events(&events, 3),
         [
-            KeyEvent::Talk(true),
-            KeyEvent::Talk(false),
-            KeyEvent::ToggleMute
+            KeyEvent::Held(PushToTalk, true),
+            KeyEvent::Held(PushToTalk, false),
+            KeyEvent::Pressed(ToggleMute)
         ]
     );
     // The system refuses: the hold ends, and the poller tells why.
     reader.hold(Ok(vec![Key::Alt]));
     until_events(&events, 4);
     reader.hold(Err(ReadError::NotAllowed));
-    assert_eq!(until_events(&events, 5)[4], KeyEvent::Talk(false));
+    assert_eq!(
+        until_events(&events, 5)[4],
+        KeyEvent::Held(PushToTalk, false)
+    );
     assert_eq!(poller.failure(), Some(ReadError::NotAllowed));
     reader.hold(Ok(Vec::new()));
     let started = std::time::Instant::now();

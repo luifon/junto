@@ -1,12 +1,14 @@
 //! The settings of the interface that belong to one installation and to no server: the
-//! interface scale, the theme and the form of the server book (ADR 0703, ADR 0710).
+//! interface scale, the theme, the form of the server book (ADR 0703, ADR 0710) and the key
+//! bindings (ADR 0777).
 
 use serde::{Deserialize, Serialize};
 
+use crate::keybinds::Keybinds;
 use crate::paths::{DataDir, SETTINGS_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+pub const SETTINGS_FORMAT_VERSION: u32 = 2;
 
 /// The narrowest and the widest interface scale, in percent (ADR 0703).
 pub const SCALE_MIN_PERCENT: u32 = 90;
@@ -16,9 +18,19 @@ const SETTINGS: Versioned = Versioned {
     name: SETTINGS_FILE,
     kind: "settings",
     version: SETTINGS_FORMAT_VERSION,
-    migrations: &[],
+    migrations: &[key_bindings],
     limit: 64 * 1024,
 };
+
+/// Version 1 had no key bindings: every action has its default.
+fn key_bindings(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    value
+        .as_object_mut()
+        .ok_or("the settings are not an object")?
+        .entry("keybinds")
+        .or_insert(serde_json::json!({}));
+    Ok(value)
+}
 
 /// The theme that the person chose. `System` follows the light or dark appearance of the
 /// system.
@@ -58,6 +70,8 @@ struct SettingsFile {
     server_book_collapsed: bool,
     #[serde(default)]
     theme: ThemeChoice,
+    #[serde(default)]
+    keybinds: Keybinds,
 }
 
 #[derive(Debug, Clone)]
@@ -73,16 +87,26 @@ impl SettingsStore {
     /// The stored settings, or the defaults when there is no file. A scale outside its
     /// range is read as the nearest bound.
     pub fn load(&self) -> Result<InterfaceSettings, StorageError> {
+        Ok(self.load_all()?.0)
+    }
+
+    /// The stored key bindings, or the defaults when there is no file.
+    pub fn load_keybinds(&self) -> Result<Keybinds, StorageError> {
+        Ok(self.load_all()?.1)
+    }
+
+    fn load_all(&self) -> Result<(InterfaceSettings, Keybinds), StorageError> {
         let Some(file) = SETTINGS.load::<SettingsFile>(self.data_dir.files())? else {
-            return Ok(InterfaceSettings::default());
+            return Ok((InterfaceSettings::default(), Keybinds::default()));
         };
-        Ok(InterfaceSettings {
+        let settings = InterfaceSettings {
             scale_percent: file
                 .scale_percent
                 .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
             server_book_collapsed: file.server_book_collapsed,
             theme: file.theme,
-        })
+        };
+        Ok((settings, file.keybinds.checked()))
     }
 
     /// Replaces the stored settings. See [`SettingsStore::update`] for a file that cannot
@@ -103,32 +127,43 @@ impl SettingsStore {
         &self,
         change: impl FnOnce(&mut InterfaceSettings),
     ) -> Result<InterfaceSettings, StorageError> {
+        Ok(self.update_all(|settings, _| change(settings))?.0)
+    }
+
+    /// As [`SettingsStore::update`], for the key bindings.
+    pub fn update_keybinds(
+        &self,
+        change: impl FnOnce(&mut Keybinds),
+    ) -> Result<Keybinds, StorageError> {
+        Ok(self.update_all(|_, keybinds| change(keybinds))?.1)
+    }
+
+    fn update_all(
+        &self,
+        change: impl FnOnce(&mut InterfaceSettings, &mut Keybinds),
+    ) -> Result<(InterfaceSettings, Keybinds), StorageError> {
         let _lock = self.data_dir.lock()?;
-        let mut settings = match self.load() {
-            Ok(settings) => settings,
-            Err(StorageError::Corrupted { .. }) => InterfaceSettings::default(),
+        let (mut settings, mut keybinds) = match self.load_all() {
+            Ok(stored) => stored,
+            Err(StorageError::Corrupted { .. }) => Default::default(),
             Err(other) => return Err(other),
         };
-        change(&mut settings);
+        change(&mut settings, &mut keybinds);
         settings.scale_percent = settings
             .scale_percent
             .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT);
-        self.write(settings)?;
-        Ok(settings)
-    }
-
-    fn write(&self, settings: InterfaceSettings) -> Result<(), StorageError> {
+        let keybinds = keybinds.checked();
         SETTINGS.store(
             self.data_dir.files(),
             &SettingsFile {
                 format_version: SETTINGS_FORMAT_VERSION,
-                scale_percent: settings
-                    .scale_percent
-                    .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
+                scale_percent: settings.scale_percent,
                 server_book_collapsed: settings.server_book_collapsed,
                 theme: settings.theme,
+                keybinds: keybinds.clone(),
             },
-        )
+        )?;
+        Ok((settings, keybinds))
     }
 }
 
@@ -188,13 +223,13 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(SETTINGS_FILE);
-        let newer = r#"{"format_version":2,"scale_percent":110,"later":true}"#;
+        let newer = r#"{"format_version":3,"scale_percent":110,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
             Err(StorageError::NewerFormat {
-                found: 2,
-                supported: 1,
+                found: 3,
+                supported: 2,
                 ..
             })
         ));
@@ -216,7 +251,7 @@ mod tests {
         let file = data_dir.root().join(SETTINGS_FILE);
         // A file of a later format that holds more than this client reads of a settings file.
         let later = format!(
-            r#"{{"format_version":2,"scale_percent":110,"later":"{}"}}"#,
+            r#"{{"format_version":3,"scale_percent":110,"later":"{}"}}"#,
             "x".repeat(70 * 1024)
         );
         fs::write(&file, &later).unwrap();
@@ -226,6 +261,52 @@ mod tests {
             Err(StorageError::TooLarge { .. })
         ));
         assert_eq!(fs::read_to_string(&file).unwrap(), later);
+    }
+
+    /// A file of version 1 has no key bindings: every action has its default. A change of
+    /// the bindings keeps the interface settings, and the reverse (ADR 0777).
+    #[test]
+    fn a_file_of_version_1_has_the_default_bindings_and_each_change_keeps_the_other_part() {
+        use crate::keybinds::KeyAction;
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(SETTINGS_FILE);
+        fs::write(
+            &file,
+            r#"{"format_version":1,"scale_percent":120,"server_book_collapsed":true,"theme":"dark"}"#,
+        )
+        .unwrap();
+        assert_eq!(store.load_keybinds().unwrap(), Keybinds::default());
+        let keys: crate::global_keys::KeyCombo = "control+alt+c".parse().unwrap();
+        store
+            .update_keybinds(|keybinds| {
+                keybinds
+                    .set(KeyAction::ToggleCamera, Some(keys.clone()))
+                    .unwrap();
+            })
+            .unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"format_version\": 2"), "{text}");
+        assert!(text.contains("\"toggle_camera\""), "{text}");
+        let settings = store.load().unwrap();
+        assert_eq!(
+            (
+                settings.scale_percent,
+                settings.server_book_collapsed,
+                settings.theme
+            ),
+            (120, true, ThemeChoice::Dark)
+        );
+        store
+            .update(|settings| settings.scale_percent = 100)
+            .unwrap();
+        assert_eq!(
+            store
+                .load_keybinds()
+                .unwrap()
+                .get(KeyAction::ToggleCamera)
+                .keys,
+            Some(keys)
+        );
     }
 
     #[test]

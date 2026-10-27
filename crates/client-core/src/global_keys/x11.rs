@@ -27,6 +27,18 @@ fn symbols(key: Key) -> Vec<u32> {
         Key::Letter(letter) => vec![u32::from(letter), u32::from(letter.to_ascii_lowercase())],
         Key::Digit(digit) => vec![u32::from(b'0' + digit)],
         Key::Function(number) => vec![0xffbe + u32::from(number) - 1],
+        Key::Up => vec![0xff52],
+        Key::Down => vec![0xff54],
+        Key::Left => vec![0xff51],
+        Key::Right => vec![0xff53],
+        // Return, and Enter of the number block.
+        Key::Enter => vec![0xff0d, 0xff8d],
+        Key::Escape => vec![0xff1b],
+        Key::Backspace => vec![0xff08],
+        Key::PageUp => vec![0xff55],
+        Key::PageDown => vec![0xff56],
+        Key::Comma => vec![0x2c],
+        Key::Slash => vec![0x2f],
     }
 }
 

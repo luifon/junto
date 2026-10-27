@@ -59,6 +59,19 @@ fn codes(key: Key) -> &'static [u16] {
         Key::Function(number) => FUNCTIONS
             .get(usize::from(number).wrapping_sub(1))
             .map_or(&[], std::slice::from_ref),
+        Key::Up => &[0x7E],
+        Key::Down => &[0x7D],
+        Key::Left => &[0x7B],
+        Key::Right => &[0x7C],
+        // Return, and Enter of the number block.
+        Key::Enter => &[0x24, 0x4C],
+        Key::Escape => &[0x35],
+        // The Delete key of a Mac keyboard deletes backwards.
+        Key::Backspace => &[0x33],
+        Key::PageUp => &[0x74],
+        Key::PageDown => &[0x79],
+        Key::Comma => &[0x2B],
+        Key::Slash => &[0x2C],
     }
 }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The key that mutes and the keys that the system reads are the key bindings of ADR 0777 since then; the readers below read every binding that may work outside.
 
 ## Context
 
@@ -12,7 +12,7 @@ Push to talk worked only while a window of Junto was in front (ADR 0507), and Ju
 
 The keys:
 
-- The key of push to talk stays a modifier, Alt (Option on macOS) or Control (ADR 0507). The key that mutes and unmutes is new: one modifier or more (Control, Alt, Shift, the system key) with one letter, digit or function key from F1 to F24, set in the settings by pressing it; Escape stops the recording. It has no default. It is stored in the sound settings (format version 5; a file of version 4 has no key) as text such as `control+shift+m`; a key without a modifier is not kept, so that it does not fire while a person types.
+- The key of push to talk is the key of the sound settings, Alt (Option on macOS) or Control (ADR 0507), until the person sets another binding for it. The key that mutes and unmutes is the binding "Mute or unmute" (Control+Shift+M), and every other binding of ADR 0777 that may work outside follows the same path; they are kept in the settings file of the interface (ADR 0777), not in the sound settings.
 - A press of the key that mutes does what the button of the microphone does: it closes an open microphone of the call, and opens a closed one at the seat of the call (ADR 0788). Outside a call it does nothing. A microphone that the server holds closed stays closed.
 
 The source of the keys, in the client core (`global_keys`):
@@ -25,9 +25,9 @@ The source of the keys, in the client core (`global_keys`):
 
 The settings:
 
-- The section "Voice" shows the key that mutes, "Set key" or "Change key", and "Remove", and states how the keys reach Junto on this system: also while another application is in front (Windows, X11, macOS with the permission); on macOS without the permission, how to give it, with "Allow", which asks macOS, and "Open System Settings", which opens the page of Input Monitoring (the permissions of the operating system, ADR 0708); with the portal, that the desktop asks to confirm them; on a desktop without the portal or after its failure, that they work only while a window of Junto is in front.
+- The section "Keybinds" of the settings (ADR 0777) states how the keys reach Junto on this system: also while another application is in front (Windows, X11, macOS with the permission); on macOS without the permission, how to give it, with "Allow", which asks macOS, and "Open System Settings", which opens the page of Input Monitoring (the permissions of the operating system, ADR 0708); with the portal, that the desktop asks to confirm them; on a desktop without the portal or after its failure, that they work only while a window of Junto is in front. The section "Voice" points to it.
 
-Tests: `global_keys::tests` (the combinations, the edges, the reader loop with a failing reader), `global_keys::portal::tests` (a portal of a desktop on a private session bus: the binding when a call needs the keys, the presses and releases, a press outside a call, a refusal, a desktop without the portal), `voice::tests::a_file_of_version_4_has_no_key_that_mutes_and_one_is_kept`, the window tests `calls::the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window`, the X11 reader against the X server of the run with keys that `xdotool` presses (`global_keys::x11::tests`, step "Keys of a call read from the X server" of the Linux CI job), and the Windows reader with F24 pressed through `SendInput` (`global_keys::windows::tests`, step "Keys of a call read from the keyboard" of the Windows CI job). The reader of macOS and the permission are checked by a person on a Mac.
+Tests: `global_keys::tests` (the combinations, the edges, the reader loop with a failing reader), `global_keys::portal::tests` (a portal of a desktop on a private session bus: the binding when a call needs the keys, the presses and releases, a press outside a call, a refusal, a desktop without the portal), the window tests `calls::the_keys_of_a_call_reach_the_call_from_the_source_and_from_the_window`, the X11 reader against the X server of the run with keys that `xdotool` presses (`global_keys::x11::tests`, step "Keys of a call read from the X server" of the Linux CI job), and the Windows reader with F24 pressed through `SendInput` (`global_keys::windows::tests`, step "Keys of a call read from the keyboard" of the Windows CI job). The reader of macOS and the permission are checked by a person on a Mac.
 
 ## Consequences
 

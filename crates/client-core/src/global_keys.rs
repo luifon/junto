@@ -1,13 +1,15 @@
-//! The keys of a call in every application (ADR 0776): the key of push to talk and the key
-//! that mutes and unmutes the microphone, also while another application is in front. A
-//! reader of the keyboard of the system tells which keys are held, at a short interval while
-//! a call needs them; [`Edges`] turns those readings into the events of the call. Where no
+//! The keys of a call in every application (ADR 0776, ADR 0777): the key bindings that the
+//! person lets work while another application is in front, such as push to talk and the key
+//! that mutes. A reader of the keyboard of the system tells which keys are held, at a short
+//! interval while a call needs them; [`Edges`] turns those readings into events. Where no
 //! reader exists, the window gives the same events while it is in front.
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::keybinds::KeyAction;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -18,7 +20,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
-/// One key of the keyboard that a key of a call can use.
+/// One key of the keyboard that a key binding can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Key {
     Control,
@@ -33,21 +35,48 @@ pub enum Key {
     Digit(u8),
     /// A function key from F1 to F24.
     Function(u8),
+    Up,
+    Down,
+    Left,
+    Right,
+    Enter,
+    Escape,
+    Backspace,
+    PageUp,
+    PageDown,
+    Comma,
+    Slash,
 }
+
+/// The keys that are neither modifiers nor letters, digits or function keys.
+const NAMED: [(Key, &str); 11] = [
+    (Key::Up, "up"),
+    (Key::Down, "down"),
+    (Key::Left, "left"),
+    (Key::Right, "right"),
+    (Key::Enter, "enter"),
+    (Key::Escape, "escape"),
+    (Key::Backspace, "backspace"),
+    (Key::PageUp, "pageup"),
+    (Key::PageDown, "pagedown"),
+    (Key::Comma, "comma"),
+    (Key::Slash, "slash"),
+];
 
 impl Key {
     pub fn is_modifier(self) -> bool {
         matches!(self, Key::Control | Key::Alt | Key::Shift | Key::Meta)
     }
 
-    /// The keys that a reader reads: the modifiers, the letters, the digits and the function
-    /// keys.
+    /// The keys that a reader reads: the modifiers, the letters, the digits, the function
+    /// keys and the named keys.
     pub fn all() -> impl Iterator<Item = Key> {
         [Key::Control, Key::Alt, Key::Shift, Key::Meta]
             .into_iter()
             .chain(('A'..='Z').map(Key::Letter))
             .chain((0..=9).map(Key::Digit))
             .chain((1..=24).map(Key::Function))
+            .chain(NAMED.iter().map(|(key, _)| *key))
     }
 
     fn name(self) -> String {
@@ -59,6 +88,10 @@ impl Key {
             Key::Letter(letter) => letter.to_ascii_lowercase().to_string(),
             Key::Digit(digit) => digit.to_string(),
             Key::Function(number) => format!("f{number}"),
+            named => NAMED
+                .iter()
+                .find(|(key, _)| *key == named)
+                .map_or_else(String::new, |(_, name)| (*name).to_owned()),
         }
     }
 }
@@ -72,7 +105,16 @@ impl FromStr for Key {
             "control" | "ctrl" => Key::Control,
             "alt" | "option" => Key::Alt,
             "shift" => Key::Shift,
-            "meta" | "cmd" | "command" | "super" | "win" => Key::Meta,
+            "meta" | "cmd" | "command" | "super" | "win" | "platform" => Key::Meta,
+            // The names of gpui for the keys of a key press.
+            "return" => Key::Enter,
+            "esc" => Key::Escape,
+            "," => Key::Comma,
+            "/" => Key::Slash,
+            named if NAMED.iter().any(|(_, name)| *name == named) => NAMED
+                .iter()
+                .find(|(_, name)| *name == named)
+                .map_or(Key::Escape, |(key, _)| *key),
             _ => {
                 let mut chars = text.chars();
                 match (chars.next(), chars.next()) {
@@ -183,72 +225,92 @@ impl<'de> Deserialize<'de> for KeyCombo {
     }
 }
 
-/// What the keys of a call are, while a call needs them.
+/// The bindings that work while another application is in front, while a call needs them
+/// (ADR 0777): each action with its keys.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CallKeys {
-    /// The key of push to talk, while push to talk is on.
-    pub talk: Option<KeyCombo>,
-    /// The key that mutes and unmutes.
-    pub mute: Option<KeyCombo>,
+    pub bindings: Vec<(KeyAction, KeyCombo)>,
 }
 
 impl CallKeys {
     /// Every key that the readings need.
     pub fn keys(&self) -> Vec<Key> {
         let mut keys: Vec<Key> = self
-            .talk
+            .bindings
             .iter()
-            .chain(&self.mute)
-            .flat_map(|combo| combo.keys().iter().copied())
+            .flat_map(|(_, combo)| combo.keys().iter().copied())
             .collect();
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
     }
 }
 
 /// An event of the keys of a call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyEvent {
-    /// The key of push to talk is held now, or let go.
-    Talk(bool),
-    /// The key that mutes was pressed: the microphone changes between open and closed.
-    ToggleMute,
+    /// The keys of an action that lasts while they are held, push to talk or push to mute,
+    /// are held now, or let go.
+    Held(KeyAction, bool),
+    /// The keys of an action that happens once were pressed.
+    Pressed(KeyAction),
 }
 
-/// Turns readings of the held keys into events: the start and the end of a hold of the key of
-/// push to talk, and each press of the key that mutes. A press counts when the combination
-/// becomes held; holding it gives no second press.
+/// Turns readings of the held keys into events: the start and the end of a hold of the keys
+/// of a held action, and each press of the keys of another action. A press counts when its
+/// combination becomes held; holding it gives no second press. When the held keys hold two
+/// combinations and one holds the other, such as Control+Shift+M and Shift+M, only the larger
+/// one counts.
 #[derive(Debug, Default)]
 pub struct Edges {
-    talking: bool,
-    mute_held: bool,
+    /// The actions whose combinations the last reading held.
+    holding: Vec<KeyAction>,
 }
 
 impl Edges {
     pub fn read(&mut self, keys: &CallKeys, held: &[Key]) -> Vec<KeyEvent> {
-        let mut events = Vec::new();
-        let talking = keys.talk.as_ref().is_some_and(|talk| talk.held_in(held));
-        if talking != self.talking {
-            self.talking = talking;
-            events.push(KeyEvent::Talk(talking));
+        let holding: Vec<&(KeyAction, KeyCombo)> = keys
+            .bindings
+            .iter()
+            .filter(|(_, combo)| combo.held_in(held))
+            .collect();
+        let larger = |combo: &KeyCombo| {
+            holding.iter().any(|(_, other)| {
+                other.keys().len() > combo.keys().len() && combo.held_in(other.keys())
+            })
+        };
+        // The holds that end come before the presses and the holds that begin.
+        let mut events: Vec<KeyEvent> = self
+            .holding
+            .iter()
+            .filter(|action| action.holds() && !holding.iter().any(|(now, _)| now == *action))
+            .map(|action| KeyEvent::Held(*action, false))
+            .collect();
+        for (action, combo) in &holding {
+            if self.holding.contains(action) {
+                continue;
+            }
+            if action.holds() {
+                events.push(KeyEvent::Held(*action, true));
+            } else if !larger(combo) {
+                events.push(KeyEvent::Pressed(*action));
+            }
         }
-        let mute_held = keys.mute.as_ref().is_some_and(|mute| mute.held_in(held));
-        if mute_held && !self.mute_held {
-            events.push(KeyEvent::ToggleMute);
-        }
-        self.mute_held = mute_held;
+        self.holding = holding.iter().map(|(action, _)| *action).collect();
         events
     }
 
-    /// The readings end: a key of push to talk that was held is let go.
+    /// The readings end: the keys of a held action that were held are let go.
     pub fn end(&mut self) -> Vec<KeyEvent> {
-        self.mute_held = false;
-        if std::mem::take(&mut self.talking) {
-            vec![KeyEvent::Talk(false)]
-        } else {
-            Vec::new()
-        }
+        std::mem::take(&mut self.holding)
+            .into_iter()
+            .filter(|action| action.holds())
+            .map(|action| KeyEvent::Held(action, false))
+            .collect()
     }
 }
 

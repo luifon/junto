@@ -17,6 +17,7 @@ mod direct;
 mod feed;
 mod invited;
 mod join;
+mod keybinds;
 pub mod linking;
 mod main_area;
 mod notices;
@@ -48,7 +49,8 @@ use gpui_base::input::InputState;
 use junto_client_core::flow::add_server::AddServerFlow;
 use junto_client_core::global_keys::{Key, KeyCombo};
 use junto_client_core::protocol::ids::{AccountId, ServerId};
-use junto_client_core::voice::{InputMode, TalkKey};
+use junto_client_core::keybinds::KeyAction;
+use junto_client_core::voice::InputMode;
 
 use call::{CallTab, DeviceKind, VolumeControl};
 pub use search::FilterKind;
@@ -56,7 +58,7 @@ pub use settings::SettingsSection;
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;
-use crate::state::{AppState, LevelsChanged, OpenAdmin};
+use crate::state::{AppState, KeybindChange, LevelsChanged, OpenAdmin};
 use crate::text;
 use crate::theme::{self, theme};
 use crate::ui::{Field, FieldEvent, StyleExt, tabular_numerals};
@@ -210,8 +212,9 @@ pub struct Shell {
     /// The person chose push to talk in the settings, and the settings ask before the
     /// switch (ADR 0507).
     push_to_talk_question: bool,
-    /// The settings wait for the keys of a new key that mutes (ADR 0776).
-    recording_mute_key: bool,
+    /// The keys that the window holds, and the binding whose keys the settings wait for
+    /// (ADR 0777).
+    pub(crate) keys: keybinds::WindowKeys,
     /// The window of the last share that the desktop portal asked for, kept while its dialog
     /// can show: on Wayland it holds the export of the window (ADR 0751).
     share_dialog_parent: Option<crate::dialog_parent::DialogParent>,
@@ -669,7 +672,7 @@ impl Shell {
             focused_camera: std::cell::Cell::new(None),
             stage_area: std::rc::Rc::default(),
             push_to_talk_question: false,
-            recording_mute_key: false,
+            keys: keybinds::WindowKeys::default(),
             share_dialog_parent: None,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
@@ -809,42 +812,116 @@ impl Shell {
         self.call_tab
     }
 
-    /// The modifier keys changed. With push-to-talk, the chosen key sends the microphone
-    /// while it is held.
+    /// The modifier keys changed: the held keys of push to talk and push to mute change.
     fn modifiers_changed(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
-        let held = {
-            let voice = self.state.read(cx).voice();
-            voice.input_mode == InputMode::PushToTalk
-                && match voice.talk_key {
-                    TalkKey::Alt => modifiers.alt,
-                    TalkKey::Control => modifiers.control,
-                }
-        };
-        self.set_talking(held, cx);
+        self.keys.modifiers = modifiers;
+        self.follow_held_keys(cx);
     }
 
-    /// A key press in the window: the key that mutes, or the keys of a new key that mutes
-    /// while the settings wait for them (ADR 0776).
-    fn call_key_down(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
-        if self.recording_mute_key {
-            if keystroke.key == "escape" {
-                self.recording_mute_key = false;
+    /// The keys that the window holds now: its modifiers and the last key that went down.
+    fn held_keys(&self) -> Vec<Key> {
+        let modifiers = self.keys.modifiers;
+        [
+            (modifiers.control, Key::Control),
+            (modifiers.alt, Key::Alt),
+            (modifiers.shift, Key::Shift),
+            (modifiers.platform, Key::Meta),
+        ]
+        .into_iter()
+        .filter_map(|(held, key)| held.then_some(key))
+        .chain(self.keys.down)
+        .collect()
+    }
+
+    /// Push to talk and push to mute while the window holds their keys (ADR 0777).
+    fn follow_held_keys(&mut self, cx: &mut Context<Self>) {
+        let held = self.held_keys();
+        let (talks, mutes) = {
+            let state = self.state.read(cx);
+            let talks = state.voice().input_mode == InputMode::PushToTalk
+                && state.talk_keys().is_some_and(|keys| keys.held_in(&held));
+            let mutes = state
+                .keys_of(KeyAction::PushToMute)
+                .is_some_and(|keys| keys.held_in(&held));
+            (talks, mutes)
+        };
+        if talks != self.keys.talks {
+            self.keys.talks = talks;
+            self.set_talking(talks, cx);
+        }
+        if mutes != self.keys.mutes {
+            self.keys.mutes = mutes;
+            let id = cx.entity_id();
+            self.state.update(cx, |state, _| {
+                state.hold_action(Some(id), KeyAction::PushToMute, mutes)
+            });
+        }
+    }
+
+    /// A key press in the window: the keys of a new binding while the settings wait for them,
+    /// or the action of a binding (ADR 0777).
+    fn call_key_down(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(action) = self.keys.recording {
+            if keystroke.key == "escape" && !keystroke.modifiers.modified() {
+                self.keys.recording = None;
+                self.keys.refusal = None;
                 cx.stop_propagation();
                 cx.notify();
                 return;
             }
-            if let Some(pressed) = pressed_combo(keystroke).filter(KeyCombo::is_shortcut) {
-                self.recording_mute_key = false;
-                self.state
-                    .update(cx, |state, cx| state.set_mute_key(Some(pressed), cx));
+            if let Some(pressed) = pressed_combo(keystroke) {
+                let held_alone = pressed.keys().iter().all(|key| key.is_modifier());
+                if held_alone && !action.holds() {
+                    // A modifier alone waits for the rest of the combination.
+                    return;
+                }
+                let result = self.state.update(cx, |state, cx| {
+                    state.change_keybinds(KeybindChange::Set(action, Some(pressed)), cx)
+                });
+                match result {
+                    Ok(()) => {
+                        self.keys.recording = None;
+                        self.keys.refusal = None;
+                    }
+                    Err(error) => self.keys.refusal = Some(text::keybind_refused(&error)),
+                }
                 cx.stop_propagation();
                 cx.notify();
             }
             return;
         }
-        if let Some(pressed) = pressed_combo(keystroke) {
-            self.state
-                .update(cx, |state, _| state.window_mute_key(&pressed));
+        if let Ok(key) = keystroke.key.parse::<Key>()
+            && !key.is_modifier()
+        {
+            self.keys.down = Some(key);
+            self.follow_held_keys(cx);
+        }
+        let Some(pressed) = pressed_combo(keystroke) else {
+            return;
+        };
+        let action = self.state.read(cx).keybinds().action_for(&pressed);
+        let Some(action) = action.filter(|action| !action.holds()) else {
+            return;
+        };
+        // The keyboard of the system gives this binding already: a window would do it a
+        // second time.
+        if self.state.read(cx).system_gives(action) {
+            return;
+        }
+        cx.stop_propagation();
+        self.perform_key_action(action, window, cx);
+    }
+
+    /// A key went up in the window.
+    fn call_key_up(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if keystroke.key.parse::<Key>().ok() == self.keys.down {
+            self.keys.down = None;
+            self.follow_held_keys(cx);
         }
     }
 
@@ -1315,8 +1392,11 @@ impl Render for Shell {
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx);
             }))
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                this.call_key_down(&event.keystroke, cx);
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.call_key_down(&event.keystroke, window, cx);
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
+                this.call_key_up(&event.keystroke, cx);
             }))
             .when(frame, |shell| {
                 shell.child(self.render_title_strip(text::APP_NAME.into(), window, cx))

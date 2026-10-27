@@ -1562,10 +1562,14 @@ impl Shell {
         let interrupted = strip.phase == Phase::Reconnecting;
         // The input mode is stated while it is push to talk: the microphone sends nothing
         // until the key is held.
+        // The keys of push to talk as they work now: the binding of the person, or the key
+        // of the sound settings (ADR 0777).
         let push_to_talk = {
-            let voice = self.state.read(cx).voice();
-            (!interrupted && voice.input_mode == junto_client_core::voice::InputMode::PushToTalk)
-                .then_some(voice.talk_key)
+            let state = self.state.read(cx);
+            (!interrupted
+                && state.voice().input_mode == junto_client_core::voice::InputMode::PushToTalk)
+                .then(|| state.talk_keys())
+                .flatten()
         };
         let (ground, ink) = if interrupted {
             (colors.ochre, colors.ink)
@@ -1821,7 +1825,7 @@ impl Shell {
                     div()
                         .id("input-mode-mark")
                         .role(Role::Status)
-                        .aria_label(text::push_to_talk_mark(key))
+                        .aria_label(text::push_to_talk_mark(&key))
                         .debug_selector(|| "input-mode-mark".to_owned())
                         .tooltip(tooltip(text::PUSH_TO_TALK_MARK_HELP))
                         .flex()
@@ -1836,7 +1840,7 @@ impl Shell {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .child(text::push_to_talk_mark(key)),
+                                .child(text::push_to_talk_mark(&key)),
                         ),
                 )
             })
