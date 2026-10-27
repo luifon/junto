@@ -17,6 +17,7 @@ use junto_client_core::protocol::structure::ChannelKind;
 use crate::calls::{connected_call, show_call, voice_channel};
 use crate::harness::{Window, World, member};
 use crate::messages::{core_anchor, document};
+use crate::support::{Fault, FaultProxy, TestServer};
 
 /// The messages in a list: more than the window shows at once.
 const LINES: usize = 40;
@@ -397,13 +398,21 @@ fn a_wheel_up_over_a_list_that_fits_leaves_no_button_to_the_end(cx: &mut TestApp
     );
 }
 
-/// A page of older messages whose read failed and that the client core does not try again
-/// is asked for again when the person moves the list again, at the same number of rows
-/// (open item RP1 of the release round). Before, the list asked once per number of rows and
-/// never again.
-#[gpui::test]
-fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut TestAppContext) {
-    use crate::support::{Fault, FaultProxy};
+/// The reads of a page of older messages that went through the proxy.
+fn older_reads(proxy: &FaultProxy) -> usize {
+    proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.path.contains("/messages?") && seen.path.contains("before"))
+        .count()
+}
+
+/// A member's window on a channel of 120 messages, through a proxy that refused the read of
+/// the page before the loaded messages, a refusal that the client core does not try again.
+/// The list stands at its first row.
+fn older_page_refused(
+    cx: &mut TestAppContext,
+) -> (World, TestServer, FaultProxy, tempfile::TempDir, Window) {
     let world = World::new();
     let server = world.server("Pages");
     let admin = world.owner(&server);
@@ -422,19 +431,10 @@ fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut 
     for index in 0..120 {
         admin.send(&world, general, document(&format!("Message {index}")));
     }
-    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Member");
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Member");
     window.until_message("Message 119");
     assert!(window.feed().unwrap().more_before);
-    let older = |proxy: &FaultProxy| {
-        proxy
-            .all()
-            .iter()
-            .filter(|seen| seen.path.contains("/messages?") && seen.path.contains("before"))
-            .count()
-    };
-    assert_eq!(older(&proxy), 0);
-    // The server refuses the next page before the loaded messages, a refusal that the
-    // client core does not try again.
+    assert_eq!(older_reads(&proxy), 0);
     proxy.fail_ending("&limit=50", [Fault::Refused]);
     window.in_shell(|shell, _, cx| shell.show_feed_row(Pane::Main, 0, cx));
     window.until("the page before is refused", |window| {
@@ -442,7 +442,19 @@ fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut 
             .feed()
             .is_some_and(|feed| feed.reading.older_failed == 1 && !feed.reading.older)
     });
-    assert_eq!(older(&proxy), 1);
+    // The notice of the refusal takes its place above the list and asks for nothing.
+    window.settle();
+    assert_eq!(older_reads(&proxy), 1);
+    (world, server, proxy, directory, window)
+}
+
+/// A page of older messages whose read failed and that the client core does not try again
+/// is asked for again when the person moves the list again, at the same number of rows
+/// (open item RP1 of the release round). Before, the list asked once per number of rows and
+/// never again.
+#[gpui::test]
+fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut TestAppContext) {
+    let (_world, _server, proxy, _directory, mut window) = older_page_refused(cx);
     // The person moves the list at the same number of rows.
     window.in_shell(|shell, _, cx| shell.show_feed_row(Pane::Main, 2, cx));
     window.settle();
@@ -451,5 +463,25 @@ fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut 
         window.texts().iter().any(|text| text == "Message 69")
     });
     // The page is read again; its rows can lead the list to ask for the next older page.
-    assert!(older(&proxy) >= 2);
+    assert!(older_reads(&proxy) >= 2);
+}
+
+/// At its first row the list cannot move further up, and a turn of the wheel shows the same
+/// rows: that turn reads the refused page again too. Before, only a change of the first row
+/// in view did, and the list stayed without its older messages.
+#[gpui::test]
+fn a_page_whose_read_failed_is_read_again_at_a_turn_of_the_wheel_at_the_first_row(
+    cx: &mut TestAppContext,
+) {
+    let (_world, _server, proxy, _directory, mut window) = older_page_refused(cx);
+    let list = window.cx.debug_bounds("message-list").unwrap();
+    window.dispatch(ScrollWheelEvent {
+        position: list.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(120.0))),
+        ..Default::default()
+    });
+    window.until("the page before is read again", |window| {
+        window.texts().iter().any(|text| text == "Message 69")
+    });
+    assert!(older_reads(&proxy) >= 2);
 }

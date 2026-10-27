@@ -88,6 +88,8 @@ pub(crate) struct FeedList {
     again: (bool, bool),
     /// The first row in view at the last layout.
     start: Option<usize>,
+    /// The person scrolled the list since the last layout that the window acted on.
+    scrolled: bool,
 }
 
 /// Gives a list aligned to its end that stands at the bottom of its rows a row position just
@@ -191,6 +193,7 @@ impl FeedList {
             failed: (0, 0),
             again: (false, false),
             start: None,
+            scrolled: false,
         }
     }
 
@@ -244,6 +247,7 @@ impl FeedList {
             self.asked = (None, None);
             self.again = (false, false);
             self.start = None;
+            self.scrolled = false;
             self.list.reset(rows.len());
             // A list follows only rows that reach the end of the history.
             self.list.set_follow_mode(if self.more_after {
@@ -875,6 +879,14 @@ impl Shell {
             self.hovered_message = None;
             cx.notify();
         }
+        // A scroll at the first or the last row moves no row, and the layout after it shows
+        // the same rows: the window acts on that layout so that a failed page is read again.
+        let list = self.list_mut(pane);
+        if list.again.0 || list.again.1 {
+            list.scrolled = true;
+            list.handled.set(None);
+            cx.notify();
+        }
     }
 
     /// A layout of a list showed other rows, or changed its follow state, or the window
@@ -933,7 +945,7 @@ impl Shell {
         // not stand where the person goes: it reads no page and tells no position.
         let waits = feed.jump_waits;
         let (asked, again) = (self.list(pane).asked, self.list(pane).again);
-        let moved = self.list(pane).start != Some(shown.start);
+        let moved = self.list(pane).start != Some(shown.start) || self.list(pane).scrolled;
         let older = !waits
             && shown.start <= PAGE_MARGIN
             && feed.more_before
@@ -947,6 +959,7 @@ impl Shell {
             && (asked.1 != Some(shown.count) || (again.1 && moved));
         let list = self.list_mut(pane);
         list.start = Some(shown.start);
+        list.scrolled = false;
         if older {
             list.asked.0 = Some(shown.count);
             list.again.0 = false;
@@ -1293,8 +1306,9 @@ impl Shell {
         let pane = Pane::of(feed.place);
         // A read of a page that ended with a failure is asked for again at the next move of
         // the list, also at the same number of rows; otherwise the list would stay without
-        // the page after the client core stopped its tries (ADR 0740). A move is a change of
-        // the first row in view: a notice that makes the list shorter is none.
+        // the page after the client core stopped its tries (ADR 0740). A move is a scroll of the
+        // person or a change of the first row in view: a notice that makes the list shorter is
+        // none.
         let shown = self.list_mut(pane);
         if shown.failed.0 != feed.reading.older_failed {
             shown.again.0 = true;
