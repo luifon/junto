@@ -282,6 +282,7 @@ impl Shell {
                         // only while it is open.
                         if in_call {
                             this.call_panel_open = true;
+                            this.call_panel_hidden = false;
                         }
                     })),
             )

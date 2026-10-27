@@ -323,6 +323,7 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.show_call_tab(tab, cx);
                     this.call_panel_open = true;
+                    this.call_panel_hidden = false;
                 }))
                 .into_any_element()
         })
@@ -353,6 +354,7 @@ impl Shell {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.open_call_notices(cx);
                 this.call_panel_open = true;
+                this.call_panel_hidden = false;
                 cx.notify();
             }))
             .into_any_element()
@@ -1988,8 +1990,12 @@ impl Shell {
         } else {
             self.render_call_stage(panel, &theme, cx)
         };
-        let side = (!narrow || self.call_panel_open)
-            .then(|| self.render_call_panel(view, panel, narrow, window, cx));
+        let side = (if narrow {
+            self.call_panel_open
+        } else {
+            !self.call_panel_hidden
+        })
+        .then(|| self.render_call_panel(view, panel, narrow, window, cx));
         (stage, side)
     }
 

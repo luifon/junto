@@ -257,6 +257,8 @@ pub struct Shell {
     pub(crate) invitations_scroll: ScrollHandle,
     /// The panel of the call lies over the content of a narrow window.
     pub(crate) call_panel_open: bool,
+    /// The person closed the panel of the call beside the stage of a wide window.
+    pub(crate) call_panel_hidden: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
@@ -677,6 +679,7 @@ impl Shell {
             members_open: false,
             call_tab: CallTab::default(),
             call_panel_open: false,
+            call_panel_hidden: false,
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
             volumes: HashMap::new(),
@@ -1121,10 +1124,12 @@ impl Shell {
             }
             Open::CallTab(tab) => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(tab, cx);
             }
             Open::InputDevices => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(CallTab::Settings, cx);
                 self.open_device_menu(DeviceKind::Input, window, cx);
             }
@@ -1136,6 +1141,7 @@ impl Shell {
             }
             Open::RoomSettings => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(CallTab::Settings, cx);
                 self.call_settings_scroll.scroll_to_bottom();
             }
@@ -1144,6 +1150,7 @@ impl Shell {
             }
             Open::MemberPicker => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(CallTab::Members, cx);
                 if !self.invite_open {
                     self.toggle_member_picker(window, cx);
