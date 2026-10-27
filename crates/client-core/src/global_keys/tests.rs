@@ -31,7 +31,8 @@ fn a_combination_is_written_in_one_order_and_read_back() {
     );
     assert_eq!(combo("meta+,").to_string(), "meta+comma");
     assert_eq!(combo("shift+pagedown").keys(), [Key::Shift, Key::PageDown]);
-    assert_eq!(Key::all().count(), 4 + 26 + 10 + 24 + 11);
+    assert_eq!(Key::all().count(), 4 + 26 + 10 + 24 + 15);
+    assert_eq!(combo("meta+[").keys(), [Key::Meta, Key::BracketLeft]);
 }
 
 /// When the held keys hold two bound combinations and one holds the other, only the larger

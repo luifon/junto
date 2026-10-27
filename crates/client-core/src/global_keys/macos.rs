@@ -72,6 +72,10 @@ fn codes(key: Key) -> &'static [u16] {
         Key::PageDown => &[0x79],
         Key::Comma => &[0x2B],
         Key::Slash => &[0x2C],
+        Key::Equal => &[0x18],
+        Key::Minus => &[0x1B],
+        Key::BracketLeft => &[0x21],
+        Key::BracketRight => &[0x1E],
     }
 }
 

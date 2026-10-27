@@ -80,6 +80,37 @@ impl Shell {
                 }
             }
             KeyAction::ShowCall => self.state.update(cx, |state, cx| state.show_call(cx)),
+            // The panel of a call beside the stage (branch B builds its wide form).
+            KeyAction::ToggleCallPanel => {
+                if view.call.is_some() {
+                    self.call_panel_open = !self.call_panel_open;
+                    cx.notify();
+                }
+            }
+            KeyAction::Back => {
+                self.state.update(cx, |state, cx| state.go_back(cx));
+            }
+            KeyAction::Forward => {
+                self.state.update(cx, |state, cx| state.go_forward(cx));
+            }
+            KeyAction::OpenDirectMessages => {
+                let newest = view
+                    .lists()
+                    .and_then(|lists| lists.directs.first())
+                    .map(|row| row.id);
+                if let (Some(server), Some(conversation_id)) = (&view.selected, newest) {
+                    let server_id = server.id;
+                    self.state.update(cx, |state, cx| {
+                        state.select_conversation(server_id, conversation_id, cx);
+                    });
+                }
+            }
+            KeyAction::NewDirectMessage => {
+                if let Some(server) = &view.selected {
+                    let server_id = server.id;
+                    self.open_new_direct(server_id, window, cx);
+                }
+            }
             KeyAction::PreviousServer | KeyAction::NextServer => {
                 let ids: Vec<_> = view.servers.iter().map(|row| row.id).collect();
                 let current = view

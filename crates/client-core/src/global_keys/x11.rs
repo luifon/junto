@@ -39,6 +39,10 @@ fn symbols(key: Key) -> Vec<u32> {
         Key::PageDown => vec![0xff56],
         Key::Comma => vec![0x2c],
         Key::Slash => vec![0x2f],
+        Key::Equal => vec![0x3d],
+        Key::Minus => vec![0x2d],
+        Key::BracketLeft => vec![0x5b],
+        Key::BracketRight => vec![0x5d],
     }
 }
 

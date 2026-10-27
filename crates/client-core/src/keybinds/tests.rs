@@ -28,6 +28,23 @@ fn every_action_has_a_name_and_the_defaults_have_no_conflict() {
     assert_eq!(KeyAction::PushToTalk.default_keys(false), None);
 }
 
+/// No default takes the keys that later actions of the list take (the quick switcher and the
+/// zoom).
+#[test]
+fn no_default_takes_a_reserved_combination() {
+    for macos in [false, true] {
+        let reserved = KeyAction::reserved(macos);
+        assert_eq!(reserved.len(), 4);
+        for action in KeyAction::ALL {
+            if let Some(keys) = action.default_keys(macos) {
+                assert!(!reserved.contains(&keys), "{action:?} takes {keys}");
+            }
+        }
+    }
+    assert!(KeyAction::reserved(false).contains(&combo("control+k")));
+    assert!(KeyAction::reserved(true).contains(&combo("meta+equal")));
+}
+
 #[test]
 fn a_change_a_conflict_and_a_reset_of_a_binding() {
     let mut keybinds = Keybinds::default();

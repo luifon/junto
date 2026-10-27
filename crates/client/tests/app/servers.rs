@@ -110,7 +110,12 @@ impl Window {
 
 impl Admin {
     /// Writes to a person in the direct conversation with that person.
-    fn write_to(&self, world: &World, account_id: AccountId, text: &str) -> ConversationId {
+    pub(crate) fn write_to(
+        &self,
+        world: &World,
+        account_id: AccountId,
+        text: &str,
+    ) -> ConversationId {
         let api = self.handle.api();
         let conversation = world.run(api.open_conversation(account_id)).unwrap();
         let message = SendMessage {

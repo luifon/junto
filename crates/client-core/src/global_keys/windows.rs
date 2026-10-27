@@ -31,6 +31,11 @@ fn codes(key: Key) -> Vec<i32> {
         // VK_OEM_COMMA, and VK_OEM_2, the key of the slash on a US keyboard.
         Key::Comma => vec![0xBC],
         Key::Slash => vec![0xBF],
+        // VK_OEM_PLUS, VK_OEM_MINUS, VK_OEM_4 and VK_OEM_6 on a US keyboard.
+        Key::Equal => vec![0xBB],
+        Key::Minus => vec![0xBD],
+        Key::BracketLeft => vec![0xDB],
+        Key::BracketRight => vec![0xDD],
     }
 }
 

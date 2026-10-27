@@ -9,6 +9,7 @@ pub mod account;
 pub mod admin;
 pub mod book;
 mod call_keys;
+mod history;
 pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
@@ -432,6 +433,8 @@ pub struct AppState {
     /// keys of push to mute, and whether their hold closed the microphone.
     mute_holds: HashSet<Option<gpui::EntityId>>,
     muted_by_hold: bool,
+    /// The places that the window showed, for Back and Forward (ADR 0777).
+    history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
     /// What the call window does before it closes: it gives the text of its composer to
     /// the main window (ADR 0772).
@@ -879,6 +882,7 @@ impl AppState {
             keybinds_error: None,
             mute_holds: HashSet::new(),
             muted_by_hold: false,
+            history: history::History::default(),
             call_window: None,
             call_window_closing: None,
             call_window_settings,
@@ -2551,6 +2555,8 @@ impl AppState {
         }
         self.end_search_of_other_server(shown.server);
         self.drop_lost_search_filter(&snapshots, cx);
+        let before = self.shown;
+        self.follow_history(&before, &shown);
         self.shown = shown;
         self.follow_people(&view, &snapshots, cx);
         self.follow_followed(&view, cx);

@@ -41,6 +41,10 @@ fn keystroke(keys: &KeyCombo) -> String {
             Key::PageDown => "pagedown".to_owned(),
             Key::Comma => ",".to_owned(),
             Key::Slash => "/".to_owned(),
+            Key::Equal => "=".to_owned(),
+            Key::Minus => "-".to_owned(),
+            Key::BracketLeft => "[".to_owned(),
+            Key::BracketRight => "]".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("-")
@@ -246,4 +250,61 @@ fn a_call_binding_works_from_the_keyboard_of_the_system_when_it_may_work_outside
     assert!(window.state.read_with(&window.cx, |state, _| {
         state.system_gives(KeyAction::ToggleCamera)
     }));
+}
+
+/// Back and Forward go through the places that the window showed, and the keys of the direct
+/// messages show the newest conversation and open the dialog of a new one.
+#[gpui::test]
+fn back_forward_and_the_direct_messages_at_their_keys(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let plans = admin.text_channel(&world, &mut window, "plans");
+    window.click_channel("general");
+    let general = window.selected_channel();
+    window.click_channel("plans");
+    assert_eq!(window.selected_channel(), plans);
+
+    press_default(&mut window, KeyAction::Back);
+    window.until("Back shows general", |window| {
+        window.selected_channel() == general
+    });
+    press_default(&mut window, KeyAction::Forward);
+    window.until("Forward shows plans", |window| {
+        window.selected_channel() == plans
+    });
+    // A new visit forgets what Forward held.
+    window.click_channel("general");
+    press_default(&mut window, KeyAction::Forward);
+    window.settle();
+    assert_eq!(window.selected_channel(), general);
+
+    let luca = window.own_account();
+    let conversation = admin.write_to(&world, luca, "Hello from the administrator");
+    window.until("the conversation is listed", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation))
+    });
+    press_default(&mut window, KeyAction::OpenDirectMessages);
+    window.until("the newest conversation is shown", |window| {
+        window
+            .view()
+            .lists()
+            .and_then(|lists| lists.conversation.as_ref())
+            .is_some_and(|shown| shown.id == conversation)
+    });
+    // Back returns to the channel.
+    press_default(&mut window, KeyAction::Back);
+    window.until("Back shows general again", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.conversation.is_none())
+            && window.selected_channel() == general
+    });
+    press_default(&mut window, KeyAction::NewDirectMessage);
+    assert!(window.shows("new-direct-dialog"));
 }

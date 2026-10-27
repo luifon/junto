@@ -46,10 +46,14 @@ pub enum Key {
     PageDown,
     Comma,
     Slash,
+    Equal,
+    Minus,
+    BracketLeft,
+    BracketRight,
 }
 
 /// The keys that are neither modifiers nor letters, digits or function keys.
-const NAMED: [(Key, &str); 11] = [
+const NAMED: [(Key, &str); 15] = [
     (Key::Up, "up"),
     (Key::Down, "down"),
     (Key::Left, "left"),
@@ -61,6 +65,10 @@ const NAMED: [(Key, &str); 11] = [
     (Key::PageDown, "pagedown"),
     (Key::Comma, "comma"),
     (Key::Slash, "slash"),
+    (Key::Equal, "equal"),
+    (Key::Minus, "minus"),
+    (Key::BracketLeft, "bracketleft"),
+    (Key::BracketRight, "bracketright"),
 ];
 
 impl Key {
@@ -111,6 +119,10 @@ impl FromStr for Key {
             "esc" => Key::Escape,
             "," => Key::Comma,
             "/" => Key::Slash,
+            "=" => Key::Equal,
+            "-" => Key::Minus,
+            "[" => Key::BracketLeft,
+            "]" => Key::BracketRight,
             named if NAMED.iter().any(|(_, name)| *name == named) => NAMED
                 .iter()
                 .find(|(_, name)| *name == named)

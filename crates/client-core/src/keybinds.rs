@@ -1,5 +1,6 @@
-//! The key bindings of the person (ADR 0777): each action of the window that a key can do,
-//! its default key, and the keys that the person chose. Every binding works while a window
+//! The key bindings of the person (ADR 0777): the one list of every action of Junto that a
+//! key does, its default key, and the keys that the person chose. A later action of the
+//! window joins this list. Every binding works while a window
 //! of Junto is in front; a binding of a call action can also work while another application
 //! is in front, through the keys of the system (ADR 0776).
 
@@ -23,6 +24,9 @@ pub enum KeyAction {
     AnswerCall,
     DeclineCall,
     ShowCall,
+    ToggleCallPanel,
+    Back,
+    Forward,
     PreviousServer,
     NextServer,
     PreviousWorkspace,
@@ -41,6 +45,8 @@ pub enum KeyAction {
     MarkServerRead,
     ReplyToNewest,
     UploadFile,
+    OpenDirectMessages,
+    NewDirectMessage,
     OpenSettings,
     OpenAdministration,
     OpenKeybinds,
@@ -56,7 +62,7 @@ pub enum ActionGroup {
 }
 
 impl KeyAction {
-    pub const ALL: [KeyAction; 31] = [
+    pub const ALL: [KeyAction; 36] = [
         KeyAction::ToggleMute,
         KeyAction::ToggleSoundOff,
         KeyAction::PushToTalk,
@@ -67,6 +73,9 @@ impl KeyAction {
         KeyAction::AnswerCall,
         KeyAction::DeclineCall,
         KeyAction::ShowCall,
+        KeyAction::ToggleCallPanel,
+        KeyAction::Back,
+        KeyAction::Forward,
         KeyAction::PreviousServer,
         KeyAction::NextServer,
         KeyAction::PreviousWorkspace,
@@ -85,6 +94,8 @@ impl KeyAction {
         KeyAction::MarkServerRead,
         KeyAction::ReplyToNewest,
         KeyAction::UploadFile,
+        KeyAction::OpenDirectMessages,
+        KeyAction::NewDirectMessage,
         KeyAction::OpenSettings,
         KeyAction::OpenAdministration,
         KeyAction::OpenKeybinds,
@@ -94,8 +105,12 @@ impl KeyAction {
         use KeyAction::*;
         match self {
             ToggleMute | ToggleSoundOff | PushToTalk | PushToMute | ToggleCamera | ShareScreen
-            | LeaveCall | AnswerCall | DeclineCall | ShowCall => ActionGroup::Call,
-            PreviousServer
+            | LeaveCall | AnswerCall | DeclineCall | ShowCall | ToggleCallPanel => {
+                ActionGroup::Call
+            }
+            Back
+            | Forward
+            | PreviousServer
             | NextServer
             | PreviousWorkspace
             | NextWorkspace
@@ -109,7 +124,8 @@ impl KeyAction {
             | JumpToNewest
             | MembersList
             | PinnedMessages => ActionGroup::Navigation,
-            MarkChannelRead | MarkServerRead | ReplyToNewest | UploadFile => ActionGroup::Messages,
+            MarkChannelRead | MarkServerRead | ReplyToNewest | UploadFile | OpenDirectMessages
+            | NewDirectMessage => ActionGroup::Messages,
             OpenSettings | OpenAdministration | OpenKeybinds => ActionGroup::App,
         }
     }
@@ -157,7 +173,12 @@ impl KeyAction {
             | UploadFile
             | OpenSettings
             | OpenAdministration
-            | OpenKeybinds => "An action of the window of Junto",
+            | OpenKeybinds
+            | ToggleCallPanel
+            | Back
+            | Forward
+            | OpenDirectMessages
+            | NewDirectMessage => "An action of the window of Junto",
         }
     }
 
@@ -209,6 +230,12 @@ impl KeyAction {
             AnswerCall => &[Control, Enter],
             DeclineCall => &[Control, Shift, Backspace],
             ShowCall => &[Control, Alt, Letter('A')],
+            ToggleCallPanel => &[Control, Shift, Letter('P')],
+            // Discord and Slack: Alt and the arrows, Command and the brackets on macOS.
+            Back if macos => &[Meta, BracketLeft],
+            Back => &[Alt, Left],
+            Forward if macos => &[Meta, BracketRight],
+            Forward => &[Alt, Right],
             PreviousServer => &[main, Alt, Up],
             NextServer => &[main, Alt, Down],
             PreviousWorkspace => &[main, Shift, Up],
@@ -227,11 +254,26 @@ impl KeyAction {
             MarkServerRead => &[main, Shift, Escape],
             ReplyToNewest => &[main, Shift, Letter('R')],
             UploadFile => &[main, Shift, Letter('U')],
+            // Slack: the direct messages at Command+Shift+K.
+            OpenDirectMessages => &[main, Shift, Letter('K')],
+            NewDirectMessage => &[main, Letter('N')],
             OpenSettings => &[main, Comma],
             OpenAdministration => &[main, Shift, Comma],
             OpenKeybinds => &[main, Slash],
         };
         KeyCombo::new(keys.iter().copied()).ok()
+    }
+}
+
+impl KeyAction {
+    /// The keys that later actions of the list take, which no default of another action
+    /// takes: the quick switcher (Command or Control with K) and the zoom (with =, - and 0).
+    pub fn reserved(macos: bool) -> Vec<KeyCombo> {
+        let main = if macos { Key::Meta } else { Key::Control };
+        [Key::Letter('K'), Key::Equal, Key::Minus, Key::Digit(0)]
+            .into_iter()
+            .filter_map(|key| KeyCombo::new([main, key]).ok())
+            .collect()
     }
 }
 

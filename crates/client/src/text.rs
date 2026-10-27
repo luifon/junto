@@ -1068,6 +1068,9 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         AnswerCall => "Answer a call",
         DeclineCall => "Decline a call",
         ShowCall => "Show the call",
+        ToggleCallPanel => "Open or close the panel of the call",
+        Back => "Back",
+        Forward => "Forward",
         PreviousServer => "Previous server",
         NextServer => "Next server",
         PreviousWorkspace => "Previous workspace",
@@ -1086,6 +1089,8 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         MarkServerRead => "Mark the server as read",
         ReplyToNewest => "Reply to the newest message",
         UploadFile => "Upload a file",
+        OpenDirectMessages => "Direct messages",
+        NewDirectMessage => "New direct message",
         OpenSettings => "Settings",
         OpenAdministration => "Administration",
         OpenKeybinds => "Keybinds",
@@ -1169,6 +1174,10 @@ pub fn key_combo(combo: &junto_client_core::global_keys::KeyCombo) -> String {
             Key::PageDown => "Page Down".to_owned(),
             Key::Comma => ",".to_owned(),
             Key::Slash => "/".to_owned(),
+            Key::Equal => "=".to_owned(),
+            Key::Minus => "-".to_owned(),
+            Key::BracketLeft => "[".to_owned(),
+            Key::BracketRight => "]".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("+")

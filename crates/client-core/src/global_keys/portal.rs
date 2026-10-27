@@ -126,6 +126,10 @@ pub fn trigger(combo: &KeyCombo) -> String {
             Key::PageDown => "Page_Down".to_owned(),
             Key::Comma => "comma".to_owned(),
             Key::Slash => "slash".to_owned(),
+            Key::Equal => "equal".to_owned(),
+            Key::Minus => "minus".to_owned(),
+            Key::BracketLeft => "bracketleft".to_owned(),
+            Key::BracketRight => "bracketright".to_owned(),
         })
         .collect::<Vec<_>>()
         .join("+")
