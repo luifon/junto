@@ -1867,6 +1867,12 @@ impl Shell {
         }
     }
 
+    /// How many reads of pictures of messages the window started. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn picture_reads(&self) -> u64 {
+        self.message_pictures.held.reads()
+    }
+
     /// The owners for which the window holds the read picture of a file. A test uses it.
     #[cfg(feature = "test-support")]
     pub fn owners_of_picture(&self, attachment_id: AttachmentId) -> Vec<junto_client_core::Owner> {
@@ -1936,6 +1942,10 @@ impl Shell {
         let owner = self.state.read(cx).owner(server_id)?;
         let key = PictureKey::of(owner, attachment, self.message_pictures.fit);
         let pictures = &mut self.message_pictures;
+        let key = match pictures.held.get(&key) {
+            Some(_) => key,
+            None => pictures.held.covering(&key).unwrap_or(key),
+        };
         if pictures.held.touch(&key, cx.background_executor().now()) {
             return Some(key);
         }

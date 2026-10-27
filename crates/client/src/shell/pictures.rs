@@ -33,7 +33,8 @@ pub(crate) struct PictureKey {
     pub attachment_id: AttachmentId,
     pub sha256: String,
     /// The size in pixels of the device that the picture was reduced to fit. A window that
-    /// draws pictures larger after a change of its scale reads them again at that size.
+    /// draws pictures larger after a change of its scale reads them again at that size; a
+    /// window that draws them smaller uses the held copy ([`Pictures::covering`]).
     pub fit: (u32, u32),
 }
 
@@ -142,6 +143,30 @@ impl<Image: Weight> Pictures<Image> {
 
     pub(crate) fn get(&self, key: &PictureKey) -> Option<&Picture<Image>> {
         self.held.get(key).map(|held| &held.picture)
+    }
+
+    /// The key of the smallest read copy of the file of `key` for its owner that was reduced
+    /// to fit a size at least as large as `key.fit`: a picture drawn smaller after a change
+    /// of the scale of the window uses it, and nothing is read again (review M7).
+    pub(crate) fn covering(&self, key: &PictureKey) -> Option<PictureKey> {
+        self.held
+            .iter()
+            .filter(|(held, picture)| {
+                held.owner == key.owner
+                    && held.attachment_id == key.attachment_id
+                    && held.sha256 == key.sha256
+                    && held.fit.0 >= key.fit.0
+                    && held.fit.1 >= key.fit.1
+                    && matches!(picture.picture, Picture::Ready(_))
+            })
+            .min_by_key(|(held, _)| u64::from(held.fit.0) * u64::from(held.fit.1))
+            .map(|(held, _)| held.clone())
+    }
+
+    /// How many reads of pictures the window started. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn reads(&self) -> u64 {
+        self.reads
     }
 
     /// A drawing of the window starts. The pictures that it asks for are in use.

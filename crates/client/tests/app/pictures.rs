@@ -679,6 +679,47 @@ fn a_picture_larger_than_the_copy_of_the_lists_is_read_at_the_size_of_the_viewer
     window.press("escape");
 }
 
+/// A picture that the window holds is not read again when a smaller interface scale draws
+/// it smaller: the held copy covers the smaller size (review M7). A larger scale reads it
+/// again at its larger size.
+#[gpui::test]
+fn a_smaller_scale_draws_the_held_copy_of_a_picture_without_reading_it_again(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let sent = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "The plan",
+        vec![("plan.png", png(2400, 1200))],
+    );
+    let id = sent.attachments[0].id;
+    window.until_message("The plan");
+    until_picture_read(&mut window, id);
+    let reads = window.in_shell(|shell, _, _| shell.picture_reads());
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.set_scale(90, cx));
+    window.settle();
+    fits(&mut window, id, (2400.0, 1200.0), "at 90%");
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.picture_reads()),
+        reads,
+        "a smaller scale read the picture again"
+    );
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.set_scale(150, cx));
+    window.until("the larger copy is read", |window| {
+        window.in_shell(|shell, _, _| shell.picture_reads()) > reads
+    });
+}
+
 /// A read of a viewer that was closed never passes for the read of the next viewer: each
 /// read has its own number in the window (review M3). Two viewers once both numbered their
 /// first read 1, so the late answer of the first picture was shown under the second.
