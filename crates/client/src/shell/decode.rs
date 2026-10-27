@@ -369,9 +369,30 @@ impl Gate {
     }
 }
 
-/// Holds `bytes` of the gate of the process for a decoding (see [`Gate::reserve`]).
-pub(crate) async fn reserve(bytes: u64) -> Option<Reserved> {
-    Arc::clone(&DECODING).reserve(bytes).await
+/// The gate of every decoding of the process.
+pub(crate) fn decoding_gate() -> Arc<Gate> {
+    Arc::clone(&DECODING)
+}
+
+/// Reads a picture of `file` bytes with `read`, and returns its bytes with the bytes of the
+/// gate that its decoding to `plan` holds. The reservation comes before the read, so that the
+/// bound of the gate counts each file from the start of its read and not only from its
+/// decoding (review M6). `None` when the gate is gone.
+pub(crate) async fn read_within<Read, Failure>(
+    gate: Arc<Gate>,
+    file: u64,
+    stated: Stated,
+    plan: Plan,
+    read: impl FnOnce() -> Read,
+) -> Result<Option<(Vec<u8>, Reserved)>, Failure>
+where
+    Read: std::future::Future<Output = Result<Vec<u8>, Failure>>,
+{
+    let Some(reserved) = gate.reserve(decoding_bytes(file, stated, plan)).await else {
+        return Ok(None);
+    };
+    let bytes = read().await?;
+    Ok(Some((bytes, reserved)))
 }
 
 #[cfg(test)]
@@ -825,6 +846,43 @@ pub(crate) mod tests {
         ] {
             assert_eq!(Stated::of(&refused), None, "{refused:?}");
         }
+    }
+
+    /// A file is read only when its bytes and the bytes of its decoding fit next to the
+    /// decodings that run: three files of 30 MiB that waited outside the bound were held
+    /// beside a decoding of 8K (review M6).
+    #[test]
+    fn a_file_is_read_only_when_its_bytes_fit_in_the_bound() {
+        use futures_util::FutureExt as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let gate = Gate::new();
+        let full = Box::pin(Arc::clone(&gate).reserve(MOST_DECODING_BYTES))
+            .now_or_never()
+            .flatten();
+        assert!(full.is_some());
+        let started = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&started);
+        let stated = stated(100, 100, 1);
+        let plan = plan(stated, None, LIST_FRAME_BYTES);
+        let mut reading = Box::pin(read_within(
+            Arc::clone(&gate),
+            30 * 1024 * 1024,
+            stated,
+            plan,
+            move || {
+                flag.store(true, Ordering::SeqCst);
+                async { Ok::<_, ()>(vec![0; 16]) }
+            },
+        ));
+        assert!(reading.as_mut().now_or_never().is_none());
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "the file was read while the bound was full"
+        );
+        drop(full);
+        let read = reading.as_mut().now_or_never();
+        assert!(matches!(read, Some(Ok(Some(_)))));
+        assert!(started.load(Ordering::SeqCst));
     }
 
     #[test]

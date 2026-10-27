@@ -383,9 +383,9 @@ pub(super) fn picture_pixels(attachment: &Attachment) -> Option<(u32, u32)> {
 }
 
 /// Reads a picture of a message for `owner` and decodes it with the plan of `fit` and
-/// `budget` once its memory fits next to the other decodings (see [`decode::reserve`]).
-/// The failure of the read, or `Ok(None)` when the bytes are no picture that the window
-/// draws.
+/// `budget`. The read starts once the bytes of the file and of its decoding fit next to the
+/// other decodings (see [`decode::read_within`]). The failure of the read, or `Ok(None)`
+/// when the file is no picture that the window draws.
 pub(super) fn read_picture(
     this: &mut Shell,
     owner: junto_client_core::Owner,
@@ -396,17 +396,21 @@ pub(super) fn read_picture(
 ) -> impl std::future::Future<
     Output = Result<Option<Arc<RenderImage>>, junto_client_core::transfers::TransferFailure>,
 > + use<> {
-    let reading = this.state.read(cx).picture(owner, attachment);
+    let state = this.state.read(cx);
     let stated = Stated::of(attachment);
+    let file = attachment.bytes;
+    let attachment = attachment.clone();
+    let read = state.picture_read(owner);
     let executor = cx.background_executor().clone();
     async move {
-        let bytes = reading.await?;
         let Some(stated) = stated else {
             return Ok(None);
         };
         let plan = decode::plan(stated, fit, budget);
-        let memory = decode::decoding_bytes(bytes.len() as u64, stated, plan);
-        let Some(reserved) = decode::reserve(memory).await else {
+        let within = decode::read_within(decode::decoding_gate(), file, stated, plan, || {
+            read(&attachment)
+        });
+        let Some((bytes, reserved)) = within.await? else {
             return Ok(None);
         };
         Ok(executor
