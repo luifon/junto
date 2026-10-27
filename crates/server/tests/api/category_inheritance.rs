@@ -1,7 +1,7 @@
 use crate::support::{Member, TestServer};
 use junto_protocol::WorkspacePermission as W;
 use junto_protocol::ids::WorkspaceRoleId;
-use junto_protocol::structure::{Category, Channel, ChannelOverride};
+use junto_protocol::structure::{Category, Channel, PermissionRule};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
@@ -37,16 +37,17 @@ async fn fixture() -> (TestServer, Member, Category, Channel, WorkspaceRoleId) {
 #[tokio::test]
 async fn a_synced_channel_lists_its_inherited_rules() {
     let (server, owner, _, channel, role) = fixture().await;
-    let rules: Vec<ChannelOverride> = server
-        .get(
-            &owner,
-            &format!("/api/v1/channels/{}/overrides", channel.id),
-        )
+    let rules = server
+        .get(&owner, &format!("/api/v1/channels/{}/rules", channel.id))
         .await
-        .ok(StatusCode::OK);
-    assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0].role_id, role);
-    assert_eq!(rules[0].deny, [W::SendMessages]);
+        .ok::<junto_protocol::structure::ChannelRules>(StatusCode::OK)
+        .rules;
+    let role_rule = rules
+        .iter()
+        .find(|rule| rule.subject == junto_protocol::structure::RuleSubject::Role { role_id: role })
+        .unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(role_rule.deny, [W::SendMessages]);
 }
 
 #[tokio::test]
@@ -55,7 +56,7 @@ async fn an_identical_inherited_rule_keeps_the_channel_synced() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{role}", channel.id),
+            &format!("/api/v1/channels/{}/rules/roles/{role}", channel.id),
             &json!({"allow":[],"deny":["send_messages"]}),
         )
         .await
@@ -78,10 +79,10 @@ async fn an_identical_inherited_rule_keeps_the_channel_synced() {
 #[tokio::test]
 async fn changing_one_inherited_rule_copies_every_role_and_person_rule() {
     let (server, owner, category, channel, role) = fixture().await;
-    let changed: ChannelOverride = server
+    let changed: PermissionRule = server
         .patch(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{role}", channel.id),
+            &format!("/api/v1/channels/{}/rules/roles/{role}", channel.id),
             &json!({"permission":"add_reactions","state":"deny"}),
         )
         .await

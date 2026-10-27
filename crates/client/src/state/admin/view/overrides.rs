@@ -5,7 +5,7 @@
 use junto_client_core::model::{ServerModel, WorkspaceModel};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::WorkspaceRoleId;
-use junto_client_core::protocol::structure::{Channel, ChannelOverride, OverrideState};
+use junto_client_core::protocol::structure::{Channel, OverrideState, PermissionRule};
 
 use super::Listed;
 
@@ -119,7 +119,7 @@ pub struct PermissionsPage {
 
 /// What an override states about a permission. A permission in both sets, which the
 /// server does not store, counts as denied: that gives the role less.
-pub fn choice_of(current: Option<&ChannelOverride>, permission: WorkspacePermission) -> Choice {
+pub fn choice_of(current: Option<&PermissionRule>, permission: WorkspacePermission) -> Choice {
     match current {
         Some(held) if held.deny.contains(&permission) => Choice::Deny,
         Some(held) if held.allow.contains(&permission) => Choice::Allow,
@@ -141,7 +141,7 @@ pub const fn state_of(choice: Choice) -> OverrideState {
 /// channel private or open (ADR 0304): denied, or decided by the roles. Absent when the
 /// channel is private or open already; an allow of "view channel" stays in an open
 /// channel.
-pub fn private_state(current: Option<&ChannelOverride>, private: bool) -> Option<OverrideState> {
+pub fn private_state(current: Option<&PermissionRule>, private: bool) -> Option<OverrideState> {
     let denied = choice_of(current, WorkspacePermission::ViewChannel) == Choice::Deny;
     (denied != private).then_some(if private {
         OverrideState::Deny
@@ -160,13 +160,13 @@ pub fn derive(
     // What the person holds in the channel is the list that the server stated
     // (ADR 0310).
     let held = model.permissions_in(channel.id);
-    let roles = Listed::of(model.admin.overrides(channel.id), |overrides| {
+    let roles = Listed::of(model.admin.rules(channel.id), |rules| {
         let everyone = workspace.roles.iter().filter(|role| role.is_everyone);
         let others = workspace.roles.iter().filter(|role| !role.is_everyone);
         everyone
             .chain(others)
             .map(|role| {
-                let current = overrides.iter().find(|of| of.role_id == role.id);
+                let current = rules.of_role(role.id);
                 RoleLine {
                     id: role.id,
                     name: role.name.clone(),
@@ -204,7 +204,9 @@ mod tests {
     use junto_client_core::protocol::ids::{AccountId, ChannelId, StreamEpoch, WorkspaceId};
     use junto_client_core::protocol::roles::WorkspaceRole;
     use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
-    use junto_client_core::protocol::structure::{ChannelKind, Workspace};
+    use junto_client_core::protocol::structure::{
+        ChannelKind, ChannelRules, RuleSubject, Workspace,
+    };
 
     use super::*;
 
@@ -306,11 +308,20 @@ mod tests {
         role_id: WorkspaceRoleId,
         allow: &[WorkspacePermission],
         deny: &[WorkspacePermission],
-    ) -> ChannelOverride {
-        ChannelOverride {
-            role_id,
+    ) -> PermissionRule {
+        PermissionRule {
+            subject: RuleSubject::Role { role_id },
             allow: allow.to_vec(),
             deny: deny.to_vec(),
+        }
+    }
+
+    fn rules(channel_id: ChannelId, rules: Vec<PermissionRule>) -> ChannelRules {
+        ChannelRules {
+            channel_id,
+            category_id: None,
+            synced: false,
+            rules,
         }
     }
 
@@ -337,8 +348,11 @@ mod tests {
         }
 
         /// The overrides of the channel are read and hold these.
-        fn load(&mut self, overrides: Vec<ChannelOverride>) {
-            self.admin.overrides = vec![(self.general, Collection::Loaded(overrides))];
+        fn load(&mut self, overrides: Vec<PermissionRule>) {
+            self.admin.rules = vec![(
+                self.general,
+                Collection::Loaded(rules(self.general, overrides)),
+            )];
         }
 
         fn page(&self) -> PermissionsPage {
@@ -648,14 +662,15 @@ mod tests {
     #[test]
     fn the_page_waits_for_the_overrides_and_states_a_read_that_failed() {
         let mut scene = scene();
-        scene.admin.overrides = Vec::new();
+        scene.admin.rules = Vec::new();
         assert_eq!(scene.page().roles, Listed::Loading);
-        scene.admin.overrides = vec![(scene.general, Collection::Loading)];
+        scene.admin.rules = vec![(scene.general, Collection::Loading)];
         assert_eq!(scene.page().roles, Listed::Loading);
-        scene.admin.overrides = vec![(scene.general, Collection::Failed(LoadFailure::NotAllowed))];
+        scene.admin.rules = vec![(scene.general, Collection::Failed(LoadFailure::NotAllowed))];
         assert_eq!(scene.page().roles, Listed::Failed(LoadFailure::NotAllowed));
         // The overrides of another channel are not those of this one.
-        scene.admin.overrides = vec![(ChannelId::generate(), Collection::Loaded(Vec::new()))];
+        let other = ChannelId::generate();
+        scene.admin.rules = vec![(other, Collection::Loaded(rules(other, Vec::new())))];
         assert_eq!(scene.page().roles, Listed::Loading);
     }
 

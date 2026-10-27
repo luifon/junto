@@ -12,6 +12,7 @@ use junto_client::state::search::{DateFilter, Filters, ResultTarget, SearchPanel
 use junto_client::text;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, WorkspaceId};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{ChannelKind, SetChannelOverride};
 use sqlx::ConnectOptions;
 
@@ -343,7 +344,7 @@ fn a_search_reads_a_further_page_and_loses_the_results_of_a_hidden_channel(
         deny: vec![WorkspacePermission::ViewChannel],
     };
     world
-        .run(api.set_channel_override(general, everyone, &hide))
+        .run(api.set_channel_rule(general, RuleSubject::Role { role_id: everyone }, &hide))
         .unwrap();
     window.until("the results of the hidden channel are gone", |window| {
         window.search_panel().is_some_and(|panel| {
@@ -783,7 +784,7 @@ fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
         deny: vec![WorkspacePermission::ViewChannel],
     };
     world
-        .run(api.set_channel_override(general, everyone, &hide))
+        .run(api.set_channel_rule(general, RuleSubject::Role { role_id: everyone }, &hide))
         .unwrap();
     window.until("the results left the panel", |window| {
         window

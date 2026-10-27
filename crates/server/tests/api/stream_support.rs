@@ -232,7 +232,7 @@ impl TestServer {
         ] {
             self.put(
                 manager,
-                &format!("/api/v1/channels/{channel_id}/overrides/{role}"),
+                &format!("/api/v1/channels/{channel_id}/rules/roles/{role}"),
                 &json!({ "allow": allow, "deny": deny }),
             )
             .await

@@ -100,7 +100,7 @@ async fn audit_a_member_with_manage_roles_does_not_enter_a_channel_by_dropping_a
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{restricted}", closed.id),
+            &format!("/api/v1/channels/{}/rules/roles/{restricted}", closed.id),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -148,7 +148,7 @@ async fn set_override(
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{}/overrides/{role}", channel.id),
+            &format!("/api/v1/channels/{}/rules/roles/{role}", channel.id),
             &rule,
         )
         .await
@@ -302,7 +302,7 @@ async fn a_token_with_manage_members_takes_no_role_from_an_account() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{restricted}", closed.id),
+            &format!("/api/v1/channels/{}/rules/roles/{restricted}", closed.id),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -584,7 +584,7 @@ async fn token_workspace_role_deletion_checks_rank_and_denies_or_the_structure_a
         server
             .put(
                 &owner,
-                &format!("/api/v1/channels/{}/overrides/{}", channel.id, low.id),
+                &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, low.id),
                 &json!({"deny":["mute_members"]}),
             )
             .await

@@ -2,7 +2,7 @@ use junto_protocol::auth::ChallengeOperation;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::invite::JoinRequest;
 use junto_protocol::roles::WorkspaceRole;
-use junto_protocol::structure::{Channel, ChannelList, ChannelOverride};
+use junto_protocol::structure::{Channel, ChannelList, PermissionRule};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use junto_server::error::ApiResult;
 use junto_server::state::AppState;
@@ -287,7 +287,7 @@ async fn private_channel() -> PrivateChannel {
         &[W::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     PrivateChannel {
         server,
         owner,

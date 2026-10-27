@@ -11,7 +11,9 @@ use junto_protocol::export::Export;
 use junto_protocol::ids::{AccessTokenId, ChannelId, WorkspaceId};
 use junto_protocol::invite::{Invite, JoinRequest};
 use junto_protocol::roles::ServerRole;
-use junto_protocol::structure::{ArchivePeriod, ArchivedChannel, Channel, ChannelOverride};
+use junto_protocol::structure::{
+    ArchivePeriod, ArchivedChannel, Channel, ChannelRules, PermissionRule, RuleSubject,
+};
 
 use super::messages::positions;
 use super::*;
@@ -35,7 +37,7 @@ struct AdminRoutes {
     join_requests: Vec<JoinRequest>,
     exports: Vec<Export>,
     server_roles: Vec<ServerRole>,
-    overrides: Vec<ChannelOverride>,
+    rules: Vec<PermissionRule>,
     archived: Vec<ArchivedChannel>,
     tokens: Vec<AccessTokenInfo>,
     /// Every page of tokens after the first holds no token and names a further page.
@@ -108,8 +110,19 @@ impl AdminRoutes {
             json(&self.exports)
         } else if ends("/server-roles") {
             json(&self.server_roles)
-        } else if ends("/overrides") {
-            json(&self.overrides)
+        } else if ends("/rules") {
+            // `/api/v1/channels/{channel_id}/rules`: the answer names its channel.
+            let channel_id = path
+                .rsplit('/')
+                .nth(1)
+                .and_then(|id| id.parse().ok())
+                .unwrap();
+            json(&ChannelRules {
+                channel_id,
+                category_id: None,
+                synced: false,
+                rules: self.rules.clone(),
+            })
         } else if ends("/permissions") {
             // `/api/v1/channels/{channel_id}/permissions`: the answer names its channel.
             let channel_id = path
@@ -503,8 +516,8 @@ async fn a_read_that_fails_tells_its_reader_and_the_state_and_is_sent_again_on_d
             LoadFailure::NotAllowed,
         ),
         (
-            AdminPart::Overrides(general),
-            "/overrides",
+            AdminPart::Rules(general),
+            "/rules",
             404,
             "not_found",
             ErrorCode::NotFound,
@@ -537,7 +550,7 @@ async fn a_read_that_fails_tells_its_reader_and_the_state_and_is_sent_again_on_d
         Collection::Failed(LoadFailure::NotAllowed)
     );
     assert_eq!(
-        rig.model().admin.overrides(general),
+        rig.model().admin.rules(general),
         &Collection::Failed(LoadFailure::NotFound)
     );
 
@@ -554,15 +567,17 @@ async fn a_read_that_fails_tells_its_reader_and_the_state_and_is_sent_again_on_d
     assert_eq!(rig.http.count("/exports"), 1);
 
     // Each reader asks again, and the server answers.
-    let rule = ChannelOverride {
-        role_id: rig.scene.helpers,
+    let rule = PermissionRule {
+        subject: RuleSubject::Role {
+            role_id: rig.scene.helpers,
+        },
         allow: vec![WorkspacePermission::ManageMessages],
         deny: Vec::new(),
     };
-    admin.lock().unwrap().overrides = vec![rule.clone()];
+    admin.lock().unwrap().rules = vec![rule.clone()];
     for (part, end) in [
         (AdminPart::JoinRequests, "/join-requests"),
-        (AdminPart::Overrides(general), "/overrides"),
+        (AdminPart::Rules(general), "/rules"),
         (AdminPart::ServerRoles, "/server-roles"),
         (AdminPart::Exports, "/exports"),
     ] {
@@ -574,14 +589,19 @@ async fn a_read_that_fails_tells_its_reader_and_the_state_and_is_sent_again_on_d
         assert_eq!(rig.http.count(end), 2, "{part:?}");
     }
     assert_eq!(
-        rig.model().admin.overrides(general),
-        &Collection::Loaded(vec![rule])
+        rig.model().admin.rules(general),
+        &Collection::Loaded(ChannelRules {
+            channel_id: general,
+            category_id: None,
+            synced: false,
+            rules: vec![rule],
+        })
     );
 
     // A collection that is loaded is not read again.
-    rig.live.read_admin_again(AdminPart::Overrides(general));
+    rig.live.read_admin_again(AdminPart::Rules(general));
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(rig.http.count("/overrides"), 2);
+    assert_eq!(rig.http.count("/rules"), 2);
 }
 
 #[tokio::test(start_paused = true)]
@@ -703,7 +723,7 @@ async fn a_collection_of_a_place_that_the_state_does_not_hold_is_not_read() {
     for part in [
         AdminPart::Archived(WorkspaceId::generate()),
         AdminPart::WorkspaceSettings(WorkspaceId::generate()),
-        AdminPart::Overrides(ChannelId::generate()),
+        AdminPart::Rules(ChannelId::generate()),
     ] {
         let answer = soon("the answer", rig.live.open_admin(part)).await;
         assert!(matches!(answer, Err(LoadError::NotInState)), "{part:?}");
@@ -1382,18 +1402,20 @@ async fn a_workspace_that_is_deleted_during_the_read_of_its_collection_closes_th
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_channel_that_is_deleted_during_the_read_of_its_overrides_closes_the_overrides() {
+async fn a_channel_that_is_deleted_during_the_read_of_its_rules_closes_the_rules() {
     let (rig, peer, admin) = served_rig().await;
     let (workspace_id, general) = (rig.scene.workspace_id, rig.scene.general);
-    let part = AdminPart::Overrides(general);
-    admin.lock().unwrap().overrides = vec![ChannelOverride {
-        role_id: rig.scene.helpers,
+    let part = AdminPart::Rules(general);
+    admin.lock().unwrap().rules = vec![PermissionRule {
+        subject: RuleSubject::Role {
+            role_id: rig.scene.helpers,
+        },
         allow: vec![WorkspacePermission::ManageMessages],
         deny: Vec::new(),
     }];
-    let gate = rig.http.hold("/overrides");
+    let gate = rig.http.hold("/rules");
     let opening = rig.live.open_admin(part);
-    asked(&rig, "/overrides", 1).await;
+    asked(&rig, "/rules", 1).await;
 
     peer.event(
         41,
@@ -1417,12 +1439,12 @@ async fn a_channel_that_is_deleted_during_the_read_of_its_overrides_closes_the_o
     let model = rig.model();
     assert!(model.channel(general).is_none());
     assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
-    assert!(model.admin.overrides.is_empty());
+    assert!(model.admin.rules.is_empty());
 
     rig.live.release_admin(part);
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(*rig.model(), *model);
-    assert_eq!(rig.http.count("/overrides"), 1);
+    assert_eq!(rig.http.count("/rules"), 1);
 }
 
 #[tokio::test(start_paused = true)]

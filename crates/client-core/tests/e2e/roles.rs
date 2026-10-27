@@ -9,6 +9,7 @@ use junto_client_core::protocol::ids::{WorkspaceId, WorkspaceRoleId};
 use junto_client_core::protocol::roles::{
     CreateServerRole, CreateWorkspaceRole, ServerRolePosition, WorkspaceRolePosition,
 };
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::SetChannelOverride;
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
@@ -310,7 +311,7 @@ async fn the_lists_of_the_snapshot_follow_a_role_an_override_and_an_archived_cha
     };
     owner
         .api()
-        .set_channel_override(ideas.id, role.id, &deny)
+        .set_channel_rule(ideas.id, RuleSubject::Role { role_id: role.id }, &deny)
         .await
         .unwrap();
     let model = model_when(

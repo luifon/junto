@@ -26,9 +26,8 @@ use junto_protocol::roles::{
 };
 use junto_protocol::secret::{InviteCode, LinkCode};
 use junto_protocol::structure::{
-    Category, Channel, ChannelList, ChannelOverride, CreateCategory, CreateChannel,
-    CreateWorkspace, MoveChannels, SetChannelOverride, UpdateCategory, UpdateChannel,
-    UpdateWorkspace, Workspace, WorkspaceMember,
+    Category, Channel, ChannelList, CreateCategory, CreateChannel, CreateWorkspace, MoveChannels,
+    UpdateCategory, UpdateChannel, UpdateWorkspace, Workspace, WorkspaceMember,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -679,23 +678,5 @@ impl ServerApi {
     pub async fn delete_channel(&self, channel_id: ChannelId) -> Result<(), ApiError> {
         self.act(Method::Delete, format!("/channels/{channel_id}"))
             .await
-    }
-
-    pub async fn channel_overrides(
-        &self,
-        channel_id: ChannelId,
-    ) -> Result<Vec<ChannelOverride>, ApiError> {
-        self.get(format!("/channels/{channel_id}/overrides")).await
-    }
-
-    /// Sets the override of one role in one channel. Two empty sets remove it.
-    pub async fn set_channel_override(
-        &self,
-        channel_id: ChannelId,
-        role_id: WorkspaceRoleId,
-        sets: &SetChannelOverride,
-    ) -> Result<ChannelOverride, ApiError> {
-        let path = format!("/channels/{channel_id}/overrides/{role_id}");
-        self.send(Method::Put, path, sets).await
     }
 }

@@ -16,6 +16,7 @@ use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::discovery::{NotificationKind, NotificationLevel};
 use junto_client_core::protocol::ids::{AccountId, ChannelId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, SetChannelOverride};
 
 use crate::harness::{Admin, Window, World, member};
@@ -568,7 +569,7 @@ fn a_person_who_loses_a_channel_loses_its_notices_on_screen(cx: &mut TestAppCont
         deny: vec![WorkspacePermission::ViewChannel],
     };
     world
-        .run(api.set_channel_override(general, everyone, &hide))
+        .run(api.set_channel_rule(general, RuleSubject::Role { role_id: everyone }, &hide))
         .unwrap();
     window.until("the channel and its notice are gone", |window| {
         !window.channels().iter().any(|row| row.id == general)

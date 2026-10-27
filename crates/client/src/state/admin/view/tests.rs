@@ -16,7 +16,8 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::protocol::roles::WorkspaceRole;
 use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ArchivedChannel, Category, Channel, ChannelKind, ChannelOverride, Workspace,
+    ArchivePeriod, ArchivedChannel, Category, Channel, ChannelKind, ChannelRules, PermissionRule,
+    RuleSubject, Workspace,
 };
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use junto_client_core::version::SupportedVersions;
@@ -609,7 +610,7 @@ fn each_page_holds_open_the_collections_that_it_shows() {
             needs(&channel(page), &model, studio),
             [
                 AdminPart::Archived(scene.studio),
-                AdminPart::Overrides(scene.general)
+                AdminPart::Rules(scene.general)
             ]
         );
     }
@@ -755,35 +756,37 @@ fn a_channel_is_private_when_its_everyone_role_is_denied_the_view() {
         ChannelPageView::Overview(page) => page.privacy,
         _ => panic!("the overview is shown"),
     };
-    scene.admin.overrides = vec![(scene.general, Collection::Loading)];
+    let held = |rules: Vec<PermissionRule>| {
+        Collection::Loaded(ChannelRules {
+            channel_id: scene.general,
+            category_id: None,
+            synced: false,
+            rules,
+        })
+    };
+    let rule = |role_id, deny| PermissionRule {
+        subject: RuleSubject::Role { role_id },
+        allow: Vec::new(),
+        deny: vec![deny],
+    };
+    let (general, leads, everyone) = (scene.general, scene.leads, scene.everyone);
+    let read = [
+        held(Vec::new()),
+        held(vec![
+            rule(leads, WorkspacePermission::ViewChannel),
+            rule(everyone, WorkspacePermission::MentionEveryone),
+        ]),
+        held(vec![rule(everyone, WorkspacePermission::ViewChannel)]),
+    ];
+    scene.admin.rules = vec![(general, Collection::Loading)];
     assert_eq!(privacy(&scene), Privacy::Unknown);
-    scene.admin.overrides = vec![(scene.general, Collection::Loaded(Vec::new()))];
+    let [empty, others, denied] = read;
+    scene.admin.rules = vec![(general, empty)];
     assert_eq!(privacy(&scene), Privacy::Open);
     // A deny of another role, and another deny of the "everyone" role, keep it open.
-    scene.admin.overrides = vec![(
-        scene.general,
-        Collection::Loaded(vec![
-            ChannelOverride {
-                role_id: scene.leads,
-                allow: Vec::new(),
-                deny: vec![WorkspacePermission::ViewChannel],
-            },
-            ChannelOverride {
-                role_id: scene.everyone,
-                allow: Vec::new(),
-                deny: vec![WorkspacePermission::MentionEveryone],
-            },
-        ]),
-    )];
+    scene.admin.rules = vec![(general, others)];
     assert_eq!(privacy(&scene), Privacy::Open);
-    scene.admin.overrides = vec![(
-        scene.general,
-        Collection::Loaded(vec![ChannelOverride {
-            role_id: scene.everyone,
-            allow: Vec::new(),
-            deny: vec![WorkspacePermission::ViewChannel],
-        }]),
-    )];
+    scene.admin.rules = vec![(general, denied)];
     assert_eq!(privacy(&scene), Privacy::Private);
 }
 

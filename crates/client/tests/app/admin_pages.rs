@@ -1314,8 +1314,8 @@ fn the_owner_hides_a_channel_from_everyone_and_shows_it_again_on_the_permissions
         "the channel is shown to the member again",
         |model| model.channel(plans).is_some(),
     );
-    let stored = world.run(owner.api().channel_overrides(plans)).unwrap();
-    assert!(stored.is_empty(), "{stored:?}");
+    let stored = world.run(owner.api().channel_rules(plans)).unwrap();
+    assert!(stored.rules.is_empty(), "{stored:?}");
 }
 
 #[gpui::test]
@@ -1386,7 +1386,7 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
 
     // "Deny" works, and it reaches the client of the owner.
     world
-        .run(admin.handle.live().open_admin(AdminPart::Overrides(plans)))
+        .run(admin.handle.live().open_admin(AdminPart::Rules(plans)))
         .unwrap();
     let everyone = choose(&mut window, messages, Choice::Deny);
     until_model(
@@ -1396,15 +1396,10 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         |model| {
             model
                 .admin
-                .overrides(plans)
+                .rules(plans)
                 .loaded()
-                .is_some_and(|overrides| {
-                    overrides.iter().any(|held| {
-                        held.role_id == everyone.id
-                            && held.allow.is_empty()
-                            && held.deny == [messages]
-                    })
-                })
+                .and_then(|rules| rules.of_role(everyone.id))
+                .is_some_and(|held| held.allow.is_empty() && held.deny == [messages])
         },
     );
 
@@ -1427,11 +1422,16 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
     }
     click_in_page(&mut window, sel("override-clear", everyone.id));
     assert!(window.admin().is_none_or(|view| view.asks.is_empty()));
-    let stored = world.run(api.channel_overrides(plans)).unwrap();
+    let stored = world.run(api.channel_rules(plans)).unwrap().rules;
     assert_eq!(stored.len(), 1);
     assert_eq!(
-        (stored[0].role_id, stored[0].deny.as_slice()),
-        (everyone.id, [messages].as_slice())
+        (stored[0].subject, stored[0].deny.as_slice()),
+        (
+            junto_client_core::protocol::structure::RuleSubject::Role {
+                role_id: everyone.id
+            },
+            [messages].as_slice()
+        )
     );
 }
 

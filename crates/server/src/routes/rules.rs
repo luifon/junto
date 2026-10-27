@@ -266,7 +266,14 @@ pub async fn set_channel_role_rule(
     ApiJson(body): ApiJson<SetChannelOverride>,
 ) -> ApiResult<Json<PermissionRule>> {
     let change = Change::set(&body)?;
-    channel_rule(app, bearer, channel_id, RuleSubject::Role { role_id }, change).await
+    channel_rule(
+        app,
+        bearer,
+        channel_id,
+        RuleSubject::Role { role_id },
+        change,
+    )
+    .await
 }
 
 /// Changes one permission of the rule of a workspace role in a channel.
@@ -286,7 +293,14 @@ pub async fn change_channel_role_rule(
     ApiJson(body): ApiJson<ChangeChannelOverride>,
 ) -> ApiResult<Json<PermissionRule>> {
     let change = Change::one(&body);
-    channel_rule(app, bearer, channel_id, RuleSubject::Role { role_id }, change).await
+    channel_rule(
+        app,
+        bearer,
+        channel_id,
+        RuleSubject::Role { role_id },
+        change,
+    )
+    .await
 }
 
 /// Sets the allow set and the deny set of one member of the workspace in a channel. The
@@ -646,11 +660,7 @@ pub async fn change_category_role_rule(
 pub async fn set_category_person_rule(
     State(app): State<AppState>,
     bearer: Bearer,
-    ApiPath((workspace_id, category_id, account_id)): ApiPath<(
-        WorkspaceId,
-        CategoryId,
-        AccountId,
-    )>,
+    ApiPath((workspace_id, category_id, account_id)): ApiPath<(WorkspaceId, CategoryId, AccountId)>,
     ApiJson(body): ApiJson<SetChannelOverride>,
 ) -> ApiResult<Json<PermissionRule>> {
     let change = Change::set(&body)?;
@@ -676,11 +686,7 @@ pub async fn set_category_person_rule(
 pub async fn change_category_person_rule(
     State(app): State<AppState>,
     bearer: Bearer,
-    ApiPath((workspace_id, category_id, account_id)): ApiPath<(
-        WorkspaceId,
-        CategoryId,
-        AccountId,
-    )>,
+    ApiPath((workspace_id, category_id, account_id)): ApiPath<(WorkspaceId, CategoryId, AccountId)>,
     ApiJson(body): ApiJson<ChangeChannelOverride>,
 ) -> ApiResult<Json<PermissionRule>> {
     let change = Change::one(&body);

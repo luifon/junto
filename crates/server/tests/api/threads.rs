@@ -202,7 +202,10 @@ async fn rule_06_07_fork_copies_text_and_voice_with_category_permissions_and_mar
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -257,7 +260,10 @@ async fn rule_08_fork_requires_both_channel_and_workspace_management() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":["manage_channel"],"deny":[]}),
         )
         .await
@@ -281,7 +287,7 @@ async fn rule_08_fork_requires_both_channel_and_workspace_management() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, role),
+            &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role),
             &json!({"allow":[],"deny":["manage_channel"]}),
         )
         .await
@@ -731,7 +737,7 @@ async fn fix_a_fork_rechecks_source_access_after_an_overlapping_override() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, role),
+            &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role),
             &json!({"allow":[],"deny":["manage_channel"]}),
         )
         .await
@@ -1082,7 +1088,7 @@ async fn round2_unread_thread_snapshot_hides_revoked_channels() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", source.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", source.id, everyone.id),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -1113,7 +1119,7 @@ async fn round2_fork_marker_requires_destination_access() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", copy.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", copy.id, everyone.id),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -1216,7 +1222,10 @@ async fn rule_13_a_fork_records_and_tells_each_override_that_it_copies() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -1274,8 +1283,13 @@ async fn rule_13_a_fork_records_and_tells_each_override_that_it_copies() {
     let told = server.traffic(&owner, &mut stream).await;
     assert!(told.iter().any(|(_, event)| matches!(
         event,
-        Event::ChannelOverrideSet { channel_id, role_id, allow, deny, .. }
-            if *channel_id == copied.id
+        Event::PermissionRuleSet {
+            place: junto_protocol::structure::RulePlace::Channel { channel_id },
+            subject: junto_protocol::structure::RuleSubject::Role { role_id },
+            allow,
+            deny,
+            ..
+        } if *channel_id == copied.id
                 && *role_id == everyone.id
                 && allow.is_empty()
                 && *deny == [junto_protocol::WorkspacePermission::ViewChannel]

@@ -10,7 +10,8 @@ use junto_protocol::ids::{
 use junto_protocol::invite::{Invite, InviteRevocation, JoinRequest, JoinRequestState};
 use junto_protocol::roles::ServerRole;
 use junto_protocol::structure::{
-    ArchivePeriod, ArchivedChannel, Category, ChannelOverride, Workspace,
+    ArchivePeriod, ArchivedChannel, Category, ChannelRules, PermissionRule, RulePlace, RuleSubject,
+    Workspace,
 };
 use junto_protocol::{ServerPermission, WorkspacePermission};
 
@@ -24,6 +25,27 @@ fn archived(scene: &Scene, channel_id: ChannelId) -> ArchivedChannel {
         channel: model.channel(channel_id).unwrap().channel.clone(),
         archived_at: time(),
         deletes_at: Some(time() + time::Duration::days(30)),
+    }
+}
+
+fn rules_of(channel_id: ChannelId, rules: Vec<PermissionRule>) -> AdminPayload {
+    AdminPayload::Rules(ChannelRules {
+        channel_id,
+        category_id: None,
+        synced: false,
+        rules,
+    })
+}
+
+fn role_rule(
+    role_id: junto_protocol::ids::WorkspaceRoleId,
+    allow: Vec<WorkspacePermission>,
+    deny: Vec<WorkspacePermission>,
+) -> PermissionRule {
+    PermissionRule {
+        subject: RuleSubject::Role { role_id },
+        allow,
+        deny,
     }
 }
 
@@ -109,8 +131,8 @@ fn a_deleted_workspace_leaves_nothing_of_itself() {
     });
     loaded(
         &mut model,
-        AdminPart::Overrides(scene.general),
-        AdminPayload::Overrides(Vec::new()),
+        AdminPart::Rules(scene.general),
+        rules_of(scene.general, Vec::new()),
     );
     loaded(
         &mut model,
@@ -132,7 +154,7 @@ fn a_deleted_workspace_leaves_nothing_of_itself() {
     assert!(model.message_state(place).is_none());
     assert!(model.invitations.is_empty());
     assert_eq!(
-        model.admin.state(AdminPart::Overrides(scene.general)),
+        model.admin.state(AdminPart::Rules(scene.general)),
         CollectionState::NotLoaded
     );
     assert_eq!(
@@ -198,7 +220,7 @@ fn a_deleted_category_leaves_its_channels_without_a_category() {
 }
 
 #[test]
-fn a_deleted_workspace_role_leaves_the_roles_the_members_and_the_overrides() {
+fn a_deleted_workspace_role_leaves_the_roles_the_members_and_the_rules() {
     let scene = scene();
     let mut model = scene.model();
     let mut holder = member("Ana");
@@ -206,21 +228,24 @@ fn a_deleted_workspace_role_leaves_the_roles_the_members_and_the_overrides() {
     model.set_members(scene.workspace_id, Loadable::Loaded(vec![holder.clone()]));
     loaded(
         &mut model,
-        AdminPart::Overrides(scene.general),
-        AdminPayload::Overrides(vec![
-            ChannelOverride {
-                role_id: scene.helpers,
-                allow: vec![WorkspacePermission::ManageMessages],
-                deny: Vec::new(),
-            },
-            ChannelOverride {
-                role_id: scene.everyone,
-                allow: Vec::new(),
-                deny: vec![WorkspacePermission::ViewChannel],
-            },
-        ]),
+        AdminPart::Rules(scene.general),
+        rules_of(
+            scene.general,
+            vec![
+                role_rule(
+                    scene.helpers,
+                    vec![WorkspacePermission::ManageMessages],
+                    Vec::new(),
+                ),
+                role_rule(
+                    scene.everyone,
+                    Vec::new(),
+                    vec![WorkspacePermission::ViewChannel],
+                ),
+            ],
+        ),
     );
-    let part = AdminPart::Overrides(scene.general);
+    let part = AdminPart::Rules(scene.general);
     let event = Event::WorkspaceRoleDeleted {
         workspace_id: scene.workspace_id,
         role_id: scene.helpers,
@@ -234,9 +259,14 @@ fn a_deleted_workspace_role_leaves_the_roles_the_members_and_the_overrides() {
     assert_eq!(workspace.roles.len(), 2);
     assert!(workspace.own_role_ids.is_empty());
     assert!(workspace.members.loaded().unwrap()[0].role_ids.is_empty());
-    let overrides = model.admin.overrides(scene.general).loaded().unwrap();
-    assert_eq!(overrides.len(), 1);
-    assert_eq!(overrides[0].role_id, scene.everyone);
+    let rules = &model.admin.rules(scene.general).loaded().unwrap().rules;
+    assert_eq!(rules.len(), 1);
+    assert_eq!(
+        rules[0].subject,
+        RuleSubject::Role {
+            role_id: scene.everyone
+        }
+    );
 }
 
 #[test]
@@ -680,50 +710,139 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
 }
 
 #[test]
-fn the_overrides_of_a_channel_follow_their_events() {
+fn the_rules_of_a_channel_follow_their_events() {
     let scene = scene();
     let mut model = scene.model();
-    let part = AdminPart::Overrides(scene.general);
-    loaded(&mut model, part, AdminPayload::Overrides(Vec::new()));
+    let part = AdminPart::Rules(scene.general);
+    loaded(&mut model, part, rules_of(scene.general, Vec::new()));
+    let helpers = RuleSubject::Role {
+        role_id: scene.helpers,
+    };
     let set = |channel_id, allow: &[WorkspacePermission], deny: &[WorkspacePermission]| {
-        Event::ChannelOverrideSet {
+        Event::PermissionRuleSet {
             workspace_id: scene.workspace_id,
-            channel_id,
-            role_id: scene.helpers,
+            place: RulePlace::Channel { channel_id },
+            subject: helpers,
             allow: allow.to_vec(),
             deny: deny.to_vec(),
         }
     };
     let event = set(scene.general, &[WorkspacePermission::ManageMessages], &[]);
     assert!(part.concerns(&event));
-    assert!(!AdminPart::Overrides(scene.daily).concerns(&event));
+    assert!(!AdminPart::Rules(scene.daily).concerns(&event));
     model.apply(&event);
-    // The override of another channel does not change this list.
+    // The rule of another channel does not change this list.
     model.apply(&set(scene.daily, &[], &[WorkspacePermission::ViewChannel]));
     assert_eq!(
-        model.admin.overrides(scene.general).loaded().unwrap(),
-        &[ChannelOverride {
-            role_id: scene.helpers,
-            allow: vec![WorkspacePermission::ManageMessages],
-            deny: Vec::new(),
-        }]
+        model.admin.rules(scene.general).loaded().unwrap().rules,
+        [role_rule(
+            scene.helpers,
+            vec![WorkspacePermission::ManageMessages],
+            Vec::new(),
+        )]
     );
-    // Two empty sets mean that the role has no override.
-    model.apply(&set(scene.general, &[], &[]));
-    assert!(
+    // A person rule is held beside the role rule.
+    let reader = AccountId::generate();
+    model.apply(&Event::PermissionRuleSet {
+        workspace_id: scene.workspace_id,
+        place: RulePlace::Channel {
+            channel_id: scene.general,
+        },
+        subject: RuleSubject::Person { account_id: reader },
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::SendMessages],
+    });
+    assert_eq!(
         model
             .admin
-            .overrides(scene.general)
+            .rules(scene.general)
             .loaded()
             .unwrap()
-            .is_empty()
+            .rules
+            .len(),
+        2
     );
-    // The overrides of a deleted channel leave the state.
+    // Two empty sets mean that the subject has no rule.
+    model.apply(&set(scene.general, &[], &[]));
+    let held = &model.admin.rules(scene.general).loaded().unwrap().rules;
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].subject, RuleSubject::Person { account_id: reader });
+    // The rules of a deleted channel leave the state.
     model.apply(&Event::ChannelDeleted {
         workspace_id: scene.workspace_id,
         channel_id: scene.general,
     });
     assert_eq!(model.admin.state(part), CollectionState::NotLoaded);
+}
+
+#[test]
+fn a_synced_channel_follows_the_rules_of_its_category_and_is_read_again_after_a_sync_change() {
+    let scene = scene();
+    let mut model = scene.model();
+    let category_id = CategoryId::generate();
+    let part = AdminPart::Rules(scene.general);
+    let other = AdminPart::Rules(scene.daily);
+    loaded(
+        &mut model,
+        part,
+        AdminPayload::Rules(ChannelRules {
+            channel_id: scene.general,
+            category_id: Some(category_id),
+            synced: true,
+            rules: Vec::new(),
+        }),
+    );
+    loaded(
+        &mut model,
+        other,
+        AdminPayload::Rules(ChannelRules {
+            channel_id: scene.daily,
+            category_id: Some(category_id),
+            synced: false,
+            rules: Vec::new(),
+        }),
+    );
+    let event = Event::PermissionRuleSet {
+        workspace_id: scene.workspace_id,
+        place: RulePlace::Category { category_id },
+        subject: RuleSubject::Role {
+            role_id: scene.helpers,
+        },
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::AddReactions],
+    };
+    assert!(part.concerns(&event));
+    model.apply(&event);
+    assert_eq!(
+        model
+            .admin
+            .rules(scene.general)
+            .loaded()
+            .unwrap()
+            .rules
+            .len(),
+        1
+    );
+    // A channel that keeps its own rules does not take the rule of its category.
+    assert!(
+        model
+            .admin
+            .rules(scene.daily)
+            .loaded()
+            .unwrap()
+            .rules
+            .is_empty()
+    );
+
+    let synced = Event::ChannelRulesSynced {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.daily,
+        synced: true,
+    };
+    assert!(other.is_stale_after(&synced));
+    assert!(!part.is_stale_after(&synced));
+    let follow = model.apply(&synced);
+    assert_eq!(follow.load, [Part::Admin(other)]);
 }
 
 #[test]
@@ -1033,11 +1152,15 @@ fn the_flags_of_the_server_are_held_by_their_read_and_read_again_after_a_change_
             .workspace_role_actions(scene.workspace_id, scene.helpers),
         None
     );
-    // An override of a channel changes the grant ceiling of the roles of its workspace.
-    let overridden = Event::ChannelOverrideSet {
+    // A rule of a channel changes the grant ceiling of the roles of its workspace.
+    let overridden = Event::PermissionRuleSet {
         workspace_id: scene.workspace_id,
-        channel_id: scene.general,
-        role_id: scene.helpers,
+        place: RulePlace::Channel {
+            channel_id: scene.general,
+        },
+        subject: RuleSubject::Role {
+            role_id: scene.helpers,
+        },
         allow: vec![WorkspacePermission::ManageChannel],
         deny: Vec::new(),
     };

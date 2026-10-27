@@ -9,6 +9,7 @@ use junto_client::state::view::Allowed;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::roles::{CreateWorkspaceRole, UpdateWorkspaceRole};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::SetChannelOverride;
 
 use crate::admin_pages::{default_workspace, text_channel};
@@ -165,9 +166,11 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
     // person changed: the list of that channel is another one than the list of the
     // workspace, and the window reads it.
     world
-        .run(api.set_channel_override(
+        .run(api.set_channel_rule(
             general,
-            stewards.id,
+            RuleSubject::Role {
+                role_id: stewards.id,
+            },
             &SetChannelOverride {
                 allow: Vec::new(),
                 deny: vec![
@@ -192,9 +195,11 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
 
     // The override allows a permission that no role of the person gives.
     world
-        .run(api.set_channel_override(
+        .run(api.set_channel_rule(
             plans,
-            stewards.id,
+            RuleSubject::Role {
+                role_id: stewards.id,
+            },
             &SetChannelOverride {
                 allow: vec![WorkspacePermission::MoveMembers],
                 deny: Vec::new(),

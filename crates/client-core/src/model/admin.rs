@@ -1,6 +1,6 @@
 //! The collections of the administration (ADR 0760): what the snapshot does not carry and
 //! a person with the permissions reads and changes: accounts, invites, join requests,
-//! access tokens, exports, server roles, the overrides of a channel, the archived channels
+//! access tokens, exports, server roles, the rules of a channel, the archived channels
 //! and the settings of a workspace.
 //!
 //! A collection is read from its route when a reader opens it, follows the events from
@@ -19,7 +19,9 @@ use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, Works
 use junto_protocol::invite::{Invite, JoinRequest, JoinRequestState};
 use junto_protocol::message::AttachmentLimits;
 use junto_protocol::roles::{ListedServerRole, ListedWorkspaceRole, RoleActions, ServerRole};
-use junto_protocol::structure::{ArchivePeriod, ArchivedChannel, Channel, ChannelOverride};
+use junto_protocol::structure::{
+    ArchivePeriod, ArchivedChannel, Channel, ChannelRules, PermissionRule, RulePlace, RuleSubject,
+};
 
 use super::rank::sort_server_roles;
 use super::{PlaceId, ServerModel};
@@ -108,8 +110,8 @@ pub enum AdminPart {
     /// The largest file and the number of files of a message that the server accepts
     /// (ADR 0408).
     AttachmentLimits,
-    /// The overrides of the roles in one channel.
-    Overrides(ChannelId),
+    /// The rules of one channel, with whether it takes them from its category.
+    Rules(ChannelId),
     /// The archived channels of one workspace that the account sees.
     Archived(WorkspaceId),
     /// The archive period and the retention of one workspace.
@@ -157,7 +159,7 @@ pub(crate) enum AdminPayload {
     ServerRoles(Vec<ListedServerRole>),
     DirectRetention(Retention),
     AttachmentLimits(AttachmentLimits),
-    Overrides(Vec<ChannelOverride>),
+    Rules(ChannelRules),
     Archived(Vec<ArchivedChannel>),
     WorkspaceSettings(WorkspaceSettings),
     ChannelPermissions(Vec<WorkspacePermission>),
@@ -203,7 +205,7 @@ pub struct AdminModel {
     pub server_role_actions: RoleActionList<ServerRoleId>,
     pub direct_retention: Collection<Retention>,
     pub attachment_limits: Collection<AttachmentLimits>,
-    pub overrides: Vec<(ChannelId, Collection<Vec<ChannelOverride>>)>,
+    pub rules: Vec<(ChannelId, Collection<ChannelRules>)>,
     pub archived: Vec<(WorkspaceId, Collection<Vec<ArchivedChannel>>)>,
     pub settings: Vec<(WorkspaceId, Collection<WorkspaceSettings>)>,
     /// The permissions of the account in the archived channels that a reader asked for.
@@ -301,8 +303,8 @@ fn sort_archived(channels: &mut [ArchivedChannel]) {
 }
 
 impl AdminModel {
-    pub fn overrides(&self, channel_id: ChannelId) -> &Collection<Vec<ChannelOverride>> {
-        keyed(&self.overrides, channel_id)
+    pub fn rules(&self, channel_id: ChannelId) -> &Collection<ChannelRules> {
+        keyed(&self.rules, channel_id)
     }
 
     pub fn archived(&self, workspace_id: WorkspaceId) -> &Collection<Vec<ArchivedChannel>> {
@@ -415,7 +417,7 @@ impl AdminModel {
             AdminPart::ServerRoles => state_of(&self.server_roles),
             AdminPart::DirectRetention => state_of(&self.direct_retention),
             AdminPart::AttachmentLimits => state_of(&self.attachment_limits),
-            AdminPart::Overrides(channel_id) => state_of(self.overrides(channel_id)),
+            AdminPart::Rules(channel_id) => state_of(self.rules(channel_id)),
             AdminPart::Archived(workspace_id) => state_of(self.archived(workspace_id)),
             AdminPart::WorkspaceSettings(workspace_id) => {
                 state_of(self.workspace_settings(workspace_id))
@@ -495,9 +497,7 @@ impl AdminModel {
         // there (ADR 0764).
         reading_keyed(&mut self.role_actions, in_scope);
         reading_keyed(&mut self.glossaries, in_scope);
-        reading_keyed(&mut self.overrides, |channel_id| {
-            channels.contains(&channel_id)
-        });
+        reading_keyed(&mut self.rules, |channel_id| channels.contains(&channel_id));
         reading_keyed(&mut self.channel_permissions, |channel_id| {
             channels.contains(&channel_id)
         });
@@ -542,8 +542,8 @@ impl AdminModel {
                 AdminPart::ServerRoles => mark_loading(&mut self.server_roles),
                 AdminPart::DirectRetention => mark_loading(&mut self.direct_retention),
                 AdminPart::AttachmentLimits => mark_loading(&mut self.attachment_limits),
-                AdminPart::Overrides(channel_id) => {
-                    mark_keyed_loading(&mut self.overrides, channel_id);
+                AdminPart::Rules(channel_id) => {
+                    mark_keyed_loading(&mut self.rules, channel_id);
                 }
                 AdminPart::Archived(workspace_id) => {
                     mark_keyed_loading(&mut self.archived, workspace_id);
@@ -652,15 +652,15 @@ impl AdminModel {
                     _ => None,
                 });
             }
-            AdminPart::Overrides(channel_id) => {
+            AdminPart::Rules(channel_id) => {
                 let collection = plain(set, |payload| match payload {
-                    AdminPayload::Overrides(mut overrides) => {
-                        overrides.sort_by_key(|held| held.role_id);
-                        Some(overrides)
+                    AdminPayload::Rules(mut rules) => {
+                        rules.rules.sort_by_key(|held| held.subject);
+                        Some(rules)
                     }
                     _ => None,
                 });
-                set_keyed(&mut self.overrides, channel_id, collection);
+                set_keyed(&mut self.rules, channel_id, collection);
             }
             AdminPart::Archived(workspace_id) => {
                 let collection = plain(set, |payload| match payload {
@@ -776,9 +776,7 @@ impl AdminModel {
             AdminPart::AttachmentLimits => {
                 plain(&mut self.attachment_limits, &before.attachment_limits)
             }
-            AdminPart::Overrides(channel_id) => {
-                by_key(&mut self.overrides, &before.overrides, channel_id)
-            }
+            AdminPart::Rules(channel_id) => by_key(&mut self.rules, &before.rules, channel_id),
             AdminPart::Archived(workspace_id) => {
                 by_key(&mut self.archived, &before.archived, workspace_id)
             }
@@ -847,9 +845,10 @@ impl AdminModel {
     }
 
     fn forget_role(&mut self, role_id: WorkspaceRoleId) {
-        for (_, list) in &mut self.overrides {
-            if let Some(list) = list.loaded_mut() {
-                list.retain(|held| held.role_id != role_id);
+        let subject = RuleSubject::Role { role_id };
+        for (_, held) in &mut self.rules {
+            if let Some(held) = held.loaded_mut() {
+                held.rules.retain(|rule| rule.subject != subject);
             }
         }
     }
@@ -859,7 +858,7 @@ impl AdminModel {
         self.role_actions.retain(|(held, _)| *held != workspace_id);
         self.glossaries.retain(|(held, _)| *held != workspace_id);
         self.settings.retain(|(held, _)| *held != workspace_id);
-        self.overrides.retain(|(held, _)| !channels.contains(held));
+        self.rules.retain(|(held, _)| !channels.contains(held));
         self.channel_permissions
             .retain(|(held, _)| !channels.contains(held));
         self.archived_known
@@ -1042,27 +1041,31 @@ impl AdminModel {
                     exports.retain(|held| held.id != *export_id);
                 }
             }
-            Event::ChannelOverrideSet {
-                channel_id,
-                role_id,
+            Event::PermissionRuleSet {
+                place,
+                subject,
                 allow,
                 deny,
                 ..
             } => {
-                let list = self
-                    .overrides
-                    .iter_mut()
-                    .find(|(held, _)| held == channel_id)
-                    .and_then(|(_, list)| list.loaded_mut());
-                if let Some(list) = list {
-                    list.retain(|held| held.role_id != *role_id);
+                // A synced channel shows the rules of its category.
+                let held = self.rules.iter_mut().filter_map(|(channel_id, held)| {
+                    held.loaded_mut().filter(|held| match place {
+                        RulePlace::Channel { channel_id: of } => of == channel_id,
+                        RulePlace::Category { category_id } => {
+                            held.synced && held.category_id == Some(*category_id)
+                        }
+                    })
+                });
+                for held in held {
+                    held.rules.retain(|rule| rule.subject != *subject);
                     if !allow.is_empty() || !deny.is_empty() {
-                        list.push(ChannelOverride {
-                            role_id: *role_id,
+                        held.rules.push(PermissionRule {
+                            subject: *subject,
                             allow: allow.clone(),
                             deny: deny.clone(),
                         });
-                        list.sort_by_key(|held| held.role_id);
+                        held.rules.sort_by_key(|rule| rule.subject);
                     }
                 }
             }
@@ -1118,10 +1121,18 @@ impl AdminPart {
                     | Event::ServerRoleDeleted { .. }
                     | Event::ServerRolePositionsShifted { .. }
             ),
-            Self::Overrides(channel_id) => match event {
-                Event::ChannelOverrideSet { channel_id: of, .. } => of == channel_id,
-                Event::WorkspaceRoleDeleted { .. } => true,
-                _ => false,
+            Self::Rules(channel_id) => match event {
+                Event::PermissionRuleSet {
+                    place: RulePlace::Channel { channel_id: of },
+                    ..
+                } => of == channel_id,
+                // Whether the channel takes the rules of the category is known after the read.
+                Event::PermissionRuleSet {
+                    place: RulePlace::Category { .. },
+                    ..
+                }
+                | Event::WorkspaceRoleDeleted { .. } => true,
+                _ => self.is_stale_after(event),
             },
             Self::Archived(workspace_id) => match event {
                 Event::ChannelArchived { channel } | Event::ChannelDeletionDue { channel } => {
@@ -1147,7 +1158,7 @@ impl AdminPart {
     /// the collection is read again.
     ///
     /// The authority of the account over accounts and roles (ADR 0311) follows role order,
-    /// the roles of the accounts, and for the roles of a workspace the overrides of its
+    /// the roles of the accounts, and for the roles of a workspace the rules of its
     /// channels: an event that changes one of them makes the flags of the server stale.
     /// `permissions_changed` replaces the state, and every collection is read again then.
     pub(crate) fn is_stale_after(&self, event: &Event) -> bool {
@@ -1171,6 +1182,9 @@ impl AdminPart {
                 of == workspace_id
             }
             (Self::Accounts, Event::AccountStatusChanged { .. }) => true,
+            (Self::Rules(channel_id), Event::ChannelRulesSynced { channel_id: of, .. }) => {
+                of == channel_id
+            }
             (Self::Accounts | Self::ServerRoles, _) => server_order,
             (Self::RoleActions(workspace_id), event) => {
                 server_order
@@ -1188,7 +1202,10 @@ impl AdminPart {
                         | Event::WorkspaceMemberRolesChanged {
                             workspace_id: of, ..
                         }
-                        | Event::ChannelOverrideSet {
+                        | Event::PermissionRuleSet {
+                            workspace_id: of, ..
+                        }
+                        | Event::WorkspacePersonPermissionsSet {
                             workspace_id: of, ..
                         }
                         | Event::ChannelDeleted {
@@ -1389,10 +1406,8 @@ impl ServerModel {
                 if self.admin.archived_channel(*channel_id).is_some() {
                     self.admin_mut().forget_archived(*channel_id);
                 }
-                if self.admin.overrides.iter().any(|(of, _)| of == channel_id) {
-                    self.admin_mut()
-                        .overrides
-                        .retain(|(of, _)| of != channel_id);
+                if self.admin.rules.iter().any(|(of, _)| of == channel_id) {
+                    self.admin_mut().rules.retain(|(of, _)| of != channel_id);
                 }
                 if self
                     .admin
@@ -1425,8 +1440,8 @@ impl ServerModel {
                     part.concerns(event) && self.admin.state(part) == CollectionState::Loaded
                 }) || (matches!(
                     event,
-                    Event::ChannelOverrideSet { .. } | Event::WorkspaceRoleDeleted { .. }
-                ) && !self.admin.overrides.is_empty());
+                    Event::PermissionRuleSet { .. } | Event::WorkspaceRoleDeleted { .. }
+                ) && !self.admin.rules.is_empty());
                 if touched {
                     self.admin_mut().apply(event);
                 }
@@ -1458,6 +1473,7 @@ impl ServerModel {
                 .iter()
                 .map(|(of, _)| AdminPart::Glossary(*of)),
         )
+        .chain(self.admin.rules.iter().map(|(of, _)| AdminPart::Rules(*of)))
         .collect();
         for part in parts {
             if part.is_stale_after(event)

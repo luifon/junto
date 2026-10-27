@@ -694,7 +694,7 @@ pub fn needs(
             }
             let may_manage = model.holds_in(channel_id, WorkspacePermission::ManageChannel);
             if may_manage && matches!(page, ChannelPage::Overview | ChannelPage::Permissions) {
-                parts.push(AdminPart::Overrides(channel_id));
+                parts.push(AdminPart::Rules(channel_id));
             }
             parts
         }
@@ -890,12 +890,11 @@ fn channel_settings(
     let page = match selected {
         ChannelPage::Overview => {
             let everyone = workspace.roles.iter().find(|role| role.is_everyone);
-            let privacy = match (model.admin.overrides(channel_id).loaded(), everyone) {
-                (Some(overrides), Some(everyone)) => {
-                    let denied = overrides.iter().any(|held| {
-                        held.role_id == everyone.id
-                            && held.deny.contains(&WorkspacePermission::ViewChannel)
-                    });
+            let privacy = match (model.admin.rules(channel_id).loaded(), everyone) {
+                (Some(rules), Some(everyone)) => {
+                    let denied = rules
+                        .of_role(everyone.id)
+                        .is_some_and(|held| held.deny.contains(&WorkspacePermission::ViewChannel));
                     if denied {
                         Privacy::Private
                     } else {

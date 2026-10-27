@@ -1,6 +1,6 @@
 use junto_protocol::error::ErrorCode;
 use junto_protocol::roles::WorkspaceRole;
-use junto_protocol::structure::{Channel, ChannelOverride, Workspace};
+use junto_protocol::structure::{Channel, PermissionRule, Workspace};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -87,11 +87,8 @@ async fn malformed_requests_get_the_error_body() {
             .bearer_auth(&owner.token)
             .header("content-type", "application/json")
             .body(format!("{{\"name\":\"{}\"}}", "x".repeat(3 * 1024 * 1024))),
-        http.get(format!(
-            "{}/api/v1/channels/not-an-id/overrides",
-            server.base
-        ))
-        .bearer_auth(&owner.token),
+        http.get(format!("{}/api/v1/channels/not-an-id/rules", server.base))
+            .bearer_auth(&owner.token),
     ];
     for request in cases {
         let response = request.send().await.unwrap();
@@ -243,7 +240,7 @@ async fn an_absent_resource_and_one_the_caller_may_not_see_get_identical_respons
         &[WorkspacePermission::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     let deleted: Channel = server
         .post(
             &owner,
@@ -334,12 +331,12 @@ async fn an_absent_resource_and_one_the_caller_may_not_see_get_identical_respons
             ),
             (
                 Method::GET,
-                format!("/api/v1/channels/{channel}/overrides"),
+                format!("/api/v1/channels/{channel}/rules"),
                 Value::Null,
             ),
             (
                 Method::PUT,
-                format!("/api/v1/channels/{channel}/overrides/{role}"),
+                format!("/api/v1/channels/{channel}/rules/roles/{role}"),
                 json!({ "allow": ["view_channel"] }),
             ),
         ]

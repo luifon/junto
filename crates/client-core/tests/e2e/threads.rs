@@ -9,6 +9,7 @@ use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::discovery::NotificationKind;
 use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{ChannelKind, SetChannelOverride};
 
 use crate::messages::{both_open, document, found, message_when, texts, timeline_when};
@@ -524,7 +525,7 @@ async fn a_client_that_loses_a_channel_loses_its_threads_its_notices_and_its_res
     };
     owner
         .api()
-        .set_channel_override(channel_id, everyone, &hide)
+        .set_channel_rule(channel_id, RuleSubject::Role { role_id: everyone }, &hide)
         .await
         .unwrap();
 

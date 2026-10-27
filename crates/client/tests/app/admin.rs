@@ -10,6 +10,7 @@ use junto_client::text::admin::FORM_SENT;
 use junto_client_core::ServerHandle;
 use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{
     ChannelKind, CreateCategory, CreateChannel, UpdateChannel,
 };
@@ -943,9 +944,11 @@ fn deny_managing(world: &World, owner: &Admin, workspace_id: WorkspaceId, channe
         .find(|role| role.is_everyone)
         .unwrap();
     world
-        .run(api.set_channel_override(
+        .run(api.set_channel_rule(
             channel_id,
-            everyone.id,
+            RuleSubject::Role {
+                role_id: everyone.id,
+            },
             &SetChannelOverride {
                 allow: Vec::new(),
                 deny: vec![WorkspacePermission::ManageChannel],
@@ -1476,14 +1479,12 @@ fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &m
         let roles = world.run(owner.api().workspace_roles(default)).unwrap();
         let everyone = roles.iter().find(|role| role.is_everyone).unwrap().id;
         world
-            .run(owner.api().channel_overrides(plans))
+            .run(owner.api().channel_rules(plans))
             .unwrap()
-            .iter()
-            .any(|held| {
-                held.role_id == everyone
-                    && held
-                        .deny
-                        .contains(&junto_client_core::protocol::WorkspacePermission::ViewChannel)
+            .of_role(everyone)
+            .is_some_and(|held| {
+                held.deny
+                    .contains(&junto_client_core::protocol::WorkspacePermission::ViewChannel)
             })
     };
 

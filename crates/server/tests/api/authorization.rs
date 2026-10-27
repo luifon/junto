@@ -830,21 +830,21 @@ async fn world() -> World {
         ),
         operation(
             Method::GET,
-            "/api/v1/channels/{channel_id}/overrides",
+            "/api/v1/channels/{channel_id}/rules",
             &[&channel.id],
             none.clone(),
             &forbidden,
         ),
         operation(
             Method::PATCH,
-            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
             &[&channel.id, &role.id],
             json!({"permission":"manage_channel", "state":"allow"}),
             &forbidden,
         ),
         operation(
             Method::PUT,
-            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
             &[&channel.id, &role.id],
             json!({ "allow": ["manage_channel"] }),
             &forbidden,
@@ -1713,10 +1713,26 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
             "/api/v1/workspaces/{workspace_id}/members",
             ReadStructure,
         ),
+        ("GET", "/api/v1/channels/{channel_id}/rules", ReadStructure),
         (
             "GET",
-            "/api/v1/channels/{channel_id}/overrides",
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules",
             ReadStructure,
+        ),
+        (
+            "POST",
+            "/api/v1/channels/{channel_id}/rules/sync",
+            ManageStructure,
+        ),
+        (
+            "PUT",
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
+            ManageStructure,
+        ),
+        (
+            "PATCH",
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
+            ManageStructure,
         ),
         ("GET", "/api/v1/server-roles", ReadStructure),
         ("POST", "/api/v1/structure/changes", ManageStructure),
@@ -1744,7 +1760,7 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
         ("PATCH", "/api/v1/channels/{channel_id}", ManageStructure),
         (
             "PATCH",
-            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
             ManageStructure,
         ),
         ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
@@ -1771,7 +1787,7 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
         ),
         (
             "PUT",
-            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
             ManageStructure,
         ),
         (

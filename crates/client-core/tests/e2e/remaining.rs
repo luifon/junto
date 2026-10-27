@@ -17,7 +17,8 @@ use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::message::{Block, Document, Inline};
-use junto_client_core::protocol::structure::{ChannelOverride, OverrideState, SetChannelOverride};
+use junto_client_core::protocol::structure::RuleSubject;
+use junto_client_core::protocol::structure::{OverrideState, PermissionRule, SetChannelOverride};
 use time::OffsetDateTime;
 
 use crate::messages::{both_open, document, message_when, messages_when};
@@ -323,12 +324,9 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
         .into_iter()
         .find(|role| role.is_everyone)
         .unwrap();
-    let held = |model: &ServerModel| -> Option<ChannelOverride> {
-        let overrides = model.admin.overrides(general.id).loaded()?;
-        overrides
-            .iter()
-            .find(|held| held.role_id == everyone.id)
-            .cloned()
+    let held = |model: &ServerModel| -> Option<PermissionRule> {
+        let rules = model.admin.rules(general.id).loaded()?;
+        rules.of_role(everyone.id).cloned()
     };
     model_when(owner, "the state holds the channel", |model| {
         model.channel(general.id).is_some()
@@ -336,14 +334,16 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
     .await;
     owner
         .live()
-        .open_admin(AdminPart::Overrides(general.id))
+        .open_admin(AdminPart::Rules(general.id))
         .await
         .unwrap();
     owner
         .api()
-        .set_channel_override(
+        .set_channel_rule(
             general.id,
-            everyone.id,
+            RuleSubject::Role {
+                role_id: everyone.id,
+            },
             &SetChannelOverride {
                 allow: vec![MentionEveryone],
                 deny: vec![LockRoom],
@@ -355,7 +355,14 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
     // One request names one permission; the two others stay as they are.
     let changed = owner
         .api()
-        .change_channel_override(general.id, everyone.id, MuteMembers, OverrideState::Deny)
+        .change_channel_rule(
+            general.id,
+            RuleSubject::Role {
+                role_id: everyone.id,
+            },
+            MuteMembers,
+            OverrideState::Deny,
+        )
         .await
         .unwrap();
     assert_eq!(changed.allow, [MentionEveryone]);
@@ -371,9 +378,11 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
 
     let changed = owner
         .api()
-        .change_channel_override(
+        .change_channel_rule(
             general.id,
-            everyone.id,
+            RuleSubject::Role {
+                role_id: everyone.id,
+            },
             MentionEveryone,
             OverrideState::Inherit,
         )
@@ -383,7 +392,14 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
     assert_eq!(changed.deny.len(), 2);
     let changed = owner
         .api()
-        .change_channel_override(general.id, everyone.id, MuteMembers, OverrideState::Allow)
+        .change_channel_rule(
+            general.id,
+            RuleSubject::Role {
+                role_id: everyone.id,
+            },
+            MuteMembers,
+            OverrideState::Allow,
+        )
         .await
         .unwrap();
     assert_eq!(changed.allow, [MuteMembers]);
@@ -393,20 +409,28 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
     for permission in [MuteMembers, LockRoom] {
         owner
             .api()
-            .change_channel_override(general.id, everyone.id, permission, OverrideState::Inherit)
+            .change_channel_rule(
+                general.id,
+                RuleSubject::Role {
+                    role_id: everyone.id,
+                },
+                permission,
+                OverrideState::Inherit,
+            )
             .await
             .unwrap();
     }
     model_when(owner, "no override of the role is left", |model| {
-        model.admin.overrides(general.id).loaded().is_some() && held(model).is_none()
+        model.admin.rules(general.id).loaded().is_some() && held(model).is_none()
     })
     .await;
     assert!(
         owner
             .api()
-            .channel_overrides(general.id)
+            .channel_rules(general.id)
             .await
             .unwrap()
+            .rules
             .is_empty()
     );
 
@@ -414,7 +438,14 @@ async fn one_permission_of_an_override_changes_and_the_other_permissions_stay() 
     let refused = scene
         .member
         .api()
-        .change_channel_override(general.id, everyone.id, MuteMembers, OverrideState::Deny)
+        .change_channel_rule(
+            general.id,
+            RuleSubject::Role {
+                role_id: everyone.id,
+            },
+            MuteMembers,
+            OverrideState::Deny,
+        )
         .await
         .unwrap_err();
     assert_eq!(refused.category(), Some(ErrorCategory::NotAllowed));

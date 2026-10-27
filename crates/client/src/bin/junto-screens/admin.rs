@@ -35,7 +35,8 @@ use junto_client_core::protocol::recording::RecordingStopReason;
 use junto_client_core::protocol::roles::ServerRole;
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ArchivedChannel, Category, ChannelKind, ChannelOverride,
+    ArchivePeriod, ArchivedChannel, Category, ChannelKind, ChannelRules, PermissionRule,
+    RuleSubject,
 };
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::{Duration, OffsetDateTime, UtcOffset};
@@ -431,17 +432,19 @@ fn roadmap_messages() -> Timeline {
 }
 
 /// The override of the "everyone" role in a channel: one allow and one deny.
-fn everyone_override() -> ChannelOverride {
-    ChannelOverride {
-        role_id: id(EVERYONE),
+fn everyone_override() -> PermissionRule {
+    PermissionRule {
+        subject: RuleSubject::Role {
+            role_id: id(EVERYONE),
+        },
         allow: vec![WorkspacePermission::RecordCalls],
         deny: vec![WorkspacePermission::MentionEveryone],
     }
 }
 
-fn leads_override() -> ChannelOverride {
-    ChannelOverride {
-        role_id: id(LEADS),
+fn leads_override() -> PermissionRule {
+    PermissionRule {
+        subject: RuleSubject::Role { role_id: id(LEADS) },
         allow: vec![
             WorkspacePermission::ManageMessages,
             WorkspacePermission::MentionEveryone,
@@ -452,28 +455,41 @@ fn leads_override() -> ChannelOverride {
 
 /// The overrides of a private channel: the "everyone" role is denied "view channel",
 /// and the role "Leads" is allowed it.
-fn private_overrides() -> Vec<ChannelOverride> {
+fn private_overrides() -> Vec<PermissionRule> {
     vec![
-        ChannelOverride {
-            role_id: id(EVERYONE),
+        PermissionRule {
+            subject: RuleSubject::Role {
+                role_id: id(EVERYONE),
+            },
             allow: Vec::new(),
             deny: vec![WorkspacePermission::ViewChannel],
         },
-        ChannelOverride {
-            role_id: id(LEADS),
+        PermissionRule {
+            subject: RuleSubject::Role { role_id: id(LEADS) },
             allow: vec![WorkspacePermission::ViewChannel],
             deny: Vec::new(),
         },
     ]
 }
 
-/// The overrides of a channel are in this state.
+/// The rules of a channel are in this state; the channel has its own rules.
 fn set_overrides(
     model: &mut ServerModel,
     channel: u32,
-    overrides: Collection<Vec<ChannelOverride>>,
+    overrides: Collection<Vec<PermissionRule>>,
 ) {
-    collections(model).overrides = vec![(id(channel), overrides)];
+    let held = match overrides {
+        Collection::NotLoaded => Collection::NotLoaded,
+        Collection::Loading => Collection::Loading,
+        Collection::Failed(failure) => Collection::Failed(failure),
+        Collection::Loaded(rules) => Collection::Loaded(ChannelRules {
+            channel_id: id(channel),
+            category_id: None,
+            synced: false,
+            rules,
+        }),
+    };
+    collections(model).rules = vec![(id(channel), held)];
 }
 
 /// The entries of one audit log, the newest first.
@@ -979,7 +995,7 @@ fn draw_channels(studio: &mut Studio) -> Result<(), String> {
 
 /// "Acme Studio" for the settings of a channel, for an administrator: the categories of
 /// the screens, the archived channels, and these overrides of the channel.
-fn with_channel(channel: u32, overrides: Collection<Vec<ChannelOverride>>) -> Vec<ServerSnapshot> {
+fn with_channel(channel: u32, overrides: Collection<Vec<PermissionRule>>) -> Vec<ServerSnapshot> {
     servers(|model| {
         administrator(model);
         structure(model);
@@ -989,7 +1005,7 @@ fn with_channel(channel: u32, overrides: Collection<Vec<ChannelOverride>>) -> Ve
 }
 
 fn draw_channel_settings(studio: &mut Studio) -> Result<(), String> {
-    let read = |overrides: Vec<ChannelOverride>| Collection::Loaded(overrides);
+    let read = |overrides: Vec<PermissionRule>| Collection::Loaded(overrides);
 
     // The overview.
     studio.draw(

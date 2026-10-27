@@ -11,6 +11,7 @@ pub(crate) mod proof;
 mod recordings;
 mod retry;
 mod roles;
+mod rules;
 pub(crate) mod session;
 mod threads;
 pub(crate) mod transport;

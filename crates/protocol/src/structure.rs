@@ -198,15 +198,6 @@ pub struct ChannelList {
     pub channels: Vec<Channel>,
 }
 
-/// The allow set and the deny set of one workspace role in one channel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ChannelOverride {
-    pub role_id: WorkspaceRoleId,
-    pub allow: Vec<WorkspacePermission>,
-    pub deny: Vec<WorkspacePermission>,
-}
-
 /// The workspace permissions that the caller holds in one channel that it can see: the
 /// permissions for which the permission function allows a request in the channel now
 /// (ADR 0310).
@@ -217,7 +208,7 @@ pub struct ChannelPermissions {
     pub permissions: Vec<WorkspacePermission>,
 }
 
-/// Two empty sets remove the override.
+/// Both sets of a rule. Two empty sets remove the rule.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SetChannelOverride {
@@ -236,7 +227,7 @@ pub enum OverrideState {
     Inherit,
 }
 
-/// Changes exactly one permission, preserving every other bit of the override.
+/// Changes exactly one permission of a rule, preserving every other bit of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -274,6 +265,18 @@ pub struct ChannelRules {
     pub category_id: Option<CategoryId>,
     pub synced: bool,
     pub rules: Vec<PermissionRule>,
+}
+
+impl ChannelRules {
+    /// The rule of `subject`, absent when the subject has none.
+    pub fn of(&self, subject: RuleSubject) -> Option<&PermissionRule> {
+        self.rules.iter().find(|rule| rule.subject == subject)
+    }
+
+    /// The rule of a workspace role.
+    pub fn of_role(&self, role_id: WorkspaceRoleId) -> Option<&PermissionRule> {
+        self.of(RuleSubject::Role { role_id })
+    }
 }
 
 /// The rules of a category, which every synced channel of it takes.

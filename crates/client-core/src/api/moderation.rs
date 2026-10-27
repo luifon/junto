@@ -1,12 +1,10 @@
 //! The routes of the reason of a ban and of a removal (ADR 0106), of the removal of a
-//! member from one workspace (ADR 0106), of one permission of an override (ADR 0304), of
-//! the filters of the audit log (ADR 0305) and of the logo of the server (ADR 0101).
+//! member from one workspace (ADR 0106), of the filters of the audit log (ADR 0305) and of
+//! the logo of the server (ADR 0101).
 
-use junto_protocol::WorkspacePermission;
 use junto_protocol::account::{Avatar, ModerationReason};
 use junto_protocol::audit::{AuditFilterQuery, AuditPage};
-use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId, WorkspaceRoleId};
-use junto_protocol::structure::{ChangeChannelOverride, ChannelOverride, OverrideState};
+use junto_protocol::ids::{AccountId, WorkspaceId};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use url::Url;
@@ -214,20 +212,6 @@ impl ServerApi {
             .map(|_| ())
     }
 
-    /// Changes one permission of the override of one role in one channel and keeps every
-    /// other permission of it. The grant rule holds for this permission only (ADR 0304).
-    pub async fn change_channel_override(
-        &self,
-        channel_id: ChannelId,
-        role_id: WorkspaceRoleId,
-        permission: WorkspacePermission,
-        state: OverrideState,
-    ) -> Result<ChannelOverride, ApiError> {
-        let path = format!("/channels/{channel_id}/overrides/{role_id}");
-        let change = ChangeChannelOverride { permission, state };
-        self.send(Method::Patch, path, &change).await
-    }
-
     /// One page of the audit log of the server, the newest first, with the filters of
     /// the query. The next page repeats the filters with `before` (ADR 0305).
     pub async fn server_audit_log(&self, query: &AuditFilterQuery) -> Result<AuditPage, ApiError> {
@@ -271,9 +255,11 @@ impl ServerApi {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use junto_protocol::WorkspacePermission;
     use junto_protocol::account::ImageType;
     use junto_protocol::audit::AuditEvent;
-    use junto_protocol::ids::{AuditEntryId, ServerId};
+    use junto_protocol::ids::{AuditEntryId, ChannelId, ServerId, WorkspaceRoleId};
+    use junto_protocol::structure::{OverrideState, PermissionRule, RuleSubject};
     use serde::Serialize;
 
     use super::*;
@@ -455,38 +441,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_change_of_one_permission_of_an_override_names_the_permission_and_its_state() {
+    async fn a_change_of_one_permission_of_a_rule_names_its_subject_the_permission_and_its_state() {
         let (channel_id, role_id) = (ChannelId::generate(), WorkspaceRoleId::generate());
-        let held = ChannelOverride {
-            role_id,
-            allow: vec![WorkspacePermission::LockRoom],
-            deny: vec![WorkspacePermission::MuteMembers],
-        };
-        for (state, name) in [
-            (OverrideState::Allow, "allow"),
-            (OverrideState::Deny, "deny"),
-            (OverrideState::Inherit, "inherit"),
+        let account_id = AccountId::generate();
+        for (subject, part) in [
+            (RuleSubject::Role { role_id }, format!("roles/{role_id}")),
+            (
+                RuleSubject::Person { account_id },
+                format!("people/{account_id}"),
+            ),
         ] {
-            let (seen, api) = server(&held);
-            let answer = api
-                .change_channel_override(
-                    channel_id,
-                    role_id,
-                    WorkspacePermission::MuteMembers,
-                    state,
-                )
-                .await
-                .unwrap();
-            assert_eq!(answer, held);
-            assert_eq!(
-                seen.request(),
-                (
-                    Method::Patch,
-                    format!("/api/v1/channels/{channel_id}/overrides/{role_id}"),
-                    None,
-                    Some(serde_json::json!({ "permission": "mute_members", "state": name }))
-                )
-            );
+            let held = PermissionRule {
+                subject,
+                allow: vec![WorkspacePermission::LockRoom],
+                deny: vec![WorkspacePermission::MuteMembers],
+            };
+            for (state, name) in [
+                (OverrideState::Allow, "allow"),
+                (OverrideState::Deny, "deny"),
+                (OverrideState::Inherit, "inherit"),
+            ] {
+                let (seen, api) = server(&held);
+                let answer = api
+                    .change_channel_rule(
+                        channel_id,
+                        subject,
+                        WorkspacePermission::MuteMembers,
+                        state,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(answer, held);
+                assert_eq!(
+                    seen.request(),
+                    (
+                        Method::Patch,
+                        format!("/api/v1/channels/{channel_id}/rules/{part}"),
+                        None,
+                        Some(serde_json::json!({ "permission": "mute_members", "state": name }))
+                    )
+                );
+            }
         }
     }
 

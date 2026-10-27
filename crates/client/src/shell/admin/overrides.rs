@@ -329,7 +329,7 @@ impl Shell {
             // The overrides of an archived channel can be changed (ADR 0410).
             column = column.child(sentence(text::admin::overrides::ARCHIVED, &theme).mt(u(3.0)));
         }
-        let part = AdminPart::Overrides(channel_id);
+        let part = AdminPart::Rules(channel_id);
         match &page.roles {
             Listed::Loaded(_) => {}
             Listed::Loading => {

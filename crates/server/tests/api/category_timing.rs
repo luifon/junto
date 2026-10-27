@@ -44,7 +44,7 @@ async fn an_absent_and_a_hidden_channel_run_the_same_statements() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", hidden.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", hidden.id, everyone.id),
             &serde_json::json!({ "deny": ["view_channel"] }),
         )
         .await

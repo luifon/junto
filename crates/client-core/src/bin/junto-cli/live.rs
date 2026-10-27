@@ -819,12 +819,6 @@ fn event_details(event: &Event) -> String {
             workspace_id,
             channel_id,
         } => format!("workspace={workspace_id} channel={channel_id}"),
-        Event::ChannelOverrideSet {
-            workspace_id,
-            channel_id,
-            role_id,
-            ..
-        } => format!("workspace={workspace_id} channel={channel_id} role={role_id}"),
         Event::PermissionRuleSet {
             workspace_id,
             place,

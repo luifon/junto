@@ -466,9 +466,13 @@ invites are revoked; other invites keep their remaining workspaces and emit `inv
 and the audit action `invite_workspaces_changed` (ADRs 0106 and 0111). Server removal keeps
 invites valid; a ban cancels them. An invite made by another member still permits return.
 
-PATCH on `/api/v1/channels/{channel_id}/overrides/{role_id}` takes
+PATCH on `/api/v1/channels/{channel_id}/rules/roles/{role_id}` and on
+`/api/v1/channels/{channel_id}/rules/people/{account_id}` takes
 `{"permission":"mute_members","state":"deny"}`. State is allow, deny or inherit. It
-preserves every other permission and applies the grant ceiling to the changed bit.
+preserves every other permission and applies the grant ceiling to the changed bit. The
+category routes under `/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules`
+and the member route `/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions`
+take the same body (ADR 0304, ADR 0306).
 
 Roles carry a `position`; larger values are higher, and everyone stays at zero.
 The owner stands above all roles. Server actions compare server roles. In a workspace,

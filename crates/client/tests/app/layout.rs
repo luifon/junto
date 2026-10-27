@@ -4,6 +4,7 @@ use junto_client::state::feed::FeedRow;
 use junto_client_core::api::Statement;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::SetChannelOverride;
 
 use crate::harness::{World, member};
@@ -117,7 +118,7 @@ fn a_long_system_line_wraps_inside_the_message_list(cx: &mut TestAppContext) {
         deny: vec![WorkspacePermission::MentionEveryone],
     };
     world
-        .run(api.set_channel_override(channel, everyone, &change))
+        .run(api.set_channel_rule(channel, RuleSubject::Role { role_id: everyone }, &change))
         .unwrap();
     let sentence = format!("{name} changed the permissions of this channel");
     let mut line = None;

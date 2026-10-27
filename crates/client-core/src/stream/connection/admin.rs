@@ -86,10 +86,9 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             .attachment_limits()
             .await
             .map(AdminPayload::AttachmentLimits),
-        AdminPart::Overrides(channel_id) => api
-            .channel_overrides(channel_id)
-            .await
-            .map(AdminPayload::Overrides),
+        AdminPart::Rules(channel_id) => {
+            api.channel_rules(channel_id).await.map(AdminPayload::Rules)
+        }
         AdminPart::Archived(workspace_id) => api
             .archived_channels(workspace_id)
             .await
@@ -126,7 +125,7 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
 /// True when the state holds the workspace or the channel of a collection.
 fn in_state(model: &ServerModel, part: AdminPart) -> bool {
     match part {
-        AdminPart::Overrides(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
+        AdminPart::Rules(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
             model.readable_channel(channel_id).is_some()
         }
         part => part
@@ -302,7 +301,7 @@ impl Client {
             .wanted
             .keys()
             .filter_map(|part| match part {
-                AdminPart::Overrides(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
+                AdminPart::Rules(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
                     Some(*channel_id)
                 }
                 _ => None,
@@ -321,10 +320,8 @@ impl Client {
             .keys()
             .copied()
             .filter(|part| {
-                matches!(
-                    part,
-                    AdminPart::Overrides(_) | AdminPart::ChannelPermissions(_)
-                ) && !in_state(model, *part)
+                matches!(part, AdminPart::Rules(_) | AdminPart::ChannelPermissions(_))
+                    && !in_state(model, *part)
             })
             .collect();
         for part in lost {
@@ -364,7 +361,7 @@ impl Client {
             // would close at every reload.
             let mut held = places.to_vec();
             held.extend(wanted.iter().filter_map(|part| match part {
-                AdminPart::Overrides(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
+                AdminPart::Rules(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
                     Some(PlaceId::Channel(*channel_id))
                 }
                 _ => None,

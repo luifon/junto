@@ -16,6 +16,7 @@ use junto_client_core::protocol::recording::{
     FileCheck, RecordingSegment, RecordingState, SegmentSource, SegmentState,
 };
 use junto_client_core::protocol::secret::OwnerCode;
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{ChannelKind, SetChannelOverride};
 use junto_client_core::protocol::transcript::{LineSource, TranscriptState};
 use junto_client_core::transfers::{
@@ -375,7 +376,7 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
     };
     owner
         .api()
-        .set_channel_override(voice.id, everyone, &hide)
+        .set_channel_rule(voice.id, RuleSubject::Role { role_id: everyone }, &hide)
         .await
         .unwrap();
     let model = recording_when(&member, id, "the lost access", |open| open.gone).await;
@@ -399,7 +400,7 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
     };
     owner
         .api()
-        .set_channel_override(voice.id, everyone, &show)
+        .set_channel_rule(voice.id, RuleSubject::Role { role_id: everyone }, &show)
         .await
         .unwrap();
     let model = recording_when(&member, id, "the recording again", |open| {

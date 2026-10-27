@@ -59,7 +59,7 @@ async fn audit_the_snapshot_carries_the_moves_invitations_and_requests_that_wait
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{garden}/overrides/{}", everyone.id),
+            &format!("/api/v1/channels/{garden}/rules/roles/{}", everyone.id),
             &json!({ "allow": [], "deny": ["view_channel"] }),
         )
         .await
@@ -68,7 +68,7 @@ async fn audit_the_snapshot_carries_the_moves_invitations_and_requests_that_wait
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{lounge}/overrides/{}", everyone.id),
+            &format!("/api/v1/channels/{lounge}/rules/roles/{}", everyone.id),
             &json!({ "allow": [], "deny": ["view_channel"] }),
         )
         .await

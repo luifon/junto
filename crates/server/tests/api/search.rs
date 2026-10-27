@@ -132,7 +132,10 @@ async fn rule_40_transcripts_search_current_corrections_and_speaker() {
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{}/overrides/{}", private.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                private.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -256,7 +259,10 @@ async fn rule_43_44_45_search_is_current_and_hides_other_channels_and_conversati
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await

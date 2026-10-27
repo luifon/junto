@@ -1,4 +1,4 @@
-//! The requests of the administration that change the overrides of the roles in a channel
+//! The requests of the administration that change the rules of the roles in a channel
 //! (ADR 0304).
 //!
 //! A change of one permission is one request that names that permission and its new
@@ -9,7 +9,7 @@
 use gpui::Context;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceRoleId};
-use junto_client_core::protocol::structure::{ChannelOverride, SetChannelOverride};
+use junto_client_core::protocol::structure::{ChannelRules, RuleSubject, SetChannelOverride};
 
 use super::AskKind;
 use super::view::overrides::{Choice, choice_of, private_state, state_of};
@@ -18,13 +18,9 @@ use crate::state::AppState;
 impl AppState {
     /// The overrides of a channel as the state of the server holds them. Absent until
     /// they are loaded.
-    fn loaded_overrides(
-        &self,
-        server_id: ServerId,
-        channel_id: ChannelId,
-    ) -> Option<Vec<ChannelOverride>> {
+    fn loaded_overrides(&self, server_id: ServerId, channel_id: ChannelId) -> Option<ChannelRules> {
         let model = self.client.server(server_id)?.live().view().model?;
-        model.admin.overrides(channel_id).loaded().cloned()
+        model.admin.rules(channel_id).loaded().cloned()
     }
 
     /// Sets one permission of one role in one channel to a choice, with one request that
@@ -43,8 +39,7 @@ impl AppState {
         let Some(overrides) = self.loaded_overrides(server_id, channel_id) else {
             return;
         };
-        let shown = overrides.iter().find(|held| held.role_id == role_id);
-        if choice_of(shown, permission) == choice {
+        if choice_of(overrides.of_role(role_id), permission) == choice {
             return;
         }
         let state = state_of(choice);
@@ -52,7 +47,8 @@ impl AppState {
             server_id,
             AskKind::SetOverride(channel_id, role_id),
             |api| async move {
-                api.change_channel_override(channel_id, role_id, permission, state)
+                let subject = RuleSubject::Role { role_id };
+                api.change_channel_rule(channel_id, subject, permission, state)
                     .await
             },
             |_, _, _| {},
@@ -72,14 +68,15 @@ impl AppState {
         let Some(overrides) = self.loaded_overrides(server_id, channel_id) else {
             return;
         };
-        if !overrides.iter().any(|held| held.role_id == role_id) {
+        if overrides.of_role(role_id).is_none() {
             return;
         }
         self.admin_ask(
             server_id,
             AskKind::SetOverride(channel_id, role_id),
             |api| async move {
-                api.set_channel_override(channel_id, role_id, &SetChannelOverride::default())
+                let subject = RuleSubject::Role { role_id };
+                api.set_channel_rule(channel_id, subject, &SetChannelOverride::default())
                     .await
             },
             |_, _, _| {},
@@ -105,7 +102,7 @@ impl AppState {
         else {
             return;
         };
-        let Some(overrides) = model.admin.overrides(channel_id).loaded() else {
+        let Some(overrides) = model.admin.rules(channel_id).loaded() else {
             return;
         };
         let everyone = model
@@ -115,17 +112,16 @@ impl AppState {
         let Some(role_id) = everyone.map(|role| role.id) else {
             return;
         };
-        let shown = overrides.iter().find(|held| held.role_id == role_id);
-        let Some(state) = private_state(shown, private) else {
+        let Some(state) = private_state(overrides.of_role(role_id), private) else {
             return;
         };
         self.admin_ask(
             server_id,
             AskKind::SetOverride(channel_id, role_id),
             |api| async move {
-                api.change_channel_override(
+                api.change_channel_rule(
                     channel_id,
-                    role_id,
+                    RuleSubject::Role { role_id },
                     WorkspacePermission::ViewChannel,
                     state,
                 )

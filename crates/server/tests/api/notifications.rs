@@ -357,7 +357,7 @@ async fn rule_32_thread_replies_notify_previous_writers_only() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, role),
+            &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -581,7 +581,10 @@ async fn fix_notices_are_not_stored_for_accounts_without_channel_access() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -599,7 +602,10 @@ async fn fix_notices_are_not_stored_for_accounts_without_channel_access() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":[]}),
         )
         .await

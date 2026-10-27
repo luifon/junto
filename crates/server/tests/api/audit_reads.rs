@@ -24,7 +24,10 @@ async fn audit_a_notice_cursor_does_not_tell_whether_a_hidden_message_still_exis
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await
@@ -78,7 +81,10 @@ async fn a_notice_that_the_caller_cannot_read_is_no_cursor_of_the_notice_list() 
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", closing.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                closing.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await

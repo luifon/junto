@@ -91,7 +91,7 @@ async fn role_and_everyone_mentions_reach_readers_once_and_never_the_author_or_h
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, own_role),
+            &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, own_role),
             &json!({"deny":["view_channel"]}),
         )
         .await
@@ -571,7 +571,7 @@ async fn losing_channel_access_hides_unread_mentions_and_replayed_notices() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, role),
+            &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await

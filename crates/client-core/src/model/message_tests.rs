@@ -305,7 +305,15 @@ fn a_change_of_permissions_withdraws_what_its_scope_holds() {
     Arc::make_mut(&mut model.workspaces[0]).members = Loadable::Loaded(Vec::new());
     let admin = Arc::make_mut(&mut model.admin);
     admin.accounts = Collection::Loaded(Vec::new());
-    admin.overrides = vec![(scene.general, Collection::Loaded(Vec::new()))];
+    admin.rules = vec![(
+        scene.general,
+        Collection::Loaded(junto_protocol::structure::ChannelRules {
+            channel_id: scene.general,
+            category_id: None,
+            synced: false,
+            rules: Vec::new(),
+        }),
+    )];
     admin.archived = vec![(scene.workspace_id, Collection::Loaded(Vec::new()))];
 
     // A change in the workspace: what it holds is withdrawn until the next state.
@@ -322,7 +330,7 @@ fn a_change_of_permissions_withdraws_what_its_scope_holds() {
         Loadable::Loading
     );
     assert_eq!(model.workspaces[0].members, Loadable::Loading);
-    assert_eq!(*model.admin.overrides(scene.general), Collection::Loading);
+    assert_eq!(*model.admin.rules(scene.general), Collection::Loading);
     assert_eq!(
         *model.admin.archived(scene.workspace_id),
         Collection::Loading

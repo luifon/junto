@@ -3,7 +3,7 @@ use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::roles::{ServerRole, WorkspaceRole};
 use junto_protocol::structure::{
-    Category, Channel, ChannelKind, ChannelList, ChannelOverride, Workspace, WorkspaceMember,
+    Category, Channel, ChannelKind, ChannelList, PermissionRule, Workspace, WorkspaceMember,
 };
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use reqwest::StatusCode;
@@ -97,7 +97,7 @@ pub async fn set_override(
     server
         .put(
             caller,
-            &format!("/api/v1/channels/{channel_id}/overrides/{role_id}"),
+            &format!("/api/v1/channels/{channel_id}/rules/roles/{role_id}"),
             &json!({ "allow": allow, "deny": deny }),
         )
         .await
@@ -249,7 +249,7 @@ async fn an_administrator_role_gives_the_administrator_pass() {
         &[W::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     assert_eq!(
         visible_channels(&server, &administrator, side.id).await,
         [channel.id]
@@ -469,7 +469,7 @@ async fn a_role_is_assigned_only_by_a_caller_who_holds_what_its_overrides_allow(
         &[W::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
 
     let key_role = create_role(&server, &owner, workspace.id, &[]).await;
     set_override(
@@ -481,7 +481,7 @@ async fn a_role_is_assigned_only_by_a_caller_who_holds_what_its_overrides_allow(
         &[],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     let recorder_role = create_role(&server, &owner, workspace.id, &[]).await;
     set_override(
         &server,
@@ -492,7 +492,7 @@ async fn a_role_is_assigned_only_by_a_caller_who_holds_what_its_overrides_allow(
         &[],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     let harmless_role = create_role(&server, &owner, workspace.id, &[]).await;
     set_override(
         &server,
@@ -503,7 +503,7 @@ async fn a_role_is_assigned_only_by_a_caller_who_holds_what_its_overrides_allow(
         &[W::RecordCalls],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
 
     let assignment = |account: &Member, role_id: WorkspaceRoleId| {
         format!(
@@ -885,7 +885,7 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         .await
         .error(ErrorCode::Forbidden);
     server
-        .get(&guest, &format!("{path}/overrides"))
+        .get(&guest, &format!("{path}/rules"))
         .await
         .error(ErrorCode::Forbidden);
 
@@ -957,7 +957,7 @@ async fn a_private_channel_is_seen_only_through_a_role_override() {
         &[W::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     set_override(
         &server,
         &owner,
@@ -967,7 +967,7 @@ async fn a_private_channel_is_seen_only_through_a_role_override() {
         &[],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
 
     assert!(
         visible_channels(&server, &insider, workspace.id)
@@ -1000,7 +1000,7 @@ async fn a_private_channel_is_seen_only_through_a_role_override() {
         .await
         .error(ErrorCode::NotFound);
     server
-        .get(&outsider, &format!("{path}/overrides"))
+        .get(&outsider, &format!("{path}/rules"))
         .await
         .error(ErrorCode::NotFound);
     set_override(
@@ -1018,24 +1018,26 @@ async fn a_private_channel_is_seen_only_through_a_role_override() {
         .patch(&insider, &path, &json!({ "name": "board room" }))
         .await
         .ok::<Channel>(StatusCode::OK);
-    let overrides: Vec<ChannelOverride> = server
-        .get(&insider, &format!("{path}/overrides"))
+    let overrides = server
+        .get(&insider, &format!("{path}/rules"))
         .await
-        .ok(StatusCode::OK);
+        .ok::<junto_protocol::structure::ChannelRules>(StatusCode::OK)
+        .rules;
     assert_eq!(overrides.len(), 2);
 
     set_override(&server, &owner, channel.id, everyone.id, &[], &[])
         .await
-        .ok::<ChannelOverride>(StatusCode::OK);
+        .ok::<PermissionRule>(StatusCode::OK);
     assert!(
         visible_channels(&server, &outsider, workspace.id)
             .await
             .contains(&channel.id)
     );
-    let overrides: Vec<ChannelOverride> = server
-        .get(&owner, &format!("{path}/overrides"))
+    let overrides = server
+        .get(&owner, &format!("{path}/rules"))
         .await
-        .ok(StatusCode::OK);
+        .ok::<junto_protocol::structure::ChannelRules>(StatusCode::OK)
+        .rules;
     assert_eq!(overrides.len(), 1);
 }
 
@@ -1060,7 +1062,7 @@ async fn an_allow_of_one_role_wins_over_a_deny_of_another_role() {
         &[W::ManageChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     server
         .patch(&member, &path, &json!({ "name": "mine" }))
         .await
@@ -1078,7 +1080,7 @@ async fn an_allow_of_one_role_wins_over_a_deny_of_another_role() {
         &[],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     server
         .patch(&member, &path, &json!({ "name": "mine" }))
         .await
@@ -1117,7 +1119,7 @@ async fn a_member_cannot_grant_a_channel_permission_they_lack() {
         &[W::RecordCalls],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
 
     set_override(
         &server,
@@ -1128,7 +1130,7 @@ async fn a_member_cannot_grant_a_channel_permission_they_lack() {
         &[W::ExportChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     set_override(&server, &manager, channel.id, everyone.id, &[], &[])
         .await
         .error(ErrorCode::ExceedsOwnPermissions);
@@ -1141,7 +1143,7 @@ async fn a_member_cannot_grant_a_channel_permission_they_lack() {
         &[W::ExportChannel, W::LockRoom],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     set_override(
         &server,
         &manager,
@@ -1161,7 +1163,7 @@ async fn a_member_cannot_grant_a_channel_permission_they_lack() {
         &[W::ExportChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
 
     set_override(
         &server,
@@ -1337,7 +1339,7 @@ async fn channels_are_moved_together_or_not_at_all() {
         &[W::ManageChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     let path = format!("/api/v1/workspaces/{}/channels/positions", workspace.id);
     let places = || async {
         let list: ChannelList = server
@@ -1451,7 +1453,7 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
     // The manager sees "c" but may not change it, and does not see "hidden".
     set_override(&server, &owner, c.id, everyone.id, &[], &[W::ManageChannel])
         .await
-        .ok::<ChannelOverride>(StatusCode::OK);
+        .ok::<PermissionRule>(StatusCode::OK);
     set_override(
         &server,
         &owner,
@@ -1461,7 +1463,7 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
         &[W::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     let path = format!("/api/v1/workspaces/{}/channels/positions", workspace.id);
     let at = |position: i32| json!({ "category_id": null, "position": position });
     let drop = |neighbour: &Channel, read: i32| {

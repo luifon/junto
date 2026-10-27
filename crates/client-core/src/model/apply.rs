@@ -1006,7 +1006,6 @@ impl ServerModel {
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::JoinRequestWithdrawn { .. }
-            | Event::ChannelOverrideSet { .. }
             | Event::PermissionRuleSet { .. }
             | Event::ChannelRulesSynced { .. }
             | Event::WorkspacePersonPermissionsSet { .. }

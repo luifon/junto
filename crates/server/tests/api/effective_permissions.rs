@@ -38,7 +38,7 @@ async fn set_override(
     server
         .put(
             manager,
-            &format!("/api/v1/channels/{}/overrides/{role_id}", channel.id),
+            &format!("/api/v1/channels/{}/rules/roles/{role_id}", channel.id),
             &body,
         )
         .await

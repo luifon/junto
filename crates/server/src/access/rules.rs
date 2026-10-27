@@ -63,11 +63,12 @@ pub(crate) async fn of_category(
     connection: &mut PgConnection,
     category_id: CategoryId,
 ) -> ApiResult<Rules> {
-    let roles: Vec<(WorkspaceRoleId, i64, i64)> =
-        sqlx::query_as("select role_id, allow, deny from category_overrides where category_id = $1")
-            .bind(category_id)
-            .fetch_all(&mut *connection)
-            .await?;
+    let roles: Vec<(WorkspaceRoleId, i64, i64)> = sqlx::query_as(
+        "select role_id, allow, deny from category_overrides where category_id = $1",
+    )
+    .bind(category_id)
+    .fetch_all(&mut *connection)
+    .await?;
     let people: Vec<(AccountId, i64, i64)> = sqlx::query_as(
         "select account_id, allow, deny from category_person_overrides where category_id = $1",
     )
@@ -104,7 +105,9 @@ pub(crate) fn granted(before: &Rules, after: &Rules) -> WorkspacePermissions {
         .keys()
         .chain(after.keys())
         .fold(WorkspacePermissions::EMPTY, |granted, subject| {
-            granted.union(of_subject(before, *subject).granted_by_change_to(of_subject(after, *subject)))
+            granted.union(
+                of_subject(before, *subject).granted_by_change_to(of_subject(after, *subject)),
+            )
         })
 }
 

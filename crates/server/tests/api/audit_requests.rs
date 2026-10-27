@@ -101,7 +101,7 @@ async fn filters_and_continuations_select_only_matching_entries() {
 
 #[tokio::test]
 async fn filters_preserve_current_visibility() {
-    use junto_protocol::{WorkspacePermission as W, structure::ChannelOverride};
+    use junto_protocol::{WorkspacePermission as W, structure::PermissionRule};
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let viewer = server.join(&owner, "Viewer").await;
@@ -119,11 +119,11 @@ async fn filters_preserve_current_visibility() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{role}", channel.id),
+            &format!("/api/v1/channels/{}/rules/roles/{role}", channel.id),
             &json!({"allow":[], "deny":["view_channel"]}),
         )
         .await
-        .ok::<ChannelOverride>(StatusCode::OK);
+        .ok::<PermissionRule>(StatusCode::OK);
     let page: AuditPage = server.get(&viewer, &route).await.ok(StatusCode::OK);
     assert!(page.entries.is_empty());
     server

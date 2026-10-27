@@ -22,8 +22,9 @@ use junto_client_core::protocol::invite::{
     ApproveJoinRequest, CreateInvite, InviteRevocation, JoinRequestState,
 };
 use junto_client_core::protocol::message::SendMessage;
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ChannelOverride, CreateCategory, SetChannelOverride, UpdateChannel,
+    ArchivePeriod, CreateCategory, PermissionRule, SetChannelOverride, UpdateChannel,
 };
 
 use crate::messages::{both_open, document, message_when, texts};
@@ -630,14 +631,20 @@ async fn an_override_hides_a_channel_from_a_member_and_its_removal_shows_the_cha
         })
         .await;
     }
-    let part = AdminPart::Overrides(plans.id);
-    let overrides = |model: &ServerModel| model.admin.overrides(plans.id).loaded().cloned();
+    let part = AdminPart::Rules(plans.id);
+    let overrides = |model: &ServerModel| {
+        model
+            .admin
+            .rules(plans.id)
+            .loaded()
+            .map(|held| held.rules.clone())
+    };
 
     // The member holds no permission to manage the channel: the server refuses the
     // overrides. What the member holds in the channel is what the snapshot states.
     let failed = refused(member, part).await;
     assert_eq!(
-        *failed.admin.overrides(plans.id),
+        *failed.admin.rules(plans.id),
         Collection::Failed(LoadFailure::NotAllowed)
     );
     assert!(failed.holds_in(plans.id, WorkspacePermission::ViewChannel));
@@ -664,11 +671,11 @@ async fn an_override_hides_a_channel_from_a_member_and_its_removal_shows_the_cha
     };
     owner
         .api()
-        .set_channel_override(plans.id, everyone, &hide)
+        .set_channel_rule(plans.id, RuleSubject::Role { role_id: everyone }, &hide)
         .await
         .unwrap();
-    let hidden = ChannelOverride {
-        role_id: everyone,
+    let hidden = PermissionRule {
+        subject: RuleSubject::Role { role_id: everyone },
         allow: Vec::new(),
         deny: vec![WorkspacePermission::ViewChannel],
     };
@@ -684,7 +691,11 @@ async fn an_override_hides_a_channel_from_a_member_and_its_removal_shows_the_cha
     // Two empty sets remove the override.
     owner
         .api()
-        .set_channel_override(plans.id, everyone, &SetChannelOverride::default())
+        .set_channel_rule(
+            plans.id,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride::default(),
+        )
         .await
         .unwrap();
     model_when(owner, "no override after the removal", |model| {
@@ -698,7 +709,7 @@ async fn an_override_hides_a_channel_from_a_member_and_its_removal_shows_the_cha
 
     owner.live().release_admin(part);
     model_when(owner, "the overrides are not held", |model| {
-        model.admin.overrides(plans.id).is_not_loaded()
+        model.admin.rules(plans.id).is_not_loaded()
     })
     .await;
 }

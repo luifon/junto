@@ -2,7 +2,7 @@ use crate::support::TestServer;
 use junto_protocol::WorkspacePermission as W;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::roles::WorkspaceRole;
-use junto_protocol::structure::ChannelOverride;
+use junto_protocol::structure::PermissionRule;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
@@ -24,7 +24,7 @@ async fn one_permission_preserves_other_bits() {
     server
         .grant_workspace(&owner, &manager, workspace.id, &[W::ManageChannel])
         .await;
-    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     server
         .put(
             &owner,
@@ -33,7 +33,7 @@ async fn one_permission_preserves_other_bits() {
         )
         .await
         .ok::<Value>(StatusCode::OK);
-    let changed: ChannelOverride = server
+    let changed: PermissionRule = server
         .patch(
             &manager,
             &route,
@@ -61,7 +61,7 @@ async fn one_permission_preserves_other_bits() {
         )
         .await
         .error(ErrorCode::ExceedsOwnPermissions);
-    let changed: ChannelOverride = server
+    let changed: PermissionRule = server
         .patch(
             &owner,
             &route,
@@ -85,7 +85,7 @@ async fn one_permission_obeys_visibility_and_the_grant_ceiling() {
         .grant_workspace(&owner, &manager, workspace.id, &[W::ManageChannel])
         .await;
     let role = server.everyone_role(&owner, workspace.id).await;
-    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     let body = json!({"permission":"mute_members","state":"allow"});
     server
         .patch(
@@ -128,7 +128,7 @@ async fn one_permission_obeys_visibility_and_the_grant_ceiling() {
         .await
         .error(ErrorCode::NotFound);
     let route = format!(
-        "/api/v1/channels/{}/overrides/{}",
+        "/api/v1/channels/{}/rules/roles/{}",
         uuid::Uuid::new_v4(),
         role.id
     );
@@ -145,7 +145,7 @@ async fn concurrent_permission_changes_are_preserved() {
     let workspace = server.default_workspace(&owner).await;
     let channel = server.channel(&owner, workspace.id, "text").await;
     let role = server.everyone_role(&owner, workspace.id).await;
-    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     let one = json!({"permission":"mute_members","state":"deny"});
     let two = json!({"permission":"disconnect_members","state":"deny"});
     server.gate().arm(0);
@@ -159,13 +159,11 @@ async fn concurrent_permission_changes_are_preserved() {
     let (first, second) = tokio::join!(first, second);
     first.ok::<Value>(StatusCode::OK);
     second.ok::<Value>(StatusCode::OK);
-    let overrides: Vec<ChannelOverride> = server
-        .get(
-            &owner,
-            &format!("/api/v1/channels/{}/overrides", channel.id),
-        )
+    let overrides: Vec<PermissionRule> = server
+        .get(&owner, &format!("/api/v1/channels/{}/rules", channel.id))
         .await
-        .ok(StatusCode::OK);
+        .ok::<junto_protocol::structure::ChannelRules>(StatusCode::OK)
+        .rules;
     assert_eq!(overrides.len(), 1);
     assert_eq!(overrides[0].deny.len(), 2);
     assert!(overrides[0].deny.contains(&W::MuteMembers));
@@ -226,7 +224,7 @@ async fn an_identical_override_writes_no_history() {
     let workspace = server.default_workspace(&owner).await;
     let channel = server.channel(&owner, workspace.id, "text").await;
     let role = server.everyone_role(&owner, workspace.id).await;
-    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     for body in [
         json!({"allow": [], "deny": []}),
         json!({"allow": ["mute_members"], "deny": ["lock_room"]}),
@@ -262,7 +260,7 @@ async fn an_unchanged_permission_writes_no_history() {
     let workspace = server.default_workspace(&owner).await;
     let channel = server.channel(&owner, workspace.id, "text").await;
     let role = server.everyone_role(&owner, workspace.id).await;
-    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     for state in ["inherit", "deny", "allow"] {
         let body = json!({"permission":"mute_members","state":state});
         if state != "inherit" {
@@ -303,7 +301,7 @@ async fn patch_audits_notifies_and_removes_the_last_permission() {
     let role = server
         .grant_workspace(&owner, &holder, workspace.id, &[])
         .await;
-    let route = format!("/api/v1/channels/{}/overrides/{role}", channel.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{role}", channel.id);
     let before = server.snapshot(&holder).await.cursor;
     server
         .patch(
@@ -327,7 +325,7 @@ async fn patch_audits_notifies_and_removes_the_last_permission() {
     assert!(
         manager_events
             .iter()
-            .any(|e| matches!(e, Event::ChannelOverrideSet { .. }))
+            .any(|e| matches!(e, Event::PermissionRuleSet { .. }))
     );
     assert!(
         events
@@ -351,7 +349,7 @@ async fn patch_audits_notifies_and_removes_the_last_permission() {
     server
         .patch(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, foreign.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", channel.id, foreign.id),
             &json!({"permission":"mute_members","state":"inherit"}),
         )
         .await
@@ -365,7 +363,7 @@ async fn patch_retries_after_a_concurrent_put() {
     let workspace = server.default_workspace(&owner).await;
     let channel = server.channel(&owner, workspace.id, "text").await;
     let role = server.everyone_role(&owner, workspace.id).await;
-    let route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     let put = json!({"allow":[],"deny":["disconnect_members"]});
     let patch = json!({"permission":"mute_members","state":"deny"});
     server.gate().arm(0);
@@ -378,7 +376,7 @@ async fn patch_retries_after_a_concurrent_put() {
     server.gate().release();
     let (first, second) = tokio::join!(first, second);
     first.ok::<Value>(StatusCode::OK);
-    let changed: ChannelOverride = second.ok(StatusCode::OK);
+    let changed: PermissionRule = second.ok(StatusCode::OK);
     assert_eq!(changed.deny.len(), 2);
     assert!(changed.deny.contains(&W::MuteMembers));
     assert!(changed.deny.contains(&W::DisconnectMembers));

@@ -121,7 +121,6 @@ impl Class {
             | Event::CategoryUpdated { .. }
             | Event::ChannelCreated { .. }
             | Event::ChannelUpdated { .. }
-            | Event::ChannelOverrideSet { .. }
             | Event::PermissionRuleSet { .. }
             | Event::ChannelRulesSynced { .. }
             | Event::WorkspacePersonPermissionsSet { .. }
@@ -792,12 +791,7 @@ impl Audience {
                 channel_id: channel.id,
                 permission: WorkspacePermission::ViewChannel,
             }),
-            Event::ChannelOverrideSet {
-                workspace_id,
-                channel_id,
-                ..
-            }
-            | Event::PermissionRuleSet {
+            Event::PermissionRuleSet {
                 workspace_id,
                 place: RulePlace::Channel { channel_id },
                 ..

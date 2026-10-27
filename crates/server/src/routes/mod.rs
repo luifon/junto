@@ -347,9 +347,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(exports::get_export_file));
     add(&mut router, || routes!(channels::get_channel_permissions));
-    add(&mut router, || routes!(channels::list_channel_overrides));
-    add(&mut router, || routes!(channels::set_channel_override));
-    add(&mut router, || routes!(channels::change_channel_override));
     add(&mut router, || routes!(rules::get_channel_rules));
     add(&mut router, || {
         routes!(
@@ -384,7 +381,9 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             person_permissions::change_member_permission
         )
     });
-    add(&mut router, || routes!(person_permissions::get_member_access));
+    add(&mut router, || {
+        routes!(person_permissions::get_member_access)
+    });
     add(&mut router, || {
         routes!(
             person_permissions::get_server_permissions,

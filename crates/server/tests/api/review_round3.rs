@@ -243,7 +243,7 @@ async fn round3_hidden_fork_conflict_has_no_details() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", copy.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", copy.id, everyone.id),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await

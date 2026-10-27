@@ -77,7 +77,10 @@ async fn rule_37_53_56_revocation_hides_every_route_notice_search_and_replay() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({"allow":[],"deny":["view_channel"]}),
         )
         .await

@@ -13,6 +13,7 @@ use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::{EndReason, Event, Level};
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{
     Channel, ChannelKind, CreateChannel, SetChannelOverride, UpdateChannel,
 };
@@ -268,7 +269,7 @@ async fn two_clients_follow_one_server_and_each_sees_what_its_account_may_see() 
     };
     owner
         .api()
-        .set_channel_override(plans.id, everyone, &hide)
+        .set_channel_rule(plans.id, RuleSubject::Role { role_id: everyone }, &hide)
         .await
         .unwrap();
     model_when(member, "the channel is hidden", |model| {
@@ -298,7 +299,7 @@ async fn two_clients_follow_one_server_and_each_sees_what_its_account_may_see() 
         Event::ChannelUpdated { channel } | Event::ChannelCreated { channel } => {
             channel.id == plans.id
         }
-        Event::ChannelOverrideSet { .. } => true,
+        Event::PermissionRuleSet { .. } | Event::ChannelRulesSynced { .. } => true,
         _ => false,
     };
     assert!(

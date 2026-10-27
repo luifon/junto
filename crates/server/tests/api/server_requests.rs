@@ -267,7 +267,7 @@ async fn role_capabilities_include_channel_grant_and_deny_rules() {
         .await;
     let role = workspace_role(&server, &owner, workspace.id).await;
     let channel = server.channel(&owner, workspace.id, "Text").await;
-    let override_route = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let override_route = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     let list = format!("/api/v1/workspaces/{}/roles", workspace.id);
     for (allow, deny, assign, remove) in [
         (json!([]), json!([]), true, true),

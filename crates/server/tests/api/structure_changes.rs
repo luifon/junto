@@ -281,7 +281,7 @@ async fn rule_21_the_revision_counts_every_change_of_the_structure_and_nothing_e
         .await
         .ok::<Value>(StatusCode::OK);
     changed(&server, &owner, &mut last, "changed role permissions").await;
-    let overrides = format!("/api/v1/channels/{}/overrides/{}", channel.id, role.id);
+    let overrides = format!("/api/v1/channels/{}/rules/roles/{}", channel.id, role.id);
     server
         .put(&owner, &overrides, &json!({ "deny": ["view_channel"] }))
         .await

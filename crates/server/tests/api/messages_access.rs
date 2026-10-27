@@ -491,7 +491,7 @@ async fn a_hidden_channel_refuses_upload_start_reaction_removal_and_cross_place_
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", hidden.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", hidden.id, everyone.id),
             &json!({"deny":["view_channel"]}),
         )
         .await

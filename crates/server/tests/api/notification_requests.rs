@@ -169,7 +169,10 @@ async fn the_request_marks_and_counts_only_the_notices_that_the_account_reads() 
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({ "deny": ["view_channel"] }),
         )
         .await
@@ -516,7 +519,7 @@ async fn the_follow_setting_needs_sight_of_the_channel() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", hidden.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", hidden.id, everyone.id),
             &json!({ "deny": ["view_channel"] }),
         )
         .await

@@ -940,7 +940,7 @@ async fn rule_e08_a_lost_access_fails_the_build() {
         .put(
             &desk.owner,
             &format!(
-                "/api/v1/channels/{}/overrides/{}",
+                "/api/v1/channels/{}/rules/roles/{}",
                 desk.channel.id, everyone.id
             ),
             &json!({ "allow": [], "deny": ["view_channel"] }),

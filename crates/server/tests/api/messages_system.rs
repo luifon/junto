@@ -1025,7 +1025,7 @@ async fn the_changes_of_one_person_join_per_action_and_per_channel() {
         server
             .put(
                 &owner,
-                &format!("/api/v1/channels/{}/overrides/{}", first.id, everyone.id),
+                &format!("/api/v1/channels/{}/rules/roles/{}", first.id, everyone.id),
                 &serde_json::json!({ "deny": [deny] }),
             )
             .await

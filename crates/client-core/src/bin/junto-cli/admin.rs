@@ -1,4 +1,4 @@
-//! The commands of the administration: workspaces, categories, channels, overrides,
+//! The commands of the administration: workspaces, categories, channels, rules,
 //! members, accounts, invites, access tokens, exports, the audit log, the archive period,
 //! retention and the logo of the server (ADR 0101, ADR 0106, ADR 0210, ADR 0304, ADR 0305,
 //! ADR 0308, ADR 0410, ADR 0411).
@@ -21,15 +21,15 @@ use junto_client_core::protocol::discovery::Retention;
 use junto_client_core::protocol::export::Export;
 use junto_client_core::protocol::ids::{
     AccessTokenId, AccountId, CategoryId, ChannelId, ConversationId, ExportId, InviteId,
-    JoinRequestId, WorkspaceId, WorkspaceRoleId,
+    JoinRequestId, WorkspaceId,
 };
 use junto_client_core::protocol::invite::{Invite, JoinRequestStatus, Redemption};
 use junto_client_core::protocol::message::MessagePlace;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
     ArchivePeriod, ArchivedChannel, Category, ChangeChannelOverride, Channel, ChannelKind,
-    ChannelOverride, CreateCategory, CreateChannel, OverrideState, SetChannelOverride,
-    UpdateCategory, UpdateChannel, Workspace, WorkspaceMember,
+    ChannelRules, CreateCategory, CreateChannel, OverrideState, PermissionRule, RuleSubject,
+    SetChannelOverride, UpdateCategory, UpdateChannel, Workspace, WorkspaceMember,
 };
 use time::OffsetDateTime;
 
@@ -51,9 +51,10 @@ enum Action {
     RestoreChannel(ChannelId),
     ArchivedChannels(WorkspaceId),
     CallSettings(ChannelId, UpdateCallSettings),
-    Overrides(ChannelId),
-    SetOverride(ChannelId, WorkspaceRoleId, SetChannelOverride),
-    ChangeOverride(ChannelId, WorkspaceRoleId, ChangeChannelOverride),
+    Rules(ChannelId),
+    SetRule(ChannelId, RuleSubject, SetChannelOverride),
+    ChangeRule(ChannelId, RuleSubject, ChangeChannelOverride),
+    SyncRules(ChannelId),
     Members(WorkspaceId),
     AddMember(WorkspaceId, AccountId),
     RemoveMember(WorkspaceId, AccountId, Statement),
@@ -173,7 +174,7 @@ fn permissions(arguments: &Arguments, name: &str) -> Result<Vec<WorkspacePermiss
         .collect()
 }
 
-/// What `overrides change` does with one permission of an override.
+/// What `rules change` does with one permission of a rule.
 fn override_state(text: &str) -> Result<OverrideState, Failure> {
     match text {
         "allow" => Ok(OverrideState::Allow),
@@ -327,30 +328,40 @@ fn channels(
     }))
 }
 
-fn overrides(
-    action: &str,
-    words: &[String],
-    arguments: &Arguments,
-) -> Result<Option<Action>, Failure> {
+/// The subject of a rule: `role <role>` or `person <account>`, from the word at `at`.
+fn subject(words: &[String], at: usize) -> Result<RuleSubject, Failure> {
+    match word(words, at, "role or person")? {
+        "role" => Ok(RuleSubject::Role {
+            role_id: identifier(words, at + 1, "the role")?,
+        }),
+        "person" => Ok(RuleSubject::Person {
+            account_id: identifier(words, at + 1, "the account")?,
+        }),
+        _ => Err(usage("a rule is for a role or a person")),
+    }
+}
+
+fn rules(action: &str, words: &[String], arguments: &Arguments) -> Result<Option<Action>, Failure> {
     let channel = || identifier::<ChannelId>(words, 1, "the channel");
     Ok(Some(match action {
-        "list" => Action::Overrides(channel()?),
-        "set" => Action::SetOverride(
+        "list" => Action::Rules(channel()?),
+        "set" => Action::SetRule(
             channel()?,
-            identifier(words, 2, "the role")?,
+            subject(words, 2)?,
             SetChannelOverride {
                 allow: permissions(arguments, "allow")?,
                 deny: permissions(arguments, "deny")?,
             },
         ),
-        "change" => Action::ChangeOverride(
+        "change" => Action::ChangeRule(
             channel()?,
-            identifier(words, 2, "the role")?,
+            subject(words, 2)?,
             ChangeChannelOverride {
-                permission: permission(word(words, 3, "the permission")?)?,
-                state: override_state(word(words, 4, "allow, deny or inherit")?)?,
+                permission: permission(word(words, 4, "the permission")?)?,
+                state: override_state(word(words, 5, "allow, deny or inherit")?)?,
             },
         ),
+        "sync" => Action::SyncRules(channel()?),
         _ => return Ok(None),
     }))
 }
@@ -514,7 +525,7 @@ fn parse(command: &str, words: &[String], arguments: &Arguments) -> Result<Actio
         "workspaces" => workspaces(action, words)?,
         "categories" => categories(action, words)?,
         "channels" => channels(action, words, arguments)?,
-        "overrides" => overrides(action, words, arguments)?,
+        "rules" => rules(action, words, arguments)?,
         "members" => members(action, words, arguments)?,
         "accounts" => accounts(action, words, arguments)?,
         "invites" => invites(action, words)?,
@@ -634,13 +645,30 @@ fn archived_line(archived: &ArchivedChannel) -> String {
     )
 }
 
-fn override_line(held: &ChannelOverride) -> String {
+fn rule_line(held: &PermissionRule) -> String {
+    let subject = match held.subject {
+        RuleSubject::Role { role_id } => format!("role {role_id}"),
+        RuleSubject::Person { account_id } => format!("person {account_id}"),
+    };
     format!(
-        "override: role {}  allow {}  deny {}",
-        held.role_id,
+        "rule: {subject}  allow {}  deny {}",
         names(&held.allow),
         names(&held.deny)
     )
+}
+
+/// The rules of a channel: whether it takes them from its category, then one line each.
+fn rules_lines(held: &ChannelRules) -> Vec<String> {
+    let category = held
+        .category_id
+        .map_or_else(|| "none".to_owned(), |id| id.to_string());
+    let synced = if held.synced { "synced" } else { "not synced" };
+    let mut lines = vec![format!(
+        "rules: channel {}  category {category}  {synced}",
+        held.channel_id
+    )];
+    lines.extend(held.rules.iter().map(rule_line));
+    lines
 }
 
 fn member_line(member: &WorkspaceMember) -> String {
@@ -1176,23 +1204,22 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
                 .await
                 .map_err(failed)?,
         )],
-        Action::Overrides(channel_id) => api
-            .channel_overrides(channel_id)
-            .await
-            .map_err(failed)?
-            .iter()
-            .map(override_line)
-            .collect(),
-        Action::SetOverride(channel_id, role_id, sets) => vec![override_line(
-            &api.set_channel_override(channel_id, role_id, &sets)
+        Action::Rules(channel_id) => {
+            rules_lines(&api.channel_rules(channel_id).await.map_err(failed)?)
+        }
+        Action::SetRule(channel_id, subject, sets) => vec![rule_line(
+            &api.set_channel_rule(channel_id, subject, &sets)
                 .await
                 .map_err(failed)?,
         )],
-        Action::ChangeOverride(channel_id, role_id, change) => vec![override_line(
-            &api.change_channel_override(channel_id, role_id, change.permission, change.state)
+        Action::ChangeRule(channel_id, subject, change) => vec![rule_line(
+            &api.change_channel_rule(channel_id, subject, change.permission, change.state)
                 .await
                 .map_err(failed)?,
         )],
+        Action::SyncRules(channel_id) => {
+            rules_lines(&api.sync_channel_rules(channel_id).await.map_err(failed)?)
+        }
         Action::Members(workspace_id) => api
             .workspace_members(workspace_id)
             .await
@@ -1401,7 +1428,7 @@ mod tests {
     use junto_client_core::api::{TransportError, TransportErrorKind};
     use junto_client_core::protocol::account::{AccountStatus, ImageType};
     use junto_client_core::protocol::export::{ExportFailure, ExportState};
-    use junto_client_core::protocol::ids::AuditEntryId;
+    use junto_client_core::protocol::ids::{AuditEntryId, WorkspaceRoleId};
     use junto_client_core::protocol::invite::{InviteRevocation, JoinRequestState};
 
     use super::*;
@@ -1557,15 +1584,17 @@ mod tests {
     }
 
     #[test]
-    fn an_override_takes_permissions_by_the_names_of_the_server() {
+    fn a_rule_takes_permissions_by_the_names_of_the_server() {
         let channel_id = ChannelId::generate().to_string();
         let role_id = WorkspaceRoleId::generate();
         let set = |options: &[&str]| {
             let role = role_id.to_string();
-            let mut words = vec!["set", channel_id.as_str(), role.as_str()];
+            let mut words = vec!["set", channel_id.as_str(), "role", role.as_str()];
             words.extend(options);
-            match parsed("overrides", &words) {
-                Ok(Action::SetOverride(_, role_id, sets)) => Some((role_id, sets)),
+            match parsed("rules", &words) {
+                Ok(Action::SetRule(_, RuleSubject::Role { role_id }, sets)) => {
+                    Some((role_id, sets))
+                }
                 _ => None,
             }
         };
@@ -1577,7 +1606,7 @@ mod tests {
             "--deny",
             "lock_room",
         ]) else {
-            panic!("the override is not read");
+            panic!("the rule is not read");
         };
         assert_eq!(role, role_id);
         assert_eq!(sets.allow, [WorkspacePermission::ViewChannel]);
@@ -1588,7 +1617,7 @@ mod tests {
                 WorkspacePermission::LockRoom
             ]
         );
-        // Two empty sets remove the override.
+        // Two empty sets remove the rule.
         assert_eq!(
             set(&[]).map(|(_, sets)| sets),
             Some(SetChannelOverride::default())
@@ -1705,7 +1734,7 @@ mod tests {
             "workspaces",
             "categories",
             "channels",
-            "overrides",
+            "rules",
             "members",
             "accounts",
             "invites",
@@ -1791,19 +1820,20 @@ mod tests {
     }
 
     #[test]
-    fn a_change_of_an_override_names_one_permission_and_its_state() {
-        let (channel_id, role_id) = (ChannelId::generate(), WorkspaceRoleId::generate());
-        let (channel, role) = (channel_id.to_string(), role_id.to_string());
+    fn a_change_of_a_rule_names_its_subject_one_permission_and_its_state() {
+        let (channel_id, account_id) = (ChannelId::generate(), AccountId::generate());
+        let (channel, account) = (channel_id.to_string(), account_id.to_string());
         let change = |options: &[&str]| {
-            let mut words = vec!["change", channel.as_str(), role.as_str()];
+            let mut words = vec!["change", channel.as_str(), "person", account.as_str()];
             words.extend(options);
-            match parsed("overrides", &words) {
-                Ok(Action::ChangeOverride(channel_id, role_id, change)) => {
-                    Some((channel_id, role_id, change))
+            match parsed("rules", &words) {
+                Ok(Action::ChangeRule(channel_id, subject, change)) => {
+                    Some((channel_id, subject, change))
                 }
                 _ => None,
             }
         };
+        let person = RuleSubject::Person { account_id };
         for (word, state) in [
             ("allow", OverrideState::Allow),
             ("deny", OverrideState::Deny),
@@ -1815,7 +1845,7 @@ mod tests {
             };
             assert_eq!(
                 change(&["mute_members", word]),
-                Some((channel_id, role_id, expected))
+                Some((channel_id, person, expected))
             );
         }
         assert_eq!(change(&[]), None);
@@ -1823,7 +1853,15 @@ mod tests {
         assert_eq!(change(&["mute_members", "remove"]), None);
         assert_eq!(change(&["MuteMembers", "allow"]), None);
         assert_eq!(change(&["administrator", "deny"]), None);
-        assert!(refused("overrides", &["change", channel.as_str()]));
+        assert!(refused("rules", &["change", channel.as_str()]));
+        assert!(refused(
+            "rules",
+            &["change", channel.as_str(), "member", account.as_str()]
+        ));
+        assert!(matches!(
+            parsed("rules", &["sync", channel.as_str()]),
+            Ok(Action::SyncRules(of)) if of == channel_id
+        ));
     }
 
     #[test]
@@ -2006,8 +2044,9 @@ mod tests {
             )
         );
 
-        let held = ChannelOverride {
-            role_id: WorkspaceRoleId::generate(),
+        let role_id = WorkspaceRoleId::generate();
+        let held = PermissionRule {
+            subject: RuleSubject::Role { role_id },
             allow: Vec::new(),
             deny: vec![
                 WorkspacePermission::ViewChannel,
@@ -2015,11 +2054,18 @@ mod tests {
             ],
         };
         assert_eq!(
-            override_line(&held),
-            format!(
-                "override: role {}  allow none  deny view_channel,manage_messages",
-                held.role_id
-            )
+            rule_line(&held),
+            format!("rule: role {role_id}  allow none  deny view_channel,manage_messages")
+        );
+        let channel_id = ChannelId::generate();
+        assert_eq!(
+            rules_lines(&ChannelRules {
+                channel_id,
+                category_id: None,
+                synced: false,
+                rules: vec![held],
+            })[0],
+            format!("rules: channel {channel_id}  category none  not synced")
         );
     }
 

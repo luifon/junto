@@ -14,8 +14,7 @@ use junto_protocol::roles::{
     ChangeServerPersonPermission, ServerPersonPermissions, SetServerPersonPermissions,
 };
 use junto_protocol::structure::{
-    ChangeChannelOverride, ChannelPermissions, OverrideState, PersonPermissions,
-    SetChannelOverride,
+    ChangeChannelOverride, ChannelPermissions, OverrideState, PersonPermissions, SetChannelOverride,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -46,7 +45,9 @@ async fn workspace_rule(
     .bind(account_id)
     .fetch_optional(connection)
     .await?;
-    row.map_or(Ok(Override::NONE), |(allow, deny)| stored_override(allow, deny))
+    row.map_or(Ok(Override::NONE), |(allow, deny)| {
+        stored_override(allow, deny)
+    })
 }
 
 fn person_permissions(account_id: AccountId, rule: Override) -> PersonPermissions {
@@ -333,7 +334,10 @@ async fn server_person_rule(
     })
 }
 
-fn server_person_permissions(account_id: AccountId, rule: ServerOverride) -> ServerPersonPermissions {
+fn server_person_permissions(
+    account_id: AccountId,
+    rule: ServerOverride,
+) -> ServerPersonPermissions {
     ServerPersonPermissions {
         account_id,
         allow: db::server_list(rule.allow()),
@@ -342,7 +346,7 @@ fn server_person_permissions(account_id: AccountId, rule: ServerOverride) -> Ser
 }
 
 async fn require_account(connection: &mut PgConnection, account_id: AccountId) -> ApiResult<()> {
-    sqlx::query("select id from accounts where id = $1 for share")
+    sqlx::query("select id from accounts where id = $1")
         .bind(account_id)
         .fetch_optional(connection)
         .await?

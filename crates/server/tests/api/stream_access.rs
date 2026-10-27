@@ -350,7 +350,10 @@ async fn events_about_a_channel_that_wait_until_after_its_deletion_reach_nobody(
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{channel_id}/overrides/{}", other_role.id),
+            &format!(
+                "/api/v1/channels/{channel_id}/rules/roles/{}",
+                other_role.id
+            ),
             &json!({ "deny": ["manage_messages"] }),
         )
         .await
@@ -434,7 +437,10 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{channel_id}/overrides/{}", other_role.id),
+            &format!(
+                "/api/v1/channels/{channel_id}/rules/roles/{}",
+                other_role.id
+            ),
             &json!({ "deny": ["manage_messages"] }),
         )
         .await

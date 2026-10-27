@@ -13,6 +13,7 @@ use junto_client_core::model::{PlaceId, SendFailure, SendState, ServerModel, Tim
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, AttachmentId, MessageId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message};
+use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::structure::{ChannelKind, SetChannelOverride};
 use junto_client_core::transfers::{DownloadStage, UploadSource, UploadStage};
 
@@ -514,7 +515,7 @@ async fn a_client_that_was_offline_gets_the_missed_changes_without_a_duplicate_a
     };
     owner
         .api()
-        .set_channel_override(hidden.id, everyone, &hide)
+        .set_channel_rule(hidden.id, RuleSubject::Role { role_id: everyone }, &hide)
         .await
         .unwrap();
     for text in ["six", "seven"] {
@@ -626,7 +627,7 @@ async fn a_long_history_is_read_by_page_in_both_directions() {
     };
     owner
         .api()
-        .set_channel_override(hidden.id, everyone, &hide)
+        .set_channel_rule(hidden.id, RuleSubject::Role { role_id: everyone }, &hide)
         .await
         .unwrap();
     let model = timeline_when(

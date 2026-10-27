@@ -285,7 +285,10 @@ async fn the_list_of_followed_threads_needs_sight_of_the_channel() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({ "deny": ["view_channel"] }),
         )
         .await

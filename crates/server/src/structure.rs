@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use junto_authz::{Override, Request, ServerPermission, ServerPermissions, WorkspacePermissions};
+use junto_authz::{Request, ServerPermission, ServerPermissions, WorkspacePermissions};
 use junto_protocol::call::UpdateCallSettings;
 use junto_protocol::ids::{
     CategoryId, ChannelId, ServerRoleId, StructureId, WorkspaceId, WorkspaceRoleId,
 };
 use junto_protocol::roles::{ServerRole, WorkspaceRole};
-use junto_protocol::structure::{ChannelKind, UpdateChannel};
+use junto_protocol::structure::{ChannelKind, RuleSubject, SetChannelOverride, UpdateChannel};
 use junto_protocol::structure_file::{
     ApplyStructureChanges, CategoryEntry, ChannelEntry, CreatedEntry, Deletions,
     OLDEST_STRUCTURE_FORMAT, OverrideEntry, RoleEntry, STRUCTURE_FORMAT, ServerRoleEntry,
@@ -622,15 +622,23 @@ async fn apply_one(
         } => {
             let channel_id = resolve(&mut *connection, Channel, *channel).await?;
             let role_id = resolve(&mut *connection, role_kind, *role).await?;
-            let allow: WorkspacePermissions = allow.iter().copied().collect();
-            let deny: WorkspacePermissions = deny.iter().copied().collect();
-            let next = Override::new(allow, deny)
-                .map_err(|_| ApiError::invalid("a permission is in both allow and deny"))?;
-            let ids = (
-                ChannelId::from_uuid(channel_id),
-                WorkspaceRoleId::from_uuid(role_id),
-            );
-            channels::set_override_in(connection, &app.calls, access, now, ids, next).await?;
+            let change = crate::routes::rules::Change::set(&SetChannelOverride {
+                allow: allow.clone(),
+                deny: deny.clone(),
+            })?;
+            let subject = RuleSubject::Role {
+                role_id: WorkspaceRoleId::from_uuid(role_id),
+            };
+            let ceiling = app.config.limits.most_person_rules_per_place;
+            crate::routes::rules::set_channel_rule_in(
+                connection,
+                (&app.calls, ceiling),
+                access,
+                now,
+                (ChannelId::from_uuid(channel_id), subject),
+                change,
+            )
+            .await?;
             Ok(())
         }
         StructureChange::DeleteChannel { id } => {

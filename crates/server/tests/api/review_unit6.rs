@@ -80,11 +80,11 @@ async fn a_system_line_does_not_give_the_overrides_to_an_account_without_manage_
     let workspace = server.default_workspace(&owner).await;
     let channel = text_channel(&server, &owner).await;
     let everyone = server.everyone_role(&owner, workspace.id).await;
-    let overrides = format!("/api/v1/channels/{}/overrides", channel.id);
+    let overrides = format!("/api/v1/channels/{}/rules", channel.id);
     server
         .put(
             &owner,
-            &format!("{overrides}/{}", everyone.id),
+            &format!("{overrides}/roles/{}", everyone.id),
             &json!({"deny": ["mention_everyone"]}),
         )
         .await

@@ -4,20 +4,20 @@ use junto_authz::{Request, WorkspacePermission};
 use junto_protocol::{
     audit::AuditEvent,
     events::Event,
-    ids::{ChannelId, MessageId, WorkspaceRoleId},
+    ids::{ChannelId, MessageId},
     message::{
         FollowedThreads, ForkThread, MarkRead, Message, MessagePage, MessagePlace, SendMessage,
         SetThreadFollow, ThreadPage, ThreadState,
     },
-    structure::Channel,
+    structure::{Channel, RulePlace, RuleSubject},
 };
 use sqlx::PgConnection;
 
 use super::messages::{Page, Target, rate, send};
 use crate::{
-    access::{Access, stored_override},
+    access::Access,
     audit::{self, About},
-    db::{self, StoredText},
+    db::StoredText,
     error::{ApiError, ApiResult},
     events,
     extract::{ApiJson, ApiPath, ApiQuery, Bearer},
@@ -194,19 +194,18 @@ pub async fn fork(
             .bind(channel.hides_occupants)
             .execute(&mut *connection)
             .await?;
-        let mut overrides: Vec<(WorkspaceRoleId, i64, i64)> = sqlx::query_as(
+        sqlx::query(
             "insert into channel_overrides(channel_id,role_id,workspace_id,allow,deny) select
-             $1,role_id,workspace_id,allow,deny from effective_channel_overrides where channel_id=$2
-             returning role_id,allow,deny",
+             $1,role_id,workspace_id,allow,deny from effective_channel_overrides where channel_id=$2",
         )
         .bind(channel.id)
         .bind(source_id)
-        .fetch_all(&mut *connection)
+        .execute(&mut *connection)
         .await?;
         sqlx::query("insert into channel_person_overrides(channel_id,account_id,workspace_id,allow,deny)
             select $1,account_id,workspace_id,allow,deny from effective_channel_person_overrides where channel_id=$2")
             .bind(channel.id).bind(source_id).execute(&mut *connection).await?;
-        overrides.sort_by_key(|(role_id, _, _)| *role_id);
+        let copied = crate::access::rules::effective(connection, channel.id).await?;
         let target = Place::channel(connection, &access, channel.id).await?;
         target.ensure(connection).await?;
         let linked = sqlx::query("insert into thread_forks(root_id,channel_id) values($1,$2) on conflict(root_id) do nothing")
@@ -247,27 +246,31 @@ pub async fn fork(
             },
         )
         .await?;
-        // Each copied override is recorded and told as a change of an override is
-        // (ADR 0305).
-        for (role_id, allow, deny) in overrides {
-            let copied = stored_override(allow, deny)?;
-            let (allow, deny) = (
-                db::workspace_list(copied.allow()),
-                db::workspace_list(copied.deny()),
-            );
-            let entry = AuditEvent::ChannelOverrideSet {
-                role_id,
-                allow: allow.clone(),
-                deny: deny.clone(),
+        // Each copied rule is recorded and told as a change of a rule is (ADR 0305).
+        for (subject, rule) in copied {
+            let rule = crate::access::rules::rule(subject, rule);
+            let entry = match subject {
+                RuleSubject::Role { role_id } => AuditEvent::ChannelOverrideSet {
+                    role_id,
+                    allow: rule.allow.clone(),
+                    deny: rule.deny.clone(),
+                },
+                RuleSubject::Person { account_id } => AuditEvent::ChannelPersonRuleSet {
+                    account_id,
+                    allow: rule.allow.clone(),
+                    deny: rule.deny.clone(),
+                },
             };
             let about = About::Channel(workspace_id, channel.id);
             audit::record(connection, now, Some(access.account_id), about, &entry).await?;
-            let set = Event::ChannelOverrideSet {
+            let set = Event::PermissionRuleSet {
                 workspace_id,
-                channel_id: channel.id,
-                role_id,
-                allow,
-                deny,
+                place: RulePlace::Channel {
+                    channel_id: channel.id,
+                },
+                subject,
+                allow: rule.allow,
+                deny: rule.deny,
             };
             events::publish(connection, now, &set).await?;
         }

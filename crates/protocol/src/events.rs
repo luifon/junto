@@ -409,15 +409,6 @@ pub enum Event {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
     },
-    /// The allow set and the deny set of one role in a channel. Two empty sets mean that the
-    /// role has no override in the channel.
-    ChannelOverrideSet {
-        workspace_id: WorkspaceId,
-        channel_id: ChannelId,
-        role_id: WorkspaceRoleId,
-        allow: Vec<WorkspacePermission>,
-        deny: Vec<WorkspacePermission>,
-    },
     /// The first person is in the room of a call: the voice channel is in use, or the
     /// direct-message call has begun.
     CallStarted {
@@ -775,7 +766,6 @@ impl Event {
         "channel_created",
         "channel_updated",
         "channel_deleted",
-        "channel_override_set",
         "call_started",
         "call_ended",
         "call_participant_joined",
@@ -878,7 +868,6 @@ impl Event {
             Self::ChannelCreated { .. } => "channel_created",
             Self::ChannelUpdated { .. } => "channel_updated",
             Self::ChannelDeleted { .. } => "channel_deleted",
-            Self::ChannelOverrideSet { .. } => "channel_override_set",
             Self::CallStarted { .. } => "call_started",
             Self::CallEnded { .. } => "call_ended",
             Self::CallParticipantJoined { .. } => "call_participant_joined",
@@ -1305,13 +1294,6 @@ mod tests {
             Event::ChannelDeleted {
                 workspace_id,
                 channel_id,
-            },
-            Event::ChannelOverrideSet {
-                workspace_id,
-                channel_id,
-                role_id: workspace_role.id,
-                allow: vec![],
-                deny: vec![WorkspacePermission::ViewChannel],
             },
             Event::CallStarted {
                 hides_occupants: Some(false),

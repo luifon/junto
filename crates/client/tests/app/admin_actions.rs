@@ -221,10 +221,11 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
     });
     reveal_in_page(&mut window, "override-manage_messages-allow");
     assert_drawn_label(&mut window, "Manage messages: Allow, chosen");
-    let stored = world.run(owner.api().channel_overrides(channel)).unwrap();
+    let stored = world.run(owner.api().channel_rules(channel)).unwrap();
     assert!(
-        stored.iter().any(|rule| rule.role_id == row.id
-            && rule.allow.contains(&WorkspacePermission::ManageMessages))
+        stored
+            .of_role(row.id)
+            .is_some_and(|rule| rule.allow.contains(&WorkspacePermission::ManageMessages))
     );
     click_in_page(&mut window, "override-lock_room-deny");
     window.until("both changes are shown", |window| {
@@ -242,8 +243,9 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
     assert!(!window.shows(sel("override-clear", row.id)));
     assert!(
         world
-            .run(owner.api().channel_overrides(channel))
+            .run(owner.api().channel_rules(channel))
             .unwrap()
+            .rules
             .is_empty()
     );
 }

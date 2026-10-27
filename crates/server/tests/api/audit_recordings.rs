@@ -83,7 +83,7 @@ async fn hide(server: &TestServer, owner: &Member, of: &Channel, hidden: bool) {
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{}/overrides/{}", of.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", of.id, everyone.id),
             &json!({ "allow": [], "deny": deny }),
         )
         .await

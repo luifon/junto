@@ -91,7 +91,7 @@ async fn set_override(
     server
         .put(
             manager,
-            &format!("/api/v1/channels/{channel_id}/overrides/{role_id}"),
+            &format!("/api/v1/channels/{channel_id}/rules/roles/{role_id}"),
             &json!({ "allow": allow, "deny": deny }),
         )
         .await

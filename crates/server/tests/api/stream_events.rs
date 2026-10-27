@@ -357,7 +357,10 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
     let channel = server.channel(&owner, workspace.id, "plans").await;
     let everyone = server.everyone_role(&owner, workspace.id).await;
     let mut stream = server.subscribed(&owner, Level::Full).await;
-    let path = format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id);
+    let path = format!(
+        "/api/v1/channels/{}/rules/roles/{}",
+        channel.id, everyone.id
+    );
     let deny = json!({ "deny": [WorkspacePermission::ManageMessages] });
 
     server
@@ -381,10 +384,14 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
         .await
         .ok::<Value>(StatusCode::OK);
 
-    let set = |deny: Vec<WorkspacePermission>| Event::ChannelOverrideSet {
+    let set = |deny: Vec<WorkspacePermission>| Event::PermissionRuleSet {
         workspace_id: workspace.id,
-        channel_id: channel.id,
-        role_id: everyone.id,
+        place: junto_protocol::structure::RulePlace::Channel {
+            channel_id: channel.id,
+        },
+        subject: junto_protocol::structure::RuleSubject::Role {
+            role_id: everyone.id,
+        },
         allow: vec![],
         deny,
     };

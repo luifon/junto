@@ -93,7 +93,7 @@ commands:
   workspaces <action> [arguments]
   categories <action> [arguments]
   channels <action> [arguments]
-  overrides <action> [arguments]
+  rules <action> [arguments]
   roles <action> [arguments]
   members <action> [arguments]
   accounts <action> [arguments]
@@ -269,15 +269,19 @@ actions of channels:
   archived <workspace>         the archived channels that the account sees
   call-settings <channel> [--limit <n> | --no-limit] [--hide <on|off>]
 
-actions of overrides:
-  list <channel>
-  set <channel> <role> [--allow <permission>]... [--deny <permission>]...
-                               set the override of a role in a channel; without an option
-                               the override is removed. A permission is written as the
-                               server names it, such as view_channel
-  change <channel> <role> <permission> <allow|deny|inherit>
-                               change one permission of the override of a role in a channel
-                               and keep the other permissions of it
+actions of rules:
+  list <channel>               the rules of a channel, and whether it takes them from its
+                               category
+  set <channel> role <role> | person <account> [--allow <permission>]...
+      [--deny <permission>]...
+                               set the rule of a role or of a member in a channel; without
+                               an option the rule is removed. A permission is written as
+                               the server names it, such as view_channel
+  change <channel> role <role> | person <account> <permission> <allow|deny|inherit>
+                               change one permission of the rule of a role or of a member
+                               in a channel and keep the other permissions of it
+  sync <channel>               remove the own rules of a channel, which takes the rules of
+                               its category again
 
 actions of roles:
   list <workspace>             the roles of a workspace: the \"everyone\" role, then the
@@ -806,7 +810,7 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "recordings" => recordings::run(&client, &arguments).await,
         "glossary" => glossary::run(&client, &arguments).await,
         "deny-request" | "invites" | "redeem" | "workspaces" | "categories" | "channels"
-        | "overrides" | "members" | "accounts" | "tokens" | "exports" | "audit" | "logo"
+        | "rules" | "members" | "accounts" | "tokens" | "exports" | "audit" | "logo"
         | "archive-period" | "retention" => admin::run(&client, command, &arguments).await,
         "roles" => roles::run(&client, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),

@@ -1,7 +1,7 @@
 use junto_protocol::audit::{AuditEntry, AuditEvent, AuditPage};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{ChannelId, WorkspaceId};
-use junto_protocol::structure::{Channel, ChannelOverride, Workspace};
+use junto_protocol::structure::{Channel, PermissionRule, Workspace};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use reqwest::StatusCode;
 use serde_json::json;
@@ -91,7 +91,7 @@ async fn an_entry_about_a_private_channel_is_shown_only_to_viewers_who_see_the_c
         &[W::ViewChannel],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     set_override(
         &server,
         &owner,
@@ -101,7 +101,7 @@ async fn an_entry_about_a_private_channel_is_shown_only_to_viewers_who_see_the_c
         &[],
     )
     .await
-    .ok::<ChannelOverride>(StatusCode::OK);
+    .ok::<PermissionRule>(StatusCode::OK);
     server
         .patch(
             &owner,

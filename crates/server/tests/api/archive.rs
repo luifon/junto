@@ -1289,7 +1289,10 @@ async fn rule_a16_an_archived_channel_is_administered() {
     server
         .put(
             owner,
-            &format!("/api/v1/channels/{}/overrides/{}", channel.id, everyone.id),
+            &format!(
+                "/api/v1/channels/{}/rules/roles/{}",
+                channel.id, everyone.id
+            ),
             &json!({ "allow": [], "deny": ["view_channel"] }),
         )
         .await

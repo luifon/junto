@@ -619,7 +619,7 @@ async fn hidden_channels_refuse_every_message_operation_and_queued_events() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", place.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", place.id, everyone.id),
             &json!({"deny":["view_channel"]}),
         )
         .await
@@ -943,7 +943,7 @@ async fn uploads_enforce_limits_ownership_integrity_expiry_and_preview_checks() 
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/overrides/{}", place.id, everyone.id),
+            &format!("/api/v1/channels/{}/rules/roles/{}", place.id, everyone.id),
             &json!({"deny":["view_channel"]}),
         )
         .await
