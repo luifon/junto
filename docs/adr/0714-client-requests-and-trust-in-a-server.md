@@ -53,7 +53,7 @@ What the client accepts from a server:
 - The name of a server and a device name that a server sends are cut to 64 characters without control characters before they are stored or shown by a flow. A logo path is used only when it resolves to the origin of the server.
 - Other text that the API returns (names of accounts, roles and channels) is given to the caller as the server sent it. The interface treats it as text of another party.
 - A session token is sent only in the `Authorization` header of a request to the origin of its server.
-- The body of a request is a JSON document or the image of an avatar. The client sends an avatar only when it has at most 256 KiB and is a PNG, JPEG or WebP image by its first bytes (ADR 0119).
+- The body of a request is a JSON document or the image of an avatar. The client sends an avatar only when it has at most 2 MiB and is a PNG, JPEG or WebP image by its first bytes; it is the cut of ADR 0119.
 - An avatar that the client reads has the same two bounds. The client reads the format from the bytes and not from the `Content-Type` of the response, and computes the SHA-256 hash of the bytes itself. Another answer is an invalid response. The interface treats the image as a file of an unknown sender.
 
 Secrets in memory:

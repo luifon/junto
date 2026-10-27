@@ -16,6 +16,7 @@ pub mod moment;
 pub mod notify;
 pub mod opening;
 pub mod panics;
+pub mod picture;
 #[cfg(target_os = "linux")]
 pub mod renderer;
 pub mod shell;

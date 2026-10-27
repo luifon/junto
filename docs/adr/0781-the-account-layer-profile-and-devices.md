@@ -23,7 +23,7 @@ Profile:
 - The page shows the name and the picture that the server holds. Both come from the state of the server, so a change is shown when the server has recorded it, whichever device made it.
 - The name field starts with the name of the server. "Save" sends it. The name is checked by the rule of the client core before a request; a name that the rule refuses is told at the field and not sent. The button reads "Saved" while the field holds the name of the server.
 - "Choose a picture…" opens the file dialog of the system. The page states the bounds of ADR 0119 under the button.
-- The chosen file is read on a background thread, at most one byte beyond 256 KiB. Only a regular file is read, by the function of ADR 0783: a link is not followed, and a pipe or a device is refused without a wait. Its size and its first bytes are checked before a request. A file that is too large, or that is no PNG, JPEG or WebP image, is told at the button and not sent. The server checks the size in pixels; its refusals `image_too_large` and `image_unsupported` are told at the same place.
+- The chosen file is read on a background thread, at most one byte beyond 10 MiB, decoded, and cut in the dialog of ADR 0119; the cut is checked again (at most 2 MiB, its first bytes) before the request. Only a regular file is read, by the function of ADR 0783: a link is not followed, and a pipe or a device is refused without a wait. Its size and its first bytes are checked before a request. A file that is too large, or that is no PNG, JPEG or WebP image, is told at the button and not sent. The server checks the size in pixels; its refusals `image_too_large` and `image_unsupported` are told at the same place.
 - A file that the dialog returns after the layer closed, or for another server or account than the one it was chosen for, is not sent.
 - A file that the dialog returns while another request of the page is on its way is not sent. The page says so at the button, and the person chooses the file again.
 - "Remove picture" removes the avatar. It is disabled while the account has none.
@@ -63,7 +63,7 @@ Text of a server:
 
 - A person changes the name and the picture of one account without a change of the profile preset or of the accounts on other servers.
 - The picture on this page is the avatar component of ADR 0783: the image of the avatar when the window holds it, and the generated avatar of the account otherwise.
-- A file larger than 256 KiB costs one read of 256 KiB and one byte, and no request.
+- A file larger than 10 MiB costs one read of 10 MiB and one byte, and no request.
 - A server that tells device events without end causes one read after another, never two at once, and only while the devices page is open.
 - A person who removes the device of the session by mistake needs a device link or a recovery to return.
 - The name field does not follow a change of the name that another device makes while the page is open; the button then reads "Save" again.

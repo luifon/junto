@@ -9,7 +9,6 @@ use junto_client::state::view::ServerStatus;
 use junto_client::text;
 use junto_client_core::ServerHandle;
 use junto_client_core::flow::access::{AccessAction, AccessState, Notice};
-use junto_client_core::profile::{InvalidAvatar, avatar_hash};
 use junto_client_core::protocol::account::DeviceOrigin;
 use junto_client_core::protocol::ids::DeviceId;
 
@@ -18,19 +17,6 @@ use crate::support::{Device, Fault, FaultProxy, TestServer, logged_in};
 
 const ACCOUNT: &str = "/api/v1/account";
 const AVATAR: &str = "/api/v1/account/avatar";
-
-/// A still PNG image as far as the server reads it: the header chunk with the size, and
-/// the start of the image data.
-fn png(width: u32, height: u32, padding: usize) -> Vec<u8> {
-    let mut image = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
-    image.extend_from_slice(&width.to_be_bytes());
-    image.extend_from_slice(&height.to_be_bytes());
-    image.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
-    image.extend_from_slice(&(padding as u32).to_be_bytes());
-    image.extend_from_slice(b"IDAT");
-    image.resize(image.len() + padding + 4, 0);
-    image
-}
 
 impl Window {
     /// The account layer as the window drew it last. Absent while the layer is closed.
@@ -225,8 +211,13 @@ fn the_name_of_the_account_changes_in_the_window_of_another_member(
     assert_eq!(window.account(), None);
 }
 
+/// A chosen picture (ADR 0119): a file larger than 10 MiB and a file that is no picture are
+/// refused before a request; a large picture opens the cut, which the person drags and
+/// zooms; Save sends the square scaled to at most 1024 by 1024 pixels. A picture smaller
+/// than that keeps its size.
 #[gpui::test]
-fn a_picture_is_checked_before_it_is_sent_and_set_and_removed(cx: &mut TestAppContext) {
+fn a_chosen_picture_is_cut_scaled_and_set_and_removed(cx: &mut TestAppContext) {
+    use junto_client::picture::{Refusal, STORED_SIDE};
     let world = World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
@@ -239,12 +230,12 @@ fn a_picture_is_checked_before_it_is_sent_and_set_and_removed(cx: &mut TestAppCo
         std::fs::write(&file, bytes).unwrap();
         file
     };
-    let small = png(64, 48, 100);
-    // 300 KiB with the first bytes of a PNG image.
-    let large = write("large.png", &png(64, 48, 300 * 1024));
+    let mut too_large = crate::harness::picture_png(64, 48);
+    too_large.resize(10 * 1024 * 1024 + 1, 0);
+    let large = write("large.png", &too_large);
     let text_file = write("notes.txt", b"These bytes are no image.");
-    let wide = write("wide.png", &png(2000, 2000, 100));
-    let picture = write("picture.png", &small);
+    let photo = write("photo.png", &crate::harness::picture_png(3000, 2000));
+    let small = write("small.png", &crate::harness::picture_png(64, 48));
     let puts = |proxy: &FaultProxy| {
         proxy
             .seen(AVATAR)
@@ -257,49 +248,68 @@ fn a_picture_is_checked_before_it_is_sent_and_set_and_removed(cx: &mut TestAppCo
     assert!(window.shows("account-picture-choose"));
     assert_eq!(window.profile().unwrap().picture, None);
 
-    // A file of 300 KiB and a file that is no image are refused before any request.
-    for (file, invalid) in [
-        (large, InvalidAvatar::TooLarge),
-        (text_file, InvalidAvatar::Unsupported),
-    ] {
+    for (file, refusal) in [(large, Refusal::TooLarge), (text_file, Refusal::Unsupported)] {
         window.in_shell(|shell, _, cx| shell.set_account_picture_path(file, cx));
         window.until("the file is refused", |window| {
             window.refused(AskKind::SetPicture).is_some()
         });
         assert_eq!(
             window.refused(AskKind::SetPicture).as_deref(),
-            Some(text::account::invalid_picture(invalid))
+            Some(text::picture_refusal(refusal))
         );
         assert!(window.shows("account-picture-refused"));
+        assert!(window.picture_crop().is_none());
     }
-    // A request of the same client that is answered now is behind every earlier one.
     let handle = window.handle();
     world.run(handle.api().own_account()).unwrap();
     assert_eq!(puts(&proxy), 0, "a refused file was sent");
 
-    // The server reads the size in pixels: its refusal is told at the same control.
-    window.in_shell(|shell, _, cx| shell.set_account_picture_path(wide, cx));
-    window.until("the server refused the picture", |window| {
-        puts(&proxy) == 1 && window.refused(AskKind::SetPicture).is_some()
-    });
-    let refused = window.refused(AskKind::SetPicture).unwrap();
-    assert!(refused.contains("1024 by 1024 pixels"), "{refused}");
-    assert_eq!(window.profile().unwrap().picture, None);
-
-    // A small PNG image is stored, and the page describes what the server holds.
-    window.in_shell(|shell, _, cx| shell.set_account_picture_path(picture, cx));
+    // The photo opens the cut over the account page, at its largest square.
+    window.in_shell(|shell, _, cx| shell.set_account_picture_path(photo, cx));
+    let crop = window.until_picture_crop();
+    assert_eq!((crop.width, crop.height), (3000, 2000));
+    assert_eq!((crop.crop.left, crop.crop.side), (500.0, 2000.0));
+    assert!(window.shows("account"));
+    // The wheel zooms in; a drag to the right shows more of the left of the photo.
+    window.wheel_picture(400.0);
+    let zoomed = window.picture_crop().unwrap();
+    assert!(zoomed.zoom > 1.5, "{}", zoomed.zoom);
+    assert!(zoomed.crop.side < 1400.0);
+    window.drag_picture((60.0, 0.0));
+    let moved = window.picture_crop().unwrap();
+    assert!(moved.crop.left < zoomed.crop.left, "{moved:?}");
+    window.click("picture-crop-save");
     window.until("the server holds the picture", |window| {
-        window.profile().is_some_and(|page| page.picture.is_some())
+        window.picture_crop().is_none()
+            && window.profile().is_some_and(|page| page.picture.is_some())
     });
     let held = window.profile().unwrap().picture.unwrap();
-    assert_eq!(held.hash, avatar_hash(&small));
-    assert_eq!((held.width, held.height), (64, 48));
-    assert_eq!(held.bytes as usize, small.len());
+    assert_eq!((held.width, held.height), (STORED_SIDE, STORED_SIDE));
+    assert!(held.bytes as usize <= junto_client_core::profile::AVATAR_MAX_BYTES);
+    assert_eq!(puts(&proxy), 1);
+    let own = world.run(handle.api().own_account()).unwrap();
+    assert_eq!(own.avatar.unwrap().hash, held.hash);
+
+    // A small picture keeps its size: its square of 48 by 48 pixels is sent.
+    window.in_shell(|shell, _, cx| shell.set_account_picture_path(small, cx));
+    window.until_picture_crop();
+    window.click("picture-crop-save");
+    window.until("the server holds the small picture", |window| {
+        window
+            .profile()
+            .and_then(|page| page.picture)
+            .is_some_and(|held| (held.width, held.height) == (48, 48))
+    });
     assert_eq!(window.refused(AskKind::SetPicture), None);
     assert!(!window.shows("account-picture-refused"));
+
+    // A cut that is cancelled sends nothing.
+    let again = write("again.png", &crate::harness::picture_png(200, 200));
+    window.in_shell(|shell, _, cx| shell.set_account_picture_path(again, cx));
+    window.until_picture_crop();
+    window.click("picture-crop-cancel");
+    window.until("the cut is closed", |window| window.picture_crop().is_none());
     assert_eq!(puts(&proxy), 2);
-    let own = world.run(handle.api().own_account()).unwrap();
-    assert_eq!(own.avatar.unwrap().hash, avatar_hash(&small));
 
     // "Remove picture" removes it on the server.
     window.click("account-picture-remove");
@@ -318,7 +328,7 @@ fn the_profile_page_sends_one_request_at_a_time(cx: &mut TestAppContext) {
     let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
     let files = tempfile::tempdir().unwrap();
     let picture = files.path().join("picture.png");
-    std::fs::write(&picture, png(64, 48, 100)).unwrap();
+    std::fs::write(&picture, crate::harness::picture_png(64, 48)).unwrap();
     let sent = |proxy: &FaultProxy, path: &str, method: &str| {
         proxy
             .seen(path)
@@ -362,8 +372,10 @@ fn the_profile_page_sends_one_request_at_a_time(cx: &mut TestAppContext) {
     assert_eq!(sent(&proxy, ACCOUNT, "PATCH"), 1);
     assert_eq!(sent(&proxy, AVATAR, "PUT"), 0);
 
-    // The page takes the picture after the answer.
+    // The page takes the picture after the answer, through its cut.
     window.in_shell(|shell, _, cx| shell.set_account_picture_path(picture, cx));
+    window.until_picture_crop();
+    window.click("picture-crop-save");
     window.until("the server holds the picture", |window| {
         window.profile().is_some_and(|page| page.picture.is_some())
     });

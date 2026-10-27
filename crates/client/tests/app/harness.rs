@@ -65,6 +65,11 @@ impl World {
         self.run(TestServer::start_with_media(name))
     }
 
+    /// A server with these settings of its process.
+    pub fn server_with_settings(&self, name: &str, settings: &[(&str, &str)]) -> TestServer {
+        self.run(TestServer::start_with_settings(name, settings))
+    }
+
     /// A device that owns the server: it claimed it with the owner code.
     pub fn owner(&self, server: &TestServer) -> Admin {
         self.run(async {
@@ -1310,4 +1315,58 @@ pub fn press_pad(cx: &mut VisualTestContext) {
 /// action reaches the global listeners.
 pub fn dispatch_from_the_window(action: Box<dyn gpui::Action>) -> Press {
     std::rc::Rc::new(move |window, cx| window.dispatch_action(action.boxed_clone(), cx))
+}
+
+/// A real PNG picture of this size, with a pattern of colours, as a camera or a drawing
+/// program writes one.
+pub fn picture_png(width: u32, height: u32) -> Vec<u8> {
+    let picture = image::RgbaImage::from_fn(width, height, |x, y| {
+        image::Rgba([(x % 251) as u8, (y % 241) as u8, ((x / 7 + y / 5) % 239) as u8, 255])
+    });
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(picture)
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
+impl Window {
+    /// The cut of a chosen picture that is open (ADR 0119).
+    pub fn picture_crop(&mut self) -> Option<junto_client::state::picture_crop::PictureCropView> {
+        self.state.read_with(&self.cx, |state, _| state.picture_crop())
+    }
+
+    /// Waits for the cut of a chosen picture and returns it as drawn.
+    #[track_caller]
+    pub fn until_picture_crop(&mut self) -> junto_client::state::picture_crop::PictureCropView {
+        self.until("the cut of the picture", |window| {
+            window.picture_crop().is_some() && window.shows("picture-crop-frame")
+        });
+        self.picture_crop().unwrap()
+    }
+
+    /// Drags the picture in the frame of the cut by this many window pixels.
+    pub fn drag_picture(&mut self, by: (f32, f32)) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        self.settle();
+        let start = self.cx.debug_bounds("picture-crop-frame").unwrap().center();
+        let end = start + point(px(by.0), px(by.1));
+        self.simulate(|cx| cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none()));
+        self.simulate(|cx| cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none()));
+        self.simulate(|cx| cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none()));
+        self.settle();
+    }
+
+    /// Turns the wheel over the frame of the cut by this many pixels.
+    pub fn wheel_picture(&mut self, by: f32) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        self.settle();
+        let position = self.cx.debug_bounds("picture-crop-frame").unwrap().center();
+        self.dispatch(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+            ..Default::default()
+        });
+        self.settle();
+    }
 }

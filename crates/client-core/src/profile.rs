@@ -19,7 +19,10 @@ pub const NAME_MAX_CHARS: usize = 64;
 
 /// The largest avatar that a server stores (ADR 0119). The preset has the same bound, so
 /// that its avatar can be sent to every server.
-pub const AVATAR_MAX_BYTES: usize = 256 * 1024;
+pub const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// The largest file that a person can choose as a picture. The window cuts it to a square
+/// and scales it to at most [`AVATAR_MAX_BYTES`] before a server sees it (ADR 0119).
+pub const CHOSEN_PICTURE_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 const PROFILE: Versioned = Versioned {
     name: PROFILE_FILE,
@@ -82,7 +85,7 @@ pub fn device_name(text: &str) -> Result<String, InvalidName> {
 /// Why bytes are not an avatar that a server stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidAvatar {
-    #[error("the avatar is larger than 256 KiB")]
+    #[error("the avatar is larger than 2 MiB")]
     TooLarge,
     #[error("the avatar is not a PNG, JPEG or WebP image")]
     Unsupported,
@@ -125,6 +128,13 @@ fn open_chosen(path: &Path) -> io::Result<File> {
 /// between the check and the read. One byte more than an avatar can have is read at
 /// most, so that a larger file is refused by [`check_avatar`] and not held in memory.
 pub fn read_avatar_file(path: &Path) -> io::Result<Vec<u8>> {
+    read_chosen_file(path, AVATAR_MAX_BYTES)
+}
+
+/// Reads a file that a person chose as a picture, as [`read_avatar_file`] does, with one
+/// byte more than `most` at most: a larger file is refused by its caller and not held in
+/// memory.
+pub fn read_chosen_file(path: &Path, most: usize) -> io::Result<Vec<u8>> {
     use std::io::Read as _;
     let file = open_chosen(path)?;
     if !file.metadata()?.is_file() {
@@ -134,8 +144,7 @@ pub fn read_avatar_file(path: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     let mut image = Vec::new();
-    file.take(AVATAR_MAX_BYTES as u64 + 1)
-        .read_to_end(&mut image)?;
+    file.take(most as u64 + 1).read_to_end(&mut image)?;
     Ok(image)
 }
 

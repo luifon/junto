@@ -114,6 +114,7 @@ services:
       JUNTO_ATTACHMENTS_DIR: /var/lib/junto/attachments
       JUNTO_ATTACHMENT_BYTES: ${JUNTO_ATTACHMENT_BYTES:-100000000}
       JUNTO_ATTACHMENTS_PER_MESSAGE: ${JUNTO_ATTACHMENTS_PER_MESSAGE:-10}
+      JUNTO_PICTURE_BYTES: ${JUNTO_PICTURE_BYTES:-2097152}
       JUNTO_RECORDINGS_DIR: /var/lib/junto/recordings
       # Exports are copies that can be made again; a backup leaves them out (ADR 0021).
       JUNTO_EXPORTS_DIR: /var/lib/junto/exports

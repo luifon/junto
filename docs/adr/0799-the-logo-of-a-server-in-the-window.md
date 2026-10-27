@@ -25,7 +25,7 @@ Server book:
 Administration:
 
 - The page "Server" exists for an administrator. It shows the logo or states that the server has none, and has "Choose image…" and "Remove logo". The removal is a question in place of the two actions.
-- A file is read away from the window and checked before a request: at most 256 KiB, and a PNG, JPEG or WebP image by its first bytes. The page states the bounds, and that the logo is public and visible before a person joins.
+- A file is read away from the window, at most 10 MiB, and cut in the dialog of ADR 0119; the cut is checked before a request: at most 2 MiB, and a PNG, JPEG or WebP image by its first bytes. The page states the bounds, and that the logo is public and visible before a person joins.
 - A refusal of the server is one sentence under the actions.
 
 ## Consequences

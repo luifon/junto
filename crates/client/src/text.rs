@@ -2234,6 +2234,26 @@ pub fn place_name(place: &crate::state::notices::Whereabouts) -> String {
 }
 
 pub const ALERT_WITHOUT_TEXT: &str = "New notification";
+
+/// Why a chosen file is not a picture (ADR 0119).
+pub const fn picture_refusal(refusal: crate::picture::Refusal) -> &'static str {
+    use crate::picture::Refusal;
+    match refusal {
+        Refusal::Unreadable => {
+            "The file could not be read. Check that the file exists and that you may open it."
+        }
+        Refusal::TooLarge => "The file is larger than 10 MiB. Choose a smaller picture.",
+        Refusal::Unsupported => "The file is not a PNG, JPEG, WebP or GIF picture.",
+        Refusal::TooManyPixels => "The picture has too many pixels. Choose a smaller picture.",
+    }
+}
+pub const PICTURE_CROP_ACCOUNT: &str = "Picture of your account";
+pub const PICTURE_CROP_PRESET: &str = "Picture of new accounts";
+pub const PICTURE_CROP_LOGO: &str = "Logo of the server";
+pub const PICTURE_CROP_HELP: &str = "Drag the picture to place it in the square, and zoom with the slider or the wheel.";
+pub const PICTURE_ZOOM: &str = "Zoom";
+pub const PICTURE_SAVE: &str = "Save";
+pub const PICTURE_SAVING: &str = "Saving…";
 /// The body of the system notification of a message while the account hides the text.
 pub const ALERT_TEXT_HIDDEN: &str = "New message";
 pub const NOTIFICATION_TEXT: &str = "Message text in notifications";

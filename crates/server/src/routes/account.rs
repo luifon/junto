@@ -124,8 +124,8 @@ pub async fn update_own_account(
 }
 
 /// Stores the avatar of the caller's account. The body is the image itself: a still PNG,
-/// JPEG or WebP image of at most 262144 bytes and at most 1024 by 1024 pixels. The server
-/// reads the format from the bytes, not from `Content-Type`.
+/// JPEG or WebP image of at most 2097152 bytes (`JUNTO_PICTURE_BYTES`) and at most 1024 by
+/// 1024 pixels. The server reads the format from the bytes, not from `Content-Type`.
 #[utoipa::path(
     put,
     path = "/api/v1/account/avatar",

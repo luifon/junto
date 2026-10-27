@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use gpui::TestAppContext;
+use junto_client::picture::Refusal;
 use junto_client::state::people::{Face, PictureHash};
 use junto_client::state::view::Members;
 use junto_client_core::book::ProfileSync;
@@ -89,6 +90,13 @@ impl Window {
     fn use_picture(&mut self, file: &Path) {
         let file = file.to_owned();
         self.in_shell(|shell, _, cx| shell.use_preset_picture(file, cx));
+    }
+
+    /// Chooses a picture for the preset and saves its cut (ADR 0119).
+    fn save_picture(&mut self, file: &Path) {
+        self.use_picture(file);
+        self.until_picture_crop();
+        self.click("picture-crop-save");
     }
 }
 
@@ -320,8 +328,6 @@ fn the_picture_of_the_preset_is_set_in_the_settings_and_goes_to_a_server_joined_
     let admin = world.owner(&server);
     let (directory, mut window) = named(cx, "Luca");
     let files = tempfile::tempdir().unwrap();
-    // The file of the picture in the data directory of the window.
-    let stored = directory.path().join("junto").join("avatar.png");
 
     window.click("app-settings");
     window.click("settings-section-picture");
@@ -345,33 +351,41 @@ fn the_picture_of_the_preset_is_set_in_the_settings_and_goes_to_a_server_joined_
     };
     assert_eq!(
         refusal(&mut window).as_deref(),
-        Some(junto_client::text::people::PICTURE_UNSUPPORTED)
+        Some(junto_client::text::picture_refusal(Refusal::Unsupported))
     );
     let mut large = png(16, 1);
-    large.resize(256 * 1024 + 1, 0);
+    large.resize(10 * 1024 * 1024 + 1, 0);
     let heavy = files.path().join("heavy.png");
     std::fs::write(&heavy, &large).unwrap();
     window.use_picture(&heavy);
     window.until("the size is refused", |window| {
-        refusal(window).as_deref() == Some(junto_client::text::people::PICTURE_TOO_LARGE)
+        refusal(window).as_deref() == Some(junto_client::text::picture_refusal(Refusal::TooLarge))
     });
     window.use_picture(&files.path().join("missing.png"));
     window.until("the missing file is told", |window| {
-        refusal(window).as_deref() == Some(junto_client::text::people::PICTURE_UNREADABLE)
+        refusal(window).as_deref()
+            == Some(junto_client::text::picture_refusal(Refusal::Unreadable))
     });
-    assert!(!stored.exists());
+    let held = |directory: &Path| {
+        ["avatar.png", "avatar.jpg", "avatar.webp"]
+            .into_iter()
+            .map(|name| directory.join("junto").join(name))
+            .find(|file| file.exists())
+    };
+    assert_eq!(held(directory.path()), None);
     assert!(!window.shows("remove-picture"));
 
-    // A picture is stored in the data directory and drawn in the settings.
-    let image = png(96, 180);
+    // A picture is cut, stored in the data directory and drawn in the settings.
     let chosen = files.path().join("me.png");
-    std::fs::write(&chosen, &image).unwrap();
-    window.use_picture(&chosen);
+    std::fs::write(&chosen, png(96, 180)).unwrap();
+    window.save_picture(&chosen);
     window.until("the picture of the preset is drawn", |window| {
         window.view().preset_picture.is_some() && window.shows("remove-picture")
     });
     assert!(!window.shows("picture-error"));
-    assert_eq!(std::fs::read(&stored).unwrap(), image);
+    let image = std::fs::read(held(directory.path()).unwrap()).unwrap();
+    let read = image::load_from_memory(&image).unwrap();
+    assert_eq!((read.width(), read.height()), (96, 96));
     window.click("dialog-close");
 
     // The device joins a server: the new account gets the picture, and the window draws
@@ -403,7 +417,7 @@ fn the_picture_of_the_preset_is_set_in_the_settings_and_goes_to_a_server_joined_
     window.until("the preset has no picture", |window| {
         window.view().preset_picture.is_none() && !window.shows("remove-picture")
     });
-    assert!(!stored.exists());
+    assert_eq!(held(directory.path()), None);
     assert!(window.shows_picture(own, hash));
 }
 
@@ -412,17 +426,16 @@ fn a_server_that_refused_the_picture_of_the_preset_is_named_in_the_settings(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
-    let server = world.server("Acme Studio");
+    // A server that takes pictures of at most 1024 bytes (ADR 0119).
+    let server = world.server_with_settings("Acme Studio", &[("JUNTO_PICTURE_BYTES", "1024")]);
     let admin = world.owner(&server);
     let (_directory, mut window) = named(cx, "Luca");
     let files = tempfile::tempdir().unwrap();
 
-    // The preset takes a picture of 2000 by 2000 pixels; a server does not (ADR 0119).
-    let wide = png(2000, 60);
-    assert!(wide.len() <= 256 * 1024);
+    // The preset takes a picture of 600 by 600 pixels; that server does not.
     let chosen = files.path().join("wide.png");
-    std::fs::write(&chosen, &wide).unwrap();
-    window.use_picture(&chosen);
+    std::fs::write(&chosen, crate::harness::picture_png(600, 600)).unwrap();
+    window.save_picture(&chosen);
     window.until("the picture of the preset is stored", |window| {
         window.view().preset_picture.is_some()
     });

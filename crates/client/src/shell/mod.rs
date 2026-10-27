@@ -22,6 +22,7 @@ mod notices;
 mod panic_notice;
 mod people;
 mod person_drag;
+mod picture_crop;
 mod pictures;
 mod prepared;
 mod rail;
@@ -265,6 +266,11 @@ pub struct Shell {
     pub(crate) share_volume: Option<VolumeControl>,
     /// The slider of the sensitivity of voice activation in the settings.
     pub(crate) voice_threshold: Option<VolumeControl>,
+    /// The zoom slider of the cut of a chosen picture, the point of a drag of the picture,
+    /// and the focus of its dialog (ADR 0119).
+    pub(crate) picture_zoom: Option<VolumeControl>,
+    pub(crate) picture_drag: Option<gpui::Point<gpui::Pixels>>,
+    pub(crate) picture_focus: FocusHandle,
     /// The details of the last recording of the call are shown.
     pub(crate) recording_details_open: bool,
     /// The press of the pointer that closed the details was on their button: the click
@@ -672,6 +678,9 @@ impl Shell {
             share_reads: 0,
             share_volume: None,
             voice_threshold: None,
+            picture_zoom: None,
+            picture_drag: None,
+            picture_focus: cx.focus_handle(),
             recording_details_open: false,
             recording_details_closed_by_press: false,
             invite_open: false,
@@ -1276,6 +1285,16 @@ impl Render for Shell {
             .when(!matches!(self.layer, Layer::None), |body| {
                 body.child(self.render_layer(&view, window, cx))
             });
+        // The cut of a chosen picture lies over the layer that chose the picture.
+        let picture_crop = self.state.read(cx).picture_crop();
+        if picture_crop.is_none() {
+            self.picture_zoom = None;
+            self.picture_drag = None;
+        }
+        let body = match picture_crop {
+            Some(crop) => body.child(self.render_picture_crop(crop, window, cx)),
+            None => body,
+        };
         div()
             .id("shell")
             .key_context("Shell")

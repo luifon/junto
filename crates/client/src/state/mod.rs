@@ -22,6 +22,7 @@ pub mod notices;
 mod notifying;
 pub mod people;
 pub mod person_drop;
+pub mod picture_crop;
 mod progress;
 pub mod receipts;
 pub mod recorded;
@@ -442,6 +443,8 @@ pub struct AppState {
     /// The servers on which this device waited for the answer to its join request at the
     /// last change (ADR 0742).
     join_waiting: std::collections::HashSet<ServerId>,
+    /// The cut of a chosen picture that is open (ADR 0119).
+    picture_crop: Option<picture_crop::PictureCrop>,
     /// The additions of the person to a workspace whose name the state does not hold yet,
     /// with the time of the event: each is told once the workspace is known (ADR 0742).
     added_waiting: Vec<(
@@ -889,6 +892,7 @@ impl AppState {
             heard: call_sounds::Heard::default(),
             message_sound_at: None,
             join_waiting: std::collections::HashSet::new(),
+            picture_crop: None,
             added_waiting: Vec::new(),
             call_window_shows: None,
             for_person: 0,

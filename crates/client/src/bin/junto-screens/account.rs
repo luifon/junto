@@ -176,6 +176,25 @@ fn draw_profile(studio: &mut Studio) -> Result<(), String> {
             },
         ),
     ];
+    // The cut of a chosen picture over the account page (ADR 0119): at its largest square,
+    // and zoomed in.
+    for (name, zoom) in [("account-picture-crop", 1.0), ("account-picture-crop-zoomed", 2.5)] {
+        studio.draw(
+            Screen::new(name, with_picture()),
+            move |shell, window, cx| {
+                shell.open_account(AccountPage::Profile, window, cx);
+                let photo = crop_photo();
+                shell.state().clone().update(cx, |state, cx| {
+                    state.show_picture_crop_fixture(
+                        junto_client::state::picture_crop::PicturePurpose::Account,
+                        &photo,
+                        zoom,
+                        cx,
+                    );
+                });
+            },
+        )?;
+    }
     for (name, ask) in refusals {
         studio.draw(
             Screen::new(name, with_picture()),
@@ -667,4 +686,20 @@ pub fn draw(studio: &mut Studio) -> Result<(), String> {
     draw_link(studio)?;
     draw_one_server(studio)?;
     draw_all_servers(studio)
+}
+
+/// A photo of 1600 by 1000 pixels with a gradient and a round shape, for the cut.
+fn crop_photo() -> Vec<u8> {
+    let picture = image::RgbaImage::from_fn(1600, 1000, |x, y| {
+        let (dx, dy) = (x as f32 - 800.0, y as f32 - 480.0);
+        if dx * dx + dy * dy < 260.0 * 260.0 {
+            image::Rgba([196, 120, 72, 255])
+        } else {
+            image::Rgba([(40 + x / 16) as u8, (70 + y / 12) as u8, 110, 255])
+        }
+    });
+    let mut bytes = Vec::new();
+    let _ = image::DynamicImage::ImageRgba8(picture)
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png);
+    bytes
 }

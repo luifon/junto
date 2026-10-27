@@ -29,7 +29,7 @@ Who may see a profile:
 Avatar:
 
 - The body of the upload is the image itself.
-- An avatar has at most 262 144 bytes (256 KiB). A larger one gets `image_too_large` (413).
+- An avatar has at most 2 097 152 bytes (2 MiB), the largest request body (ADR 0013); the setting `JUNTO_PICTURE_BYTES` lowers it, from 1024 bytes. A larger one gets `image_too_large` (413). The bound was 256 KiB before; a person chooses a file of up to 10 MiB, and the client cuts it to a square and scales it to at most 1024 by 1024 pixels before it sends it: a picture with transparent points as PNG, the others as JPEG (quality 90, lower when it passes the bound), smaller when a PNG passes it. The cut is a dialog over the page that chose the picture, as in Discord: the person drags the picture in a square frame with a round mark and zooms with a slider or the wheel, from the largest square to a quarter of the shorter side. The client reads PNG, JPEG, WebP and the first frame of GIF, refuses a decoded picture above 16 384 pixels on a side or 512 MiB, and holds a chosen picture at most 4096 pixels on a side for the cut. The same cut serves the account picture, the picture of the preset (ADR 0717) and the logo of a server (ADR 0799). Tests: `picture::tests` (the cut, the scale, PNG and JPEG, GIF, the 10 MiB bound), the window tests `account::a_chosen_picture_is_cut_scaled_and_set_and_removed`, `logo::an_administrator_sets_and_removes_the_logo…`, `people::` (the preset), and the server tests `profiles::an_avatar_is_bounded_and_recognized_by_its_bytes`, `server_logo::logo_uploads_use_avatar_limits`.
 - The server accepts a still PNG, JPEG or WebP image. It reads the format from the bytes of the file and ignores the `Content-Type` of the request.
 - The image is at most 1024 by 1024 pixels, as its header states. An animated PNG and an animated WebP are refused.
 - Another file gets `image_unsupported` (415).
@@ -61,7 +61,7 @@ Member and participant descriptions:
 ## Consequences
 
 - A backup of the database contains the avatars.
-- The avatars add at most 256 KiB per account to the database.
+- The avatars add at most 2 MiB per account to the database; a cut picture of 1024 by 1024 pixels as JPEG has some hundreds of kilobytes.
 - A client must treat an avatar as a file of an unknown sender: the server checked the header, not the image data.
 - A person who leaves every common workspace of another person no longer sees that person's profile and receives no further event about it, unless that person administers the server.
 - The profile of an administrator goes to every account of the server, and a change of it is an event for every connected account. When an account loses the administrator permission, or is banned or removed, the accounts without a common workspace no longer see its profile. Test: `contacts::the_profile_of_an_administrator_is_seen_by_the_accounts_that_may_write_to_it` in `crates/server`.
