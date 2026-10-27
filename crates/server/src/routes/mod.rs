@@ -384,6 +384,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             person_permissions::change_member_permission
         )
     });
+    add(&mut router, || routes!(person_permissions::get_member_access));
     add(&mut router, || {
         routes!(
             person_permissions::get_server_permissions,

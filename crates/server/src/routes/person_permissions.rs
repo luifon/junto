@@ -14,7 +14,7 @@ use junto_protocol::roles::{
     ChangeServerPersonPermission, ServerPersonPermissions, SetServerPersonPermissions,
 };
 use junto_protocol::structure::{
-    ChangeChannelOverride, OverrideState, PersonPermissions,
+    ChangeChannelOverride, ChannelPermissions, OverrideState, PersonPermissions,
     SetChannelOverride,
 };
 use sqlx::PgConnection;
@@ -264,6 +264,59 @@ pub(crate) async fn set_member_permissions_in(
     let affected = Affected::Account(account_id);
     events::permissions_changed(connection, now, affected, Some(workspace_id)).await?;
     Ok(result)
+}
+
+/// What a member can use in each channel of the workspace that the caller can see: the
+/// permissions for which the permission function allows a request of the member there.
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/access",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = [ChannelPermissions]), ApiError)
+)]
+pub async fn get_member_access(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((workspace_id, account_id)): ApiPath<(WorkspaceId, AccountId)>,
+) -> ApiResult<Json<Vec<ChannelPermissions>>> {
+    let now = app.now();
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let scope = access.workspace(connection, workspace_id).await?;
+        access.require(Request::Workspace {
+            scope: &scope,
+            permission: WorkspacePermission::ManageRoles,
+        })?;
+        require_member(connection, workspace_id, account_id).await?;
+        let seen: std::collections::HashSet<_> = access
+            .workspace_channels(connection, workspace_id, &scope)
+            .await?
+            .into_iter()
+            .filter(|(record, channel_scope)| {
+                record.deleted_at.is_none()
+                    && access.allows(Request::Channel {
+                        scope: channel_scope,
+                        permission: WorkspacePermission::ViewChannel,
+                    })
+            })
+            .map(|(record, _)| record.channel.id)
+            .collect();
+        let person = Access::standing_of(connection, account_id).await?;
+        let person_scope = person.workspace(connection, workspace_id).await?;
+        Ok(person
+            .workspace_channels(connection, workspace_id, &person_scope)
+            .await?
+            .into_iter()
+            .filter(|(record, _)| seen.contains(&record.channel.id))
+            .map(|(record, channel_scope)| ChannelPermissions {
+                channel_id: record.channel.id,
+                permissions: person.channel_permissions(&channel_scope),
+            })
+            .collect())
+    })
+    .map(Json)
 }
 
 async fn server_person_rule(
