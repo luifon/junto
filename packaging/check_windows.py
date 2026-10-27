@@ -136,7 +136,8 @@ class Check:
     def version(self):
         result = ran([self.installed / "junto.exe", "--version"])
         expect(result.returncode == 0 and result.stdout.strip(), "the program did not start", result)
-        print(f"    the program states: {result.stdout.strip()}", flush=True)
+        self.stated = result.stdout.strip()
+        print(f"    the program states: {self.stated}", flush=True)
 
     @step("start: the installed program draws its first frame")
     def first_frame(self):
@@ -269,9 +270,10 @@ class Check:
                 expect(entry["DisplayVersion"][0] == "1.0.0", f"the entry states {entry}")
                 expect(entry["UninstallString"][0] == f'"{folder / "uninstall.exe"}"', f"the entry states {entry}")
                 expect(entry["InstallLocation"][0] == str(folder), f"the entry states {entry}")
+                # The program states the version of its build, not the version of the test package.
                 result = ran([folder / "junto.exe", "--version"], env=environment)
-                expect(result.returncode == 0 and "1.0.0" in result.stdout, "the installed program did not start",
-                       result)
+                expect(result.returncode == 0 and result.stdout.strip() == self.stated,
+                       "the installed program did not start", result)
                 # A second run of the setup program replaces the folder.
                 result = ran([self.setup, "--quiet", "--no-start"], env=environment, timeout=300)
                 expect(result.returncode == 0, "a second run of the setup program failed", result)
