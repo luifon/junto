@@ -36,7 +36,9 @@ use junto_client_core::version::{Incompatibility, ServerVersion};
 use junto_client_core::voice::{ShareResolution, VOLUME_DEFAULT_PERCENT, VoiceSettings};
 use junto_client_core::{Reach, ServerHandle};
 use junto_media::audio::{DeviceInfo, Devices};
-use junto_media::calls::{ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase, Seat};
+use junto_media::calls::{
+    ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase, Seat, Withheld,
+};
 use junto_media::engine::{MicrophoneState, OutputState, ShareId, ShareState};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
@@ -1484,6 +1486,8 @@ pub enum MicrophoneButton {
     Muted,
     /// The server closed it. The person cannot open it.
     Held,
+    /// The person does not hold "speak" in the voice channel of the call (ADR 0790).
+    NotPermitted,
 }
 
 /// What the line above the profile strip tells about the sound of this device.
@@ -1500,6 +1504,11 @@ pub enum SoundWarning {
         by: Option<String>,
     },
     OutputFailed,
+    /// The person does not hold "speak" in the voice channel of the call (ADR 0790).
+    SpeakNotPermitted,
+    /// The person chose voice activation, and does not hold "use voice activity" in the
+    /// voice channel of the call: the microphone sends only while the key is held.
+    PushToTalkRequired,
 }
 
 /// What the microphone control does when the person uses it. A control holds the action
@@ -1547,6 +1556,8 @@ pub struct CallStrip {
     /// Meeting mode is on, the presenter removed the block of the person, and the person's
     /// own microphone setting is "closed".
     pub may_speak: bool,
+    /// What the permissions of the voice channel do not allow the person to publish.
+    pub withheld: Withheld,
 }
 
 /// An invitation into a call that waits for the answer of the person (ADR 0514).
@@ -1560,6 +1571,9 @@ pub struct Invited {
     pub channel: Option<String>,
     /// When the invitation was made: the window shows the newest ones first.
     pub created_at: OffsetDateTime,
+    /// The person holds "connect" in the voice channel, as far as the state knows: the
+    /// server accepts the invitation only then (ADR 0790).
+    pub may_connect: bool,
 }
 
 /// How the last join or call ended, when the person did not end it.
@@ -3456,6 +3470,12 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
                 by,
                 channel: channel_of(servers, &target),
                 created_at: invitation.created_at,
+                may_connect: match invitation.place {
+                    CallPlace::Channel { channel_id, .. } => model
+                        .permissions_in(channel_id)
+                        .is_none_or(|held| held.contains(&WorkspacePermission::Connect)),
+                    CallPlace::Direct { .. } => true,
+                },
             });
         }
     }
@@ -3527,24 +3547,31 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         name_of(server.id, account_id, Some(workspace), model, known)
     };
     let held = active.and_then(|call| call.microphone_block.as_ref());
+    let withheld = active.map(|call| call.withheld).unwrap_or_default();
     let warning = if let Some(block) = held {
         Some(SoundWarning::MicrophoneHeld {
             reason: block.reason,
             by: name(block.by),
         })
+    } else if withheld.microphone {
+        Some(SoundWarning::SpeakNotPermitted)
     } else {
         match active.map(|call| (&call.microphone, &call.output, &call.sound_block)) {
             Some((MicrophoneState::NoPermission, _, _)) => Some(SoundWarning::NoMicrophoneAccess),
             Some((MicrophoneState::Failed(_), _, _)) => Some(SoundWarning::MicrophoneFailed),
             Some((_, _, Some(block))) => Some(SoundWarning::SoundHeld { by: name(block.by) }),
             Some((_, OutputState::Failed(_), _)) => Some(SoundWarning::OutputFailed),
-            _ => None,
+            _ => (withheld.voice_activity
+                && known.media.voice.input_mode != junto_client_core::voice::InputMode::PushToTalk)
+                .then_some(SoundWarning::PushToTalkRequired),
         }
     };
     let seat = active.map(ActiveCall::seat);
     Controls {
         microphone: if held.is_some() {
             MicrophoneButton::Held
+        } else if withheld.microphone {
+            MicrophoneButton::NotPermitted
         } else if calls.muted {
             MicrophoneButton::Muted
         } else {
@@ -3631,6 +3658,7 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
                     .is_some_and(|own| own.hand_raised)
             }),
         may_speak: may_speak(active, call, model, known),
+        withheld: active.withheld,
     })
 }
 

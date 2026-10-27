@@ -783,8 +783,14 @@ impl Shell {
     /// while it is held.
     fn modifiers_changed(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
         let held = {
-            let voice = self.state.read(cx).voice();
-            voice.input_mode == InputMode::PushToTalk
+            let state = self.state.read(cx);
+            let voice = state.voice();
+            // The permissions of the channel of the call can require it (ADR 0790).
+            let required = state
+                .media_calls()
+                .call
+                .is_some_and(|call| call.withheld.voice_activity);
+            (voice.input_mode == InputMode::PushToTalk || required)
                 && match voice.talk_key {
                     TalkKey::Alt => modifiers.alt,
                     TalkKey::Control => modifiers.control,

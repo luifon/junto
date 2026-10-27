@@ -8,6 +8,7 @@ use gpui::{
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::settings::ThemeChoice;
 use junto_client_core::voice::{InputMode, THRESHOLD_DEFAULT, THRESHOLD_RANGE, TalkKey};
 
@@ -721,7 +722,29 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if voice.input_mode == InputMode::PushToTalk {
+        // The permissions of the channel of the call can require push-to-talk (ADR 0790):
+        // the key is chosen then whatever mode the person chose.
+        let required = self
+            .state
+            .read(cx)
+            .media_calls()
+            .call
+            .is_some_and(|call| call.withheld.voice_activity);
+        if required {
+            rows.push(
+                div()
+                    .id("push-to-talk-required")
+                    .role(Role::Status)
+                    .debug_selector(|| "push-to-talk-required".to_owned())
+                    .mt(u(6.0))
+                    .child(help(
+                        text::not_permitted(WorkspacePermission::UseVoiceActivity),
+                        theme,
+                    ))
+                    .into_any_element(),
+            );
+        }
+        if voice.input_mode == InputMode::PushToTalk || required {
             rows.push(
                 div()
                     .flex()

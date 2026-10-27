@@ -176,7 +176,18 @@ impl Shell {
                     .label(text::JOIN)
                     .icon(Icon::Speaker)
                     .kind(ButtonKind::Primary)
-                    .selector("invitation-join"),
+                    .when(!invited.may_connect, |button| {
+                        button
+                            .tooltip(text::not_permitted(
+                                junto_client_core::protocol::WorkspacePermission::Connect,
+                            ))
+                            .disabled(true)
+                    })
+                    .selector(if invited.may_connect {
+                        "invitation-join"
+                    } else {
+                        "invitation-join-refused"
+                    }),
                 Button::new(id("invitation-decline"))
                     .label(text::DECLINE)
                     .selector("invitation-decline"),

@@ -156,6 +156,7 @@ mod tests {
                     share: ShareState::Off,
                     shares: Vec::new(),
                     watched: None,
+                    withheld: Default::default(),
                 }),
                 ..CallsView::default()
             }

@@ -198,6 +198,7 @@ fn an_invitation_that_is_not_shown_names_no_caller_for_the_profile_reads() {
             by: None,
             channel: None,
             created_at: invitation.created_at,
+            may_connect: true,
         });
         view.wanted_people
             .entry(server)

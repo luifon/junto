@@ -122,6 +122,9 @@ pub struct Controls {
     /// The camera is not published: the server has not listed the seat of this device, or
     /// the events up to the answer that gave the seat were not read (ADR 0785).
     pub camera_held: bool,
+    /// The permissions of the voice channel require push-to-talk, whatever the person
+    /// chose (ADR 0790).
+    pub push_to_talk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1555,13 +1558,13 @@ impl Actor {
     /// it or push-to-talk waits for its key. A mute is also told to the room, so that the
     /// media server forwards nothing.
     fn sync_gate(&self) {
-        self.link.set_threshold(if self.config.push_to_talk {
+        let push_to_talk = self.config.push_to_talk || self.controls.push_to_talk;
+        self.link.set_threshold(if push_to_talk {
             None
         } else {
             self.config.threshold
         });
-        let open =
-            !self.controls.muted && !self.input_held && (!self.config.push_to_talk || self.talking);
+        let open = !self.controls.muted && !self.input_held && (!push_to_talk || self.talking);
         self.link.set_open(open && self.capture.is_some());
         if let Publication::Published(publication) = &self.publication
             && publication.is_muted() != self.controls.muted

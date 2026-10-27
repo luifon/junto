@@ -138,6 +138,7 @@ fn in_call(server_id: ServerId, scene: &Scene, channel_id: ChannelId) -> Known {
                     share: ShareState::Off,
                     shares: Vec::new(),
                     watched: None,
+                    withheld: Default::default(),
                 }),
                 ..CallsView::default()
             },

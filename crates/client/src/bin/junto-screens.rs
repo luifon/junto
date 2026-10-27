@@ -101,6 +101,8 @@ mod logo;
 mod messages;
 #[path = "junto-screens/people.rs"]
 mod people;
+#[path = "junto-screens/permissions.rs"]
+mod permissions;
 #[path = "junto-screens/recorded.rs"]
 mod recorded;
 #[path = "junto-screens/roles.rs"]
@@ -790,6 +792,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
                 share: ShareState::Off,
                 shares: Vec::new(),
                 watched: None,
+                withheld: Default::default(),
             }),
             outcome: None,
             unused: None,
@@ -2889,6 +2892,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("account") => account::draw(&mut studio),
         Some("book") => book::draw(&mut studio),
         Some("logo") => logo::draw(&mut studio),
+        Some("permissions") => permissions::draw(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
@@ -2904,6 +2908,7 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| account::draw(&mut studio))
             .and_then(|()| book::draw(&mut studio))
             .and_then(|()| logo::draw(&mut studio))
+            .and_then(|()| permissions::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

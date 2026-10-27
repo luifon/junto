@@ -223,6 +223,15 @@ pub fn sound_warning(warning: &SoundWarning) -> (String, String) {
             "The sound output does not work.".to_owned(),
             " Choose another output device in the Settings tab of the call.".to_owned(),
         ),
+        SoundWarning::SpeakNotPermitted => (
+            "You cannot speak in this channel.".to_owned(),
+            " You hear the call, and the others do not hear you or the sound of your share."
+                .to_owned(),
+        ),
+        SoundWarning::PushToTalkRequired => (
+            "This channel requires push-to-talk.".to_owned(),
+            " Your microphone sends only while you hold the push-to-talk key.".to_owned(),
+        ),
     }
 }
 
@@ -3043,6 +3052,8 @@ mod tests {
             SoundWarning::MicrophoneFailed,
             SoundWarning::SoundHeld { by: ana },
             SoundWarning::OutputFailed,
+            SoundWarning::SpeakNotPermitted,
+            SoundWarning::PushToTalkRequired,
         ] {
             let (strong, rest) = sound_warning(&warning);
             assert!(!strong.is_empty() && rest.ends_with('.'), "{warning:?}");

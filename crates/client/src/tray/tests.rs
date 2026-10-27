@@ -29,6 +29,7 @@ fn call() -> ActiveCall {
         share: ShareState::Off,
         shares: Vec::new(),
         watched: None,
+        withheld: Default::default(),
     }
 }
 

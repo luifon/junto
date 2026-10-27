@@ -543,10 +543,20 @@ pub(crate) async fn update_call_settings_in(
     change: &UpdateCallSettings,
 ) -> ApiResult<Channel> {
     let voice = voice(connection, access, channel_id).await?;
-    access.require(Request::Channel {
+    // A change of the user limit alone takes "set call user limit" in place of "manage
+    // channel"; the hide setting takes "manage channel" (ADR 0514).
+    let manage = Request::Channel {
         scope: &voice.scope,
         permission: WorkspacePermission::ManageChannel,
-    })?;
+    };
+    if change.hides_occupants.is_some() || access.allows(manage) {
+        access.require(manage)?;
+    } else {
+        access.require(Request::Channel {
+            scope: &voice.scope,
+            permission: WorkspacePermission::SetCallUserLimit,
+        })?;
+    }
     let mut channel = voice.record.channel.clone();
     if let Some(user_limit) = change.user_limit {
         channel.user_limit = user_limit;

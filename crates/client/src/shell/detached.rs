@@ -399,6 +399,15 @@ impl Shell {
                             .icon(crate::assets::Icon::MicrophoneHeld)
                             .tooltip(text::MICROPHONE_HELD)
                     }
+                    crate::state::view::MicrophoneButton::NotPermitted => {
+                        Button::new("detached-microphone")
+                            .kind(ButtonKind::SquareHeld)
+                            .icon(crate::assets::Icon::MicrophoneHeld)
+                            .tooltip(text::not_permitted(
+                                junto_client_core::protocol::WorkspacePermission::Speak,
+                            ))
+                            .disabled(true)
+                    }
                 }
                 .selector("detached-microphone")
                 .on_click({

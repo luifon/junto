@@ -12,6 +12,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, StyledText, Window, anchored, deferred, div,
     prelude::FluentBuilder,
 };
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId};
 
@@ -405,9 +406,11 @@ impl Shell {
         let (meeting_on, meeting_held, _) = meeting_switch(room);
         let locked = room.locked;
         let hides = room.hides_occupants;
+        // The user limit takes "manage channel" or "set call user limit" (ADR 0790).
         let manage = room.allowed.manage;
+        let sets_limit = manage || room.allowed.set_user_limit;
         let (limit, inside) = (room.user_limit, room.inside);
-        let step = |up: bool| stepped_limit(limit, inside, up).filter(|_| manage);
+        let step = |up: bool| stepped_limit(limit, inside, up).filter(|_| sets_limit);
         let lower = step(false).map(|next| self.limit_listener(next, cx));
         let raise = step(true).map(|next| self.limit_listener(next, cx));
         let mut rows = vec![
@@ -456,7 +459,10 @@ impl Shell {
                     text::RAISE_USER_LIMIT,
                 )
                 .selector("room-limit")
-                .held((!manage).then_some(text::MANAGE_NO_PERMISSION))
+                .held(
+                    (!sets_limit)
+                        .then_some(text::not_permitted(WorkspacePermission::SetCallUserLimit)),
+                )
                 .on_lower(lower)
                 .on_raise(raise)
                 .into_any_element(),
@@ -842,13 +848,23 @@ impl Shell {
                 text::ENTRY_EXPIRED,
             ),
         };
+        // A request to enter needs "connect" (ADR 0790).
+        let connect = channel.allowed.connect;
         let ask = |label: &'static str, disabled: bool, cx: &mut Context<Self>| {
             Button::new("ask-to-enter")
                 .label(label)
-                .tooltip(text::ASK_TO_ENTER_HELP)
+                .tooltip(if connect {
+                    text::ASK_TO_ENTER_HELP
+                } else {
+                    text::not_permitted(WorkspacePermission::Connect)
+                })
                 .accessible_label(text::ASK_TO_ENTER)
-                .disabled(disabled)
-                .selector("ask-to-enter")
+                .disabled(disabled || !connect)
+                .selector(if connect {
+                    "ask-to-enter"
+                } else {
+                    "ask-to-enter-refused"
+                })
                 .flex_1()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {

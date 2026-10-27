@@ -202,6 +202,7 @@ fn fixture() -> Fixture {
         controls,
         microphone_block: None,
         sound_block: None,
+        withheld: Withheld::default(),
         blocks_untold: false,
         refresh: None,
         removal_read: None,

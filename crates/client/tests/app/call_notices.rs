@@ -41,6 +41,7 @@ fn call_with_share(window: &mut Window, channel: &str, share: ShareState) -> Act
         share,
         shares: Vec::new(),
         watched: None,
+        withheld: Default::default(),
     }
 }
 

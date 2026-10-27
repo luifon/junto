@@ -581,6 +581,7 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
             share: ShareState::Off,
             shares: Vec::new(),
             watched: None,
+            withheld: Default::default(),
         },
     );
     window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(480.0))));

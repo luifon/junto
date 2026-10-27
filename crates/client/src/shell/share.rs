@@ -508,6 +508,10 @@ impl Shell {
             return;
         };
         let now = self.state.read(cx).media_calls().call;
+        // The permissions of the channel do not allow a share (ADR 0790).
+        if now.as_ref().is_some_and(|call| call.withheld.share) {
+            return;
+        }
         if now.as_ref().map(ActiveCall::seat).as_ref() != Some(&seat) {
             // The device is in another call than the one that is drawn, or in none.
             if now.is_some() {
@@ -1175,7 +1179,18 @@ impl Shell {
                 SoundKind::Application => text::SOUND_ONE_APPLICATION.into(),
             })
             .collect();
-        let sound_help = picker.sound_help(&sources);
+        // The sound of a share needs "speak" too (ADR 0510, ADR 0790).
+        let sound_help = if self
+            .state
+            .read(cx)
+            .media_calls()
+            .call
+            .is_some_and(|call| call.withheld.microphone)
+        {
+            SharedString::from(text::SHARE_SOUND_NOT_PERMITTED)
+        } else {
+            picker.sound_help(&sources)
+        };
         let applications: Vec<AnyElement> =
             if sound == Some(SoundKind::Application) && window_application.is_none() {
                 let mut listed: Vec<AnyElement> = sources
@@ -1830,6 +1845,7 @@ mod tests {
                 share: ShareState::Off,
                 shares: Vec::new(),
                 watched: None,
+                withheld: Default::default(),
             }),
             ..CallsView::default()
         }

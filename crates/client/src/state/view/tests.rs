@@ -1112,6 +1112,7 @@ pub(super) mod calls {
             share: ShareState::Off,
             shares: Vec::new(),
             watched: None,
+            withheld: Default::default(),
         }
     }
 
@@ -2853,6 +2854,8 @@ pub(super) mod calls {
                 by: Some("Ana".to_owned()),
                 channel: Some("Daily".to_owned()),
                 created_at: incoming.created_at,
+                // The roles of the scene give no permission.
+                may_connect: false,
             }]
         );
         assert!(view.entry_prompts.is_empty());

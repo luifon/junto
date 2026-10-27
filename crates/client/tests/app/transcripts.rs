@@ -583,6 +583,7 @@ fn show_own_call(window: &mut Window, seat: &Seat, workspace_id: WorkspaceId, vo
         share: ShareState::Off,
         shares: Vec::new(),
         watched: None,
+        withheld: Default::default(),
     };
     let calls = window
         .state

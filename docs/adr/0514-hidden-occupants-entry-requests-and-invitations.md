@@ -14,7 +14,7 @@ User limit and lock:
 
 - The user limit of a voice channel is from 1 to 99, or absent. It counts the members of the call and the people on their way in by a move (ADR 0511).
 - A person inside a voice channel with "lock room" locks and unlocks it. The lock belongs to the call and ends with it, so an empty voice channel is never locked.
-- The user limit and the hide setting are changed with "manage channel". The change is in the audit log as `channel_call_settings_updated`.
+- The hide setting is changed with "manage channel". The user limit is changed with "manage channel" or with "set call user limit": a request that changes the user limit alone takes either, and a request that changes the hide setting takes "manage channel". The change is in the audit log as `channel_call_settings_updated`.
 - A change of the hide setting during a call applies to the next call of the channel. The running call keeps the setting that it started with (ADR 0517).
 - A person who is in the call keeps the place when the channel is locked or the limit is lowered.
 

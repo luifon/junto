@@ -184,3 +184,33 @@ async fn admission_removes_tracks_that_bypass_the_source_permission() {
         );
     }
 }
+
+#[tokio::test]
+async fn set_call_user_limit_changes_the_user_limit_without_manage_channel() {
+    let scene = Scene::start().await;
+    let path = format!("/api/v1/channels/{}/call/settings", scene.voice.id);
+    scene
+        .server
+        .patch(&scene.ann, &path, &json!({ "user_limit": 5 }))
+        .await
+        .error(ErrorCode::Forbidden);
+    let bits = 1_i64 << W::SetCallUserLimit as u8;
+    sqlx::query("insert into channel_person_overrides(channel_id,workspace_id,account_id,allow,deny) values($1,$2,$3,$4,0)")
+        .bind(scene.voice.id).bind(scene.workspace_id).bind(scene.ann.account_id).bind(bits).execute(&scene.server.db).await.unwrap();
+    let channel: junto_protocol::structure::Channel = scene
+        .server
+        .patch(&scene.ann, &path, &json!({ "user_limit": 5 }))
+        .await
+        .ok(reqwest::StatusCode::OK);
+    assert_eq!(channel.user_limit, Some(5));
+    // Hiding who is inside still takes "manage channel".
+    scene
+        .server
+        .patch(
+            &scene.ann,
+            &path,
+            &json!({ "user_limit": 6, "hides_occupants": true }),
+        )
+        .await
+        .error(ErrorCode::Forbidden);
+}

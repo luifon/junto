@@ -367,6 +367,7 @@ pub(crate) fn connected_call(window: &mut Window, channel: &str) -> junto_media:
         share: ShareState::Off,
         shares: Vec::new(),
         watched: None,
+        withheld: Default::default(),
     }
 }
 

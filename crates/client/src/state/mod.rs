@@ -1053,8 +1053,10 @@ impl AppState {
             self.pending.call_refused = None;
             self.pending.call_told = None;
         } else if let (Some(held), Some(call)) = (&self.known.media.calls.call, &view.call)
-            && held.microphone_block.is_some()
+            && (held.microphone_block.is_some() || held.withheld.microphone)
             && call.microphone_block.is_none()
+            // "speak" in the channel was taken and is given again (ADR 0790).
+            && !call.withheld.microphone
             && !view.muted
             // With push-to-talk the microphone sends only while the person holds the key.
             && self.known.media.voice.input_mode != InputMode::PushToTalk

@@ -17,6 +17,7 @@ use junto_client_core::book::Membership;
 use junto_client_core::flow::FlowError;
 use junto_client_core::live::{Missed, Notice, Notices, StreamStatus};
 use junto_client_core::model::ServerModel;
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{
     Call, CallJoin, CallMove, CallPlace, LeaveReason, MicrophoneBlock, MoveOutcome, OwnCall,
     ShareAudio, SoundBlock,
@@ -190,6 +191,8 @@ pub struct ActiveCall {
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets.
     pub watched: Option<ShareId>,
+    /// What the permissions of the voice channel do not allow the person to publish.
+    pub withheld: Withheld,
 }
 
 impl ActiveCall {
@@ -197,6 +200,47 @@ impl ActiveCall {
         Seat {
             target: self.target,
             identity: self.identity.clone(),
+        }
+    }
+}
+
+/// The sources that the permissions of the voice channel of a call do not allow this
+/// account to publish, as the state of the server states them (ADR 0790). The server
+/// restricts the token of the call to the allowed sources and removes a track of another
+/// source; the calls stop such a source on this device and start none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Withheld {
+    /// No "speak": no microphone, and no sound of a share (ADR 0510).
+    pub microphone: bool,
+    /// No "video".
+    pub camera: bool,
+    /// No "share screen".
+    pub share: bool,
+    /// No "use voice activity": the microphone sends only while the push-to-talk key is
+    /// held.
+    pub voice_activity: bool,
+}
+
+impl Withheld {
+    /// What a list of permissions of a voice channel withholds.
+    pub fn of(held: &[WorkspacePermission]) -> Self {
+        let lacks = |permission| !held.contains(&permission);
+        Self {
+            microphone: lacks(WorkspacePermission::Speak),
+            camera: lacks(WorkspacePermission::Video),
+            share: lacks(WorkspacePermission::ShareScreen),
+            voice_activity: lacks(WorkspacePermission::UseVoiceActivity),
+        }
+    }
+
+    /// What the state withholds in a call: nothing in a direct-message call, which has no
+    /// channel. Absent while the state holds no list for the voice channel.
+    pub fn in_call(model: &ServerModel, place: &CallPlace) -> Option<Self> {
+        match place {
+            CallPlace::Channel { channel_id, .. } => {
+                model.permissions_in(*channel_id).map(Self::of)
+            }
+            CallPlace::Direct { .. } => Some(Self::default()),
         }
     }
 }
@@ -1279,12 +1323,21 @@ fn start(
     let admitted = false;
     let refresh = None;
     let accepted = read_at;
+    // The permissions of the channel hold from the first moment too (ADR 0790).
+    let withheld = server
+        .live()
+        .view()
+        .model
+        .as_deref()
+        .and_then(|model| Withheld::in_call(model, &target.place))
+        .unwrap_or_default();
     let controls = Controls {
         muted: shared.muted,
         deafened: shared.deafened,
         microphone_blocked: true,
         sound_blocked: true,
         camera_held: true,
+        push_to_talk: withheld.voice_activity,
     };
     let volumes = shared
         .volumes
@@ -1343,6 +1396,7 @@ fn start(
         controls,
         microphone_block: answer.microphone_block,
         sound_block: answer.sound_block,
+        withheld,
         blocks_untold,
         refresh,
         removal_read: None,
@@ -2100,6 +2154,7 @@ struct Session {
     controls: Controls,
     microphone_block: Option<MicrophoneBlock>,
     sound_block: Option<SoundBlock>,
+    withheld: Withheld,
     /// The server has not told the blocks of the person for this place yet (see
     /// [`blocks_untold`]). The sound stays off until it has, so that a sound block holds
     /// from the first moment of the media connection (ADR 0503).
@@ -2561,7 +2616,7 @@ impl Session {
     fn command(&mut self, command: SessionCommand) {
         match command {
             SessionCommand::StartCamera(seat, device) => {
-                if self.holds(&seat, Unused::Camera) {
+                if self.holds(&seat, Unused::Camera) && !self.withheld.camera {
                     self.engine.start_camera(device);
                 }
             }
@@ -2602,7 +2657,7 @@ impl Session {
                 }
             }
             SessionCommand::StartShare(seat, request) => {
-                if self.holds(&seat, Unused::Share) {
+                if self.holds(&seat, Unused::Share) && !self.withheld.share {
                     self.engine.start_share(request);
                 }
             }
@@ -2677,12 +2732,16 @@ impl Session {
         let controls = Controls {
             muted,
             deafened,
-            microphone_blocked: self.microphone_block.is_some() || !self.admitted || self.rejoining,
+            microphone_blocked: self.microphone_block.is_some()
+                || self.withheld.microphone
+                || !self.admitted
+                || self.rejoining,
             sound_blocked: self.sound_block.is_some()
                 || self.blocks_untold
                 || !self.admitted
                 || self.rejoining,
             camera_held: !self.admitted,
+            push_to_talk: self.withheld.voice_activity,
         };
         if controls != self.controls {
             self.controls = controls;
@@ -2760,6 +2819,10 @@ impl Session {
         });
         if let Some(model) = current {
             self.read_blocks(model);
+        }
+        if let Some(withheld) = live.and_then(|model| Withheld::in_call(model, &self.target.place))
+        {
+            self.set_withheld(withheld);
         }
         // Membership and moves belong to the stream cursor, not an ahead-of-stream call read.
         // A state from before the answer that gave or stated the seat tells nothing of it.
@@ -2971,6 +3034,24 @@ impl Session {
             view.muted = true;
             view.closed = Some(why);
         });
+        self.apply_controls();
+        self.show();
+    }
+
+    /// Takes what the permissions of the voice channel withhold. A source that they no
+    /// longer allow stops now: the camera and the share end, and the microphone and the
+    /// sound of a share are closed as by a block (ADR 0790).
+    fn set_withheld(&mut self, withheld: Withheld) {
+        let before = std::mem::replace(&mut self.withheld, withheld);
+        if before == withheld {
+            return;
+        }
+        if withheld.camera && !before.camera {
+            self.engine.stop_camera();
+        }
+        if withheld.share && !before.share {
+            self.engine.stop_share();
+        }
         self.apply_controls();
         self.show();
     }
@@ -3306,6 +3387,7 @@ impl Session {
             share: state.share.clone(),
             shares: state.shares.clone(),
             watched: state.watched,
+            withheld: self.withheld,
         };
         let key = self.key;
         let current = self
@@ -3331,6 +3413,33 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_permissions_of_a_voice_channel_withhold_each_source_by_its_permission() {
+        use WorkspacePermission::{ShareScreen, Speak, UseVoiceActivity, Video, ViewChannel};
+        assert_eq!(
+            Withheld::of(&[ViewChannel, Speak, Video, ShareScreen, UseVoiceActivity]),
+            Withheld::default()
+        );
+        assert_eq!(
+            Withheld::of(&[ViewChannel, Video]),
+            Withheld {
+                microphone: true,
+                camera: false,
+                share: true,
+                voice_activity: true,
+            }
+        );
+        assert_eq!(
+            Withheld::of(&[Speak, ShareScreen]),
+            Withheld {
+                microphone: false,
+                camera: true,
+                share: false,
+                voice_activity: true,
+            }
+        );
+    }
 
     #[test]
     fn media_connection_alone_does_not_offer_participant_actions() {

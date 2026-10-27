@@ -11,6 +11,7 @@ use gpui::{
     Styled, StyledText, Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
 };
 use gpui_base::slider::{SliderEvent, SliderState};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
 use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
@@ -260,10 +261,19 @@ impl Shell {
                 } else {
                     text::JOIN_CALL
                 })
-                .tooltip(text::ENTER_VOICE_CHANNEL)
+                // Without "connect" the server gives no place (ADR 0790).
+                .tooltip(if channel.allowed.connect {
+                    text::ENTER_VOICE_CHANNEL
+                } else {
+                    text::not_permitted(WorkspacePermission::Connect)
+                })
                 .accessible_label(text::JOIN_CALL)
-                .disabled(joining)
-                .selector("join-call")
+                .disabled(joining || !channel.allowed.connect)
+                .selector(if channel.allowed.connect {
+                    "join-call"
+                } else {
+                    "join-call-refused"
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.join_call(server_id, workspace_id, channel_id, cx);
@@ -1564,7 +1574,9 @@ impl Shell {
         // until the key is held.
         let push_to_talk = {
             let voice = self.state.read(cx).voice();
-            (!interrupted && voice.input_mode == junto_client_core::voice::InputMode::PushToTalk)
+            (!interrupted
+                && (voice.input_mode == junto_client_core::voice::InputMode::PushToTalk
+                    || strip.withheld.voice_activity))
                 .then_some(voice.talk_key)
         };
         let (ground, ink) = if interrupted {
@@ -1691,11 +1703,20 @@ impl Shell {
                             .update(cx, |state, cx| state.set_hand(!raised, cx));
                     }))
             });
+            // A source that the permissions of the channel do not allow is not available,
+            // with the reason (ADR 0790). The calls have stopped it already.
+            let share_refused = strip.withheld.share && strip.share == OwnShare::Off;
             let share = match (strip.can_share, strip.share) {
                 (false, _) => Button::new("call-share")
                     .kind(ButtonKind::Call)
                     .icon(Icon::Screen)
                     .tooltip(text::SHARE_NOT_ON_THIS_SYSTEM)
+                    .disabled(true),
+                (true, OwnShare::Off) if share_refused => Button::new("call-share")
+                    .kind(ButtonKind::Call)
+                    .icon(Icon::Screen)
+                    .tooltip(text::not_permitted(WorkspacePermission::ShareScreen))
+                    .accessible_label(text::SHARE_SCREEN)
                     .disabled(true),
                 (true, OwnShare::Off) => Button::new("call-share")
                     .kind(ButtonKind::Call)
@@ -1713,8 +1734,13 @@ impl Shell {
                     .tooltip(text::SHARE_RUNS)
                     .accessible_label(text::SHARE_RUNS),
             }
-            .selector("call-share")
+            .selector(if share_refused {
+                "call-share-refused"
+            } else {
+                "call-share"
+            })
             .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
+            let camera_refused = strip.withheld.camera;
             // One reading of the calls gives the look of the camera control and what it
             // does: the control does what it shows, also when the call is another one at
             // the click (ADR 0788).
@@ -1743,10 +1769,18 @@ impl Shell {
                         } else {
                             Icon::CameraOff
                         })
-                        .tooltip(text::CAMERA)
+                        .tooltip(if camera_refused {
+                            text::not_permitted(WorkspacePermission::Video)
+                        } else {
+                            text::CAMERA
+                        })
                         .accessible_label(text::CAMERA)
-                        .selector("call-camera")
-                        .disabled(!camera_usable)
+                        .selector(if camera_refused {
+                            "call-camera-refused"
+                        } else {
+                            "call-camera"
+                        })
+                        .disabled(!camera_usable || camera_refused)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(action) = &camera {
                                 this.state
@@ -1893,6 +1927,8 @@ impl Shell {
                 Icon::MicrophoneOff
             }
             SoundWarning::SoundHeld { .. } | SoundWarning::OutputFailed => Icon::PhonesOff,
+            SoundWarning::SpeakNotPermitted => Icon::MicrophoneHeld,
+            SoundWarning::PushToTalkRequired => Icon::Microphone,
         };
         div()
             .id("sound-warning")
