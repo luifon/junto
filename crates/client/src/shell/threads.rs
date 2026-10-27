@@ -83,6 +83,7 @@ impl Shell {
                 gone: text::THREAD_GONE,
                 empty: text::NO_REPLIES,
                 writing: thread.writing,
+                live_only: thread.live_only,
             };
             vec![
                 self.render_fork_bar(thread, &theme, cx),

@@ -717,8 +717,24 @@ fn the_settings_of_a_channel_show_what_the_roles_of_the_person_allow() {
     assert_eq!(page.voice, None);
     // The overrides are not read yet.
     assert_eq!(page.privacy, Privacy::Unknown);
+    // The server writes an export from the history: it needs "read message history" too
+    // (ADR 0790).
     let settings = scene.settings(scene.general, ChannelPage::Archive).unwrap();
-    assert!(matches!(&settings.page, ChannelPageView::Archive(page) if page.may_export));
+    assert!(matches!(
+        &settings.page,
+        ChannelPageView::Archive(page) if !page.may_export
+            && page.export_needs == Some(WorkspacePermission::ReadMessageHistory)
+    ));
+    scene.lead_holds(&[
+        WorkspacePermission::ManageChannel,
+        WorkspacePermission::ExportChannel,
+        WorkspacePermission::ReadMessageHistory,
+    ]);
+    let settings = scene.settings(scene.general, ChannelPage::Archive).unwrap();
+    assert!(matches!(
+        &settings.page,
+        ChannelPageView::Archive(page) if page.may_export && page.export_needs.is_none()
+    ));
 
     // A voice channel has the settings of its room.
     let daily = scene.daily;

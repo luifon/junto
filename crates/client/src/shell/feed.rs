@@ -319,6 +319,9 @@ pub(crate) struct PaneShown<'a> {
     pub empty: &'static str,
     /// What the person may put into a message of the pane (ADR 0790).
     pub writing: Writing,
+    /// The person may not read the history of the channel: the list holds the messages
+    /// of the live connection only (ADR 0790).
+    pub live_only: bool,
 }
 
 /// How a message is drawn.
@@ -992,6 +995,12 @@ impl Shell {
             gone,
             empty,
             writing: lists.writing,
+            live_only: lists.conversation.is_none()
+                && lists
+                    .workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.channel.as_ref())
+                    .is_some_and(|channel| !channel.allowed.read_history),
         };
         self.render_pane(Pane::Main, &shown, notices, window, cx)
     }
@@ -1068,9 +1077,16 @@ impl Shell {
                     )
                 });
                 if empty && !feed.more_before && !feed.more_after {
+                    // Without the history, earlier messages are not available: the
+                    // statement says so in place of the start of the channel (ADR 0790).
+                    let (sentence, selector) = if shown.live_only {
+                        (text::HISTORY_NOT_PERMITTED, "history-not-permitted")
+                    } else {
+                        (shown.empty, pane.id("no-messages"))
+                    };
                     match pane {
-                        Pane::Main => StatePanel::new(text::NO_MESSAGES_TITLE, shown.empty)
-                            .selector(pane.id("no-messages"))
+                        Pane::Main => StatePanel::new(text::NO_MESSAGES_TITLE, sentence)
+                            .selector(selector)
                             .after_actions(std::mem::take(&mut notices))
                             .into_any_element(),
                         // A thread without replies shows its root above this line.
@@ -1082,7 +1098,7 @@ impl Shell {
                             .pt(u(10.0))
                             .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
-                            .child(shown.empty)
+                            .child(sentence)
                             .into_any_element(),
                     }
                 } else {
@@ -1407,6 +1423,7 @@ impl Shell {
         };
         match row {
             FeedRow::Start => note(text::HISTORY_START, "history-start"),
+            FeedRow::NoHistory => note(text::HISTORY_NOT_PERMITTED, "history-not-permitted"),
             FeedRow::Earlier { reading } => note(
                 if *reading {
                     text::READING_EARLIER

@@ -365,8 +365,11 @@ pub struct ChannelArchivePage {
     pub archived: Option<(OffsetDateTime, Option<OffsetDateTime>)>,
     pub permanent: bool,
     pub is_owner: bool,
-    /// The person holds "export channel" in the channel.
+    /// The person holds "export channel" in the channel, and "read message history",
+    /// from which the server writes the export (ADR 0790).
     pub may_export: bool,
+    /// The permission that the export needs and the person does not hold.
+    pub export_needs: Option<WorkspacePermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -922,17 +925,26 @@ fn channel_settings(
         ChannelPage::Permissions => {
             ChannelPageView::Permissions(overrides::derive(model, workspace, channel))
         }
-        ChannelPage::Archive => ChannelPageView::Archive(ChannelArchivePage {
-            archived: archived.map(|held| {
-                (
-                    known.zone.local(held.archived_at),
-                    held.deletes_at.map(|at| known.zone.local(at)),
-                )
-            }),
-            permanent: channel.permanent_messages,
-            is_owner: model.account.is_owner,
-            may_export: model.holds_in(channel_id, WorkspacePermission::ExportChannel),
-        }),
+        ChannelPage::Archive => {
+            let export_needs = [
+                WorkspacePermission::ExportChannel,
+                WorkspacePermission::ReadMessageHistory,
+            ]
+            .into_iter()
+            .find(|permission| !model.holds_in(channel_id, *permission));
+            ChannelPageView::Archive(ChannelArchivePage {
+                archived: archived.map(|held| {
+                    (
+                        known.zone.local(held.archived_at),
+                        held.deletes_at.map(|at| known.zone.local(at)),
+                    )
+                }),
+                permanent: channel.permanent_messages,
+                is_owner: model.account.is_owner,
+                may_export: export_needs.is_none(),
+                export_needs,
+            })
+        }
     };
     Some(ChannelSettings {
         workspace_id,

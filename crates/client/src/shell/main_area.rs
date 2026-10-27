@@ -7,6 +7,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::AccountId;
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -413,17 +414,26 @@ impl Shell {
                     .zip(channel.map(|channel| channel.id))
                     .filter(|_| call.is_none()),
                 |header, (server_id, channel_id)| {
+                    // The pinned messages are read from the history (ADR 0790).
+                    let refused = channel
+                        .filter(|channel| !channel.allowed.read_history)
+                        .map(|_| text::not_permitted(WorkspacePermission::ReadMessageHistory));
                     header.child(
                         Button::new("pins")
                             .icon(Icon::Pin)
                             .label(text::PINS)
-                            .tooltip(if pins_open {
-                                text::CLOSE_PINS
-                            } else {
-                                text::SHOW_PINS
+                            .tooltip(match refused {
+                                Some(reason) => reason,
+                                None if pins_open => text::CLOSE_PINS,
+                                None => text::SHOW_PINS,
                             })
                             .accessible_label(text::PINS)
-                            .selector("pins-button")
+                            .disabled(refused.is_some())
+                            .selector(if refused.is_some() {
+                                "pins-button-refused"
+                            } else {
+                                "pins-button"
+                            })
                             .when(pins_open, |button| {
                                 button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
                             })

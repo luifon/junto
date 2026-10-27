@@ -267,6 +267,9 @@ pub struct SearchPanel {
     pub reading_more: bool,
     /// The channels that the filter offers: the ones of the shown workspace.
     pub channels: Vec<(ChannelId, String, ChannelKind)>,
+    /// The channels of `channels` whose history the person may not read: the server
+    /// searches none of their messages, and the filter states why (ADR 0790).
+    pub unreadable: Vec<ChannelId>,
     /// The people that the filter offers: the members of the shown workspace.
     pub authors: Vec<(AccountId, String)>,
     pub channel: Option<(ChannelId, String)>,
@@ -576,6 +579,15 @@ pub fn search_panel(
             .author
             .map(|account_id| (account_id, name_of(account_id))),
         date: search.filters.date,
+        unreadable: channels
+            .iter()
+            .map(|(channel_id, _, _)| *channel_id)
+            .filter(|channel_id| {
+                !workspace
+                    .permissions_in(*channel_id)
+                    .contains(&junto_client_core::protocol::WorkspacePermission::ReadMessageHistory)
+            })
+            .collect(),
         channels,
         authors,
         going: search.going,

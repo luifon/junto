@@ -470,6 +470,9 @@ pub struct ThreadPanel {
     pub follow: Option<FollowControl>,
     /// What the person may put into a reply.
     pub writing: Writing,
+    /// The person may not read the history of the channel: the panel holds the replies
+    /// of the live connection only (ADR 0790).
+    pub live_only: bool,
 }
 
 /// The pinned messages of the shown channel, as the side panel shows them.
@@ -2822,6 +2825,7 @@ fn workspace_view(
                                 .is_some_and(|root| root.reply_count > 0)
                     }),
                 ),
+                live_only: !allowed.read_history,
             }
         });
     let pins = selection

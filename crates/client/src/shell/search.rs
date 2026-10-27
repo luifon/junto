@@ -5,6 +5,7 @@ use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
     StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
 };
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::ServerId;
 
 use super::notices::{Excerpt, place_icon, side_panel};
@@ -175,6 +176,24 @@ impl Shell {
                     cx,
                 )];
                 for (index, (channel_id, name, _)) in panel.channels.iter().enumerate() {
+                    if panel.unreadable.contains(channel_id) {
+                        let selector = format!("search-channel-refused:{channel_id}");
+                        items.push(
+                            div()
+                                .flex_none()
+                                .debug_selector(move || selector.clone())
+                                .child(
+                                    MenuItem::new(("filter", index + 1), name.clone())
+                                        .icon(Icon::Lock)
+                                        .disabled(true)
+                                        .detail(text::not_permitted(
+                                            WorkspacePermission::ReadMessageHistory,
+                                        )),
+                                )
+                                .into_any_element(),
+                        );
+                        continue;
+                    }
                     items.push(item(
                         format!("search-channel:{channel_id}"),
                         index + 1,

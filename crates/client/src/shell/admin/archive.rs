@@ -7,6 +7,7 @@ use gpui::{
     Window, div,
 };
 use junto_client_core::model::AdminPart;
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -651,25 +652,24 @@ impl Shell {
             "channel-archive-refused",
         ));
         // The export.
+        let export_needs = page.export_needs.map(|permission| match permission {
+            WorkspacePermission::ExportChannel => text::admin::EXPORT_NEEDS,
+            other => text::not_permitted(other),
+        });
         column = column.child(
             line(&theme)
                 .child(line_text(
                     text::admin::EXPORT,
-                    detail_or(
-                        (!page.may_export).then_some(text::admin::EXPORT_NEEDS),
-                        text::admin::EXPORT_HELP,
-                    ),
+                    detail_or(export_needs, text::admin::EXPORT_HELP),
                     &theme,
                 ))
                 .child(row_action(
                     "channel-export",
                     text::admin::EXPORT,
                     "channel-export".to_owned(),
-                    (!page.may_export)
-                        .then_some(text::admin::EXPORT_NEEDS)
-                        .or(view
-                            .sending(AskKind::RequestExport)
-                            .then_some(text::admin::SENDING)),
+                    export_needs.or(view
+                        .sending(AskKind::RequestExport)
+                        .then_some(text::admin::SENDING)),
                     cx.listener(move |this, _, _, cx| {
                         this.state.update(cx, |state, cx| {
                             state.export_channel(server_id, channel_id, cx);

@@ -331,6 +331,9 @@ pub struct WaitingRow {
 pub enum FeedRow {
     /// The history has no message before the first loaded one.
     Start,
+    /// The person may not read the history of the channel: the list holds the messages
+    /// that the live connection brought, and earlier ones are not available (ADR 0790).
+    NoHistory,
     /// The history has messages before the first loaded one.
     Earlier {
         reading: bool,
@@ -352,7 +355,9 @@ pub enum FeedRow {
 impl PartialEq for FeedRow {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Start, Self::Start) | (Self::Unread, Self::Unread) => true,
+            (Self::Start, Self::Start)
+            | (Self::NoHistory, Self::NoHistory)
+            | (Self::Unread, Self::Unread) => true,
             (Self::Earlier { reading: one }, Self::Earlier { reading: other })
             | (Self::Later { reading: one }, Self::Later { reading: other }) => one == other,
             (Self::Day(one), Self::Day(other)) => one == other,
@@ -864,7 +869,11 @@ pub fn derive(source: &Source<'_>) -> Feed {
             reading: timeline.reading.older,
         });
     } else if timeline.loaded && !in_thread {
-        rows.push(FeedRow::Start);
+        rows.push(if source.writes.read_history {
+            FeedRow::Start
+        } else {
+            FeedRow::NoHistory
+        });
     }
     let mut loaded = Loaded::default();
     let mut day: Option<Date> = timeline
@@ -1425,6 +1434,7 @@ mod tests {
             .iter()
             .map(|row| match row {
                 FeedRow::Start => 'S',
+                FeedRow::NoHistory => 'H',
                 FeedRow::Earlier { .. } => 'E',
                 FeedRow::Later { .. } => 'L',
                 FeedRow::Day(_) => 'D',
