@@ -16,8 +16,10 @@ pub fn area(name: impl Into<SharedString>) -> impl IntoElement {
         },
         |_, (), _, _| {},
     )
+    // The insets place it on the box of its element: without them it would start at the
+    // static place of a child, after the padding of a flex container.
     .absolute()
-    .size_full()
+    .inset_0()
 }
 
 /// The name that [`cover`] records.
