@@ -276,7 +276,9 @@ impl RenderOnce for Held {
                             || (grows_at_once && now.shown.is_some_and(|shown| target > shown))
                             || (!now.pressed && (!covered || now.due || !window.is_window_active()))
                         {
-                            if covered && now.shown.is_some() {
+                            // Only a change at the end of the bound moves a part under a
+                            // person who points at it: the guard of the next press.
+                            if now.due && covered && window.is_window_active() {
                                 now.moved_at = Some(cx.background_executor().now());
                             }
                             now.waiting = None;
