@@ -291,6 +291,22 @@ pub fn install(
     allow_older: bool,
     system: &impl SetupSystem,
 ) -> Result<Installed, Error> {
+    install_with(
+        archive,
+        places,
+        allow_older,
+        system,
+        super::windows::exchange_entries,
+    )
+}
+
+fn install_with(
+    archive: &[u8],
+    places: &Places,
+    allow_older: bool,
+    system: &impl SetupSystem,
+    exchange: impl FnOnce(&Path, &Path) -> Result<(), Error>,
+) -> Result<Installed, Error> {
     fs::create_dir_all(places.programs())?;
     let updates = places.updates();
     if !updates.is_dir() {
@@ -299,7 +315,10 @@ pub fn install(
     let lock = updates_lock(&updates)?;
     let stage = updates.join(install::random_name("stage-")?);
     archive::unpack(&mut &archive[..], &stage)?;
-    let result = install_from(&stage, places, allow_older, system);
+    let result = install_from(&stage, places, allow_older, system, exchange);
+    if matches!(result, Err(Error::ExchangeIncomplete)) {
+        return Err(Error::SetupIncomplete(stage));
+    }
     finish(&updates, &stage);
     drop(lock);
     result
@@ -310,6 +329,7 @@ fn install_from(
     places: &Places,
     allow_older: bool,
     system: &impl SetupSystem,
+    exchange: impl FnOnce(&Path, &Path) -> Result<(), Error>,
 ) -> Result<Installed, Error> {
     let candidate = stage.join(FOLDER);
     let version = described(&candidate)?;
@@ -327,7 +347,7 @@ fn install_from(
         return Err(Error::Invalid("a newer version of Junto is installed"));
     }
     if fs::symlink_metadata(&folder).is_ok() {
-        super::windows::exchange_entries(&folder, &candidate)?;
+        exchange(&folder, &candidate)?;
     } else {
         fs::rename(&candidate, &folder)?;
     }
@@ -421,4 +441,70 @@ pub fn uninstall(
         results.push(absent(fs::remove_dir_all(&places.data)));
     }
     results.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Unused;
+    impl SetupSystem for Unused {
+        fn write_uninstall_entry(&self, _: &UninstallEntry) -> std::io::Result<()> {
+            panic!("unexpected registration")
+        }
+        fn uninstall_entry_location(&self) -> std::io::Result<Option<PathBuf>> {
+            panic!("unexpected registration")
+        }
+        fn remove_uninstall_entry(&self) -> std::io::Result<()> {
+            panic!("unexpected registration")
+        }
+        fn create_shortcut(&self, _: &Path, _: &Path) -> std::io::Result<()> {
+            panic!("unexpected shortcut")
+        }
+        fn unregister_notifications(&self) -> std::io::Result<()> {
+            panic!("unexpected registration")
+        }
+    }
+
+    #[test]
+    fn incomplete_setup_restoration_keeps_the_only_old_files_without_a_finished_marker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let places = Places::of_account(root.path(), &root.path().join("Roaming"));
+        fs::create_dir_all(places.folder())?;
+        fs::write(places.folder().join("old.txt"), b"old installation")?;
+        let package = root.path().join("package");
+        fs::create_dir_all(package.join(FOLDER))?;
+        fs::write(package.join(FOLDER).join(install::DESCRIPTION),
+            br#"{"format":1,"version":"0.1.0","system":"windows","package":"directory","architecture":"x86_64"}"#)?;
+        let mut bytes = Vec::new();
+        archive::pack(&package, &mut bytes)?;
+        let result = install_with(&bytes, &places, false, &Unused, |application, candidate| {
+            super::super::windows::exchange_entries_with(application, candidate, |from, to| {
+                if from.parent() == Some(application) {
+                    fs::rename(from, to)
+                } else {
+                    Err(std::io::Error::other("replacement and restoration refused"))
+                }
+            })
+        });
+        let error = result.err().ok_or("replacement succeeded")?;
+        let entries = fs::read_dir(places.updates())?.collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("finished-"))
+        );
+        let stage = entries
+            .iter()
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("stage-"))
+            .ok_or("the only old files were deleted")?
+            .path();
+        assert_eq!(
+            fs::read(stage.join("Junto.replaced/old.txt"))?,
+            b"old installation"
+        );
+        assert!(error.to_string().contains(&stage.display().to_string()));
+        Ok(())
+    }
 }

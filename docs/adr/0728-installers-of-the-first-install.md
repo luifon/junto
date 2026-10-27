@@ -52,3 +52,5 @@ The release site (ADR 0727) and the GitHub release offer the three installers be
 - Not tested: the setup program started from Explorer with its dialogs and the start of Junto at its end, the uninstall from Settings, Apps, the drag from the disk image in the Finder, and an installation of the `.deb` with `apt` on a desktop. The coordinator and a person check them on the real systems.
 
 The uninstall command requires `--uninstall`. A missing or damaged setup archive is an installation error. Both the original uninstall program and its temporary copy require a Windows package description and regular program, recovery and uninstall files before removing any file or registration.
+
+When setup cannot restore the old entries after a failed replacement, it keeps the staging directory without a finished marker and reports its full location. That directory can hold the only copies of old files, so neither setup nor later staging cleanup may remove it automatically. A test fails a replacement move and its restoration move and checks the retained old file and the absence of a finished marker.

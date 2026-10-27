@@ -212,6 +212,8 @@ pub enum Error {
         "the replacement stopped and could not be undone; keep the stage-* directory in .<application>.junto-update beside the application, it holds the application"
     )]
     ExchangeIncomplete,
+    #[error("the replacement stopped and could not be undone; recover the retained files from {stage}", stage = .0.display())]
+    SetupIncomplete(PathBuf),
     #[error("the source did not give the release: {0}")]
     Unavailable(String),
     #[error("the release request timed out")]
