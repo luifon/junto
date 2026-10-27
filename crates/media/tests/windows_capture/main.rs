@@ -347,6 +347,43 @@ fn the_lists_name_the_screens_the_window_of_another_program_and_its_application(
     );
 }
 
+/// The preview of a window whose application does not answer fails at once instead of
+/// waiting for the application, and the window gets its preview again once it answers
+/// (ADR 0736).
+#[test]
+fn the_preview_of_a_window_whose_application_does_not_answer_fails_without_waiting() {
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let source = PictureSource::Window(fixture.window);
+    let bound = junto_media::share::PREVIEW_BOUND;
+    assert!(runtime().block_on(capture.preview(source, bound)).is_ok());
+    fixture.send("stall 14");
+    // Windows marks a window as not answering after five seconds without a message read.
+    std::thread::sleep(Duration::from_secs(7));
+    let asked = Instant::now();
+    let refused = runtime().block_on(capture.preview(source, bound));
+    assert!(
+        matches!(refused, Err(CaptureError::Failed(_))),
+        "{refused:?}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        asked.elapsed()
+    );
+    let started = Instant::now();
+    loop {
+        if runtime().block_on(capture.preview(source, bound)).is_ok() {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "no preview after the stall"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 #[test]
 fn a_window_share_shows_its_colours_follows_a_change_and_ends_when_the_window_closes() {
     let mut fixture = Fixture::open();

@@ -31,6 +31,9 @@ const SIZE: (i32, i32) = (640, 400);
 const TURN: u32 = WM_APP + 1;
 /// A change of the size of the inner area to the width and height of the message.
 const RESIZE: u32 = WM_APP + 2;
+/// The window answers no message for the seconds of the message, as an application that
+/// does not answer: after five seconds Windows marks it as not answering.
+const STALL: u32 = WM_APP + 3;
 const STYLE: windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
 const EXTENDED: windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE = WS_EX_TOPMOST;
 
@@ -163,6 +166,10 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LP
                 say(format!("resized {}", place(window)));
                 LRESULT(0)
             }
+            STALL => {
+                std::thread::sleep(std::time::Duration::from_secs(w.0 as u64));
+                LRESULT(0)
+            }
             WM_CLOSE => {
                 let _ = DestroyWindow(window);
                 LRESULT(0)
@@ -249,6 +256,11 @@ pub fn run(
                         if let (Ok(width), Ok(height)) = (width.parse(), height.parse()) {
                             let _ =
                                 PostMessageW(Some(target), RESIZE, WPARAM(width), LPARAM(height));
+                        }
+                    }
+                    ["stall", seconds] => {
+                        if let Ok(seconds) = seconds.parse() {
+                            let _ = PostMessageW(Some(target), STALL, WPARAM(seconds), LPARAM(0));
                         }
                     }
                     ["close"] => break,

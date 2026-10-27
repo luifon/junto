@@ -59,17 +59,18 @@ impl KeyReader for Reader {
 #[cfg(test)]
 mod tests {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_F24,
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL, VK_F24,
+        VK_UP,
     };
 
     use super::*;
 
-    fn press(down: bool) {
+    fn press(key: u16, down: bool) {
         let input = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VK_F24,
+                    wVk: key,
                     wScan: 0,
                     dwFlags: if down { 0 } else { KEYEVENTF_KEYUP },
                     time: 0,
@@ -82,6 +83,34 @@ mod tests {
         assert_eq!(sent, 1, "SendInput");
     }
 
+    /// A binding of named keys from the keyboard of the system (ADR 0777): Control with Up
+    /// is one press of its action, whichever window is in front.
+    #[test]
+    fn a_binding_of_a_modifier_and_an_arrow_is_one_press() {
+        use crate::global_keys::{CallKeys, Edges, KeyEvent};
+        use crate::keybinds::KeyAction;
+        if std::env::var_os("JUNTO_TEST_GLOBAL_KEYS").is_none() {
+            return;
+        }
+        let keys = CallKeys {
+            bindings: vec![(KeyAction::ToggleSoundOff, "control+up".parse().unwrap())],
+        };
+        let mut reader = Reader;
+        let mut edges = Edges::default();
+        assert_eq!(edges.read(&keys, &reader.held(&keys.keys()).unwrap()), []);
+        press(VK_CONTROL, true);
+        press(VK_UP, true);
+        let held = reader.held(&keys.keys()).unwrap();
+        press(VK_UP, false);
+        press(VK_CONTROL, false);
+        assert_eq!(held, [Key::Control, Key::Up]);
+        assert_eq!(
+            edges.read(&keys, &held),
+            [KeyEvent::Pressed(KeyAction::ToggleSoundOff)]
+        );
+        assert_eq!(edges.read(&keys, &reader.held(&keys.keys()).unwrap()), []);
+    }
+
     #[test]
     fn a_key_that_the_keyboard_holds_is_read_whichever_window_is_in_front() {
         if std::env::var_os("JUNTO_TEST_GLOBAL_KEYS").is_none() {
@@ -90,9 +119,9 @@ mod tests {
         let mut reader = Reader;
         let keys = [Key::Function(24), Key::Alt];
         assert_eq!(reader.held(&keys).unwrap(), []);
-        press(true);
+        press(VK_F24, true);
         assert_eq!(reader.held(&keys).unwrap(), [Key::Function(24)]);
-        press(false);
+        press(VK_F24, false);
         assert_eq!(reader.held(&keys).unwrap(), []);
     }
 }
