@@ -48,6 +48,7 @@ mod lost_answers;
 mod maintenance;
 mod migration_identifiers;
 mod moderation;
+mod permission_rules;
 mod permissions_migration;
 mod person_standing;
 mod processing;
