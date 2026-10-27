@@ -555,6 +555,8 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         types(&to_background),
         [
             "device_added",
+            // The own addition to the workspace, for its system notification (ADR 0107).
+            "workspace_member_added",
             "permissions_changed",
             "device_logged_in",
             "permissions_changed",
