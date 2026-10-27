@@ -468,6 +468,7 @@ pub(crate) async fn create_channel_in(
         channel: channel.clone(),
     };
     events::publish(connection, now, &created).await?;
+    events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel.id).await?;
     Ok(channel)
 }
 
@@ -600,6 +601,7 @@ pub(crate) async fn update_channel_in(
 
     let mut channel = record.channel;
     let permanent_before = channel.permanent_messages;
+    let category_before = channel.category_id;
     if let Some(name) = new_name {
         name.clone_into(&mut channel.name);
     }
@@ -658,6 +660,15 @@ pub(crate) async fn update_channel_in(
         channel: channel.clone(),
     };
     events::publish(connection, now, &updated).await?;
+    if channel.category_id != category_before {
+        events::permissions_changed(
+            connection,
+            now,
+            Affected::Workspace(channel.workspace_id),
+            Some(channel.workspace_id),
+        )
+        .await?;
+    }
     Ok(channel)
 }
 

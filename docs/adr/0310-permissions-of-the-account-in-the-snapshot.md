@@ -29,12 +29,12 @@ Kept current:
 
 - `permissions_changed` stays the one event for a change of what an account may do, and the client loads a snapshot (ADR 0208). The lists are part of the snapshot, so no further event carries them.
 - A channel that appears with overrides can give an account another list than its snapshot states. Two changes do this: a fork, which copies the overrides of its source (ADR 0409), and the restore of an archived channel (ADR 0410). Both record `permissions_changed` for the accounts that see the channel, which are the accounts that receive `channel_created` or `channel_restored` for it. An account that does not see the channel receives neither.
-- A channel that is created without overrides has the list of the workspace for every account, and its creation records no notice.
+- Creation, fork and restore record a refresh when the channel belongs to a category, has effective role or person overrides, or workspace person rules or connect prerequisites can change its effective list. A move between categories refreshes the workspace for both people who gain access and people who lose it; the latter do not receive the channel event. The refresh also updates which category names the account sees.
 - The creation of a workspace records `permissions_changed` for the accounts that see the new workspace. Its creator gets the notice as a new member (ADR 0208). An account that sees the workspace without being a member, by the administrator permission, holds every permission in it, and no other event states that.
 
 Cost:
 
-- The snapshot reads the channels and the overrides of a workspace in two statements, as before, and computes the lists from them. It reads no further statement.
+- The snapshot reads channel records and effective role and person rules in batches per workspace. Category scopes and their person rules are also batched. The number of statements does not grow with the channels or categories.
 - A list has at most one name for each workspace permission. The snapshot has at most one entry for each channel that it carries, and none for a channel whose overrides do not change the list of the account.
 
 ## Consequences

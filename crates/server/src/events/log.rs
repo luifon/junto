@@ -160,9 +160,8 @@ pub async fn permissions_changed(
 }
 
 /// Records the notice for the accounts that see a channel that appears with overrides, by
-/// a fork or by a restore: an override can give an account another list of permissions in
-/// the channel than its snapshot states (ADR 0310). A channel without overrides has the
-/// list of the workspace for every account, and nothing is recorded.
+/// a creation, fork or restore. Category membership also needs a refresh of visible names;
+/// person rules and a missing base connect grant can change publication prerequisites.
 pub async fn permissions_changed_by_overrides_of(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -170,8 +169,14 @@ pub async fn permissions_changed_by_overrides_of(
     channel_id: ChannelId,
 ) -> ApiResult<()> {
     let has_overrides: bool =
-        sqlx::query_scalar("select exists (select 1 from channel_overrides where channel_id = $1)")
+        sqlx::query_scalar("select exists (select 1 from channels c where c.id=$1 and (
+            c.category_id is not null
+            or exists(select 1 from effective_channel_overrides o where o.channel_id=c.id)
+            or exists(select 1 from effective_channel_person_overrides o where o.channel_id=c.id)
+            or exists(select 1 from workspace_person_overrides o where o.workspace_id=c.workspace_id)
+            or exists(select 1 from workspace_roles r where r.workspace_id=c.workspace_id and r.is_everyone and r.permissions & $2 = 0)))")
             .bind(channel_id)
+            .bind(crate::db::workspace_bits(junto_authz::WorkspacePermission::Connect.into()))
             .fetch_one(&mut *connection)
             .await?;
     if !has_overrides {
