@@ -23,7 +23,7 @@ fi
 exit 0
 """
 SYSTEMS = {"macos": "Darwin", "windows": "MINGW64_NT-10.0-26100"}
-WINDOW_TESTS = "cargo test --locked --workspace --test app --"
+WINDOW_TESTS = "cargo test --no-fail-fast --locked --workspace --test app --"
 WINDOWS_ONLY_SKIPS = [
     "recordings::",
     "transcripts::",
@@ -97,7 +97,7 @@ class JobSteps(unittest.TestCase):
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)
             self.assertEqual(status, 0, output)
-            self.assertIn("cargo test --locked --workspace --test emoji_fonts", commands, system)
+            self.assertIn("cargo test --no-fail-fast --locked --workspace --test emoji_fonts", commands, system)
             status, _, _ = self.run_job(system, fail_on="--test emoji_fonts")
             self.assertNotEqual(status, 0, system)
 
@@ -117,9 +117,27 @@ class JobSteps(unittest.TestCase):
         self.assertLess(commands.index(" ".join(bundles[0])), commands.index(" ".join(starts[0])))
 
     def test_a_bundle_that_draws_no_first_frame_fails_the_macos_job(self):
-        status, commands, _ = self.run_job("macos", fail_on="packaging/check_start.py")
-        self.assertNotEqual(status, 0)
-        self.assertFalse(any(c.startswith(WINDOW_TESTS) for c in commands))
+        status, commands, output = self.run_job("macos", fail_on="packaging/check_start.py")
+        self.assertEqual(status, 1)
+        self.assertIn("First frame of the macOS bundle (exit 1): python3 packaging/check_start.py", output)
+
+    def test_a_failed_step_does_not_stop_the_later_steps_and_the_job_lists_every_failure(self):
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system, fail_on="--test emoji_fonts")
+            self.assertEqual(status, 1, system)
+            self.assertTrue(any(c.startswith(WINDOW_TESTS) for c in commands), system)
+            failed = output.split("=== Failed steps", 1)[1]
+            self.assertIn("Emoji of the fonts of the system (exit 1): cargo test --no-fail-fast --locked "
+                          "--workspace --test emoji_fonts", failed, system)
+            self.assertNotIn("Lint", failed, system)
+
+    def test_every_cargo_test_runs_every_test_program(self):
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            tests = [c for c in commands if " test " in f" {c} " and "cargo" in c]
+            self.assertTrue(tests, system)
+            self.assertTrue(all("cargo test --no-fail-fast " in c for c in tests), tests)
 
     def test_a_failed_window_test_fails_the_macos_job(self):
         status, _, _ = self.run_job("macos", fail_on="--skip live::")
@@ -137,7 +155,7 @@ class JobSteps(unittest.TestCase):
         self.assertFalse(any("packaging/check_start.py" in c or "packaging/bundle.py" in c for c in commands))
 
     def test_windows_checks_the_dialogs_of_the_system_after_the_tests_also_after_a_failure(self):
-        media = "cargo test --locked -p junto-media --lib --test native_exceptions --test windows_capture"
+        media = "cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture"
         for fail_on, expected in [("", 0), ("windows_capture", None), ("dialogs.py check", 1)]:
             status, commands, output = self.run_job("windows", fail_on=fail_on)
             if expected is None:
