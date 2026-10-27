@@ -241,7 +241,7 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         .unwrap();
     turn_meeting_on(&world, &mut window, &ada, voice);
     world.run(api.end_meeting(voice)).unwrap();
-    caller.calls.stop_share();
+    caller.calls.stop_share(None);
     // The media engine of Ada reports the end of the share to the server after the stop:
     // the lock follows once the window has the end, so that the lines keep this order.
     window.until("the share of Ada ends", |window| {
@@ -331,7 +331,7 @@ fn the_chat_of_a_voice_channel_tells_why_meeting_mode_ended(cx: &mut TestAppCont
 
     share_screen(&caller, &mut window);
     turn_meeting_on(&world, &mut window, &ada, voice);
-    caller.calls.stop_share();
+    caller.calls.stop_share(None);
     window.until("the share of Ada ends", |window| {
         window
             .state
