@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
-use crate::events::audience::{Audience, Class, KeptOverride, revalidated_account};
+use crate::events::audience::{Audience, Class, KeptOverride, KeptPerson, revalidated_account};
 use crate::state::AppState;
 use crate::transact;
 
@@ -370,7 +370,7 @@ pub async fn workspace_deleted(
 }
 
 /// Records the deletion of a channel for the accounts that could see it. It reads the
-/// overrides of the channel, so it runs before they are deleted.
+/// rules that apply to the channel (its category's while it is synced), so it runs before they are deleted.
 pub async fn channel_deleted(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -379,7 +379,7 @@ pub async fn channel_deleted(
 ) -> ApiResult<()> {
     let rows: Vec<(WorkspaceRoleId, bool, i64, i64)> = sqlx::query_as(
         "select o.role_id, r.is_everyone, o.allow, o.deny
-         from channel_overrides o
+         from effective_channel_overrides o
          join workspace_roles r on r.id = o.role_id
          where o.channel_id = $1
          order by o.role_id",
@@ -396,10 +396,27 @@ pub async fn channel_deleted(
             deny,
         })
         .collect();
+    let people: Vec<(AccountId, i64, i64)> = sqlx::query_as(
+        "select account_id, allow, deny from effective_channel_person_overrides
+         where channel_id = $1
+         order by account_id",
+    )
+    .bind(channel_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    let people = people
+        .into_iter()
+        .map(|(account_id, allow, deny)| KeptPerson {
+            account_id,
+            allow,
+            deny,
+        })
+        .collect();
     let audience = Audience::DeletedChannel {
         workspace_id,
         channel_id,
         overrides,
+        people,
     };
     let event = Event::ChannelDeleted {
         workspace_id,

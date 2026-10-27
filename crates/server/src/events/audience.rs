@@ -178,6 +178,15 @@ pub struct KeptOverride {
     pub deny: i64,
 }
 
+/// The rule that a person had in a channel when the channel was deleted, with the
+/// permission sets as their stored bits (ADR 0304).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptPerson {
+    pub account_id: AccountId,
+    pub allow: i64,
+    pub deny: i64,
+}
+
 /// How far an event about the inside of a call of a voice channel reaches (ADR 0517).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -274,6 +283,8 @@ pub enum Audience {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
         overrides: Vec<KeptOverride>,
+        #[serde(default)]
+        people: Vec<KeptPerson>,
     },
     /// Accounts that may see the voice channel, as far as `reach` states for the call
     /// `call_id`. Whether that call hides who is inside is the state that it started with;
@@ -1119,9 +1130,18 @@ impl WorkspaceStanding {
                     .any(|role| role.key == role_key(role_id)))
     }
 
-    fn kept_scope(&self, overrides: &[KeptOverride]) -> Option<ChannelScope> {
+    fn kept_scope(
+        &self,
+        account_id: AccountId,
+        overrides: &[KeptOverride],
+        people: &[KeptPerson],
+    ) -> Option<ChannelScope> {
+        let person_override = match people.iter().find(|kept| kept.account_id == account_id) {
+            Some(kept) => stored_override(kept.allow, kept.deny).ok()?,
+            None => Default::default(),
+        };
         let mut scope = ChannelScope {
-            person_override: Default::default(),
+            person_override,
             workspace: self.scope.clone(),
             everyone_override: Override::NONE,
             role_overrides: Vec::new(),
@@ -1288,8 +1308,10 @@ pub fn receives<'a>(
                         permission: WorkspacePermission::ViewChannel,
                     })
             }),
-        Audience::DeletedChannel { overrides, .. } => workspace
-            .and_then(|standing| standing.kept_scope(overrides))
+        Audience::DeletedChannel {
+            overrides, people, ..
+        } => workspace
+            .and_then(|standing| standing.kept_scope(recipient.account_id, overrides, people))
             .is_some_and(|scope| {
                 allows(Request::Channel {
                     scope: &scope,
@@ -1943,6 +1965,7 @@ mod tests {
                     deny: 0,
                 },
             ],
+            people: vec![],
         };
         let without_role = standing(&place, Membership::Member, false, false);
         assert!(may_receive(recipient(&plain), &deletion, Some(&gone)));
@@ -1966,6 +1989,7 @@ mod tests {
                 allow: view,
                 deny: view,
             }],
+            people: vec![],
         };
         assert!(!may_receive(recipient(&plain), &broken, Some(&gone)));
     }
@@ -2151,6 +2175,7 @@ mod tests {
             workspace_id: place.workspace_id,
             channel_id,
             overrides: vec![],
+            people: vec![],
         };
         assert!(kept(place.channel_id).fits(&deleted));
         assert!(!kept(ChannelId::generate()).fits(&deleted));
