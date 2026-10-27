@@ -1784,6 +1784,33 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
     );
 }
 
+/// The account can keep the text of messages out of the notifications of the system: a
+/// notification names who wrote and where, as before, with a fixed text (ADR 0742).
+#[test]
+fn a_hidden_text_leaves_the_message_out_of_the_notification() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    let shown = scene.message(scene.in_channel(scene.general), 7, "the plan, @you");
+    scene.notice(NotificationKind::Mention, shown, 1);
+    let told = scene.alerts(&mut seen);
+    let (title, body) = (told.show[0].0.title.clone(), told.show[0].0.body.clone());
+    assert!(body.contains("the plan"));
+    scene.settings(
+        SettingsScope::Account,
+        NotificationSettings {
+            hide_text: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let hidden = scene.message(scene.in_channel(scene.general), 8, "the budget, @you");
+    scene.notice(NotificationKind::Mention, hidden, 2);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.show.len(), 1);
+    assert_eq!(told.show[0].0.title, title);
+    assert_eq!(told.show[0].0.body, text::ALERT_TEXT_HIDDEN);
+}
+
 #[test]
 fn a_change_with_new_notices_has_one_sound_under_the_rules_of_a_system_notification() {
     let mut scene = scene();

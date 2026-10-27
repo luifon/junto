@@ -527,7 +527,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let unavailable = self.state.read(cx).notifications_unavailable();
-        vec![
+        let quiet = self
+            .view
+            .as_ref()
+            .map(|view| view.quiet.clone())
+            .unwrap_or_default();
+        let mut parts = vec![
             group_label(text::NOTIFICATIONS, theme).into_any_element(),
             div()
                 .typeface(theme.types.control, theme)
@@ -548,7 +553,72 @@ impl Shell {
                         .child(Notice::new(reason).selector("notifications-unavailable"))
                 }))
                 .into_any_element(),
-        ]
+        ];
+        // Settings of the account on each server; the window sets them on every server of
+        // the device, as the quiet times (ADR 0742).
+        if let Some(hide_text) = quiet.hide_text {
+            let shown = hide_text == crate::state::notices::Agreement::All(false);
+            let busy = quiet.busy;
+            parts.push(self.switch_row(
+                theme,
+                "notification-text",
+                text::NOTIFICATION_TEXT,
+                text::NOTIFICATION_TEXT_HELP,
+                shown,
+                Box::new(move |this: &mut Shell, cx: &mut Context<Shell>| {
+                    if !busy {
+                        this.state
+                            .update(cx, |state, cx| state.set_hide_text(shown, cx));
+                    }
+                }),
+                cx,
+            ));
+        }
+        parts
+    }
+
+    /// A setting with its title, its sentence and its switch.
+    fn switch_row(
+        &self,
+        theme: &Theme,
+        selector: &'static str,
+        title: &'static str,
+        sentence: &'static str,
+        on: bool,
+        press: Box<dyn Fn(&mut Shell, &mut Context<Shell>)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = &theme.colors;
+        div()
+            .debug_selector(move || format!("{selector}-row"))
+            .flex()
+            .items_start()
+            .gap(u(10.0))
+            .mt(u(12.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .typeface(theme.types.control, theme)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .ink(colors.ink)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink_2)
+                            .child(sentence),
+                    ),
+            )
+            .child(
+                Toggle::new(selector, title, on, (text::ON, text::OFF))
+                    .selector(selector)
+                    .on_click(cx.listener(move |this, _, _, cx| press(this, cx))),
+            )
+            .into_any_element()
     }
 
     /// The data directory, the version of this build and its updates.

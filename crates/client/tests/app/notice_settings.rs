@@ -750,3 +750,53 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
         .collect();
     assert_eq!(listed, stored);
 }
+
+/// The switch of the message text in notifications: off, the system notification of a
+/// message names who wrote and where, without the text; the account keeps the choice on
+/// its server (ADR 0742).
+#[gpui::test]
+fn the_text_of_a_message_can_be_left_out_of_its_system_notification(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (general, own) = (window.selected_channel(), window.own_account());
+    let handle = window.handle();
+    admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    let told = |window: &mut Window, text: &str| {
+        window
+            .kept()
+            .told
+            .iter()
+            .find(|alert| alert.title.contains("general") && alert.body.contains(text))
+            .cloned()
+    };
+    admin.mention(&world, general, "the plan, ", own);
+    window.until("the notification with its text", |window| {
+        told(window, "the plan").is_some()
+    });
+    let title = told(&mut window, "the plan").unwrap().title;
+
+    window.click("app-settings");
+    window.click("settings-section-notifications");
+    window.until("the switch shows the text", |window| {
+        let quiet = window.view().quiet;
+        quiet.hide_text == Some(Agreement::All(false)) && !quiet.busy
+    });
+    window.click_in_settings("notification-text");
+    window.until("the text is hidden", |window| {
+        let quiet = window.view().quiet;
+        quiet.hide_text == Some(Agreement::All(true)) && !quiet.busy
+    });
+    assert!(stored(&world, &handle, SettingsScope::Account).hide_text);
+    window.click("dialog-close");
+
+    admin.mention(&world, general, "the budget, ", own);
+    window.until("the notification without its text", |window| {
+        window.kept().told.len() == 2
+    });
+    let hidden = window.kept().told[1].clone();
+    assert_eq!(hidden.title, title);
+    assert_eq!(hidden.body, junto_client::text::ALERT_TEXT_HIDDEN);
+}

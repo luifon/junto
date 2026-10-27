@@ -92,7 +92,7 @@ pub async fn set_settings(
     {
         return Err(ApiError::invalid("invalid notification settings"));
     }
-    if !id.is_nil() && (body.do_not_disturb || body.daily_quiet.is_some()) {
+    if !id.is_nil() && (body.do_not_disturb || body.daily_quiet.is_some() || body.hide_text) {
         return Err(ApiError::invalid("do not disturb is an account setting"));
     }
     let mut counted = false;

@@ -734,6 +734,12 @@ impl AppState {
         self.change_quiet(cx, move |settings| settings.do_not_disturb = on);
     }
 
+    /// Leaves the text of messages out of the notifications of the system, or shows it,
+    /// on every server of the device (ADR 0742).
+    pub fn set_hide_text(&mut self, hide: bool, cx: &mut Context<Self>) {
+        self.change_quiet(cx, move |settings| settings.hide_text = hide);
+    }
+
     /// Sets the daily quiet time as two minutes of a day on the clock of a named time
     /// zone, or ends it with `None`. The server keeps the name of the zone (ADR 0412,
     /// ADR 0798).

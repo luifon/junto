@@ -28,6 +28,10 @@ pub struct NotificationSettings {
     #[serde(default)]
     pub do_not_disturb: bool,
     pub daily_quiet: Option<DailyQuiet>,
+    /// Account scope: the system notifications of messages name who wrote and where,
+    /// without the text (ADR 0742).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_text: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

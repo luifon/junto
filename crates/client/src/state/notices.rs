@@ -694,6 +694,8 @@ pub struct QuietView {
     /// Absent: the device has a session on no server.
     pub do_not_disturb: Option<Agreement<bool>>,
     pub daily: Option<Agreement<Option<DailyQuiet>>>,
+    /// The system notifications of messages leave out their text (ADR 0742).
+    pub hide_text: Option<Agreement<bool>>,
     /// The account of the shown server is in its quiet time now.
     pub quiet_now: bool,
     pub busy: bool,
@@ -737,9 +739,14 @@ pub fn quiet_view(
         .iter()
         .map(|(server_id, _, model)| account(*server_id, model).daily_quiet)
         .collect();
+    let hide_text: Vec<bool> = servers
+        .iter()
+        .map(|(server_id, _, model)| account(*server_id, model).hide_text)
+        .collect();
     QuietView {
         do_not_disturb: agreement(&dnd),
         daily: agreement(&daily),
+        hide_text: agreement(&hide_text),
         quiet_now: known.clock.is_some_and(|now| {
             servers
                 .iter()
@@ -1134,6 +1141,10 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
     let do_not_disturb = model
         .notification_settings(SettingsScope::Account)
         .is_some_and(|settings| settings.do_not_disturb);
+    // The account keeps the text of messages out of the notifications of the system.
+    let hide_text = model
+        .notification_settings(SettingsScope::Account)
+        .is_some_and(|settings| settings.hide_text);
     // The notices of the first state of a server are not new. An invitation of that
     // state waits for an answer now, and follows its rule.
     let first = !seen.started;
@@ -1274,9 +1285,14 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                     accounts(),
                     &scene.known.people.departures(scene.server_id),
                 );
+                let body = if hide_text {
+                    text::ALERT_TEXT_HIDDEN.to_owned()
+                } else {
+                    excerpt(message, &names_of(&message.place, model, accounts()))
+                };
                 (
                     text::alert_title(notice.kind, &author, &place, server),
-                    excerpt(message, &names_of(&message.place, model, accounts())),
+                    body,
                     Some(Jump::to(scene.server_id, message)),
                     Some(message.place),
                 )

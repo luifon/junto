@@ -2234,6 +2234,10 @@ pub fn place_name(place: &crate::state::notices::Whereabouts) -> String {
 }
 
 pub const ALERT_WITHOUT_TEXT: &str = "New notification";
+/// The body of the system notification of a message while the account hides the text.
+pub const ALERT_TEXT_HIDDEN: &str = "New message";
+pub const NOTIFICATION_TEXT: &str = "Message text in notifications";
+pub const NOTIFICATION_TEXT_HELP: &str = "Off: a notification names who wrote and where, without the text. Each server keeps the choice of your account.";
 
 /// The title of the system notification of a notice. It names the server when the device
 /// has more than one.
