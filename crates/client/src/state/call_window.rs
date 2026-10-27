@@ -4,6 +4,7 @@ use junto_client_core::call_window::{CallWindowSettings, CallWindowStore};
 pub(super) use writes::Writes;
 impl AppState {
     pub fn window_talking(&mut self, window: gpui::EntityId, talking: bool) {
+        let talking = talking && !self.recording_keybind();
         if talking {
             self.talking_windows.insert(window);
         } else {

@@ -225,6 +225,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if self.settings_section != section {
+            if section != SettingsSection::Keybinds {
+                self.stop_keybind_recording(cx);
+            }
             self.settings_section = section;
             self.settings_scroll().set_offset(gpui::Point::default());
         }

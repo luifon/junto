@@ -26,6 +26,7 @@ pub(crate) struct WindowKeys {
     pub mutes: bool,
     /// The settings wait for the keys of this action.
     pub recording: Option<KeyAction>,
+    pub recording_release: bool,
     /// Why the last recorded keys were refused.
     pub refusal: Option<String>,
 }
@@ -69,6 +70,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.state.read(cx).recording_keybind() {
+            return;
+        }
         if self
             .state
             .update(cx, |state, cx| state.perform_call_action(action, cx))
@@ -163,9 +167,15 @@ impl Shell {
                 self.members_open = !self.members_open;
                 cx.notify();
             }
+            // As the pins button of the header: a second press closes them.
             KeyAction::PinnedMessages => {
                 let shown = view.shown();
-                if let (Some(server_id), Some(channel_id)) = (shown.server, shown.channel) {
+                if view
+                    .workspace()
+                    .is_some_and(|workspace| workspace.pins.is_some())
+                {
+                    self.state.update(cx, |state, cx| state.close_pins(cx));
+                } else if let (Some(server_id), Some(channel_id)) = (shown.server, shown.channel) {
                     self.open_pins(server_id, channel_id, cx);
                 }
             }
@@ -180,6 +190,18 @@ impl Shell {
             KeyAction::ReplyToNewest => {
                 if let Some(message_id) = self.newest_message(super::Pane::Main) {
                     self.reply_to_message(super::Pane::Main, message_id, window, cx);
+                }
+            }
+            // A draft in the composer is not replaced.
+            KeyAction::EditLastMessage => {
+                if self
+                    .pen_mut(super::Pane::Main)
+                    .input
+                    .read(cx)
+                    .value()
+                    .is_empty()
+                {
+                    self.edit_last_own_message(super::Pane::Main, window, cx);
                 }
             }
             KeyAction::UploadFile => self.choose_files(super::Pane::Main, cx),
@@ -274,6 +296,7 @@ impl Shell {
                         .px(u(10.0))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.keys.recording = None;
+                            this.finish_keybind_recording(cx);
                             this.state.update(cx, |state, cx| {
                                 let _ = state.change_keybinds(KeybindChange::ResetAll, cx);
                             });
@@ -364,6 +387,12 @@ impl Shell {
                     .px(u(8.0))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.keys.recording = Some(action);
+                        this.keys.recording_release = true;
+                        this.keys.talks = false;
+                        this.keys.mutes = false;
+                        let id = cx.entity_id();
+                        this.state
+                            .update(cx, |state, _| state.begin_keybind_recording(id));
                         this.keys.refusal = None;
                         cx.notify();
                     })),
@@ -466,26 +495,7 @@ impl Shell {
     fn render_keys_reach(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let state = self.state.read(cx).global_keys_state();
         let permission = junto_client_core::global_keys::input_monitoring();
-        let (reach, asks): (String, bool) = match state {
-            KeysState::Reading if cfg!(target_os = "macos") => {
-                (text::KEYS_ALLOWED.to_owned(), false)
-            }
-            KeysState::Reading => (text::KEYS_EVERYWHERE.to_owned(), false),
-            KeysState::Failed(ReadError::NotAllowed) => {
-                (text::KEYS_NEED_PERMISSION.to_owned(), true)
-            }
-            KeysState::Failed(ReadError::Failed(reason)) => {
-                (text::keys_portal_failed(&reason), false)
-            }
-            KeysState::Portal => (text::KEYS_PORTAL.to_owned(), false),
-            KeysState::PortalFailed(reason) => (text::keys_portal_failed(&reason), false),
-            KeysState::WindowOnly
-                if cfg!(target_os = "macos") && permission == Permission::NotGranted =>
-            {
-                (text::KEYS_NEED_PERMISSION.to_owned(), true)
-            }
-            KeysState::WindowOnly => (text::KEYS_WINDOW_ONLY.to_owned(), false),
-        };
+        let (reach, asks) = keys_reach(state, permission, cfg!(target_os = "macos"));
         let mut rows = vec![
             div()
                 .debug_selector(|| "keys-reach".to_owned())
@@ -525,5 +535,56 @@ impl Shell {
             );
         }
         rows
+    }
+}
+
+/// The sentence of how the keys reach Junto, and whether the settings show the buttons of the
+/// macOS permission. On macOS the permission decides first: before the first reading of a call,
+/// or after a call ended, the source has no failure to tell.
+fn keys_reach(state: KeysState, permission: Permission, macos: bool) -> (String, bool) {
+    if macos && permission == Permission::NotGranted {
+        return (text::KEYS_NEED_PERMISSION.to_owned(), true);
+    }
+    match state {
+        KeysState::Reading if macos => (text::KEYS_ALLOWED.to_owned(), false),
+        KeysState::Reading => (text::KEYS_EVERYWHERE.to_owned(), false),
+        KeysState::Failed(ReadError::NotAllowed) => (text::KEYS_NEED_PERMISSION.to_owned(), macos),
+        KeysState::Failed(ReadError::Failed(reason)) => (text::keys_portal_failed(&reason), false),
+        KeysState::Portal => (text::KEYS_PORTAL.to_owned(), false),
+        KeysState::PortalFailed(reason) => (text::keys_portal_failed(&reason), false),
+        KeysState::WindowOnly => (text::KEYS_WINDOW_ONLY.to_owned(), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_macos_permission_decides_before_the_last_reading() {
+        let need = (text::KEYS_NEED_PERMISSION.to_owned(), true);
+        for state in [
+            KeysState::Reading,
+            KeysState::Failed(ReadError::NotAllowed),
+            KeysState::WindowOnly,
+        ] {
+            assert_eq!(
+                keys_reach(state.clone(), Permission::NotGranted, true),
+                need,
+                "{state:?}"
+            );
+        }
+        assert_eq!(
+            keys_reach(KeysState::Reading, Permission::Granted, true),
+            (text::KEYS_ALLOWED.to_owned(), false)
+        );
+        assert_eq!(
+            keys_reach(KeysState::Reading, Permission::Granted, false),
+            (text::KEYS_EVERYWHERE.to_owned(), false)
+        );
+        assert_eq!(
+            keys_reach(KeysState::WindowOnly, Permission::Granted, true),
+            (text::KEYS_WINDOW_ONLY.to_owned(), false)
+        );
     }
 }

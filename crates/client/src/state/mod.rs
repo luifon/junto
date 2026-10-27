@@ -416,6 +416,12 @@ pub struct OpenAdmin(pub admin::AdminOpen);
 
 impl gpui::EventEmitter<OpenAdmin> for AppState {}
 
+/// A key that works while another application is in front asks the main window, now in
+/// front, for an action that needs a window: show the call, or share (ADR 0777).
+pub struct WindowKeyAction(pub junto_client_core::keybinds::KeyAction);
+
+impl gpui::EventEmitter<WindowKeyAction> for AppState {}
+
 /// What the call window does before it closes.
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
@@ -429,6 +435,9 @@ pub struct AppState {
     /// The key bindings of the person (ADR 0777), and why their last change was not written.
     keybinds: junto_client_core::keybinds::Keybinds,
     keybinds_error: Option<String>,
+    keybind_recordings: HashSet<gpui::EntityId>,
+    keybind_boundary: u64,
+    keybind_global_ready: bool,
     /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
     /// keys of push to mute, and whether their hold closed the microphone.
     mute_holds: HashSet<Option<gpui::EntityId>>,
@@ -880,6 +889,9 @@ impl AppState {
             call_keys_told: None,
             keybinds,
             keybinds_error: None,
+            keybind_recordings: HashSet::new(),
+            keybind_boundary: 0,
+            keybind_global_ready: true,
             mute_holds: HashSet::new(),
             muted_by_hold: false,
             history: history::History::default(),

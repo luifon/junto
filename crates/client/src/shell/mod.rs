@@ -465,8 +465,10 @@ impl Shell {
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
-                this.state
-                    .update(cx, |state, _| state.release_window_keys(own_entity));
+                this.state.update(cx, |state, _| {
+                    state.release_window_keys(own_entity);
+                    state.end_keybind_recording(own_entity);
+                });
             }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
@@ -545,6 +547,8 @@ impl Shell {
                     let id = cx.entity_id();
                     this.state
                         .update(cx, |state, _| state.release_window_keys(id));
+                    this.keys.recording = None;
+                    this.finish_keybind_recording(cx);
                 } else {
                     this.modifiers_changed(window.modifiers(), cx);
                     if let Some(view) = this.view.clone() {
@@ -596,6 +600,15 @@ impl Shell {
                     this.open_admin(event.0, window, cx);
                 }
             }),
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, _, event: &crate::state::WindowKeyAction, window, cx| {
+                    if !this.detached {
+                        this.perform_key_action(event.0, window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {
                     view.show_levels(state.read(cx).shown_levels());
@@ -821,7 +834,28 @@ impl Shell {
     /// The modifier keys changed: the held keys of push to talk and push to mute change.
     fn modifiers_changed(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
         self.keys.modifiers = modifiers;
+        self.finish_keybind_recording(cx);
         self.follow_held_keys(cx);
+    }
+
+    /// The settings stop waiting for keys: they closed or show another section.
+    pub(crate) fn stop_keybind_recording(&mut self, cx: &mut Context<Self>) {
+        if self.keys.recording.take().is_some() {
+            self.keys.refusal = None;
+        }
+        self.finish_keybind_recording(cx);
+    }
+
+    fn finish_keybind_recording(&mut self, cx: &mut Context<Self>) {
+        if self.keys.recording_release
+            && self.keys.recording.is_none()
+            && self.held_keys().is_empty()
+        {
+            self.keys.recording_release = false;
+            let id = cx.entity_id();
+            self.state
+                .update(cx, |state, _| state.end_keybind_recording(id));
+        }
     }
 
     /// The keys that the window holds now: its modifiers and the last key that went down.
@@ -841,7 +875,11 @@ impl Shell {
 
     /// Push to talk and push to mute while the window holds their keys (ADR 0777).
     fn follow_held_keys(&mut self, cx: &mut Context<Self>) {
-        let held = self.held_keys();
+        let held = if self.state.read(cx).recording_keybind() {
+            Vec::new()
+        } else {
+            self.held_keys()
+        };
         let (talks, mutes) = {
             let state = self.state.read(cx);
             let talks = state.voice().input_mode == InputMode::PushToTalk
@@ -873,6 +911,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if let Some(action) = self.keys.recording {
+            self.keys.modifiers = keystroke.modifiers;
+            self.keys.down = keystroke
+                .key
+                .parse::<Key>()
+                .ok()
+                .filter(|key| !key.is_modifier());
             if keystroke.key == "escape" && !keystroke.modifiers.modified() {
                 self.keys.recording = None;
                 self.keys.refusal = None;
@@ -899,6 +943,10 @@ impl Shell {
                 cx.stop_propagation();
                 cx.notify();
             }
+            return;
+        }
+        if self.state.read(cx).recording_keybind() {
+            cx.stop_propagation();
             return;
         }
         if let Ok(key) = keystroke.key.parse::<Key>()
@@ -929,6 +977,7 @@ impl Shell {
             self.keys.down = None;
             self.follow_held_keys(cx);
         }
+        self.finish_keybind_recording(cx);
     }
 
     /// The calls keep the state of the key and act on a change only, so the window tells
@@ -1112,6 +1161,7 @@ impl Shell {
         if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
             self.state
                 .update(cx, |state, _| state.set_input_test(false));
+            self.stop_keybind_recording(cx);
         }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
@@ -1146,6 +1196,7 @@ impl Shell {
         if matches!(self.layer, Layer::Settings) {
             self.state
                 .update(cx, |state, _| state.set_input_test(false));
+            self.stop_keybind_recording(cx);
         }
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);

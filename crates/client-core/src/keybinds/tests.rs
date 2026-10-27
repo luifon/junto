@@ -87,6 +87,10 @@ fn a_key_without_a_modifier_is_only_for_a_held_action_and_outside_only_for_a_cal
         Err(KeybindError::NotOutside)
     );
     keybinds.set_outside(KeyAction::LeaveCall, true).unwrap();
+    for action in [KeyAction::ShareScreen, KeyAction::ShowCall] {
+        assert!(action.may_work_outside());
+    }
+    assert!(!KeyAction::ToggleCallPanel.may_work_outside());
     keybinds.set_outside(KeyAction::ToggleMute, false).unwrap();
     let outside: Vec<KeyAction> = keybinds
         .outside()

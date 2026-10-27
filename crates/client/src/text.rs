@@ -1088,6 +1088,7 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         MarkChannelRead => "Mark the channel as read",
         MarkServerRead => "Mark the server as read",
         ReplyToNewest => "Reply to the newest message",
+        EditLastMessage => "Edit the last own message",
         UploadFile => "Upload a file",
         OpenDirectMessages => "Direct messages",
         NewDirectMessage => "New direct message",

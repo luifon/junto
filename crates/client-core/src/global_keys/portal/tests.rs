@@ -360,3 +360,75 @@ fn a_key_of_a_call_is_suggested_in_the_form_of_the_desktop() {
         "CTRL+SHIFT+BackSpace"
     );
 }
+
+#[tokio::test]
+async fn a_held_action_is_released_when_the_session_is_replaced_refused_or_lost() {
+    for ending in 0..5 {
+        let mut bus = Some(Bus::new());
+        let (desktop, _) = desktop(bus.as_ref().unwrap(), (ending == 1).then_some(2)).await;
+        let client = bus.as_ref().unwrap().connect().await;
+        let (wanted, watched) = watch::channel(Some(keys()));
+        let (send, mut events) = mpsc::unbounded_channel();
+        let task = tokio::spawn(run(client.clone(), watched, move |event| {
+            let _ = send.send(event);
+        }));
+        let held = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tokio::select! {
+                    event = events.recv() => break event.unwrap(),
+                    _ = tick.tick() => press(&desktop, &client, TALK, true).await,
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(held, KeyEvent::Held(KeyAction::PushToTalk, true));
+        let mut wanted = Some(wanted);
+        match ending {
+            0 | 1 => {
+                let mut next = keys();
+                next.bindings[1].1 = "control+shift+u".parse().unwrap();
+                wanted.as_ref().unwrap().send(Some(next)).unwrap();
+            }
+            2 => {
+                drop(bus.take());
+            }
+            3 => {
+                drop(wanted.take());
+            }
+            _ => {
+                let sender = client
+                    .unique_name()
+                    .unwrap()
+                    .as_str()
+                    .trim_start_matches(':')
+                    .replace('.', "_");
+                let path = format!("/org/freedesktop/portal/desktop/session/{sender}/junto_keys_1");
+                desktop
+                    .emit_signal(
+                        None::<&str>,
+                        path.as_str(),
+                        "org.freedesktop.portal.Session",
+                        "Closed",
+                        &HashMap::<String, OwnedValue>::new(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            next(&mut events).await,
+            KeyEvent::Held(KeyAction::PushToTalk, false),
+            "ending {ending}"
+        );
+        drop(wanted);
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        if ending == 1 {
+            assert_eq!(result, Err(PortalError::Refused));
+        }
+    }
+}

@@ -18,6 +18,21 @@ use crate::keybinds::KeyAction;
 /// How long Junto waits for the answer of the desktop, which can show a dialog.
 const ANSWER: Duration = Duration::from_secs(120);
 
+#[derive(Clone, Default)]
+pub struct Requested {
+    pub keys: Option<CallKeys>,
+    pub boundary: Option<u64>,
+}
+
+impl From<Option<CallKeys>> for Requested {
+    fn from(keys: Option<CallKeys>) -> Self {
+        Self {
+            keys,
+            boundary: None,
+        }
+    }
+}
+
 /// True in a Wayland session. Whether the desktop has the portal shows when a call binds the
 /// keys.
 pub fn available() -> bool {
@@ -74,6 +89,8 @@ trait Request {
 )]
 trait Session {
     fn close(&self) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn closed(&self, details: HashMap<String, OwnedValue>) -> zbus::Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -224,7 +241,7 @@ async fn bind(
         })
         .collect();
     let bound_token = format!("{token}_bind");
-    ask(
+    let result = ask(
         connection,
         &bound_token,
         portal.bind_shortcuts(
@@ -234,7 +251,11 @@ async fn bind(
             HashMap::from([("handle_token", Value::from(bound_token.as_str()))]),
         ),
     )
-    .await?;
+    .await;
+    if let Err(error) = result {
+        close(connection, session).await;
+        return Err(error);
+    }
     Ok(session)
 }
 
@@ -245,16 +266,35 @@ async fn close(connection: &Connection, session: OwnedObjectPath) {
     if let Ok(building) = proxy
         && let Ok(proxy) = building.await
     {
-        let _ = proxy.close().await;
+        let _ = tokio::time::timeout(ANSWER, proxy.close()).await;
+    }
+}
+
+struct Held<'a, F: Fn(KeyEvent)> {
+    actions: Vec<KeyAction>,
+    events: &'a F,
+}
+
+impl<F: Fn(KeyEvent)> Held<'_, F> {
+    fn release(&mut self) {
+        for action in std::mem::take(&mut self.actions) {
+            (self.events)(KeyEvent::Held(action, false));
+        }
+    }
+}
+
+impl<F: Fn(KeyEvent)> Drop for Held<'_, F> {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
 /// Gives the events of the shortcuts while a call needs them, until `wanted` ends. The keys
 /// are bound when a call first needs them and again when they change. A press outside a call
 /// gives nothing; a hold of push to talk or push to mute ends with the call.
-pub async fn run(
+pub async fn run<T: Clone + Into<Requested>>(
     connection: Connection,
-    mut wanted: watch::Receiver<Option<CallKeys>>,
+    mut wanted: watch::Receiver<T>,
     events: impl Fn(KeyEvent),
 ) -> Result<(), PortalError> {
     let portal = GlobalShortcutsProxy::new(&connection)
@@ -264,18 +304,38 @@ pub async fn run(
     let mut deactivated = portal.receive_deactivated().await.map_err(failed)?;
     let mut bound: Option<(CallKeys, OwnedObjectPath)> = None;
     let mut number = 0;
-    let mut holding: Vec<KeyAction> = Vec::new();
+    let mut holding = Held {
+        actions: Vec::new(),
+        events: &events,
+    };
+    let mut closed = None;
+    let mut ready = None;
     loop {
-        let keys = wanted.borrow_and_update().clone().map(CallKeys::resolved);
+        let request: Requested = wanted.borrow_and_update().clone().into();
+        let keys = request.keys.map(CallKeys::resolved);
         if let Some(keys) = &keys
             && bound.as_ref().map(|(held, _)| held) != Some(keys)
         {
+            holding.release();
             if let Some((_, session)) = bound.take() {
                 close(&connection, session).await;
             }
             number += 1;
             let session = bind(&connection, &portal, keys, number).await?;
+            let proxy = SessionProxy::builder(&connection)
+                .path(session.clone())
+                .map_err(failed)?
+                .build()
+                .await
+                .map_err(failed)?;
+            closed = Some(proxy.receive_closed().await.map_err(failed)?);
             bound = Some((keys.clone(), session));
+        }
+        if let Some(boundary) = request.boundary
+            && ready != Some(boundary)
+        {
+            ready = Some(boundary);
+            events(KeyEvent::Ready(boundary));
         }
         let ours = |session: &ObjectPath<'_>| {
             bound
@@ -283,16 +343,25 @@ pub async fn run(
                 .is_some_and(|(_, held)| held.as_str() == session.as_str())
         };
         tokio::select! {
+            biased;
             changed = wanted.changed() => {
                 if changed.is_err() {
+                    if let Some((_, session)) = bound.take() {
+                        close(&connection, session).await;
+                    }
                     return Ok(());
                 }
-                if wanted.borrow().is_none() {
-                    for action in std::mem::take(&mut holding) {
-                        events(KeyEvent::Held(action, false));
-                    }
+                let next: Requested = wanted.borrow().clone().into();
+                if next.keys.map(CallKeys::resolved) != keys {
+                    holding.release();
                 }
             }
+            _ = async {
+                match &mut closed {
+                    Some(stream) => stream.next().await,
+                    None => std::future::pending().await,
+                }
+            } => return Err(PortalError::Failed("the desktop closed the shortcuts session".to_owned())),
             signal = activated.next() => {
                 let signal = signal.ok_or_else(|| PortalError::Failed("the bus ended".to_owned()))?;
                 let args = signal.args().map_err(failed)?;
@@ -304,8 +373,8 @@ pub async fn run(
                 });
                 match action {
                     Some(action) if action.holds() => {
-                        if !holding.contains(&action) {
-                            holding.push(action);
+                        if !holding.actions.contains(&action) {
+                            holding.actions.push(action);
                             events(KeyEvent::Held(action, true));
                         }
                     }
@@ -317,11 +386,11 @@ pub async fn run(
                 let signal = signal.ok_or_else(|| PortalError::Failed("the bus ended".to_owned()))?;
                 let args = signal.args().map_err(failed)?;
                 if ours(&args.session_handle)
-                    && let Some(at) = holding
+                    && let Some(at) = holding.actions
                         .iter()
                         .position(|action| action.name() == args.shortcut_id)
                 {
-                    events(KeyEvent::Held(holding.remove(at), false));
+                    events(KeyEvent::Held(holding.actions.remove(at), false));
                 }
             }
         }

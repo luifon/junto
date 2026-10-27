@@ -44,6 +44,7 @@ pub enum KeyAction {
     MarkChannelRead,
     MarkServerRead,
     ReplyToNewest,
+    EditLastMessage,
     UploadFile,
     OpenDirectMessages,
     NewDirectMessage,
@@ -62,7 +63,7 @@ pub enum ActionGroup {
 }
 
 impl KeyAction {
-    pub const ALL: [KeyAction; 36] = [
+    pub const ALL: [KeyAction; 37] = [
         KeyAction::ToggleMute,
         KeyAction::ToggleSoundOff,
         KeyAction::PushToTalk,
@@ -93,6 +94,7 @@ impl KeyAction {
         KeyAction::MarkChannelRead,
         KeyAction::MarkServerRead,
         KeyAction::ReplyToNewest,
+        KeyAction::EditLastMessage,
         KeyAction::UploadFile,
         KeyAction::OpenDirectMessages,
         KeyAction::NewDirectMessage,
@@ -124,8 +126,8 @@ impl KeyAction {
             | JumpToNewest
             | MembersList
             | PinnedMessages => ActionGroup::Navigation,
-            MarkChannelRead | MarkServerRead | ReplyToNewest | UploadFile | OpenDirectMessages
-            | NewDirectMessage => ActionGroup::Messages,
+            MarkChannelRead | MarkServerRead | ReplyToNewest | EditLastMessage | UploadFile
+            | OpenDirectMessages | NewDirectMessage => ActionGroup::Messages,
             OpenSettings | OpenAdministration | OpenKeybinds => ActionGroup::App,
         }
     }
@@ -170,6 +172,7 @@ impl KeyAction {
             | MarkChannelRead
             | MarkServerRead
             | ReplyToNewest
+            | EditLastMessage
             | UploadFile
             | OpenSettings
             | OpenAdministration
@@ -189,7 +192,7 @@ impl KeyAction {
     }
 
     /// True for an action whose key may also work while another application is in front:
-    /// the actions of a call that need no window of Junto.
+    /// the actions of a call. Showing the call and sharing bring Junto to the front first.
     pub fn may_work_outside(self) -> bool {
         use KeyAction::*;
         matches!(
@@ -199,9 +202,11 @@ impl KeyAction {
                 | PushToTalk
                 | PushToMute
                 | ToggleCamera
+                | ShareScreen
                 | LeaveCall
                 | AnswerCall
                 | DeclineCall
+                | ShowCall
         )
     }
 
@@ -253,6 +258,8 @@ impl KeyAction {
             MarkChannelRead => &[Shift, Escape],
             MarkServerRead => &[main, Shift, Escape],
             ReplyToNewest => &[main, Shift, Letter('R')],
+            // Slack: Command or Control with the arrow up edits the last own message.
+            EditLastMessage => &[main, Up],
             UploadFile => &[main, Shift, Letter('U')],
             // Slack: the direct messages at Command+Shift+K.
             OpenDirectMessages => &[main, Shift, Letter('K')],

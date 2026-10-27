@@ -67,17 +67,55 @@ impl AppState {
     }
 
     fn global_key(&mut self, event: KeyEvent, cx: &mut Context<Self>) {
+        if let KeyEvent::Ready(boundary) = event {
+            if boundary == self.keybind_boundary {
+                self.keybind_global_ready = true;
+            }
+            return;
+        }
+        if self.recording_keybind() || !self.keybind_global_ready {
+            return;
+        }
         match event {
+            KeyEvent::Ready(_) => {}
             KeyEvent::Held(KeyAction::PushToTalk, held) => {
                 self.talking_globally = held;
                 self.sync_talking();
             }
             KeyEvent::Held(action, held) => self.hold_action(None, action, held),
             KeyEvent::Pressed(action) => {
-                self.perform_call_action(action, cx);
+                if !self.perform_call_action(action, cx) && action.may_work_outside() {
+                    crate::notify::bring_to_front(cx);
+                    cx.emit(super::WindowKeyAction(action));
+                }
             }
         }
         cx.notify();
+    }
+
+    pub fn recording_keybind(&self) -> bool {
+        !self.keybind_recordings.is_empty()
+    }
+
+    pub fn begin_keybind_recording(&mut self, window: gpui::EntityId) {
+        self.keybind_recordings.insert(window);
+        self.keybind_boundary += 1;
+        self.keybind_global_ready = false;
+        self.global_keys.pause_for_recording();
+        self.talking_windows.clear();
+        self.talking_globally = false;
+        self.sync_talking();
+        self.mute_holds.clear();
+        self.hold_action(None, KeyAction::PushToMute, false);
+    }
+
+    pub fn end_keybind_recording(&mut self, window: gpui::EntityId) {
+        if self.keybind_recordings.remove(&window) && self.keybind_recordings.is_empty() {
+            self.keybind_boundary += 1;
+            self.keybind_global_ready = !self
+                .global_keys
+                .resume_after_release(self.call_keys_told.clone(), self.keybind_boundary);
+        }
     }
 
     /// What the key that mutes does: it closes an open microphone of the call, and opens a
@@ -136,6 +174,7 @@ impl AppState {
         if action != KeyAction::PushToMute {
             return;
         }
+        let held = held && !self.recording_keybind();
         if held {
             self.mute_holds.insert(window);
         } else {
@@ -173,6 +212,7 @@ impl AppState {
             KeysState::Reading | KeysState::Portal
         );
         source
+            && self.keybind_global_ready
             && self
                 .call_keys_told
                 .as_ref()

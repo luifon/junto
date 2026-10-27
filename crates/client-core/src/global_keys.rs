@@ -277,6 +277,8 @@ impl CallKeys {
 /// An event of the keys of a call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyEvent {
+    /// A requested recording boundary has reached a keyboard with no held keys.
+    Ready(u64),
     /// The keys of an action that lasts while they are held, push to talk or push to mute,
     /// are held now, or let go.
     Held(KeyAction, bool),
@@ -465,7 +467,7 @@ pub const INTERVAL: std::time::Duration = std::time::Duration::from_millis(15);
 /// and gives each event to a callback on that thread. Without a call nothing is read. The
 /// thread ends with the poller.
 pub struct Poller {
-    keys: std::sync::mpsc::Sender<Option<CallKeys>>,
+    keys: std::sync::mpsc::Sender<(Option<CallKeys>, Option<u64>)>,
     failure: std::sync::Arc<std::sync::Mutex<Option<ReadError>>>,
 }
 
@@ -475,7 +477,7 @@ impl Poller {
         events: impl Fn(KeyEvent) + Send + 'static,
     ) -> Self {
         use std::sync::mpsc::RecvTimeoutError;
-        let (keys, taken) = std::sync::mpsc::channel::<Option<CallKeys>>();
+        let (keys, taken) = std::sync::mpsc::channel::<(Option<CallKeys>, Option<u64>)>();
         let failure: std::sync::Arc<std::sync::Mutex<Option<ReadError>>> = Default::default();
         let told = failure.clone();
         let tell = move |error: Option<ReadError>| {
@@ -488,19 +490,24 @@ impl Poller {
             .spawn(move || {
                 let mut wanted: Option<CallKeys> = None;
                 let mut edges = Edges::default();
+                let mut resume = None;
                 loop {
                     // Without a call the thread only waits for the keys of the next call.
-                    let wait = if wanted.is_some() {
+                    let wait = if wanted.is_some() || resume.is_some() {
                         INTERVAL
                     } else {
                         std::time::Duration::from_secs(1)
                     };
                     match taken.recv_timeout(wait) {
-                        Ok(mut next) => {
-                            while let Ok(newer) = taken.try_recv() {
+                        Ok((mut next, mut boundary)) => {
+                            while let Ok((newer, newer_boundary)) = taken.try_recv() {
                                 next = newer;
+                                boundary = newer_boundary.or(boundary);
                             }
-                            if next.is_none() {
+                            if boundary.is_some() {
+                                resume = boundary;
+                            }
+                            if next.is_none() || boundary.is_some() {
                                 edges.end().into_iter().for_each(&events);
                                 tell(None);
                             }
@@ -510,17 +517,32 @@ impl Poller {
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
-                    let Some(keys) = &wanted else {
+                    if wanted.is_none() && resume.is_none() {
                         continue;
+                    }
+                    let read = if resume.is_some() {
+                        Key::all().collect()
+                    } else {
+                        wanted.as_ref().map_or_else(Vec::new, CallKeys::keys)
                     };
-                    match reader.held(&keys.keys()) {
+                    match reader.held(&read) {
                         Ok(held) => {
                             tell(None);
-                            edges.read(keys, &held).into_iter().for_each(&events);
+                            if let Some(boundary) = resume {
+                                if held.is_empty() {
+                                    resume = None;
+                                    events(KeyEvent::Ready(boundary));
+                                }
+                            } else if let Some(keys) = &wanted {
+                                edges.read(keys, &held).into_iter().for_each(&events);
+                            }
                         }
                         Err(error) => {
                             tell(Some(error));
                             edges.end().into_iter().for_each(&events);
+                            if let Some(boundary) = resume.take() {
+                                events(KeyEvent::Ready(boundary));
+                            }
                         }
                     }
                 }
@@ -536,7 +558,7 @@ impl Poller {
 
     /// The keys that the call needs now; absent without a call, which stops the readings.
     pub fn set(&self, keys: Option<CallKeys>) {
-        let _ = self.keys.send(keys.map(CallKeys::resolved));
+        let _ = self.keys.send((keys.map(CallKeys::resolved), None));
     }
 
     /// Why the last reading failed, while it fails.
@@ -567,7 +589,7 @@ enum Source {
     Poller(Poller),
     #[cfg(target_os = "linux")]
     Portal {
-        wanted: tokio::sync::watch::Sender<Option<CallKeys>>,
+        wanted: tokio::sync::watch::Sender<portal::Requested>,
         failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     },
     None,
@@ -581,6 +603,33 @@ pub struct GlobalKeys {
 }
 
 impl GlobalKeys {
+    pub fn pause_for_recording(&self) {
+        #[cfg(target_os = "linux")]
+        if let Source::Portal { wanted, .. } = &self.source {
+            wanted.send_modify(|request| request.keys = None);
+        }
+    }
+
+    pub fn resume_after_release(&self, keys: Option<CallKeys>, boundary: u64) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Source::Portal { wanted, .. } = &self.source {
+            wanted.send_replace(portal::Requested {
+                keys,
+                boundary: Some(boundary),
+            });
+            return true;
+        }
+        if let Source::Poller(poller) = &self.source {
+            let _ = poller
+                .keys
+                .send((keys.map(CallKeys::resolved), Some(boundary)));
+            true
+        } else {
+            self.set(keys);
+            false
+        }
+    }
+
     /// The source of this system. The portal runs on `runtime`.
     pub fn of_system(
         runtime: &tokio::runtime::Handle,
@@ -588,7 +637,7 @@ impl GlobalKeys {
     ) -> Self {
         #[cfg(target_os = "linux")]
         if !x11::available() && portal::available() {
-            let (wanted, watched) = tokio::sync::watch::channel(None);
+            let (wanted, watched) = tokio::sync::watch::channel(portal::Requested::default());
             let failure: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
             let told = failure.clone();
             runtime.spawn(async move {
@@ -639,7 +688,7 @@ impl GlobalKeys {
             Source::Poller(poller) => poller.set(keys),
             #[cfg(target_os = "linux")]
             Source::Portal { wanted, .. } => {
-                wanted.send_replace(keys);
+                wanted.send_modify(|request| request.keys = keys);
             }
             Source::None => {}
         }

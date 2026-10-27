@@ -688,19 +688,7 @@ impl Shell {
                 true
             }
             Step::Up if empty && self.pen_mut(pane).editing.is_none() => {
-                let last = self.composer_feed(pane).and_then(|feed| {
-                    feed.rows.iter().rev().find_map(|row| match row {
-                        FeedRow::Message(row) if row.can_edit => Some(row.message.id),
-                        _ => None,
-                    })
-                });
-                match last {
-                    Some(message_id) => {
-                        self.edit_message(pane, message_id, window, cx);
-                        true
-                    }
-                    None => false,
-                }
+                self.edit_last_own_message(pane, window, cx)
             }
             _ => false,
         }
@@ -973,6 +961,29 @@ impl Shell {
                 FeedRow::Message(row) if row.message.id == message_id => Some(row.message.clone()),
                 _ => None,
             })
+    }
+
+    /// Puts the text of the newest own message that the pane lists into the composer, to
+    /// change it. False when the pane lists none.
+    pub(crate) fn edit_last_own_message(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let last = self.composer_feed(pane).and_then(|feed| {
+            feed.rows.iter().rev().find_map(|row| match row {
+                FeedRow::Message(row) if row.can_edit => Some(row.message.id),
+                _ => None,
+            })
+        });
+        match last {
+            Some(message_id) => {
+                self.edit_message(pane, message_id, window, cx);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Puts the text of an own message into the composer, to change it.
