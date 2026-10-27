@@ -514,6 +514,15 @@ pub async fn remove(
     place: &Place,
     message: &Message,
 ) -> ApiResult<()> {
+    changed(
+        connection,
+        now,
+        place.value,
+        message.id,
+        message.position,
+        true,
+    )
+    .await?;
     erase(connection, now, message.id).await?;
     if let Some(root) = message.thread_root {
         let position: i64 = sqlx::query_scalar("select position from messages where id=$1")
@@ -531,15 +540,7 @@ pub async fn remove(
         .execute(&mut *connection)
         .await?;
     }
-    changed(
-        connection,
-        now,
-        place.value,
-        message.id,
-        message.position,
-        true,
-    )
-    .await
+    Ok(())
 }
 
 /// Erases content while retaining the marker required by replies and future threads.

@@ -1340,3 +1340,37 @@ async fn the_events_of_a_reply_state_the_thread_and_the_notice_of_the_account() 
         } if *message_id == root.id
     )));
 }
+
+#[tokio::test]
+async fn deleting_unread_replies_states_the_remaining_thread_count() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Author").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = send(&server, &owner, &channel, "root").await;
+    reply(&server, &owner, root.id, "own").await;
+    let first = reply(&server, &author, root.id, "first").await;
+    let second = reply(&server, &author, root.id, "second").await;
+    for (removed, remaining) in [(first, 1), (second, 0)] {
+        let cursor = server.snapshot(&owner).await.cursor;
+        server
+            .delete(&author, &message(removed.id))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let told = events(&server, &owner, cursor, Level::Full).await;
+        let state = told
+            .iter()
+            .find_map(|event| match event {
+                Event::MessageChanged {
+                    message_id,
+                    deleted: true,
+                    thread: Some(state),
+                    ..
+                } if *message_id == removed.id => Some(state),
+                _ => None,
+            })
+            .expect("the deletion must carry its surviving root's state");
+        assert_eq!(state.root_id, root.id);
+        assert_eq!(state.unread, remaining);
+    }
+}

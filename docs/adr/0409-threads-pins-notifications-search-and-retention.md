@@ -218,6 +218,8 @@ An account authorized to fork a thread can learn that its single fork already ex
 even after losing access to the destination. The repeated request returns 409 with no
 identifier, name or membership of the destination; thread reads omit unreadable fork links.
 
+A reply deletion records its message-change event before erasing the row, in the same transaction. The event therefore retains its audience and thread root even when the row is physically removed. Delivery reads the resulting thread state after commit, including zero unread replies, so clients update or remove the root from their unread list. The regression deletes one of several unread replies and then the last one.
+
 ## Consequences
 
 - A channel fork cannot widen access at creation. Subsequent independent permission changes
