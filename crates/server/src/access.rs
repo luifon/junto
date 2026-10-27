@@ -1,4 +1,5 @@
 mod categories;
+pub(crate) mod inheritance;
 pub(crate) mod permissions;
 pub mod visibility;
 

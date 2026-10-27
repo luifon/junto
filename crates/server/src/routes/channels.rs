@@ -813,6 +813,12 @@ pub(crate) async fn delete_category_in(
     .fetch_optional(&mut *connection)
     .await?;
     let name = name.ok_or_else(ApiError::not_found)?;
+    let children: Vec<ChannelId> =
+        sqlx::query_scalar("select id from channels where category_id=$1")
+            .bind(category_id)
+            .fetch_all(&mut *connection)
+            .await?;
+    crate::access::inheritance::detach_channels(connection, &children).await?;
     // The rows of deleted channels refer to the category as well.
     sqlx::query("update channels set category_id = null where category_id = $1")
         .bind(category_id)
@@ -864,7 +870,7 @@ pub async fn list_channel_overrides(
             permission: WorkspacePermission::ManageChannel,
         })?;
         let rows: Vec<(WorkspaceRoleId, i64, i64)> = sqlx::query_as(
-            "select role_id, allow, deny from channel_overrides
+            "select role_id, allow, deny from effective_channel_overrides
              where channel_id = $1
              order by role_id",
         )
@@ -944,18 +950,7 @@ pub async fn change_channel_override(
             scope: &scope,
             permission: WorkspacePermission::ManageChannel,
         })?;
-        let stored: Option<(i64, i64)> = sqlx::query_as(
-            "select allow, deny from channel_overrides
-             where channel_id=$1 and role_id=$2 for update",
-        )
-        .bind(channel_id)
-        .bind(role_id)
-        .fetch_optional(&mut *connection)
-        .await?;
-        let previous = match stored {
-            Some((allow, deny)) => stored_override(allow, deny)?,
-            None => Override::NONE,
-        };
+        let previous = current_override(connection, channel_id, role_id).await?;
         let changed = WorkspacePermissions::from(body.permission);
         let mut allow = previous.allow().difference(changed);
         let mut deny = previous.deny().difference(changed);
@@ -1009,19 +1004,7 @@ pub(crate) async fn set_override_in(
     if !role_exists {
         return Err(ApiError::not_found());
     }
-    let stored: Option<(i64, i64)> = sqlx::query_as(
-        "select allow, deny from channel_overrides
-         where channel_id = $1 and role_id = $2
-         for update",
-    )
-    .bind(channel_id)
-    .bind(role_id)
-    .fetch_optional(&mut *connection)
-    .await?;
-    let previous = match stored {
-        Some((allow, deny)) => stored_override(allow, deny)?,
-        None => Override::NONE,
-    };
+    let previous = current_override(connection, channel_id, role_id).await?;
     access.require(Request::ManageChannelOverrides {
         scope: &scope,
         granting: previous.granted_by_change_to(next),
@@ -1031,6 +1014,7 @@ pub(crate) async fn set_override_in(
     if previous == next {
         return Ok(result);
     }
+    crate::access::inheritance::detach_channels(connection, &[channel_id]).await?;
     if next.is_none() {
         sqlx::query("delete from channel_overrides where channel_id = $1 and role_id = $2")
             .bind(channel_id)
@@ -1076,4 +1060,26 @@ pub(crate) async fn set_override_in(
     let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
     events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
     Ok(result)
+}
+
+async fn current_override(
+    connection: &mut PgConnection,
+    channel_id: ChannelId,
+    role_id: WorkspaceRoleId,
+) -> ApiResult<Override> {
+    sqlx::query("select id from channels where id=$1 for update")
+        .bind(channel_id)
+        .fetch_one(&mut *connection)
+        .await?;
+    let stored: Option<(i64, i64)> = sqlx::query_as(
+        "select allow,deny from effective_channel_overrides where channel_id=$1 and role_id=$2",
+    )
+    .bind(channel_id)
+    .bind(role_id)
+    .fetch_optional(connection)
+    .await?;
+    match stored {
+        Some((allow, deny)) => stored_override(allow, deny),
+        None => Ok(Override::NONE),
+    }
 }
