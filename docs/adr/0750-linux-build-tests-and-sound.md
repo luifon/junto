@@ -40,3 +40,5 @@ The native client depends on system libraries for its window, text, sound and ca
 
 - [PipeWire 0.3.65 initialisation and deinitialisation](https://github.com/PipeWire/pipewire/blob/0.3.65/src/pipewire/pipewire.c).
 - [Snapshots of the Debian archives](https://snapshot.debian.org/).
+
+The complete sound startup uses one 60-second monotonic deadline, read from `/proc/uptime`. The deadline covers readiness probes, module loading and default-device commands, including a command that connects but never answers. Each command runs in its own process group with the remaining time as its limit. At the deadline, that group is killed before the script reads and copies the service logs; no timed-out probe or its children remain running.
