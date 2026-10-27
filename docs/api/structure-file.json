@@ -347,7 +347,21 @@
           "lock_room",
           "run_meeting_mode",
           "view_audit_entries",
-          "admit_to_full_call"
+          "admit_to_full_call",
+          "send_messages",
+          "send_messages_in_threads",
+          "create_threads",
+          "read_message_history",
+          "attach_files",
+          "add_reactions",
+          "mention_roles",
+          "connect",
+          "speak",
+          "video",
+          "share_screen",
+          "use_voice_activity",
+          "set_call_user_limit",
+          "set_voice_channel_status"
         ],
         "type": "string"
       }

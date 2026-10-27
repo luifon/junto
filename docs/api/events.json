@@ -798,30 +798,15 @@
       ],
       "type": "object"
     },
-    "channel_override_set": {
-      "description": "The allow set and the deny set of one role in a channel. Two empty sets mean that the\nrole has no override in the channel.",
+    "channel_history_withdrawn": {
+      "description": "Messages of the channel that are older than the current connection of the\nrecipient changed, and the recipient may not read the history of the channel. The\nevent names no message. The recipient keeps only the messages of the channel that\nit received during this connection (ADR 0304).",
       "properties": {
-        "allow": {
-          "items": {
-            "$ref": "#/components/schemas/WorkspacePermission"
-          },
-          "type": "array"
-        },
         "channel_id": {
           "$ref": "#/components/schemas/ChannelId"
         },
-        "deny": {
-          "items": {
-            "$ref": "#/components/schemas/WorkspacePermission"
-          },
-          "type": "array"
-        },
-        "role_id": {
-          "$ref": "#/components/schemas/WorkspaceRoleId"
-        },
         "type": {
           "enum": [
-            "channel_override_set"
+            "channel_history_withdrawn"
           ],
           "type": "string"
         },
@@ -832,9 +817,6 @@
       "required": [
         "workspace_id",
         "channel_id",
-        "role_id",
-        "allow",
-        "deny",
         "type"
       ],
       "type": "object"
@@ -854,6 +836,33 @@
       },
       "required": [
         "channel",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_rules_synced": {
+      "description": "A channel stopped taking the rules of its category (`synced` false), takes them again,\nor moved into another category while it takes the rules of its category. A client\nreads the rules of the channel again.",
+      "properties": {
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "synced": {
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "channel_rules_synced"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "channel_id",
+        "synced",
         "type"
       ],
       "type": "object"
@@ -1525,6 +1534,47 @@
       ],
       "type": "object"
     },
+    "permission_rule_set": {
+      "description": "The allow set and the deny set of one subject in a category or a channel. Two empty\nsets mean that the subject has no rule there (ADR 0304).",
+      "properties": {
+        "allow": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "type": "array"
+        },
+        "place": {
+          "$ref": "#/components/schemas/RulePlace"
+        },
+        "subject": {
+          "$ref": "#/components/schemas/RuleSubject"
+        },
+        "type": {
+          "enum": [
+            "permission_rule_set"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "place",
+        "subject",
+        "allow",
+        "deny",
+        "type"
+      ],
+      "type": "object"
+    },
     "permissions_changed": {
       "description": "What the recipient may see or do has changed: in one workspace, or on the server when\nno workspace is named. The client loads a snapshot.",
       "properties": {
@@ -1659,6 +1709,39 @@
         }
       },
       "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "server_person_permissions_set": {
+      "description": "The server permissions that are allowed to or denied to one account.",
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "allow": {
+          "items": {
+            "$ref": "#/components/schemas/ServerPermission"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "$ref": "#/components/schemas/ServerPermission"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "server_person_permissions_set"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "allow",
+        "deny",
         "type"
       ],
       "type": "object"
@@ -1965,6 +2048,43 @@
         "workspace_id",
         "account_id",
         "role_ids",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_person_permissions_set": {
+      "description": "The workspace permissions that are allowed to or denied to one member.",
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "allow": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "workspace_person_permissions_set"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "account_id",
+        "allow",
+        "deny",
         "type"
       ],
       "type": "object"
@@ -3636,47 +3756,6 @@
             "type": "object"
           },
           {
-            "description": "The allow set and the deny set of one role in a channel. Two empty sets mean that the\nrole has no override in the channel.",
-            "properties": {
-              "allow": {
-                "items": {
-                  "$ref": "#/components/schemas/WorkspacePermission"
-                },
-                "type": "array"
-              },
-              "channel_id": {
-                "$ref": "#/components/schemas/ChannelId"
-              },
-              "deny": {
-                "items": {
-                  "$ref": "#/components/schemas/WorkspacePermission"
-                },
-                "type": "array"
-              },
-              "role_id": {
-                "$ref": "#/components/schemas/WorkspaceRoleId"
-              },
-              "type": {
-                "enum": [
-                  "channel_override_set"
-                ],
-                "type": "string"
-              },
-              "workspace_id": {
-                "$ref": "#/components/schemas/WorkspaceId"
-              }
-            },
-            "required": [
-              "workspace_id",
-              "channel_id",
-              "role_id",
-              "allow",
-              "deny",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
             "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
             "properties": {
               "call_id": {
@@ -4471,6 +4550,29 @@
             "type": "object"
           },
           {
+            "description": "Messages of the channel that are older than the current connection of the\nrecipient changed, and the recipient may not read the history of the channel. The\nevent names no message. The recipient keeps only the messages of the channel that\nit received during this connection (ADR 0304).",
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "type": {
+                "enum": [
+                  "channel_history_withdrawn"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "message_id": {
                 "$ref": "#/components/schemas/MessageId"
@@ -4865,6 +4967,144 @@
             },
             "required": [
               "account_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The allow set and the deny set of one subject in a category or a channel. Two empty\nsets mean that the subject has no rule there (ADR 0304).",
+            "properties": {
+              "allow": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                },
+                "type": "array"
+              },
+              "deny": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                },
+                "type": "array"
+              },
+              "place": {
+                "$ref": "#/components/schemas/RulePlace"
+              },
+              "subject": {
+                "$ref": "#/components/schemas/RuleSubject"
+              },
+              "type": {
+                "enum": [
+                  "permission_rule_set"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "place",
+              "subject",
+              "allow",
+              "deny",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A channel stopped taking the rules of its category (`synced` false), takes them again,\nor moved into another category while it takes the rules of its category. A client\nreads the rules of the channel again.",
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "synced": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "channel_rules_synced"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "synced",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The workspace permissions that are allowed to or denied to one member.",
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "allow": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                },
+                "type": "array"
+              },
+              "deny": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "workspace_person_permissions_set"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "account_id",
+              "allow",
+              "deny",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server permissions that are allowed to or denied to one account.",
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "allow": {
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                },
+                "type": "array"
+              },
+              "deny": {
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "server_person_permissions_set"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "allow",
+              "deny",
               "type"
             ],
             "type": "object"
@@ -5520,6 +5760,88 @@
         ],
         "type": "string"
       },
+      "RulePlace": {
+        "description": "Where a permission rule is.",
+        "oneOf": [
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "enum": [
+                  "channel"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "category_id": {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              "kind": {
+                "enum": [
+                  "category"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "category_id",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RuleSubject": {
+        "description": "Whom a permission rule of a category or a channel is for: the holders of a workspace\nrole (every member for the \"everyone\" role), or one member.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "role"
+                ],
+                "type": "string"
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            },
+            "required": [
+              "role_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "kind": {
+                "enum": [
+                  "person"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ScreenShare": {
         "properties": {
           "audio": {
@@ -5911,7 +6233,21 @@
           "lock_room",
           "run_meeting_mode",
           "view_audit_entries",
-          "admit_to_full_call"
+          "admit_to_full_call",
+          "send_messages",
+          "send_messages_in_threads",
+          "create_threads",
+          "read_message_history",
+          "attach_files",
+          "add_reactions",
+          "mention_roles",
+          "connect",
+          "speak",
+          "video",
+          "share_screen",
+          "use_voice_activity",
+          "set_call_user_limit",
+          "set_voice_channel_status"
         ],
         "type": "string"
       },
