@@ -126,14 +126,14 @@ pub enum Buttons {
 /// Shows a message box of the system and returns the answer.
 pub fn ask(title: &str, text: &str, buttons: Buttons, warning: bool) -> Answer {
     use windows::Win32::UI::WindowsAndMessaging::{
-        IDOK, IDRETRY, IDYES, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_OKCANCEL,
-        MB_RETRYCANCEL, MB_SETFOREGROUND, MB_YESNO, MessageBoxW,
+        IDOK, IDRETRY, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+        MB_OKCANCEL, MB_RETRYCANCEL, MB_SETFOREGROUND, MB_YESNO, MessageBoxW,
     };
     use windows::core::HSTRING;
     let style = match buttons {
         Buttons::Ok => MB_OK,
         Buttons::OkCancel => MB_OKCANCEL,
-        Buttons::YesNo => MB_YESNO,
+        Buttons::YesNo => MB_YESNO | MB_DEFBUTTON2,
         Buttons::RetryCancel => MB_RETRYCANCEL,
     } | if warning {
         MB_ICONWARNING
