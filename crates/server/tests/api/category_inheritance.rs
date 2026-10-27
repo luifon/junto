@@ -151,3 +151,29 @@ async fn deleting_a_category_keeps_its_child_permissions() {
     .unwrap();
     assert_eq!(people, 1);
 }
+
+#[tokio::test]
+async fn a_fork_preserves_inherited_person_rules_when_the_category_changes() {
+    let (server, owner, category, channel, _) = fixture().await;
+    let reader = server.join(&owner, "Another reader").await;
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,1)")
+        .bind(category.id).bind(reader.account_id).bind(category.workspace_id).execute(&server.db).await.unwrap();
+    let root = crate::messages_support::send(&server, &owner, &channel, "Root").await;
+    let copied: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/messages/{}/fork", root.id),
+            &json!({"name":"Copy","kind":"text"}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    sqlx::query("delete from category_person_overrides where category_id=$1")
+        .bind(category.id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    server
+        .get(&reader, &format!("/api/v1/channels/{}/messages", copied.id))
+        .await
+        .error(junto_protocol::error::ErrorCode::NotFound);
+}

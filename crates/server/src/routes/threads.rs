@@ -180,8 +180,8 @@ pub async fn fork(
                 && source.channel.hides_occupants,
         };
         sqlx::query("insert into
-             channels(id,workspace_id,category_id,kind,name,position,created_at,permanent_messages,hides_occupants)
-             values($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+             channels(id,workspace_id,category_id,kind,name,position,created_at,permanent_messages,hides_occupants,permissions_synced)
+             values($1,$2,$3,$4,$5,$6,$7,$8,$9,false)")
             .bind(channel.id)
             .bind(workspace_id)
             .bind(channel.category_id)
@@ -195,13 +195,16 @@ pub async fn fork(
             .await?;
         let mut overrides: Vec<(WorkspaceRoleId, i64, i64)> = sqlx::query_as(
             "insert into channel_overrides(channel_id,role_id,workspace_id,allow,deny) select
-             $1,role_id,workspace_id,allow,deny from channel_overrides where channel_id=$2
+             $1,role_id,workspace_id,allow,deny from effective_channel_overrides where channel_id=$2
              returning role_id,allow,deny",
         )
         .bind(channel.id)
         .bind(source_id)
         .fetch_all(&mut *connection)
         .await?;
+        sqlx::query("insert into channel_person_overrides(channel_id,account_id,workspace_id,allow,deny)
+            select $1,account_id,workspace_id,allow,deny from effective_channel_person_overrides where channel_id=$2")
+            .bind(channel.id).bind(source_id).execute(&mut *connection).await?;
         overrides.sort_by_key(|(role_id, _, _)| *role_id);
         let target = Place::channel(connection, &access, channel.id).await?;
         target.ensure(connection).await?;

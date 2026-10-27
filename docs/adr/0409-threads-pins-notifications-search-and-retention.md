@@ -213,3 +213,5 @@ identifier, name or membership of the destination; thread reads omit unreadable 
 - Search needs no service outside PostgreSQL and cannot preserve an earlier edit in an index.
 - Clients fetch current notice data and render plain text. OS notification policy stays in
   the client while server policy and read state remain consistent across devices.
+
+A fork copies the effective role and person overrides of its source and starts detached from category permissions. Later category changes cannot change who can read the copied messages.

@@ -543,13 +543,15 @@ async fn fix_fork_copies_more_than_one_thousand_replies_and_reply_references() {
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "root").await;
-    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,thread_root) select
+    for (first, last) in crate::support::fixture_batches(1001) {
+        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,thread_root) select
              gen_random_uuid(),place_id,position+n,author_id,created_at,document,id,id from messages cross join
-             generate_series(1,1001) n where id=$1")
-        .bind(root.id)
+             generate_series($2::int,$3::int) n where id=$1")
+        .bind(root.id).bind(first).bind(last)
         .execute(&server.db)
         .await
         .unwrap();
+    }
     sqlx::query("update messages set reply_to=(select id from messages where thread_root=$1 order by position limit 1) where id=(select id from messages where thread_root=$1 order by position desc limit 1)").bind(root.id).execute(&server.db).await.unwrap();
     let copied = fork(&server, &owner, root.id, "text").await;
     let page: MessagePage = server
