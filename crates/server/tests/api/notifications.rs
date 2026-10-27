@@ -139,9 +139,9 @@ async fn rule_25_26_direct_mentions_survive_independent_role_and_everyone_switch
     assert_eq!(listed[0].message_id, explicit.id);
     let events = events(&server, &reader, cursor, Level::Background).await;
     assert!(events.iter().any(
-        |event| matches!(event,Event::NotificationChanged{message_id} if *message_id==explicit.id)
+        |event| matches!(event,Event::NotificationChanged{message_id,..} if *message_id==explicit.id)
     ));
-    assert!(!events.iter().any(|event|matches!(event,Event::NotificationChanged{message_id}|Event::MessageMentioned{message_id,..} if *message_id==role_message.id || *message_id==everyone.id)));
+    assert!(!events.iter().any(|event|matches!(event,Event::NotificationChanged{message_id,..}|Event::MessageMentioned{message_id,..} if *message_id==role_message.id || *message_id==everyone.id)));
 }
 
 #[tokio::test]
@@ -369,7 +369,7 @@ async fn rule_32_thread_replies_notify_previous_writers_only() {
         !events(&server, &reader, cursor, Level::Full)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==last.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==last.id))
     );
     let stored: bool = sqlx::query_scalar(
         "select exists(select 1 from notifications where account_id=$1 and message_id=$2)",
@@ -451,17 +451,17 @@ async fn rule_34_35_36_notices_read_state_snapshot_and_stream_levels() {
     let background = events(&server, &reader, cursor, Level::Background).await;
     assert!(
         full.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==ordinary.id)
+            |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
         )
     );
     assert!(
         !background.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==ordinary.id)
+            |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
         )
     );
     assert!(
         background.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==mentioned.id)
+            |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==mentioned.id)
         )
     );
     let notice = notices(&server, &reader)
@@ -498,7 +498,7 @@ async fn rule_34_35_36_notices_read_state_snapshot_and_stream_levels() {
             .await
             .iter()
             .any(
-                |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==mentioned.id)
+                |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==mentioned.id)
             )
     );
 }
@@ -529,7 +529,7 @@ async fn added_mention_upgrades_an_existing_general_notice_once() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==root.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==root.id))
     );
 }
 
@@ -656,8 +656,8 @@ async fn fix_thread_notices_do_not_reach_background_without_a_mention() {
             .iter()
             .any(|n| n.message_id == child.id)
     );
-    assert!(!events(&server, &reader, cursor, Level::Background).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id} if *message_id==child.id)));
-    assert!(events(&server, &reader, cursor, Level::Full).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id} if *message_id==child.id)));
+    assert!(!events(&server, &reader, cursor, Level::Background).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id,..} if *message_id==child.id)));
+    assert!(events(&server, &reader, cursor, Level::Full).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id,..} if *message_id==child.id)));
 }
 
 #[tokio::test]
@@ -702,7 +702,7 @@ async fn fix_dnd_suppresses_notifications_but_preserves_unread() {
         json!({"do_not_disturb":false}),
     )
     .await;
-    assert!(!events(&server,&reader,cursor,Level::Background).await.iter().any(|e|matches!(e,Event::NotificationChanged{message_id}|Event::MessageMentioned{message_id,..} if *message_id==sent.id)));
+    assert!(!events(&server,&reader,cursor,Level::Background).await.iter().any(|e|matches!(e,Event::NotificationChanged{message_id,..}|Event::MessageMentioned{message_id,..} if *message_id==sent.id)));
 
     settings(
         &server,
@@ -720,7 +720,7 @@ async fn fix_dnd_suppresses_notifications_but_preserves_unread() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==sent.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==sent.id))
     );
 }
 
@@ -876,7 +876,7 @@ async fn fix_scheduled_dnd_suppresses_direct_notices_and_call_invites_until_it_e
         events(server, reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==next.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==next.id))
     );
     server.enter_direct(sender, reader).await;
     assert_eq!(server.snapshot(reader).await.call_invitations.len(), 1);
@@ -958,7 +958,7 @@ async fn round2_added_mention_upgrades_a_thread_notice() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==child.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==child.id))
     );
 }
 
@@ -973,7 +973,7 @@ async fn round2_dnd_checks_replayed_notices_and_channel_invites() {
         events(server, &scene.ben, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==message.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==message.id))
     );
     settings(
         server,
