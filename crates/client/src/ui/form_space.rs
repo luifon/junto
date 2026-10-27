@@ -1,9 +1,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use std::time::Instant;
+
 use gpui::{
-    App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseMoveEvent, ParentElement,
-    Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, prelude::FluentBuilder,
+    App, DispatchPhase, Div, Hsla, InteractiveElement, IntoElement, MouseDownEvent, MouseMoveEvent,
+    ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, canvas, div,
+    prelude::FluentBuilder,
 };
 
 use super::{StyleExt, icon};
@@ -24,7 +27,11 @@ use crate::theme::{theme, u};
 ///
 /// The kept space under the content of the row states the result of the request, in a
 /// frame of the colour of a result that fills it, so that it is no empty band (finding of
-/// the live tests: a large empty space stayed after an action in an expanded row).
+/// the live tests: a large empty space stayed after an action in an expanded row). The space
+/// keeps the height of the form for at most [`super::WAIT_BOUND`]; then the row has its
+/// content and the result at the height of its sentence, and a press in the rows that
+/// moved under a resting pointer is refused for [`super::MOVED_GUARD`] (review L2: the
+/// frame was much taller than its sentence).
 pub struct FormSpace<M> {
     /// The open form and the height of its row as it was drawn last.
     drawn: Rc<Cell<Option<(M, Pixels)>>>,
@@ -36,6 +43,18 @@ pub struct FormSpace<M> {
     /// form of each row: a form is never lower than its row, so the row does not grow
     /// when the answer closes the form.
     closed: Rc<RefCell<Vec<(M, Pixels)>>>,
+    /// The bound of the kept height: the number of the last kept result, the number whose
+    /// timer runs, the kept result has the height of its sentence, and when that change
+    /// moved the rows under a resting pointer.
+    bound: Rc<Cell<Bound>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Bound {
+    kept: u64,
+    timed: u64,
+    over: bool,
+    moved_at: Option<Instant>,
 }
 
 /// The most rows whose height without a form is kept.
@@ -48,6 +67,7 @@ impl<M> Default for FormSpace<M> {
             kept: Rc::default(),
             result: Rc::default(),
             closed: Rc::default(),
+            bound: Rc::default(),
         }
     }
 }
@@ -92,26 +112,87 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
             Some((kept, height)) if modes.contains(&kept) => {
                 let held = self.kept.clone();
                 let result = self.result.borrow().clone();
+                let bound = self.bound.clone();
+                let over = bound.get().over;
+                let guard = bound.clone();
                 space
-                    .min_h(height)
+                    .when(!over, |space| space.min_h(height))
                     .relative()
                     // The result fills the space under the content and never makes the row
-                    // taller than the kept height.
+                    // taller than the kept height; after the bound it has the height of its
+                    // sentence.
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .flex_grow(1.0)
-                            .flex_shrink_0()
-                            .flex_basis(gpui::px(0.0))
-                            .min_h_0()
-                            .overflow_hidden()
+                            .map(|part| {
+                                if over {
+                                    part.flex_none()
+                                } else {
+                                    part.flex_grow(1.0)
+                                        .flex_shrink_0()
+                                        .flex_basis(gpui::px(0.0))
+                                        .min_h_0()
+                                        .overflow_hidden()
+                                }
+                            })
                             .child(KeptResult { sentence: result }),
                     )
                     .child(
                         canvas(
-                            |_, _, _| {},
+                            move |area, window, cx| {
+                                let mut now = bound.get();
+                                if now.over || now.timed == now.kept {
+                                    return;
+                                }
+                                now.timed = now.kept;
+                                bound.set(now);
+                                let (number, timer) = (now.kept, bound.clone());
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        cx.background_executor().timer(super::WAIT_BOUND).await;
+                                        let _ = cx.update(|window, cx| {
+                                            let mut now = timer.get();
+                                            if now.kept == number && !now.over {
+                                                now.over = true;
+                                                // Only a pointer that rests in the rows that
+                                                // move guards the next press.
+                                                let at = window.mouse_position();
+                                                let under = at.y >= area.top()
+                                                    && at.x >= area.left()
+                                                    && at.x <= area.right();
+                                                if under && window.is_window_active() {
+                                                    now.moved_at =
+                                                        Some(cx.background_executor().now());
+                                                }
+                                                timer.set(now);
+                                                window.refresh();
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                            },
                             move |bounds, (), window, _| {
+                                let guarded = guard.clone();
+                                window.on_mouse_event(
+                                    move |event: &MouseDownEvent, phase, _, cx| {
+                                        let at = event.position;
+                                        let beside = at.x < bounds.left() || at.x > bounds.right();
+                                        let moved = guarded.get().moved_at.is_some_and(|at| {
+                                            cx.background_executor()
+                                                .now()
+                                                .saturating_duration_since(at)
+                                                < super::MOVED_GUARD
+                                        });
+                                        if phase == DispatchPhase::Capture
+                                            && moved
+                                            && !beside
+                                            && at.y >= bounds.top()
+                                        {
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                );
                                 window.on_mouse_event(
                                     move |event: &MouseMoveEvent, phase, window, _| {
                                         let at = event.position;
@@ -162,6 +243,11 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
         self.kept
             .set(self.drawn.get().filter(|(drawn, _)| *drawn == open));
         *self.result.borrow_mut() = result.into();
+        let mut bound = self.bound.get();
+        bound.kept += 1;
+        bound.over = false;
+        bound.moved_at = None;
+        self.bound.set(bound);
     }
 
     /// The person opened or put away a form or question, the page changed or the layer

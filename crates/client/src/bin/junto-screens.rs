@@ -728,6 +728,17 @@ impl Studio {
                 })
                 .map_err(|error| format!("{error:#}"))?;
             self.cx.run_until_parked();
+            // The screen shows the page after the bound of the kept space of a form: the
+            // result at the height of its sentence (ADR 0730).
+            for _ in 0..2 {
+                self.cx
+                    .update_window(window.into(), |_, window, _| window.refresh())
+                    .map_err(|error| format!("{error:#}"))?;
+                self.cx.run_until_parked();
+            }
+            self.cx
+                .advance_clock(junto_client::ui::WAIT_BOUND + std::time::Duration::from_millis(50));
+            self.cx.run_until_parked();
         }
         // The first frame lays the layers out, the second draws what they opened, and a
         // part that takes the height of a late content draws it in the frame after its

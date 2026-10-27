@@ -796,6 +796,26 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     );
     let kept = window.cx.debug_bounds("kept-result").unwrap();
     assert!(kept.size.height > px(20.0), "{kept:?}");
+    // The kept space keeps the height of the question for at most a bound; then the result
+    // has the height of its sentence and stays (review L2).
+    window
+        .cx
+        .executor()
+        .advance_clock(junto_client::ui::WAIT_BOUND + std::time::Duration::from_millis(50));
+    window.settle();
+    let bounded = window
+        .cx
+        .debug_bounds("kept-result")
+        .unwrap_or_else(|| panic!("the result went with the bound"));
+    assert!(
+        bounded.size.height < kept.size.height && bounded.size.height < px(80.0),
+        "the result {bounded:?} after the bound, {kept:?} before"
+    );
+    // A press in the rows that moved under the pointer is refused for a short time.
+    window
+        .cx
+        .executor()
+        .advance_clock(junto_client::ui::MOVED_GUARD);
     assert!(!window.shows(sel("account-ban", bruno)) && !window.shows("account-confirm"));
     let entry_of = |action: &str| {
         let query = AuditFilterQuery {
