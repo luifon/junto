@@ -21,7 +21,7 @@ roles, and other server roles contribute no position.
 - A role has a nonnegative integer `position`; larger is higher. Positions are unique
   among server roles and within each workspace. The workspace everyone role is fixed
   at zero. No assigned role means zero at server level and everyone at workspace level.
-  A server role without administrator contributes no workspace position. Equal highest
+  A server role without administrator contributes no workspace position. A server person rule that denies administrator removes the administrator from every server role of that account, so the account has no server position in a workspace comparison; a person rule that allows administrator gives no position. Equal highest
   roles refuse role-order checks. Permissions still combine as ADR 0301 decides, irrespective of position.
 - Removal, ban and unban check role order. Unban restores roles in Junto (ADR 0106),
   unlike Discord: it therefore requires the actor above the restored server position

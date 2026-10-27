@@ -331,10 +331,17 @@ impl Access {
         .bind(account)
         .fetch_all(&mut *connection)
         .await?;
+        let denied: Option<i64> =
+            sqlx::query_scalar("select deny from server_person_overrides where account_id = $1")
+                .bind(account)
+                .fetch_optional(&mut *connection)
+                .await?;
+        let denied = db::server_permissions(denied.unwrap_or(0))?;
         let server = rows
             .into_iter()
             .map(|(position, bits)| {
-                db::server_permissions(bits).map(|permissions| (position, permissions))
+                db::server_permissions(bits)
+                    .map(|permissions| (position, permissions.difference(denied)))
             })
             .collect::<ApiResult<Vec<_>>>()?;
         let workspace_positions: Option<Vec<i32>> = if let Some(workspace) = workspace {

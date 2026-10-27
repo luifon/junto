@@ -128,6 +128,7 @@ mod override_requests;
 mod remaining_review;
 mod review_audit;
 mod review_events;
+mod review_rank;
 mod review_rules;
 
 mod server_requests;
