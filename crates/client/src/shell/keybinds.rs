@@ -29,6 +29,9 @@ pub(crate) struct WindowKeys {
     pub recording_release: bool,
     /// Why the last recorded keys were refused.
     pub refusal: Option<String>,
+    /// The keystroke whose binding the window performed before the actions of the focused
+    /// element; the key-down listener of the window then leaves it.
+    pub intercepted: Option<gpui::Keystroke>,
 }
 
 /// The name of a control of the row of an action, which a window test finds: one name per

@@ -689,3 +689,37 @@ fn a_window_releases_push_to_mute_on_deactivation_and_destruction(cx: &mut TestA
         "destruction kept the mute hold"
     );
 }
+
+/// A binding goes before the keys that the focused text field of the composer binds to its
+/// own actions (ADR 0777): Alt+Shift+Down adds a cursor in a text field on Linux and goes to
+/// the next unread channel here; Command+Up moves to the start of a text field on macOS and
+/// edits the last own message here.
+#[gpui::test]
+fn a_binding_goes_before_the_keys_of_the_focused_composer(cx: &mut TestAppContext) {
+    use junto_client::shell::Pane;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca = window.own_account();
+    let plans = admin.text_channel(&world, &mut window, "plans");
+    window.click_channel("general");
+    admin.mention(&world, plans, "Plans for the week, ", luca);
+    window.until("plans holds the unread mention", |window| {
+        window.view().servers[0].unread.any()
+    });
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    press_default(&mut window, KeyAction::NextUnreadChannel);
+    window.until("the unread channel is shown", |window| {
+        window.selected_channel() == plans
+    });
+
+    window.write("Hello from Luca");
+    let own = window.until_message("Hello from Luca").message.id;
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    press_default(&mut window, KeyAction::EditLastMessage);
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
+        (None, Some(own))
+    );
+}

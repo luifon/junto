@@ -678,6 +678,20 @@ impl Shell {
                 cx.notify();
             }),
         ];
+        subscriptions.push({
+            let shell = cx.entity().downgrade();
+            let handle = window.window_handle();
+            cx.intercept_keystrokes(move |event, window, cx| {
+                if window.window_handle() != handle {
+                    return;
+                }
+                if let Some(shell) = shell.upgrade() {
+                    shell.update(cx, |this, cx| {
+                        this.intercept_key(&event.keystroke, window, cx);
+                    });
+                }
+            })
+        });
         subscriptions.extend(admin_subscriptions);
         subscriptions.push(transcript_subscription);
         subscriptions.extend(account_subscriptions);
@@ -932,6 +946,35 @@ impl Shell {
         }
     }
 
+    /// A binding of the person goes before the keys that the focused element binds: a text
+    /// field binds some default keys of the bindings to its own actions (Command and the
+    /// arrow up on macOS moves to the start of the text), and the actions of the focused
+    /// element come before the key-down listeners of the window (ADR 0777).
+    fn intercept_key(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.keys.intercepted = None;
+        if self.keys.recording.is_some() || self.state.read(cx).recording_keybind() {
+            return;
+        }
+        let Some(pressed) = pressed_combo(keystroke) else {
+            return;
+        };
+        let action = self.state.read(cx).keybinds().action_for(&pressed);
+        let Some(action) = action.filter(|action| !action.holds()) else {
+            return;
+        };
+        if self.state.read(cx).system_gives(action) {
+            return;
+        }
+        self.keys.intercepted = Some(keystroke.clone());
+        cx.stop_propagation();
+        self.perform_key_action(action, window, cx);
+    }
+
     /// A key press in the window: the keys of a new binding while the settings wait for them,
     /// or the action of a binding (ADR 0777).
     fn call_key_down(
@@ -984,6 +1027,10 @@ impl Shell {
         {
             self.keys.down = Some(key);
             self.follow_held_keys(cx);
+        }
+        if self.keys.intercepted.take().as_ref() == Some(keystroke) {
+            cx.stop_propagation();
+            return;
         }
         let Some(pressed) = pressed_combo(keystroke) else {
             return;
