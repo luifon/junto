@@ -362,6 +362,8 @@ pub fn language_name(code: &str) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+pub const CHANGE_SAVED: &str = "The change is saved.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,4 +387,3 @@ mod tests {
         assert_eq!(language_name("xx"), None);
     }
 }
-pub const CHANGE_SAVED: &str = "The change is saved.";
