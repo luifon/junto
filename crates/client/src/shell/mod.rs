@@ -466,7 +466,7 @@ impl Shell {
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
                 this.state
-                    .update(cx, |state, _| state.window_talking(own_entity, false));
+                    .update(cx, |state, _| state.release_window_keys(own_entity));
             }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
@@ -538,7 +538,13 @@ impl Shell {
                         .update(cx, |state, cx| state.set_window_active(active, cx));
                 }
                 if !window.is_window_active() {
-                    this.set_talking(false, cx);
+                    this.keys.modifiers = Modifiers::none();
+                    this.keys.down = None;
+                    this.keys.talks = false;
+                    this.keys.mutes = false;
+                    let id = cx.entity_id();
+                    this.state
+                        .update(cx, |state, _| state.release_window_keys(id));
                 } else {
                     this.modifiers_changed(window.modifiers(), cx);
                     if let Some(view) = this.view.clone() {

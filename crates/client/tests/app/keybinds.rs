@@ -372,3 +372,62 @@ fn back_forward_and_the_direct_messages_at_their_keys(cx: &mut TestAppContext) {
     press_default(&mut window, KeyAction::NewDirectMessage);
     assert!(window.shows("new-direct-dialog"));
 }
+
+#[gpui::test]
+fn a_window_releases_push_to_mute_on_deactivation_and_destruction(cx: &mut TestAppContext) {
+    use junto_media::calls::CallsView;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut main) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut main, "Daily");
+    main.click_channel("Daily");
+    let call = connected_call(&mut main, "Daily");
+    main.state.update(&mut main.cx, |state, cx| {
+        state
+            .change_keybinds(
+                KeybindChange::Set(KeyAction::PushToMute, Some(combo("f13"))),
+                cx,
+            )
+            .unwrap();
+        state.calls().show_view_for_test(CallsView {
+            call: Some(call),
+            ..CallsView::default()
+        });
+    });
+    main.settle();
+    main.click("detach-call");
+    let mut detached = main.call_window();
+    let hold = |window: &mut Window| {
+        window.cx.update(|window, _| window.activate_window());
+        window.dispatch(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("f13").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        assert!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.holds_mute())
+        );
+    };
+    hold(&mut detached);
+    main.cx.update(|window, _| window.activate_window());
+    main.settle();
+    assert!(
+        !main
+            .state
+            .read_with(&main.cx, |state, _| state.holds_mute()),
+        "deactivation kept the mute hold"
+    );
+    hold(&mut detached);
+    detached.cx.update(|window, _| window.remove_window());
+    drop(detached);
+    main.settle();
+    assert!(
+        !main
+            .state
+            .read_with(&main.cx, |state, _| state.holds_mute()),
+        "destruction kept the mute hold"
+    );
+}

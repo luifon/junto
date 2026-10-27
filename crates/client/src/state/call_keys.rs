@@ -160,6 +160,11 @@ impl AppState {
         !self.mute_holds.is_empty()
     }
 
+    pub fn release_window_keys(&mut self, window: gpui::EntityId) {
+        self.window_talking(window, false);
+        self.hold_action(Some(window), KeyAction::PushToMute, false);
+    }
+
     /// True when the keyboard of the system gives the keys of `action` now: a window then
     /// does not do the action a second time at the same press.
     pub fn system_gives(&self, action: KeyAction) -> bool {

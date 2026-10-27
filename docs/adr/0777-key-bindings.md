@@ -30,7 +30,7 @@ The bindings (`keybinds::Keybinds`):
 In the window:
 
 - Every window of Junto, the main window and the call window, reads its key presses before the focused element (`capture_key_down`): a press whose keys are a binding does its action and goes no further. A binding that the keyboard of the system reads now is not done a second time by the window.
-- Push to talk and push to mute hold while the window holds their keys: the modifiers and the last key that went down and not up.
+- Push to talk and push to mute hold while the window holds their keys: the modifiers and the last key that went down and not up. Deactivation clears both holds and the cached keys; destroying a window releases both of its holds.
 - The settings have a section "Keybinds": how the keys reach Junto on this system (ADR 0776, with the permission of macOS), "Reset all", and for each group and action its keys with "Set" (the next keys that the person presses; Escape stops; refused keys are stated and the wait goes on), "Remove", "Reset" while it differs from its default, the switch "Also while another application is in front" for an action that may, and the conflict. The Voice section points to it.
 
 Outside the window: the keyboard of the system (ADR 0776) reads the bindings that work outside while this device is in a call, and answer and decline while a call rings; push to talk only while push to talk is on. A Wayland desktop gets one shortcut per binding through its portal, named by the action. When the held keys hold two bound combinations and one holds the other, only the larger one is a press, and a press counts when its own combination becomes held.
