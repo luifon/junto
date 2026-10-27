@@ -964,8 +964,8 @@ async fn until_received(
 
 /// Two shares of one person reach a client from before several shares as one share: the
 /// share of the lowest slot with its sound, as long as two run. A client that shows several
-/// shares gets both (ADR 0510). When the person leaves the call, each of the shares ends
-/// at the viewer and at the server.
+/// shares gets both (ADR 0510), also after the call library of the sharer connects anew.
+/// When the person leaves the call, each of the shares ends at the viewer and at the server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_their_sharer() {
@@ -1043,6 +1043,30 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
             "Cara receives the share of the lowest slot",
         )
         .await;
+
+        // The call library of Ann connects anew and publishes her tracks again under new
+        // identifiers: the permissions follow the new tracks, so Cara again receives the
+        // share of the lowest slot only, and Ben both shares.
+        ann.calls.simulate_full_reconnect();
+        ben.until(
+            "Ben sees the two shares of Ann after the new connection",
+            |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.shares.len() == 2)
+            },
+        )
+        .await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![]),
+            "Cara receives the share of the lowest slot after the new connection of Ann",
+        )
+        .await;
+        for _ in 0..5 {
+            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![]));
+        }
 
         // Ann leaves the call: each of her shares ends at Ben and at the server.
         ann.calls.leave().await;
