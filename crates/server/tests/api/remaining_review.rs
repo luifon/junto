@@ -373,7 +373,12 @@ async fn review2_actual_audit_queries_bound_time_ranges_and_combined_filters() {
         let mut statement = junto_server::routes::audit_log::statement(
             &query,
             Some(workspace.id),
-            Some((owner.account_id, vec![channel.id])),
+            Some(junto_server::routes::audit_log::Readable {
+                account_id: owner.account_id,
+                channels: vec![channel.id],
+                categories: Vec::new(),
+                deleted_categories: false,
+            }),
             50,
         );
         let mut built = statement.build();

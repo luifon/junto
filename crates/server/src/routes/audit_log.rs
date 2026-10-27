@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::State;
 use junto_authz::{AuditScope, Request};
 use junto_protocol::audit::{AuditFilterQuery, AuditPage};
-use junto_protocol::ids::{AuditEntryId, ChannelId, WorkspaceId};
+use junto_protocol::ids::{AuditEntryId, CategoryId, ChannelId, WorkspaceId};
 use sqlx::{Postgres, QueryBuilder};
 
 use crate::access::Access;
@@ -182,10 +182,27 @@ pub async fn get_workspace_audit_log(
         // (ADR 0604). The entry keeps the call of its recording. An entry from before that
         // column existed is decided by the row of its recording, and when that row is
         // gone, by the call that the channel had when the entry was written.
+        let all_categories: Vec<CategoryId> =
+            sqlx::query_scalar("select id from categories where workspace_id = $1")
+                .bind(workspace_id)
+                .fetch_all(&mut *connection)
+                .await?;
+        let readable_categories: Vec<CategoryId> = access
+            .categories_with_children(connection, workspace_id, &scope, &all_categories)
+            .await?
+            .into_iter()
+            .filter(|(_, category_scope, child)| access.category_visible(category_scope, *child))
+            .map(|(category, _, _)| category.id)
+            .collect();
         let mut statement = statement(
             &query,
             Some(workspace_id),
-            Some((access.account_id, readable_channels)),
+            Some(Readable {
+                account_id: access.account_id,
+                channels: readable_channels,
+                categories: readable_categories,
+                deleted_categories: access.allows(Request::AuditEntry(AuditScope::DeletedChannel)),
+            }),
             size,
         );
         let rows = statement
@@ -200,7 +217,7 @@ pub async fn get_workspace_audit_log(
 fn scope(
     statement: &mut QueryBuilder<Postgres>,
     workspace_id: Option<WorkspaceId>,
-    visibility: &Option<(junto_protocol::ids::AccountId, Vec<ChannelId>)>,
+    visibility: &Option<Readable>,
 ) {
     if let Some(workspace_id) = workspace_id {
         statement
@@ -209,7 +226,22 @@ fn scope(
     } else {
         statement.push(" and e.workspace_id is null");
     }
-    if let Some((account_id, readable_channels)) = visibility {
+    if let Some(Readable {
+        account_id,
+        channels: readable_channels,
+        categories: readable_categories,
+        deleted_categories,
+    }) = visibility
+    {
+        statement
+            .push(" and (e.action not in (")
+            .push("'category_created','category_updated','category_deleted',")
+            .push("'category_role_rule_set','category_person_rule_set')")
+            .push(" or (e.event ->> 'category_id')::uuid = any(")
+            .push_bind(readable_categories.clone())
+            .push(") or (")
+            .push_bind(*deleted_categories)
+            .push(" and not exists (select 1 from categories k where k.id = (e.event ->> 'category_id')::uuid)))");
         statement.push(" and (e.channel_id is null or e.channel_id = any(")
             .push_bind(readable_channels.clone()).push(")) and case when e.call_id is not null then reads_call(e.call_id, ")
             .push_bind(*account_id)
@@ -220,11 +252,20 @@ fn scope(
     }
 }
 
+/// What the caller of a workspace audit read may see: the channels and categories that the
+/// caller can see now, and whether the entries of deleted categories are included.
+pub struct Readable {
+    pub account_id: junto_protocol::ids::AccountId,
+    pub channels: Vec<ChannelId>,
+    pub categories: Vec<CategoryId>,
+    pub deleted_categories: bool,
+}
+
 /// The bounded audit-page statement, after the route has established its current audience.
 pub fn statement(
     query: &AuditFilterQuery,
     workspace_id: Option<WorkspaceId>,
-    visibility: Option<(junto_protocol::ids::AccountId, Vec<ChannelId>)>,
+    visibility: Option<Readable>,
     size: i64,
 ) -> QueryBuilder<Postgres> {
     let columns = ENTRY_COLUMNS
