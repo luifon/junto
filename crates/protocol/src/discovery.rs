@@ -16,7 +16,6 @@ pub enum NotificationLevel {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[serde(deny_unknown_fields)]
 pub struct NotificationSettings {
     pub level: Option<NotificationLevel>,
     #[serde(default)]
@@ -37,6 +36,15 @@ pub struct NotificationSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_while_presenting: Option<bool>,
 }
+/// Strict request fields, separate from extensible settings returned by the server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct NotificationSettingsRequest {
+    #[serde(flatten)]
+    pub settings: NotificationSettings,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]

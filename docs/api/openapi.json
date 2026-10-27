@@ -7357,6 +7357,18 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7408,13 +7420,25 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 replaces the text privacy and presentation preferences; otherwise they are preserved",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NotificationSettings"
+                "$ref": "#/components/schemas/NotificationSettingsRequest"
               }
             }
           },
@@ -8885,6 +8909,20 @@
         ],
         "summary": "The state that a client starts from, with the cursor from which the event stream\ncontinues it.",
         "operationId": "get_snapshot",
+        "parameters": [
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -16307,8 +16345,15 @@
               "null"
             ]
           }
-        },
-        "additionalProperties": false
+        }
+      },
+      "NotificationSettingsRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/NotificationSettings"
+          }
+        ],
+        "description": "Strict request fields, separate from extensible settings returned by the server."
       },
       "NotificationsRead": {
         "type": "object",

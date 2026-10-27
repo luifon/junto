@@ -1277,3 +1277,63 @@ async fn round2_snapshot_and_delivery_queries_are_batched() {
     );
     server.require_no_statement_eviction(evictions).await;
 }
+
+#[tokio::test]
+async fn old_clients_read_and_change_settings_after_a_new_device_sets_privacy() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct OldSettings {
+        level: Option<NotificationLevel>,
+        mute: bool,
+        muted_until: Option<String>,
+        role_mentions: Option<bool>,
+        everyone_mentions: Option<bool>,
+        do_not_disturb: bool,
+        daily_quiet: Option<DailyQuiet>,
+    }
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let path = format!("/api/v1/notification-settings/{}", uuid::Uuid::nil());
+    let response = TestServer::reply(
+        reqwest::Client::new()
+            .put(format!("{}{path}", server.base))
+            .bearer_auth(&owner.token)
+            .header("Junto-Notification-Preferences", "1")
+            .json(&json!({"hide_text":true,"hold_while_presenting":false})),
+    )
+    .await;
+    response.ok::<NotificationSettings>(StatusCode::OK);
+    let old = server.get(&owner, &path).await.ok::<Value>(StatusCode::OK);
+    serde_json::from_value::<OldSettings>(old).expect("old client reads preferences");
+    let snapshot = server
+        .get(&owner, "/api/v1/snapshot")
+        .await
+        .ok::<Value>(StatusCode::OK);
+    for scope in snapshot["notification_settings"].as_array().unwrap() {
+        serde_json::from_value::<OldSettings>(scope["settings"].clone())
+            .expect("old client reads snapshot");
+    }
+    let old = server
+        .put(&owner, &path, &json!({"level":"all"}))
+        .await
+        .ok::<Value>(StatusCode::OK);
+    serde_json::from_value::<OldSettings>(old).expect("old client reads mutation response");
+    let current = TestServer::reply(
+        reqwest::Client::new()
+            .get(format!("{}{path}", server.base))
+            .bearer_auth(&owner.token)
+            .header("Junto-Notification-Preferences", "1"),
+    )
+    .await
+    .ok::<NotificationSettings>(StatusCode::OK);
+    assert!(current.hide_text);
+    assert_eq!(current.hold_while_presenting, Some(false));
+    assert_eq!(current.level, Some(NotificationLevel::All));
+    server
+        .put(&owner, &path, &json!({"unknown_preference":true}))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    let future = serde_json::from_value::<NotificationSettings>(json!({"future_preference":true}));
+    assert!(future.is_ok(), "response settings allow future fields");
+}

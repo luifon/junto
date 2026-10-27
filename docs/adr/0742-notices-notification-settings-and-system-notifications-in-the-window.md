@@ -84,6 +84,8 @@ Windows:
 - The key names the picture of the data directory of the last start. A second installation or a second data directory of the same account uses the same identifier.
 - gpui activates no application on Windows and on Linux: a press on a notification asks the main window to come to the front, which restores it when it is minimized. On Linux the press carries the activation token that the notification service sends with it, and the window is activated with that token, so that a Wayland compositor gives it the focus (ADR 0752, ADR 0757).
 
+Clients send `Junto-Notification-Preferences: 1` to read and replace `hide_text` and `hold_while_presenting`. Without this capability, snapshots and settings responses omit both fields, and a settings write preserves their stored values atomically. This keeps the strict decoder of earlier clients usable after another device changes these preferences. Requests use a strict settings wrapper; response settings accept added fields. The server regression reads both routes with the earlier decoder and changes the level without losing privacy preferences.
+
 ## Consequences
 
 - The notices and notification settings use the components of ADR 0731.
