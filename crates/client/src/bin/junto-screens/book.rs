@@ -433,6 +433,17 @@ fn draw_recordings(studio: &mut Studio) -> Result<(), String> {
         Screen::new("admin-recordings", servers()),
         |shell, window, cx| open_recordings(shell, |list| list, recordings(), true, window, cx),
     )?;
+    // A recording was removed: its row is gone from the page.
+    studio.draw(
+        Screen::new("admin-recording-removed", servers()),
+        |shell, window, cx| {
+            let mut fewer = recordings();
+            if !fewer.is_empty() {
+                fewer.remove(0);
+            }
+            open_recordings(shell, |list| list, fewer, true, window, cx)
+        },
+    )?;
     studio.draw(
         Screen::new("admin-recordings-scale-150", servers()).scale(150),
         |shell, window, cx| open_recordings(shell, |list| list, recordings(), false, window, cx),

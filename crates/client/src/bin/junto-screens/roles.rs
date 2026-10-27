@@ -294,6 +294,54 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             shell.show_role_permissions(Some(RoleRef::Server(id(MODERATORS))), cx);
         },
     )?;
+    // The pages of the roles after an action: a role created, renamed and deleted, and the
+    // server roles of a server that has none.
+    let answer = |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+        shell.answer_open_admin_form(cx);
+    };
+    studio.draw_answered(
+        Screen::new("roles-workspace-created", as_lead()),
+        |shell, window, cx| {
+            roles_page(shell, window, cx);
+            shell.set_roles_open(Some(Open::Create), "Reviewers", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new("roles-workspace-renamed", as_lead()),
+        |shell, window, cx| {
+            roles_page(shell, window, cx);
+            let open = Open::Rename(workspace_role(ENGINEERS));
+            shell.set_roles_open(Some(open), "Engineers", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new("roles-workspace-deleted", as_lead()),
+        |shell, window, cx| {
+            roles_page(shell, window, cx);
+            let open = Open::Delete(workspace_role(GUESTS));
+            shell.set_roles_open(Some(open), "", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new("roles-server-created", as_steward()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::ServerRoles, window, cx);
+            shell.set_roles_open(Some(Open::Create), "Recruiters", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw(
+        Screen::new(
+            "roles-server-empty",
+            servers(|model| {
+                with_server_roles(model, &[STEWARDS], Collection::Loaded(Vec::new()));
+            }),
+        ),
+        server_page,
+    )?;
     studio.draw(
         Screen::new("roles-server-new", as_steward()),
         |shell, window, cx| {

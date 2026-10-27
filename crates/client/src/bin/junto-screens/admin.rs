@@ -1821,6 +1821,14 @@ fn draw_notifications(studio: &mut Studio) -> Result<(), String> {
             tell(shell, Some(ask), None, cx);
         },
     )?;
+    // The level was saved: the page shows it, with nothing on its way.
+    studio.draw(
+        Screen::new(
+            "admin-notifications-saved",
+            with_level(Some(NotificationLevel::Mentions)),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+    )?;
     studio.draw(
         Screen::new("admin-notifications-refused", with_level(None)),
         |shell, window, cx| {
@@ -2073,6 +2081,89 @@ fn draw_page_states(studio: &mut Studio) -> Result<(), String> {
             shell.open_term_mode(Mode::ChangeTerm(1), "mixdown", window, cx);
         },
         answer,
+    )?;
+    draw_pages_after_actions(studio)
+}
+
+/// Every page of the administration after an action of a row or a form (review: item 1 in
+/// part). A revoke, an answer to a request and a removal take their row away; a form keeps
+/// its space with its result (ADR 0730).
+fn draw_pages_after_actions(studio: &mut Studio) -> Result<(), String> {
+    let answer = |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+        shell.answer_open_admin_form(cx);
+    };
+    fn without_first<T>(mut all: Vec<T>) -> Vec<T> {
+        if !all.is_empty() {
+            all.remove(0);
+        }
+        all
+    }
+    studio.draw(
+        Screen::new(
+            "admin-invite-revoked",
+            with_invites(Collection::Loaded(without_first(invites()))),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Invites, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-request-answered",
+            with_requests(Collection::Loaded(without_first(join_requests()))),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::JoinRequests, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-token-revoked",
+            with_tokens(Collection::Loaded(without_first(access_tokens()))),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Tokens, window, cx),
+    )?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-channel-renamed",
+            with_channel(GENERAL, Collection::Loaded(Vec::new())),
+        ),
+        |shell, window, cx| {
+            open_channel(shell, GENERAL, ChannelPage::Overview, window, cx);
+            shell.set_admin_mode(Some(Mode::RenameChannel), "general", window, cx);
+            shell.type_admin_name("announcements", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new("admin-channel-moved", with_structure()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Channels, window, cx);
+            shell.set_admin_mode(Some(Mode::MoveChannel(id(RANDOM))), "", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw_answered(
+        Screen::new(
+            "admin-channel-deleted",
+            servers(|model| {
+                owner(model);
+                structure(model);
+            }),
+        ),
+        |shell, window, cx| {
+            open_channel(shell, DEPLOYS, ChannelPage::Archive, window, cx);
+            shell.set_admin_mode(Some(Mode::DeleteChannel(id(DEPLOYS))), "", window, cx);
+        },
+        answer,
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-channels-empty",
+            servers(|model| {
+                administrator(model);
+                let studio = Arc::make_mut(&mut model.workspaces[0]);
+                studio.categories.clear();
+                studio.channels.clear();
+            }),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Channels, window, cx),
     )
 }
 
