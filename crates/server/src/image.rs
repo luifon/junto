@@ -77,6 +77,16 @@ impl<R: Read> Source<R> {
         }
     }
 
+    /// The next `count` bytes; `count` is bounded by the caller.
+    fn read(&mut self, count: u64) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        (&mut self.reader)
+            .take(count)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() as u64 == count).then_some(bytes)
+    }
+
     fn skip(&mut self, count: u64) -> Option<()> {
         let skipped =
             std::io::copy(&mut (&mut self.reader).take(count), &mut std::io::sink()).ok()?;
@@ -96,6 +106,60 @@ fn le24(bytes: [u8; 3]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])
 }
 
+/// The longest EXIF block that is read for its orientation; a longer one is skipped.
+const MOST_EXIF: u64 = 65_536;
+
+/// The picture is stored turned by a quarter: its EXIF orientation is 5 to 8, so it is
+/// shown with its width and height exchanged (ADR 0408). `tiff` is the TIFF structure of
+/// the EXIF block: its byte order, its first directory and the orientation entry there.
+fn turned(tiff: &[u8]) -> bool {
+    let little = match tiff.get(..2) {
+        Some(b"II") => true,
+        Some(b"MM") => false,
+        _ => return false,
+    };
+    let u16_at = |at: usize| {
+        let bytes: [u8; 2] = tiff.get(at..at.checked_add(2)?)?.try_into().ok()?;
+        Some(if little {
+            u16::from_le_bytes(bytes)
+        } else {
+            u16::from_be_bytes(bytes)
+        })
+    };
+    let u32_at = |at: usize| {
+        let bytes: [u8; 4] = tiff.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        Some(if little {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        })
+    };
+    let orientation = || -> Option<u16> {
+        if u16_at(2)? != 42 {
+            return None;
+        }
+        let directory = usize::try_from(u32_at(4)?).ok()?;
+        let entries = usize::from(u16_at(directory)?);
+        (0..entries).find_map(|index| {
+            let entry = directory
+                .checked_add(2)?
+                .checked_add(index.checked_mul(12)?)?;
+            const ORIENTATION: u16 = 0x0112;
+            const SHORT: u16 = 3;
+            (u16_at(entry)? == ORIENTATION && u16_at(entry + 2)? == SHORT)
+                .then(|| u16_at(entry + 8))
+                .flatten()
+        })
+    };
+    matches!(orientation(), Some(5..=8))
+}
+
+/// The EXIF block of a JPEG segment or of a WebP chunk, which starts with `Exif` and two
+/// zero bytes before its TIFF structure; a WebP writer may leave them out.
+fn exif_tiff(block: &[u8]) -> &[u8] {
+    block.strip_prefix(b"Exif\0\0").unwrap_or(block)
+}
+
 /// A PNG: the header chunk first. An animation chunk before the image data states the
 /// frames of an animated PNG.
 fn png<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
@@ -111,6 +175,7 @@ fn png<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
     // The rest of the header and its check value.
     file.skip(5 + 4)?;
     let mut frames = None;
+    let mut quarter = false;
     loop {
         let length = u64::from(u32::from_be_bytes(file.take()?));
         match &file.take::<4>()? {
@@ -121,12 +186,22 @@ fn png<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
                 // The rest of the chunk and its check value.
                 file.skip(length)?;
             }
+            b"eXIf" if length <= MOST_EXIF => {
+                let block = file.read(length)?;
+                quarter = turned(&block);
+                file.skip(4)?;
+            }
             _ => file.skip(length.checked_add(4)?)?,
         }
     }
     if frames == Some(0) {
         return None;
     }
+    let (width, height) = if quarter {
+        (height, width)
+    } else {
+        (width, height)
+    };
     Some(Picture {
         kind: PictureKind::Png,
         width,
@@ -142,6 +217,7 @@ fn jpeg<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
         return None;
     }
     let mut marker = start[3];
+    let mut quarter = None;
     loop {
         match marker {
             0xff => {}
@@ -156,6 +232,11 @@ fn jpeg<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
                 file.skip(3)?;
                 let height = be16(file.take()?);
                 let width = be16(file.take()?);
+                let (width, height) = if quarter == Some(true) {
+                    (height, width)
+                } else {
+                    (width, height)
+                };
                 return Some(Picture {
                     kind: PictureKind::Jpeg,
                     width,
@@ -169,7 +250,16 @@ fn jpeg<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
                 if length < 2 {
                     return None;
                 }
-                file.skip(u64::from(length) - 2)?;
+                let block = u64::from(length) - 2;
+                // The first EXIF segment states the orientation.
+                if marker == 0xe1 && quarter.is_none() {
+                    let data = file.read(block)?;
+                    if data.starts_with(b"Exif\0\0") {
+                        quarter = Some(turned(exif_tiff(&data)));
+                    }
+                } else {
+                    file.skip(block)?;
+                }
                 if file.byte()? != 0xff {
                     return None;
                 }
@@ -211,11 +301,16 @@ fn webp<R: Read>(file: &mut Source<R>, start: [u8; 4], total: u64) -> Option<Pic
         }
         b"VP8X" => {
             const ANIMATION: u8 = 0x02;
-            animated = file.byte()? & ANIMATION != 0;
+            const EXIF: u8 = 0x08;
+            let flags = file.byte()?;
+            animated = flags & ANIMATION != 0;
             file.skip(3)?;
             let canvas = (le24(file.take()?) + 1, le24(file.take()?) + 1);
-            if animated {
-                frames = 0u32;
+            let mut quarter = false;
+            // The frames of an animation and the EXIF chunk follow the image data: each
+            // chunk is read to the end of the file.
+            if animated || flags & EXIF != 0 {
+                frames = if animated { 0u32 } else { 1 };
                 // The rest of the header chunk, then each chunk to the end of the file.
                 let read = 10;
                 let padded = size.checked_add(size & 1)?;
@@ -224,18 +319,28 @@ fn webp<R: Read>(file: &mut Source<R>, start: [u8; 4], total: u64) -> Option<Pic
                 while at < total {
                     let chunk: [u8; 4] = file.take()?;
                     let length = u64::from(u32::from_le_bytes(file.take()?));
-                    if &chunk == b"ANMF" {
+                    let padded = length + (length & 1);
+                    if animated && &chunk == b"ANMF" {
                         frames = frames.checked_add(1)?;
                     }
-                    let padded = length + (length & 1);
-                    file.skip(padded)?;
+                    if &chunk == b"EXIF" && length <= MOST_EXIF {
+                        let block = file.read(length)?;
+                        quarter = turned(exif_tiff(&block));
+                        file.skip(padded - length)?;
+                    } else {
+                        file.skip(padded)?;
+                    }
                     at = at.checked_add(8 + padded)?;
                 }
                 if frames == 0 || at != total {
                     return None;
                 }
             }
-            canvas
+            if quarter {
+                (canvas.1, canvas.0)
+            } else {
+                canvas
+            }
         }
         _ => return None,
     };
@@ -471,6 +576,91 @@ pub mod samples {
         image.push(0x3b);
         image
     }
+
+    /// The TIFF structure of an EXIF block with one entry, the orientation; `big` writes it
+    /// in big-endian order.
+    pub fn exif(orientation: u16, big: bool) -> Vec<u8> {
+        let two = |value: u16| {
+            if big {
+                value.to_be_bytes()
+            } else {
+                value.to_le_bytes()
+            }
+        };
+        let four = |value: u32| {
+            if big {
+                value.to_be_bytes()
+            } else {
+                value.to_le_bytes()
+            }
+        };
+        let mut tiff = if big { b"MM".to_vec() } else { b"II".to_vec() };
+        tiff.extend_from_slice(&two(42));
+        tiff.extend_from_slice(&four(8));
+        tiff.extend_from_slice(&two(1));
+        tiff.extend_from_slice(&two(0x0112));
+        tiff.extend_from_slice(&two(3));
+        tiff.extend_from_slice(&four(1));
+        tiff.extend_from_slice(&two(orientation));
+        tiff.extend_from_slice(&[0, 0]);
+        tiff.extend_from_slice(&four(0));
+        tiff
+    }
+
+    /// A JPEG whose EXIF segment, after the start of the file, states this orientation.
+    pub fn jpeg_turned(width: u16, height: u16, orientation: u16) -> Vec<u8> {
+        let mut block = b"Exif\0\0".to_vec();
+        block.extend(exif(orientation, true));
+        let mut segment = vec![0xff, 0xe1];
+        segment.extend_from_slice(
+            &u16::try_from(block.len() + 2)
+                .unwrap_or(u16::MAX)
+                .to_be_bytes(),
+        );
+        segment.extend(block);
+        let still = jpeg(width, height);
+        let mut image = still[..2].to_vec();
+        image.extend(segment);
+        image.extend_from_slice(&still[2..]);
+        image
+    }
+
+    /// A PNG with an EXIF chunk before its image data.
+    pub fn png_turned(width: u32, height: u32, orientation: u16) -> Vec<u8> {
+        let still = png(width, height);
+        let mut image = still[..33].to_vec();
+        image.extend(chunk(b"eXIf", &exif(orientation, false)));
+        image.extend_from_slice(&still[33..]);
+        image
+    }
+
+    /// An extended still WebP with the EXIF flag, its image data, and an EXIF chunk after it.
+    pub fn webp_turned(width: u32, height: u32, orientation: u16) -> Vec<u8> {
+        let mut data = extended_header(width, height, false);
+        data[0] |= 0x08;
+        let mut add = |kind: &[u8; 4], content: &[u8]| {
+            data.extend_from_slice(kind);
+            data.extend_from_slice(
+                &u32::try_from(content.len())
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            data.extend_from_slice(content);
+            if content.len() % 2 == 1 {
+                data.push(0);
+            }
+        };
+        add(b"VP8L", &[0x2f, 0, 0, 0, 0]);
+        add(b"EXIF", &exif(orientation, false));
+        let mut body = b"WEBP".to_vec();
+        body.extend_from_slice(b"VP8X");
+        body.extend_from_slice(&10u32.to_le_bytes());
+        body.extend_from_slice(&data);
+        let mut image = b"RIFF".to_vec();
+        image.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_le_bytes());
+        image.extend(body);
+        image
+    }
 }
 
 #[cfg(test)]
@@ -562,6 +752,38 @@ mod tests {
         png.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
         png.extend_from_slice(b"tEXt");
         assert_eq!(inspect(&png), None);
+    }
+
+    /// A phone stores a portrait photo as a landscape picture with an EXIF orientation of
+    /// 6; the size after the turn is stated, for every orientation that turns by a quarter
+    /// and in both byte orders. Orientations 1 to 4 keep the size.
+    #[test]
+    fn a_picture_turned_by_its_exif_orientation_states_its_turned_size() {
+        for orientation in 1..=8 {
+            let quarter = orientation >= 5;
+            let size = |width: u32, height: u32| {
+                if quarter {
+                    (height, width)
+                } else {
+                    (width, height)
+                }
+            };
+            assert_eq!(
+                of(&samples::jpeg_turned(4032, 3024, orientation)),
+                found(PictureKind::Jpeg, size(4032, 3024), 1),
+                "JPEG, orientation {orientation}"
+            );
+            assert_eq!(
+                of(&samples::png_turned(1920, 1080, orientation)),
+                found(PictureKind::Png, size(1920, 1080), 1),
+                "PNG, orientation {orientation}"
+            );
+            assert_eq!(
+                of(&samples::webp_turned(1600, 1200, orientation)),
+                found(PictureKind::Webp, size(1600, 1200), 1),
+                "WebP, orientation {orientation}"
+            );
+        }
     }
 
     #[test]

@@ -208,6 +208,14 @@ Attachments:
   `image/gif`. The server reads the parts of the file that state these in the pass that
   checks the chunks and computes the hash, with one chunk in memory, and decodes no image
   data. Avatars and logos keep the still PNG, JPEG and WebP of ADR 0119.
+  The stated size is the size after the turn of the EXIF orientation: the orientations 5
+  to 8 exchange the width and the height. The server reads the first EXIF segment of a
+  JPEG before its frame header, an `eXIf` chunk of a PNG before its image data, and the
+  `EXIF` chunk of a WebP file whose header has the EXIF flag, each up to 65,536 bytes.
+  Reason: a phone stores a portrait photo as 4032 × 3024 pixels with the orientation 6,
+  and the card of the picture had landscape proportions (review H1). Tests:
+  `image::tests::a_picture_turned_by_its_exif_orientation_states_its_turned_size` and the
+  API test `previews_state_the_size_of_a_photo_after_its_exif_orientation`.
   The bounds: a still picture has at most 33,554,432 pixels, the 128 MiB as RGBA that a
   client decodes before it reduces the picture, and at most 16,384 pixels per side, the
   longest side of a WebP file. An animation has a canvas of at most 4,194,304 pixels
@@ -222,7 +230,7 @@ Attachments:
   Before, only still PNG, JPEG and WebP files up to 8 MiB and 16,777,216 pixels got the
   metadata, so a GIF, an animated WebP or PNG, a PNG screenshot above 8 MiB and a photo
   above 16 megapixels were rows of files; before that the bound was 1,024 pixels per side.
-  A client shows a picture reduced in a list and at its own size in its viewer, and plays
+  A client shows a picture reduced in a list and at the size of its place in its viewer, and plays
   an animation (ADR 0740). A file uploaded before a change keeps the metadata it got.
   Clients treat attachments as untrusted files.
 - Sending claims complete uploads once, in the message transaction. Upload ownership,

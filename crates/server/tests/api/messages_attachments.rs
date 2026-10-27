@@ -361,6 +361,30 @@ async fn previews_state_the_size_of_a_picture_larger_than_1024_pixels() {
     );
 }
 
+/// A photo that a phone stored on its side states the size after the turn of its EXIF
+/// orientation, in JPEG, PNG and WebP (ADR 0408).
+#[tokio::test]
+async fn previews_state_the_size_of_a_photo_after_its_exif_orientation() {
+    use junto_server::image::samples;
+    let files = Files::open().await;
+    assert_eq!(
+        previewed(&files, &samples::jpeg_turned(4032, 3024, 6)).await,
+        ("image/jpeg".to_owned(), Some((3024, 4032)), None)
+    );
+    assert_eq!(
+        previewed(&files, &samples::png_turned(1920, 1080, 8)).await,
+        ("image/png".to_owned(), Some((1080, 1920)), None)
+    );
+    assert_eq!(
+        previewed(&files, &samples::webp_turned(1600, 1200, 5)).await,
+        ("image/webp".to_owned(), Some((1200, 1600)), None)
+    );
+    assert_eq!(
+        previewed(&files, &samples::jpeg_turned(4032, 3024, 3)).await,
+        ("image/jpeg".to_owned(), Some((4032, 3024)), None)
+    );
+}
+
 /// GIF, animated WebP and animated PNG pictures state the size of their canvas and their
 /// frames. A GIF of one frame is a still picture.
 #[tokio::test]

@@ -188,15 +188,36 @@ pub(crate) fn decode(bytes: &[u8], stated: Stated, plan: Plan) -> Option<Arc<Ren
     let frames = if stated.frames > 1 {
         frames(bytes, stated, plan)?
     } else {
+        use image::ImageDecoder as _;
         let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
             .with_guessed_format()
             .ok()?;
-        reader.limits(limits(stated, MOST_PICTURE_PIXELS * 4));
-        let decoded = reader.decode().ok()?;
+        // The server states the size after the turn of the EXIF orientation (ADR 0408); the
+        // stored picture can have its width and height exchanged.
+        let side = stated.width.max(stated.height);
+        let either = Stated {
+            width: side,
+            height: side,
+            ..stated
+        };
+        reader.limits(limits(either, MOST_PICTURE_PIXELS * 4));
+        let mut decoder = reader.into_decoder().ok()?;
+        let orientation = decoder
+            .orientation()
+            .unwrap_or(image::metadata::Orientation::NoTransforms);
+        let mut decoded = image::DynamicImage::from_decoder(decoder).ok()?;
+        decoded.apply_orientation(orientation);
+        let landscape = |(width, height): (u32, u32)| width >= height;
         let decoded = if (decoded.width(), decoded.height()) == (plan.width, plan.height) {
             decoded
-        } else {
+        } else if landscape((decoded.width(), decoded.height()))
+            == landscape((plan.width, plan.height))
+        {
             decoded.thumbnail_exact(plan.width, plan.height)
+        } else {
+            // A picture sent before the server read the orientation states the size before
+            // the turn: it keeps its proportions in the planned bounds.
+            decoded.thumbnail(plan.width, plan.height)
         };
         vec![into_frame(
             decoded.into_rgba8(),
@@ -523,6 +544,85 @@ pub(crate) mod tests {
         image.extend_from_slice(&(body.len() as u32).to_le_bytes());
         image.extend(body);
         image
+    }
+
+    /// A JPEG of `width` by `height` pixels with a red left half and a blue right half, and
+    /// an EXIF segment that states this orientation.
+    fn turned_jpeg(width: u32, height: u32, orientation: u8) -> Vec<u8> {
+        let picture = image::RgbImage::from_fn(width, height, |x, _| {
+            if x < width / 2 {
+                image::Rgb([220, 30, 30])
+            } else {
+                image::Rgb([30, 30, 220])
+            }
+        });
+        let mut encoded = Vec::new();
+        picture
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let mut block = b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01".to_vec();
+        block.extend_from_slice(&[
+            0x01,
+            0x12,
+            0,
+            3,
+            0,
+            0,
+            0,
+            1,
+            0,
+            orientation,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
+        let length = u16::try_from(block.len() + 2).unwrap().to_be_bytes();
+        let mut bytes = encoded[..2].to_vec();
+        bytes.extend_from_slice(&[0xff, 0xe1, length[0], length[1]]);
+        bytes.extend(block);
+        bytes.extend_from_slice(&encoded[2..]);
+        bytes
+    }
+
+    /// The colour of a pixel of the first frame, as red, green and blue.
+    fn colour_at(image: &RenderImage, x: u32, y: u32) -> [u8; 3] {
+        let width = image.size(0).width.0 as usize;
+        let bytes = image.as_bytes(0).unwrap();
+        let at = (y as usize * width + x as usize) * 4;
+        [bytes[at + 2], bytes[at + 1], bytes[at]]
+    }
+
+    /// A phone stores a portrait photo on its side with the EXIF orientation 6, and the
+    /// server states the size after the turn: the decoded copy is upright, with the red left
+    /// half of the stored pixels at the top. The orientation 3 turns it by a half and keeps
+    /// its size: the red half is then at the right.
+    #[test]
+    fn a_photo_is_decoded_upright_by_its_exif_orientation() {
+        let portrait = stated(40, 80, 1);
+        let planned = plan(portrait, None, LIST_FRAME_BYTES);
+        let image = decode(&turned_jpeg(80, 40, 6), portrait, planned).unwrap();
+        assert_eq!(sizes(&image), vec![(40, 80)]);
+        let [red, _, blue] = colour_at(&image, 20, 5);
+        assert!(red > 150 && blue < 100, "the top is red: {red} {blue}");
+        let [red, _, blue] = colour_at(&image, 20, 75);
+        assert!(blue > 150 && red < 100, "the bottom is blue: {red} {blue}");
+
+        let landscape = stated(80, 40, 1);
+        let image = decode(
+            &turned_jpeg(80, 40, 3),
+            landscape,
+            plan(landscape, None, LIST_FRAME_BYTES),
+        )
+        .unwrap();
+        assert_eq!(sizes(&image), vec![(80, 40)]);
+        let [red, _, _] = colour_at(&image, 75, 20);
+        assert!(red > 150, "the right is red: {red}");
     }
 
     fn sizes(image: &RenderImage) -> Vec<(u32, u32)> {

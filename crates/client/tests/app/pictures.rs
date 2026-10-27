@@ -32,6 +32,35 @@ pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
+/// A JPEG photo as a phone stores a portrait photo: the pixels lie on their side, `width`
+/// by `height`, with a red left half, and its EXIF segment states the orientation 6 (turn a
+/// quarter to the right to show it).
+pub(crate) fn turned_jpeg(width: u32, height: u32) -> Vec<u8> {
+    let picture = image::RgbImage::from_fn(width, height, |x, _| {
+        if x < width / 2 {
+            image::Rgb([220, 30, 30])
+        } else {
+            image::Rgb([30, 30, 220])
+        }
+    });
+    let mut encoded = Vec::new();
+    picture
+        .write_to(
+            &mut std::io::Cursor::new(&mut encoded),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+    // The TIFF structure in big-endian order with one entry: the orientation, 6.
+    let mut block = b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01".to_vec();
+    block.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+    let length = u16::try_from(block.len() + 2).unwrap().to_be_bytes();
+    let mut bytes = encoded[..2].to_vec();
+    bytes.extend_from_slice(&[0xff, 0xe1, length[0], length[1]]);
+    bytes.extend(block);
+    bytes.extend_from_slice(&encoded[2..]);
+    bytes
+}
+
 /// The administrator sends a message with a text and these files.
 pub(crate) fn send_files(
     world: &World,
@@ -260,6 +289,39 @@ fn a_picture_fits_the_message_list_at_every_window_width_and_interface_scale(
             }
         }
     }
+}
+
+/// A portrait photo that a phone stored on its side with an EXIF orientation is drawn
+/// upright: the server states the size after the turn, the card has portrait proportions,
+/// and the copy that the list holds is taller than wide.
+#[gpui::test]
+fn a_photo_stored_on_its_side_is_drawn_upright(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let sent = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "From the phone",
+        vec![("photo.jpg", turned_jpeg(1600, 1200))],
+    );
+    let attachment = &sent.attachments[0];
+    assert_eq!(
+        (attachment.width, attachment.height),
+        (Some(1200), Some(1600)),
+        "the server states the size after the turn"
+    );
+    window.until_message("From the phone");
+    until_picture_read(&mut window, attachment.id);
+    fits(&mut window, attachment.id, (1200.0, 1600.0), "the list");
+    let ((width, height), _) = held(&mut window, attachment.id);
+    assert!(
+        height > width,
+        "the copy of the list is {width} by {height}, on its side"
+    );
 }
 
 /// Clicks the part of the picture of this file that the message list shows.
