@@ -1272,7 +1272,6 @@ impl Shell {
     ) -> AnyElement {
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
-        let faces = self.shown_faces();
         let header = SideHeader::new(text::MEMBERS)
             .title_bar()
             .icon(Icon::People)
