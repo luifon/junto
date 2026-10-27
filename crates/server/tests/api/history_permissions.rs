@@ -1,5 +1,6 @@
 mod event_times;
 mod lists;
+mod mentions;
 mod notices;
 mod recordings;
 mod streams;

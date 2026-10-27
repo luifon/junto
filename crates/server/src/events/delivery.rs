@@ -290,6 +290,12 @@ fn decide(
             channel_id,
             created_at,
             ..
+        }
+        | Audience::Mention {
+            workspace_id,
+            channel_id,
+            created_at,
+            ..
         } => Some((*workspace_id, *channel_id, *created_at)),
         _ => match &candidate.event {
             Some(Event::MessageChanged {

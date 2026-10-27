@@ -298,6 +298,12 @@ pub enum Audience {
         account_id: Option<AccountId>,
         #[serde(default)]
         notice_id: Option<uuid::Uuid>,
+        #[serde(
+            default,
+            with = "time::serde::rfc3339::option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        created_at: Option<time::OffsetDateTime>,
     },
     /// The accounts that the rows of `event_receivers` with this identifier list. The
     /// change that recorded the event selected them, because the rule that named them no
@@ -649,6 +655,7 @@ impl Audience {
                 message_id: *message_id,
                 account_id: None,
                 notice_id: None,
+                created_at: None,
             }),
             Event::MessageChanged { place, .. } => Some(of_call(&message_call_place(*place), None)),
             Event::ThreadRead { .. }

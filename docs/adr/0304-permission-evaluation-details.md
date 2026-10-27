@@ -97,3 +97,5 @@ Stored sets:
 - A category is listed only when a person sees a channel in it or can manage the category. Its management permission is evaluated with its role and person overrides. Renaming or deleting a hidden category, and creating or moving a channel into one, answers as for a missing category. A person who can manage one category can create channels there without workspace-wide management permission.
 - Category creation and rename events use the current category visibility at delivery and replay. A category deletion sends a workspace permission refresh without its identifier, so a person who never saw it learns no hidden name or identifier.
 - The number of a permission bit cannot be reused for another permission.
+
+Mention events retain the message creation time, including mentions added by editing. Delivery and replay require read message history unless that creation time is after the verified current live connection start; adding a mention does not make an older message readable. Legacy mention audiences without a creation time require history.

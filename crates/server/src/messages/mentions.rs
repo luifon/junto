@@ -243,10 +243,11 @@ pub async fn mentions(
         .bind(&prior_recipients)
         .fetch_all(&mut *connection)
         .await?;
-        let position: i64 = sqlx::query_scalar("select position from messages where id=$1")
-            .bind(id)
-            .fetch_one(&mut *connection)
-            .await?;
+        let (position, created_at): (i64, OffsetDateTime) =
+            sqlx::query_as("select position, created_at from messages where id=$1")
+                .bind(id)
+                .fetch_one(&mut *connection)
+                .await?;
         added_recipients = recipients.clone();
         if !recipients.is_empty() {
             let notice_id = uuid::Uuid::now_v7();
@@ -260,6 +261,7 @@ pub async fn mentions(
                     message_id: id,
                     account_id: None,
                     notice_id: Some(notice_id),
+                    created_at: Some(created_at),
                 },
                 &Event::MessageMentioned {
                     workspace_id,
