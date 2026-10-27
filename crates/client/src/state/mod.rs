@@ -445,6 +445,7 @@ pub struct AppState {
     join_waiting: std::collections::HashSet<ServerId>,
     /// The cut of a chosen picture that is open (ADR 0119).
     picture_crop: Option<picture_crop::PictureCrop>,
+    picture_operation: u64,
     /// The additions of the person to a workspace whose name the state does not hold yet,
     /// with the time of the event: each is told once the workspace is known (ADR 0742).
     added_waiting: Vec<(
@@ -893,6 +894,7 @@ impl AppState {
             message_sound_at: None,
             join_waiting: std::collections::HashSet::new(),
             picture_crop: None,
+            picture_operation: 0,
             added_waiting: Vec::new(),
             call_window_shows: None,
             for_person: 0,

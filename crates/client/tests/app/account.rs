@@ -750,3 +750,49 @@ fn a_read_of_the_devices_that_failed_is_read_again_with_try_again(cx: &mut TestA
             && !window.shows("devices-read-failed")
     });
 }
+
+#[gpui::test]
+fn cancelling_an_encoding_keeps_a_replacement_crop_and_sends_no_picture(cx: &mut TestAppContext) {
+    use junto_client::state::picture_crop::PicturePurpose;
+    let world = World::new();
+    let server = world.server("Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Reader");
+    window.open_account();
+    let bytes = crate::harness::picture_png(3000, 2000);
+    let replacement = crate::harness::picture_png(64, 48);
+    window.state.update(&mut window.cx, |state, cx| {
+        state.show_picture_crop_fixture(PicturePurpose::Account, &bytes, 1.0, cx);
+        state.save_picture(cx);
+        state.cancel_picture(cx);
+        state.show_picture_crop_fixture(PicturePurpose::Account, &replacement, 1.0, cx);
+    });
+    window.settle();
+    assert_eq!(window.picture_crop().map(|crop| crop.width), Some(64));
+    assert!(!proxy.seen(AVATAR).iter().any(|seen| seen.method == "PUT"));
+}
+
+/// Two files chosen one after the other while the first is still read: the cut shows the
+/// later one, whichever read ends last (ADR 0119).
+#[gpui::test]
+fn the_later_of_two_chosen_files_opens_its_cut(cx: &mut TestAppContext) {
+    use junto_client::state::picture_crop::PicturePurpose;
+    let world = World::new();
+    let server = world.server("Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    let files = tempfile::tempdir().unwrap();
+    let photo = files.path().join("photo.png");
+    std::fs::write(&photo, crate::harness::picture_png(3000, 2000)).unwrap();
+    let small = files.path().join("small.png");
+    std::fs::write(&small, crate::harness::picture_png(64, 48)).unwrap();
+    window.open_account();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.choose_picture(PicturePurpose::Account, photo, cx);
+        state.choose_picture(PicturePurpose::Account, small, cx);
+    });
+    window.until("a cut is open", |window| window.picture_crop().is_some());
+    window.settle();
+    assert_eq!(window.picture_crop().map(|crop| crop.width), Some(64));
+}

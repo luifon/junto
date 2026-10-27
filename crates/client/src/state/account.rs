@@ -142,6 +142,10 @@ pub(crate) struct Stamp {
 }
 
 impl AccountState {
+    pub(super) fn picture_destination(&self) -> Option<(ServerId, AccountId, u64)> {
+        Some((self.open?.server_id, self.account?, self.session))
+    }
+
     /// Shows a page. What the page before told about a request, the devices that it
     /// listed and the code that it looked up are put away, and a later answer to a
     /// request of that page is dropped.
@@ -1012,14 +1016,18 @@ impl AppState {
     /// Sends a cut picture as the picture of the account. Its size and its first bytes are
     /// checked before a request. Nothing is sent while another request of the page is on
     /// its way.
-    pub(super) fn send_account_picture(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+    pub(super) fn send_account_picture(
+        &mut self,
+        destination: (ServerId, AccountId, u64),
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.account.picture_destination() != Some(destination) {
+            return;
+        }
         let what = AskKind::SetPicture;
-        let Some((server, account_id)) = self
-            .account
-            .open
-            .and_then(|open| self.client.server(open.server_id))
-            .zip(self.account.account)
-        else {
+        let (server_id, account_id, _) = destination;
+        let Some(server) = self.client.server(server_id) else {
             return;
         };
         let Some(stamp) = self.account.begin(what) else {

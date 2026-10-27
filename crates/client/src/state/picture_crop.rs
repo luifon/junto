@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{Context, RenderImage};
 use junto_client_core::profile::{self, CHOSEN_PICTURE_MAX_BYTES};
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{AccountId, ServerId};
 
 use super::AppState;
 use crate::picture::{self, Chosen, Crop, Refusal};
@@ -28,12 +28,20 @@ pub enum PicturePurpose {
 
 /// The cut that is open.
 pub(super) struct PictureCrop {
+    operation: PictureOperation,
     purpose: PicturePurpose,
     chosen: Arc<Chosen>,
     shown: Arc<RenderImage>,
     zoom: f32,
     centre: (f32, f32),
     saving: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PictureOperation {
+    id: u64,
+    navigation: u64,
+    destination: Option<(ServerId, AccountId, u64)>,
 }
 
 /// The cut as the window draws it.
@@ -60,6 +68,29 @@ fn shown_of(chosen: &Chosen) -> Arc<RenderImage> {
 }
 
 impl AppState {
+    fn start_picture_operation(&mut self, purpose: PicturePurpose) -> PictureOperation {
+        self.picture_operation += 1;
+        PictureOperation {
+            id: self.picture_operation,
+            navigation: self.navigations,
+            destination: (purpose == PicturePurpose::Account)
+                .then(|| self.account.picture_destination())
+                .flatten(),
+        }
+    }
+
+    fn picture_operation_current(
+        &self,
+        operation: PictureOperation,
+        purpose: PicturePurpose,
+    ) -> bool {
+        operation.id == self.picture_operation
+            && operation.navigation == self.navigations
+            && (purpose != PicturePurpose::Account
+                || operation.destination.is_some()
+                    && operation.destination == self.account.picture_destination())
+    }
+
     /// Reads and decodes the file at `path` on a background thread, and opens the cut. A
     /// file that is not a picture is refused at the control of its purpose, and nothing is
     /// sent.
@@ -72,6 +103,7 @@ impl AppState {
         if self.picture_crop.is_some() {
             return;
         }
+        let operation = self.start_picture_operation(purpose);
         let reading = cx.background_executor().spawn(async move {
             let bytes = profile::read_chosen_file(&path, CHOSEN_PICTURE_MAX_BYTES)
                 .map_err(|_| Refusal::Unreadable)?;
@@ -82,10 +114,14 @@ impl AppState {
         cx.spawn(async move |this, cx| {
             let read = reading.await;
             let _ = this.update(cx, |this, cx| {
+                if !this.picture_operation_current(operation, purpose) {
+                    return;
+                }
                 match read {
                     Ok((chosen, shown)) => {
                         let centre = (chosen.width() as f32 / 2.0, chosen.height() as f32 / 2.0);
                         this.picture_crop = Some(PictureCrop {
+                            operation,
                             purpose,
                             chosen: Arc::new(chosen),
                             shown,
@@ -113,10 +149,12 @@ impl AppState {
         zoom: f32,
         cx: &mut Context<Self>,
     ) {
+        let operation = self.start_picture_operation(purpose);
         if let Ok(chosen) = picture::decode(bytes) {
             let centre = (chosen.width() as f32 / 2.0, chosen.height() as f32 / 2.0);
             let shown = shown_of(&chosen);
             self.picture_crop = Some(PictureCrop {
+                operation,
                 purpose,
                 chosen: Arc::new(chosen),
                 shown,
@@ -171,6 +209,7 @@ impl AppState {
 
     /// Closes the cut without storing anything.
     pub fn cancel_picture(&mut self, cx: &mut Context<Self>) {
+        self.picture_operation += 1;
         if let Some(crop) = self.picture_crop.take() {
             crate::images::release(crop.shown, cx);
         }
@@ -187,6 +226,7 @@ impl AppState {
             return;
         };
         crop.saving = true;
+        let operation = crop.operation;
         let chosen = crop.chosen.clone();
         let encoding = cx
             .background_executor()
@@ -195,12 +235,26 @@ impl AppState {
             let encoded = encoding.await;
             let _ = this.update(cx, |this, cx| {
                 let purpose = view.purpose;
+                if !this.picture_operation_current(operation, purpose) {
+                    if this
+                        .picture_crop
+                        .as_ref()
+                        .is_some_and(|crop| crop.operation.id == operation.id)
+                    {
+                        this.cancel_picture(cx);
+                    }
+                    return;
+                }
                 if let Some(crop) = this.picture_crop.take() {
                     crate::images::release(crop.shown, cx);
                 }
                 match encoded {
                     Ok(bytes) => match purpose {
-                        PicturePurpose::Account => this.send_account_picture(bytes, cx),
+                        PicturePurpose::Account => {
+                            if let Some(destination) = operation.destination {
+                                this.send_account_picture(destination, bytes, cx);
+                            }
+                        }
                         PicturePurpose::Preset => this.store_preset_picture(bytes, cx),
                         PicturePurpose::Logo(server_id) => {
                             this.send_server_logo(server_id, bytes, cx)

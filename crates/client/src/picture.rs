@@ -13,8 +13,8 @@ pub const STORED_SIDE: u32 = 1024;
 /// The longest side that a chosen picture keeps for the cut. A larger one is scaled down
 /// at once: the stored picture has at most [`STORED_SIDE`], and memory stays bounded.
 const HELD_SIDE: u32 = 4096;
-/// The largest side and the memory that a decoded file may take.
-const DECODED_SIDE: u32 = 16_384;
+/// The memory that a decoded file may take. A picture of any side is read when its decoded
+/// points fit; the bound is checked from the header of the file, before its points are read.
 const DECODED_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Why a chosen file is not a picture.
@@ -60,8 +60,6 @@ pub fn decode(bytes: &[u8]) -> Result<Chosen, Refusal> {
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
-    limits.max_image_width = Some(DECODED_SIDE);
-    limits.max_image_height = Some(DECODED_SIDE);
     limits.max_alloc = Some(DECODED_BYTES);
     reader.limits(limits);
     let decoded = reader.decode().map_err(|error| match error {
@@ -171,6 +169,59 @@ mod tests {
             .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
             .unwrap();
         bytes
+    }
+
+    fn crc(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffff_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A PNG file of a few bytes whose header states a picture of `width` by `height`
+    /// points, as a file that is made to take the memory of the reader.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut chunk = |kind: &[u8], data: &[u8]| {
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut body = kind.to_vec();
+            body.extend_from_slice(data);
+            bytes.extend_from_slice(&body);
+            bytes.extend_from_slice(&crc(&body).to_be_bytes());
+        };
+        let mut header = width.to_be_bytes().to_vec();
+        header.extend_from_slice(&height.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(b"IHDR", &header);
+        chunk(b"IDAT", &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        chunk(b"IEND", &[]);
+        bytes
+    }
+
+    #[test]
+    fn a_picture_whose_points_pass_the_memory_bound_is_refused_from_its_header() {
+        let bytes = png_header(40_000, 40_000);
+        assert!(bytes.len() < 100);
+        assert_eq!(decode(&bytes).unwrap_err(), Refusal::TooManyPixels);
+        assert_eq!(
+            decode(&png_header(200_000, 1_000)).unwrap_err(),
+            Refusal::TooManyPixels
+        );
+    }
+
+    #[test]
+    fn a_picture_with_a_side_above_sixteen_thousand_points_is_read() {
+        let chosen = decode(&png(20_000, 8, 255)).unwrap();
+        assert_eq!(chosen.width(), HELD_SIDE);
+        assert!(chosen.height() >= 1);
     }
 
     #[test]
