@@ -177,6 +177,26 @@ fn an_update_from_the_server_book_installs_and_offers_the_restart(cx: &mut TestA
         window.shows("client-version-action")
     });
     assert_eq!(line(&mut window).sentence, "Junto 2.0.0 is available.");
+    // The label of the button is painted inside the button.
+    let button = window.cx.debug_bounds("client-version-action").unwrap();
+    let painted = {
+        let _record = junto_client::ui::record_painted_text();
+        window.cx.update(|window, _| window.refresh());
+        window.settle();
+        junto_client::ui::take_painted_text()
+    };
+    let label = painted
+        .iter()
+        .find(|text| {
+            let middle = text.bounds.center().y;
+            text.text.as_ref() == txt::UPDATE && middle > button.top() && middle < button.bottom()
+        })
+        .expect("the label of the button is painted");
+    assert!(
+        label.bounds.left() >= button.left() && label.bounds.right() <= button.right(),
+        "the label {:?} is outside the button {button:?}",
+        label.bounds
+    );
     window.click("client-version-action");
     window.until("the update is installed", |window| {
         line(window).action == Some(junto_client::state::update_install::VersionAction::Restart)

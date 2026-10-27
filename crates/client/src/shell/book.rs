@@ -344,6 +344,7 @@ impl Shell {
                         VersionAction::Details => Icon::Document,
                     })
                     .label(label(action))
+                    .w_auto()
                     .h(u(26.0))
                     .px(u(10.0))
             }
