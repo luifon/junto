@@ -191,7 +191,6 @@ impl Shell {
                     .child(
                         crate::ui::notice_slot("call-notice-area")
                             .most(128.0)
-                            .centred()
                             .children(
                                 call.and_then(|panel| panel.room())
                                     .and_then(|room| room.meeting.as_ref())
