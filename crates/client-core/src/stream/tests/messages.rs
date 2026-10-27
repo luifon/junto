@@ -408,6 +408,11 @@ pub(super) fn positions(model: &ServerModel, place: PlaceId) -> Vec<u64> {
 
 /// A served connection with three messages in the text channel and its timeline open.
 pub(super) async fn room() -> Room {
+    room_at(junto_protocol::events::EVENT_REVISION).await
+}
+
+/// A room on a server that states this event revision in its `hello`.
+pub(super) async fn room_at(revision: u32) -> Room {
     let mut rig = rig();
     let place = PlaceId::Channel(rig.scene.general);
     let other = AccountId::generate();
@@ -419,7 +424,7 @@ pub(super) async fn room() -> Room {
             .collect();
     }
     rig.want(ConnectionLevel::Selected, "jst_one");
-    let (peer, _, _) = rig.served().await;
+    let (peer, _, _) = rig.served_at(revision).await;
     soon("the first page", rig.live.open_messages(place))
         .await
         .unwrap();

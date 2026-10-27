@@ -500,8 +500,13 @@ impl Rig {
 
     /// The next connection, greeted and with its `subscribe` served.
     async fn served(&mut self) -> (Peer, Level, Cursor) {
+        self.served_at(junto_protocol::events::EVENT_REVISION).await
+    }
+
+    /// As [`Rig::served`], by a server that states this event revision.
+    async fn served_at(&mut self, revision: u32) -> (Peer, Level, Cursor) {
         let mut peer = self.peer().await;
-        peer.hello(self.epoch()).await;
+        peer.hello_of(self.epoch(), "0.1.0", revision).await;
         let (level, cursor) = peer.serve().await;
         self.when("live", |view| view.status == StreamStatus::Live)
             .await;

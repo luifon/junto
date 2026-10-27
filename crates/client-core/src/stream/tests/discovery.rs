@@ -7,7 +7,7 @@ use junto_protocol::discovery::{
 use junto_protocol::ids::{ChannelId, MessageId};
 use junto_protocol::message::{Message, ThreadState};
 
-use super::messages::{Room, positions, room};
+use super::messages::{Room, positions, room, room_at};
 use super::*;
 use crate::model::message_tests::{document, message};
 use crate::model::{Loadable, Named, PlaceId};
@@ -132,7 +132,8 @@ async fn a_reply_is_sent_into_its_thread_and_the_read_position_goes_to_the_threa
 
 #[tokio::test(start_paused = true)]
 async fn the_unread_threads_are_read_after_the_notice_of_a_root_and_two_reads_keep_a_distance() {
-    let room = room().await;
+    // A server of revision 1: its events state no thread, and the list is read.
+    let room = room_at(1).await;
     let rig = &room.rig;
     let root = root_of(&room);
     assert_eq!(room.sent_to(UNREAD), 0);
@@ -854,7 +855,8 @@ async fn the_answer_to_a_read_position_of_a_thread_does_not_remove_what_came_aft
         routes.snapshot.as_mut().unwrap().threads = vec![state(5, 4, 1)];
     }
     rig.want(ConnectionLevel::Selected, "jst_one");
-    let (peer, _, _) = rig.served().await;
+    // A server of revision 1: its events state no thread, and the list is read.
+    let (peer, _, _) = rig.served_at(1).await;
     let thread = PlaceId::Thread {
         channel_id: rig.scene.general,
         root_id: root.id,

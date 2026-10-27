@@ -14,6 +14,13 @@ use sqlx::{PgConnection, Row, types::Json};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// The call, the readers and the root of a message, which its change event needs.
+type ChangeAudience = (
+    Option<junto_protocol::ids::CallId>,
+    Option<Vec<junto_protocol::ids::AccountId>>,
+    Option<MessageId>,
+);
+
 pub async fn changed(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -22,11 +29,8 @@ pub async fn changed(
     position: u64,
     deleted: bool,
 ) -> ApiResult<()> {
-    let audience: Option<(
-        Option<junto_protocol::ids::CallId>,
-        Option<Vec<junto_protocol::ids::AccountId>>,
-        Option<MessageId>,
-    )> = sqlx::query_as("select call_id,readers,thread_root from messages where id=$1")
+    let audience: Option<ChangeAudience> =
+        sqlx::query_as("select call_id,readers,thread_root from messages where id=$1")
         .bind(message_id)
         .fetch_optional(&mut *connection)
         .await?;
