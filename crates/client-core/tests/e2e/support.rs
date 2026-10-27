@@ -588,6 +588,8 @@ pub struct Seen {
     /// The status and the body that the client got. Absent while the server works and
     /// when the answer was dropped.
     pub answer: Option<(u16, Vec<u8>)>,
+    /// When the whole request had arrived.
+    pub arrived: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -615,6 +617,10 @@ struct ProxyState {
     answers_waiting: usize,
     /// What the server sends on the event stream waits at the proxy.
     events_held: bool,
+    /// How many connections ended before a whole request arrived.
+    unfinished: usize,
+    /// The errors of the connections that the proxy served, with their time.
+    failures: Vec<(std::time::Instant, String)>,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -679,7 +685,11 @@ impl FaultProxy {
                 let (state, cut) = (shared.clone(), cuts.subscribe());
                 let released = releases.subscribe();
                 tokio::spawn(async move {
-                    let _ = serve(stream, upstream_port, state, cut, released).await;
+                    let served = serve(stream, upstream_port, state.clone(), cut, released).await;
+                    if let Err(error) = served {
+                        let failure = (std::time::Instant::now(), error.to_string());
+                        state.lock().unwrap().failures.push(failure);
+                    }
                 });
             }
         });
@@ -847,6 +857,18 @@ impl FaultProxy {
         self.state.lock().unwrap().seen.clone()
     }
 
+    /// How many connections ended before a whole request arrived.
+    #[allow(dead_code)]
+    pub fn unfinished(&self) -> usize {
+        self.state.lock().unwrap().unfinished
+    }
+
+    /// The errors of the connections that the proxy served, with their time.
+    #[allow(dead_code)]
+    pub fn failures(&self) -> Vec<(std::time::Instant, String)> {
+        self.state.lock().unwrap().failures.clone()
+    }
+
     pub fn seen(&self, path: &str) -> Vec<Seen> {
         self.state
             .lock()
@@ -871,6 +893,7 @@ async fn serve(
     let (head_end, length) = loop {
         let count = client.read(&mut buffer).await?;
         if count == 0 {
+            state.lock().unwrap().unfinished += 1;
             return Ok(());
         }
         request.extend_from_slice(&buffer[..count]);
@@ -887,6 +910,7 @@ async fn serve(
     while request.len() < head_end + length {
         let count = client.read(&mut buffer).await?;
         if count == 0 {
+            state.lock().unwrap().unfinished += 1;
             return Ok(());
         }
         request.extend_from_slice(&buffer[..count]);
@@ -905,6 +929,7 @@ async fn serve(
         let blocked = {
             let mut state = state.lock().unwrap();
             state.seen.push(Seen {
+                arrived: std::time::Instant::now(),
                 method,
                 path,
                 body,
@@ -955,6 +980,7 @@ async fn serve(
     let (index, fault) = {
         let mut state = state.lock().unwrap();
         state.seen.push(Seen {
+            arrived: std::time::Instant::now(),
             method: method.clone(),
             path: path.clone(),
             body,

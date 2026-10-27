@@ -274,6 +274,7 @@ fn a_device_list_that_was_not_read_and_an_approval_without_an_answer_are_read_ag
     // which would tell whether the key was added, is not read either. The events of the
     // server wait, so that only the approval reads the list.
     proxy.hold_events();
+    let before_approval = proxy.all().len();
     proxy.fail(APPROVE, [Fault::LoseAnswer]);
     proxy.fail(DEVICES, unread());
     first.click("link-approve");
@@ -297,10 +298,42 @@ fn a_device_list_that_was_not_read_and_an_approval_without_an_answer_are_read_ag
     proxy.release_events();
 
     // "Check again" reads the list: the key is there, and the device is linked.
-    first.click("link-check");
-    first.until(
+    let scroll = first.in_shell(|shell, _, _| shell.account_scroll_handle());
+    let checked = std::time::Instant::now();
+    first.settle();
+    let listed = first.devices().len();
+    let button = first.cx.debug_bounds("link-check").unwrap();
+    let pressed = (listed, button, scroll.bounds());
+    first.press_at(button.center(), gpui::MouseButton::Left);
+    first.settle();
+    // A failure states the link, each request that the proxy got from the approval on with
+    // its answer and time, and the connections that ended before a whole request or with an
+    // error.
+    first.until_read(
         "the first device tells that the device is linked",
-        |first| first.shows("link-approved"),
+        |first| {
+            let requests: Vec<_> = proxy.all()[before_approval..]
+                .iter()
+                .map(|seen| {
+                    let status = seen.answer.as_ref().map(|(status, _)| *status);
+                    let at = elapsed(checked, seen.arrived);
+                    format!("{} {} {status:?} at {at} ms", seen.method, seen.path)
+                })
+                .collect();
+            (
+                first.shows("link-approved"),
+                first.link(),
+                pressed,
+                requests,
+                proxy.unfinished(),
+                proxy
+                    .failures()
+                    .into_iter()
+                    .map(|(at, error)| format!("{error} at {} ms", elapsed(checked, at)))
+                    .collect::<Vec<_>>(),
+            )
+        },
+        |(approved, ..)| *approved,
     );
     assert_eq!(
         first.link(),
@@ -853,4 +886,12 @@ fn a_line_whose_device_has_another_account_by_now_is_approved_for_that_account_a
     let devices = world.run(phone.api().devices()).unwrap();
     assert_eq!(devices.len(), 1);
     assert_ne!(luca, bruno);
+}
+
+/// The milliseconds from `from` to `at`, negative when `at` came first.
+fn elapsed(from: std::time::Instant, at: std::time::Instant) -> i128 {
+    match at.checked_duration_since(from) {
+        Some(after) => after.as_millis() as i128,
+        None => -(from.duration_since(at).as_millis() as i128),
+    }
 }
