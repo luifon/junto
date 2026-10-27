@@ -32,6 +32,7 @@ mod call_notices;
 mod calls;
 mod channel_calls;
 mod channel_history;
+mod channel_updates;
 mod channel_use;
 mod composing;
 mod contacts;
