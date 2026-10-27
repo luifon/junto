@@ -2474,6 +2474,7 @@ impl AppState {
         let now = time::OffsetDateTime::now_utc();
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
+        self.follow_owners();
         let snapshots = self.snapshots();
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
@@ -2571,7 +2572,6 @@ impl AppState {
         self.follow_result_jump(shown);
         self.tell_alerts(&snapshots, shown, call_window, cx);
         self.follow_tray();
-        self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();
         self.drop_sent_uploads();

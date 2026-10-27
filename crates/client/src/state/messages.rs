@@ -363,6 +363,23 @@ impl AppState {
             if self.owners.get(&server_id) == Some(&owner) {
                 continue;
             }
+            self.open_places.retain(|key, _| key.0 != server_id);
+            self.anchors.retain(|key, _| key.0 != server_id);
+            if self
+                .open_pins
+                .as_ref()
+                .is_some_and(|(key, _)| key.0 == server_id)
+            {
+                self.open_pins = None;
+            }
+            if self
+                .members
+                .as_ref()
+                .is_some_and(|(key, _)| key.0 == server_id)
+            {
+                self.members = None;
+            }
+            self.known.members_failed.retain(|key| key.0 != server_id);
             self.downloads.retain(|key, download| {
                 if key.0 == server_id {
                     download.cancel();
