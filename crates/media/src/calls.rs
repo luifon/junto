@@ -1505,6 +1505,15 @@ impl<T: PartialEq + Clone> Reporter<T> {
         }
     }
 
+    /// A reporter for a value that the server holds already: `value` is sent only after
+    /// another value was.
+    pub(crate) fn holding(spacing: Duration, value: T) -> Self {
+        Self {
+            sent: Some(value),
+            ..Self::new(spacing, None)
+        }
+    }
+
     /// What to do for the value that holds now. `renews`: the server forgets this value
     /// unless it is sent again.
     pub(crate) fn step(&self, wanted: &T, renews: bool, now: Instant) -> Step {
