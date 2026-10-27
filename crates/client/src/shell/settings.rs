@@ -43,7 +43,7 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
