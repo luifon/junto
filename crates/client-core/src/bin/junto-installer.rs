@@ -26,7 +26,7 @@ mod windows_main {
 
     use junto_client_core::releases::setup::{self, Places};
     use junto_client_core::releases::setup_windows::{
-        Answer, Buttons, WindowsSetup, ask, runs, start,
+        Answer, Buttons, WindowsSetup, ask, remove_after_end, runs, start, wait_for_end,
     };
 
     const TITLE: &str = "Junto";
@@ -197,31 +197,18 @@ mod windows_main {
 
     fn remove_as_copy(
         options: &Options,
-        _process: u32,
+        process: u32,
         folder: &Path,
         copy: &Path,
     ) -> Result<(), String> {
         let (local, roaming) = account()?;
         let places = Places::of_folder(folder, &local, &roaming);
         // The uninstall program of the folder ends after it started this copy; until then
-        // its file cannot be removed. The removal is tried for 30 seconds.
-        let mut last = Ok(());
-        for _ in 0..30 {
-            last = setup::uninstall(&places, options.remove_data, &WindowsSetup);
-            if last.is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_secs(1));
-        }
-        // The copy removes itself after it ended.
-        let script = format!(
-            "ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"",
-            copy.display()
-        );
-        let _ = start(
-            Path::new("cmd.exe"),
-            &[OsStr::new("/c"), OsStr::new(&script)],
-        );
+        // its file cannot be removed.
+        wait_for_end(process, Duration::from_secs(60));
+        let last = setup::uninstall(&places, options.remove_data, &WindowsSetup);
+        // The copy is removed after it ended.
+        let _ = remove_after_end(copy, std::process::id());
         match last {
             Ok(()) => {
                 if !options.quiet {

@@ -229,6 +229,48 @@ pub fn start(program: &Path, arguments: &[&std::ffi::OsStr]) -> std::io::Result<
     command.spawn().map(|_| ())
 }
 
+/// Waits until the process with this number has ended, at most `limit`. True when it ended
+/// or does not exist.
+pub fn wait_for_end(process: u32, limit: std::time::Duration) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    let milliseconds = u32::try_from(limit.as_millis()).unwrap_or(u32::MAX);
+    // SAFETY: the handle is closed after the wait.
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, process) else {
+            return true;
+        };
+        let ended = WaitForSingleObject(handle, milliseconds) == WAIT_OBJECT_0;
+        let _ = CloseHandle(handle);
+        ended
+    }
+}
+
+/// Removes `file` after the process with this number has ended, from a hidden Windows
+/// PowerShell that waits for that end: a running program file cannot be removed. The path
+/// and the number reach it as environment variables, so no quoting applies.
+pub fn remove_after_end(file: &Path, process: u32) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let system = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let shell = Path::new(&system).join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    std::process::Command::new(shell)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Wait-Process -Id $env:JUNTO_REMOVE_AFTER -Timeout 120 -ErrorAction SilentlyContinue; \
+             Remove-Item -LiteralPath $env:JUNTO_REMOVE_FILE -Force",
+        ])
+        .env("JUNTO_REMOVE_AFTER", process.to_string())
+        .env("JUNTO_REMOVE_FILE", file)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+}
+
 /// The entry of the list of installed programs states the version of the folder: an update
 /// from inside the application replaced the folder (ADR 0728). Only an entry of this folder
 /// is changed.
