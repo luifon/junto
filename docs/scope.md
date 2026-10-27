@@ -29,7 +29,8 @@ Text:
 
 Servers, accounts and permissions:
 
-- Server roles and workspace roles with channel permissions
+- Server roles and workspace roles; permissions per role and per person at server, workspace,
+  category and channel level; channels synced with their category (ADR 0301, ADR 0304)
 - Several workspaces per server
 - The server book
 - A device list per account
@@ -65,7 +66,6 @@ Client:
 
 - No guest accounts and no browser client (ADR 0105).
 - No bot accounts, incoming webhooks or slash commands (ADR 0201).
-- No permission overrides for a single member (ADR 0301).
 - No presence indicators and no typing indicators (ADR 0401).
 - No calls in text channels (ADR 0501).
 - No recording and no meeting mode in direct-message calls (ADR 0501).
