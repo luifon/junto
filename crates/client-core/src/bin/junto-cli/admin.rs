@@ -10,7 +10,6 @@ use std::str::FromStr;
 
 use futures_util::StreamExt as _;
 use junto_client_core::api::{AvatarImage, BodyStream, ServerApi, Statement};
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::access_token::{
     AccessTokenInfo, AccessTokenQuery, CreateAccessToken, TokenAction,
 };
@@ -25,12 +24,15 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::invite::{Invite, JoinRequestStatus, Redemption};
 use junto_client_core::protocol::message::MessagePlace;
+use junto_client_core::protocol::roles::{ServerPersonPermissions, SetServerPersonPermissions};
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ArchivedChannel, Category, ChangeChannelOverride, Channel, ChannelKind,
-    ChannelRules, CreateCategory, CreateChannel, OverrideState, PermissionRule, RuleSubject,
-    SetChannelOverride, UpdateCategory, UpdateChannel, Workspace, WorkspaceMember,
+    ArchivePeriod, ArchivedChannel, Category, CategoryRules, ChangeChannelOverride, Channel,
+    ChannelKind, ChannelPermissions, ChannelRules, CreateCategory, CreateChannel, OverrideState,
+    PermissionRule, PersonPermissions, RuleSubject, SetChannelOverride, UpdateCategory,
+    UpdateChannel, Workspace, WorkspaceMember,
 };
+use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
 use crate::{Arguments, Client, Failure, end_session, failed, logged_in, shown, usage};
@@ -55,6 +57,20 @@ enum Action {
     SetRule(ChannelId, RuleSubject, SetChannelOverride),
     ChangeRule(ChannelId, RuleSubject, ChangeChannelOverride),
     SyncRules(ChannelId),
+    CategoryRules(WorkspaceId, CategoryId),
+    SetCategoryRule((WorkspaceId, CategoryId), RuleSubject, SetChannelOverride),
+    ChangeCategoryRule(
+        (WorkspaceId, CategoryId),
+        RuleSubject,
+        ChangeChannelOverride,
+    ),
+    MemberPermissions(WorkspaceId, AccountId),
+    SetMemberPermissions(WorkspaceId, AccountId, SetChannelOverride),
+    ChangeMemberPermission(WorkspaceId, AccountId, ChangeChannelOverride),
+    MemberAccess(WorkspaceId, AccountId),
+    ServerPermissions(AccountId),
+    SetServerPermissions(AccountId, SetServerPersonPermissions),
+    ChangeServerPermission(AccountId, ServerPermission, OverrideState),
     Members(WorkspaceId),
     AddMember(WorkspaceId, AccountId),
     RemoveMember(WorkspaceId, AccountId, Statement),
@@ -341,9 +357,85 @@ fn subject(words: &[String], at: usize) -> Result<RuleSubject, Failure> {
     }
 }
 
+/// Both sets of a rule from `--allow` and `--deny`. Without an option the rule is removed.
+fn sets(arguments: &Arguments) -> Result<SetChannelOverride, Failure> {
+    Ok(SetChannelOverride {
+        allow: permissions(arguments, "allow")?,
+        deny: permissions(arguments, "deny")?,
+    })
+}
+
+/// One permission and its new state from the words at `at` and after it.
+fn change_at(words: &[String], at: usize) -> Result<ChangeChannelOverride, Failure> {
+    Ok(ChangeChannelOverride {
+        permission: permission(word(words, at, "the permission")?)?,
+        state: override_state(word(words, at + 1, "allow, deny or inherit")?)?,
+    })
+}
+
 fn rules(action: &str, words: &[String], arguments: &Arguments) -> Result<Option<Action>, Failure> {
     let channel = || identifier::<ChannelId>(words, 1, "the channel");
+    let workspace = || identifier::<WorkspaceId>(words, 1, "the workspace");
+    let category = || {
+        Ok::<_, Failure>((
+            workspace()?,
+            identifier::<CategoryId>(words, 2, "the category")?,
+        ))
+    };
+    let member = || {
+        Ok::<_, Failure>((
+            workspace()?,
+            identifier::<AccountId>(words, 2, "the account")?,
+        ))
+    };
+    let account = || identifier::<AccountId>(words, 1, "the account");
+    let server_sets = || {
+        let read = |name: &str| -> Result<Vec<ServerPermission>, Failure> {
+            arguments
+                .values(name)
+                .iter()
+                .map(|text| crate::roles::server_permission(text))
+                .collect()
+        };
+        Ok::<_, Failure>(SetServerPersonPermissions {
+            allow: read("allow")?,
+            deny: read("deny")?,
+        })
+    };
     Ok(Some(match action {
+        "category-list" => {
+            let (workspace_id, category_id) = category()?;
+            Action::CategoryRules(workspace_id, category_id)
+        }
+        "category-set" => {
+            Action::SetCategoryRule(category()?, subject(words, 3)?, sets(arguments)?)
+        }
+        "category-change" => {
+            Action::ChangeCategoryRule(category()?, subject(words, 3)?, change_at(words, 5)?)
+        }
+        "member-list" => {
+            let (workspace_id, account_id) = member()?;
+            Action::MemberPermissions(workspace_id, account_id)
+        }
+        "member-set" => {
+            let (workspace_id, account_id) = member()?;
+            Action::SetMemberPermissions(workspace_id, account_id, sets(arguments)?)
+        }
+        "member-change" => {
+            let (workspace_id, account_id) = member()?;
+            Action::ChangeMemberPermission(workspace_id, account_id, change_at(words, 3)?)
+        }
+        "member-access" => {
+            let (workspace_id, account_id) = member()?;
+            Action::MemberAccess(workspace_id, account_id)
+        }
+        "server-list" => Action::ServerPermissions(account()?),
+        "server-set" => Action::SetServerPermissions(account()?, server_sets()?),
+        "server-change" => Action::ChangeServerPermission(
+            account()?,
+            crate::roles::server_permission(word(words, 2, "the permission")?)?,
+            override_state(word(words, 3, "allow, deny or inherit")?)?,
+        ),
         "list" => Action::Rules(channel()?),
         "set" => Action::SetRule(
             channel()?,
@@ -655,6 +747,42 @@ fn rule_line(held: &PermissionRule) -> String {
         names(&held.allow),
         names(&held.deny)
     )
+}
+
+/// The rules of a category, one line each.
+fn category_rules_lines(held: &CategoryRules) -> Vec<String> {
+    let mut lines = vec![format!("rules: category {}", held.category_id)];
+    lines.extend(held.rules.iter().map(rule_line));
+    lines
+}
+
+/// The workspace permissions that are allowed to or denied to a member.
+fn person_line(held: &PersonPermissions) -> String {
+    format!(
+        "permissions: {}  allow {}  deny {}",
+        held.account_id,
+        names(&held.allow),
+        names(&held.deny)
+    )
+}
+
+/// The server permissions that are allowed to or denied to an account.
+fn server_person_line(held: &ServerPersonPermissions) -> String {
+    let named = |permissions: &[ServerPermission]| {
+        let names: Vec<&str> = permissions.iter().map(|held| held.name()).collect();
+        listed(&names)
+    };
+    format!(
+        "server-permissions: {}  allow {}  deny {}",
+        held.account_id,
+        named(&held.allow),
+        named(&held.deny)
+    )
+}
+
+/// What a member can use in one channel that the account sees.
+fn access_line(held: &ChannelPermissions) -> String {
+    format!("access: {}  {}", held.channel_id, names(&held.permissions))
 }
 
 /// The rules of a channel: whether it takes them from its category, then one line each.
@@ -1220,6 +1348,62 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
         Action::SyncRules(channel_id) => {
             rules_lines(&api.sync_channel_rules(channel_id).await.map_err(failed)?)
         }
+        Action::CategoryRules(workspace_id, category_id) => category_rules_lines(
+            &api.category_rules(workspace_id, category_id)
+                .await
+                .map_err(failed)?,
+        ),
+        Action::SetCategoryRule(place, subject, sets) => vec![rule_line(
+            &api.set_category_rule(place, subject, &sets)
+                .await
+                .map_err(failed)?,
+        )],
+        Action::ChangeCategoryRule(place, subject, change) => vec![rule_line(
+            &api.change_category_rule(place, subject, change.permission, change.state)
+                .await
+                .map_err(failed)?,
+        )],
+        Action::MemberPermissions(workspace_id, account_id) => vec![person_line(
+            &api.member_permissions(workspace_id, account_id)
+                .await
+                .map_err(failed)?,
+        )],
+        Action::SetMemberPermissions(workspace_id, account_id, sets) => vec![person_line(
+            &api.set_member_permissions(workspace_id, account_id, &sets)
+                .await
+                .map_err(failed)?,
+        )],
+        Action::ChangeMemberPermission(workspace_id, account_id, change) => vec![person_line(
+            &api.change_member_permission(
+                (workspace_id, account_id),
+                change.permission,
+                change.state,
+            )
+            .await
+            .map_err(failed)?,
+        )],
+        Action::MemberAccess(workspace_id, account_id) => api
+            .member_access(workspace_id, account_id)
+            .await
+            .map_err(failed)?
+            .iter()
+            .map(access_line)
+            .collect(),
+        Action::ServerPermissions(account_id) => vec![server_person_line(
+            &api.server_permissions(account_id).await.map_err(failed)?,
+        )],
+        Action::SetServerPermissions(account_id, sets) => vec![server_person_line(
+            &api.set_server_permissions(account_id, &sets)
+                .await
+                .map_err(failed)?,
+        )],
+        Action::ChangeServerPermission(account_id, permission, state) => {
+            vec![server_person_line(
+                &api.change_server_permission(account_id, permission, state)
+                    .await
+                    .map_err(failed)?,
+            )]
+        }
         Action::Members(workspace_id) => api
             .workspace_members(workspace_id)
             .await
@@ -1581,6 +1765,124 @@ mod tests {
         assert_eq!(change(&["--limit", "4", "--no-limit"]), None);
         assert_eq!(change(&["--hide", "yes"]), None);
         assert_eq!(change(&[]), None);
+    }
+
+    #[test]
+    fn the_rules_of_a_category_name_the_workspace_the_category_and_the_subject() {
+        let (workspace_id, category_id) = (WorkspaceId::generate(), CategoryId::generate());
+        let account_id = AccountId::generate();
+        let (workspace, category, account) = (
+            workspace_id.to_string(),
+            category_id.to_string(),
+            account_id.to_string(),
+        );
+        let place = (workspace_id, category_id);
+        assert!(matches!(
+            parsed("rules", &["category-list", &workspace, &category]),
+            Ok(Action::CategoryRules(of, held)) if (of, held) == place
+        ));
+        assert!(matches!(
+            parsed(
+                "rules",
+                &["category-set", &workspace, &category, "person", &account, "--deny", "view_channel"],
+            ),
+            Ok(Action::SetCategoryRule(of, RuleSubject::Person { account_id: who }, sets))
+                if of == place && who == account_id
+                    && sets.allow.is_empty()
+                    && sets.deny == [WorkspacePermission::ViewChannel]
+        ));
+        assert!(matches!(
+            parsed(
+                "rules",
+                &["category-change", &workspace, &category, "person", &account, "speak", "deny"],
+            ),
+            Ok(Action::ChangeCategoryRule(of, RuleSubject::Person { account_id: who }, change))
+                if of == place && who == account_id
+                    && change.permission == WorkspacePermission::Speak
+                    && change.state == OverrideState::Deny
+        ));
+        assert!(refused("rules", &["category-list", &workspace]));
+        assert!(refused(
+            "rules",
+            &[
+                "category-change",
+                &workspace,
+                &category,
+                "person",
+                &account,
+                "speak"
+            ]
+        ));
+        assert!(refused(
+            "rules",
+            &["category-set", &workspace, &category, "group", &account]
+        ));
+    }
+
+    #[test]
+    fn the_permissions_of_a_member_and_of_an_account_take_the_names_of_the_server() {
+        let workspace_id = WorkspaceId::generate();
+        let account_id = AccountId::generate();
+        let (workspace, account) = (workspace_id.to_string(), account_id.to_string());
+        assert!(matches!(
+            parsed("rules", &["member-list", &workspace, &account]),
+            Ok(Action::MemberPermissions(of, who)) if of == workspace_id && who == account_id
+        ));
+        assert!(matches!(
+            parsed(
+                "rules",
+                &["member-set", &workspace, &account, "--allow", "mention_everyone", "--deny", "send_messages"],
+            ),
+            Ok(Action::SetMemberPermissions(_, _, sets))
+                if sets.allow == [WorkspacePermission::MentionEveryone]
+                    && sets.deny == [WorkspacePermission::SendMessages]
+        ));
+        assert!(matches!(
+            parsed("rules", &["member-change", &workspace, &account, "connect", "inherit"]),
+            Ok(Action::ChangeMemberPermission(_, _, change))
+                if change.permission == WorkspacePermission::Connect
+                    && change.state == OverrideState::Inherit
+        ));
+        assert!(matches!(
+            parsed("rules", &["member-access", &workspace, &account]),
+            Ok(Action::MemberAccess(of, who)) if of == workspace_id && who == account_id
+        ));
+        assert!(matches!(
+            parsed("rules", &["server-list", &account]),
+            Ok(Action::ServerPermissions(who)) if who == account_id
+        ));
+        assert!(matches!(
+            parsed("rules", &["server-set", &account, "--allow", "create_invites", "--deny", "administrator"]),
+            Ok(Action::SetServerPermissions(who, sets))
+                if who == account_id
+                    && sets.allow == [ServerPermission::CreateInvites]
+                    && sets.deny == [ServerPermission::Administrator]
+        ));
+        assert!(matches!(
+            parsed("rules", &["server-change", &account, "ban_members", "allow"]),
+            Ok(Action::ChangeServerPermission(who, ServerPermission::BanMembers, OverrideState::Allow))
+                if who == account_id
+        ));
+        // A workspace permission is no server permission, and the other way round.
+        assert!(refused(
+            "rules",
+            &["server-change", &account, "send_messages", "allow"]
+        ));
+        assert!(refused(
+            "rules",
+            &[
+                "member-change",
+                &workspace,
+                &account,
+                "administrator",
+                "allow"
+            ]
+        ));
+        assert!(refused(
+            "rules",
+            &["server-set", &account, "--allow", "view_channel"]
+        ));
+        assert!(refused("rules", &["member-access", &workspace]));
     }
 
     #[test]

@@ -33,7 +33,7 @@ enum Action {
 }
 
 /// A permission of the server by the name that the server writes.
-fn server_permission(text: &str) -> Result<ServerPermission, Failure> {
+pub(crate) fn server_permission(text: &str) -> Result<ServerPermission, Failure> {
     ServerPermission::ALL
         .iter()
         .find(|held| held.name() == text)

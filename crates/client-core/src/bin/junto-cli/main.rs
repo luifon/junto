@@ -282,6 +282,30 @@ actions of rules:
                                in a channel and keep the other permissions of it
   sync <channel>               remove the own rules of a channel, which takes the rules of
                                its category again
+  category-list <workspace> <category>
+                               the rules of a category, which its synced channels take
+  category-set <workspace> <category> role <role> | person <account>
+      [--allow <permission>]... [--deny <permission>]...
+                               set the rule of a role or of a member in a category; without
+                               an option the rule is removed
+  category-change <workspace> <category> role <role> | person <account> <permission>
+      <allow|deny|inherit>     change one permission of the rule of a role or of a member
+                               in a category
+  member-list <workspace> <account>
+                               the workspace permissions allowed to or denied to a member
+  member-set <workspace> <account> [--allow <permission>]... [--deny <permission>]...
+                               set both sets of the workspace permissions of a member;
+                               without an option both are removed
+  member-change <workspace> <account> <permission> <allow|deny|inherit>
+                               change one workspace permission of a member
+  member-access <workspace> <account>
+                               what a member can use in each channel that the account sees
+  server-list <account>        the server permissions allowed to or denied to an account
+  server-set <account> [--allow <permission>]... [--deny <permission>]...
+                               set both sets of the server permissions of an account, by
+                               the names of the server, such as create_invites
+  server-change <account> <permission> <allow|deny|inherit>
+                               change one server permission of an account
 
 actions of roles:
   list <workspace>             the roles of a workspace: the \"everyone\" role, then the
