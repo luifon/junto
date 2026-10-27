@@ -114,19 +114,33 @@ mod windows_main {
             }
         };
         let result = if let Some((process, folder)) = options.copy_of.clone() {
-            remove_as_copy(&options, process, &folder, &program)
+            remove_as_copy(&options, process, &folder)
         } else if options.uninstall {
             uninstall(&options, &program)
         } else {
             install(&options, &program)
         };
-        match result {
+        let exit = match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(problem) => {
                 tell(&options, &problem, true);
                 ExitCode::FAILURE
             }
+        };
+        if options.copy_of.is_some()
+            && let Err(error) = remove_after_end(&program, std::process::id())
+        {
+            tell(
+                &options,
+                &format!(
+                    "Remove the temporary uninstall program {} by hand after closing this message: the cleanup helper could not start ({error}).",
+                    program.display()
+                ),
+                true,
+            );
+            return ExitCode::FAILURE;
         }
+        exit
     }
 
     /// Asks the person to quit the Junto of this folder while it runs.
@@ -200,23 +214,20 @@ mod windows_main {
         if options.quiet {
             arguments.push(OsStr::new("--quiet"));
         }
-        start(&copy, &arguments).map_err(|error| format!("Junto was not removed: {error}."))
+        if let Err(error) = start(&copy, &arguments) {
+            let _ = std::fs::remove_file(&copy);
+            return Err(format!("Junto was not removed: {error}."));
+        }
+        Ok(())
     }
 
-    fn remove_as_copy(
-        options: &Options,
-        process: u32,
-        folder: &Path,
-        copy: &Path,
-    ) -> Result<(), String> {
+    fn remove_as_copy(options: &Options, process: u32, folder: &Path) -> Result<(), String> {
         let (local, roaming) = account()?;
         let places = Places::of_folder(folder, &local, &roaming);
         // The uninstall program of the folder ends after it started this copy; until then
         // its file cannot be removed.
         wait_for_end(process, Duration::from_secs(60));
         let last = setup::uninstall(&places, options.remove_data, &WindowsSetup);
-        // The copy is removed after it ended.
-        let _ = remove_after_end(copy, std::process::id());
         match last {
             Ok(()) => {
                 if !options.quiet {

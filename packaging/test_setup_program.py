@@ -115,6 +115,33 @@ class UninstallDialogs(unittest.TestCase):
             self.assertEqual((data / "kept.txt").read_text(), "keep")
             self.assertFalse(folder.exists())
 
+    def test_cleanup_waits_until_the_last_dialog_is_closed(self):
+        import time
+        with self.installation() as (job, folder, data, copies):
+            copy = copies / "uninstall-copy.exe"
+            shutil.copy2(folder / "uninstall.exe", copy)
+            process = job.start([str(copy), "--uninstall", "--from-copy", "0", str(folder)])
+            dialog = self.dialog(job, "Junto was removed.")
+            deadline = time.monotonic() + 125
+            window_frame.until("the final dialog remains open beyond the former helper timeout",
+                               lambda: time.monotonic() >= deadline, 130)
+            self.assertIsNone(process.poll())
+            self.dismiss(dialog)
+            self.assertEqual(process.wait(timeout=30), 0)
+            window_frame.until("temporary uninstall copy removed after the dialog", lambda: not copy.exists(), 60)
+
+    def test_failure_to_start_cleanup_reports_the_copy_that_needs_removal(self):
+        with self.installation() as (job, folder, data, copies):
+            copy = copies / "uninstall-copy.exe"
+            shutil.copy2(folder / "uninstall.exe", copy)
+            with mock.patch.dict(os.environ, SystemRoot=str(copies / "missing-system")):
+                process = job.start([str(copy), "--uninstall", "--from-copy", "0", str(folder)])
+            self.dismiss(self.dialog(job, "Junto was removed."))
+            self.dismiss(self.dialog(job, "Remove the temporary uninstall program"))
+            self.assertNotEqual(process.wait(timeout=30), 0)
+            self.assertTrue(copy.exists())
+            copy.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()
