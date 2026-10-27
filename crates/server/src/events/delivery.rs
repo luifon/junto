@@ -273,11 +273,55 @@ fn decide(
     standing: &Standing,
     level: Level,
     in_call: Option<CallKey>,
+    live_since: Option<OffsetDateTime>,
     candidate: Candidate,
 ) -> ApiResult<Decision> {
     let Some(audience) = &candidate.audience else {
         return Ok(Decision::Unsendable);
     };
+    let message_time = match audience {
+        Audience::ChannelMessage {
+            workspace_id,
+            channel_id,
+            created_at,
+        } => Some((*workspace_id, *channel_id, Some(*created_at))),
+        Audience::SystemMessage {
+            workspace_id,
+            channel_id,
+            created_at,
+            ..
+        } => Some((*workspace_id, *channel_id, *created_at)),
+        _ => match &candidate.event {
+            Some(Event::MessageChanged {
+                place:
+                    junto_protocol::message::MessagePlace::Channel {
+                        workspace_id,
+                        channel_id,
+                    },
+                ..
+            }) => Some((*workspace_id, *channel_id, None)),
+            _ => None,
+        },
+    };
+    if let Some((workspace, channel, created_at)) = message_time {
+        let history = standing
+            .workspaces
+            .get(&workspace)
+            .and_then(|workspace| workspace.channels.get(&channel))
+            .is_some_and(|channel| {
+                access.allows(junto_authz::Request::Channel {
+                    scope: &channel.scope,
+                    permission: junto_authz::WorkspacePermission::ReadMessageHistory,
+                })
+            });
+        if !history
+            && !created_at
+                .zip(live_since)
+                .is_some_and(|(created, since)| created > since)
+        {
+            return Ok(Decision::Hidden);
+        }
+    }
     if let Audience::Notification {
         message_id,
         notice_id,
@@ -449,7 +493,15 @@ pub async fn subscribe(
                 .collect();
             let standing = Standing::load(connection, &access, &candidates, app.now()).await?;
             for candidate in candidates {
-                let decision = decide(&access, &standing, level, in_call, candidate)?;
+                let decision = decide(
+                    &access,
+                    &standing,
+                    level,
+                    in_call,
+                    app.streams
+                        .live_since(who.account_id, who.device_id, who.session_id),
+                    candidate,
+                )?;
                 if !matches!(decision, Decision::Hidden) {
                     waiting += 1;
                 }
@@ -536,6 +588,7 @@ pub(crate) async fn last_receivable(
     account: AccountId,
     change: i64,
     now: OffsetDateTime,
+    live_since: Option<OffsetDateTime>,
 ) -> ApiResult<Option<Cursor>> {
     let Some(access) = Access::of_account(connection, account).await? else {
         return Ok(None);
@@ -567,7 +620,7 @@ pub(crate) async fn last_receivable(
         let candidates: Vec<Candidate> = rows.into_iter().map(read_candidate).collect();
         let standing = Standing::load(connection, &access, &candidates, now).await?;
         for candidate in candidates {
-            match decide(&access, &standing, Level::Full, None, candidate)? {
+            match decide(&access, &standing, Level::Full, None, live_since, candidate)? {
                 Decision::Deliver(_) => return Ok(Some(log.cursor(change)?)),
                 Decision::Hidden => {}
                 Decision::Unsendable => {
@@ -698,7 +751,15 @@ pub async fn next_batch(
                     }
                 }
             }
-            match decide(&access, &standing, subscription.level, in_call, candidate)? {
+            match decide(
+                &access,
+                &standing,
+                subscription.level,
+                in_call,
+                app.streams
+                    .live_since(who.account_id, who.device_id, who.session_id),
+                candidate,
+            )? {
                 Decision::Deliver(receivable) => change.push(*receivable),
                 Decision::Hidden => {}
                 Decision::Unsendable => {

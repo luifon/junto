@@ -47,6 +47,9 @@ use one function for their SQL audience/class filter. The read transaction is re
 access, log state, candidates and Standing must share one snapshot after the commit;
 an own-account address alone cannot bypass current-account or quiet-time checks. Positions
 of hidden events never become the receipt.
+For message events without read message history, receipt selection uses the live connection
+boundary of the verified requesting session and device (ADR 0304). It never borrows a
+connection from another device or session.
 The cursor is stored only after this read succeeds. If the range was trimmed or a relevant
 event cannot be read, the success response omits the header instead of supplying a false
 cursor. An epoch reset requires client resynchronization.

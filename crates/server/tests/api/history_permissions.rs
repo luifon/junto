@@ -1,6 +1,7 @@
 mod event_times;
 mod lists;
 mod recordings;
+mod streams;
 
 use crate::messages_support::{channel, message, send, text};
 use crate::support::{Member, TestServer};

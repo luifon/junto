@@ -9,12 +9,15 @@ use junto_protocol::events::{Cursor, EVENT_CURSOR_HEADER};
 use sqlx::PgConnection;
 
 use crate::state::AppState;
-use junto_protocol::ids::AccountId;
+use junto_protocol::ids::{AccountId, DeviceId};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 struct Receipt {
     committed: bool,
     failed: bool,
-    account: Option<AccountId>,
+    account: Option<(AccountId, DeviceId, Uuid)>,
+    streams: Arc<crate::events::hub::Streams>,
     clock: Arc<dyn crate::clock::Clock>,
     /// The header value of the cursor, made when the cursor was read.
     cursor: Option<HeaderValue>,
@@ -28,8 +31,9 @@ pub fn requested() -> bool {
     RECEIPT.try_with(|_| ()).is_ok()
 }
 
-pub fn authorize_session(account: AccountId) {
-    let _ = RECEIPT.try_with(|receipt| receipt.borrow_mut().account = Some(account));
+pub fn authorize_session(account: AccountId, device: DeviceId, session: Uuid) {
+    let _ =
+        RECEIPT.try_with(|receipt| receipt.borrow_mut().account = Some((account, device, session)));
 }
 
 pub async fn committed(connection: &mut PgConnection) {
@@ -40,17 +44,21 @@ pub async fn committed(connection: &mut PgConnection) {
             if receipt.failed {
                 None
             } else {
-                receipt
-                    .account
-                    .map(|account| (account, receipt.clock.clone()))
+                receipt.account.map(|(account, device, session)| {
+                    (
+                        account,
+                        receipt.clock.clone(),
+                        receipt.streams.live_since(account, device, session),
+                    )
+                })
             }
         })
         .ok()
         .flatten();
-    let Some((account, clock)) = who else {
+    let Some((account, clock, live_since)) = who else {
         return;
     };
-    match read_cursor(connection, account, clock.as_ref()).await {
+    match read_cursor(connection, account, clock.as_ref(), live_since).await {
         Ok(Some(cursor)) => {
             let _ = RECEIPT.try_with(|receipt| receipt.borrow_mut().cursor = Some(cursor));
         }
@@ -81,6 +89,7 @@ async fn read_cursor(
     connection: &mut PgConnection,
     account: AccountId,
     clock: &dyn crate::clock::Clock,
+    live_since: Option<OffsetDateTime>,
 ) -> Result<Option<HeaderValue>, sqlx::Error> {
     let change: Option<i64> = sqlx::query_scalar(
         "select nullif(current_setting('junto.event_cursor', true), '')::bigint",
@@ -92,8 +101,14 @@ async fn read_cursor(
     };
     let mut read =
         crate::database::begin_on_connection(connection, crate::database::Mode::ReadOnly).await?;
-    let result =
-        crate::events::delivery::last_receivable(&mut read, account, change, clock.now()).await;
+    let result = crate::events::delivery::last_receivable(
+        &mut read,
+        account,
+        change,
+        clock.now(),
+        live_since,
+    )
+    .await;
     read.commit().await?;
     let cursor = result.map_err(|error| {
         sqlx::Error::Protocol(format!("receipt delivery decision failed: {error:?}"))
@@ -112,6 +127,7 @@ pub async fn middleware(State(app): State<AppState>, request: Request, next: Nex
                 committed: false,
                 failed: false,
                 account: None,
+                streams: app.streams.clone(),
                 cursor: None,
                 clock: app.clock.clone(),
             }),

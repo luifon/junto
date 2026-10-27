@@ -128,7 +128,7 @@ impl Access {
             _ => return Err(ApiError::unauthenticated()),
         };
         let access = Self::load(connection, account_id, device_id, session_id).await?;
-        crate::receipts::authorize_session(account_id);
+        crate::receipts::authorize_session(account_id, device_id, session_id);
         Ok(access)
     }
 
