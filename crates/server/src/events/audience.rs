@@ -243,6 +243,12 @@ pub enum Audience {
         channel_id: ChannelId,
         permission: WorkspacePermission,
     },
+    ChannelMessage {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        #[serde(with = "time::serde::rfc3339")]
+        created_at: time::OffsetDateTime,
+    },
     /// The accounts that could see the channel with the overrides it had at its deletion.
     DeletedChannel {
         workspace_id: WorkspaceId,
@@ -277,6 +283,12 @@ pub enum Audience {
         channel_id: ChannelId,
         call_id: junto_protocol::ids::CallId,
         readers: Option<Vec<AccountId>>,
+        #[serde(
+            default,
+            with = "time::serde::rfc3339::option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        created_at: Option<time::OffsetDateTime>,
     },
     Mention {
         workspace_id: WorkspaceId,
@@ -525,6 +537,7 @@ impl Audience {
             | Self::Category { workspace_id, .. }
             | Self::WorkspaceRoleHolders { workspace_id, .. }
             | Self::Channel { workspace_id, .. }
+            | Self::ChannelMessage { workspace_id, .. }
             | Self::DeletedChannel { workspace_id, .. }
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
             Self::Notification { .. }
@@ -580,6 +593,7 @@ impl Audience {
             Self::SystemMessage { channel_id, .. }
             | Self::Mention { channel_id, .. }
             | Self::Channel { channel_id, .. }
+            | Self::ChannelMessage { channel_id, .. }
             | Self::DeletedChannel { channel_id, .. }
             | Self::Call { channel_id, .. } => Some(*channel_id),
             _ => None,
@@ -592,6 +606,7 @@ impl Audience {
         match self {
             Self::SystemMessage { channel_id, .. }
             | Self::Channel { channel_id, .. }
+            | Self::ChannelMessage { channel_id, .. }
             | Self::Call { channel_id, .. } => Some(CallKey::Channel(*channel_id)),
             Self::Direct {
                 low_account_id,
@@ -789,6 +804,11 @@ impl Audience {
                     ..
                 },
                 Self::SystemMessage {
+                    workspace_id: w,
+                    channel_id: ch,
+                    ..
+                }
+                | Self::ChannelMessage {
                     workspace_id: w,
                     channel_id: ch,
                     ..
@@ -1187,17 +1207,17 @@ pub fn receives<'a>(
                         permission: *permission,
                     })
             }),
-        Audience::SystemMessage { channel_id, .. } | Audience::Mention { channel_id, .. } => {
-            workspace
-                .and_then(|standing| standing.channels.get(channel_id))
-                .is_some_and(|channel| {
-                    !channel.deleted
-                        && allows(Request::Channel {
-                            scope: &channel.scope,
-                            permission: WorkspacePermission::ViewChannel,
-                        })
-                })
-        }
+        Audience::SystemMessage { channel_id, .. }
+        | Audience::ChannelMessage { channel_id, .. }
+        | Audience::Mention { channel_id, .. } => workspace
+            .and_then(|standing| standing.channels.get(channel_id))
+            .is_some_and(|channel| {
+                !channel.deleted
+                    && allows(Request::Channel {
+                        scope: &channel.scope,
+                        permission: WorkspacePermission::ViewChannel,
+                    })
+            }),
         Audience::DeletedChannel { overrides, .. } => workspace
             .and_then(|standing| standing.kept_scope(overrides))
             .is_some_and(|scope| {

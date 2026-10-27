@@ -1,3 +1,4 @@
+mod event_times;
 mod lists;
 mod recordings;
 

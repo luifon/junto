@@ -435,15 +435,20 @@ async fn remove_notes(
     recording: &RecordingRow,
     kind: &'static str,
 ) -> ApiResult<()> {
-    let lines: Vec<(junto_protocol::ids::MessageId, i64, Option<Vec<AccountId>>)> = sqlx::query_as(
-        "select id, position, readers from messages
+    let lines: Vec<(
+        junto_protocol::ids::MessageId,
+        i64,
+        Option<Vec<AccountId>>,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "select id, position, readers, created_at from messages
          where recording_id = $1 and system->>'action' = $2",
     )
     .bind(recording.id)
     .bind(kind)
     .fetch_all(&mut *connection)
     .await?;
-    for (id, position, readers) in lines {
+    for (id, position, readers, created_at) in lines {
         crate::messages::erase(connection, now, id).await?;
         events::log::record(
             connection,
@@ -453,6 +458,7 @@ async fn remove_notes(
                 channel_id: recording.channel_id,
                 call_id: recording.call_id,
                 readers,
+                created_at: Some(created_at),
             },
             &Event::MessageChanged {
                 place: junto_protocol::message::MessagePlace::Channel {

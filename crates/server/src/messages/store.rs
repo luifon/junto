@@ -31,36 +31,38 @@ pub async fn changed(
     let audience: Option<(
         Option<junto_protocol::ids::CallId>,
         Option<Vec<junto_protocol::ids::AccountId>>,
-    )> = sqlx::query_as("select call_id,readers from messages where id=$1")
+        OffsetDateTime,
+    )> = sqlx::query_as("select call_id,readers,created_at from messages where id=$1")
         .bind(message_id)
         .fetch_optional(&mut *connection)
         .await?;
-    let (call_id, readers) = audience.unwrap_or_default();
-    if let (
-        Some(call_id),
-        MessagePlace::Channel {
-            workspace_id,
-            channel_id,
-        },
-    ) = (call_id, place)
+    let audience = if let MessagePlace::Channel {
+        workspace_id,
+        channel_id,
+    } = place
     {
-        events::log::record(
-            connection,
-            now,
-            &events::audience::Audience::SystemMessage {
+        let (call_id, readers, created_at) = audience.ok_or_else(|| {
+            ApiError::internal(&"a channel message event needs its creation time")
+        })?;
+        match call_id {
+            Some(call_id) => events::audience::Audience::SystemMessage {
                 workspace_id,
                 channel_id,
                 call_id,
                 readers,
+                created_at: Some(created_at),
             },
-            &event,
-        )
-        .await?;
+            None => events::audience::Audience::ChannelMessage {
+                workspace_id,
+                channel_id,
+                created_at,
+            },
+        }
     } else {
-        let audience = events::audience::Audience::fixed_by(&event)
-            .ok_or_else(|| ApiError::internal(&"a message event needs its audience"))?;
-        events::log::record(connection, now, &audience, &event).await?;
-    }
+        events::audience::Audience::fixed_by(&event)
+            .ok_or_else(|| ApiError::internal(&"a message event needs its audience"))?
+    };
+    events::log::record(connection, now, &audience, &event).await?;
     Ok(())
 }
 
@@ -408,6 +410,7 @@ pub async fn system(
                 channel_id: channel,
                 call_id,
                 readers,
+                created_at: Some(now),
             },
             &Event::MessageChanged {
                 place: place.value,
@@ -428,6 +431,15 @@ pub async fn remove(
     place: &Place,
     message: &Message,
 ) -> ApiResult<()> {
+    changed(
+        connection,
+        now,
+        place.value,
+        message.id,
+        message.position,
+        true,
+    )
+    .await?;
     erase(connection, now, message.id).await?;
     if let Some(root) = message.thread_root {
         let position: i64 = sqlx::query_scalar("select position from messages where id=$1")
@@ -445,15 +457,7 @@ pub async fn remove(
         .execute(&mut *connection)
         .await?;
     }
-    changed(
-        connection,
-        now,
-        place.value,
-        message.id,
-        message.position,
-        true,
-    )
-    .await
+    Ok(())
 }
 
 /// Erases content while retaining the marker required by replies and future threads.
