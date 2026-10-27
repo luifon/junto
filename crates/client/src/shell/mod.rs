@@ -21,6 +21,8 @@ mod join;
 pub mod linking;
 mod main_area;
 mod moving;
+/// The least time between two drawings that the animations of a window ask for.
+pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
 mod panic_notice;
 mod people;

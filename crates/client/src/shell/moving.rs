@@ -2,7 +2,8 @@
 //! An animation is painted one frame at a time: it plays only while some part of it is in
 //! view in the active window, and with reduced motion only while the pointer is over it.
 //! The window is drawn again when the shown frame of an animation ends, and not at every
-//! frame of the display.
+//! frame of the display, and at most once in [`LEAST_INTERVAL`] for all its animations: a
+//! drawing renders the whole window (review M5).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -17,6 +18,9 @@ use gpui::{
 
 /// How many animations the window keeps the shown frame of.
 const MOST_PLAYS: usize = 256;
+/// The least time between two drawings that the animations of a window ask for. A frame that
+/// ends within it is shown at the next drawing, and a shorter frame is passed over.
+pub const LEAST_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The delay of a frame. A frame with a delay of 10 ms or less is shown for 100 ms, as
 /// browsers show it.
@@ -111,8 +115,10 @@ impl Playback {
             .map_or(0, |play| play.frame)
     }
 
-    /// Draws the window again at `at`, unless a timer draws it earlier.
+    /// Draws the window again at `at`, but not before [`LEAST_INTERVAL`] from `now`, unless a
+    /// timer draws it earlier.
     fn wake_at(&self, at: Instant, now: Instant, window: &mut Window, cx: &mut App) {
+        let at = at.max(now + LEAST_INTERVAL);
         if self.wake.get().is_some_and(|waiting| waiting <= at) {
             return;
         }

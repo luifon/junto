@@ -891,6 +891,42 @@ fn draws(window: &mut Window) -> usize {
     window.in_shell(|shell, _, _| shell.draws().0)
 }
 
+/// An animation with frames of 20 ms draws the window at most once in 50 ms, its least
+/// interval, and passes over the frames between: each drawing renders the whole window
+/// (review M5). It still moves.
+#[gpui::test]
+fn a_fast_animation_draws_the_window_at_most_once_in_its_least_interval(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let sent = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "Fast",
+        vec![("fast.gif", gif(64, 64, 20, 20))],
+    );
+    let id = sent.attachments[0].id;
+    window.until_message("Fast");
+    until_picture_read(&mut window, id);
+    window.cx.update(|window, _| window.activate_window());
+    window.settle();
+    let before = draws(&mut window);
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..100 {
+        wait_for(&mut window, 10);
+        seen.extend(frames(&mut window, id));
+    }
+    let drawn = draws(&mut window) - before;
+    assert!(
+        drawn <= 22,
+        "one second of an animation with frames of 20 ms drew the window {drawn} times"
+    );
+    assert!(seen.len() >= 5, "the animation showed the frames {seen:?}");
+}
+
 /// An animation plays while it is in view in the active window: each frame for its delay,
 /// with one drawing of the window at the end of each frame. It stops while the window is
 /// not active, with reduced motion unless the pointer is over it, and out of view, where it

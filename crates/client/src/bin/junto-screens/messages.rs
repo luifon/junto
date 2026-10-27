@@ -844,3 +844,88 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let _: MessageId = id(1);
     Ok(())
 }
+
+/// A GIF of `frames` frames of `width` by `height` pixels, each shown for `hundredths` of a
+/// second, in turn of two colours.
+fn animated_gif(width: u32, height: u32, frames: u32, hundredths: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+        let shown = (0..frames).map(|index| {
+            let colour = if index % 2 == 0 {
+                image::Rgba([199, 154, 69, 255])
+            } else {
+                image::Rgba([143, 177, 191, 255])
+            };
+            image::Frame::from_parts(
+                image::RgbaImage::from_pixel(width, height, colour),
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(hundredths * 10, 1),
+            )
+        });
+        if encoder.encode_frames(shown).is_err() {
+            return Vec::new();
+        }
+    }
+    bytes
+}
+
+/// The cost of an animation in view (review M5): the time of one drawing of the window with a
+/// GIF of 24 frames of 20 ms in the list, and the drawings in one second while it plays. The
+/// share of one processor is the time of a drawing times the drawings in a second.
+pub(crate) fn measure_animation(studio: &mut Studio) -> Result<(), String> {
+    use std::time::{Duration as Wait, Instant};
+    let mut room = general();
+    let mut moving = file(13, "applause.gif", 2_400_000, Some((498, 280)));
+    moving.media_type = "image/gif".to_owned();
+    moving.frames = Some(24);
+    let shared = room.message("Ana", 100, "The room after the mix.");
+    shared.attachments = vec![moving];
+    let (window, shell, _) = studio.open(
+        Screen::new("gif-frames", with_timeline(room.timeline())),
+        Box::new(move |shell: &mut Shell, _, cx| {
+            prepare(shell, none(), cx);
+            shell.show_picture(id(7013), &animated_gif(498, 280, 24, 2));
+        }),
+    )?;
+    studio
+        .cx
+        .update_window(window.into(), |_, window, _| window.activate_window())
+        .map_err(|error| format!("{error:#}"))?;
+    let mut times = Vec::new();
+    for step in 0..65 {
+        let started = Instant::now();
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.refresh())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+        if step >= 5 {
+            times.push(started.elapsed());
+        }
+    }
+    times.sort();
+    let median = times[times.len() / 2];
+    let before = studio.cx.update(|cx| shell.read(cx).draws().0);
+    let started = Instant::now();
+    while started.elapsed() < Wait::from_secs(1) {
+        studio.cx.run_until_parked();
+        std::thread::sleep(Wait::from_millis(1));
+    }
+    let drawn = studio.cx.update(|cx| shell.read(cx).draws().0) - before;
+    let milliseconds = median.as_secs_f64() * 1_000.0;
+    let interval = junto_client::shell::ANIMATION_INTERVAL.as_secs_f64() * 1_000.0;
+    println!(
+        "a GIF of 20 ms frames in view: a drawing takes {milliseconds:.2} ms (median of 60); \
+         {drawn} drawings in one second of play; at most one drawing in {interval:.0} ms is \
+         {:.1} % of one processor",
+        milliseconds / interval * 100.0
+    );
+    studio
+        .cx
+        .update_window(window.into(), |_, window, _| window.remove_window())
+        .map_err(|error| format!("{error:#}"))?;
+    studio.cx.run_until_parked();
+    Ok(())
+}
