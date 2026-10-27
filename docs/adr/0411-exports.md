@@ -12,7 +12,7 @@ ADR 0406 decides that an export is one ZIP file with the messages as JSON and as
 
 Request and ownership:
 
-- `POST /api/v1/channels/{channel_id}/exports` needs sight of the channel and `export_channel` in it. `POST /api/v1/conversations/{conversation_id}/exports` needs that the caller is a participant who may reach the other account (ADR 0307).
+- `POST /api/v1/channels/{channel_id}/exports` needs sight of the channel and both `export_channel` and `read_message_history` in it. `POST /api/v1/conversations/{conversation_id}/exports` needs that the caller is a participant who may reach the other account (ADR 0307).
 - An export belongs to the account that asked for it. `GET /api/v1/exports`, `GET` and `DELETE /api/v1/exports/{export_id}` and `GET /api/v1/exports/{export_id}/file` serve that account only; every other account gets `not_found`, an administrator included.
 - While an export of the same place waits or is written for the caller, a request returns that export with the status 200.
 - An account has at most 3 exports that wait or are written and at most 10 stored exports; a further request gets `limit_reached`.

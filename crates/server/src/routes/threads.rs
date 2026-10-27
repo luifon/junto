@@ -136,6 +136,7 @@ pub async fn fork(
     let channel = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let (place, _) = root(connection, &access, id, Purpose::Change).await?;
+        place.require(&access, WorkspacePermission::ReadMessageHistory)?;
         place.require_open()?;
         let MessagePlace::Channel {
             workspace_id,

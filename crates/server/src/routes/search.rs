@@ -104,7 +104,8 @@ pub async fn search(
         read_rate(&app, &access, &mut counted)?;
         let allowed = places(connection, &access).await?;
         if let Some(channel) = query.channel_id {
-            Place::channel(connection, &access, channel).await?;
+            Place::channel(connection, &access, channel).await?
+                .require(&access, junto_authz::WorkspacePermission::ReadMessageHistory)?;
         }
         let rows = sqlx::query("with query as (select websearch_to_tsquery( 'simple' ,$1) as q), content as ( select m.id,-1 as
              line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as

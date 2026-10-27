@@ -63,6 +63,8 @@ Message reads:
 
 - Channel and thread history require read message history. A single channel message also requires it unless the message was created strictly after the current subscribed event connection began. The server records this time; requests cannot supply it.
 - The live exception uses the latest subscribed connection for the requesting session and device. A replaced, unsubscribed or stopping connection grants no exception. Reconnecting establishes a new boundary. Current view channel permission is always required.
+- Search results and unread thread lists include only channels with read message history. Scoped search, pins, thread history and a thread copy require that permission explicitly. An export checks both export channel and read message history when requested, while being built and during download.
+- An attachment download uses the same creation-time bound as its message, including when permission is checked again during a running download. A reconnect can therefore end a history-free download of an older message.
 - Sending and editing return the written message without requiring read message history. Internal checks of a reply destination and updates of its root do not turn an authorized write into a history read. Direct conversations retain their participant and departure rules.
 
 Message edits:

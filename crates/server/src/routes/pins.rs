@@ -25,6 +25,7 @@ pub async fn list(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
         let place = Place::channel(connection, &access, id).await?;
+        place.require(&access, WorkspacePermission::ReadMessageHistory)?;
         super::search::read_rate(&app, &access, &mut counted)?;
         let ids = sqlx::query_scalar(
             "select message_id from message_pins where channel_id=$1 order by pinned_at,message_id",

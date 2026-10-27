@@ -1,3 +1,5 @@
+mod lists;
+
 use crate::messages_support::{channel, message, send, text};
 use crate::support::{Member, TestServer};
 use junto_protocol::{

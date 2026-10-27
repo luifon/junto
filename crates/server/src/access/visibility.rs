@@ -81,11 +81,17 @@ fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Act
 }
 
 pub async fn places(connection: &mut PgConnection, access: &Access) -> ApiResult<Places> {
-    Ok(load(connection, &[access.account_id], None, true)
-        .await?
-        .pop()
-        .map(|(_, places)| places)
-        .unwrap_or_default())
+    Ok(load_for(
+        connection,
+        &[access.account_id],
+        None,
+        true,
+        WorkspacePermission::ReadMessageHistory,
+    )
+    .await?
+    .pop()
+    .map(|(_, places)| places)
+    .unwrap_or_default())
 }
 
 /// With named places, no unrelated channel or conversation is loaded. Notification delivery
@@ -95,6 +101,23 @@ pub async fn load(
     accounts: &[AccountId],
     named: Option<&[Uuid]>,
     directs: bool,
+) -> ApiResult<Vec<(AccountId, Places)>> {
+    load_for(
+        connection,
+        accounts,
+        named,
+        directs,
+        WorkspacePermission::ViewChannel,
+    )
+    .await
+}
+
+async fn load_for(
+    connection: &mut PgConnection,
+    accounts: &[AccountId],
+    named: Option<&[Uuid]>,
+    directs: bool,
+    permission: WorkspacePermission,
 ) -> ApiResult<Vec<(AccountId, Places)>> {
     let rows: Vec<Json<Standing>> = sqlx::query_scalar("with channels_selected as materialized ( select id,workspace_id from channels where deleted_at is null and
              ($2::uuid[] is null or id=any($2)) ), overrides as materialized ( select
@@ -179,7 +202,7 @@ pub async fn load(
                         &actor,
                         &Request::Channel {
                             scope: &scope,
-                            permission: WorkspacePermission::ViewChannel,
+                            permission,
                         },
                     )
                     .is_allowed()

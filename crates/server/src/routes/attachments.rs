@@ -377,6 +377,7 @@ pub async fn cancel_upload(
 /// The row of an attachment that the caller may download now: the upload is complete and
 /// belongs to a message that the caller reads.
 async fn downloadable(
+    app: &AppState,
     connection: &mut sqlx::PgConnection,
     access: &Access,
     id: AttachmentId,
@@ -398,7 +399,11 @@ async fn downloadable(
         connection,
         access,
         message.ok_or_else(ApiError::not_found)?,
-        messages::Purpose::Read,
+        messages::Purpose::Live(app.streams.live_since(
+            access.account_id,
+            access.device_id,
+            access.session_id,
+        )),
     )
     .await?;
     Ok(row)
@@ -413,7 +418,7 @@ async fn stored_decided_again(
 ) -> ApiResult<AttachmentId> {
     read!(app.background(), |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let row = downloadable(connection, &access, id).await?;
+        let row = downloadable(app, connection, &access, id).await?;
         Ok(row.try_get::<AttachmentId, _>("storage_id")?)
     })
 }
@@ -443,7 +448,7 @@ pub async fn download(
     let now = app.now();
     let (parts, size, media, hash, account_id, storage_id) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let row = downloadable(connection, &access, id).await?;
+        let row = downloadable(&app, connection, &access, id).await?;
         Ok((
             files::chunks(connection, id).await?,
             row.try_get::<i64, _>("bytes")?,

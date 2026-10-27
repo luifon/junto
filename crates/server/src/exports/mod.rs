@@ -227,7 +227,7 @@ pub async fn of_account(
 }
 
 /// The place of an export when the account may export it now: for a channel, the account
-/// sees it and holds `export_channel` in it; for a direct-message conversation, the account
+/// sees it and holds `export_channel` and `read_message_history` in it; for a direct-message conversation, the account
 /// is a participant and may reach the other one (ADR 0302). `None` otherwise. Every
 /// request for an export, every page of its build and every download ask this.
 pub async fn permitted(
@@ -259,10 +259,12 @@ pub async fn permitted(
         Err(error) => return Err(error),
     };
     if let Some(scope) = &opened.scope
-        && !access.allows(Request::Channel {
-            scope,
-            permission: WorkspacePermission::ExportChannel,
-        })
+        && [
+            WorkspacePermission::ExportChannel,
+            WorkspacePermission::ReadMessageHistory,
+        ]
+        .into_iter()
+        .any(|permission| !access.allows(Request::Channel { scope, permission }))
     {
         return Ok(None);
     }
