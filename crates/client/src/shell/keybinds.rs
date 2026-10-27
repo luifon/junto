@@ -188,6 +188,7 @@ impl Shell {
                 self.open_server_admin(crate::state::admin::AdminPage::Workspaces, window, cx);
             }
             KeyAction::OpenKeybinds => {
+                self.open(Open::Settings, window, cx);
                 self.open_settings_section(super::settings::SettingsSection::Keybinds, window, cx);
             }
             // The call actions are above; push to talk and push to mute are held keys.

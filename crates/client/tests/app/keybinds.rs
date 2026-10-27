@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use gpui::TestAppContext;
-use junto_client::shell::SettingsSection;
+use junto_client::shell::{Open, SettingsSection};
 use junto_client::state::KeybindChange;
 use junto_client_core::global_keys::{HeldKeys, Key, KeyCombo};
 use junto_client_core::keybinds::{KeyAction, Keybinds};
@@ -64,6 +64,7 @@ fn keybinds(window: &mut Window) -> Keybinds {
 
 fn open_keybinds(window: &mut Window) {
     window.in_shell(|shell, window, cx| {
+        shell.open(Open::Settings, window, cx);
         shell.open_settings_section(SettingsSection::Keybinds, window, cx);
     });
     assert!(window.shows("settings-page-settings-section-keybinds"));
@@ -210,14 +211,22 @@ fn a_call_binding_works_from_the_keyboard_of_the_system_when_it_may_work_outside
             .read_with(&window.cx, |state, _| state.calls().view())
     };
 
-    // Push to mute: closed while held, open again at the release.
+    // Push to mute: closed while held; the release ends the hold, which opens the microphone
+    // again at the seat of the call (the call of this test has no media connection to open
+    // it in).
+    let holds = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.holds_mute())
+    };
     held.hold(Ok(vec![Key::Function(13)]));
     window.until(
         "the held key of push to mute closed the microphone",
-        |window| view(window).muted,
+        |window| view(window).muted && holds(window),
     );
     held.hold(Ok(Vec::new()));
-    window.until("the release opened it again", |window| !view(window).muted);
+    window.until("the release ended the hold", |window| !holds(window));
+    calls.set_muted(false);
 
     // The sound goes off at its default keys.
     let sound_off = Keybinds::default_binding(KeyAction::ToggleSoundOff)

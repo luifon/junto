@@ -155,6 +155,11 @@ impl AppState {
         }
     }
 
+    /// True while a window or the keyboard of the system holds the keys of push to mute.
+    pub fn holds_mute(&self) -> bool {
+        !self.mute_holds.is_empty()
+    }
+
     /// True when the keyboard of the system gives the keys of `action` now: a window then
     /// does not do the action a second time at the same press.
     pub fn system_gives(&self, action: KeyAction) -> bool {
