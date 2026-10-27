@@ -130,7 +130,7 @@ pub async fn may_be_at(
                     && record.archived_at.is_none()
                     && access.allows(Request::Channel {
                         scope: &scope,
-                        permission: WorkspacePermission::ViewChannel,
+                        permission: WorkspacePermission::Connect,
                     })),
                 Err(error) if error.code() == ErrorCode::NotFound => Ok(false),
                 Err(error) => Err(error),
@@ -624,12 +624,10 @@ async fn apply(
             orders
                 .updates
                 .push((room.clone(), member.identity.clone(), wanted));
-        } else if !wanted.allows(TrackSource::Microphone)
-            && participant
-                .tracks
-                .iter()
-                .any(|track| track.kind == TrackKind::Audio)
-        {
+        } else if participant.tracks.iter().any(|track| {
+            !wanted.allows(track.source)
+                || (!wanted.allows(TrackSource::Microphone) && track.kind == TrackKind::Audio)
+        }) {
             orders
                 .removals
                 .push((room.clone(), member.identity.clone()));

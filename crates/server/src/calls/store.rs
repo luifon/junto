@@ -725,7 +725,7 @@ pub async fn announce_participant(
     Ok(())
 }
 
-/// What an account may publish in a call: pictures only while its microphone is blocked.
+/// What an account may publish: channel permissions, restricted to pictures while blocked.
 /// An account that is not a member yet, on its way into a call with meeting mode, gets the
 /// block of the meeting on its entry, so it is treated as blocked already.
 pub async fn publishing_of(
@@ -740,18 +740,50 @@ pub async fn publishing_of(
     )
     .bind(call.id)
     .bind(account_id)
-    .fetch_one(connection)
+    .fetch_one(&mut *connection)
     .await?;
     let by_meeting = !is_member
         && call
             .meeting
             .as_ref()
             .is_some_and(|meeting| meeting.presenter != account_id);
-    Ok(if blocked || by_meeting {
+    let publishing = if blocked || by_meeting {
         Publishing::pictures_only()
     } else {
         Publishing::open()
-    })
+    };
+    allowed_publishing(connection, call, account_id, publishing).await
+}
+
+async fn allowed_publishing(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+    mut publishing: Publishing,
+) -> ApiResult<Publishing> {
+    use crate::media::TrackSource;
+    use junto_authz::{Request, WorkspacePermission as W};
+    if let CallPlace::Channel { channel_id, .. } = call.place {
+        let Some(access) = crate::access::Access::of_account(connection, account_id).await? else {
+            publishing.sources.clear();
+            return Ok(publishing);
+        };
+        let (_, scope) = access.channel(connection, channel_id).await?;
+        let holds = |permission| {
+            access.allows(Request::Channel {
+                scope: &scope,
+                permission,
+            })
+        };
+        publishing.sources.retain(|source| match source {
+            TrackSource::Microphone => holds(W::Speak),
+            TrackSource::Camera => holds(W::Video),
+            TrackSource::ScreenShare => holds(W::ShareScreen),
+            TrackSource::ScreenShareAudio => holds(W::Speak) && holds(W::ShareScreen),
+            TrackSource::Unknown => false,
+        });
+    }
+    Ok(publishing)
 }
 
 /// What the join token of an account states that the account may publish. An account that
@@ -765,7 +797,7 @@ pub async fn publishing_at_join(
     account_id: AccountId,
 ) -> ApiResult<Publishing> {
     if !reads(&mut *connection, call, account_id).await? {
-        return Ok(Publishing::pictures_only());
+        return allowed_publishing(connection, call, account_id, Publishing::pictures_only()).await;
     }
     publishing_of(connection, call, account_id).await
 }

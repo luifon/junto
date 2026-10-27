@@ -25,7 +25,8 @@ Step 0 measured how long a token admits a participant (`docs/step-0/README.md`, 
 - The comparison runs for as long as the room exists. It does not stop when the join token of a removed person has expired, because that person can hold a longer token from the LiveKit server, and each successful return gives a new one.
 - The server removes anyone who is not allowed, each time that person is found.
 - The comparison skips the participants of the recorder. The recorder is in the room as one participant per recording job, and the participant of a recorder that crashed stays in the room for about 20 seconds (ADR 0601).
-- The decision whether a person is allowed uses the permission function of ADR 0301.
+- The decision whether a person is allowed uses the permission function of ADR 0301. Joining, renewing a seat, accepting an invitation or move, and requesting entry require connect in the channel; losing it removes the participant. Seeing a channel alone still permits reading its public call state.
+- Join tokens and repeated admission checks intersect publication with the channel permissions: speak for microphone, video for camera, share screen for screen video, and both speak and share screen for screen audio. Meeting mode and microphone blocks restrict this set further. The initial pictures-only token of a call that hides its occupants obeys the same channel restrictions. An empty source set sets `canPublish` to false, because an empty source list alone does not prohibit publishing in LiveKit.
 
 ## Consequences
 

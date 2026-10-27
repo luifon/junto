@@ -28,7 +28,7 @@ mode, view audit entries and admit to full call (bits 0–16).
 Bits 17–30 are, in order: send messages, send messages in threads, create threads, read message
 history, attach files, add reactions, mention roles, connect, speak, video, share screen, use
 voice activity, set call user limit and set voice channel status. Camera and screen publication
-have separate permissions; screen sound follows screen share, not microphone permission.
+have separate permissions; screen sound requires both speak and share screen, because the server cannot tell screen sound from a voice (ADR 0510).
 
 Everyone and workspace roles grant workspace permissions. A workspace person override applies
 after their union: deny then allow. Category and channel overrides exist for everyone, roles and

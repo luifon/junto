@@ -47,9 +47,8 @@ impl Voice {
     }
 }
 
-/// Access to a voice channel is the permission to see it: a member who sees a voice channel
-/// can enter it, unless its lock or its user limit stops the entry (ADR 0504). An archived
-/// voice channel has no call and takes no change (ADR 0410).
+/// A visible, open voice channel for a change. Entry separately requires connect;
+/// an archived voice channel has no call and takes no change (ADR 0410).
 pub(super) async fn voice(
     connection: &mut PgConnection,
     access: &Access,
@@ -797,6 +796,10 @@ pub async fn request_entry(
     let request = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let voice = voice(connection, &access, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &voice.scope,
+            permission: WorkspacePermission::Connect,
+        })?;
         let open = || ApiError::conflict("the voice channel is open; join it");
         let call = store::call(connection, By::Place(voice.place), true)
             .await?

@@ -185,6 +185,13 @@ pub async fn enter(
     pass: Pass,
     renews: Option<&str>,
 ) -> ApiResult<Entered> {
+    if let CallPlace::Channel { channel_id, .. } = place {
+        let (_, scope) = access.channel(connection, channel_id).await?;
+        access.require(junto_authz::Request::Channel {
+            scope: &scope,
+            permission: junto_authz::WorkspacePermission::Connect,
+        })?;
+    }
     let limits = &app.config.limits.calls;
     let usable_until = now + limits.token_lifetime + limits.token_tolerance;
     let call =

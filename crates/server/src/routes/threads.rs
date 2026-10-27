@@ -515,7 +515,8 @@ pub async fn followed(
     let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        Place::channel(connection, &access, channel_id).await?;
+        let place = Place::channel(connection, &access, channel_id).await?;
+        place.require(&access, WorkspacePermission::ReadMessageHistory)?;
         super::search::read_rate(&app, &access, &mut counted)?;
         messages::threads::followed(connection, access.account_id, channel_id, before, limit).await
     })

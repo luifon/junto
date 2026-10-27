@@ -264,6 +264,16 @@ pub async fn snapshot(
             workspace
                 .channels
                 .iter()
+                .filter(|channel| {
+                    workspace
+                        .channel_permissions
+                        .iter()
+                        .find(|entry| entry.channel_id == channel.id)
+                        .map_or(workspace.permissions.as_slice(), |entry| {
+                            entry.permissions.as_slice()
+                        })
+                        .contains(&junto_authz::WorkspacePermission::ReadMessageHistory)
+                })
                 .map(|channel| MessagePlace::Channel {
                     workspace_id: workspace.workspace.id,
                     channel_id: channel.id,

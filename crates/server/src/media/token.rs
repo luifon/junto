@@ -64,7 +64,7 @@ pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
             "room": grant.room.as_str(),
             "roomJoin": true,
             "canSubscribe": true,
-            "canPublish": true,
+            "canPublish": !sources.is_empty(),
             "canPublishData": false,
             "canPublishSources": sources,
             "canUpdateOwnMetadata": false,
