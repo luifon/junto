@@ -248,6 +248,7 @@ impl Shell {
     pub(crate) fn render_book_end(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let end = div()
             .id("server-book-end")
+            .w_full()
             .flex_1()
             .min_h(u(24.0))
             .debug_selector(|| "server-book-end".to_owned());

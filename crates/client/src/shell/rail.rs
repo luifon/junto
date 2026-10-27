@@ -785,10 +785,20 @@ impl Shell {
                 )
             });
         let icon = self.drop_target(icon, DropTarget::Server(server_id), theme, cx);
+        // The menu of a workspace that the hover menu opened stays at the tile of its server.
+        let workspace_menu = match &self.layer {
+            Layer::WorkspaceMenu(open_server, open) if *open_server == server_id => row
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.id == *open)
+                .map(|position| self.render_workspace_menu(row, position, cx)),
+            _ => None,
+        };
         div()
             .relative()
             .flex_none()
             .child(icon)
+            .children(workspace_menu)
             .when(open, |wrapper| {
                 wrapper.child(
                     deferred(
@@ -847,28 +857,80 @@ impl Shell {
                             .child(line),
                     ),
             );
-        let workspaces = row
-            .workspaces
-            .iter()
-            .enumerate()
-            .map(|(position, workspace)| {
-                let workspace_id = workspace.id;
-                WorkspaceRow::new(
-                    ("menu-workspace", index * 1000 + position),
-                    workspace.name.clone(),
-                    workspace.id.as_uuid().as_u128(),
+        // The workspaces of the server as the expanded server book has them: dragged into an
+        // order, their menu from the secondary press or the menu key, and hidden while the
+        // workspaces of the server are collapsed (ADR 0775).
+        let collapsed = row.workspaces_collapsed;
+        let mut workspaces: Vec<AnyElement> = Vec::new();
+        for (position, workspace) in row.workspaces.iter().enumerate().filter(|_| !collapsed) {
+            let workspace_id = workspace.id;
+            let shown: SharedString = workspace.name.clone().into();
+            let row_element = WorkspaceRow::new(
+                ("menu-workspace", index * 1000 + position),
+                workspace.name.clone(),
+                workspace.id.as_uuid().as_u128(),
+            )
+            .selected(workspace.selected)
+            .unread(super::channels::unread_sign(workspace.unread))
+            .in_menu()
+            .on_menu(Self::handler(cx, move |this, window, cx| {
+                this.open_workspace_menu(server_id, workspace_id, window, cx);
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.select_workspace(server_id, workspace_id, cx);
+                });
+                this.dismiss_hover_menu(window, cx);
+            }));
+            let dragged = div()
+                .id(("menu-workspace-drag", index * 1000 + position))
+                .flex_none()
+                .on_drag(
+                    super::arrange::WorkspaceDrag(server_id, workspace_id),
+                    move |_, _, _, cx| cx.new(|_| super::person_drag::DragLabel(shown.clone())),
                 )
-                .selected(workspace.selected)
-                .unread(super::channels::unread_sign(workspace.unread))
-                .in_menu()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.select_workspace(server_id, workspace_id, cx);
-                    });
-                    this.dismiss_hover_menu(window, cx);
-                }))
-            });
-        let workspaces: Vec<WorkspaceRow> = workspaces.collect();
+                .child(row_element);
+            workspaces.push(
+                self.drop_target(
+                    dragged,
+                    DropTarget::Workspace(server_id, workspace_id),
+                    theme,
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        let toggle_label = if collapsed {
+            text::book::EXPAND_WORKSPACES
+        } else {
+            text::book::COLLAPSE_WORKSPACES
+        };
+        let toggle = div()
+            .id(("menu-workspaces-toggle", index))
+            .role(Role::MenuItem)
+            .aria_label(toggle_label)
+            .aria_expanded(!collapsed)
+            .debug_selector(|| "menu-workspaces-toggle".to_owned())
+            .px(u(12.0))
+            .py(u(8.0))
+            .typeface(theme.types.small, theme)
+            .ink(colors.bone_2)
+            .cursor_pointer()
+            .focusable()
+            .tab_stop(true)
+            .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.arrange(
+                        junto_client_core::arrangement::Change::CollapseWorkspaces {
+                            server: server_id,
+                            collapsed: !collapsed,
+                        },
+                        cx,
+                    );
+                });
+            }))
+            .child(toggle_label);
         let empty = row.workspaces.is_empty();
         div()
             .id(("hover-menu", index))
@@ -894,6 +956,7 @@ impl Shell {
                 .when(!empty, |menu| {
                     menu.child(menu_label(text::WORKSPACES, true, cx))
                         .children(workspaces)
+                        .child(toggle)
                 })
                 .when(empty, |menu| {
                     menu.child(

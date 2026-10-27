@@ -5,6 +5,7 @@
 //! (ADR 0702).
 
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
+use junto_client::shell::Open;
 use junto_client::state::view::BookPart;
 use junto_client_core::arrangement::GroupColour;
 use junto_client_core::protocol::ids::WorkspaceId;
@@ -394,4 +395,117 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
     again.until_ready();
     assert_eq!(again.workspaces_of_first(), ordered);
     assert!(again.view().servers[0].workspaces_collapsed);
+}
+
+#[gpui::test]
+fn the_collapsed_server_book_orders_collapses_and_marks_the_workspaces_of_a_server(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.own_account();
+    let api = admin.handle.api();
+    for name in ["Lab", "Mill"] {
+        let workspace = world.run(api.create_workspace(name.to_owned())).unwrap();
+        world
+            .run(api.add_workspace_member(workspace.id, own))
+            .unwrap();
+    }
+    window.until("the server book lists the three workspaces", |window| {
+        window.workspaces_of_first().len() == 3
+    });
+    let harbor = world.server("Harbor");
+    let harbor_admin = world.owner(&harbor);
+    window.join_further(&world, &harbor, &harbor_admin);
+    let acme = window.view().servers[0].id;
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.select_server(acme, cx));
+    window.until("Acme Studio is shown", |window| {
+        window.view().servers[0].selected
+    });
+    window.click("collapse-server-book");
+    assert!(window.shows("expand-server-book"));
+    let hover = |window: &mut Window| {
+        window.in_shell(|shell, window, cx| shell.open(Open::ServerHoverMenu, window, cx));
+        assert!(window.shows("server-hover-menu"));
+    };
+    let listed = window.workspaces_of_first();
+    let (first, last) = (listed[0].clone(), listed[2].clone());
+
+    // A drag in the menu of the server tile orders the workspaces.
+    hover(&mut window);
+    let (from, to) = (window.workspace_row(&last), window.workspace_row(&first));
+    assert!(drag(&mut window, &from, &to, 0.2));
+    window.until("the last workspace is the first", |window| {
+        window.workspaces_of_first()[0] == last
+    });
+
+    // The secondary press on a row opens the menu of the workspace.
+    hover(&mut window);
+    let row = window.workspace_row(&last);
+    window.right_click_named(row);
+    assert!(window.shows("workspace-menu"));
+    assert!(window.shows("mark-workspace-read"));
+    window.click("workspace-move-down");
+    window.until("the workspace moved one place down", |window| {
+        window.workspaces_of_first()[1] == last
+    });
+    window.press("escape");
+    assert!(!window.shows("workspace-menu"));
+
+    // The keyboard: the menu key on the first row opens its menu.
+    hover(&mut window);
+    window.press("down menu");
+    assert!(window.shows("workspace-menu"));
+    window.click("workspace-move-down");
+    window.until("the first workspace moved one place down", |window| {
+        window.workspaces_of_first()[1] == first
+    });
+    window.press("escape");
+
+    // The workspaces collapse and expand in the menu, which then lists none of them.
+    hover(&mut window);
+    window.click("menu-workspaces-toggle");
+    window.until("the workspaces are collapsed", |window| {
+        window.view().servers[0].workspaces_collapsed
+    });
+    let hidden = window.workspace_row(&last);
+    assert!(!window.shows_named(hidden));
+    window.click("menu-workspaces-toggle");
+    window.until("the workspaces are expanded", |window| {
+        !window.view().servers[0].workspaces_collapsed
+    });
+    let shown = window.workspace_row(&last);
+    assert!(window.shows_named(shown));
+    window.press("escape");
+
+    // The tiles of the servers are dragged too: Harbor on the middle of Acme Studio makes a
+    // group, and Harbor dropped after the last tile leaves it.
+    assert!(drag(&mut window, "server-1", "server-0", 0.5));
+    window.until("the two servers are a group", |window| {
+        window.view().groups.len() == 1
+    });
+    assert!(window.shows("group-0"));
+    let at = window
+        .view()
+        .servers
+        .iter()
+        .position(|row| row.name == "Harbor")
+        .unwrap();
+    assert!(drag(
+        &mut window,
+        &format!("server-{at}"),
+        "server-book-end",
+        0.5
+    ));
+    window.until("Harbor left the group", |window| {
+        window
+            .view()
+            .servers
+            .iter()
+            .any(|row| row.name == "Harbor" && row.group.is_none())
+    });
 }
