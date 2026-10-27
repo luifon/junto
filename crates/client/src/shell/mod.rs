@@ -329,6 +329,9 @@ pub struct Shell {
     /// The list of the messages of the shown channel.
     pub(crate) feed: feed::FeedList,
     pub(crate) message_pictures: feed::MessagePictures,
+    /// The reads of the picture viewers of this window, so that a read of a closed viewer
+    /// never passes for a read of a later one.
+    pub(crate) viewer_reads: u64,
     /// The tokens of the code blocks that the window drew.
     pub(crate) code_tokens: feed::CodeTokens,
     pub(crate) composer: composer::Composer,
@@ -714,6 +717,7 @@ impl Shell {
             join_results: 0,
             feed,
             message_pictures: feed::MessagePictures::default(),
+            viewer_reads: 0,
             code_tokens: feed::CodeTokens::default(),
             composer,
             thread_feed,

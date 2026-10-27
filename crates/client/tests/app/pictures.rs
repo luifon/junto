@@ -599,42 +599,129 @@ fn a_picture_in_the_chat_of_a_call_opens_in_the_viewer_of_both_windows(cx: &mut 
     assert!(!detached.shows("picture-viewer"));
 }
 
-/// A picture with a side above 1,024 pixels is drawn in the list from a reduced copy, and
-/// the viewer reads it at its own size while it is open.
+/// A picture with a side above 1,024 pixels is drawn in the list from a reduced copy. The
+/// viewer reads it at the size of its place in pixels of the device, never larger than its
+/// own size: in a window narrower than the picture a reduced copy, and its own size in a
+/// window wider than it (review M4). The bytes of the copy are printed for the record.
 #[gpui::test]
-fn a_picture_larger_than_the_copy_of_the_lists_is_read_at_its_own_size_for_the_viewer(
+fn a_picture_larger_than_the_copy_of_the_lists_is_read_at_the_size_of_the_viewer(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0))));
     let general = window.selected_channel();
     let sent = send_files(
         &world,
         &admin,
         PlaceId::Channel(general),
         "A wide screen",
-        vec![("screen.png", png(2400, 1200))],
+        vec![("screen.png", png(5120, 2880))],
     );
     let (id, bytes) = (sent.attachments[0].id, sent.attachments[0].bytes);
-    assert_eq!(
-        (sent.attachments[0].width, sent.attachments[0].height),
-        (Some(2400), Some(1200))
-    );
     window.until_message("A wide screen");
     until_picture_read(&mut window, id);
-    fits(&mut window, id, (2400.0, 1200.0), "the channel");
+    fits(&mut window, id, (5120.0, 2880.0), "the channel");
     click_picture(&mut window, id);
-    window.until("the viewer holds the picture at its own size", |window| {
-        window.in_shell(|shell, _, _| shell.viewer_image_size()) == Some((2400, 1200))
+    let device = window.cx.update(|window, _| {
+        let viewport = window.viewport_size();
+        (
+            f32::from(viewport.width) * window.scale_factor(),
+            f32::from(viewport.height) * window.scale_factor(),
+        )
     });
-    viewer_shows(&mut window, "screen.png", bytes, None, (2400.0, 1200.0));
+    window.until("the viewer holds its copy", |window| {
+        window
+            .in_shell(|shell, _, _| shell.viewer_image_size())
+            .is_some()
+    });
+    let (width, height) = window
+        .in_shell(|shell, _, _| shell.viewer_image_size())
+        .unwrap();
+    eprintln!(
+        "the viewer holds 5120 by 2880 as {width} by {height}: {} bytes, against {} at its own size",
+        u64::from(width) * u64::from(height) * 4,
+        5120u64 * 2880 * 4
+    );
+    assert!(
+        (width as f32) <= device.0 && (height as f32) <= device.1,
+        "the copy {width} by {height} is larger than the window {device:?}"
+    );
+    assert!(
+        ((width as f32 / height as f32) - 5120.0 / 2880.0).abs() < 0.02,
+        "the copy {width} by {height} keeps the proportions"
+    );
+    viewer_shows(&mut window, "screen.png", bytes, None, (5120.0, 2880.0));
     window.press("escape");
     assert_eq!(
         window.in_shell(|shell, _, _| shell.viewer_image_size()),
         None
     );
+
+    // A picture smaller than the place of the viewer is read at its own size.
+    let sent = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "A smaller screen",
+        vec![("small.png", png(1600, 800))],
+    );
+    let small = sent.attachments[0].id;
+    window.until_message("A smaller screen");
+    until_picture_read(&mut window, small);
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(2600.0), gpui::px(1600.0))));
+    click_picture(&mut window, small);
+    window.until("the viewer holds the picture at its own size", |window| {
+        window.in_shell(|shell, _, _| shell.viewer_image_size()) == Some((1600, 800))
+    });
+    window.press("escape");
+}
+
+/// A read of a viewer that was closed never passes for the read of the next viewer: each
+/// read has its own number in the window (review M3). Two viewers once both numbered their
+/// first read 1, so the late answer of the first picture was shown under the second.
+#[gpui::test]
+fn the_read_of_a_closed_viewer_is_not_taken_for_the_read_of_the_next_one(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let first = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "The first plan",
+        vec![("first.png", png(2400, 1200))],
+    )
+    .attachments[0]
+        .id;
+    let second = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "The second plan",
+        vec![("second.png", png(1200, 2400))],
+    )
+    .attachments[0]
+        .id;
+    window.until_message("The second plan");
+    until_picture_read(&mut window, first);
+    until_picture_read(&mut window, second);
+    click_picture(&mut window, first);
+    let (shown, earlier) = window.in_shell(|shell, _, _| shell.viewer_read()).unwrap();
+    assert_eq!(shown, first);
+    window.press("escape");
+    click_picture(&mut window, second);
+    let (shown, later) = window.in_shell(|shell, _, _| shell.viewer_read()).unwrap();
+    assert_eq!(shown, second);
+    assert_ne!(
+        later, earlier,
+        "the read of the second viewer has the number of the read of the first"
+    );
+    window.press("escape");
 }
 
 /// A GIF whose frames have different colours, each shown for `delay` milliseconds.
@@ -676,7 +763,8 @@ fn list_fit(window: &mut Window) -> (f32, f32) {
 
 /// A GIF and a screenshot of a screen of 2560 by 1440 pixels are drawn in the list within
 /// its width with their proportions, from copies at the size that the list draws, and open
-/// in the viewer at their own size, the GIF with every frame. Its download stays.
+/// in the viewer at the size of its place, at most their own, the GIF with every frame. Its
+/// download stays.
 #[gpui::test]
 fn a_gif_and_a_screenshot_are_drawn_in_the_list_and_open_in_the_viewer(cx: &mut TestAppContext) {
     let world = World::new();
@@ -762,10 +850,19 @@ fn a_gif_and_a_screenshot_are_drawn_in_the_list_and_open_in_the_viewer(cx: &mut 
         Some("2 of 2"),
         (2560.0, 1440.0),
     );
-    window.until(
-        "the viewer holds the screenshot at its own size",
-        |window| window.in_shell(|shell, _, _| shell.viewer_image_size()) == Some((2560, 1440)),
-    );
+    // The screenshot is read at the size of the place of the viewer, at most its own.
+    let device_width = window
+        .cx
+        .update(|window, _| f32::from(window.viewport_size().width) * window.scale_factor());
+    window.until("the viewer holds the screenshot", |window| {
+        window
+            .in_shell(|shell, _, _| shell.viewer_image_size())
+            .is_some_and(|(width, height)| {
+                width <= 2560
+                    && width as f32 <= device_width
+                    && ((width as f32 / height as f32) - 16.0 / 9.0).abs() < 0.02
+            })
+    });
     window.press("escape");
     assert!(!window.shows("picture-viewer"));
 }

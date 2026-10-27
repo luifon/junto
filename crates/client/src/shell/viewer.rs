@@ -33,6 +33,9 @@ const SIDE_SPACE: f32 = 64.0;
 const BOTTOM_SPACE: f32 = 24.0;
 /// The height of the bar above the picture, in pixels of the design.
 const BAR_HEIGHT: f32 = 52.0;
+/// The longest side of a picture that the viewer reads, in pixels: a GPU draws textures of
+/// at least this size.
+const LONGEST_SIDE: u32 = 8192;
 
 /// The pictures of one message in the viewer.
 pub(crate) struct PictureViewer {
@@ -41,19 +44,22 @@ pub(crate) struct PictureViewer {
     /// The pictures of the message, in the order of its files.
     pictures: Vec<Attachment>,
     shown: usize,
-    /// The shown picture at its own size, read for the viewer when the message lists hold
-    /// a reduced copy of it. It is released from the GPU when the viewer shows another
-    /// picture or closes (ADR 0774).
+    /// The shown picture at the size of the place of the viewer, read for the viewer when
+    /// the message lists hold a smaller copy of it. It is released from the GPU when the
+    /// viewer shows another picture or closes (ADR 0774).
     large: Option<Large>,
-    /// The number of the last read of the viewer.
-    reads: u64,
     /// The size of the place of the picture at the last layout, in pixels of the window.
     area: Rc<Cell<Option<Size<Pixels>>>>,
+    /// The size of that place in pixels of the device, at most [`LONGEST_SIDE`].
+    fit: (u32, u32),
 }
 
 struct Large {
     attachment_id: AttachmentId,
+    /// The number of the read among the reads of every viewer of the window.
     number: u64,
+    /// The size in pixels of the device that the read asked for.
+    fit: (u32, u32),
     image: LargeImage,
 }
 
@@ -112,6 +118,27 @@ fn reduced_in_lists(attachment: &Attachment, fit: (u32, u32)) -> bool {
         .is_some_and(|stated| !plan(stated, Some(fit), LIST_FRAME_BYTES).whole(stated))
 }
 
+/// The place of the picture in pixels of the window: its last layout, or before it the size
+/// of the window less the bar, the arrows and the space under the picture.
+fn place(window: &Window, area: Option<Size<Pixels>>) -> Size<Pixels> {
+    let per_design = f32::from(window.rem_size()) / REM_AT_100;
+    area.unwrap_or_else(|| {
+        let viewport = window.viewport_size();
+        size(
+            viewport.width - px(2.0 * SIDE_SPACE * per_design),
+            viewport.height - px((BAR_HEIGHT + BOTTOM_SPACE + 32.0) * per_design),
+        )
+    })
+}
+
+/// The size of the place of the picture in pixels of the device, at most [`LONGEST_SIDE`].
+fn device_fit(window: &Window, place: Size<Pixels>) -> (u32, u32) {
+    let scale = window.scale_factor();
+    let side =
+        |length: Pixels| ((f32::from(length) * scale).round().max(1.0) as u32).min(LONGEST_SIDE);
+    (side(place.width), side(place.height))
+}
+
 impl Shell {
     /// Opens the viewer on the picture at `shown` among the pictures of a message.
     pub fn open_picture_viewer(
@@ -132,8 +159,8 @@ impl Shell {
             pictures,
             shown: shown.min(last),
             large: None,
-            reads: 0,
             area: Rc::new(Cell::new(None)),
+            fit: device_fit(window, place(window, None)),
         };
         self.open_layer(Layer::Picture(Box::new(viewer)), window, cx);
         self.read_viewer_picture(cx);
@@ -167,9 +194,10 @@ impl Shell {
         }
     }
 
-    /// Reads the shown picture at its own size, and every frame of an animation within the
-    /// bytes of the viewer, when the lists hold a reduced copy of it. An answer for a
-    /// picture that the viewer no longer shows is released at once.
+    /// Reads the shown picture at the size of the place of the viewer, and every frame of an
+    /// animation within the bytes of the viewer, when the lists hold a reduced copy of it.
+    /// An answer for a picture or a read that the viewer no longer shows is released at
+    /// once: the number of a read counts the reads of every viewer of the window.
     fn read_viewer_picture(&mut self, cx: &mut Context<Self>) {
         let Layer::Picture(viewer) = &self.layer else {
             return;
@@ -177,7 +205,7 @@ impl Shell {
         let Some(attachment) = viewer.shown().cloned() else {
             return;
         };
-        let server_id = viewer.server_id;
+        let (server_id, fit) = (viewer.server_id, viewer.fit);
         if !reduced_in_lists(&attachment, self.message_pictures.fit)
             || self.picture_of_screen_tool(attachment.id)
         {
@@ -186,28 +214,53 @@ impl Shell {
         let Some(owner) = self.state.read(cx).owner(server_id) else {
             return;
         };
-        let reading = read_picture(self, owner, &attachment, None, VIEWER_FRAME_BYTES, cx);
+        let reading = read_picture(self, owner, &attachment, Some(fit), VIEWER_FRAME_BYTES, cx);
+        self.viewer_reads += 1;
+        let number = self.viewer_reads;
         let Layer::Picture(viewer) = &mut self.layer else {
             return;
         };
-        viewer.reads += 1;
-        let number = viewer.reads;
+        // A read of a larger place replaces the copy that the viewer shows when it ends.
+        let shown = match viewer.large.take() {
+            Some(Large {
+                attachment_id,
+                image: LargeImage::Ready(image),
+                ..
+            }) if attachment_id == attachment.id => LargeImage::Ready(image),
+            Some(earlier) => {
+                if let LargeImage::Ready(image) = earlier.image {
+                    crate::images::release(image, cx);
+                }
+                LargeImage::Reading
+            }
+            None => LargeImage::Reading,
+        };
         viewer.large = Some(Large {
             attachment_id: attachment.id,
             number,
-            image: LargeImage::Reading,
+            fit,
+            image: shown,
         });
+        let attachment_id = attachment.id;
         cx.spawn(async move |this, cx| {
             let decoded = reading.await.ok().flatten();
             let _ = this.update(cx, |this, cx| {
                 let unused = match &mut this.layer {
                     Layer::Picture(viewer) => match &mut viewer.large {
-                        Some(large) if large.number == number => {
-                            large.image = match decoded {
-                                Some(image) => LargeImage::Ready(image),
-                                None => LargeImage::Failed,
-                            };
-                            None
+                        Some(large)
+                            if large.number == number && large.attachment_id == attachment_id =>
+                        {
+                            let earlier = std::mem::replace(
+                                &mut large.image,
+                                match decoded {
+                                    Some(image) => LargeImage::Ready(image),
+                                    None => LargeImage::Failed,
+                                },
+                            );
+                            match earlier {
+                                LargeImage::Ready(image) => Some(image),
+                                LargeImage::Reading | LargeImage::Failed => None,
+                            }
                         }
                         _ => decoded,
                     },
@@ -220,6 +273,18 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    /// The file and the number of the last read of the viewer. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn viewer_read(&self) -> Option<(AttachmentId, u64)> {
+        let Layer::Picture(viewer) = &self.layer else {
+            return None;
+        };
+        viewer
+            .large
+            .as_ref()
+            .map(|large| (large.attachment_id, large.number))
     }
 
     /// The size of the image that the viewer shows, in its pixels. A test uses it.
@@ -245,6 +310,23 @@ impl Shell {
             return div().into_any_element();
         };
         let Some(attachment) = viewer.shown().cloned() else {
+            return div().into_any_element();
+        };
+        // A place larger than the one of the last read reads the picture again at its size.
+        let fit = device_fit(window, place(window, viewer.area.get()));
+        let larger =
+            |read: (u32, u32)| fit.0 > read.0 + read.0 / 20 || fit.1 > read.1 + read.1 / 20;
+        let read_again = viewer
+            .large
+            .as_ref()
+            .is_some_and(|large| large.attachment_id == attachment.id && larger(large.fit));
+        if let Layer::Picture(viewer) = &mut self.layer {
+            viewer.fit = fit;
+        }
+        if read_again {
+            self.read_viewer_picture(cx);
+        }
+        let Layer::Picture(viewer) = &self.layer else {
             return div().into_any_element();
         };
         let (server_id, shown, count) = (viewer.server_id, viewer.shown, viewer.pictures.len());
@@ -458,13 +540,7 @@ impl Shell {
             px(height.max(1) as f32 * per_design),
         );
         // Before the first layout the place is taken from the size of the window.
-        let place = area.get().unwrap_or_else(|| {
-            let viewport = window.viewport_size();
-            size(
-                viewport.width - px(2.0 * SIDE_SPACE * per_design),
-                viewport.height - px((BAR_HEIGHT + BOTTOM_SPACE + 32.0) * per_design),
-            )
-        });
+        let place = place(window, area.get());
         let fit = (place.width / largest.width)
             .min(place.height / largest.height)
             .clamp(0.0, 1.0);
