@@ -40,9 +40,11 @@ pub mod messages;
 pub mod moderation;
 pub mod moderation_notices;
 pub mod notifications;
+pub mod person_permissions;
 pub mod pins;
 pub mod recordings;
 pub mod retention;
+pub mod rules;
 pub mod search;
 pub mod server_info;
 pub mod server_logo;
@@ -79,7 +81,7 @@ pub const SESSION_SECURITY: &str = "session";
         (name = "structure", description = "The whole structure of the server and changes \
                                             of it in one request"),
         (name = "workspaces", description = "Workspaces, their members and roles"),
-        (name = "channels", description = "Categories, channels and channel overrides"),
+        (name = "channels", description = "Categories, channels and their permission rules"),
         (name = "calls", description = "Calls in voice channels and direct messages"),
         (name = "recordings", description = "Recordings of calls in voice channels, their \
                                              files, their transcripts and the glossary"),
@@ -348,6 +350,46 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(channels::list_channel_overrides));
     add(&mut router, || routes!(channels::set_channel_override));
     add(&mut router, || routes!(channels::change_channel_override));
+    add(&mut router, || routes!(rules::get_channel_rules));
+    add(&mut router, || {
+        routes!(
+            rules::set_channel_role_rule,
+            rules::change_channel_role_rule
+        )
+    });
+    add(&mut router, || {
+        routes!(
+            rules::set_channel_person_rule,
+            rules::change_channel_person_rule
+        )
+    });
+    add(&mut router, || routes!(rules::get_category_rules));
+    add(&mut router, || {
+        routes!(
+            rules::set_category_role_rule,
+            rules::change_category_role_rule
+        )
+    });
+    add(&mut router, || {
+        routes!(
+            rules::set_category_person_rule,
+            rules::change_category_person_rule
+        )
+    });
+    add(&mut router, || {
+        routes!(
+            person_permissions::get_member_permissions,
+            person_permissions::set_member_permissions,
+            person_permissions::change_member_permission
+        )
+    });
+    add(&mut router, || {
+        routes!(
+            person_permissions::get_server_permissions,
+            person_permissions::set_server_permissions,
+            person_permissions::change_server_permission
+        )
+    });
     add(&mut router, || {
         routes!(calls::get_own_call, calls::leave_call)
     });

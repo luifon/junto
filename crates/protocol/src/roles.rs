@@ -1,7 +1,7 @@
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ServerRoleId, WorkspaceId, WorkspaceRoleId};
+use crate::ids::{AccountId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -124,6 +124,35 @@ pub struct ListedWorkspaceRole {
 pub struct ChangeServerRolePermission {
     pub permission: ServerPermission,
     pub enabled: bool,
+}
+
+/// The server permissions that are allowed to or denied to one account, after its server
+/// roles (ADR 0301).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ServerPersonPermissions {
+    pub account_id: AccountId,
+    pub allow: Vec<ServerPermission>,
+    pub deny: Vec<ServerPermission>,
+}
+
+/// Two empty sets remove the server permissions of the account.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SetServerPersonPermissions {
+    #[serde(default)]
+    pub allow: Vec<ServerPermission>,
+    #[serde(default)]
+    pub deny: Vec<ServerPermission>,
+}
+
+/// Changes exactly one server permission of an account, preserving the others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChangeServerPersonPermission {
+    pub permission: ServerPermission,
+    pub state: crate::structure::OverrideState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

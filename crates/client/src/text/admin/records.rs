@@ -538,6 +538,31 @@ fn the_role(name: Option<String>) -> String {
     name.map_or_else(|| "a role".to_owned(), |name| format!("the role “{name}”"))
 }
 
+fn the_category(name: Option<String>) -> String {
+    name.map_or_else(
+        || "a category".to_owned(),
+        |name| format!("the category “{name}”"),
+    )
+}
+
+/// The sentence of a rule of `subject` in `place`, a channel or a category.
+fn rule_sentence(
+    place: &str,
+    subject: &str,
+    allow: &[WorkspacePermission],
+    deny: &[WorkspacePermission],
+) -> String {
+    if allow.is_empty() && deny.is_empty() {
+        format!("the rule of {place} for {subject} was removed.")
+    } else {
+        format!(
+            "the rule of {place} for {subject} was set. It allows {} and denies {}.",
+            workspace_permissions(allow),
+            workspace_permissions(deny)
+        )
+    }
+}
+
 fn the_server_role(name: Option<String>) -> String {
     name.map_or_else(
         || "a server role".to_owned(),
@@ -960,6 +985,79 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
                     "the rule of the channel for {role} was set. It allows {} and denies {}.",
                     workspace_permissions(allow),
                     workspace_permissions(deny)
+                )
+            }
+        }
+        AuditEvent::ChannelPersonRuleSet {
+            account_id,
+            allow,
+            deny,
+        } => rule_sentence("the channel", &account(*account_id), allow, deny),
+        AuditEvent::CategoryRoleRuleSet {
+            category_id,
+            role_id,
+            allow,
+            deny,
+        } => rule_sentence(
+            &the_category(names.category(*category_id)),
+            &the_role(names.workspace_role(*role_id)),
+            allow,
+            deny,
+        ),
+        AuditEvent::CategoryPersonRuleSet {
+            category_id,
+            account_id,
+            allow,
+            deny,
+        } => rule_sentence(
+            &the_category(names.category(*category_id)),
+            &account(*account_id),
+            allow,
+            deny,
+        ),
+        AuditEvent::ChannelRulesSynced {
+            category_id,
+            synced,
+        } => match (synced, category_id) {
+            (false, _) => {
+                "the channel no longer takes the rules of its category; it keeps them as its own."
+                    .to_owned()
+            }
+            (true, Some(category_id)) => format!(
+                "the channel takes the rules of {} again.",
+                the_category(names.category(*category_id))
+            ),
+            (true, None) => "the channel takes the rules of its category again.".to_owned(),
+        },
+        AuditEvent::WorkspacePersonPermissionsSet {
+            account_id,
+            allow,
+            deny,
+        } => {
+            let person = account(*account_id);
+            if allow.is_empty() && deny.is_empty() {
+                format!("the workspace permissions of {person} were removed.")
+            } else {
+                format!(
+                    "the workspace permissions of {person} were set. They allow {} and deny {}.",
+                    workspace_permissions(allow),
+                    workspace_permissions(deny)
+                )
+            }
+        }
+        AuditEvent::ServerPersonPermissionsSet {
+            account_id,
+            allow,
+            deny,
+        } => {
+            let person = account(*account_id);
+            if allow.is_empty() && deny.is_empty() {
+                format!("the server permissions of {person} were removed.")
+            } else {
+                format!(
+                    "the server permissions of {person} were set. They allow {} and deny {}.",
+                    server_permissions(allow),
+                    server_permissions(deny)
                 )
             }
         }

@@ -21,7 +21,7 @@
 /// An absent header states no position; it does not undo a successful response.
 pub const EVENT_CURSOR_HEADER: &str = "junto-event-cursor";
 
-use junto_authz::WorkspacePermission;
+use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -40,7 +40,7 @@ use crate::invite::{Invite, InviteRevocation, JoinRequest, JoinRequestState};
 use crate::keys::PublicKey;
 use crate::recording::Recording;
 use crate::roles::{ServerRole, WorkspaceRole};
-use crate::structure::{Category, Channel, Workspace, WorkspaceMember};
+use crate::structure::{Category, Channel, RulePlace, RuleSubject, Workspace, WorkspaceMember};
 
 /// The largest message of the server that a client reads: the size of a whole batch of events
 /// on the server (ADR 0116). The server sends no larger `change`; it tells the connection to
@@ -702,6 +702,36 @@ pub enum Event {
         account_id: AccountId,
         departure: Option<Departure>,
     },
+    /// The allow set and the deny set of one subject in a category or a channel. Two empty
+    /// sets mean that the subject has no rule there (ADR 0304).
+    PermissionRuleSet {
+        workspace_id: WorkspaceId,
+        place: RulePlace,
+        subject: RuleSubject,
+        allow: Vec<WorkspacePermission>,
+        deny: Vec<WorkspacePermission>,
+    },
+    /// A channel stopped taking the rules of its category (`synced` false), takes them again,
+    /// or moved into another category while it takes the rules of its category. A client
+    /// reads the rules of the channel again.
+    ChannelRulesSynced {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        synced: bool,
+    },
+    /// The workspace permissions that are allowed to or denied to one member.
+    WorkspacePersonPermissionsSet {
+        workspace_id: WorkspaceId,
+        account_id: AccountId,
+        allow: Vec<WorkspacePermission>,
+        deny: Vec<WorkspacePermission>,
+    },
+    /// The server permissions that are allowed to or denied to one account.
+    ServerPersonPermissionsSet {
+        account_id: AccountId,
+        allow: Vec<ServerPermission>,
+        deny: Vec<ServerPermission>,
+    },
 }
 
 impl Event {
@@ -796,6 +826,10 @@ impl Event {
         "thread_follow_changed",
         "notification_default_changed",
         "account_departure_changed",
+        "permission_rule_set",
+        "channel_rules_synced",
+        "workspace_person_permissions_set",
+        "server_person_permissions_set",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -810,6 +844,10 @@ impl Event {
             Self::AccountAdded { .. } => "account_added",
             Self::AccountProfileUpdated { .. } => "account_profile_updated",
             Self::AccountDepartureChanged { .. } => "account_departure_changed",
+            Self::PermissionRuleSet { .. } => "permission_rule_set",
+            Self::ChannelRulesSynced { .. } => "channel_rules_synced",
+            Self::WorkspacePersonPermissionsSet { .. } => "workspace_person_permissions_set",
+            Self::ServerPersonPermissionsSet { .. } => "server_person_permissions_set",
             Self::AccountStatusChanged { .. } => "account_status_changed",
             Self::AccountServerRolesChanged { .. } => "account_server_roles_changed",
             Self::OwnerChanged { .. } => "owner_changed",
@@ -1524,6 +1562,31 @@ mod tests {
             Event::AccountDepartureChanged {
                 account_id,
                 departure: Some(crate::account::Departure::Inactive),
+            },
+            Event::PermissionRuleSet {
+                workspace_id,
+                place: RulePlace::Category {
+                    category_id: crate::ids::CategoryId::generate(),
+                },
+                subject: RuleSubject::Person { account_id },
+                allow: vec![WorkspacePermission::SendMessages],
+                deny: vec![WorkspacePermission::ViewChannel],
+            },
+            Event::ChannelRulesSynced {
+                workspace_id,
+                channel_id,
+                synced: false,
+            },
+            Event::WorkspacePersonPermissionsSet {
+                workspace_id,
+                account_id,
+                allow: vec![],
+                deny: vec![WorkspacePermission::Connect],
+            },
+            Event::ServerPersonPermissionsSet {
+                account_id,
+                allow: vec![ServerPermission::CreateInvites],
+                deny: vec![],
             },
         ]
     }

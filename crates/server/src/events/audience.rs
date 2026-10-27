@@ -11,6 +11,7 @@ use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{
     AccountId, CallId, CategoryId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
+use junto_protocol::structure::RulePlace;
 use serde::{Deserialize, Serialize};
 
 use crate::access::{role_key, stored_override};
@@ -121,6 +122,10 @@ impl Class {
             | Event::ChannelCreated { .. }
             | Event::ChannelUpdated { .. }
             | Event::ChannelOverrideSet { .. }
+            | Event::PermissionRuleSet { .. }
+            | Event::ChannelRulesSynced { .. }
+            | Event::WorkspacePersonPermissionsSet { .. }
+            | Event::ServerPersonPermissionsSet { .. }
             | Event::CallStarted { .. }
             | Event::CallEnded { .. }
             | Event::CallParticipantJoined { .. }
@@ -233,6 +238,17 @@ pub enum Audience {
     Category {
         workspace_id: WorkspaceId,
         category_id: CategoryId,
+    },
+    /// The members who hold `permission` in the workspace.
+    InWorkspace {
+        workspace_id: WorkspaceId,
+        permission: WorkspacePermission,
+    },
+    /// The members who hold `permission` in the category, as its rules decide.
+    InCategory {
+        workspace_id: WorkspaceId,
+        category_id: CategoryId,
+        permission: WorkspacePermission,
     },
     /// The members of the workspace who hold the role; every member for the "everyone" role.
     WorkspaceRoleHolders {
@@ -548,6 +564,8 @@ impl Audience {
             | Self::Mention { workspace_id, .. }
             | Self::Workspace { workspace_id }
             | Self::Category { workspace_id, .. }
+            | Self::InWorkspace { workspace_id, .. }
+            | Self::InCategory { workspace_id, .. }
             | Self::WorkspaceRoleHolders { workspace_id, .. }
             | Self::Channel { workspace_id, .. }
             | Self::ChannelMessage { workspace_id, .. }
@@ -778,11 +796,35 @@ impl Audience {
                 workspace_id,
                 channel_id,
                 ..
+            }
+            | Event::PermissionRuleSet {
+                workspace_id,
+                place: RulePlace::Channel { channel_id },
+                ..
+            }
+            | Event::ChannelRulesSynced {
+                workspace_id,
+                channel_id,
+                ..
             } => Some(Self::Channel {
                 workspace_id: *workspace_id,
                 channel_id: *channel_id,
                 permission: WorkspacePermission::ManageChannel,
             }),
+            Event::PermissionRuleSet {
+                workspace_id,
+                place: RulePlace::Category { category_id },
+                ..
+            } => Some(Self::InCategory {
+                workspace_id: *workspace_id,
+                category_id: *category_id,
+                permission: WorkspacePermission::ManageChannel,
+            }),
+            Event::WorkspacePersonPermissionsSet { workspace_id, .. } => Some(Self::InWorkspace {
+                workspace_id: *workspace_id,
+                permission: WorkspacePermission::ManageRoles,
+            }),
+            Event::ServerPersonPermissionsSet { .. } => permission(ServerPermission::Administrator),
         }
     }
 
@@ -1207,6 +1249,24 @@ pub fn receives<'a>(
                             })
                     })
         }),
+        Audience::InWorkspace { permission, .. } => workspace.is_some_and(|standing| {
+            allows(Request::Workspace {
+                scope: &standing.scope,
+                permission: *permission,
+            })
+        }),
+        Audience::InCategory {
+            category_id,
+            permission,
+            ..
+        } => workspace
+            .and_then(|standing| standing.categories.get(category_id))
+            .is_some_and(|(scope, _)| {
+                allows(Request::Channel {
+                    scope,
+                    permission: *permission,
+                })
+            }),
         Audience::WorkspaceRoleHolders { role_id, .. } => workspace.is_some_and(|standing| {
             standing.holds(*role_id) && allows(Request::ViewWorkspace(&standing.scope))
         }),

@@ -43,6 +43,12 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
         "/api/v1/channels/{channel_id}/overrides",
         ReadStructure,
     ),
+    ("GET", "/api/v1/channels/{channel_id}/rules", ReadStructure),
+    (
+        "GET",
+        "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules",
+        ReadStructure,
+    ),
     ("GET", "/api/v1/server-roles", ReadStructure),
     ("POST", "/api/v1/structure/changes", ManageStructure),
     ("POST", "/api/v1/workspaces", ManageStructure),
@@ -89,6 +95,26 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
         ManageStructure,
     ),
     ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
+    (
+        "PUT",
+        "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
+        ManageStructure,
+    ),
+    (
+        "PATCH",
+        "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
+        ManageStructure,
+    ),
+    (
+        "PUT",
+        "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
+        ManageStructure,
+    ),
+    (
+        "PATCH",
+        "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
+        ManageStructure,
+    ),
     (
         "PATCH",
         "/api/v1/channels/{channel_id}/call/settings",

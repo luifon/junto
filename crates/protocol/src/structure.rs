@@ -245,6 +245,64 @@ pub struct ChangeChannelOverride {
     pub state: OverrideState,
 }
 
+/// Whom a permission rule of a category or a channel is for: the holders of a workspace
+/// role (every member for the "everyone" role), or one member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuleSubject {
+    Role { role_id: WorkspaceRoleId },
+    Person { account_id: AccountId },
+}
+
+/// The allow set and the deny set of one subject in one category or channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PermissionRule {
+    pub subject: RuleSubject,
+    pub allow: Vec<WorkspacePermission>,
+    pub deny: Vec<WorkspacePermission>,
+}
+
+/// The rules that decide the permissions in a channel (ADR 0304). `synced` is true when the
+/// channel has a category and takes the rules of that category; `rules` are then the rules of
+/// the category.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ChannelRules {
+    pub channel_id: ChannelId,
+    pub category_id: Option<CategoryId>,
+    pub synced: bool,
+    pub rules: Vec<PermissionRule>,
+}
+
+/// The rules of a category, which every synced channel of it takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct CategoryRules {
+    pub category_id: CategoryId,
+    pub rules: Vec<PermissionRule>,
+}
+
+/// Where a permission rule is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RulePlace {
+    Channel { channel_id: ChannelId },
+    Category { category_id: CategoryId },
+}
+
+/// The workspace permissions that are allowed to or denied to one member in a workspace,
+/// after the member's roles (ADR 0301).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PersonPermissions {
+    pub account_id: AccountId,
+    pub allow: Vec<WorkspacePermission>,
+    pub deny: Vec<WorkspacePermission>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

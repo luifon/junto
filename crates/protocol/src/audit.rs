@@ -370,6 +370,44 @@ pub enum AuditEvent {
         #[serde(default)]
         join_request_id: Option<JoinRequestId>,
     },
+    /// The rule of one member in a channel (ADR 0304). Two empty sets remove it.
+    ChannelPersonRuleSet {
+        account_id: AccountId,
+        allow: Vec<WorkspacePermission>,
+        deny: Vec<WorkspacePermission>,
+    },
+    /// The rule of one workspace role in a category.
+    CategoryRoleRuleSet {
+        category_id: CategoryId,
+        role_id: WorkspaceRoleId,
+        allow: Vec<WorkspacePermission>,
+        deny: Vec<WorkspacePermission>,
+    },
+    /// The rule of one member in a category.
+    CategoryPersonRuleSet {
+        category_id: CategoryId,
+        account_id: AccountId,
+        allow: Vec<WorkspacePermission>,
+        deny: Vec<WorkspacePermission>,
+    },
+    /// The channel stopped taking the rules of its category (`synced` false) or takes the
+    /// rules of the category `category_id` from now on.
+    ChannelRulesSynced {
+        category_id: Option<CategoryId>,
+        synced: bool,
+    },
+    /// The workspace permissions that are allowed to or denied to one member.
+    WorkspacePersonPermissionsSet {
+        account_id: AccountId,
+        allow: Vec<WorkspacePermission>,
+        deny: Vec<WorkspacePermission>,
+    },
+    /// The server permissions that are allowed to or denied to one account.
+    ServerPersonPermissionsSet {
+        account_id: AccountId,
+        allow: Vec<ServerPermission>,
+        deny: Vec<ServerPermission>,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -451,6 +489,12 @@ impl AuditEvent {
             Self::AccountLeft { .. } => "account_left",
             Self::AccountDeleted { .. } => "account_deleted",
             Self::AccountReturned { .. } => "account_returned",
+            Self::ChannelPersonRuleSet { .. } => "channel_person_rule_set",
+            Self::CategoryRoleRuleSet { .. } => "category_role_rule_set",
+            Self::CategoryPersonRuleSet { .. } => "category_person_rule_set",
+            Self::ChannelRulesSynced { .. } => "channel_rules_synced",
+            Self::WorkspacePersonPermissionsSet { .. } => "workspace_person_permissions_set",
+            Self::ServerPersonPermissionsSet { .. } => "server_person_permissions_set",
             Self::Unknown => "unknown",
         }
     }
@@ -619,6 +663,37 @@ mod tests {
                 invite_id: Some(InviteId::generate()),
                 invite_created_by: Some(AccountId::generate()),
                 join_request_id: None,
+            },
+            AuditEvent::ChannelPersonRuleSet {
+                account_id,
+                allow: vec![],
+                deny: vec![WorkspacePermission::SendMessages],
+            },
+            AuditEvent::CategoryRoleRuleSet {
+                category_id: CategoryId::generate(),
+                role_id: WorkspaceRoleId::generate(),
+                allow: vec![WorkspacePermission::ViewChannel],
+                deny: vec![],
+            },
+            AuditEvent::CategoryPersonRuleSet {
+                category_id: CategoryId::generate(),
+                account_id,
+                allow: vec![],
+                deny: vec![WorkspacePermission::ViewChannel],
+            },
+            AuditEvent::ChannelRulesSynced {
+                category_id: Some(CategoryId::generate()),
+                synced: true,
+            },
+            AuditEvent::WorkspacePersonPermissionsSet {
+                account_id,
+                allow: vec![WorkspacePermission::Connect],
+                deny: vec![],
+            },
+            AuditEvent::ServerPersonPermissionsSet {
+                account_id,
+                allow: vec![],
+                deny: vec![ServerPermission::Administrator],
             },
         ];
         for event in events {

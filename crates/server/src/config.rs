@@ -457,6 +457,8 @@ pub struct Limits {
     pub most_server_roles: u32,
     pub most_roles_per_workspace: u32,
     pub most_roles_per_member: u32,
+    /// The person rules of one category or of one channel (ADR 0306).
+    pub most_person_rules_per_place: u32,
     pub most_server_roles_per_account: u32,
     /// The numbers of access tokens (ADR 0210).
     pub most_access_tokens_per_creator: u32,
@@ -649,6 +651,7 @@ impl Default for Limits {
             most_server_roles: 250,
             most_roles_per_workspace: 250,
             most_roles_per_member: 64,
+            most_person_rules_per_place: 250,
             most_server_roles_per_account: 64,
             most_access_tokens_per_creator: 100,
             access_token_longest_lifetime: Duration::days(366),

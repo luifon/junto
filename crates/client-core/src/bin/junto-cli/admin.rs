@@ -923,6 +923,23 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::RecordingRemoved { recording_id }
         | E::TranscriptRequested { recording_id } => vec![pair("recording", recording_id)],
         E::PermanentMessageDeleted { message_id } => vec![pair("message", message_id)],
+        E::ChannelPersonRuleSet { account_id, .. }
+        | E::WorkspacePersonPermissionsSet { account_id, .. }
+        | E::ServerPersonPermissionsSet { account_id, .. } => vec![pair("account", account_id)],
+        E::CategoryRoleRuleSet {
+            category_id,
+            role_id,
+            ..
+        } => vec![pair("category", category_id), pair("role", role_id)],
+        E::CategoryPersonRuleSet {
+            category_id,
+            account_id,
+            ..
+        } => vec![pair("category", category_id), pair("account", account_id)],
+        E::ChannelRulesSynced { category_id, .. } => category_id
+            .iter()
+            .map(|category_id| pair("category", category_id))
+            .collect(),
         E::ExportRequested { export_id } => vec![pair("export", export_id)],
         E::ServerLogoChanged { logo } => {
             let hash = match logo {

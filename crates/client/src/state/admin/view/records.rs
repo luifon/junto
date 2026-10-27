@@ -263,7 +263,13 @@ impl AuditGroup {
             | AuditEvent::WorkspaceRoleDeleted { .. }
             | AuditEvent::ServerRolePositionChanged { .. }
             | AuditEvent::WorkspaceRolePositionChanged { .. }
-            | AuditEvent::ChannelOverrideSet { .. } => Self::Roles,
+            | AuditEvent::ChannelOverrideSet { .. }
+            | AuditEvent::ChannelPersonRuleSet { .. }
+            | AuditEvent::CategoryRoleRuleSet { .. }
+            | AuditEvent::CategoryPersonRuleSet { .. }
+            | AuditEvent::ChannelRulesSynced { .. }
+            | AuditEvent::WorkspacePersonPermissionsSet { .. }
+            | AuditEvent::ServerPersonPermissionsSet { .. } => Self::Roles,
             AuditEvent::WorkspaceCreated { .. }
             | AuditEvent::WorkspaceRenamed { .. }
             | AuditEvent::WorkspaceDeleted { .. }
@@ -322,7 +328,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 73] = [
+pub const ACTIONS: [(&str, AuditGroup); 79] = [
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -354,6 +360,12 @@ pub const ACTIONS: [(&str, AuditGroup); 73] = [
     ("workspace_role_deleted", AuditGroup::Roles),
     ("workspace_role_position_changed", AuditGroup::Roles),
     ("channel_override_set", AuditGroup::Roles),
+    ("channel_person_rule_set", AuditGroup::Roles),
+    ("category_role_rule_set", AuditGroup::Roles),
+    ("category_person_rule_set", AuditGroup::Roles),
+    ("channel_rules_synced", AuditGroup::Roles),
+    ("workspace_person_permissions_set", AuditGroup::Roles),
+    ("server_person_permissions_set", AuditGroup::Roles),
     ("workspace_created", AuditGroup::Structure),
     ("workspace_renamed", AuditGroup::Structure),
     ("workspace_deleted", AuditGroup::Structure),
@@ -1494,6 +1506,12 @@ mod tests {
             AuditEvent::AccountDeleted { .. } => 71,
             AuditEvent::AccountReturned { .. } => 72,
             AuditEvent::JoinRequestWithdrawn { .. } => 73,
+            AuditEvent::ChannelPersonRuleSet { .. } => 74,
+            AuditEvent::CategoryRoleRuleSet { .. } => 75,
+            AuditEvent::CategoryPersonRuleSet { .. } => 76,
+            AuditEvent::ChannelRulesSynced { .. } => 77,
+            AuditEvent::WorkspacePersonPermissionsSet { .. } => 78,
+            AuditEvent::ServerPersonPermissionsSet { .. } => 79,
         }
     }
 
@@ -1928,6 +1946,55 @@ mod tests {
             (AuditEvent::PermanentMessagesTurnedOn, vec!["turned on"]),
             (AuditEvent::PermanentMessagesTurnedOff, vec!["turned off"]),
             (AuditEvent::Unknown, vec![txt::UNKNOWN_ACTION]),
+            (
+                AuditEvent::ChannelPersonRuleSet {
+                    account_id,
+                    allow: vec![],
+                    deny: vec![WorkspacePermission::SendMessages],
+                },
+                vec!["Ana", "“send messages”"],
+            ),
+            (
+                AuditEvent::CategoryRoleRuleSet {
+                    category_id: scene.projects,
+                    role_id: scene.leads,
+                    allow: vec![WorkspacePermission::ViewChannel],
+                    deny: vec![],
+                },
+                vec!["“Projects”", "“leads”", "“view channel”"],
+            ),
+            (
+                AuditEvent::CategoryPersonRuleSet {
+                    category_id: scene.projects,
+                    account_id,
+                    allow: vec![],
+                    deny: vec![],
+                },
+                vec!["“Projects”", "Ana", "removed"],
+            ),
+            (
+                AuditEvent::ChannelRulesSynced {
+                    category_id: Some(scene.projects),
+                    synced: true,
+                },
+                vec!["“Projects”", "again"],
+            ),
+            (
+                AuditEvent::WorkspacePersonPermissionsSet {
+                    account_id,
+                    allow: vec![WorkspacePermission::Connect],
+                    deny: vec![],
+                },
+                vec!["Ana", "“connect”"],
+            ),
+            (
+                AuditEvent::ServerPersonPermissionsSet {
+                    account_id,
+                    allow: vec![],
+                    deny: vec![ServerPermission::CreateInvites],
+                },
+                vec!["Ana", "“create invites”"],
+            ),
         ]
     }
 
@@ -2791,7 +2858,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..74).collect::<Vec<usize>>());
+        assert_eq!(places, (0..80).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

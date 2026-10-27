@@ -21,7 +21,7 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::message::MessagePlace;
 use junto_client_core::protocol::recording::Recording;
-use junto_client_core::protocol::structure::{Channel, ChannelKind};
+use junto_client_core::protocol::structure::{Channel, ChannelKind, RulePlace, RuleSubject};
 use junto_client_core::{Client, ServerHandle};
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
@@ -825,6 +825,33 @@ fn event_details(event: &Event) -> String {
             role_id,
             ..
         } => format!("workspace={workspace_id} channel={channel_id} role={role_id}"),
+        Event::PermissionRuleSet {
+            workspace_id,
+            place,
+            subject,
+            ..
+        } => {
+            let place = match place {
+                RulePlace::Channel { channel_id } => format!("channel={channel_id}"),
+                RulePlace::Category { category_id } => format!("category={category_id}"),
+            };
+            let subject = match subject {
+                RuleSubject::Role { role_id } => format!("role={role_id}"),
+                RuleSubject::Person { account_id } => format!("account={account_id}"),
+            };
+            format!("workspace={workspace_id} {place} {subject}")
+        }
+        Event::ChannelRulesSynced {
+            workspace_id,
+            channel_id,
+            synced,
+        } => format!("workspace={workspace_id} channel={channel_id} synced={synced}"),
+        Event::WorkspacePersonPermissionsSet {
+            workspace_id,
+            account_id,
+            ..
+        } => format!("workspace={workspace_id} account={account_id}"),
+        Event::ServerPersonPermissionsSet { account_id, .. } => format!("account={account_id}"),
         Event::CallStarted { call_id, place, .. }
         | Event::CallEnded { call_id, place }
         | Event::CallLockChanged { call_id, place, .. } => at(call_id, place),

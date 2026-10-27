@@ -1114,10 +1114,17 @@ impl Standing {
             let category_ids: Vec<_> = candidates
                 .iter()
                 .filter_map(|candidate| match candidate.audience.as_ref() {
-                    Some(Audience::Category {
-                        workspace_id: id,
-                        category_id,
-                    }) if *id == workspace_id => Some(*category_id),
+                    Some(
+                        Audience::Category {
+                            workspace_id: id,
+                            category_id,
+                        }
+                        | Audience::InCategory {
+                            workspace_id: id,
+                            category_id,
+                            ..
+                        },
+                    ) if *id == workspace_id => Some(*category_id),
                     _ => None,
                 })
                 .collect();

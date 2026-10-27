@@ -1,6 +1,7 @@
 mod categories;
 pub(crate) mod inheritance;
 pub(crate) mod permissions;
+pub(crate) mod rules;
 pub mod visibility;
 
 use std::collections::{HashMap, HashSet};
@@ -219,6 +220,16 @@ impl Access {
         Ok(Some(
             Self::load(connection, account_id, nobody, Uuid::nil()).await?,
         ))
+    }
+
+    /// The standing of an account whatever its status, for a decision about what a change
+    /// gives that account. It does not authorize a request of the account.
+    pub(crate) async fn standing_of(
+        connection: &mut PgConnection,
+        account_id: AccountId,
+    ) -> ApiResult<Self> {
+        let nobody = DeviceId::from_uuid(Uuid::nil());
+        Self::load(connection, account_id, nobody, Uuid::nil()).await
     }
 
     /// The standing of the account behind a session that was valid when a call was joined.
