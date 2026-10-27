@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_sent_has_its_reason() {
-        assert!(invalid_logo(InvalidAvatar::TooLarge).contains("256 KiB"));
+        assert!(invalid_logo(InvalidAvatar::TooLarge).contains("2 MiB"));
         assert!(invalid_logo(InvalidAvatar::Unsupported).contains("PNG, JPEG or WebP"));
     }
 }

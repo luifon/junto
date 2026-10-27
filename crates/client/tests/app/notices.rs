@@ -1142,7 +1142,7 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
-    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let (_server, admin, directory, mut window, general) = scene(cx, &world);
     let own = window.own_account();
     admin.mention(&world, general, "older, ", own);
 
@@ -1169,6 +1169,13 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
     for number in 1..=50 {
         admin.mention(&world, bench, &format!("bench {number}, "), own);
     }
+    // The notices follow the events; a window that starts now holds the first page of them
+    // (ADR 0722).
+    window.until("every notice arrived", |window| {
+        window.unread_notices() == 51
+    });
+    window.close();
+    let mut window = crate::harness::open(cx, directory.path());
     window.open_notices();
     window.until("the first page holds the notices of the bench", |window| {
         window.notices().is_some_and(|panel| {

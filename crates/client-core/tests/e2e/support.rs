@@ -109,7 +109,9 @@ impl TestServer {
         Self::start_as(name, Some(address.to_owned())).await
     }
 
-    /// A server with these settings of its process, such as `JUNTO_PICTURE_BYTES`.
+    /// A server with these settings of its process, such as `JUNTO_PICTURE_BYTES`. The
+    /// window tests use it.
+    #[allow(dead_code)]
     pub async fn start_with_settings(name: &str, settings: &[(&str, &str)]) -> Self {
         let settings = settings
             .iter()

@@ -699,17 +699,23 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
 #[gpui::test]
 fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
     let world = World::new();
-    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let (_server, admin, directory, mut window, general) = scene(cx, &world);
     let own = window.own_account();
     for number in 0..55 {
         admin.send(&world, general, mention(&format!("number {number}, "), own));
     }
-    // The window counts the notices that it holds: the first page.
+    // The notices follow the events: the window holds every one that arrived (ADR 0722).
+    window.until("every notice arrived", |window| {
+        window.unread_notices() == 55
+    });
+    // A window that starts now holds the first page of the notices.
+    window.close();
+    let mut window = crate::harness::open(cx, directory.path());
     window.until("the notices are counted", |window| {
         window.unread_notices() == 50
     });
     window.open_notices();
-    // The list is read again after each notice: the first page is the one with the newest.
+    // The first page is the one with the newest.
     window.until("the first page of notices", |window| {
         window.notices().is_some_and(|panel| {
             panel.rows.len() == 50
