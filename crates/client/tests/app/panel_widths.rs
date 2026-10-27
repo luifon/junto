@@ -174,11 +174,10 @@ fn the_panel_of_a_call_closes_and_opens_again_and_stays_closed_after_a_restart(
         "the stage keeps its width"
     );
     assert!(window.shows("open-call-chat"));
-    assert_eq!(
+    assert!(
         window
             .state
-            .read_with(&window.cx, |state, _| state.call_panel_closed(false)),
-        true
+            .read_with(&window.cx, |state, _| state.call_panel_closed(false))
     );
     // A message of the chat while the panel is closed is counted on its button.
     admin.send(&world, daily, document("Are we starting?"));
