@@ -227,11 +227,14 @@ pub async fn get_snapshot(
         let entry_requests = own_entry_requests(connection, &access, now).await?;
         let direct_mutes = calls::direct_mutes(connection, now, access.account_id).await?;
         let messages = crate::messages::snapshot(connection, &access, &workspaces, now).await?;
-        let allowed = crate::access::visibility::places(connection, &access).await?;
+        let mut allowed = crate::access::visibility::viewable_places(connection, &access).await?;
+        allowed.live_since =
+            app.streams
+                .live_since(access.account_id, access.device_id, access.session_id);
         let threads = crate::messages::threads::unread(
             connection,
             access.account_id,
-            &allowed.channels,
+            &allowed.history_channels,
             None,
             200,
         )

@@ -144,6 +144,7 @@ pub async fn visible(
     ids: Option<&[MessageId]>,
     before: Option<Uuid>,
     limit: i64,
+    live_since: Option<OffsetDateTime>,
 ) -> ApiResult<Vec<Notification>> {
     let named: Option<Vec<Uuid>> = if let Some(ids) = ids {
         Some(
@@ -155,12 +156,13 @@ pub async fn visible(
     } else {
         None
     };
-    let allowed =
+    let mut allowed =
         crate::access::visibility::load(connection, &[access.account_id], named.as_deref(), true)
             .await?
             .pop()
             .map(|(_, places)| places)
             .unwrap_or_default();
+    allowed.live_since = live_since;
     visible_in(connection, access, now, ids, before, limit, &allowed).await
 }
 
@@ -176,7 +178,7 @@ const STORED_NOTICES: &str = "notifications n join messages m on m.id=n.message_
 
 const READABLE_CONDITIONS: &str = "left join
              conversations cv on cv.id=m.place_id cross join lateral notification_policy($1,m.place_id,$2) p where
-             n.account_id=$1 and m.place_id=any($3) and not m.deleted and (m.readers is null or $1=any(m.readers))
+             n.account_id=$1 and m.place_id=any($3) and (m.place_id=any($4) or m.created_at>$5) and not m.deleted and (m.readers is null or $1=any(m.readers))
              and not p.muted and (cv.id is not null or p.level<> 'nothing' ) and (n.kind<> 'mention' or
              notification_mentioned($1,m.id,p.roles,p.everyone)) and (n.kind<> 'message' or p.level= 'all' ) and
              (cv.id is null or not exists(select 1 from direct_mutes dm where dm.account_id=$1 and
@@ -208,6 +210,8 @@ pub async fn mark_all_read(
         .bind(access.account_id)
         .bind(now)
         .bind(places.ids())
+        .bind(places.history_ids())
+        .bind(places.live_since)
         .bind(until)
         .execute(connection)
         .await?
@@ -215,7 +219,7 @@ pub async fn mark_all_read(
 }
 
 /// The statement of [`mark_all_read`]: the account `$1`, the time `$2`, the places `$3`
-/// and the bound `$4`. It reads the unread notices of the account first, through their
+/// their history-readable subset `$4`, the live boundary `$5` and the bound `$6`. It reads the unread notices of the account first, through their
 /// index, and decides for each of them whether the account reads it now; an account has
 /// at most 500 notices after each maintenance run. The message of each one is read by its
 /// identifier: without the fixed order, the statement can read every message of the
@@ -227,7 +231,7 @@ pub fn mark_all_read_statement() -> String {
     format!(
         "with unread as materialized (
              select * from notifications
-             where account_id=$1 and read_at is null and created_at<=$4)
+             where account_id=$1 and read_at is null and created_at<=$6)
          update notifications set read_at=$2 where account_id=$1 and id = any(array(
              select n.id from {readable}))"
     )
@@ -249,12 +253,14 @@ pub async fn visible_in(
         Some(before) => {
             let cursor: Option<(OffsetDateTime, Uuid)> =
                 sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                    "select n.created_at,n.id from {} and n.id=$4",
+                    "select n.created_at,n.id from {} and n.id=$6",
                     readable_notices(STORED_NOTICES)
                 )))
                 .bind(access.account_id)
                 .bind(now)
                 .bind(places.ids())
+                .bind(places.history_ids())
+                .bind(places.live_since)
                 .bind(before)
                 .fetch_optional(&mut *connection)
                 .await?;
@@ -262,14 +268,16 @@ pub async fn visible_in(
         }
     };
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "select n.* from {} and ($4::uuid[] is null or n.message_id=any($4)) and
-             ($5::timestamptz is null or (n.created_at,n.id)<($5,$6)) order by n.created_at desc,n.id
-             desc limit $7",
+        "select n.* from {} and ($6::uuid[] is null or n.message_id=any($6)) and
+             ($7::timestamptz is null or (n.created_at,n.id)<($7,$8)) order by n.created_at desc,n.id
+             desc limit $9",
         readable_notices(STORED_NOTICES)
     )))
     .bind(access.account_id)
     .bind(now)
     .bind(places.ids())
+        .bind(places.history_ids())
+        .bind(places.live_since)
     .bind(ids)
     .bind(after.map(|(created_at, _)| created_at))
     .bind(after.map(|(_, id)| id))

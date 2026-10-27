@@ -442,6 +442,9 @@ pub async fn subscribe(
             Ok(access) => access,
             Err(ended) => return Ok(Start::Ended(ended)),
         };
+        let live_since = app
+            .streams
+            .live_since(who.account_id, who.device_id, who.session_id);
         let in_call = seat_of(connection, access.account_id, level).await?;
         let classes = selected_classes(level, in_call);
         let log = log::state(connection).await?;
@@ -491,17 +494,10 @@ pub async fn subscribe(
                     event: None,
                 })
                 .collect();
-            let standing = Standing::load(connection, &access, &candidates, app.now()).await?;
+            let standing =
+                Standing::load(connection, &access, &candidates, app.now(), live_since).await?;
             for candidate in candidates {
-                let decision = decide(
-                    &access,
-                    &standing,
-                    level,
-                    in_call,
-                    app.streams
-                        .live_since(who.account_id, who.device_id, who.session_id),
-                    candidate,
-                )?;
+                let decision = decide(&access, &standing, level, in_call, live_since, candidate)?;
                 if !matches!(decision, Decision::Hidden) {
                     waiting += 1;
                 }
@@ -618,7 +614,7 @@ pub(crate) async fn last_receivable(
         };
         after = last.1;
         let candidates: Vec<Candidate> = rows.into_iter().map(read_candidate).collect();
-        let standing = Standing::load(connection, &access, &candidates, now).await?;
+        let standing = Standing::load(connection, &access, &candidates, now, live_since).await?;
         for candidate in candidates {
             match decide(&access, &standing, Level::Full, None, live_since, candidate)? {
                 Decision::Deliver(_) => return Ok(Some(log.cursor(change)?)),
@@ -650,6 +646,9 @@ pub async fn next_batch(
             Ok(access) => access,
             Err(ended) => return Ok(Batch::Ended(ended)),
         };
+        let live_since = app
+            .streams
+            .live_since(who.account_id, who.device_id, who.session_id);
         let in_call = seat_of(connection, access.account_id, subscription.level).await?;
         let classes = selected_classes(subscription.level, in_call);
         let log = log::state(connection).await?;
@@ -733,7 +732,8 @@ pub async fn next_batch(
             _ => log.head.max(subscription.position),
         };
         let candidates: Vec<Candidate> = rows.into_iter().map(read_candidate).collect();
-        let standing = Standing::load(connection, &access, &candidates, app.now()).await?;
+        let standing =
+            Standing::load(connection, &access, &candidates, app.now(), live_since).await?;
 
         let mut deliveries = Vec::new();
         let mut change: Vec<Receivable> = Vec::new();
@@ -756,8 +756,7 @@ pub async fn next_batch(
                 &standing,
                 subscription.level,
                 in_call,
-                app.streams
-                    .live_since(who.account_id, who.device_id, who.session_id),
+                live_since,
                 candidate,
             )? {
                 Decision::Deliver(receivable) => change.push(*receivable),
@@ -824,6 +823,7 @@ impl Standing {
         access: &Access,
         candidates: &[Candidate],
         now: OffsetDateTime,
+        live_since: Option<OffsetDateTime>,
     ) -> ApiResult<Self> {
         let notification_events: Vec<_> = candidates
             .iter()
@@ -864,6 +864,7 @@ impl Standing {
                 Some(&notification_ids),
                 None,
                 notification_ids.len() as i64,
+                live_since,
             )
             .await?
             .into_iter()

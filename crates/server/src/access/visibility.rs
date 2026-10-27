@@ -13,10 +13,20 @@ use uuid::Uuid;
 pub struct Places {
     pub workspaces: Vec<WorkspaceId>,
     pub channels: Vec<ChannelId>,
+    pub history_channels: Vec<ChannelId>,
+    pub live_since: Option<time::OffsetDateTime>,
     pub directs: Vec<ConversationId>,
 }
 
 impl Places {
+    pub fn history_ids(&self) -> Vec<Uuid> {
+        self.history_channels
+            .iter()
+            .map(|id| id.as_uuid())
+            .chain(self.directs.iter().map(|id| id.as_uuid()))
+            .collect()
+    }
+
     pub fn ids(&self) -> Vec<Uuid> {
         self.channels
             .iter()
@@ -78,6 +88,14 @@ fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Act
             .map(db::server_permissions)
             .collect::<ApiResult<_>>()?,
     })
+}
+
+pub async fn viewable_places(connection: &mut PgConnection, access: &Access) -> ApiResult<Places> {
+    Ok(load(connection, &[access.account_id], None, true)
+        .await?
+        .pop()
+        .map(|(_, places)| places)
+        .unwrap_or_default())
 }
 
 pub async fn places(connection: &mut PgConnection, access: &Access) -> ApiResult<Places> {
@@ -198,6 +216,17 @@ async fn load_for(
                 if let Some(workspace) = scopes.get(&channel.workspace_id) {
                     let mut scope = channel_scope(workspace.clone(), &channel.overrides)?;
                     scope.person_override = people.get(&channel.id).copied().unwrap_or_default();
+                    if junto_authz::authorize(
+                        &actor,
+                        &Request::Channel {
+                            scope: &scope,
+                            permission: WorkspacePermission::ReadMessageHistory,
+                        },
+                    )
+                    .is_allowed()
+                    {
+                        places.history_channels.push(channel.id);
+                    }
                     if junto_authz::authorize(
                         &actor,
                         &Request::Channel {

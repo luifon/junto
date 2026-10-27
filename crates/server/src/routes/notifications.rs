@@ -312,6 +312,8 @@ pub async fn list(
             None,
             page.before,
             i64::from(limit) + 1,
+            app.streams
+                .live_since(access.account_id, access.device_id, access.session_id),
         )
         .await?;
         let has_more = notifications.len() > limit as usize;
@@ -341,6 +343,8 @@ pub async fn mark_read(
             Some(&[MessageId::from_uuid(id)]),
             None,
             1,
+            app.streams
+                .live_since(access.account_id, access.device_id, access.session_id),
         )
         .await?;
         let mut notice = notices.pop().ok_or_else(ApiError::not_found)?;
@@ -381,7 +385,10 @@ pub async fn mark_all_read(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         super::messages::rate(&app, &access, &mut counted)?;
-        let places = crate::access::visibility::places(connection, &access).await?;
+        let mut places = crate::access::visibility::viewable_places(connection, &access).await?;
+        places.live_since =
+            app.streams
+                .live_since(access.account_id, access.device_id, access.session_id);
         let marked = notifications::mark_all_read(connection, &access, now, until, &places).await?;
         if marked > 0 {
             let read = Event::NotificationsRead {

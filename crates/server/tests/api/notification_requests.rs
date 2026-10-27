@@ -274,6 +274,8 @@ async fn marking_all_read_reads_the_index_of_unread_notices() {
         .bind(reader.account_id)
         .bind(server.clock.now())
         .bind(vec![channel.id.as_uuid()])
+        .bind(vec![channel.id.as_uuid()])
+        .bind(None::<time::OffsetDateTime>)
         .bind(server.clock.now())
         .fetch_one(&server.db)
         .await
