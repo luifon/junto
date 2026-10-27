@@ -529,7 +529,8 @@ impl Client {
         if self.server_events != revision {
             self.server_events = revision;
             if let Some(model) = &mut self.model {
-                model.lists_follow_events = lists_follow_events(revision);
+                model.lists_follow_events =
+                    lists_follow_events(revision) && self.wanted == Level::Full;
             }
             self.version_changed = true;
             if let Some(revision) = revision.filter(|revision| *revision > EVENT_REVISION) {
@@ -904,6 +905,10 @@ impl Client {
                     since: Instant::now(),
                 };
                 self.fault = None;
+                if let Some(model) = &mut self.model {
+                    model.lists_follow_events =
+                        lists_follow_events(self.server_events) && level == Level::Full;
+                }
                 if level == Level::Background {
                     self.covered = Level::Background;
                 }
@@ -1404,7 +1409,8 @@ impl Client {
     fn install(&mut self, answer: SnapshotResponse) {
         let mut model = ServerModel::from_snapshot(answer.snapshot);
         model.take_moderation_notices(answer.moderation_notices);
-        model.lists_follow_events = lists_follow_events(self.server_events);
+        model.lists_follow_events =
+            lists_follow_events(self.server_events) && self.wanted == Level::Full;
         let cursor = model.cursor;
         let in_call = model.own_call.is_some();
         let before = self.model.take();

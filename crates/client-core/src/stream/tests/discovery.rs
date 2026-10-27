@@ -1424,3 +1424,49 @@ async fn a_burst_of_replies_keeps_the_notices_and_the_unread_threads_without_rea
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     assert_eq!(rig.http.count("/notifications"), before.0 + 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn background_notices_refresh_the_thread_without_channel_events() {
+    let mut rig = rig();
+    let place = rig.scene.text_place();
+    let root = message(place, 1, rig.scene.account_id, "root");
+    let answer = message(place, 2, AccountId::generate(), "reply");
+    {
+        let mut routes = rig.http.routes.lock().unwrap();
+        routes.chat.own = Some(rig.scene.account_id);
+        routes.chat.messages = vec![root.clone()];
+        let mut reply = answer.clone();
+        reply.thread_root = Some(root.id);
+        routes.chat.replies = vec![reply];
+        routes.chat.threads = vec![unread(&root, 0, 2, 1)];
+    }
+    rig.set_snapshot(40, |snapshot| {
+        snapshot.threads = vec![unread(&root, 0, 2, 1)];
+    });
+    rig.want(ConnectionLevel::Background, "jst_one");
+    let (peer, level, _) = rig.served_at(2).await;
+    assert_eq!(level, Level::Background);
+    rig.model_when("the starting thread", |model| model.threads.len() == 1)
+        .await;
+    rig.http.routes.lock().unwrap().chat.threads = vec![unread(&root, 0, 3, 2)];
+    peer.event(
+        41,
+        Event::NotificationChanged {
+            message_id: answer.id,
+            notice: Some(Notification {
+                id: answer.id.as_uuid(),
+                message_id: answer.id,
+                kind: NotificationKind::Thread,
+                created_at: crate::model::tests::time(),
+                read_at: None,
+            }),
+        },
+    )
+    .await;
+    rig.model_when("the background thread count", |model| {
+        model
+            .thread_state(root.id)
+            .is_some_and(|state| state.unread == 2)
+    })
+    .await;
+}

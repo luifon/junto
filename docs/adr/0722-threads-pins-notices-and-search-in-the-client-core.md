@@ -64,6 +64,8 @@ Tool:
 
 - `junto-cli` has `threads` (`list`, `reply`, `state`, `read`, `unread`, `fork`), `pins` (`list`, `add`, `remove`), `notices` (`list`, `read`, `settings`, `set-settings`, `default`, `set-default`) and `search`. `set-settings` reads the stored settings of a scope, changes the named ones and sends the whole: the server replaces the settings of a scope. `state` prints the unread threads, the notices and the settings, and `watch` the four new events.
 
+Background subscriptions do not receive the channel events that carry thread states. They retain the joined refresh of notices and unread threads when a notice arrives, even at event revision 2. A full subscription uses the event contents without those reads; changing the subscription or installing a snapshot updates that decision. The stream test `background_notices_refresh_the_thread_without_channel_events` covers the background path alongside the full-subscription burst test.
+
 ## Consequences
 
 - A notice that arrives within 2 seconds after a read of the first page of the notices, also a read that `message_read`, `thread_read` or `notifications_read` started, is listed, and told to the system, up to 2 seconds later.
