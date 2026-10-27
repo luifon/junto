@@ -3,6 +3,7 @@
 //! call and in the call window.
 
 use gpui::TestAppContext;
+use junto_client::shell::Pane;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ids::AttachmentId;
 use junto_client_core::protocol::message::{Message, SendMessage};
@@ -1190,19 +1191,18 @@ fn many_large_pictures_are_held_at_the_size_that_the_list_draws(cx: &mut TestApp
     }
     window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0))));
     window.until_message("Pictures 4");
+    // The list goes to its first row at once: a scroll there with the wheel decodes every
+    // picture that it passes in one wait, on the thread of the test, which took longer than
+    // the wait under load. The loop below brings each picture into view with the wheel.
     let first = selector(format!("picture:{}", ids[0].0));
-    scroll_until(
-        &mut window,
-        "the first picture is in view",
-        600.0,
-        |window| {
-            let list = window.cx.debug_bounds("message-list").unwrap();
-            window
-                .cx
-                .debug_bounds(first)
-                .is_some_and(|picture| picture.top() >= list.top())
-        },
-    );
+    window.in_shell(|shell, _, cx| shell.show_feed_row(Pane::Main, 0, cx));
+    window.until("the first picture is in view", |window| {
+        let list = window.cx.debug_bounds("message-list").unwrap();
+        window
+            .cx
+            .debug_bounds(first)
+            .is_some_and(|picture| picture.top() >= list.top())
+    });
     const MOST_HELD_BYTES: u64 = 96 * 1024 * 1024;
     let (fit_width, fit_height) = list_fit(&mut window);
     let mut most = 0;
