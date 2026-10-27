@@ -740,7 +740,33 @@ pub(crate) async fn delete_channel_in(
         name: &record.channel.name,
         permanent_message_count: record.permanent_message_count,
     };
-    remove_channel(connection, calls, now, &removed, Some(access.account_id)).await
+    remove_channel(connection, calls, now, &removed, Some(access.account_id)).await?;
+    if record.archived_at.is_some() {
+        return Ok(());
+    }
+    left_lists(connection, now, &record.channel).await
+}
+
+/// A category is listed to a person while it holds a channel of the lists that the person
+/// sees, or while the person manages it (ADR 0304). A channel that leaves the lists by a
+/// deletion or an archive can be the last such channel, so each person of the workspace
+/// reads the lists again, as after a move.
+pub(crate) async fn left_lists(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    channel: &Channel,
+) -> ApiResult<()> {
+    if channel.category_id.is_none() {
+        return Ok(());
+    }
+    let workspace_id = channel.workspace_id;
+    events::permissions_changed(
+        connection,
+        now,
+        Affected::Workspace(workspace_id),
+        Some(workspace_id),
+    )
+    .await
 }
 
 /// A channel that is deleted, as the deletion read it.

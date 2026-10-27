@@ -70,6 +70,7 @@ pub async fn archive_channel(
             channel: channel.clone(),
         };
         events::publish(connection, now, &archived).await?;
+        super::channels::left_lists(connection, now, &channel.channel).await?;
         Ok(channel)
     })
     .map(Json)

@@ -46,7 +46,7 @@ impl Access {
             .categories(connection, workspace_id, workspace, Some(ids))
             .await?;
         let children: Vec<ChannelId> = sqlx::query_scalar(
-            "select id from channels where category_id=any($1) and workspace_id=$2 and deleted_at is null",
+            "select id from channels where category_id=any($1) and workspace_id=$2 and deleted_at is null and archived_at is null",
         ).bind(ids).bind(workspace_id).fetch_all(&mut *connection).await?;
         let children = self
             .named_channels(connection, workspace_id, workspace, &children)
