@@ -15,7 +15,7 @@ use sqlx::PgConnection;
 use time::OffsetDateTime;
 
 use crate::access::Access;
-use crate::access::rules::{self, Place};
+use crate::access::rules::{self, Place, Rules};
 use crate::audit::{self, About};
 use crate::calls::Calls;
 use crate::error::{ApiError, ApiResult};
@@ -116,6 +116,36 @@ pub(crate) async fn require_member(
     } else {
         Err(ApiError::not_found())
     }
+}
+
+/// Requires, for each person whose rule differs between `before` and `after`, that the
+/// caller outranks the person or is the person.
+async fn require_people(
+    connection: &mut PgConnection,
+    access: &Access,
+    workspace_id: WorkspaceId,
+    before: &Rules,
+    after: &Rules,
+) -> ApiResult<()> {
+    let changed = before.keys().chain(after.keys()).filter(|subject| {
+        rules::of_subject(before, **subject) != rules::of_subject(after, **subject)
+    });
+    let mut people: Vec<AccountId> = changed
+        .filter_map(|subject| match subject {
+            RuleSubject::Person { account_id } if *account_id != access.account_id => {
+                Some(*account_id)
+            }
+            _ => None,
+        })
+        .collect();
+    people.sort_unstable();
+    people.dedup();
+    for account_id in people {
+        access
+            .require_above_workspace_account(connection, workspace_id, account_id)
+            .await?;
+    }
+    Ok(())
 }
 
 /// A rule that adds a permission to a person needs an active account, as a role does.
@@ -401,6 +431,109 @@ pub(crate) async fn set_channel_rule_in(
     let affected = affected(workspace_id, subject);
     events::permissions_changed(connection, now, affected, Some(workspace_id)).await?;
     Ok(result)
+}
+
+/// Removes the own rules of a channel, which takes the rules of its category again. The
+/// grant ceiling applies to what this adds (ADR 0306).
+#[utoipa::path(
+    post,
+    path = "/api/v1/channels/{channel_id}/rules/sync",
+    tag = "channels",
+    params(("channel_id" = ChannelId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = ChannelRules), ApiError)
+)]
+pub async fn sync_channel_rules(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(channel_id): ApiPath<ChannelId>,
+) -> ApiResult<Json<ChannelRules>> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        sync_channel_in(connection, &app.calls, &access, now, channel_id).await
+    })
+    .map(Json)
+}
+
+pub(crate) async fn sync_channel_in(
+    connection: &mut PgConnection,
+    calls: &Calls,
+    access: &Access,
+    now: OffsetDateTime,
+    channel_id: ChannelId,
+) -> ApiResult<ChannelRules> {
+    let (record, scope) = access.channel(connection, channel_id).await?;
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+    let channel = record.channel;
+    let category_id = channel
+        .category_id
+        .ok_or_else(|| ApiError::invalid("the channel has no category to take the rules of"))?;
+    lock_channel(connection, channel_id).await?;
+    if rules::synced(connection, channel_id).await? {
+        return channel_rules_of(connection, &channel).await;
+    }
+    let before = rules::effective(connection, channel_id).await?;
+    let after = rules::of_category(connection, category_id).await?;
+    access.require(Request::ManageChannelOverrides {
+        scope: &scope,
+        granting: rules::granted(&before, &after),
+    })?;
+    require_people(connection, access, channel.workspace_id, &before, &after).await?;
+
+    rules::sync_channels(connection, &[channel_id]).await?;
+    let ids = (channel.workspace_id, channel_id);
+    let actor = Some(access.account_id);
+    announce_sync(connection, now, actor, ids, Some(category_id), true).await?;
+    crate::calls::store::mark_channel(connection, calls, channel_id).await?;
+    if before != after {
+        let affected = Affected::Workspace(channel.workspace_id);
+        events::permissions_changed(connection, now, affected, Some(channel.workspace_id)).await?;
+    }
+    channel_rules_of(connection, &channel).await
+}
+
+/// What a move of a channel to another category changes in its rules: a synced channel takes
+/// the rules of the destination category, and a synced channel that leaves its category for
+/// none keeps the rules it had, as its own. The caller must hold what the new rules add
+/// (ADR 0306). Called before the category of the channel is changed.
+pub(crate) enum MovedRules {
+    Unchanged,
+    /// The channel keeps the rules of its former category as its own.
+    Detach,
+    /// The channel takes the rules of the destination category.
+    Take(CategoryId),
+}
+
+pub(crate) async fn check_move(
+    connection: &mut PgConnection,
+    access: &Access,
+    scope: &junto_authz::ChannelScope,
+    channel: &Channel,
+    destination: Option<CategoryId>,
+) -> ApiResult<MovedRules> {
+    let stored_synced: bool =
+        sqlx::query_scalar("select permissions_synced from channels where id = $1 for update")
+            .bind(channel.id)
+            .fetch_one(&mut *connection)
+            .await?;
+    if !stored_synced || destination == channel.category_id {
+        return Ok(MovedRules::Unchanged);
+    }
+    let Some(destination) = destination else {
+        return Ok(MovedRules::Detach);
+    };
+    let before = rules::effective(connection, channel.id).await?;
+    let after = rules::of_category(connection, destination).await?;
+    access.require(Request::ManageChannelOverrides {
+        scope,
+        granting: rules::granted(&before, &after),
+    })?;
+    require_people(connection, access, channel.workspace_id, &before, &after).await?;
+    Ok(MovedRules::Take(destination))
 }
 
 /// The rules of a category, which its synced channels take.

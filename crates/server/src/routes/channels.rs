@@ -605,9 +605,15 @@ pub(crate) async fn update_channel_in(
     if let Some(name) = new_name {
         name.clone_into(&mut channel.name);
     }
+    let mut moved_rules = super::rules::MovedRules::Unchanged;
     if let Some(category_id) = change.category_id {
         if let Some(category_id) = category_id.filter(|id| Some(*id) != channel.category_id) {
             require_category(connection, access, channel.workspace_id, category_id).await?;
+        }
+        moved_rules =
+            super::rules::check_move(connection, access, &scope, &channel, category_id).await?;
+        if let super::rules::MovedRules::Detach = moved_rules {
+            crate::access::inheritance::detach_channels(connection, &[channel_id]).await?;
         }
         channel.category_id = category_id;
     }
@@ -660,6 +666,19 @@ pub(crate) async fn update_channel_in(
         channel: channel.clone(),
     };
     events::publish(connection, now, &updated).await?;
+    let ids = (channel.workspace_id, channel_id);
+    let actor = Some(access.account_id);
+    match moved_rules {
+        super::rules::MovedRules::Unchanged => {}
+        super::rules::MovedRules::Detach => {
+            super::rules::announce_sync(connection, now, actor, ids, None, false).await?;
+        }
+        super::rules::MovedRules::Take(category_id) => {
+            crate::access::rules::sync_channels(connection, &[channel_id]).await?;
+            super::rules::announce_sync(connection, now, actor, ids, Some(category_id), true)
+                .await?;
+        }
+    }
     if channel.category_id != category_before {
         events::permissions_changed(
             connection,
@@ -829,7 +848,16 @@ pub(crate) async fn delete_category_in(
             .bind(category_id)
             .fetch_all(&mut *connection)
             .await?;
+    let synced = crate::access::rules::synced_children(connection, category_id).await?;
     crate::access::inheritance::detach_channels(connection, &children).await?;
+    for channel_id in synced {
+        let detached = Event::ChannelRulesSynced {
+            workspace_id,
+            channel_id,
+            synced: false,
+        };
+        events::publish(connection, now, &detached).await?;
+    }
     // The rows of deleted channels refer to the category as well.
     sqlx::query("update channels set category_id = null where category_id = $1")
         .bind(category_id)

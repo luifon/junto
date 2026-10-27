@@ -106,6 +106,11 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
         ManageStructure,
     ),
     (
+        "POST",
+        "/api/v1/channels/{channel_id}/rules/sync",
+        ManageStructure,
+    ),
+    (
         "PUT",
         "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
         ManageStructure,

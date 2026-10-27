@@ -160,6 +160,24 @@ pub(crate) async fn write(
     Ok(())
 }
 
+/// Removes the own rules of channels, which then use the rules of their category.
+pub(crate) async fn sync_channels(
+    connection: &mut PgConnection,
+    channels: &[ChannelId],
+) -> ApiResult<()> {
+    for statement in [
+        "delete from channel_overrides where channel_id = any($1)",
+        "delete from channel_person_overrides where channel_id = any($1)",
+        "update channels set permissions_synced = true where id = any($1)",
+    ] {
+        sqlx::query(statement)
+            .bind(channels)
+            .execute(&mut *connection)
+            .await?;
+    }
+    Ok(())
+}
+
 /// The channels of a category that use its rules, deleted channels excluded.
 pub(crate) async fn synced_children(
     connection: &mut PgConnection,

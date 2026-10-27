@@ -363,6 +363,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             rules::change_channel_person_rule
         )
     });
+    add(&mut router, || routes!(rules::sync_channel_rules));
     add(&mut router, || routes!(rules::get_category_rules));
     add(&mut router, || {
         routes!(
