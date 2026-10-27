@@ -1,3 +1,4 @@
+pub(crate) mod permissions;
 pub mod visibility;
 
 use std::collections::{HashMap, HashSet};
@@ -187,6 +188,7 @@ impl Access {
         access.token_actions = held;
         if access.actor.position == Position::Owner {
             access.actor.position = Position::Member;
+            access.actor.server_override = Default::default();
             access.actor.server_roles.push(
                 [ServerPermission::Administrator]
                     .into_iter()
@@ -287,7 +289,7 @@ impl Access {
             token_id: None,
             token_actions: Vec::new(),
             actor: Actor {
-                server_override: Default::default(),
+                server_override: permissions::server_person(connection, account_id).await?,
                 position,
                 server_roles,
             },
@@ -486,7 +488,7 @@ impl Access {
         }
         let everyone = everyone.ok_or_else(ApiError::not_found)?;
         Ok(WorkspaceScope {
-            person_override: Default::default(),
+            person_override: self.workspace_person(connection, workspace_id).await?,
             membership: if is_member {
                 Membership::Member
             } else {
@@ -536,14 +538,19 @@ impl Access {
             .await?;
         let overrides: Vec<OverrideRow> = sqlx::query_as(
             "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
-             from channel_overrides o
+             from effective_channel_overrides o
              join workspace_roles r on r.id = o.role_id
              where o.channel_id = $1",
         )
         .bind(channel_id)
         .fetch_all(&mut *connection)
         .await?;
-        let scope = channel_scope(workspace, &overrides)?;
+        let mut scope = channel_scope(workspace, &overrides)?;
+        scope.person_override = self
+            .channel_people(connection, &[channel_id])
+            .await?
+            .remove(&channel_id)
+            .unwrap_or_default();
         Ok((record, scope))
     }
 
@@ -574,15 +581,21 @@ impl Access {
         .await?;
         let overrides: Vec<OverrideRow> = sqlx::query_as(
             "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
-             from channel_overrides o
+             from effective_channel_overrides o
              join workspace_roles r on r.id = o.role_id
              where o.workspace_id = $1",
         )
         .bind(workspace_id)
         .fetch_all(&mut *connection)
         .await?;
+        let people = self
+            .channel_people(
+                connection,
+                &rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+            )
+            .await?;
         Ok((
-            scoped_channels(rows, overrides.clone(), workspace)?,
+            scoped_channels(rows, overrides.clone(), workspace, &people)?,
             overrides,
         ))
     }
@@ -605,7 +618,7 @@ impl Access {
         .await?;
         let overrides: Vec<OverrideRow> = sqlx::query_as(
             "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
-             from channel_overrides o
+             from effective_channel_overrides o
              join workspace_roles r on r.id = o.role_id
              where o.workspace_id = $1 and o.channel_id = any($2)",
         )
@@ -613,7 +626,8 @@ impl Access {
         .bind(channel_ids)
         .fetch_all(&mut *connection)
         .await?;
-        scoped_channels(rows, overrides, workspace)
+        let people = self.channel_people(connection, channel_ids).await?;
+        scoped_channels(rows, overrides, workspace, &people)
     }
 }
 
@@ -681,6 +695,7 @@ fn scoped_channels(
     rows: Vec<ChannelRow>,
     overrides: Vec<OverrideRow>,
     workspace: &WorkspaceScope,
+    people: &HashMap<ChannelId, Override>,
 ) -> ApiResult<Vec<(ChannelRecord, ChannelScope)>> {
     let mut by_channel: HashMap<ChannelId, Vec<OverrideRow>> = HashMap::new();
     for row in overrides {
@@ -692,7 +707,8 @@ fn scoped_channels(
             let overrides = by_channel
                 .get(&record.channel.id)
                 .map_or(&[][..], Vec::as_slice);
-            let scope = channel_scope(workspace.clone(), overrides)?;
+            let mut scope = channel_scope(workspace.clone(), overrides)?;
+            scope.person_override = people.get(&record.channel.id).copied().unwrap_or_default();
             Ok((record, scope))
         })
         .collect()

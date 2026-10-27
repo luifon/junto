@@ -40,6 +40,7 @@ mod maintenance;
 mod migration_identifiers;
 mod moderation;
 mod permissions_migration;
+mod person_standing;
 mod processing;
 mod profiles;
 mod recordings;

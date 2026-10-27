@@ -885,7 +885,7 @@ pub async fn recover(
 /// reads every role assignment, so that the time of a list of contacts would depend on
 /// accounts that the caller may not see (ADR 0307).
 pub const CONTACT_STANDING: &str = "select a.id, coalesce(a.id = s.owner_account_id, false),
-            coalesce(held.permissions, '{}')
+            coalesce(held.permissions, '{}'), coalesce(person.allow,0), coalesce(person.deny,0)
      from unnest($1::uuid[]) asked(id)
      cross join lateral (
          select id, status from accounts where id = asked.id offset 0
@@ -900,6 +900,9 @@ pub const CONTACT_STANDING: &str = "select a.id, coalesce(a.id = s.owner_account
              select permissions from server_roles where id = assigned.role_id offset 0
          ) r
      ) held
+     left join lateral (
+         select allow,deny from server_person_overrides where account_id=a.id offset 0
+     ) person on true
      where a.status = 'active'";
 
 /// Contact standing for a set of peers, loaded without a query per conversation.
@@ -908,15 +911,15 @@ pub async fn contacts(
     access: &Access,
     accounts: &[AccountId],
 ) -> ApiResult<HashMap<AccountId, Contact>> {
-    let rows: Vec<(AccountId, bool, Vec<i64>)> = sqlx::query_as(CONTACT_STANDING)
+    let rows: Vec<(AccountId, bool, Vec<i64>, i64, i64)> = sqlx::query_as(CONTACT_STANDING)
         .bind(accounts)
         .fetch_all(&mut *connection)
         .await?;
     let fellows = fellow_members(connection, access.account_id, accounts).await?;
     rows.into_iter()
-        .map(|(id, owner, roles)| {
+        .map(|(id, owner, roles, allow, deny)| {
             let actor = junto_authz::Actor {
-                server_override: Default::default(),
+                server_override: crate::access::permissions::server_rule(allow, deny)?,
                 position: if owner {
                     junto_authz::Position::Owner
                 } else {

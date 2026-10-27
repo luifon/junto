@@ -1,5 +1,5 @@
 //! Batched standing for search, notices and their bounded delivery candidates.
-use super::{Access, channel_scope, role_key};
+use super::{Access, channel_scope, role_key, stored_override};
 use crate::{db, error::ApiResult};
 use junto_authz::{
     Actor, Contact, HeldRole, Membership, Position, Request, WorkspacePermission, WorkspaceScope,
@@ -30,6 +30,7 @@ impl Places {
 struct Workspace {
     id: WorkspaceId,
     member: bool,
+    person: (i64, i64),
     roles: Vec<(WorkspaceRoleId, i64, bool)>,
 }
 
@@ -46,6 +47,7 @@ struct Direct {
     shared: bool,
     owner: bool,
     roles: Vec<i64>,
+    person: (i64, i64),
     /// The other participant is inactive or deleted: the conversation is read only
     /// (ADR 0121).
     departed: bool,
@@ -56,14 +58,16 @@ struct Standing {
     account_id: AccountId,
     owner: bool,
     roles: Vec<i64>,
+    person: (i64, i64),
     workspaces: Vec<Workspace>,
     channels: Vec<Channel>,
+    channel_people: Vec<(ChannelId, i64, i64)>,
     directs: Vec<Direct>,
 }
 
-fn make_actor(owner: bool, roles: Vec<i64>) -> ApiResult<Actor> {
+fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Actor> {
     Ok(Actor {
-        server_override: Default::default(),
+        server_override: super::permissions::server_rule(person.0, person.1)?,
         position: if owner {
             Position::Owner
         } else {
@@ -95,22 +99,26 @@ pub async fn load(
     let rows: Vec<Json<Standing>> = sqlx::query_scalar("with channels_selected as materialized ( select id,workspace_id from channels where deleted_at is null and
              ($2::uuid[] is null or id=any($2)) ), overrides as materialized ( select
              o.channel_id,jsonb_agg(jsonb_build_array(o.channel_id,o.role_id,r.is_everyone,o.allow,o.deny)) as rules
-             from channel_overrides o join workspace_roles r on r.id=o.role_id where o.channel_id in(select id from
+             from effective_channel_overrides o join workspace_roles r on r.id=o.role_id where o.channel_id in(select id from
              channels_selected) group by o.channel_id ), channels_json as ( select
              coalesce(jsonb_agg(jsonb_build_object( 'id' ,c.id, 'workspace_id' ,c.workspace_id, 'overrides'
              ,coalesce(o.rules, '[]' ::jsonb))), '[]' ::jsonb) as value from channels_selected c left join overrides o
              on o.channel_id=c.id ) select jsonb_build_object( 'account_id' ,a.id, 'owner'
              ,coalesce(a.id=s.owner_account_id,false), 'roles' ,array(select r.permissions from server_roles r join
-             account_server_roles ar on ar.role_id=r.id where ar.account_id=a.id), 'channels' ,cj.value, 'workspaces'
+             account_server_roles ar on ar.role_id=r.id where ar.account_id=a.id), 'person', coalesce((select jsonb_build_array(p.allow,p.deny) from server_person_overrides p where p.account_id=a.id),'[0,0]'::jsonb),
+             'channel_people', coalesce((select jsonb_agg(jsonb_build_array(p.channel_id,p.allow,p.deny)) from effective_channel_person_overrides p where p.account_id=a.id and p.channel_id in(select id from channels_selected)),'[]'::jsonb),
+             'channels' ,cj.value, 'workspaces'
              ,coalesce((select jsonb_agg(jsonb_build_object( 'id' ,w.id, 'member' ,exists(select 1 from
-             workspace_members wm where wm.workspace_id=w.id and wm.account_id=a.id), 'roles' ,(select
+             workspace_members wm where wm.workspace_id=w.id and wm.account_id=a.id),
+             'person', coalesce((select jsonb_build_array(p.allow,p.deny) from workspace_person_overrides p where p.workspace_id=w.id and p.account_id=a.id),'[0,0]'::jsonb), 'roles' ,(select
              jsonb_agg(jsonb_build_array(r.id,r.permissions,r.is_everyone)) from workspace_roles r where
              r.workspace_id=w.id and (r.is_everyone or exists( select 1 from member_roles mr where mr.role_id=r.id and
              mr.account_id=a.id))))) from workspaces w where w.deleted_at is null and ($2::uuid[] is null or w.id in(select workspace_id from
              channels_selected))), '[]' ::jsonb), 'directs' ,coalesce((select jsonb_agg(jsonb_build_object( 'id' ,c.id,
              'departed' ,peer.departed_at is not null
                  and peer.status in ('inactive', 'deleted', 'removed'),
-             'owner' ,coalesce(peer.id=s.owner_account_id,false), 'roles' ,array(select r.permissions from server_roles
+             'owner' ,coalesce(peer.id=s.owner_account_id,false),
+             'person', coalesce((select jsonb_build_array(p.allow,p.deny) from server_person_overrides p where p.account_id=peer.id),'[0,0]'::jsonb), 'roles' ,array(select r.permissions from server_roles
              r join account_server_roles ar on ar.role_id=r.id where ar.account_id=peer.id), 'shared' ,exists(select 1
              from workspace_members mine join workspace_members theirs using(workspace_id) where mine.account_id=a.id
              and theirs.account_id=peer.id))) from conversations c join accounts peer on peer.id=case when
@@ -126,7 +134,7 @@ pub async fn load(
         .await?;
     rows.into_iter()
         .map(|Json(row)| {
-            let actor = make_actor(row.owner, row.roles)?;
+            let actor = make_actor(row.owner, row.roles, row.person)?;
             let mut scopes = std::collections::HashMap::new();
             let mut places = Places::default();
             for workspace in row.workspaces {
@@ -144,7 +152,7 @@ pub async fn load(
                     }
                 }
                 let scope = WorkspaceScope {
-                    person_override: Default::default(),
+                    person_override: stored_override(workspace.person.0, workspace.person.1)?,
                     membership: if workspace.member {
                         Membership::Member
                     } else {
@@ -158,9 +166,15 @@ pub async fn load(
                 }
                 scopes.insert(workspace.id, scope);
             }
+            let people: std::collections::HashMap<_, _> = row
+                .channel_people
+                .into_iter()
+                .map(|(id, allow, deny)| Ok((id, stored_override(allow, deny)?)))
+                .collect::<ApiResult<_>>()?;
             for channel in row.channels {
                 if let Some(workspace) = scopes.get(&channel.workspace_id) {
-                    let scope = channel_scope(workspace.clone(), &channel.overrides)?;
+                    let mut scope = channel_scope(workspace.clone(), &channel.overrides)?;
+                    scope.person_override = people.get(&channel.id).copied().unwrap_or_default();
                     if junto_authz::authorize(
                         &actor,
                         &Request::Channel {
@@ -177,7 +191,8 @@ pub async fn load(
             for direct in row.directs {
                 let contact = if direct.shared {
                     Contact::SharedWorkspace
-                } else if make_actor(direct.owner, direct.roles)?.is_administrator() {
+                } else if make_actor(direct.owner, direct.roles, direct.person)?.is_administrator()
+                {
                     Contact::Administrator
                 } else {
                     Contact::Unrelated
