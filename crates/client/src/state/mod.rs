@@ -2571,6 +2571,8 @@ impl AppState {
         self.follow_jump(shown);
         self.follow_result_jump(shown);
         self.tell_alerts(&snapshots, shown, call_window, cx);
+        let mentions = tray::tray_mention_count(&view);
+        self.set_tray_mentions(mentions, cx);
         self.follow_tray();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();
