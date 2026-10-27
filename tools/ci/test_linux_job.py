@@ -15,7 +15,7 @@ echo "$*" >>"$RECORD"
 case "$*" in *"$FAIL_ON"*) [ -z "$FAIL_ON" ] || exit 17 ;; esac
 exit 0
 """
-DEVICE_TESTS = "cargo test --locked -p junto-media --test linux_audio --test tls_trust -- --ignored"
+DEVICE_TESTS = "cargo test --no-fail-fast --locked -p junto-media --test linux_audio --test tls_trust -- --ignored"
 
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
@@ -45,9 +45,32 @@ class LinuxSteps(unittest.TestCase):
         self.assertLess(commands.index("cargo build --workspace --locked"), commands.index(DEVICE_TESTS))
 
     def test_a_failed_test_of_sound_devices_fails_the_linux_job(self):
-        status, commands, _ = self.run_job(fail_on="--test linux_audio")
+        status, commands, output = self.run_job(fail_on="--test linux_audio")
         self.assertEqual(status, 17)
-        self.assertEqual(commands[-1], DEVICE_TESTS)
+        self.assertIn(DEVICE_TESTS, commands)
+        self.assertIn(f"Linux sound devices and TURN over TLS (exit 17): tools/linux-container.sh {DEVICE_TESTS}",
+                      output)
+
+    def test_a_failed_step_does_not_stop_the_later_steps_and_the_job_lists_every_failure(self):
+        status, commands, output = self.run_job(fail_on="cargo fmt")
+        self.assertEqual(status, 17)
+        self.assertIn("git diff --exit-code -- docs/api", commands)
+        self.assertIn("cargo test --no-fail-fast --workspace --locked", commands)
+        failed = output.split("=== Failed steps", 1)[1]
+        self.assertIn("Format (exit 17): tools/linux-container.sh cargo fmt --all --check", failed)
+        self.assertNotIn("Lint", failed)
+
+    def test_every_cargo_test_of_the_linux_job_runs_every_test_program(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        tests = [c for c in commands if "cargo test" in c]
+        self.assertTrue(tests)
+        self.assertTrue(all("cargo test --no-fail-fast " in c for c in tests), tests)
+
+    def test_a_failed_image_build_stops_the_linux_job(self):
+        status, commands, _ = self.run_job(fail_on="true")
+        self.assertEqual(status, 17)
+        self.assertEqual(commands, ["true"])
 
 
 if __name__ == "__main__":

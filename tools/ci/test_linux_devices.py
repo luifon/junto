@@ -108,7 +108,7 @@ class LinuxJob(unittest.TestCase):
                             steps.index("cargo clippy --locked -p junto-media --features native-device-tests "
                                         "--all-targets -- -D warnings"))
             # The camera unit tests that read the counts of the device check (ADR 0913).
-            self.assertIn("cargo test --locked -p junto-media --features native-device-tests --lib camera::",
+            self.assertIn("cargo test --no-fail-fast --locked -p junto-media --features native-device-tests --lib camera::",
                           steps)
 
 
