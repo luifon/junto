@@ -365,7 +365,9 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
     // The last workspace goes: the direct section, the conversation, its header and the
     // side panel stay where they are (ADR 0730). The person reads the conversation, with
     // the pointer on its list: the notice of the removal waits until the pointer leaves it.
+    // A change waits for the pointer in the active window only (ADR 0730).
     let list = window.cx.debug_bounds("message-list").unwrap();
+    window.cx.update(|window, _| window.activate_window());
     window.move_pointer(list.center());
     world
         .run(api.remove_workspace_member(default, luca_id, &Default::default()))
