@@ -277,6 +277,7 @@ pub fn update_steps(
 pub fn restart_to_use(version: Version) -> String {
     format!("Junto {version} is installed. Restart Junto to use it.")
 }
+
 /// The server is newer than this build: it sends changes that this build does not show.
 pub const NEWER_EVENTS: &str =
     "This server is newer than this Junto: update Junto to see every change.";

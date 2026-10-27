@@ -2275,6 +2275,8 @@ fn the_call_actions_at_their_default_keys(cx: &mut TestAppContext) {
     scene
         .window
         .until("the device left", |window| window.view().call.is_none());
+}
+
 /// The events of a call that a person needs to know while no window of the application is
 /// active are system notifications (ADR 0742): a call that starts in a voice channel whose
 /// messages all notify the person, the answers to the own request to enter, a removal and a
