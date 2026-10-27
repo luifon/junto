@@ -1867,6 +1867,15 @@ pub fn unread_count(count: u64) -> String {
     }
 }
 
+/// The unread messages of the chat of a call, for the button that opens the closed panel.
+pub fn unread_messages(count: u64) -> String {
+    if count == 1 {
+        "1 new message".to_owned()
+    } else {
+        format!("{} new messages", unread_count(count))
+    }
+}
+
 /// The sign of a channel that mentions the person.
 pub fn mention_badge(mentions: u64) -> String {
     format!("@ {}", unread_count(mentions))

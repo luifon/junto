@@ -372,7 +372,9 @@ impl Shell {
                     }
                 }
             }
-            if narrow {
+            // The buttons that open the panel of the call: over the stage of a narrow
+            // window, and in a wide window while the person closed it.
+            if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
         } else {

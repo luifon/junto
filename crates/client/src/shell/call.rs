@@ -323,13 +323,29 @@ impl Shell {
         ]
         .into_iter()
         .map(|(tab, shown, label, selector)| {
+            // While the panel is closed, the chat button counts the messages that arrived.
+            let unread = if tab == CallTab::Chat {
+                self.view
+                    .as_ref()
+                    .and_then(|view| view.lists())
+                    .and_then(|lists| lists.feed.as_ref())
+                    .map_or(0, |feed| feed.unread)
+            } else {
+                0
+            };
             Button::new(selector)
                 .icon(shown)
                 .tooltip(label)
+                .accessible_label(if unread > 0 {
+                    SharedString::from(format!("{label}, {}", text::unread_messages(unread)))
+                } else {
+                    SharedString::from(label)
+                })
+                .count((unread > 0).then(|| text::unread_count(unread)))
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.show_call_tab(tab, cx);
-                    this.call_panel_open = true;
+                    this.open_call_panel(cx);
                 }))
                 .into_any_element()
         })
@@ -359,7 +375,7 @@ impl Shell {
             .selector("open-call-notices")
             .on_click(cx.listener(|this, _, _, cx| {
                 this.open_call_notices(cx);
-                this.call_panel_open = true;
+                this.open_call_panel(cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -806,21 +822,18 @@ impl Shell {
                         cx,
                     )),
             )
-            .when(narrow, |tabs| {
-                tabs.child(
-                    div().flex().flex_none().items_center().child(
-                        Button::new("close-call-panel")
-                            .kind(ButtonKind::Ghost)
-                            .icon(Icon::X)
-                            .tooltip(text::CLOSE_PANEL)
-                            .selector("close-call-panel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.call_panel_open = false;
-                                cx.notify();
-                            })),
-                    ),
-                )
-            });
+            // The panel closes in every window, as the server book does; the stage then
+            // takes its width (round 2 item 16).
+            .child(
+                div().flex().flex_none().items_center().child(
+                    Button::new("close-call-panel")
+                        .kind(ButtonKind::Ghost)
+                        .icon(if narrow { Icon::X } else { Icon::CollapseRight })
+                        .tooltip(text::CLOSE_PANEL)
+                        .selector("close-call-panel")
+                        .on_click(cx.listener(|this, _, _, cx| this.close_call_panel(cx))),
+                ),
+            );
         let pane = match (&notices, self.call_tab) {
             (Some((shown, server_id)), _) => self.render_notices_panel(*server_id, shown, true, cx),
             (None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
@@ -2053,13 +2066,55 @@ impl Shell {
         } else {
             self.render_call_stage(panel, &theme, cx)
         };
-        let side = (!narrow || self.call_panel_open).then(|| {
+        self.call_panel_overlay = narrow;
+        let side = self.call_panel_shown(narrow, cx).then(|| {
             (
                 Panel::Call,
                 self.render_call_panel(view, panel, narrow, window, cx),
             )
         });
         (stage, side)
+    }
+
+    /// The panel of the call is drawn: beside the stage unless the person closed it (kept in
+    /// the settings), or over the stage of a narrow window while it is open.
+    pub(crate) fn call_panel_shown(&self, overlay: bool, cx: &App) -> bool {
+        if overlay {
+            self.call_panel_open
+        } else {
+            !self.state.read(cx).call_panel_closed(self.detached)
+        }
+    }
+
+    /// Opens the panel of the call of this window.
+    pub(crate) fn open_call_panel(&mut self, cx: &mut Context<Self>) {
+        self.call_panel_open = true;
+        let detached = self.detached;
+        self.state
+            .update(cx, |state, cx| state.set_call_panel_closed(detached, false, cx));
+        cx.notify();
+    }
+
+    /// Closes the panel of the call of this window; beside the stage the choice is kept.
+    pub(crate) fn close_call_panel(&mut self, cx: &mut Context<Self>) {
+        if self.call_panel_overlay {
+            self.call_panel_open = false;
+        } else {
+            let detached = self.detached;
+            self.state
+                .update(cx, |state, cx| state.set_call_panel_closed(detached, true, cx));
+        }
+        cx.notify();
+    }
+
+    /// Closes the panel of the call of this window when it is open and opens it otherwise:
+    /// the button of the header and the key of the shortcut list.
+    pub fn toggle_call_panel(&mut self, cx: &mut Context<Self>) {
+        if self.call_panel_shown(self.call_panel_overlay, cx) {
+            self.close_call_panel(cx);
+        } else {
+            self.open_call_panel(cx);
+        }
     }
 
     /// The panel of the call of this window: the one of the main window or the one of the

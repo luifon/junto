@@ -76,6 +76,7 @@ icons! {
     Code => "lucide/code",
     CodeBlock => "lucide/square-code",
     Collapse => "lucide/panel-left-close",
+    CollapseRight => "lucide/panel-right-close",
     Cup => "lucide/coffee",
     Detach => "lucide/picture-in-picture-2",
     Devices => "lucide/monitor-smartphone",

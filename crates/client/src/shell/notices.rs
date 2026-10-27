@@ -283,7 +283,7 @@ impl Shell {
                         // A narrow window draws the panel of the call over the stage
                         // only while it is open.
                         if in_call {
-                            this.call_panel_open = true;
+                            this.open_call_panel(cx);
                         }
                     })),
             )

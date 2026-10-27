@@ -1,6 +1,6 @@
 //! The settings of the interface that belong to one installation and to no server: the
-//! interface scale, the theme, the form of the server book and the widths of the panels
-//! (ADR 0703, ADR 0710).
+//! interface scale, the theme, the form of the server book, the widths of the panels and
+//! whether the panel of a call is closed (ADR 0703, ADR 0710).
 
 use std::collections::BTreeMap;
 
@@ -126,6 +126,10 @@ pub struct InterfaceSettings {
     pub server_book_collapsed: bool,
     pub theme: ThemeChoice,
     pub panel_widths: PanelWidths,
+    /// The person closed the panel of a call beside its stage in the main window.
+    pub call_panel_closed: bool,
+    /// The same for the separate call window.
+    pub call_window_panel_closed: bool,
 }
 
 impl Default for InterfaceSettings {
@@ -135,6 +139,8 @@ impl Default for InterfaceSettings {
             server_book_collapsed: false,
             theme: ThemeChoice::default(),
             panel_widths: PanelWidths::default(),
+            call_panel_closed: false,
+            call_window_panel_closed: false,
         }
     }
 }
@@ -150,6 +156,10 @@ struct SettingsFile {
     /// A panel that this client does not know is left out of the file at the next write.
     #[serde(default, deserialize_with = "known_panels")]
     panel_widths: BTreeMap<Panel, u16>,
+    #[serde(default)]
+    call_panel_closed: bool,
+    #[serde(default)]
+    call_window_panel_closed: bool,
 }
 
 /// The widths of the panels that this client knows; a panel of a later client is skipped.
@@ -190,6 +200,8 @@ impl SettingsStore {
             server_book_collapsed: file.server_book_collapsed,
             theme: file.theme,
             panel_widths: PanelWidths::of(&file.panel_widths),
+            call_panel_closed: file.call_panel_closed,
+            call_window_panel_closed: file.call_window_panel_closed,
         })
     }
 
@@ -236,6 +248,8 @@ impl SettingsStore {
                 server_book_collapsed: settings.server_book_collapsed,
                 theme: settings.theme,
                 panel_widths: settings.panel_widths.stored(),
+                call_panel_closed: settings.call_panel_closed,
+                call_window_panel_closed: settings.call_window_panel_closed,
             },
         )
     }
@@ -268,6 +282,8 @@ mod tests {
             server_book_collapsed: true,
             theme: ThemeChoice::Dark,
             panel_widths,
+            call_panel_closed: true,
+            call_window_panel_closed: false,
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
@@ -381,6 +397,8 @@ mod tests {
             server_book_collapsed: true,
             theme: ThemeChoice::Light,
             panel_widths: PanelWidths::default(),
+            call_panel_closed: false,
+            call_window_panel_closed: false,
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

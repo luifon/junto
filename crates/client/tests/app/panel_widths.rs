@@ -140,3 +140,65 @@ fn the_edge_of_a_panel_moves_with_the_arrow_keys(cx: &mut TestAppContext) {
     window.press("left");
     assert_eq!(width(&mut window, "channel-column"), channels + 16.0);
 }
+
+/// The panel of a call closes with its button, the stage takes its width, a message of the
+/// chat while it is closed is counted on the button that opens it again, and the closed
+/// state is kept after a restart (round 2 item 16).
+#[gpui::test]
+fn the_panel_of_a_call_closes_and_opens_again_and_stays_closed_after_a_restart(
+    cx: &mut TestAppContext,
+) {
+    use crate::calls::{connected_call, show_call, voice_channel};
+    use crate::messages::document;
+    let world = World::new();
+    let server = world.server("Panels");
+    let admin = world.owner(&server);
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(1600.0), px(900.0))));
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    show_call(&mut window, call);
+    window.until("the panel of the call", |window| window.shows("call-panel"));
+    let daily = (window.channels().into_iter())
+        .find(|row| row.name == "Daily")
+        .unwrap()
+        .id;
+    let stage = width(&mut window, "call-stage");
+    assert!(!window.shows("open-call-chat"));
+
+    window.click("close-call-panel");
+    window.until("the panel is closed", |window| !window.shows("call-panel"));
+    assert!(width(&mut window, "call-stage") > stage, "the stage keeps its width");
+    assert!(window.shows("open-call-chat"));
+    assert_eq!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.call_panel_closed(false)),
+        true
+    );
+    // A message of the chat while the panel is closed is counted on its button.
+    admin.send(&world, daily, document("Are we starting?"));
+    window.until("the chat button counts the message", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.unread == 1)
+    });
+    assert!(window.shows("open-call-chat"));
+
+    window.click("open-call-chat");
+    window.until("the panel is open again", |window| window.shows("call-panel"));
+    window.click("close-call-panel");
+    window.until("the panel is closed again", |window| !window.shows("call-panel"));
+    window.run_tasks();
+    let stored = std::fs::read_to_string(directory.path().join("junto").join("settings.json"))
+        .expect("the settings are written");
+    assert!(stored.contains("\"call_panel_closed\": true"), "{stored}");
+    window.close();
+
+    let mut window = open(cx, directory.path());
+    window.until_ready();
+    assert!(window
+        .state
+        .read_with(&window.cx, |state, _| state.call_panel_closed(false)));
+}

@@ -131,6 +131,7 @@ enum Setting {
     ServerBook,
     Theme,
     PanelWidth(Panel),
+    CallPanel,
 }
 
 /// A part of the processing of the microphone (ADR 0701).
@@ -2910,6 +2911,30 @@ impl AppState {
             .map_or(design, f32::from)
     }
 
+    /// Whether the person closed the panel of a call beside its stage, in the separate call
+    /// window when `detached`, otherwise in the main window.
+    pub fn call_panel_closed(&self, detached: bool) -> bool {
+        if detached {
+            self.settings.call_window_panel_closed
+        } else {
+            self.settings.call_panel_closed
+        }
+    }
+
+    /// Closes or opens the panel of a call beside its stage; the choice is kept after a
+    /// restart (round 2 item 16).
+    pub fn set_call_panel_closed(&mut self, detached: bool, closed: bool, cx: &mut Context<Self>) {
+        if self.call_panel_closed(detached) == closed {
+            return;
+        }
+        if detached {
+            self.settings.call_window_panel_closed = closed;
+        } else {
+            self.settings.call_panel_closed = closed;
+        }
+        self.write_setting(Setting::CallPanel, cx);
+    }
+
     /// Keeps the width that the person gave a panel, within its bounds, also after a
     /// restart (ADR 0703).
     pub fn set_panel_width(&mut self, panel: Panel, width: f32, cx: &mut Context<Self>) {
@@ -2943,6 +2968,10 @@ impl AppState {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }
                             Setting::Theme => stored.theme = wanted.theme,
+                            Setting::CallPanel => {
+                                stored.call_panel_closed = wanted.call_panel_closed;
+                                stored.call_window_panel_closed = wanted.call_window_panel_closed;
+                            }
                             Setting::PanelWidth(panel) => {
                                 if let Some(width) = wanted.panel_widths.get(*panel) {
                                     stored.panel_widths.set(*panel, width);

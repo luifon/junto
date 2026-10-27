@@ -346,14 +346,13 @@ impl Shell {
                     )
                     .children(self.render_camera_notice(cx)),
             );
+        self.call_panel_overlay = !beside;
+        let shown = self.call_panel_shown(!beside, cx);
         let side = match panel {
-            Some(panel) => self
-                .call_panel_open
-                .then(|| self.render_call_panel(&view, panel, true, window, cx)),
+            Some(panel) => shown.then(|| self.render_call_panel(&view, panel, true, window, cx)),
             // Before the state holds the conversation of a direct-message call there is no
             // panel of the call, but the bell opens the notices of its server (ADR 0772).
-            None => self
-                .call_panel_open
+            None => shown
                 .then(|| self.render_call_notices_alone(&view, cx))
                 .flatten(),
         };
