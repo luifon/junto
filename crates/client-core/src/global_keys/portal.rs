@@ -266,7 +266,7 @@ pub async fn run(
     let mut number = 0;
     let mut holding: Vec<KeyAction> = Vec::new();
     loop {
-        let keys = wanted.borrow_and_update().clone();
+        let keys = wanted.borrow_and_update().clone().map(CallKeys::resolved);
         if let Some(keys) = &keys
             && bound.as_ref().map(|(held, _)| held) != Some(keys)
         {

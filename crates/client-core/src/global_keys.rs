@@ -245,6 +245,18 @@ pub struct CallKeys {
 }
 
 impl CallKeys {
+    pub fn resolved(mut self) -> Self {
+        let bindings = self.bindings.clone();
+        self.bindings.retain(|(action, combo)| {
+            KeyAction::ALL.iter().find(|candidate| {
+                bindings
+                    .iter()
+                    .any(|(bound, keys)| bound == *candidate && keys == combo)
+            }) == Some(action)
+        });
+        self
+    }
+
     /// Every key that the readings need.
     pub fn keys(&self) -> Vec<Key> {
         let mut keys: Vec<Key> = self
@@ -285,6 +297,7 @@ pub struct Edges {
 
 impl Edges {
     pub fn read(&mut self, keys: &CallKeys, held: &[Key]) -> Vec<KeyEvent> {
+        let keys = keys.clone().resolved();
         let holding: Vec<&(KeyAction, KeyCombo)> = keys
             .bindings
             .iter()
@@ -523,7 +536,7 @@ impl Poller {
 
     /// The keys that the call needs now; absent without a call, which stops the readings.
     pub fn set(&self, keys: Option<CallKeys>) {
-        let _ = self.keys.send(keys);
+        let _ = self.keys.send(keys.map(CallKeys::resolved));
     }
 
     /// Why the last reading failed, while it fails.
@@ -621,6 +634,7 @@ impl GlobalKeys {
 
     /// The keys that the call needs now; absent without a call.
     pub fn set(&self, keys: Option<CallKeys>) {
+        let keys = keys.map(CallKeys::resolved);
         match &self.source {
             Source::Poller(poller) => poller.set(keys),
             #[cfg(target_os = "linux")]

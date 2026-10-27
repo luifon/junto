@@ -192,3 +192,28 @@ fn the_poller_reads_only_while_a_call_needs_the_keys_and_tells_a_refusal() {
     std::thread::sleep(INTERVAL * 6);
     assert_eq!(reader.readings(), readings);
 }
+
+#[test]
+fn equal_global_bindings_dispatch_only_the_first_action_of_the_registry() {
+    let combo: KeyCombo = "control+shift+m".parse().unwrap();
+    let keys = CallKeys {
+        bindings: vec![
+            (KeyAction::ToggleSoundOff, combo.clone()),
+            (KeyAction::ToggleMute, combo.clone()),
+        ],
+    };
+    let held = HeldKeys::default();
+    let (send, events) = std::sync::mpsc::channel();
+    let poller = Poller::start(Box::new(held.clone()), move |event| {
+        send.send(event).unwrap();
+    });
+    poller.set(Some(keys));
+    held.hold(Ok(combo.keys().to_vec()));
+    assert_eq!(
+        events
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        KeyEvent::Pressed(KeyAction::ToggleMute)
+    );
+    assert!(events.recv_timeout(INTERVAL * 4).is_err());
+}

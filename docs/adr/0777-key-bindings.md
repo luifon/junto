@@ -25,7 +25,7 @@ The bindings (`keybinds::Keybinds`):
 - Keys are modifiers and at most one other key: a letter, a digit, F1 to F24, an arrow, Enter, Escape, Backspace, Page Up, Page Down, comma, slash, =, -, [ or ]. The keys of an action that happens at a press need a modifier, so that typing does not do it; the keys of a held action can be one key.
 - The settings file of the interface keeps the bindings that differ from the defaults, by the name of the action (format 3; a file of format 1 has none, every action has its default). A file whose binding breaks these rules is read without that binding. A change is written under the lock of the data directory with only that change, so that a second program keeps its other changes (ADR 0710).
 - The key that mutes of ADR 0776 is this binding: the sound settings stay at format 4 and have no key that mutes. Push to talk keeps the key of the sound settings (Alt or Control, ADR 0507) until the person sets another one; its reset returns to that key. The binding stores inheritance separately from an explicitly removed key, so changing only the outside switch keeps the inherited key. Format 2 push-to-talk overrides with no keys migrate to inheritance; format 2 could not keep an explicit removal with the default outside switch.
-- Two actions with the same keys are a conflict, which both rows state; a press does the first of them in the order of the list.
+- Two actions with the same keys are a conflict, which both rows state; a press does the first of them in the order of the list. The polling reader and portal remove the other equal bindings before dispatch or registration, preserving the order of distinct bindings.
 
 In the window:
 

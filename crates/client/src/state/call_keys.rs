@@ -220,7 +220,7 @@ impl AppState {
             })
             .filter_map(|action| self.keys_of(action).map(|keys| (action, keys)))
             .collect();
-        let keys = CallKeys { bindings };
+        let keys = CallKeys { bindings }.resolved();
         (!keys.is_empty()).then_some(keys)
     }
 
