@@ -29,21 +29,17 @@ use crate::{read, transact};
 
 async fn require_category(
     connection: &mut PgConnection,
+    access: &Access,
     workspace_id: WorkspaceId,
     category_id: CategoryId,
 ) -> ApiResult<()> {
-    let exists: bool = sqlx::query_scalar(
-        "select exists (select 1 from categories where id = $1 and workspace_id = $2)",
-    )
-    .bind(category_id)
-    .bind(workspace_id)
-    .fetch_one(connection)
-    .await?;
-    if exists {
-        Ok(())
-    } else {
-        Err(ApiError::not_found())
-    }
+    let (_, scope) = access
+        .visible_category(connection, workspace_id, category_id)
+        .await?;
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })
 }
 
 /// Creates a category in a workspace.
@@ -187,8 +183,10 @@ pub(crate) async fn update_category_in(
     new_name: Option<&str>,
     position: Option<i32>,
 ) -> ApiResult<Category> {
-    let scope = access.workspace(connection, workspace_id).await?;
-    access.require(Request::Workspace {
+    let (_, scope) = access
+        .visible_category(connection, workspace_id, category_id)
+        .await?;
+    access.require(Request::Channel {
         scope: &scope,
         permission: WorkspacePermission::ManageChannel,
     })?;
@@ -275,14 +273,9 @@ pub async fn visible_structure(
     workspace_id: WorkspaceId,
     scope: &WorkspaceScope,
 ) -> ApiResult<Visible> {
-    let categories: Vec<(CategoryId, String, i32)> = sqlx::query_as(
-        "select id, name, position from categories
-         where workspace_id = $1
-         order by position, id",
-    )
-    .bind(workspace_id)
-    .fetch_all(&mut *connection)
-    .await?;
+    let categories = access
+        .categories(connection, workspace_id, scope, None)
+        .await?;
     let permissions = access.workspace_permissions(scope);
     let mut channels = Vec::new();
     let mut channel_permissions = Vec::new();
@@ -312,12 +305,15 @@ pub async fn visible_structure(
         list: ChannelList {
             categories: categories
                 .into_iter()
-                .map(|(id, name, position)| Category {
-                    id,
-                    workspace_id,
-                    name,
-                    position,
+                .filter(|(category, scope)| {
+                    access.category_visible(
+                        scope,
+                        channels
+                            .iter()
+                            .any(|channel| channel.category_id == Some(category.id)),
+                    )
                 })
+                .map(|(category, _)| category)
                 .collect(),
             channels,
         },
@@ -410,13 +406,14 @@ pub(crate) async fn create_channel_in(
     new: &NewChannel<'_>,
 ) -> ApiResult<Channel> {
     let workspace_id = new.workspace_id;
-    let scope = access.workspace(connection, workspace_id).await?;
-    access.require(Request::Workspace {
-        scope: &scope,
-        permission: WorkspacePermission::ManageChannel,
-    })?;
     if let Some(category_id) = new.category_id {
-        require_category(connection, workspace_id, category_id).await?;
+        require_category(connection, access, workspace_id, category_id).await?;
+    } else {
+        let scope = access.workspace(connection, workspace_id).await?;
+        access.require(Request::Workspace {
+            scope: &scope,
+            permission: WorkspacePermission::ManageChannel,
+        })?;
     }
 
     let position = match new.position {
@@ -607,8 +604,8 @@ pub(crate) async fn update_channel_in(
         name.clone_into(&mut channel.name);
     }
     if let Some(category_id) = change.category_id {
-        if let Some(category_id) = category_id {
-            require_category(connection, channel.workspace_id, category_id).await?;
+        if let Some(category_id) = category_id.filter(|id| Some(*id) != channel.category_id) {
+            require_category(connection, access, channel.workspace_id, category_id).await?;
         }
         channel.category_id = category_id;
     }
@@ -801,8 +798,10 @@ pub(crate) async fn delete_category_in(
     now: OffsetDateTime,
     (workspace_id, category_id): (WorkspaceId, CategoryId),
 ) -> ApiResult<()> {
-    let scope = access.workspace(connection, workspace_id).await?;
-    access.require(Request::Workspace {
+    let (_, scope) = access
+        .visible_category(connection, workspace_id, category_id)
+        .await?;
+    access.require(Request::Channel {
         scope: &scope,
         permission: WorkspacePermission::ManageChannel,
     })?;

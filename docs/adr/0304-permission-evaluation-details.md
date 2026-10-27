@@ -68,5 +68,5 @@ Stored sets:
 - A person with "manage channel" who denies a permission to a role that the person holds loses that permission in the channel and cannot remove the deny again. An administrator can.
 - Role changes and server moderation also obey the order of ADR 0309. A person with "manage roles" changes only roles below their highest role, with the permission-grant ceiling above.
 - A person with "create workspace" and no administrator permission gets an empty workspace that an administrator has to give roles to.
-- A category does not hide its name from members who see none of its channels.
+- A category is listed only when a person sees a channel in it or can manage the category. Its management permission is evaluated with its role and person overrides. Renaming or deleting a hidden category, and creating or moving a channel into one, answers as for a missing category. A person who can manage one category can create channels there without workspace-wide management permission.
 - The number of a permission bit cannot be reused for another permission.

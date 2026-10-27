@@ -1,3 +1,4 @@
+mod categories;
 pub(crate) mod permissions;
 pub mod visibility;
 
@@ -729,15 +730,27 @@ pub fn stored_override(allow: i64, deny: i64) -> ApiResult<Override> {
 }
 
 fn channel_scope(workspace: WorkspaceScope, overrides: &[OverrideRow]) -> ApiResult<ChannelScope> {
+    role_scope(
+        workspace,
+        overrides
+            .iter()
+            .map(|(_, role, everyone, allow, deny)| (*role, *everyone, *allow, *deny)),
+    )
+}
+
+fn role_scope(
+    workspace: WorkspaceScope,
+    overrides: impl Iterator<Item = (WorkspaceRoleId, bool, i64, i64)>,
+) -> ApiResult<ChannelScope> {
     let mut everyone_override = Override::NONE;
     let mut role_overrides = Vec::new();
-    for (_, role_id, is_everyone, allow, deny) in overrides {
-        let rule = stored_override(*allow, *deny)?;
-        if *is_everyone {
+    for (role_id, is_everyone, allow, deny) in overrides {
+        let rule = stored_override(allow, deny)?;
+        if is_everyone {
             everyone_override = rule;
         } else {
             role_overrides.push(RoleOverride {
-                role: role_key(*role_id),
+                role: role_key(role_id),
                 rule,
             });
         }
