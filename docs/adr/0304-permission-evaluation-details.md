@@ -20,7 +20,7 @@ View permission:
 
 - The workspace permission "view channel" is added to the list of ADR 0301. A private channel is a channel whose override of the "everyone" role denies it.
 - Every permission in a channel needs "view channel" in that channel as well.
-- An absent channel reads the same workspace-role, membership, person-rule and effective-channel-rule statements as a hidden channel before returning `not_found`. An absent category likewise runs the category and child scope reads before the visibility decision. Database-statistics tests compare the statements of repeated requests; they do not assert identical elapsed time.
+- An absent channel reads the same workspace-role, membership, person-rule and effective-channel-rule statements as a hidden channel before returning `not_found`. An absent category likewise runs the category and child scope reads before the visibility decision. Database-statistics tests compare the statements of repeated requests; they do not assert identical elapsed time. Only the `not_found` result waits for the remaining reads; a database error of a read is returned at once, because PostgreSQL refuses every later statement of a failed transaction and a serialization failure must reach the retry of ADR 0009.
 - The "everyone" role of a new workspace has "view channel", "lock room" and "run meeting mode".
 
 Membership:

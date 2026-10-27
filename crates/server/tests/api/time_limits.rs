@@ -338,3 +338,24 @@ async fn a_connection_terminated_during_a_statement_is_unavailable() {
         .await
         .ok::<Workspace>(StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_channel_lookup_whose_workspace_read_times_out_gets_the_timeout_error() {
+    let prepared = TestServer::start().await;
+    let owner = prepared.owner().await;
+    let channel = crate::messages_support::channel(&prepared, &owner, "text").await;
+    let server = prepared
+        .strict(|config| config.limits.database.lock = Duration::milliseconds(300))
+        .await;
+    let mut lock = server.db.begin().await.unwrap();
+    sqlx::query("lock table workspace_roles in access exclusive mode")
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let path = format!("/api/v1/channels/{}/messages", channel.id);
+    let reply = tokio::time::timeout(PATIENCE, server.get(&owner, &path))
+        .await
+        .expect("the blocked request did not return");
+    lock.rollback().await.unwrap();
+    reply.error(ErrorCode::Timeout);
+}
