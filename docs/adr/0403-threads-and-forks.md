@@ -13,7 +13,7 @@ A discussion about one message can fill a channel and hide other messages. A dis
 - A thread is a set of replies attached to one message. The client shows it in a side panel.
 - A thread can be forked into a text channel or into a voice channel.
 - The new channel inherits the category and the permissions of the thread's channel.
-- The fork copies each override of the thread's channel. Each copy gets the audit entry `channel_override_set` about the new channel, with its system line, and the event `channel_override_set`, as a change of an override does (ADR 0305).
+- The fork copies each role and person rule that the thread's channel uses, and the new channel keeps them as its own. Each copy gets the audit entry `channel_override_set` for a role or `channel_person_rule_set` for a person about the new channel, with its system line, and the event `permission_rule_set`, as a change of a rule does (ADR 0304, ADR 0305).
 - The new channel receives a copy of the thread's messages.
 - The thread gets a link to the new channel.
 - A reply in a thread notifies the people who wrote in that thread (ADR 0404).

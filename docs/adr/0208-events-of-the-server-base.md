@@ -24,7 +24,10 @@ Audiences:
 | `join_request_created`, `join_request_decided`, `join_request_withdrawn` | Accounts with `approve_join_requests` |
 | `workspace_created`, `workspace_updated`, `workspace_member_added`, `workspace_member_removed`, `workspace_member_roles_changed`, `workspace_role_created`, `workspace_role_updated`, `category_created`, `category_updated` | Accounts that may see the workspace |
 | `channel_created`, `channel_updated`, `channel_deleted` | Accounts with `view_channel` in the channel |
-| `channel_override_set` | Accounts with `manage_channel` in the channel |
+| `permission_rule_set` for a channel, `channel_rules_synced` | Accounts with `manage_channel` in the channel |
+| `permission_rule_set` for a category | Accounts with `manage_channel` in the category |
+| `workspace_person_permissions_set` | Accounts with `manage_roles` in the workspace |
+| `server_person_permissions_set` | Accounts with `administrator` |
 
 - Each audience is the permission that the REST route for the same data needs (ADR 0304).
 - The decision is made when the event is delivered (ADR 0011).
