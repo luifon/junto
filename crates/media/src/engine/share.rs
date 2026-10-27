@@ -454,6 +454,9 @@ pub(super) struct OwnShare {
     picture_returns: Option<(u64, TrackSid)>,
     sound_returns: Option<(u64, TrackSid)>,
     waits: u64,
+    /// The picture track waits until the call library has taken the track permissions of
+    /// this number (ADR 0737).
+    cleared_by: Option<(u64, LocalVideoTrack, TrackPublishOptions)>,
     /// The answer of the system to the start of the capture, until the engine takes it.
     /// The share owns it: a capture that has started when the share ends is stopped with
     /// the share.
@@ -482,6 +485,14 @@ impl Drop for OwnShare {
 }
 
 type Started = Arc<Mutex<Option<Result<CaptureStream, CaptureError>>>>;
+
+/// A share track whose publication has not answered and that no share uses any more: the
+/// picture of a share, by the share, or a sound, by the share and the sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Arriving {
+    Picture(u64),
+    Sound(u64, u64),
+}
 
 /// Whether a track that the call library published again is the track of a place: the
 /// place waits for the track with that identifier, or holds it.
@@ -942,6 +953,7 @@ impl Actor {
                 picture_returns: None,
                 sound_returns: None,
                 waits: 0,
+                cleared_by: None,
                 started,
                 tasks,
             },
@@ -962,6 +974,16 @@ impl Actor {
                 continue;
             };
             self.share_generation += 1;
+            if matches!(share.picture, Publication::Publishing)
+                && share.cleared_by.is_none()
+                && share.picture_returns.is_none()
+            {
+                self.arriving.insert(Arriving::Picture(share.generation));
+            }
+            if matches!(share.sound, Publication::Publishing) && share.sound_returns.is_none() {
+                self.arriving
+                    .insert(Arriving::Sound(share.generation, share.sound_generation));
+            }
             for publication in [
                 std::mem::replace(&mut share.picture, Publication::None),
                 std::mem::replace(&mut share.sound, Publication::None),
@@ -1008,7 +1030,7 @@ impl Actor {
                 return;
             }
         };
-        let (Some(room), Some(share)) = (&self.room, self.own_shares.get_mut(&slot)) else {
+        let (Some(_), Some(share)) = (&self.room, self.own_shares.get_mut(&slot)) else {
             self.end_share(Some(slot), Some(CaptureError::Interrupted));
             return;
         };
@@ -1040,6 +1062,46 @@ impl Actor {
         );
         share.stream = Some(stream);
         share.picture = Publication::Publishing;
+        share.cleared_by = Some((u64::MAX, track, options));
+        // The permissions that count this share reach the call library before its tracks.
+        let Some(number) = self.sync_permissions() else {
+            self.end_share(
+                Some(slot),
+                Some(CaptureError::Failed(
+                    "the track permissions of the room were not set".to_owned(),
+                )),
+            );
+            return;
+        };
+        if number <= self.permissions_applied {
+            self.publish_share_picture(slot);
+        } else {
+            if let Some((waits_for, _, _)) = self
+                .own_shares
+                .get_mut(&slot)
+                .and_then(|share| share.cleared_by.as_mut())
+            {
+                *waits_for = number;
+            }
+            let internal = self.internal.clone();
+            self.runtime.spawn(async move {
+                tokio::time::sleep(PUBLISH_LIMIT).await;
+                let _ = internal.send(Internal::SharePermissionsDue(generation));
+            });
+        }
+        self.tell_shares();
+    }
+
+    /// Publishes the picture track of the share in `slot` that waits for its permissions,
+    /// and its sound.
+    fn publish_share_picture(&mut self, slot: u8) {
+        let (Some(room), Some(share)) = (&self.room, self.own_shares.get_mut(&slot)) else {
+            return;
+        };
+        let Some((_, track, options)) = share.cleared_by.take() else {
+            return;
+        };
+        let generation = share.generation;
         let (participant, internal) = (room.local_participant(), self.internal.clone());
         self.runtime.spawn(async move {
             let publishing = participant.publish_track(LocalTrack::Video(track), options);
@@ -1051,7 +1113,57 @@ impl Actor {
             let _ = internal.send(Internal::SharePicturePublished(generation, result));
         });
         self.sync_share_sound();
-        self.tell_shares();
+    }
+
+    /// The call library took the track permissions up to `number`, or failed to take those
+    /// of `number`: the shares that wait for them are published, or end.
+    pub(super) fn share_permissions_applied(&mut self, number: u64, failure: Option<String>) {
+        let waiting: Vec<u8> = self
+            .own_shares
+            .iter()
+            .filter(|(_, share)| {
+                share
+                    .cleared_by
+                    .as_ref()
+                    .is_some_and(|(waits_for, _, _)| *waits_for <= number)
+            })
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in waiting {
+            match &failure {
+                None => self.publish_share_picture(slot),
+                Some(error) => {
+                    tracing::warn!(%error, slot, "the share was not published without its permissions");
+                    self.end_share(
+                        Some(slot),
+                        Some(CaptureError::Failed(format!(
+                            "the track permissions of the room were not set: {error}"
+                        ))),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The time of a share to wait for its permissions has passed.
+    pub(super) fn share_permissions_due(&mut self, generation: u64) {
+        let Some(share) = self
+            .own_share_of(generation)
+            .filter(|share| share.cleared_by.is_some())
+        else {
+            return;
+        };
+        let slot = share.slot;
+        tracing::warn!(
+            slot,
+            "the track permissions of the share were not set in time"
+        );
+        self.end_share(
+            Some(slot),
+            Some(CaptureError::Failed(
+                "the track permissions of the room were not set in time".to_owned(),
+            )),
+        );
     }
 
     pub(super) fn share_picture_published(
@@ -1073,8 +1185,13 @@ impl Actor {
                 self.end_share(Some(slot), Some(CaptureError::Failed(error)));
             }
             // The share ended while its track was published.
-            (None, Ok(publication)) => self.withdraw(publication),
-            (None, Err(_)) => {}
+            (None, result) => {
+                self.arriving.remove(&Arriving::Picture(generation));
+                if let Ok(publication) = result {
+                    self.withdraw(publication);
+                }
+                self.sync_permissions();
+            }
         }
     }
 
@@ -1195,6 +1312,7 @@ impl Actor {
         let mut withdrawn = Vec::new();
         for share in self.own_shares.values_mut() {
             let wanted = share.stream.is_some()
+                && share.cleared_by.is_none()
                 && share.request.sound.reported() != ShareAudio::None
                 && may_send;
             match (&share.sound, wanted) {
@@ -1248,6 +1366,12 @@ impl Actor {
                     });
                 }
                 (Publication::Published(_) | Publication::Publishing, false) => {
+                    if matches!(share.sound, Publication::Publishing)
+                        && share.sound_returns.is_none()
+                    {
+                        self.arriving
+                            .insert(Arriving::Sound(share.generation, share.sound_generation));
+                    }
                     share.sound_generation += 1;
                     share.sound_returns = None;
                     *share
@@ -1287,8 +1411,13 @@ impl Actor {
                 share.sound = Publication::None;
                 self.retry_share_sound_later(key.0);
             }
-            (None, Ok(publication)) => self.withdraw(publication),
-            (None, Err(_)) => {}
+            (None, result) => {
+                self.arriving.remove(&Arriving::Sound(key.0, key.1));
+                if let Ok(publication) = result {
+                    self.withdraw(publication);
+                }
+                self.sync_permissions();
+            }
         }
     }
 

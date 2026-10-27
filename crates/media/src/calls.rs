@@ -328,6 +328,8 @@ enum SessionCommand {
     #[cfg(feature = "test-support")]
     SimulateConnectionLoss,
     #[cfg(feature = "test-support")]
+    HoldPermissions(bool),
+    #[cfg(feature = "test-support")]
     Statistics(crate::engine::statistics::Reply),
     #[cfg(feature = "test-support")]
     SoundCheck(crate::engine::statistics::SoundReply),
@@ -903,6 +905,12 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn simulate_connection_loss(&self) {
         self.inner.tell(SessionCommand::SimulateConnectionLoss);
+    }
+    /// Holds back the track permissions of the media connection of the call, or applies
+    /// them again.
+    #[cfg(feature = "test-support")]
+    pub fn hold_permissions(&self, held: bool) {
+        self.inner.tell(SessionCommand::HoldPermissions(held));
     }
 
     /// Queries the connection statistics for a failed live test.
@@ -2780,6 +2788,8 @@ impl Session {
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateConnectionLoss => self.engine.simulate_connection_loss(),
+            #[cfg(feature = "test-support")]
+            SessionCommand::HoldPermissions(held) => self.engine.hold_permissions(held),
             // The loop takes this command itself.
             SessionCommand::End { .. } => {}
         }

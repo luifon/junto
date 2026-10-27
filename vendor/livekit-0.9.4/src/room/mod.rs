@@ -14,7 +14,9 @@
 //
 // Modified: this file differs from the published livekit 0.9.4. After a resume the local
 // participant sends the mute state of each local track again (`handle_resumed`). The close
-// stops the negotiations of the session before it unpublishes the tracks (`close`).
+// stops the negotiations of the session before it unpublishes the tracks (`close`). After a
+// new connection of the session the track permissions are sent before the tracks are
+// published again (`handle_restarted`).
 
 pub use crate::utils::take_cell::TakeCell;
 use bmrng::unbounded::UnboundedRequestReceiver;
@@ -1751,6 +1753,11 @@ impl RoomSession {
         tokio::spawn({
             let session = self.clone();
             async move {
+                // Modified: the session that connected anew holds no track permissions, and
+                // every participant could receive each track that is published again until
+                // the permissions are sent after the last one. They are also sent before.
+                local_participant.update_track_subscription_permissions().await;
+
                 let mut set = tokio::task::JoinSet::new();
 
                 for (_, publication) in published_tracks {

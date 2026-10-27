@@ -7,7 +7,7 @@
 //! server: who is in a call, who is blocked and when a call ends is told to it
 //! (see [`crate::calls`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -297,6 +297,10 @@ enum Internal {
     CameraPublished(u64, u64, u64, Result<LocalTrackPublication, String>),
     CameraDue(u64, TrackSid),
     Connected(u64, Result<(Room, Events), String>),
+    /// The call library took the track permissions of a number, in a connection.
+    PermissionsApplied(u64, u64, Result<(), String>),
+    /// The time of a share to wait for its track permissions has passed.
+    SharePermissionsDue(u64),
     Permission(MicrophoneAccess),
     InputFailed(u64, AudioError),
     OutputFailed(u64, AudioError),
@@ -375,6 +379,8 @@ pub struct Engine {
     levels: watch::Receiver<Levels>,
     main_picture: watch::Receiver<Option<MainPicture>>,
     small_pictures: watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>>,
+    /// Holds the track permissions of the room back while it holds `true` (a test sets it).
+    permissions_held: Arc<watch::Sender<bool>>,
 }
 
 impl Engine {
@@ -461,6 +467,7 @@ impl Engine {
         ));
         let camera_pictures = watch::Sender::new(HashMap::new());
         let camera_seen = camera_pictures.subscribe();
+        let permissions_held = Arc::new(watch::Sender::new(false));
         let actor = Actor {
             id: NEXT_ENGINE.fetch_add(1, Ordering::Relaxed),
             camera: None,
@@ -509,6 +516,10 @@ impl Engine {
             share_generation: 0,
             permissions: None,
             permissions_told: None,
+            permissions_sent: 0,
+            permissions_applied: 0,
+            permissions_held: permissions_held.clone(),
+            arriving: HashSet::new(),
             remote_pictures: HashMap::new(),
             remote_sounds: HashMap::new(),
             share_order: 0,
@@ -533,7 +544,14 @@ impl Engine {
             levels: levels_seen,
             main_picture,
             small_pictures,
+            permissions_held,
         }
+    }
+
+    /// Holds back the track permissions of the room, or applies them again, for a test.
+    #[cfg(feature = "test-support")]
+    pub fn hold_permissions(&self, held: bool) {
+        self.permissions_held.send_replace(held);
     }
 
     /// The picture of the share that the person watches, at the size of its drawing.
@@ -789,8 +807,15 @@ struct Actor {
     share_limit: u8,
     /// The work that applies the track permissions of the room, and the permissions that
     /// it was sent last (ADR 0510).
-    permissions: Option<mpsc::UnboundedSender<permissions::Permissions>>,
+    permissions: Option<mpsc::UnboundedSender<(u64, permissions::Permissions)>>,
     permissions_told: Option<permissions::Permissions>,
+    /// The number of the permissions sent last, and of those that the call library took
+    /// last, in this connection.
+    permissions_sent: u64,
+    permissions_applied: u64,
+    permissions_held: Arc<watch::Sender<bool>>,
+    /// The share tracks whose publication has not answered and that no share uses any more.
+    arriving: HashSet<share::Arriving>,
     /// Why the last own share that ended by itself ended, until the person acts.
     share_ended: Option<CaptureError>,
     /// Counts the shares that were started. The result of an earlier one is not used.
@@ -1110,6 +1135,9 @@ impl Actor {
                     }
                 }
             }
+            Internal::PermissionsApplied(attempt, number, result) => {
+                self.permissions_applied(attempt, number, result);
+            }
             Internal::Permission(access) => {
                 self.asking = false;
                 self.change(|state| state.access = access);
@@ -1150,6 +1178,7 @@ impl Actor {
                 }
             }
             Internal::ShareStarted(generation) => self.share_started(generation),
+            Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
             Internal::SharePicturePublished(generation, result) => {
                 self.share_picture_published(generation, result);
@@ -1418,6 +1447,7 @@ impl Actor {
         self.attempt += 1;
         self.permissions = None;
         self.permissions_told = None;
+        self.arriving.clear();
         // A share does not outlive the connection that carried it (ADR 0737).
         if !self.own_shares.is_empty() {
             self.end_share(None, Some(CaptureError::Interrupted));

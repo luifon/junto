@@ -1095,6 +1095,493 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
     .await;
 }
 
+/// The slots of the shares of `of` whose tracks a room connection of the call library sees
+/// published: the picture tracks and the sound tracks, whether it receives them or not.
+fn published_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec<u8>) {
+    let mut slots = (Vec::new(), Vec::new());
+    for (picture, slot, _) in share_tracks_of(room, of) {
+        if picture {
+            slots.0.push(slot);
+        } else {
+            slots.1.push(slot);
+        }
+    }
+    slots.0.sort_unstable();
+    slots.1.sort_unstable();
+    slots
+}
+
+/// The share tracks of `of` that a room connection sees: picture or sound, the slot, and
+/// whether the connection was ever let to receive the track.
+fn share_tracks_of(room: &livekit::prelude::Room, of: AccountId) -> Vec<(bool, u8, bool)> {
+    use livekit::prelude::TrackSource;
+    let mut tracks = Vec::new();
+    for participant in room.remote_participants().values() {
+        if junto_media::engine::account_of(participant.identity().as_str()) != Some(of) {
+            continue;
+        }
+        for publication in participant.track_publications().values() {
+            let name = publication.name();
+            let (picture, slot) = match publication.source() {
+                TrackSource::Screenshare => (
+                    true,
+                    junto_media::share::read_track_name(&name).map_or(0, |name| name.slot),
+                ),
+                TrackSource::ScreenshareAudio => {
+                    (false, junto_media::share::read_sound_name(&name))
+                }
+                _ => continue,
+            };
+            tracks.push((picture, slot, publication.track().is_some()));
+        }
+    }
+    tracks
+}
+
+/// While the permissions of the room are held back, a further share of a person publishes
+/// nothing (ADR 0737): the media server holds no track of it, for any participant. A hold
+/// longer than the limit ends that share with an error that the sharer sees, and the share
+/// that runs goes on. After a shorter hold the share is published, and a client from before
+/// several shares is never let to receive one of its tracks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_further_share_is_published_only_after_the_permissions_that_withhold_it() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben, cara) = (Person::new(440.0), Person::new(880.0), Person::new(660.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let cara_at = room.member(&ann_at, &cara, "Cara").await;
+        let ann_id = account(&ann_at);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        let join = cara_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let (old, _events) = livekit::prelude::Room::connect(
+            &join.media_url,
+            join.token.expose(),
+            livekit::prelude::RoomOptions::default(),
+        )
+        .await
+        .unwrap();
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            "Cara receives the screen of Ann with its sound",
+        )
+        .await;
+
+        // The permissions are held back longer than the limit of a publication.
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        let started = std::time::Instant::now();
+        loop {
+            let call = ann.calls.view().call.unwrap();
+            if matches!(call.share_ended, Some(CaptureError::Failed(_))) {
+                break;
+            }
+            assert_eq!(
+                published_slots(&old, ann_id),
+                (vec![0], vec![0]),
+                "after {:?} of the hold the media server holds a track of the further share; \
+                 the own shares are {:?}",
+                started.elapsed(),
+                call.own_shares
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the further share did not end while the permissions were held: {call:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let call = ann.calls.view().call.unwrap();
+        assert_eq!(call.own_shares.keys().copied().collect::<Vec<_>>(), [0]);
+        ann.calls.hold_permissions(false);
+        ann.calls.forget_share_end();
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            "Cara still receives the screen of Ann",
+        )
+        .await;
+
+        // A shorter hold: nothing of the further share is published during it.
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(3) {
+            assert_eq!(
+                published_slots(&old, ann_id),
+                (vec![0], vec![0]),
+                "after {:?} of the hold the media server holds a track of the further share",
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        ann.calls.hold_permissions(false);
+        ann.until_sharing_in(1).await;
+        ben.until("Ben sees the two shares of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        for _ in 0..10 {
+            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![0]));
+            let let_in: Vec<(bool, u8, bool)> = share_tracks_of(&old, ann_id)
+                .into_iter()
+                .filter(|(_, slot, received)| *slot == 1 && *received)
+                .collect();
+            assert_eq!(
+                let_in,
+                [],
+                "Cara was let to receive a track of the further share"
+            );
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(10), old.close()).await;
+    })
+    .await;
+}
+
+/// What a test participant of a release from before several shares reports: the tracks that
+/// the media server let it receive, and the packets that each one received.
+#[derive(Default)]
+struct LegacyReport {
+    subscribed: Vec<String>,
+    packets: std::collections::HashMap<String, u64>,
+    /// The last lines of its output, for a failure.
+    last: std::collections::VecDeque<String>,
+}
+
+impl LegacyReport {
+    /// Takes one line of the output of `test-participant subscribe`: one JSON object.
+    fn take(&mut self, line: &str) {
+        if self.last.len() == 8 {
+            self.last.pop_front();
+        }
+        self.last.push_back(line.chars().take(600).collect());
+        if line.contains(r#""event":"track_subscribed""#) {
+            if let Some(sid) = line.split(r#""track_sid":""#).nth(1) {
+                self.subscribed
+                    .push(sid.split('"').next().unwrap_or_default().to_owned());
+            }
+        } else if line.contains(r#""event":"report""#) || line.contains(r#""event":"summary""#) {
+            for track in objects_in(line, r#""tracks":["#) {
+                let text = |key: &str| track.split(key).nth(1).map(str::to_owned);
+                let sid = text(r#""track_sid":""#)
+                    .and_then(|rest| rest.split('"').next().map(str::to_owned));
+                let packets = text(r#""packets_received":"#).and_then(|rest| {
+                    rest.split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .and_then(|digits| digits.parse::<u64>().ok())
+                });
+                if let (Some(sid), Some(packets)) = (sid, packets) {
+                    self.packets.insert(sid, packets);
+                }
+            }
+        }
+    }
+}
+
+/// The objects of the JSON array that follows `start` in `line`, each as its text with the
+/// objects inside it.
+fn objects_in<'a>(line: &'a str, start: &str) -> Vec<&'a str> {
+    let Some(at) = line.find(start) else {
+        return Vec::new();
+    };
+    let (mut objects, mut depth, mut open) = (Vec::new(), 0usize, 0usize);
+    let (mut in_string, mut escaped) = (false, false);
+    for (offset, character) in line[at + start.len()..].char_indices() {
+        let position = at + start.len() + offset;
+        match character {
+            _ if escaped => escaped = false,
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            '{' => {
+                if depth == 0 {
+                    open = position;
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    objects.push(&line[open..=position]);
+                }
+            }
+            ']' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    objects
+}
+
+/// A client of a release from before several shares, the test participant of that release
+/// (`JUNTO_TEST_LEGACY_PARTICIPANT` names its program), never receives a track of a further
+/// share of a person (ADR 0510, ADR 0737): not while that share starts with the permissions
+/// of the room held back for a time, not while it runs, and not while the call library of the
+/// sharer connects anew and publishes every track again under new identifiers. It receives
+/// the share of the lowest slot before and after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server and a test participant of a release from before several shares"]
+async fn a_client_of_a_release_before_several_shares_never_receives_a_further_share() {
+    let Some(program) = std::env::var_os("JUNTO_TEST_LEGACY_PARTICIPANT") else {
+        eprintln!(
+            "skipped: JUNTO_TEST_LEGACY_PARTICIPANT does not name the test participant of a \
+             release from before several shares"
+        );
+        return;
+    };
+    limited(async {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::AsyncBufReadExt;
+
+        let _media = media_server_shared().await;
+        let (ann, ben, cara, dan) = (
+            Person::new(440.0),
+            Person::new(880.0),
+            Person::new(660.0),
+            Person::new(550.0),
+        );
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let cara_at = room.member(&ann_at, &cara, "Cara").await;
+        let dan_at = room.member(&ann_at, &dan, "Dan").await;
+        let ann_id = account(&ann_at);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+
+        // Dan's connection of the call library names the slot of each share track of Ann
+        // that the media server holds, also of the tracks that it withdrew later.
+        let join = dan_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let (observer, _observed) = livekit::prelude::Room::connect(
+            &join.media_url,
+            join.token.expose(),
+            livekit::prelude::RoomOptions::default(),
+        )
+        .await
+        .unwrap();
+        let observer = Arc::new(observer);
+        let slots: Arc<Mutex<HashMap<String, (bool, u8)>>> = Arc::default();
+        let watch_slots = {
+            let (observer, slots) = (observer.clone(), slots.clone());
+            tokio::spawn(async move {
+                loop {
+                    for participant in observer.remote_participants().values() {
+                        if junto_media::engine::account_of(participant.identity().as_str())
+                            != Some(ann_id)
+                        {
+                            continue;
+                        }
+                        for (sid, publication) in participant.track_publications() {
+                            let name = publication.name();
+                            let place = match publication.source() {
+                                livekit::prelude::TrackSource::Screenshare => (
+                                    true,
+                                    junto_media::share::read_track_name(&name)
+                                        .map_or(0, |name| name.slot),
+                                ),
+                                livekit::prelude::TrackSource::ScreenshareAudio => {
+                                    (false, junto_media::share::read_sound_name(&name))
+                                }
+                                _ => continue,
+                            };
+                            slots.lock().unwrap().insert(sid.to_string(), place);
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        };
+
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+
+        // Cara's device asks for its place as a client from before several shares, and its
+        // test participant of that release receives every track that it may receive.
+        let join = cara_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let mut legacy = tokio::process::Command::new(&program)
+            .args([
+                "subscribe",
+                "--url",
+                &join.media_url,
+                "--report-every",
+                "0.5",
+            ])
+            .env("LIVEKIT_TOKEN", join.token.expose())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let report: Arc<Mutex<LegacyReport>> = Arc::default();
+        let reading = {
+            let report = report.clone();
+            let mut lines = tokio::io::BufReader::new(legacy.stdout.take().unwrap()).lines();
+            let mut errors = tokio::io::BufReader::new(legacy.stderr.take().unwrap()).lines();
+            tokio::spawn(async move {
+                loop {
+                    let line = tokio::select! {
+                        line = lines.next_line() => line,
+                        line = errors.next_line() => line,
+                    };
+                    match line {
+                        Ok(Some(line)) => report.lock().unwrap().take(&line),
+                        _ => break,
+                    }
+                }
+            })
+        };
+        // The tracks of `slot` that the participant was let to receive, and those of them
+        // whose packets arrived.
+        let of_slot = |slot: u8| {
+            let slots = slots.lock().unwrap();
+            let report = report.lock().unwrap();
+            let in_slot = |sid: &String| slots.get(sid).is_some_and(|place| place.1 == slot);
+            let subscribed: Vec<String> = report
+                .subscribed
+                .iter()
+                .filter(|sid| in_slot(sid))
+                .cloned()
+                .collect();
+            let with_packets: Vec<String> = report
+                .packets
+                .iter()
+                .filter(|(sid, packets)| in_slot(sid) && **packets > 0)
+                .map(|(sid, _)| sid.clone())
+                .collect();
+            (subscribed, with_packets)
+        };
+        let no_further_share = |what: &str| {
+            let (subscribed, with_packets) = of_slot(1);
+            assert!(
+                subscribed.is_empty() && with_packets.is_empty(),
+                "{what}: the participant of the release before several shares was let to \
+                 receive the tracks {subscribed:?} of the further share, with packets on \
+                 {with_packets:?}"
+            );
+        };
+        // Packets of the picture and of the sound of the lowest slot, on tracks that are not
+        // in `before`.
+        let until_lowest = |what: &'static str, before: Vec<String>| {
+            let (slots, report) = (slots.clone(), report.clone());
+            async move {
+                let started = std::time::Instant::now();
+                loop {
+                    let kinds: Vec<bool> = {
+                        let slots = slots.lock().unwrap();
+                        let report = report.lock().unwrap();
+                        report
+                            .packets
+                            .iter()
+                            .filter(|(sid, packets)| **packets > 0 && !before.contains(sid))
+                            .filter_map(|(sid, _)| slots.get(sid))
+                            .filter(|place| place.1 == 0)
+                            .map(|place| place.0)
+                            .collect()
+                    };
+                    if kinds.contains(&true) && kinds.contains(&false) {
+                        return;
+                    }
+                    if started.elapsed() > Duration::from_secs(60) {
+                        let report = report.lock().unwrap();
+                        panic!(
+                            "after 60s this did not hold: {what}; the share tracks are {:?}, the \
+                             packets {:?}, the last lines of the participant {:?}",
+                            slots.lock().unwrap(),
+                            report.packets,
+                            report.last
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+        until_lowest(
+            "the participant of the release before receives the screen of Ann with its sound",
+            Vec::new(),
+        )
+        .await;
+
+        // The further share starts while the permissions of the room are held back.
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        no_further_share("while the permissions were held");
+        ann.calls.hold_permissions(false);
+        ann.until_sharing_in(1).await;
+        ben.until("Ben sees the two shares of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            no_further_share("while two shares run");
+        }
+
+        // The call library of Ann connects anew and publishes every track again.
+        let before: Vec<String> = slots.lock().unwrap().keys().cloned().collect();
+        ann.calls.simulate_full_reconnect();
+        let started = std::time::Instant::now();
+        loop {
+            let renewed: Vec<(bool, u8)> = slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(sid, _)| !before.contains(sid))
+                .map(|(_, place)| *place)
+                .collect();
+            no_further_share("while the call library of Ann connects anew");
+            if renewed.contains(&(true, 0)) && renewed.contains(&(true, 1)) {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the call library of Ann did not publish both shares again: {renewed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        until_lowest(
+            "the participant of the release before receives the screen of Ann after the new \
+             connection",
+            before,
+        )
+        .await;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            no_further_share("after the call library of Ann connected anew");
+        }
+
+        let _ = legacy.kill().await;
+        reading.abort();
+        watch_slots.abort();
+        let _ = watch_slots.await;
+        if let Some(observer) = Arc::into_inner(observer) {
+            let _ = tokio::time::timeout(Duration::from_secs(10), observer.close()).await;
+        }
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_last_size_decides_drawing_bounds_while_the_share_keeps_full_resolution() {
