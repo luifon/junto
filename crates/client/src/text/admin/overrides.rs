@@ -19,6 +19,7 @@ pub const SUBJECTS: &str = "Roles and people";
 pub const EVERY_MEMBER: &str = "Every member";
 pub const ROLE: &str = "Role";
 pub const PERSON: &str = "Person";
+pub const FORMER_MEMBER: &str = "Former member";
 pub const SHOW: &str = "Show";
 pub const HIDE: &str = "Hide";
 pub const REMOVE: &str = "Remove rule";

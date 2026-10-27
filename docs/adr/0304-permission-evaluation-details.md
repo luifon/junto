@@ -26,6 +26,7 @@ View permission:
 Membership:
 
 - A request inside a workspace is denied to an account that is not a member of it, unless the account has the administrator permission.
+- The person rules of an account (its workspace permissions and its rules in categories and channels) stay when the account leaves the workspace or is removed from it, and apply again when the account becomes a member again. Reason: a deny that ended with the membership would return access with no rule change and no audit entry. A rule of an account that is not a member is not evaluated, because the account gets nothing in the workspace. The rules end with the account, the workspace, the category or the channel, or when an administrator removes them. The rule routes accept the rule of an account that is not a member only to remove it (a request that sets or changes it answers `not_found`), and the lists of rules still show it; the client shows the person as no longer a member. Migration `0042_person_rules_survive_leaving` replaces the foreign keys of the person-rule tables to the workspace members by foreign keys to the account and to the workspace.
 
 Grant rule:
 
@@ -82,7 +83,7 @@ Stored sets:
 
 - A set of permissions is stored as one integer in which each permission has a fixed bit. A test fixes the bit and the name of every permission.
 - The database refuses an integer with a bit above the highest known one. A new permission needs a migration that widens that check.
-- Migration `0039_person_and_category_permissions` stores server, workspace, category and channel person overrides, category role overrides, and whether a channel is synced. Composite foreign keys keep roles and members in the correct workspace. Sets are disjoint and nonempty; removing the last bit removes the row. Workspace sets use bits 0–30.
+- Migration `0039_person_and_category_permissions` stores server, workspace, category and channel person overrides, category role overrides, and whether a channel is synced. Composite foreign keys keep roles and categories or channels in the correct workspace. Sets are disjoint and nonempty; removing the last bit removes the row. Workspace sets use bits 0–30.
 - Existing everyone roles gain the channel-use permissions that previously followed visibility, including ordinary role mentions and voice status. Existing manage-channel grants and overrides also grant or deny setting the call user limit. Existing channel overrides stay detached; channels without overrides start synced with their initially empty category. The event epoch changes so a client reads the new permission lists.
 - A synced channel reads its category role and person overrides. Its first actual override change copies all of those rules into the channel and detaches it in the same transaction. An identical request keeps it synced. Deleting a category first detaches its children, preserving their permissions, then removes the category, and sends `channel_rules_synced` with `synced` false for each child that was synced.
 

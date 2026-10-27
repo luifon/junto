@@ -64,15 +64,16 @@ impl Change {
     }
 }
 
-/// Requires that the subject of a rule is in the workspace: a role of it, or a member of it
-/// whom the caller outranks or who is the caller (ADR 0306). An absent role and an account
-/// that is not a member are `not_found`.
+/// Requires that the subject of a rule is in the workspace: a role of it, or a person whom
+/// the caller outranks or who is the caller (ADR 0306). An absent role is `not_found`. The
+/// answer tells whether the subject is a current member: the rule of a person who left stays
+/// and can be removed, and nothing else can be set for that person (ADR 0304).
 async fn require_subject(
     connection: &mut PgConnection,
     access: &Access,
     workspace_id: WorkspaceId,
     subject: RuleSubject,
-) -> ApiResult<()> {
+) -> ApiResult<bool> {
     match subject {
         RuleSubject::Role { role_id } => {
             let exists: bool = sqlx::query_scalar(
@@ -87,22 +88,39 @@ async fn require_subject(
             }
         }
         RuleSubject::Person { account_id } => {
-            require_member(connection, workspace_id, account_id).await?;
+            let member = is_member(connection, workspace_id, account_id).await?;
             if account_id != access.account_id {
                 access
                     .require_above_workspace_account(connection, workspace_id, account_id)
                     .await?;
             }
+            return Ok(member);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
-pub(crate) async fn require_member(
+/// A person who is not a member keeps the rules that exist and gets no new rule.
+fn require_removal_for_former_member(
+    member: bool,
+    previous: Override,
+    next: Override,
+) -> ApiResult<()> {
+    if member
+        || (!previous.is_none() && next.is_none())
+        || (!previous.is_none() && previous == next)
+    {
+        Ok(())
+    } else {
+        Err(ApiError::not_found())
+    }
+}
+
+async fn is_member(
     connection: &mut PgConnection,
     workspace_id: WorkspaceId,
     account_id: AccountId,
-) -> ApiResult<()> {
+) -> ApiResult<bool> {
     let member: bool = sqlx::query_scalar(
         "select exists (
              select 1 from workspace_members where workspace_id = $1 and account_id = $2)",
@@ -111,7 +129,15 @@ pub(crate) async fn require_member(
     .bind(account_id)
     .fetch_one(connection)
     .await?;
-    if member {
+    Ok(member)
+}
+
+pub(crate) async fn require_member(
+    connection: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    if is_member(connection, workspace_id, account_id).await? {
         Ok(())
     } else {
         Err(ApiError::not_found())
@@ -386,10 +412,11 @@ pub(crate) async fn set_channel_rule_in(
         permission: WorkspacePermission::ManageChannel,
     })?;
     let workspace_id = record.channel.workspace_id;
-    require_subject(connection, access, workspace_id, subject).await?;
+    let member = require_subject(connection, access, workspace_id, subject).await?;
     lock_channel(connection, channel_id).await?;
     let previous = rules::of_subject(&rules::effective(connection, channel_id).await?, subject);
     let next = change.applied_to(previous)?;
+    require_removal_for_former_member(member, previous, next)?;
     let granting = previous.granted_by_change_to(next);
     access.require(Request::ManageChannelOverrides {
         scope: &scope,
@@ -762,7 +789,7 @@ pub(crate) async fn set_category_rule_in(
         scope: &scope,
         permission: WorkspacePermission::ManageChannel,
     })?;
-    require_subject(connection, access, workspace_id, subject).await?;
+    let member = require_subject(connection, access, workspace_id, subject).await?;
     sqlx::query("select id from categories where id = $1 and workspace_id = $2 for update")
         .bind(category_id)
         .bind(workspace_id)
@@ -771,6 +798,7 @@ pub(crate) async fn set_category_rule_in(
         .ok_or_else(ApiError::not_found)?;
     let previous = rules::of_subject(&rules::of_category(connection, category_id).await?, subject);
     let next = change.applied_to(previous)?;
+    require_removal_for_former_member(member, previous, next)?;
     let granting = previous.granted_by_change_to(next);
     access.require(Request::ManageChannelOverrides {
         scope: &scope,

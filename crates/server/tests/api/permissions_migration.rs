@@ -137,5 +137,108 @@ async fn permission_migration_keeps_access_and_custom_channel_rules() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
+    assert_eq!(left, 2);
+    sqlx::query("delete from accounts where id=$1")
+        .bind(account)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("select count(*) from effective_channel_person_overrides")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
     assert_eq!(left, 0);
+}
+
+#[tokio::test]
+async fn person_rules_copied_by_the_migration_stay_when_the_membership_ends() {
+    let database = crate::support::empty_database().await;
+    let mut connection = database.options.connect().await.unwrap();
+    crate::migration_identifiers::migrations_up_to(39)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let workspace = uuid::Uuid::now_v7();
+    let category = uuid::Uuid::now_v7();
+    let channel = uuid::Uuid::now_v7();
+    let account = uuid::Uuid::now_v7();
+    sqlx::query("insert into workspaces(id,name,created_at) values($1,'Project',now())")
+        .bind(workspace)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("insert into categories(id,workspace_id,name,position,created_at) values($1,$2,'Plans',0,now())")
+        .bind(category).bind(workspace).execute(&mut connection).await.unwrap();
+    sqlx::query("insert into channels(id,workspace_id,category_id,kind,name,position,created_at) values($1,$2,$3,'text','Plans',0,now())")
+        .bind(channel).bind(workspace).bind(category).execute(&mut connection).await.unwrap();
+    sqlx::query(
+        "insert into accounts(id,name,status,created_at) values($1,'Reader','active',now())",
+    )
+    .bind(account)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into workspace_members(workspace_id,account_id,joined_at) values($1,$2,now())",
+    )
+    .bind(workspace)
+    .bind(account)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query("insert into workspace_person_overrides(workspace_id,account_id,allow,deny) values($1,$2,0,4)")
+        .bind(workspace).bind(account).execute(&mut connection).await.unwrap();
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,4)")
+        .bind(category).bind(account).bind(workspace).execute(&mut connection).await.unwrap();
+    sqlx::query("insert into channel_person_overrides(channel_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,4)")
+        .bind(channel).bind(account).bind(workspace).execute(&mut connection).await.unwrap();
+    crate::migration_identifiers::migrations_up_to(i64::MAX)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let count = |table: &'static str| {
+        sqlx::AssertSqlSafe(format!(
+            "select count(*) from {table} where account_id = $1"
+        ))
+    };
+    let tables = [
+        "workspace_person_overrides",
+        "category_person_overrides",
+        "channel_person_overrides",
+    ];
+    for table in tables {
+        let kept: i64 = sqlx::query_scalar(count(table))
+            .bind(account)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(kept, 1, "{table} after the migration");
+    }
+    sqlx::query("delete from workspace_members where workspace_id=$1 and account_id=$2")
+        .bind(workspace)
+        .bind(account)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for table in tables {
+        let kept: i64 = sqlx::query_scalar(count(table))
+            .bind(account)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(kept, 1, "{table} after the membership ended");
+    }
+    sqlx::query("delete from accounts where id=$1")
+        .bind(account)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for table in tables {
+        let kept: i64 = sqlx::query_scalar(count(table))
+            .bind(account)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(kept, 0, "{table} after the account was deleted");
+    }
 }

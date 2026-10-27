@@ -375,7 +375,13 @@ pub fn rule_list(
         })
         .into_iter()
         .map(|(subject, account_id)| {
-            let name = member_name(workspace, account_id).unwrap_or_default();
+            let name = member_name(workspace, account_id).unwrap_or_else(|| {
+                if workspace.members.loaded().is_some() {
+                    crate::text::admin::overrides::FORMER_MEMBER.to_owned()
+                } else {
+                    String::new()
+                }
+            });
             let locked = member_lock(model, workspace, account_id, true);
             line(subject, name, SubjectKind::Person, locked)
         })
@@ -749,6 +755,19 @@ mod tests {
                 .find(|line| line.permission == permission)
                 .unwrap()
         }
+    }
+
+    #[test]
+    fn a_rule_of_a_person_who_left_stays_listed_and_names_the_person_as_a_former_member() {
+        let mut scene = scene();
+        let former = AccountId::generate();
+        scene.load(
+            vec![rule(scene.person(former), &[], &[SendMessages])],
+            false,
+        );
+        let line = scene.subject(scene.person(former));
+        assert_eq!(line.name, crate::text::admin::overrides::FORMER_MEMBER);
+        assert_eq!(line.kind, SubjectKind::Person);
     }
 
     #[test]

@@ -810,6 +810,10 @@ pub(crate) async fn remove_channel(
         .bind(channel.id)
         .execute(&mut *connection)
         .await?;
+    sqlx::query("delete from channel_person_overrides where channel_id = $1")
+        .bind(channel.id)
+        .execute(&mut *connection)
+        .await?;
     crate::purge::queue(connection, now, crate::purge::Subject::Channel(channel.id)).await?;
     audit::record(
         connection,
