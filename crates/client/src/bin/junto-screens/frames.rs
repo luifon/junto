@@ -246,7 +246,7 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
                     .collect(),
             );
         });
-        let (window, _, state) = studio.open(
+        let (window, shell, state) = studio.open(
             Screen::new("people-frames", people),
             Box::new(move |shell: &mut Shell, window, cx| {
                 if panel {
@@ -274,9 +274,12 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
                 if panel { "open" } else { "closed" }
             ))
         );
-        // A burst of answers of profiles: each changes the state, as an answer does, and
-        // one frame follows (review M8).
+        // The cost of answers of profiles that each change the state (review M8). The
+        // headless platform draws after each round of work, so each answer here is derived
+        // and drawn: the cost of an answer that a frame follows. In the application the
+        // answers that come between two frames are derived once.
         const ANSWERS: u32 = 500;
+        let derived = studio.cx.update(|cx| shell.read(cx).derivations());
         let started = Instant::now();
         for _ in 0..ANSWERS {
             studio.cx.update(|cx| state.update(cx, |_, cx| cx.notify()));
@@ -286,9 +289,10 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
             .update_window(window.into(), |_, window, _| window.refresh())
             .map_err(|error| format!("{error:#}"))?;
         studio.cx.run_until_parked();
+        let derived = studio.cx.update(|cx| shell.read(cx).derivations()) - derived;
         println!(
             "{members} members and {accounts} accounts: {ANSWERS} changes of the state and one \
-             frame in {:.0} ms",
+             frame in {:.0} ms, {derived} derivations of the view",
             started.elapsed().as_secs_f64() * 1_000.0
         );
         studio
