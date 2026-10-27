@@ -3857,6 +3857,8 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
  "x11rb",
  "zbus",
 ]
