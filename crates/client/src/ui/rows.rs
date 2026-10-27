@@ -28,6 +28,9 @@ pub struct WorkspaceRow {
     unread: Option<UnreadSign>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
+    /// The menu of the workspace is open at the row.
+    open: bool,
+    on_menu: Option<MenuHandler>,
 }
 
 /// The sign of what a place holds that the person has not read: a count of mentions, or
@@ -64,11 +67,26 @@ impl WorkspaceRow {
             unread: None,
             selector: None,
             on_click: None,
+            open: false,
+            on_menu: None,
         }
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// The menu of the workspace is open at the row.
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
+    /// Opens the menu of the workspace: the secondary press, the menu key, and Shift with
+    /// F10.
+    pub fn on_menu(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_menu = Some(std::rc::Rc::new(handler));
         self
     }
 
@@ -139,6 +157,27 @@ impl RenderOnce for WorkspaceRow {
             .when(self.selected, |row| {
                 row.bg(Hsla::from(colors.basalt_3))
                     .child(selection_mark(cx))
+            })
+            .when(self.open && !self.selected, |row| {
+                row.bg(Hsla::from(colors.basalt_3))
+            })
+            .when_some(self.on_menu, |row, open| {
+                let (by_click, by_key) = (open.clone(), open);
+                row.on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
+                    by_click(window, cx);
+                })
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                    let keys = &event.keystroke;
+                    let opens = match keys.key.as_str() {
+                        "menu" => true,
+                        "f10" => keys.modifiers.shift,
+                        _ => false,
+                    };
+                    if opens {
+                        by_key(window, cx);
+                        cx.stop_propagation();
+                    }
+                })
             })
             .when(!self.in_menu, |row| {
                 // The branch of the tree line that joins the row to its server.

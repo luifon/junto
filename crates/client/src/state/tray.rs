@@ -8,6 +8,14 @@ use gpui::Context;
 use super::AppState;
 use crate::tray::{KeptTray, SystemTray, derive};
 
+/// The number of unread mentions that the tray icon shows: the unread mentions of every server
+/// as the server book counts them.
+pub(super) fn tray_mention_count(view: &super::view::ShellView) -> u64 {
+    view.servers
+        .iter()
+        .fold(0u64, |sum, row| sum.saturating_add(row.unread.mentions))
+}
+
 impl AppState {
     /// Uses this tray for the tray icon, and tells it the state of now.
     pub fn set_tray(&mut self, tray: Rc<dyn SystemTray>, cx: &mut Context<Self>) {
@@ -15,6 +23,16 @@ impl AppState {
         self.tray_shown = None;
         self.follow_tray();
         cx.notify();
+    }
+
+    /// Tells the tray icon the unread mentions that the application counts: the icon shows
+    /// its mention mark while there is one, and the tooltip states the number (ADR 0759).
+    pub fn set_tray_mentions(&mut self, mentions: u64, cx: &mut Context<Self>) {
+        if self.tray_mentions != mentions {
+            self.tray_mentions = mentions;
+            self.follow_tray();
+            cx.notify();
+        }
     }
 
     /// The tray of a start without the tray icon of the system.
@@ -33,14 +51,19 @@ impl AppState {
         #[cfg(not(feature = "test-support"))]
         let calls = &self.known.media.calls;
         let mut shown = derive(calls);
-        if self.tray_shown.as_ref().map(|told| &told.call) == Some(&shown.call) {
+        shown.mentions = self.tray_mentions;
+        let told = self.tray_shown.as_ref();
+        let same_call = told.map(|told| &told.call) == Some(&shown.call);
+        if same_call && told.map(|told| told.mentions) == Some(shown.mentions) {
             return;
         }
-        // A new menu: a press on a menu of an earlier generation is refused (ADR 0788).
-        shown.generation = self
-            .tray_shown
-            .as_ref()
-            .map_or(0, |told| told.generation.wrapping_add(1));
+        // A new menu: a press on a menu of an earlier generation is refused (ADR 0788). A
+        // change of the mentions alone keeps the menu.
+        shown.generation = match told {
+            Some(told) if same_call => told.generation,
+            Some(told) => told.generation.wrapping_add(1),
+            None => 0,
+        };
         self.tray.set(&shown);
         self.tray_shown = Some(shown);
     }

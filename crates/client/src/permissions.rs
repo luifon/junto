@@ -1,6 +1,7 @@
 //! The permissions of the operating system that the client uses, what each system keeps of
 //! them, and the page of the settings of the system that changes each (ADR 0708).
 
+use junto_client_core::global_keys;
 use junto_client_core::notification_access::NotificationAccess;
 use junto_media::camera::CameraAccess;
 use junto_media::permission::MicrophoneAccess;
@@ -191,11 +192,11 @@ pub struct SystemInputMonitoring;
 
 impl InputMonitoring for SystemInputMonitoring {
     fn allowed(&self) -> bool {
-        junto_client_core::input_monitoring::allowed()
+        global_keys::input_monitoring() == global_keys::Permission::Granted
     }
 
     fn request(&self) -> bool {
-        junto_client_core::input_monitoring::request()
+        global_keys::request_input_monitoring() == global_keys::Permission::Granted
     }
 }
 

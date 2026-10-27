@@ -333,7 +333,8 @@ fn a_share_choice_cannot_cross_a_call_move(cx: &mut TestAppContext) {
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
-    let share_of_the_window = |calls: &junto_media::Calls| calls.view().call.unwrap().share;
+    let shares_of_the_window =
+        |calls: &junto_media::Calls| calls.view().call.unwrap().own_shares.len();
 
     // The person opens the dialog and chooses a screen with the sound of the system.
     let choose = |window: &mut Window| {
@@ -356,11 +357,11 @@ fn a_share_choice_cannot_cross_a_call_move(cx: &mut TestAppContext) {
     // The button of the dialog as it is drawn: the window does no other work before.
     window.press_as_drawn("start-share");
     window.until("the confirmed share has its result", |window| {
-        window.shows("call-told") || share_of_the_window(&calls) != ShareState::Off
+        window.shows("call-told") || shares_of_the_window(&calls) != 0
     });
     assert_eq!(
-        share_of_the_window(&calls),
-        ShareState::Off,
+        shares_of_the_window(&calls),
+        0,
         "the choice of the first call is shared in the call of the destination"
     );
     assert!(window.shows("call-told"));
@@ -368,7 +369,7 @@ fn a_share_choice_cannot_cross_a_call_move(cx: &mut TestAppContext) {
     stays(&mut window, "nothing is shared", |view| {
         view.call
             .as_ref()
-            .is_some_and(|call| call.share == ShareState::Off)
+            .is_some_and(|call| call.own_shares.is_empty())
     });
     assert!(window.capture.started().is_empty());
     assert!(caller.calls.view().call.unwrap().shares.is_empty());
@@ -388,7 +389,10 @@ fn a_share_choice_cannot_cross_a_call_move(cx: &mut TestAppContext) {
     choose(&mut window);
     window.click("start-share");
     window.until("the share runs", |_| {
-        matches!(share_of_the_window(&calls), ShareState::Running(_))
+        matches!(
+            calls.view().call.unwrap().own_shares.get(&0),
+            Some(ShareState::Running(_))
+        )
     });
     window.click("leave-call");
     world.run(caller.calls.leave());
@@ -459,6 +463,7 @@ fn the_detached_call_draws_the_notices_and_the_bars_of_its_call(cx: &mut TestApp
         picture: PictureSource::Display(1),
         sound: SoundChoice::None,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     let started = std::time::Instant::now();
     while let Err(error) = world.run(api.start_meeting(voice.id)) {

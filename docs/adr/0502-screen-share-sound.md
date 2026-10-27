@@ -29,9 +29,12 @@ Choice of sound:
 
 Several shares:
 
-- Several people can share at once.
-- Each viewer picks which share to watch and hears the sound of that share.
+- Several people can share at once, and one person can run up to three shares at once, for example two screens, or a screen and a window. Each share has its own choice of sound.
+- Three is the limit because each share costs the sharer one capture and one encoder and costs every viewer one more received picture track; a fourth share of one person is refused by the client and by the server.
+- Each viewer picks which share to watch, as between the shares of two people, and hears the sound of that share only, also when the other share is a share of the same person.
 - A viewer can mute the sound of a share, or change its volume, and keep the picture.
+- Sound is separated per application, not per window and not per browser tab of one application: no system offers the sound of one window or one tab. Two meetings in two applications can be shared at once, each with its own sound. Two meetings or two tabs inside one application share the sound of that application. A browser tab with only its own sound needs a browser extension, a separate project.
+- The server states the number of shares of one person in each answer that gives a place in a call. A server from before several shares states none, and its end of a share without a slot ends every share, so the client runs one share there (ADR 0510).
 
 Track:
 
@@ -76,7 +79,7 @@ Windows:
 ## Consequences
 
 - The set of sound choices differs between systems. On macOS and Windows "this application" covers applications with a window; on Linux it covers applications that play sound at that moment.
-- A sharer who starts a share makes one explicit choice of sound each time, including the choice "none".
+- A sharer who starts a share makes one explicit choice of sound each time, including the choice "none". Two shares of one person with "all system sound" send the same sound twice; a viewer hears one of them, the one of the watched share.
 - The project maintains three implementations of sound capture.
 - A shared-sound track uses more bandwidth than a microphone track, because of its higher bitrate.
 - The recorder writes shared sound as a separate audio file (ADR 0602), and the transcript labels its lines as shared audio (ADR 0603).

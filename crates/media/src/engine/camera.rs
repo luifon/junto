@@ -369,7 +369,7 @@ impl Actor {
             self.withdraw(publication);
         }
         self.camera_pictures
-            .send_if_modified(|pictures| pictures.remove(&ShareId::Own).is_some());
+            .send_if_modified(|pictures| pictures.remove(&Person::Own).is_some());
         self.change(|s| s.camera = error.map(CameraState::Failed).unwrap_or(CameraState::Off));
     }
     pub(super) fn camera_track_taken(&mut self, sid: &TrackSid) {
@@ -447,7 +447,7 @@ impl Actor {
     pub(super) fn camera_track_ended(&mut self, sid: &TrackSid) {
         if let Some(camera) = self.remote_cameras.remove(sid) {
             self.camera_pictures
-                .send_if_modified(|p| p.remove(&ShareId::Of(camera.account)).is_some());
+                .send_if_modified(|p| p.remove(&Person::Of(camera.account)).is_some());
             self.tell_cameras();
         }
     }
@@ -458,7 +458,7 @@ impl Actor {
         self.apply_camera_views();
         self.change(|s| s.cameras = accounts);
     }
-    pub(super) fn set_camera_views(&mut self, views: HashMap<ShareId, (u32, u32)>) {
+    pub(super) fn set_camera_views(&mut self, views: HashMap<Person, (u32, u32)>) {
         self.camera_pictures
             .send_modify(|pictures| pictures.retain(|id, _| views.contains_key(id)));
         self.camera_views = Some(views);
@@ -476,7 +476,7 @@ impl Actor {
         };
         for camera in self.remote_cameras.values() {
             let requested = match &self.camera_views {
-                Some(views) => views.get(&ShareId::Of(camera.account)).copied(),
+                Some(views) => views.get(&Person::Of(camera.account)).copied(),
                 None => Some(default),
             };
             let publication = camera.publication.clone();
@@ -496,7 +496,7 @@ impl Actor {
         };
         let mut changed = Vec::new();
         let own_size = match &self.camera_views {
-            Some(views) => views.get(&ShareId::Own).copied(),
+            Some(views) => views.get(&Person::Own).copied(),
             None => Some((640, 360)),
         };
         if let Some(camera) = &mut self.camera
@@ -515,14 +515,14 @@ impl Actor {
                     .is_none_or(|old| !Arc::ptr_eq(old, &frame))
             {
                 if let Some(picture) = VideoPicture::of_buffer(&frame, true, own_size) {
-                    changed.push((ShareId::Own, Arc::new(picture)));
+                    changed.push((Person::Own, Arc::new(picture)));
                 }
                 camera.seen = Some(frame);
             }
         }
         for camera in self.remote_cameras.values_mut() {
             let size = match &self.camera_views {
-                Some(views) => match views.get(&ShareId::Of(camera.account)) {
+                Some(views) => match views.get(&Person::Of(camera.account)) {
                     Some(size) => *size,
                     None => continue,
                 },
@@ -532,7 +532,7 @@ impl Actor {
                 && let Some(frame) = camera.frames.borrow_and_update().clone()
                 && let Some(picture) = VideoPicture::of_frame(&frame, false, size)
             {
-                changed.push((ShareId::Of(camera.account), Arc::new(picture)));
+                changed.push((Person::Of(camera.account), Arc::new(picture)));
             }
         }
         if !changed.is_empty() {

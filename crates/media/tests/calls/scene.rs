@@ -68,6 +68,7 @@ fn holding(
     let test = this_test();
     HOLDERS.lock().unwrap().push(test.clone());
     step("holds the media server");
+    crate::limit::restart_limit();
     MediaServer {
         _shared: shared,
         _alone: alone,
@@ -205,6 +206,8 @@ fn a_check_of_a_media_server_that_does_not_answer_ends_within_its_waits() {
 }
 
 fn note_wait(how: &str) {
+    // The holders end within their own limits.
+    crate::limit::wait_for_others();
     let holders = HOLDERS.lock().unwrap().join(", ");
     step(format!(
         "waits for the media server, {how}; it is held by: {holders}"
@@ -692,7 +695,12 @@ impl Room {
     /// (ADR 0520).
     pub fn renew_path(target: &CallTarget, identity: &str) -> String {
         let named: String = url::form_urlencoded::byte_serialize(identity.as_bytes()).collect();
-        format!("{}?renews={named}", Self::join_path(target))
+        // A renewal states the shares of one person that the client shows (ADR 0510).
+        format!(
+            "{}?renews={named}&shares={}",
+            Self::join_path(target),
+            junto_client_core::protocol::call::MAX_SHARES
+        )
     }
 
     /// The path of the request for a place in a voice channel.

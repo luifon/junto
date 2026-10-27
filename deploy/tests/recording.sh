@@ -2,11 +2,12 @@
 # Records a call through the local form with the real parts (ADR 0020): the server, the media
 # server, the recorder with the built layout page that the server serves, the files on the
 # shared volume, the transcription worker, and the downloads. Three test participants publish
-# generated sound and pictures. Then the failures: everybody leaves the call, the recorder is
-# killed during a recording, the server is restarted during a recording, the recorder is
-# stopped during a recording and stays stopped, a recording is removed while its transcript
-# runs, a backup is made while a recording runs and while a transcript runs and each is
-# restored, and the storage guard refuses a start. recording_driver.py holds the steps and
+# generated sound and pictures. One person then runs two shares, each with its sound. Then the
+# failures: everybody leaves the call, the recorder is killed during a recording, the server
+# is restarted during a recording, the recorder is stopped during a recording and stays
+# stopped, a recording is removed while its transcript runs, a backup is made while a
+# recording runs and while a transcript runs and each is restored, and the storage guard
+# refuses a start. recording_driver.py holds the steps and
 # the checks.
 #
 #   (cd spikes/test-participant && cargo build --release)

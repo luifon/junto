@@ -261,34 +261,37 @@ async fn people(
     recording: &RecordingRow,
     participants: &[Participant],
 ) -> ApiResult<(HashMap<String, AccountId>, Option<String>)> {
-    let members: Vec<(String, AccountId, Option<OffsetDateTime>)> = sqlx::query_as(
-        "select identity, account_id, share_started_at from call_members
-         where call_id = $1
-         order by share_started_at desc nulls last, account_id",
+    let members: Vec<(String, AccountId)> = sqlx::query_as(
+        "select identity, account_id from call_members where call_id = $1 order by account_id",
+    )
+    .bind(recording.call_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    let shares: Vec<(String, i16)> = sqlx::query_as(
+        "select m.identity, s.slot from call_shares s
+         join call_members m on m.call_id = s.call_id and m.account_id = s.account_id
+         where s.call_id = $1
+         order by s.started_at desc, s.account_id, s.slot",
     )
     .bind(recording.call_id)
     .fetch_all(connection)
     .await?;
-    let screen_track = |identity: &str| {
+    let screen_track = |identity: &str, slot: i16| {
         participants
             .iter()
             .filter(|participant| participant.identity == identity && participant.connected)
             .flat_map(|participant| &participant.tracks)
             .find(|track| {
                 track.kind == TrackKind::Video
-                    && track.source == TrackSource::ScreenShare
+                    && track.share_slot().map(i16::from) == Some(slot)
                     && !track.id.is_empty()
             })
             .map(|track| track.id.clone())
     };
-    let main_share = members
+    let main_share = shares
         .iter()
-        .filter(|(_, _, share_started_at)| share_started_at.is_some())
-        .find_map(|(identity, _, _)| screen_track(identity));
-    let by_identity = members
-        .into_iter()
-        .map(|(identity, account_id, _)| (identity, account_id))
-        .collect();
+        .find_map(|(identity, slot)| screen_track(identity, *slot));
+    let by_identity = members.into_iter().collect();
     Ok((by_identity, main_share))
 }
 

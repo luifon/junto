@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use junto_client_core::notification_area::{Entry, NotificationIcon, Press, small_icon_side};
 
-use super::{Picture, SystemTray, TrayAction, TrayState, renderings};
+use super::{IconPicture, SystemTray, TrayAction, TrayState, renderings};
 
 pub(super) struct NotificationAreaTray {
     icon: NotificationIcon,
@@ -38,8 +38,8 @@ impl NotificationAreaTray {
 }
 
 /// The smallest rendering at least as large as the small icons of the system, or the largest.
-fn rendering(picture: Picture, wanted: u32) -> Option<(u32, &'static [u8])> {
-    let all: Vec<_> = renderings(picture).collect();
+fn rendering(shown: IconPicture, wanted: u32) -> Option<(u32, &'static [u8])> {
+    let all: Vec<_> = renderings(shown).collect();
     all.iter()
         .find(|(side, _)| *side >= wanted)
         .or(all.last())
@@ -48,7 +48,7 @@ fn rendering(picture: Picture, wanted: u32) -> Option<(u32, &'static [u8])> {
 
 impl SystemTray for NotificationAreaTray {
     fn set(&self, state: &TrayState) {
-        let Some((side, rgba)) = rendering(state.picture(), small_icon_side()) else {
+        let Some((side, rgba)) = rendering(state.icon(), small_icon_side()) else {
             return;
         };
         let entries = state
@@ -62,7 +62,7 @@ impl SystemTray for NotificationAreaTray {
             })
             .collect();
         *self.shown.borrow_mut() = state.clone();
-        if let Err(error) = self.icon.set(rgba, side, state.tooltip(), entries) {
+        if let Err(error) = self.icon.set(rgba, side, &state.tooltip(), entries) {
             tracing::warn!(%error, "the icon of the notification area was not shown");
         }
     }

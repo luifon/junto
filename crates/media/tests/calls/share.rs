@@ -40,6 +40,7 @@ fn screen(sound: SoundChoice) -> CaptureRequest {
         picture: PictureSource::Display(1),
         sound,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn window(sound: SoundChoice) -> CaptureRequest {
         picture: PictureSource::Window(11),
         sound,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     }
 }
 
@@ -62,17 +64,22 @@ fn near(seen: Colour, sent: Colour) -> bool {
 }
 
 impl Person {
-    /// Waits until the share of this device runs, and returns what it sends.
+    /// Waits until the share of this device in slot 0 runs, and returns what it sends.
     async fn until_sharing(&self) -> ShareInfo {
+        self.until_sharing_in(0).await
+    }
+
+    /// Waits until the share of this device in `slot` runs, and returns what it sends.
+    async fn until_sharing_in(&self, slot: u8) -> ShareInfo {
         let view = self
             .until("the own share runs", |view| {
-                view.call
-                    .as_ref()
-                    .is_some_and(|call| matches!(call.share, ShareState::Running(_)))
+                view.call.as_ref().is_some_and(|call| {
+                    matches!(call.own_shares.get(&slot), Some(ShareState::Running(_)))
+                })
             })
             .await;
-        match view.call.unwrap().share {
-            ShareState::Running(info) => info,
+        match view.call.unwrap().own_shares.get(&slot) {
+            Some(ShareState::Running(info)) => info.clone(),
             other => panic!("{other:?}"),
         }
     }
@@ -241,16 +248,17 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
         let view = ann
             .until("the sound of the share is sent", |view| {
                 view.call.as_ref().is_some_and(
-                    |call| matches!(&call.share, ShareState::Running(info) if !info.sound_held),
+                    |call| matches!(call.own_shares.get(&0), Some(ShareState::Running(info)) if !info.sound_held),
                 )
             })
             .await;
-        let ShareState::Running(info) = view.call.unwrap().share else {
+        let Some(ShareState::Running(info)) = view.call.unwrap().own_shares.get(&0).cloned() else {
             panic!("the share runs");
         };
         assert_eq!(
             info,
             ShareInfo {
+                id: info.id,
                 kind: ShareKind::Screen,
                 sound: ShareAudio::Application,
                 sound_held: false,
@@ -277,7 +285,7 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
         let view = ben
             .until("Ben watches the share of Ann", |view| {
                 view.call.as_ref().is_some_and(|call| {
-                    call.watched == Some(ShareId::Of(ann_id))
+                    call.watched == Some(ShareId::of(ann_id, 0))
                         && call.shares.len() == 1
                         && call.shares[0].size.is_some()
                 })
@@ -289,7 +297,7 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
             (seen.kind, seen.frame_rate),
             (Some(ShareKind::Screen), Some(30))
         );
-        let picture = ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        let picture = ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         assert_eq!(picture.frame.source.0 * 9, picture.frame.source.1 * 16);
         // The sound track of the share is published a moment after the picture track, and
         // the media server forwards it when it has subscribed Ben: the time depends on the
@@ -313,28 +321,28 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
         let mut small = ben.calls.small_pictures();
         let has_small = tokio::time::timeout(
             PATIENCE,
-            small.wait_for(|small| small.contains_key(&ShareId::Of(ann_id))),
+            small.wait_for(|small| small.contains_key(&ShareId::of(ann_id, 0))),
         )
         .await
         .is_ok();
         assert!(has_small);
 
         // Ann sees her own share and does not hear it.
-        assert_eq!(ann.calls.view().call.unwrap().watched, Some(ShareId::Own));
-        ann.until_shown(ShareId::Own, RED, BLUE).await;
+        assert_eq!(ann.calls.view().call.unwrap().watched, Some(ShareId::own(0)));
+        ann.until_shown(ShareId::own(0), RED, BLUE).await;
         let own = ann.hears_afresh(PLAYER.0).await;
         assert!(own < ABSENT_DBFS, "{own}");
 
         // A change of what the screen shows arrives.
         ann.capture.set_colours(GREEN, YELLOW);
-        ben.until_shown(ShareId::Of(ann_id), GREEN, YELLOW).await;
+        ben.until_shown(ShareId::of(ann_id, 0), GREEN, YELLOW).await;
 
         // Ann stops: the picture and the sound end for Ben, and the server shows no share.
-        ann.calls.stop_share();
+        ann.calls.stop_share(None);
         ann.until("the own share is off", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Off && call.watched.is_none())
+                .is_some_and(|call| call.own_shares.is_empty() && call.watched.is_none())
         })
         .await;
         assert_eq!(ann.capture.running(), 0);
@@ -366,6 +374,11 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
 /// none, ADR 0773).
 const FULL_RATE_IN_THREE_SECONDS: usize = 66;
 
+/// After this time of a wait for the full rate, a sender that its processor holds below it
+/// ends the wait with that cause. Before it, the sender can still be raising its rate after
+/// the change of the watched share.
+const PROCESSOR_LIMITED_AFTER: Duration = Duration::from_secs(20);
+
 impl Person {
     /// Waits until the media connection of this person receives the picture of a share with
     /// this width at its full rate, and returns the time from `since`. The receiver of the
@@ -377,6 +390,7 @@ impl Person {
         &self,
         width: u32,
         since: tokio::time::Instant,
+        sender: &Person,
     ) -> Duration {
         let mut before: Option<(tokio::time::Instant, u32)> = None;
         loop {
@@ -410,9 +424,23 @@ impl Person {
                 }
                 _ => 0.0,
             };
+            // What the sender states of its encoding: a rate that its processor limits shows
+            // the cause of a slow case.
+            let sent = sender.encoding(width).await;
+            // A sender that its processor holds below the full rate cannot show what the
+            // test measures: the run has too few processors for the engines of the test.
+            if since.elapsed() > PROCESSOR_LIMITED_AFTER
+                && let Some(rate) = sender.limited_by_processor(width).await
+            {
+                panic!(
+                    "the processor of the sender limits the picture of {width} pixels to \
+                     {rate:.1} per second, so the full rate cannot arrive; the run has too few \
+                     processors for three call engines (the sender: {sent})"
+                );
+            }
             crate::limit::step(format!(
                 "the picture of {width} pixels arrives at the full rate: {rate:.1} per second; \
-                 the received streams (width, decoded): {streams:?}"
+                 the received streams (width, decoded): {streams:?}; the sender: {sent}"
             ));
             if rate >= 25.0 {
                 return since.elapsed();
@@ -420,6 +448,28 @@ impl Person {
             before = decoded.map(|decoded| (now, decoded));
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+    }
+
+    /// The frame rate of the encoding of a picture of this width while the processor of this
+    /// person's device limits it below the full rate, and has limited it for most of the time
+    /// of the encoding.
+    async fn limited_by_processor(&self, width: u32) -> Option<f64> {
+        let stats = self.calls.statistics().await.ok()?;
+        (stats.publisher_stats.iter())
+            .chain(&stats.subscriber_stats)
+            .find_map(|stat| match stat {
+                RtcStats::OutboundRtp(stat)
+                    if stat.stream.kind == "video"
+                        && stat.outbound.frame_width == width
+                        && stat.outbound.quality_limitation_reason
+                            == livekit::webrtc::stats::QualityLimitationReason::Cpu
+                        && stat.outbound.frames_per_second < 25.0
+                        && mostly_processor(&stat.outbound.quality_limitation_durations) =>
+                {
+                    Some(stat.outbound.frames_per_second)
+                }
+                _ => None,
+            })
     }
 
     /// What the sender of the media connection of this person states of the encoding of a
@@ -473,7 +523,7 @@ impl Person {
             while let Ok(Ok(())) = tokio::time::timeout_at(end, pictures.changed()).await {
                 arrived +=
                     usize::from(pictures.borrow_and_update().as_ref().is_some_and(|shown| {
-                        shown.share == ShareId::Of(of) && shown.frame.source == size
+                        shown.share == ShareId::of(of, 0) && shown.frame.source == size
                     }));
             }
             seconds.push(arrived);
@@ -501,13 +551,21 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         }
         ben.capture.set_colours(GREEN, YELLOW);
 
-        // Ann shares her screen with all system sound. Cal watches it.
-        ann.calls.start_share(screen(SoundChoice::System));
+        // Ann shares her screen with all system sound, at the lowest frame rate: the test
+        // measures the rate of the share of Ben, and three engines that encode and decode
+        // share the processors of the run. Cal watches it.
+        ann.calls.start_share(CaptureRequest {
+            quality: ShareQuality {
+                frame_rate: junto_media::share::FRAME_RATES[0],
+                ..ShareQuality::default()
+            },
+            ..screen(SoundChoice::System)
+        });
         ann.until_sharing().await;
         cal.until("Cal watches the share of Ann", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.watched == Some(ShareId::Of(ann_id)))
+                .is_some_and(|call| call.watched == Some(ShareId::of(ann_id, 0)))
         })
         .await;
         cal.until_heard_tone(SYSTEM.0).await;
@@ -539,8 +597,8 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
                 (ben_id, Some(ShareKind::Window))
             ]
         );
-        assert_eq!(call.watched, Some(ShareId::Of(ann_id)));
-        cal.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        assert_eq!(call.watched, Some(ShareId::of(ann_id, 0)));
+        cal.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         let other = cal.hears_afresh(PLAYER.0).await;
         assert!(other < ABSENT_DBFS, "{other}");
         // The sound of the share of Ann goes on. One half second can hold a gap while the
@@ -552,12 +610,12 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         ann.until("Ann watches the share of Ben", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.watched == Some(ShareId::Of(ben_id)))
+                .is_some_and(|call| call.watched == Some(ShareId::of(ben_id, 0)))
         })
         .await;
         assert_eq!(
             ann.calls.view().call.unwrap().watched,
-            Some(ShareId::Of(ben_id))
+            Some(ShareId::of(ben_id, 0))
         );
         ann.until_heard_tone(PLAYER.0).await;
         ben.until_heard_tone(SYSTEM.0).await;
@@ -571,17 +629,17 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         // defaults of the call library send a picture of 800 pixels at 5 per second.
         let before_switch = crate::statistics::snapshot(&ben, &cal, share_started).await;
         let switched = tokio::time::Instant::now();
-        cal.calls.watch_share(ShareId::Of(ben_id));
+        cal.calls.watch_share(ShareId::of(ben_id, 0));
         cal.until("Cal watches the share of Ben", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.watched == Some(ShareId::Of(ben_id)))
+                .is_some_and(|call| call.watched == Some(ShareId::of(ben_id, 0)))
         })
         .await;
-        let picture = cal.until_shown(ShareId::Of(ben_id), GREEN, YELLOW).await;
+        let picture = cal.until_shown(ShareId::of(ben_id, 0), GREEN, YELLOW).await;
         assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
         let at_switch = ben.encoding(800).await;
-        let forwarded = cal.until_received_at_full_rate(800, switched).await;
+        let forwarded = cal.until_received_at_full_rate(800, switched, &ben).await;
         let seconds = cal.pictures_in_three_seconds(ben_id, (800, 600)).await;
         eprintln!(
             "the full rate arrived {forwarded:?} after the change of the watched share; \
@@ -604,7 +662,7 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         cal.calls.set_share_volume(0.0);
         cal.until_silent_tone(PLAYER.0).await;
         ben.capture.set_colours(BLUE, RED);
-        cal.until_shown(ShareId::Of(ben_id), BLUE, RED).await;
+        cal.until_shown(ShareId::of(ben_id, 0), BLUE, RED).await;
         cal.calls.set_share_volume(1.0);
         cal.until_heard_tone(PLAYER.0).await;
         let full = cal.until_steady_tone(PLAYER.0).await;
@@ -624,8 +682,8 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         cal.until_width(ben_id, 800).await;
 
         // Ann chooses her own share: its preview, and no sound of the share of Ben.
-        ann.calls.watch_share(ShareId::Own);
-        ann.until_shown(ShareId::Own, RED, BLUE).await;
+        ann.calls.watch_share(ShareId::own(0));
+        ann.until_shown(ShareId::own(0), RED, BLUE).await;
         ann.until_silent_tone(PLAYER.0).await;
 
         // Ben leaves the call. His share ends for everyone, and Cal watches the share that is
@@ -634,11 +692,11 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         assert_eq!(ben.capture.running(), 0);
         cal.until("the share of Ben has ended", |view| {
             view.call.as_ref().is_some_and(|call| {
-                call.shares.len() == 1 && call.watched == Some(ShareId::Of(ann_id))
+                call.shares.len() == 1 && call.watched == Some(ShareId::of(ann_id, 0))
             })
         })
         .await;
-        cal.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        cal.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         cal.until_heard_tone(SYSTEM.0).await;
         cal.until_silent_tone(PLAYER.0).await;
         cal.until_width(ann_id, 1280).await;
@@ -651,6 +709,875 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
             })
         })
         .await;
+    })
+    .await;
+}
+
+/// One person shares a screen and a window at once (ADR 0502, ADR 0737). The viewer
+/// watches one of them and hears only its sound, switches to the other, and keeps the
+/// share that is left when one ends. A person runs at most three shares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn one_person_shares_two_things_and_the_viewer_hears_only_the_one_watched() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let (ann_id, place) = (account(&ann_at), room.target.place);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+            person.calls.set_muted(true);
+        }
+        ann.capture
+            .set_source_colours(PictureSource::Window(11), GREEN, YELLOW);
+        let (screen_of_ann, window_of_ann) = (ShareId::of(ann_id, 0), ShareId::of(ann_id, 1));
+
+        // Ann shares her screen with all system sound, then a window with the sound of its
+        // application: two shares in two slots, two captures.
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        // The viewer receives the screen before the window starts, so that it is the share
+        // that the viewer received first.
+        ben.until("Ben sees the screen of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 1)
+        })
+        .await;
+        ann.calls.start_share(window(player()));
+        let info = ann.until_sharing_in(1).await;
+        assert_eq!(
+            (info.kind, info.sound, info.size),
+            (ShareKind::Window, ShareAudio::Application, (800, 600))
+        );
+        assert_eq!(ann.capture.running(), 2);
+
+        // Ben sees both shares of Ann with their kinds, and watches the one seen first.
+        let view = ben
+            .until("Ben sees the two shares of Ann", |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.shares.len() == 2)
+            })
+            .await;
+        let call = view.call.unwrap();
+        assert_eq!(
+            call.shares
+                .iter()
+                .map(|share| (share.account_id, share.slot, share.kind))
+                .collect::<Vec<_>>(),
+            [
+                (ann_id, 0, Some(ShareKind::Screen)),
+                (ann_id, 1, Some(ShareKind::Window))
+            ]
+        );
+        assert_eq!(call.watched, Some(screen_of_ann));
+        ben.until_shown(screen_of_ann, RED, BLUE).await;
+        ben.until_heard_tone(SYSTEM.0).await;
+        let other = ben.hears_afresh(PLAYER.0).await;
+        assert!(other < ABSENT_DBFS, "{other}");
+        let mut small = ben.calls.small_pictures();
+        tokio::time::timeout(
+            PATIENCE,
+            small.wait_for(|small| {
+                small.contains_key(&screen_of_ann) && small.contains_key(&window_of_ann)
+            }),
+        )
+        .await
+        .expect("a small picture of each share of Ann")
+        .expect("the small pictures");
+        model_when(&ben_at, "the server lists the two shares of Ann", |model| {
+            model.call_at(&place).is_some_and(|call| {
+                call.participant(ann_id).is_some_and(|ann| {
+                    ann.shares()
+                        .iter()
+                        .map(|share| (share.slot, share.audio))
+                        .eq([(0, ShareAudio::System), (1, ShareAudio::Application)])
+                })
+            })
+        })
+        .await;
+
+        // Ben switches to the window: its picture, and its sound in place of the other one.
+        ben.calls.watch_share(window_of_ann);
+        let picture = ben.until_shown(window_of_ann, GREEN, YELLOW).await;
+        assert_eq!(picture.frame.source, (800, 600));
+        ben.until_heard_tone(PLAYER.0).await;
+        ben.until_silent_tone(SYSTEM.0).await;
+        // And back to the screen.
+        ben.calls.watch_share(screen_of_ann);
+        ben.until_shown(screen_of_ann, RED, BLUE).await;
+        ben.until_heard_tone(SYSTEM.0).await;
+        ben.until_silent_tone(PLAYER.0).await;
+
+        // A third share takes slot 2; a fourth is refused while three run.
+        ann.calls.start_share(screen(SoundChoice::None));
+        ann.until_sharing_in(2).await;
+        ann.calls.start_share(window(SoundChoice::None));
+        ann.until("a fourth share is refused", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.share_ended == Some(CaptureError::TooMany))
+        })
+        .await;
+        assert_eq!(ann.capture.running(), 3);
+        assert_eq!(ann.calls.view().call.unwrap().own_shares.len(), 3);
+
+        // Ann ends the share that Ben watches. Ben watches the share of Ann that he saw
+        // first of those left, with its sound; the other shares of Ann go on.
+        ann.calls.stop_share(Some(0));
+        let view = ben
+            .until("the screen of Ann has ended", |view| {
+                view.call.as_ref().is_some_and(|call| {
+                    call.shares.iter().map(|share| share.slot).eq([1, 2])
+                        && call.watched == Some(window_of_ann)
+                })
+            })
+            .await;
+        assert_eq!(view.call.unwrap().shares.len(), 2);
+        ben.until_shown(window_of_ann, GREEN, YELLOW).await;
+        ben.until_heard_tone(PLAYER.0).await;
+        assert_eq!(ann.capture.running(), 2);
+        model_when(&ben_at, "the server lists slots 1 and 2 of Ann", |model| {
+            model.call_at(&place).is_some_and(|call| {
+                call.participant(ann_id).is_some_and(|ann| {
+                    ann.shares().iter().map(|share| share.slot).eq([1, 2])
+                        && ann.screen_share.as_ref().map(|share| share.slot) == Some(1)
+                })
+            })
+        })
+        .await;
+
+        // A stop without a slot ends every share.
+        ann.calls.stop_share(None);
+        ben.until("no share of Ann is left", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.is_empty() && call.watched.is_none())
+        })
+        .await;
+        assert_eq!(ann.capture.running(), 0);
+        model_when(&ben_at, "the server lists no share of Ann", |model| {
+            model.call_at(&place).is_some_and(|call| {
+                call.participant(ann_id)
+                    .is_some_and(|ann| ann.shares().is_empty())
+            })
+        })
+        .await;
+    })
+    .await;
+}
+
+/// True when the processor limited an encoding for more than half of its time, as its
+/// durations of each quality limitation state.
+fn mostly_processor(durations: &std::collections::HashMap<String, f64>) -> bool {
+    let all: f64 = durations.values().sum();
+    durations.get("cpu").is_some_and(|cpu| *cpu * 2.0 > all)
+}
+
+/// The packets that a subscribed track of a room connection has received.
+async fn packets_received(track: &livekit::prelude::RemoteTrack) -> u64 {
+    track
+        .get_stats()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|stat| match stat {
+            RtcStats::InboundRtp(stat) => stat.received.packets_received,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The slots of the shares of `of` whose media a room connection of the call library
+/// receives: the picture tracks and the sound tracks whose packets grow within one second.
+/// The call library keeps a track after the media server has withdrawn the permission to
+/// receive it, so the presence of a track does not say that its media arrives.
+async fn received_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec<u8>) {
+    use livekit::prelude::TrackSource;
+    let mut tracks = Vec::new();
+    for participant in room.remote_participants().values() {
+        if junto_media::engine::account_of(participant.identity().as_str()) != Some(of) {
+            continue;
+        }
+        for publication in participant.track_publications().values() {
+            let Some(track) = publication.track() else {
+                continue;
+            };
+            let slot = match publication.source() {
+                TrackSource::Screenshare => (
+                    true,
+                    junto_media::share::read_track_name(&publication.name())
+                        .map_or(0, |name| name.slot),
+                ),
+                TrackSource::ScreenshareAudio => (
+                    false,
+                    junto_media::share::read_sound_name(&publication.name()),
+                ),
+                _ => continue,
+            };
+            tracks.push((slot, track));
+        }
+    }
+    let mut before = Vec::new();
+    for (_, track) in &tracks {
+        before.push(packets_received(track).await);
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (mut pictures, mut sounds) = (Vec::new(), Vec::new());
+    for (((picture, slot), track), before) in tracks.iter().zip(before) {
+        if packets_received(track).await > before {
+            if *picture {
+                pictures.push(*slot);
+            } else {
+                sounds.push(*slot);
+            }
+        }
+    }
+    pictures.sort_unstable();
+    sounds.sort_unstable();
+    (pictures, sounds)
+}
+
+/// Waits until a room connection of the call library receives the shares `expected` of
+/// `of`, as [`received_slots`] states them; a failure names what it received last.
+async fn until_received(
+    room: &livekit::prelude::Room,
+    of: AccountId,
+    expected: (Vec<u8>, Vec<u8>),
+    what: &str,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        let received = received_slots(room, of).await;
+        if received == expected {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "after 60s this did not hold: {what}; received (pictures, sounds): {received:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Two shares of one person reach a client from before several shares as one share: the
+/// share of the lowest slot with its sound, as long as two run. A client that shows several
+/// shares gets both (ADR 0510), also after the call library of the sharer connects anew.
+/// When the person leaves the call, each of the shares ends at the viewer and at the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_their_sharer() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben, cara) = (Person::new(440.0), Person::new(880.0), Person::new(660.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let cara_at = room.member(&ann_at, &cara, "Cara").await;
+        let (ann_id, place) = (account(&ann_at), room.target.place);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        // Cara's device asks for its place as a client from before several shares, and
+        // connects with the call library alone.
+        let join = cara_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let (old, _events) = livekit::prelude::Room::connect(
+            &join.media_url,
+            join.token.expose(),
+            livekit::prelude::RoomOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            "Cara receives the screen of Ann with its sound",
+        )
+        .await;
+        ann.calls.start_share(window(player()));
+        ann.until_sharing_in(1).await;
+        ben.until("Ben sees the two shares of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        ben.calls.watch_share(ShareId::of(ann_id, 1));
+        ben.until_heard_tone(PLAYER.0).await;
+        // Cara keeps the one share of the lowest slot, also some seconds later.
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![0]));
+        }
+
+        // Ann ends the screen: one share is left, and Cara receives it.
+        ann.calls.stop_share(Some(0));
+        until_received(
+            &old,
+            ann_id,
+            (vec![1], vec![1]),
+            "Cara receives the window of Ann",
+        )
+        .await;
+        // A second share again: Cara keeps the window, which is now the lowest slot.
+        ann.calls.start_share(screen(SoundChoice::None));
+        ann.until_sharing_in(0).await;
+        ben.until("Ben sees the two shares of Ann again", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![]),
+            "Cara receives the share of the lowest slot",
+        )
+        .await;
+
+        // The call library of Ann connects anew and publishes her tracks again under new
+        // identifiers: the permissions follow the new tracks, so Cara again receives the
+        // share of the lowest slot only, and Ben both shares.
+        ann.calls.simulate_full_reconnect();
+        ben.until(
+            "Ben sees the two shares of Ann after the new connection",
+            |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.shares.len() == 2)
+            },
+        )
+        .await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![]),
+            "Cara receives the share of the lowest slot after the new connection of Ann",
+        )
+        .await;
+        for _ in 0..5 {
+            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![]));
+        }
+
+        // Ann leaves the call: each of her shares ends at Ben and at the server.
+        ann.calls.leave().await;
+        ben.until("the shares of Ann ended with her departure", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.is_empty() && call.watched.is_none())
+        })
+        .await;
+        assert_eq!(ann.capture.running(), 0);
+        model_when(&ben_at, "the server lists no share of Ann", |model| {
+            model
+                .call_at(&place)
+                .is_some_and(|call| call.participant(ann_id).is_none())
+        })
+        .await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![], vec![]),
+            "Cara receives no share of Ann",
+        )
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), old.close()).await;
+    })
+    .await;
+}
+
+/// The slots of the shares of `of` whose tracks a room connection of the call library sees
+/// published: the picture tracks and the sound tracks, whether it receives them or not.
+fn published_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8>, Vec<u8>) {
+    let mut slots = (Vec::new(), Vec::new());
+    for (picture, slot, _) in share_tracks_of(room, of) {
+        if picture {
+            slots.0.push(slot);
+        } else {
+            slots.1.push(slot);
+        }
+    }
+    slots.0.sort_unstable();
+    slots.1.sort_unstable();
+    slots
+}
+
+/// The share tracks of `of` that a room connection sees: picture or sound, the slot, and
+/// whether the connection was ever let to receive the track.
+fn share_tracks_of(room: &livekit::prelude::Room, of: AccountId) -> Vec<(bool, u8, bool)> {
+    use livekit::prelude::TrackSource;
+    let mut tracks = Vec::new();
+    for participant in room.remote_participants().values() {
+        if junto_media::engine::account_of(participant.identity().as_str()) != Some(of) {
+            continue;
+        }
+        for publication in participant.track_publications().values() {
+            let name = publication.name();
+            let (picture, slot) = match publication.source() {
+                TrackSource::Screenshare => (
+                    true,
+                    junto_media::share::read_track_name(&name).map_or(0, |name| name.slot),
+                ),
+                TrackSource::ScreenshareAudio => {
+                    (false, junto_media::share::read_sound_name(&name))
+                }
+                _ => continue,
+            };
+            tracks.push((picture, slot, publication.track().is_some()));
+        }
+    }
+    tracks
+}
+
+/// While the permissions of the room are held back, a further share of a person publishes
+/// nothing (ADR 0737): the media server holds no track of it, for any participant. A hold
+/// longer than the limit ends that share with an error that the sharer sees, and the share
+/// that runs goes on. After a shorter hold the share is published, and a client from before
+/// several shares is never let to receive one of its tracks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_further_share_is_published_only_after_the_permissions_that_withhold_it() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben, cara) = (Person::new(440.0), Person::new(880.0), Person::new(660.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let cara_at = room.member(&ann_at, &cara, "Cara").await;
+        let ann_id = account(&ann_at);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        let join = cara_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let (old, _events) = livekit::prelude::Room::connect(
+            &join.media_url,
+            join.token.expose(),
+            livekit::prelude::RoomOptions::default(),
+        )
+        .await
+        .unwrap();
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            "Cara receives the screen of Ann with its sound",
+        )
+        .await;
+
+        // The permissions are held back longer than the limit of a publication.
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        let started = std::time::Instant::now();
+        loop {
+            let call = ann.calls.view().call.unwrap();
+            if matches!(call.share_ended, Some(CaptureError::Failed(_))) {
+                break;
+            }
+            assert_eq!(
+                published_slots(&old, ann_id),
+                (vec![0], vec![0]),
+                "after {:?} of the hold the media server holds a track of the further share; \
+                 the own shares are {:?}",
+                started.elapsed(),
+                call.own_shares
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the further share did not end while the permissions were held: {call:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let call = ann.calls.view().call.unwrap();
+        assert_eq!(call.own_shares.keys().copied().collect::<Vec<_>>(), [0]);
+        ann.calls.hold_permissions(false);
+        ann.calls.forget_share_end();
+        until_received(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            "Cara still receives the screen of Ann",
+        )
+        .await;
+
+        // A shorter hold: nothing of the further share is published during it.
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(3) {
+            assert_eq!(
+                published_slots(&old, ann_id),
+                (vec![0], vec![0]),
+                "after {:?} of the hold the media server holds a track of the further share",
+                started.elapsed()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        ann.calls.hold_permissions(false);
+        ann.until_sharing_in(1).await;
+        ben.until("Ben sees the two shares of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        for _ in 0..10 {
+            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![0]));
+            let let_in: Vec<(bool, u8, bool)> = share_tracks_of(&old, ann_id)
+                .into_iter()
+                .filter(|(_, slot, received)| *slot == 1 && *received)
+                .collect();
+            assert_eq!(
+                let_in,
+                [],
+                "Cara was let to receive a track of the further share"
+            );
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(10), old.close()).await;
+    })
+    .await;
+}
+
+/// What a test participant of a release from before several shares reports: the tracks that
+/// the media server let it receive, and the packets that each one received.
+#[derive(Default)]
+struct LegacyReport {
+    subscribed: Vec<String>,
+    packets: std::collections::HashMap<String, u64>,
+    /// The last lines of its output, for a failure.
+    last: std::collections::VecDeque<String>,
+}
+
+impl LegacyReport {
+    /// Takes one line of the output of `test-participant subscribe`: one JSON object.
+    fn take(&mut self, line: &str) {
+        if self.last.len() == 8 {
+            self.last.pop_front();
+        }
+        self.last.push_back(line.chars().take(600).collect());
+        if line.contains(r#""event":"track_subscribed""#) {
+            if let Some(sid) = line.split(r#""track_sid":""#).nth(1) {
+                self.subscribed
+                    .push(sid.split('"').next().unwrap_or_default().to_owned());
+            }
+        } else if line.contains(r#""event":"report""#) || line.contains(r#""event":"summary""#) {
+            for track in objects_in(line, r#""tracks":["#) {
+                let text = |key: &str| track.split(key).nth(1).map(str::to_owned);
+                let sid = text(r#""track_sid":""#)
+                    .and_then(|rest| rest.split('"').next().map(str::to_owned));
+                let packets = text(r#""packets_received":"#).and_then(|rest| {
+                    rest.split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .and_then(|digits| digits.parse::<u64>().ok())
+                });
+                if let (Some(sid), Some(packets)) = (sid, packets) {
+                    self.packets.insert(sid, packets);
+                }
+            }
+        }
+    }
+}
+
+/// The objects of the JSON array that follows `start` in `line`, each as its text with the
+/// objects inside it.
+fn objects_in<'a>(line: &'a str, start: &str) -> Vec<&'a str> {
+    let Some(at) = line.find(start) else {
+        return Vec::new();
+    };
+    let (mut objects, mut depth, mut open) = (Vec::new(), 0usize, 0usize);
+    let (mut in_string, mut escaped) = (false, false);
+    for (offset, character) in line[at + start.len()..].char_indices() {
+        let position = at + start.len() + offset;
+        match character {
+            _ if escaped => escaped = false,
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            '{' => {
+                if depth == 0 {
+                    open = position;
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    objects.push(&line[open..=position]);
+                }
+            }
+            ']' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    objects
+}
+
+/// A client of a release from before several shares, the test participant of that release
+/// (`JUNTO_TEST_LEGACY_PARTICIPANT` names its program), never receives a track of a further
+/// share of a person (ADR 0510, ADR 0737): not while that share starts with the permissions
+/// of the room held back for a time, not while it runs, and not while the call library of the
+/// sharer connects anew and publishes every track again under new identifiers. It receives
+/// the share of the lowest slot before and after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server and a test participant of a release from before several shares"]
+async fn a_client_of_a_release_before_several_shares_never_receives_a_further_share() {
+    let Some(program) = std::env::var_os("JUNTO_TEST_LEGACY_PARTICIPANT") else {
+        eprintln!(
+            "skipped: JUNTO_TEST_LEGACY_PARTICIPANT does not name the test participant of a \
+             release from before several shares"
+        );
+        return;
+    };
+    limited(async {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::AsyncBufReadExt;
+
+        let _media = media_server_shared().await;
+        let (ann, ben, cara, dan) = (
+            Person::new(440.0),
+            Person::new(880.0),
+            Person::new(660.0),
+            Person::new(550.0),
+        );
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let cara_at = room.member(&ann_at, &cara, "Cara").await;
+        let dan_at = room.member(&ann_at, &dan, "Dan").await;
+        let ann_id = account(&ann_at);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+
+        // Dan's connection of the call library names the slot of each share track of Ann
+        // that the media server holds, also of the tracks that it withdrew later.
+        let join = dan_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let (observer, _observed) = livekit::prelude::Room::connect(
+            &join.media_url,
+            join.token.expose(),
+            livekit::prelude::RoomOptions::default(),
+        )
+        .await
+        .unwrap();
+        let observer = Arc::new(observer);
+        let slots: Arc<Mutex<HashMap<String, (bool, u8)>>> = Arc::default();
+        let watch_slots = {
+            let (observer, slots) = (observer.clone(), slots.clone());
+            tokio::spawn(async move {
+                loop {
+                    for participant in observer.remote_participants().values() {
+                        if junto_media::engine::account_of(participant.identity().as_str())
+                            != Some(ann_id)
+                        {
+                            continue;
+                        }
+                        for (sid, publication) in participant.track_publications() {
+                            let name = publication.name();
+                            let place = match publication.source() {
+                                livekit::prelude::TrackSource::Screenshare => (
+                                    true,
+                                    junto_media::share::read_track_name(&name)
+                                        .map_or(0, |name| name.slot),
+                                ),
+                                livekit::prelude::TrackSource::ScreenshareAudio => {
+                                    (false, junto_media::share::read_sound_name(&name))
+                                }
+                                _ => continue,
+                            };
+                            slots.lock().unwrap().insert(sid.to_string(), place);
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        };
+
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+
+        // Cara's device asks for its place as a client from before several shares, and its
+        // test participant of that release receives every track that it may receive.
+        let join = cara_at
+            .api()
+            .join_channel_call_showing(room.voice, None)
+            .await
+            .unwrap();
+        let mut legacy = tokio::process::Command::new(&program)
+            .args([
+                "subscribe",
+                "--url",
+                &join.media_url,
+                "--report-every",
+                "0.5",
+            ])
+            .env("LIVEKIT_TOKEN", join.token.expose())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let report: Arc<Mutex<LegacyReport>> = Arc::default();
+        let reading = {
+            let report = report.clone();
+            let mut lines = tokio::io::BufReader::new(legacy.stdout.take().unwrap()).lines();
+            let mut errors = tokio::io::BufReader::new(legacy.stderr.take().unwrap()).lines();
+            tokio::spawn(async move {
+                loop {
+                    let line = tokio::select! {
+                        line = lines.next_line() => line,
+                        line = errors.next_line() => line,
+                    };
+                    match line {
+                        Ok(Some(line)) => report.lock().unwrap().take(&line),
+                        _ => break,
+                    }
+                }
+            })
+        };
+        // The tracks of `slot` that the participant was let to receive, and those of them
+        // whose packets arrived.
+        let of_slot = |slot: u8| {
+            let slots = slots.lock().unwrap();
+            let report = report.lock().unwrap();
+            let in_slot = |sid: &String| slots.get(sid).is_some_and(|place| place.1 == slot);
+            let subscribed: Vec<String> = report
+                .subscribed
+                .iter()
+                .filter(|sid| in_slot(sid))
+                .cloned()
+                .collect();
+            let with_packets: Vec<String> = report
+                .packets
+                .iter()
+                .filter(|(sid, packets)| in_slot(sid) && **packets > 0)
+                .map(|(sid, _)| sid.clone())
+                .collect();
+            (subscribed, with_packets)
+        };
+        let no_further_share = |what: &str| {
+            let (subscribed, with_packets) = of_slot(1);
+            assert!(
+                subscribed.is_empty() && with_packets.is_empty(),
+                "{what}: the participant of the release before several shares was let to \
+                 receive the tracks {subscribed:?} of the further share, with packets on \
+                 {with_packets:?}"
+            );
+        };
+        // Packets of the picture and of the sound of the lowest slot, on tracks that are not
+        // in `before`.
+        let until_lowest = |what: &'static str, before: Vec<String>| {
+            let (slots, report) = (slots.clone(), report.clone());
+            async move {
+                let started = std::time::Instant::now();
+                loop {
+                    let kinds: Vec<bool> = {
+                        let slots = slots.lock().unwrap();
+                        let report = report.lock().unwrap();
+                        report
+                            .packets
+                            .iter()
+                            .filter(|(sid, packets)| **packets > 0 && !before.contains(sid))
+                            .filter_map(|(sid, _)| slots.get(sid))
+                            .filter(|place| place.1 == 0)
+                            .map(|place| place.0)
+                            .collect()
+                    };
+                    if kinds.contains(&true) && kinds.contains(&false) {
+                        return;
+                    }
+                    if started.elapsed() > Duration::from_secs(60) {
+                        let report = report.lock().unwrap();
+                        panic!(
+                            "after 60s this did not hold: {what}; the share tracks are {:?}, the \
+                             packets {:?}, the last lines of the participant {:?}",
+                            slots.lock().unwrap(),
+                            report.packets,
+                            report.last
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+        until_lowest(
+            "the participant of the release before receives the screen of Ann with its sound",
+            Vec::new(),
+        )
+        .await;
+
+        // The further share starts while the permissions of the room are held back.
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        no_further_share("while the permissions were held");
+        ann.calls.hold_permissions(false);
+        ann.until_sharing_in(1).await;
+        ben.until("Ben sees the two shares of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            no_further_share("while two shares run");
+        }
+
+        // The call library of Ann connects anew and publishes every track again.
+        let before: Vec<String> = slots.lock().unwrap().keys().cloned().collect();
+        ann.calls.simulate_full_reconnect();
+        let started = std::time::Instant::now();
+        loop {
+            let renewed: Vec<(bool, u8)> = slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(sid, _)| !before.contains(sid))
+                .map(|(_, place)| *place)
+                .collect();
+            no_further_share("while the call library of Ann connects anew");
+            if renewed.contains(&(true, 0)) && renewed.contains(&(true, 1)) {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the call library of Ann did not publish both shares again: {renewed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        until_lowest(
+            "the participant of the release before receives the screen of Ann after the new \
+             connection",
+            before,
+        )
+        .await;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            no_further_share("after the call library of Ann connected anew");
+        }
+
+        let _ = legacy.kill().await;
+        reading.abort();
+        watch_slots.abort();
+        let _ = watch_slots.await;
+        if let Some(observer) = Arc::into_inner(observer) {
+            let _ = tokio::time::timeout(Duration::from_secs(10), observer.close()).await;
+        }
     })
     .await;
 }
@@ -740,16 +1667,16 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         ann.until("the share did not start", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Ended(CaptureError::NotAllowed))
+                .is_some_and(|call| call.share_ended == Some(CaptureError::NotAllowed))
         })
         .await;
         assert_eq!(ann.capture.running(), 0);
         // The statement is put away.
-        ann.calls.stop_share();
+        ann.calls.stop_share(None);
         ann.until("the statement is put away", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Off)
+                .is_some_and(|call| call.own_shares.is_empty())
         })
         .await;
 
@@ -760,14 +1687,14 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         ann.until("the share starts", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Starting)
+                .is_some_and(|call| call.own_shares.get(&0) == Some(&ShareState::Starting))
         })
         .await;
-        ann.calls.stop_share();
+        ann.calls.stop_share(None);
         ann.until("the share is off", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Off)
+                .is_some_and(|call| call.own_shares.is_empty())
         })
         .await;
         tokio::time::sleep(Duration::from_millis(1_500)).await;
@@ -787,7 +1714,7 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         assert_eq!((info.sound, info.sound_held), (ShareAudio::None, false));
         tokio::time::sleep(Duration::from_secs(3)).await;
         ben.enter(room.target).await;
-        ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         let none = ben.hears_afresh(SYSTEM.0).await;
         assert!(none < ABSENT_DBFS, "{none}");
         model_when(&ben_at, "the share of Ann without sound", |model| {
@@ -807,7 +1734,7 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         ann.until("the share ended by itself", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Ended(CaptureError::SourceGone))
+                .is_some_and(|call| call.share_ended == Some(CaptureError::SourceGone))
         })
         .await;
         ben.until("the share of Ann has ended", |view| {
@@ -824,21 +1751,26 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         })
         .await;
 
-        // A new share replaces the statement, and a second start replaces the first share.
+        // A new share puts the statement away, and a second start adds a second share.
         ann.capture.set_still(false);
         ann.calls.start_share(screen(SoundChoice::None));
         ann.until_sharing().await;
+        assert_eq!(ann.calls.view().call.unwrap().share_ended, None);
         ann.calls.start_share(window(SoundChoice::None));
-        ann.until("the window is shared", |view| {
+        let info = ann.until_sharing_in(1).await;
+        assert_eq!(info.kind, ShareKind::Window);
+        assert_eq!(ann.capture.running(), 2);
+        // The shares are kept in the order in which their tracks were received, which is
+        // not the order of their starts.
+        ben.until("Ben sees the screen and the window", |view| {
             view.call.as_ref().is_some_and(|call| {
-            matches!(&call.share, ShareState::Running(info) if info.kind == ShareKind::Window)
-        })
-        })
-        .await;
-        assert_eq!(ann.capture.running(), 1);
-        ben.until("Ben sees the window", |view| {
-            view.call.as_ref().is_some_and(|call| {
-                call.shares.len() == 1 && call.shares[0].kind == Some(ShareKind::Window)
+                let mut seen: Vec<_> = call
+                    .shares
+                    .iter()
+                    .map(|share| (share.slot, share.kind))
+                    .collect();
+                seen.sort_by_key(|(slot, _)| *slot);
+                seen == [(0, Some(ShareKind::Screen)), (1, Some(ShareKind::Window))]
             })
         })
         .await;
@@ -877,11 +1809,11 @@ async fn the_blocks_of_the_server_hold_for_a_share_and_from_the_first_moment_of_
         ben.calls.start_share(screen(SoundChoice::System));
         ben.until("the share runs and its sound is held", |view| {
             view.call.as_ref().is_some_and(
-                |call| matches!(&call.share, ShareState::Running(info) if info.sound_held),
+                |call| matches!(call.own_shares.get(&0), Some(ShareState::Running(info)) if info.sound_held),
             )
         })
         .await;
-        ann.until_shown(ShareId::Of(ben_id), RED, BLUE).await;
+        ann.until_shown(ShareId::of(ben_id, 0), RED, BLUE).await;
         let held = ann.hears_afresh(SYSTEM.0).await;
         assert!(held < ABSENT_DBFS, "{held}");
 
@@ -893,12 +1825,12 @@ async fn the_blocks_of_the_server_hold_for_a_share_and_from_the_first_moment_of_
             .unwrap();
         ben.until("the sound of the share is sent", |view| {
             view.call.as_ref().is_some_and(
-                |call| matches!(&call.share, ShareState::Running(info) if !info.sound_held),
+                |call| matches!(call.own_shares.get(&0), Some(ShareState::Running(info)) if !info.sound_held),
             )
         })
         .await;
         ann.until_heard_tone(SYSTEM.0).await;
-        ben.calls.stop_share();
+        ben.calls.stop_share(None);
 
         // Ben gets both blocks, leaves and enters again. The blocks belong to the call, and
         // the answer of the server to the join states them: the first view of the new place
@@ -973,7 +1905,7 @@ async fn a_share_goes_on_when_the_call_library_connects_anew_and_publishes_its_t
         ben.enter(room.target).await;
         ann.calls.start_share(screen(SoundChoice::System));
         ann.until_sharing().await;
-        ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         ben.until_heard_tone(SYSTEM.0).await;
         ben.until_heard(&ann).await;
 
@@ -997,7 +1929,7 @@ async fn a_share_goes_on_when_the_call_library_connects_anew_and_publishes_its_t
         assert_eq!(ann.capture.running(), 1);
         assert_eq!(ann.capture.started().len(), 1);
         ann.capture.set_colours(GREEN, YELLOW);
-        ben.until_shown(ShareId::Of(ann_id), GREEN, YELLOW).await;
+        ben.until_shown(ShareId::of(ann_id, 0), GREEN, YELLOW).await;
         ben.host.clear_played();
         ben.until_heard_tone(SYSTEM.0).await;
         // One picture track and one sound track of Ann: no track is published twice.
@@ -1005,8 +1937,8 @@ async fn a_share_goes_on_when_the_call_library_connects_anew_and_publishes_its_t
         let view = ben.calls.view().call.unwrap();
         assert_eq!(view.shares.len(), 1);
         assert!(matches!(
-            ann.calls.view().call.unwrap().share,
-            ShareState::Running(_)
+            ann.calls.view().call.unwrap().own_shares.get(&0),
+            Some(ShareState::Running(_))
         ));
 
         // The microphone of Ann is the same microphone after it: her voice arrives, and her
@@ -1027,11 +1959,11 @@ async fn a_share_goes_on_when_the_call_library_connects_anew_and_publishes_its_t
                 .is_some_and(|call| call.shares.is_empty())
         })
         .await;
-        ann.calls.stop_share();
+        ann.calls.stop_share(None);
         ann.until("the share is off", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share == ShareState::Off)
+                .is_some_and(|call| call.own_shares.is_empty())
         })
         .await;
         assert_eq!(ann.capture.running(), 0);
@@ -1070,6 +2002,7 @@ async fn the_local_admission_gate_withdraws_share_sound_with_a_permissive_token(
             MediaJoin {
                 url: answer.media_url,
                 token: answer.token,
+                shares: answer.shares.unwrap_or(1),
             },
             crate::scene::plain_voice(),
             Controls::default(),
@@ -1085,7 +2018,7 @@ async fn the_local_admission_gate_withdraws_share_sound_with_a_permissive_token(
         .unwrap()
         .unwrap();
         engine.start_share(screen(SoundChoice::System));
-        let id = ShareId::Of(account(&peer));
+        let id = ShareId::of(account(&peer), 0);
         one.calls.watch_share(id);
         one.until_shown(id, RED, BLUE).await;
         one.until_heard_tone(SYSTEM.0).await;
@@ -1124,11 +2057,13 @@ async fn on_macos_the_own_share_and_camera_are_encoded_by_the_hardware_of_the_sy
         ann.calls.start_share(screen(SoundChoice::None));
         ann.until_sharing().await;
         ann.calls.start_camera(None);
-        ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         let mut cameras = ben.calls.camera_pictures();
         let camera = tokio::time::timeout(
             PATIENCE,
-            cameras.wait_for(|pictures| pictures.contains_key(&ShareId::Of(ann_id))),
+            cameras.wait_for(|pictures| {
+                pictures.contains_key(&junto_media::engine::Person::Of(ann_id))
+            }),
         )
         .await;
         assert!(camera.is_ok(), "no camera picture of Ann arrived");
@@ -1216,9 +2151,10 @@ async fn a_share_larger_than_the_levels_of_h264_arrives_at_its_size_in_vp8() {
                 resolution: Resolution::Source,
                 frame_rate: 15,
             },
+            dialog_parent: None,
         });
         assert_eq!(ann.until_sharing().await.size, (5120, 2880));
-        let picture = ben.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
+        let picture = ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
         assert_eq!(picture.frame.source, (5120, 2880));
         let codecs: Vec<String> = (ann.calls.statistics().await.unwrap().publisher_stats)
             .iter()

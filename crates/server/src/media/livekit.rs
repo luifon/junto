@@ -88,6 +88,8 @@ struct PermissionInfo {
 struct TrackInfo {
     #[serde(default)]
     sid: String,
+    #[serde(default)]
+    name: String,
     #[serde(default, rename = "type")]
     kind: Named,
     #[serde(default)]
@@ -151,6 +153,7 @@ fn participant(info: ParticipantInfo) -> Participant {
                 source: source(&track.source),
                 muted: track.muted,
                 id: track.sid,
+                name: track.name,
             })
             .collect(),
     }
@@ -313,7 +316,8 @@ mod tests {
                     },
                     "tracks": [
                         { "sid": "TR_1", "type": "AUDIO", "source": "MICROPHONE", "muted": true },
-                        { "sid": "TR_2", "type": "VIDEO", "source": "SCREEN_SHARE" },
+                        { "sid": "TR_2", "type": "VIDEO", "source": "SCREEN_SHARE",
+                          "name": "window/30/2" },
                         { "sid": "TR_3", "type": 0, "source": 4 },
                         { "sid": "TR_4", "type": "AUDIO", "source": "LATER_SOURCE" }
                     ]
@@ -341,29 +345,34 @@ mod tests {
                     source: TrackSource::Microphone,
                     muted: true,
                     id: "TR_1".to_owned(),
+                    name: String::new(),
                 },
                 Track {
                     kind: TrackKind::Video,
                     source: TrackSource::ScreenShare,
                     muted: false,
                     id: "TR_2".to_owned(),
+                    name: "window/30/2".to_owned(),
                 },
                 Track {
                     kind: TrackKind::Audio,
                     source: TrackSource::ScreenShareAudio,
                     muted: false,
                     id: "TR_3".to_owned(),
+                    name: String::new(),
                 },
                 Track {
                     kind: TrackKind::Audio,
                     source: TrackSource::Unknown,
                     muted: false,
                     id: "TR_4".to_owned(),
+                    name: String::new(),
                 },
             ]
         );
         assert!(person.publishes(TrackSource::ScreenShare));
         assert!(!person.publishes(TrackSource::Camera));
+        assert!(person.publishes_share(2) && !person.publishes_share(0));
 
         assert_eq!(participants[1].kind, ParticipantKind::Recorder);
         assert_eq!(participants[1].publishing, None);

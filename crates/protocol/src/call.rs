@@ -58,9 +58,31 @@ pub enum ShareAudio {
     None,
 }
 
+/// What a screen share shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ShareKind {
+    Screen,
+    Window,
+}
+
+/// The number of shares that one person can run at once (ADR 0502). The slots of a person's
+/// shares are `0` to `MAX_SHARES - 1`.
+pub const MAX_SHARES: u8 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScreenShare {
+    /// The number that the sharing device gave the share, below `MAX_SHARES`. A device that
+    /// runs one share uses slot 0; a server or a client from before several shares states
+    /// no slot, which is slot 0.
+    #[serde(default)]
+    pub slot: u8,
+    /// What the share shows, as the device reported it. Absent from a device that did not
+    /// state it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ShareKind>,
     pub audio: ShareAudio,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
@@ -111,7 +133,24 @@ pub struct CallParticipant {
     pub microphone_block: Option<MicrophoneBlock>,
     pub sound_block: Option<SoundBlock>,
     pub hand_raised: bool,
+    /// The share of the lowest slot. A client from before several shares reads only this.
     pub screen_share: Option<ScreenShare>,
+    /// Every share of the person, in the order of their slots. A server from before several
+    /// shares sends none; [`CallParticipant::shares`] then reads `screen_share`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screen_shares: Vec<ScreenShare>,
+}
+
+impl CallParticipant {
+    /// Every share of the person, in the order of their slots, also from a server that
+    /// states only one share.
+    pub fn shares(&self) -> &[ScreenShare] {
+        if self.screen_shares.is_empty() {
+            self.screen_share.as_slice()
+        } else {
+            &self.screen_shares
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,7 +257,30 @@ pub struct CallJoin {
     /// that ADR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting_grant: Option<bool>,
+    /// How many shares one person can run at once in this call (ADR 0502). A server from
+    /// before several shares sends none: one share, which its end of a share without a
+    /// slot ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shares: Option<u8>,
 }
+
+/// The query of each request that gives a place in a call or a token for it: what the
+/// client of the device shows of the shares of another person (ADR 0510).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct ViewerQuery {
+    /// How many shares of one person the client shows at once, each with its own picture
+    /// and sound. The join token states it to the other participants of the room, so that
+    /// a device that runs several shares sends the further ones only to the participants
+    /// that show them. Absent: a client from before several shares, which shows one.
+    #[serde(default)]
+    pub shares: Option<u8>,
+}
+
+/// The name of the attribute of a participant of the media server that states
+/// [`ViewerQuery::shares`]. Its value is the number in decimal digits.
+pub const SHOWN_SHARES_ATTRIBUTE: &str = "junto-shares";
 
 /// The query of the request that leaves a call.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -282,6 +344,30 @@ pub struct ReportCallState {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReportScreenShare {
     pub audio: ShareAudio,
+    /// The share that the report is about, below `MAX_SHARES`. Absent: slot 0, as a client
+    /// from before several shares reports its one share.
+    #[serde(default)]
+    pub slot: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ShareKind>,
+    /// The share that the device started in the slot: a new identifier for each start. A
+    /// report with another identifier than the share that the slot holds is a new share,
+    /// which starts at the report; a report with the same identifier changes the sound and
+    /// the kind of the share and keeps its start. Absent from a client from before it: a
+    /// report changes the share of the slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_id: Option<uuid::Uuid>,
+}
+
+/// The query of the request that ends a share.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct EndScreenShareQuery {
+    /// The share that ends. Absent: every share of the person ends, as a client from before
+    /// several shares ends its one share.
+    #[serde(default)]
+    pub slot: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,9 +588,12 @@ mod tests {
             sound_block: None,
             hand_raised: true,
             screen_share: Some(ScreenShare {
+                slot: 0,
+                kind: None,
                 audio: ShareAudio::Application,
                 started_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
             }),
+            screen_shares: Vec::new(),
         };
         let json = serde_json::to_value(&participant).unwrap();
         assert_eq!(json["muted"], false);
@@ -516,6 +605,63 @@ mod tests {
             serde_json::from_value::<CallParticipant>(json).unwrap(),
             participant
         );
+    }
+
+    /// A client of v0.1.0-test.1 or test.2 reads one share per person from `screen_share`
+    /// and reports and ends one share without a slot. A server of that time sends no list.
+    #[test]
+    fn several_shares_keep_the_form_that_a_client_of_one_share_reads_and_sends() {
+        let at = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let share = |slot, kind, audio| ScreenShare {
+            slot,
+            kind: Some(kind),
+            audio,
+            started_at: at,
+        };
+        let shares = vec![
+            share(0, ShareKind::Screen, ShareAudio::System),
+            share(2, ShareKind::Window, ShareAudio::None),
+        ];
+        let participant = CallParticipant {
+            avatar: None,
+            account_id: AccountId::generate(),
+            identity: "seat".to_owned(),
+            joined_at: at,
+            muted: false,
+            deafened: false,
+            microphone_block: None,
+            sound_block: None,
+            hand_raised: false,
+            screen_share: shares.first().cloned(),
+            screen_shares: shares.clone(),
+        };
+        let json = serde_json::to_value(&participant).unwrap();
+        assert_eq!(json["screen_share"]["audio"], "system");
+        assert_eq!(json["screen_shares"][1]["slot"], 2);
+        assert_eq!(json["screen_shares"][1]["kind"], "window");
+        assert_eq!(participant.shares(), shares.as_slice());
+
+        // What an older server sends: one share without a slot, kind or list.
+        let older = serde_json::json!({
+            "account_id": participant.account_id,
+            "identity": "seat",
+            "joined_at": "2027-01-15T08:00:00Z",
+            "muted": false,
+            "deafened": false,
+            "microphone_block": null,
+            "sound_block": null,
+            "hand_raised": false,
+            "screen_share": { "audio": "application", "started_at": "2027-01-15T08:00:00Z" },
+        });
+        let older: CallParticipant = serde_json::from_value(older).unwrap();
+        assert_eq!(older.shares().len(), 1);
+        assert_eq!((older.shares()[0].slot, older.shares()[0].kind), (0, None));
+
+        // What an older client sends: a report without a slot, and an end without one.
+        let report: ReportScreenShare = serde_json::from_str(r#"{"audio":"none"}"#).unwrap();
+        assert_eq!((report.slot, report.kind), (0, None));
+        let end: EndScreenShareQuery = serde_json::from_str("{}").unwrap();
+        assert_eq!(end.slot, None);
     }
 
     #[test]

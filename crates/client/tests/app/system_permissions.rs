@@ -6,6 +6,8 @@
 use gpui::TestAppContext;
 use junto_client::permissions::{Access, Permission, System};
 use junto_client::shell::SettingsSection;
+use junto_client::state::KeybindChange;
+use junto_client_core::keybinds::KeyAction;
 use junto_client_core::notification_access::NotificationAccess;
 use junto_media::camera::CameraAccess;
 use junto_media::permission::MicrophoneAccess;
@@ -104,10 +106,22 @@ fn macos_lists_each_permission_asks_for_one_not_asked_and_opens_the_page_of_a_re
     });
     assert!(!window.shows("permission-action-camera"));
 
-    // Input Monitoring is listed while push to talk reads the key while another
-    // application is in front. Its button makes macOS list Junto and ask once, and opens
-    // its page.
-    assert!(!window.shows("permission-input-monitoring"));
+    // Input Monitoring is listed while a binding of a call works while another application
+    // is in front (ADR 0776): by default the keys that mute and that turn the sound off.
+    // Without them it is not listed; push to talk lists it again. Its button makes macOS
+    // list Junto and ask once, and opens its page.
+    assert!(window.shows("permission-input-monitoring"));
+    window.state.update(&mut window.cx, |state, cx| {
+        for action in [KeyAction::ToggleMute, KeyAction::ToggleSoundOff] {
+            state
+                .change_keybinds(KeybindChange::Outside(action, false), cx)
+                .unwrap();
+        }
+        state.read_permissions(cx);
+    });
+    window.until("Input Monitoring is not listed", |window| {
+        !window.shows("permission-input-monitoring")
+    });
     let input = window
         .state
         .read_with(&window.cx, |state, _| state.fixed_input_monitoring());

@@ -323,6 +323,7 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.show_call_tab(tab, cx);
                     this.call_panel_open = true;
+                    this.call_panel_hidden = false;
                 }))
                 .into_any_element()
         })
@@ -353,6 +354,7 @@ impl Shell {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.open_call_notices(cx);
                 this.call_panel_open = true;
+                this.call_panel_hidden = false;
                 cx.notify();
             }))
             .into_any_element()
@@ -1571,10 +1573,14 @@ impl Shell {
         let interrupted = strip.phase == Phase::Reconnecting;
         // The input mode is stated while it is push to talk: the microphone sends nothing
         // until the key is held.
+        // The keys of push to talk as they work now: the binding of the person, or the key
+        // of the sound settings (ADR 0777).
         let push_to_talk = {
-            let voice = self.state.read(cx).voice();
-            (!interrupted && voice.input_mode == junto_client_core::voice::InputMode::PushToTalk)
-                .then_some(voice.talk_key)
+            let state = self.state.read(cx);
+            (!interrupted
+                && state.voice().input_mode == junto_client_core::voice::InputMode::PushToTalk)
+                .then(|| state.talk_keys())
+                .flatten()
         };
         let (ground, ink) = if interrupted {
             (colors.ochre, colors.ink)
@@ -1724,6 +1730,13 @@ impl Shell {
             }
             .selector("call-share")
             .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
+            let share_menu = matches!(self.layer, Layer::ShareMenu)
+                .then(|| self.render_share_menu(&strip.own_shares, strip.share_limit, cx));
+            let share = div()
+                .relative()
+                .flex_none()
+                .child(share)
+                .children(share_menu);
             // One reading of the calls gives the look of the camera control and what it
             // does: the control does what it shows, also when the call is another one at
             // the click (ADR 0788).
@@ -1823,7 +1836,7 @@ impl Shell {
                     div()
                         .id("input-mode-mark")
                         .role(Role::Status)
-                        .aria_label(text::push_to_talk_mark(key))
+                        .aria_label(text::push_to_talk_mark(&key))
                         .debug_selector(|| "input-mode-mark".to_owned())
                         .tooltip(tooltip(text::PUSH_TO_TALK_MARK_HELP))
                         .flex()
@@ -1838,7 +1851,7 @@ impl Shell {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .child(text::push_to_talk_mark(key)),
+                                .child(text::push_to_talk_mark(&key)),
                         ),
                 )
             })
@@ -2021,8 +2034,12 @@ impl Shell {
         } else {
             self.render_call_stage(panel, &theme, cx)
         };
-        let side = (!narrow || self.call_panel_open)
-            .then(|| self.render_call_panel(view, panel, narrow, window, cx));
+        let side = (if narrow {
+            self.call_panel_open
+        } else {
+            !self.call_panel_hidden
+        })
+        .then(|| self.render_call_panel(view, panel, narrow, window, cx));
         (stage, side)
     }
 

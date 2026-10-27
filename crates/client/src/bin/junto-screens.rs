@@ -15,6 +15,7 @@
 // draws; the refusals of the file system in `clippy.toml` are for the application (ADR 0730).
 #![allow(clippy::disallowed_methods)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -154,6 +155,7 @@ fn participant(name: &str) -> CallParticipant {
         sound_block: None,
         hand_raised: false,
         screen_share: None,
+        screen_shares: Vec::new(),
     }
 }
 
@@ -232,6 +234,8 @@ fn studio() -> WorkspaceState {
     bruno.muted = true;
     let mut carla = participant("Carla");
     carla.screen_share = Some(ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::Application,
         started_at: at(),
     });
@@ -755,6 +759,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
             muted: false,
             deafened: false,
             joining: None,
+            input_test_failed: None,
             call: Some(ActiveCall {
                 camera: junto_media::camera::CameraState::Off,
                 cameras: Vec::new(),
@@ -774,7 +779,9 @@ fn in_call(phase: Phase) -> MediaSnapshot {
                 output_device: Some(device("phones", "Headphones", false)),
                 microphone_block: None,
                 sound_block: None,
-                share: ShareState::Off,
+                share_limit: junto_client_core::protocol::call::MAX_SHARES,
+                own_shares: BTreeMap::new(),
+                share_ended: None,
                 shares: Vec::new(),
                 watched: None,
             }),
@@ -1050,9 +1057,12 @@ fn acme_with_shares(
                         .iter()
                         .find(|(name, _)| person(name) == participant.account_id)
                         .map(|(_, audio)| ScreenShare {
+                            slot: 0,
+                            kind: None,
                             audio: *audio,
                             started_at: at(),
                         });
+                    participant.screen_shares = participant.screen_share.iter().cloned().collect();
                 }
                 change(call);
             }
@@ -1062,8 +1072,13 @@ fn acme_with_shares(
 }
 
 fn seen(name: &str, kind: ShareKind, size: (u32, u32)) -> SeenShare {
+    seen_in(name, 0, kind, size)
+}
+
+fn seen_in(name: &str, slot: u8, kind: ShareKind, size: (u32, u32)) -> SeenShare {
     SeenShare {
         account_id: person(name),
+        slot,
         kind: Some(kind),
         frame_rate: Some(30),
         size: Some(size),
@@ -1119,8 +1134,8 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         &[("Carla", ShareAudio::System), ("Bruno", ShareAudio::None)];
     const LUCA: &[(&str, ShareAudio)] = &[("Luca", ShareAudio::Application)];
     let screen_size = (1920, 1200);
-    let carla = ShareId::Of(person("Carla"));
-    let bruno = ShareId::Of(person("Bruno"));
+    let carla = ShareId::of(person("Carla"), 0);
+    let bruno = ShareId::of(person("Bruno"), 0);
     let watching = |shares: Vec<SeenShare>, watched: ShareId| {
         with_call(in_call(Phase::Connected), move |call| {
             call.shares = shares;
@@ -1192,20 +1207,24 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     // The share of this device.
     let own = |sound_held: bool| {
         with_call(in_call(Phase::Connected), move |call| {
-            call.share = ShareState::Running(ShareInfo {
-                kind: ShareKind::Window,
-                sound: ShareAudio::Application,
-                sound_held,
-                size: (1280, 800),
-                frame_rate: 30,
-            });
-            call.watched = Some(ShareId::Own);
+            call.own_shares = BTreeMap::from([(
+                0,
+                ShareState::Running(ShareInfo {
+                    id: uuid::Uuid::from_u128(4),
+                    kind: ShareKind::Window,
+                    sound: ShareAudio::Application,
+                    sound_held,
+                    size: (1280, 800),
+                    frame_rate: 30,
+                }),
+            )]);
+            call.watched = Some(ShareId::own(0));
         })
     };
     studio.draw(
         Screen::call("share-own", own(false))
             .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
-        show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new()),
+        show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
     )?;
     let block = MicrophoneBlock {
         by: person("Ana"),
@@ -1227,16 +1246,92 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
             }),
             harbor(),
         ]),
-        show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new()),
+        show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
     )?;
     let starting = with_call(in_call(Phase::Connected), |call| {
-        call.share = ShareState::Starting;
+        call.own_shares = BTreeMap::from([(0, ShareState::Starting)]);
     });
     studio.draw(Screen::call("share-own-starting", starting), show_daily)?;
     let ended = with_call(in_call(Phase::Connected), |call| {
-        call.share = ShareState::Ended(CaptureError::SourceGone);
+        call.share_ended = Some(CaptureError::SourceGone);
     });
     studio.draw(Screen::call("share-own-ended-by-itself", ended), show_daily)?;
+
+    // Several shares of one person (ADR 0738): Carla shares two screens and a window. The
+    // viewer watches her second screen, and the cards number the two screens.
+    let (carla_screen_2, carla_window) = (
+        ShareId::of(person("Carla"), 1),
+        ShareId::of(person("Carla"), 2),
+    );
+    let of_carla = watching(
+        vec![
+            seen_in("Carla", 0, ShareKind::Screen, screen_size),
+            seen_in("Carla", 1, ShareKind::Screen, (2560, 1440)),
+            seen_in("Carla", 2, ShareKind::Window, (1280, 800)),
+        ],
+        carla_screen_2,
+    );
+    studio.draw(
+        Screen::call("share-three-of-one-person", of_carla)
+            .servers(vec![acme_with_shares(CARLA, true, |_| {}), harbor()]),
+        show_pictures(
+            (carla_screen_2, desktop_picture(1568, 882)),
+            vec![
+                (carla, desktop_picture(176, 110)),
+                (carla_screen_2, desktop_picture(176, 99)),
+                (carla_window, editor_picture(176, 110)),
+            ],
+        ),
+    )?;
+
+    // The menu of the share button while this device shares a screen and a window, and
+    // while it runs the most shares.
+    let own_two = |slots: &'static [(u8, ShareKind)]| {
+        with_call(in_call(Phase::Connected), move |call| {
+            call.own_shares = slots
+                .iter()
+                .map(|(slot, kind)| {
+                    (
+                        *slot,
+                        ShareState::Running(ShareInfo {
+                            id: uuid::Uuid::from_u128(5),
+                            kind: *kind,
+                            sound: ShareAudio::None,
+                            sound_held: false,
+                            size: (1280, 800),
+                            frame_rate: 30,
+                        }),
+                    )
+                })
+                .collect();
+            call.watched = Some(ShareId::own(0));
+        })
+    };
+    let open_menu =
+        |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::ShareMenu, window, cx);
+        };
+    studio.draw(
+        Screen::call(
+            "share-menu-two-own",
+            own_two(&[(0, ShareKind::Screen), (1, ShareKind::Window)]),
+        )
+        .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        open_menu,
+    )?;
+    studio.draw(
+        Screen::call(
+            "share-menu-at-the-limit",
+            own_two(&[
+                (0, ShareKind::Screen),
+                (1, ShareKind::Screen),
+                (2, ShareKind::Window),
+            ]),
+        )
+        .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        open_menu,
+    )?;
 
     // The dialog of a share.
     let picker = |prepare: fn(&mut Shell, &mut gpui::Context<Shell>)| -> Prepare {
@@ -1400,7 +1495,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                 .state()
                 .update(cx, |state, cx| state.set_server_book_collapsed(true, cx));
             shell.show_pictures_fixture(
-                Some((ShareId::Of(person("Carla")), desktop_picture(1568, 980))),
+                Some((ShareId::of(person("Carla"), 0), desktop_picture(1568, 980))),
                 Vec::new(),
                 cx,
             );
@@ -1521,6 +1616,8 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
         WorkspacePermission::MoveMembers,
     ];
     let share = || ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::Application,
         started_at: at(),
     };
@@ -1553,17 +1650,21 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     }
     let sharing = || {
         with_call(in_call(Phase::Connected), |call| {
-            call.share = ShareState::Running(ShareInfo {
-                kind: ShareKind::Window,
-                sound: ShareAudio::Application,
-                sound_held: false,
-                size: (1280, 800),
-                frame_rate: 30,
-            });
-            call.watched = Some(ShareId::Own);
+            call.own_shares = BTreeMap::from([(
+                0,
+                ShareState::Running(ShareInfo {
+                    id: uuid::Uuid::from_u128(6),
+                    kind: ShareKind::Window,
+                    sound: ShareAudio::Application,
+                    sound_held: false,
+                    size: (1280, 800),
+                    frame_rate: 30,
+                }),
+            )]);
+            call.watched = Some(ShareId::own(0));
         })
     };
-    let own_picture = || show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new());
+    let own_picture = || show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new());
 
     // View D, as the presenter: Ana raised a hand.
     let presenter = move |allowed: bool| {
@@ -1616,7 +1717,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     )?;
 
     // View D, as a participant: Carla runs meeting mode.
-    let carla = ShareId::Of(person("Carla"));
+    let carla = ShareId::of(person("Carla"), 0);
     let participant_media = |held: bool, muted: bool| {
         let mut media = with_call(in_call(Phase::Connected), move |call| {
             call.shares = vec![seen("Carla", ShareKind::Screen, (1920, 1200))];

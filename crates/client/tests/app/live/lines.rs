@@ -154,6 +154,7 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         picture: PictureSource::Display(1),
         sound: SoundChoice::None,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("the share of Ada arrives", |window| {
         window

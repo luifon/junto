@@ -33,6 +33,8 @@ pub enum SettingsSection {
     Picture,
     Interface,
     Voice,
+    /// The key bindings (ADR 0777).
+    Keybinds,
     Quiet,
     Notifications,
     Devices,
@@ -46,6 +48,7 @@ impl SettingsSection {
         Self::Picture,
         Self::Interface,
         Self::Voice,
+        Self::Keybinds,
         Self::Quiet,
         Self::Notifications,
         Self::Devices,
@@ -59,6 +62,7 @@ impl SettingsSection {
             Self::Picture => text::PICTURE,
             Self::Interface => text::INTERFACE,
             Self::Voice => text::VOICE,
+            Self::Keybinds => text::KEYBINDS,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
             Self::Devices => text::account::DEVICES_SECTION,
@@ -73,6 +77,7 @@ impl SettingsSection {
             Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
             Self::Voice => Icon::Microphone,
+            Self::Keybinds => Icon::Keyboard,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
             Self::Devices => Icon::Devices,
@@ -88,6 +93,7 @@ impl SettingsSection {
             Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
             Self::Voice => "settings-section-voice",
+            Self::Keybinds => "settings-section-keybinds",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
             Self::Devices => "settings-section-devices",
@@ -107,7 +113,7 @@ fn row_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(label)
 }
 
-fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mb(u(5.0))
         .typeface(theme.types.label, theme)
@@ -115,7 +121,15 @@ fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(label)
 }
 
-fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .mt(u(5.0))
+        .typeface(theme.types.small, theme)
+        .ink(theme.colors.ink_2)
+        .child(sentence)
+}
+
+pub(super) fn help_owned(sentence: String, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mt(u(5.0))
         .typeface(theme.types.small, theme)
@@ -216,6 +230,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if self.settings_section != section {
+            if section != SettingsSection::Keybinds {
+                self.stop_keybind_recording(cx);
+            }
             self.settings_section = section;
             self.settings_scroll().set_offset(gpui::Point::default());
         }
@@ -269,6 +286,7 @@ impl Shell {
                 parts.extend(self.render_voice_settings(&theme, window, cx));
                 parts
             }
+            SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
             SettingsSection::Quiet => {
                 let quiet = self
                     .view
@@ -611,16 +629,22 @@ impl Shell {
                     .level(level)
                     .selector("voice-threshold-slider"),
                 )
-                .child(
+                .child({
+                    let failed = self.state.read(cx).calls().view().input_test_failed;
                     div()
                         .typeface(theme.types.small, theme)
-                        .ink(colors.ink_2)
-                        .child(if level.is_some() {
-                            text::SENSITIVITY_LEVEL_HELP
+                        .ink(if failed.is_some() && level.is_none() {
+                            colors.cinnabar_ink
                         } else {
-                            text::SENSITIVITY_NO_LEVEL
-                        }),
-                );
+                            colors.ink_2
+                        })
+                        .debug_selector(|| "sensitivity-level-help".to_owned())
+                        .child(match (level, failed) {
+                            (Some(_), _) => text::SENSITIVITY_LEVEL_HELP.to_owned(),
+                            (None, Some(error)) => text::microphone_test_failed(&error),
+                            (None, None) => text::SENSITIVITY_NO_LEVEL.to_owned(),
+                        })
+                });
         }
         column.into_any_element()
     }
@@ -772,6 +796,32 @@ impl Shell {
             );
         }
         rows.push(help(text::INPUT_MODE_HELP, theme).into_any_element());
+        // The key that mutes, push to mute and the other keys of a call are in the Keybinds
+        // section (ADR 0777).
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .mt(u(10.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(help(text::CALL_KEYS_IN_KEYBINDS, theme)),
+                )
+                .child(
+                    Button::new("open-keybinds")
+                        .label(text::KEYBINDS)
+                        .selector("open-keybinds")
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_settings_section(SettingsSection::Keybinds, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        );
         if voice.input_mode == InputMode::VoiceActivation {
             rows.push(self.render_voice_threshold(voice.voice_threshold, theme, window, cx));
         }

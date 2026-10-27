@@ -7,11 +7,13 @@
 pub mod address;
 pub mod api;
 pub mod app_identity;
+pub mod arrangement;
 pub mod book;
 pub mod console;
 pub mod events;
 pub mod flow;
-pub mod input_monitoring;
+pub mod global_keys;
+pub mod keybinds;
 pub mod keys;
 pub mod link;
 pub mod live;

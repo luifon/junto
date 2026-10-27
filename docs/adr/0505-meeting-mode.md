@@ -15,7 +15,7 @@ In a call where one person presents to many, open microphones interrupt the pres
 - While meeting mode is on, every other microphone is blocked.
 - A bar tells every participant that meeting mode is on and who runs it.
 - A participant raises a hand, and the presenter removes that person's block.
-- Meeting mode ends when the presenter turns it off, stops sharing, or leaves and does not return within a short time.
+- Meeting mode ends when the presenter turns it off, ends the last of the presenter's shares, or leaves and does not return within a short time. A presenter who runs several shares (ADR 0502) keeps meeting mode while one of them runs.
 - Ending meeting mode removes every microphone block in that voice channel, including a block that a moderator set earlier.
 - A person whose own microphone setting is on is then heard again, and the client tells that person so.
 - Turning meeting mode on and off is written into the text chat of the voice channel.

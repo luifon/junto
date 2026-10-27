@@ -168,32 +168,37 @@ impl Shell {
         }
     }
 
-    /// The two items of the menu of the selected server that move it in the server book.
-    /// An item at the end that it leads to stays in the menu and keeps the keyboard
-    /// focus; it does nothing and says why.
+    /// The items of the menu of the selected server that arrange the server book
+    /// (ADR 0780, ADR 0775): one step up and one step down, among the servers of its group
+    /// or among the top-level parts over a whole group; the choice of its group; the
+    /// collapse of its workspaces; and mark as read. An item at the end that it leads to
+    /// stays in the menu and keeps the keyboard focus; it does nothing and says why.
     pub(crate) fn render_move_items(
         &mut self,
         view: &ShellView,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(index) = view.servers.iter().position(|row| row.selected) else {
+        let Some(row) = view.servers.iter().find(|row| row.selected) else {
             return Vec::new();
         };
-        let server_id = view.servers[index].id;
-        let count = view.servers.len();
-        let items: Vec<AnyElement> = [
-            (Step::Up, "move-server-up", "menu-move-up", index == 0),
+        let server_id = row.id;
+        let shelves = view.shelves();
+        let item = junto_client_core::arrangement::Item::Server(server_id);
+        let at_end = |up: bool| junto_client_core::arrangement::step(&shelves, item, up).is_none();
+        let in_group = row.group.is_some();
+        let mut items: Vec<AnyElement> = [
+            (Step::Up, "move-server-up", "menu-move-up", at_end(true)),
             (
                 Step::Down,
                 "move-server-down",
                 "menu-move-down",
-                index + 1 >= count,
+                at_end(false),
             ),
         ]
         .into_iter()
         .map(|(step, id, selector, at_end)| {
             MenuItem::new(id, txt::move_title(step))
-                .detail(txt::move_help(step, at_end))
+                .detail(txt::server_move_help(step, at_end, in_group))
                 .disabled(at_end)
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -203,6 +208,71 @@ impl Shell {
                 .into_any_element()
         })
         .collect();
+        items.push(
+            MenuItem::new("server-group", txt::MOVE_TO_GROUP)
+                .icon(Icon::FolderOpen)
+                .detail(txt::MOVE_TO_GROUP_HELP)
+                .end_icon(Icon::ChevronRight)
+                .selector("menu-server-group")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_layer(Layer::GroupChoice(server_id), window, cx);
+                }))
+                .into_any_element(),
+        );
+        if !row.workspaces.is_empty() {
+            let collapsed = row.workspaces_collapsed;
+            items.push(
+                MenuItem::new(
+                    "server-workspaces",
+                    if collapsed {
+                        txt::EXPAND_WORKSPACES
+                    } else {
+                        txt::COLLAPSE_WORKSPACES
+                    },
+                )
+                .icon(if collapsed {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                })
+                .detail(if collapsed {
+                    txt::EXPAND_WORKSPACES_HELP
+                } else {
+                    txt::COLLAPSE_WORKSPACES_HELP
+                })
+                .selector("menu-server-workspaces")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.arrange(
+                            junto_client_core::arrangement::Change::CollapseWorkspaces {
+                                server: server_id,
+                                collapsed: !collapsed,
+                            },
+                            cx,
+                        );
+                    });
+                }))
+                .into_any_element(),
+            );
+        }
+        let unread = row.unread.any();
+        items.push(
+            MenuItem::new("mark-server-read", txt::MARK_SERVER_READ)
+                .icon(Icon::CheckDouble)
+                .detail(if unread {
+                    txt::MARK_SERVER_READ_HELP
+                } else {
+                    txt::NOTHING_UNREAD
+                })
+                .disabled(!unread)
+                .selector("menu-mark-server-read")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.state
+                        .update(cx, |state, _| state.mark_server_read(server_id, None));
+                    this.close_layer(window, cx);
+                }))
+                .into_any_element(),
+        );
         items
     }
 
@@ -781,6 +851,8 @@ mod tests {
             head_unread,
             waiting_join_requests: 0,
             workspaces: Vec::new(),
+            group: None,
+            workspaces_collapsed: false,
         }
     }
 

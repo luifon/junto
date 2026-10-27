@@ -99,10 +99,19 @@ impl AppState {
         self.permissions.fixed_input.clone()
     }
 
-    /// Whether the client reads keys while another application is in front: the key of
-    /// push to talk. macOS needs Input Monitoring for it.
+    /// Whether the client reads keys while another application is in front: a binding of a
+    /// call that works there (ADR 0776), push to talk only while push to talk is on. macOS
+    /// needs Input Monitoring for it.
     pub fn uses_keys_in_background(&self) -> bool {
-        self.known.media.voice.input_mode == junto_client_core::voice::InputMode::PushToTalk
+        use junto_client_core::keybinds::KeyAction;
+        let talks =
+            self.known.media.voice.input_mode == junto_client_core::voice::InputMode::PushToTalk;
+        KeyAction::ALL.into_iter().any(|action| {
+            action.may_work_outside()
+                && self.keybinds.get(action).outside
+                && (action != KeyAction::PushToTalk || talks)
+                && self.keys_of(action).is_some()
+        })
     }
 
     /// The fixed notification permission of a start that does not use the system.

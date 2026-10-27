@@ -4468,6 +4468,66 @@ async fn a_move_counts_the_servers_of_this_client_and_keeps_those_of_another_pro
     assert_eq!(shown(&device.reopened(&network)), [n, b]);
 }
 
+#[tokio::test(start_paused = true)]
+async fn the_arrangement_of_the_book_orders_the_list_and_is_read_at_the_next_start() {
+    use crate::arrangement::{Change, Item, Spot};
+
+    let network = Arc::new(Network::default());
+    for name in ["acme", "globex", "initech"] {
+        network.host(name);
+    }
+    let device = device(&network);
+    let a = device.add("acme").await.id();
+    let b = device.add("globex").await.id();
+    let c = device.add("initech").await.id();
+    let mut changes = device.client.changes();
+    assert!(!told(&mut changes).await);
+
+    device
+        .client
+        .arrange(Change::GroupWith {
+            server: c,
+            target: a,
+        })
+        .unwrap();
+    assert!(told(&mut changes).await);
+    assert_eq!(shown(&device.client), [a, c, b]);
+    let arrangement = device.client.arrangement();
+    let group = arrangement.group_of(a).unwrap();
+    assert_eq!(arrangement.group_of(c), Some(group));
+    device
+        .client
+        .arrange(Change::CollapseGroup {
+            group,
+            collapsed: true,
+        })
+        .unwrap();
+    device
+        .client
+        .arrange(Change::MoveGroup {
+            group,
+            to: Spot::After(Item::Server(b)),
+        })
+        .unwrap();
+    assert_eq!(shown(&device.client), [b, a, c]);
+
+    let reopened = device.reopened(&network);
+    assert_eq!(shown(&reopened), [b, a, c]);
+    let read = reopened.arrangement();
+    assert_eq!(read.group_of(a), Some(group));
+    assert!(read.group(group).unwrap().collapsed);
+
+    // A removed server leaves the group.
+    device.client.remove_server(a).unwrap();
+    assert_eq!(device.client.arrangement().group_of(a), None);
+    assert_eq!(device.client.arrangement().group_of(c), Some(group));
+    assert!(matches!(
+        device.client.arrange(Change::LeaveGroup { server: a }),
+        Err(BookError::Arrange(_))
+    ));
+    assert_eq!(shown(&device.client), [b, c]);
+}
+
 fn offered(version: &str) -> Release {
     let page = format!("https://junto.example.test/releases/{version}");
     Release::new(Version::parse(version).unwrap(), Some(&page))

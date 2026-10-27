@@ -455,7 +455,13 @@ impl Shell {
                 |this, event: &gpui::ModifiersChangedEvent, _, cx| {
                     this.modifiers_changed(event.modifiers, cx)
                 },
-            ));
+            ))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.call_key_down(&event.keystroke, window, cx);
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
+                this.call_key_up(&event.keystroke, cx);
+            }));
         // The system draws the title bar of this window, except on a Wayland compositor
         // without server decorations. A layer covers the call and not that strip.
         if !super::title_bar::draws_frame(window, false, cx) {

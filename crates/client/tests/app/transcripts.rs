@@ -558,7 +558,7 @@ fn the_parts_of_a_recording_saved_in_part_state_their_time_ranges(cx: &mut TestA
 /// The connected call of this device in the voice channel, as the media engine states it,
 /// for the seat that the media server in memory gave the client of the window.
 fn show_own_call(window: &mut Window, seat: &Seat, workspace_id: WorkspaceId, voice: ChannelId) {
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
     let server_id = window.view().selected.unwrap().id;
     let call = ActiveCall {
         camera: junto_media::camera::CameraState::Off,
@@ -580,7 +580,9 @@ fn show_own_call(window: &mut Window, seat: &Seat, workspace_id: WorkspaceId, vo
         output_device: None,
         microphone_block: None,
         sound_block: None,
-        share: ShareState::Off,
+        share_limit: junto_client_core::protocol::call::MAX_SHARES,
+        own_shares: std::collections::BTreeMap::new(),
+        share_ended: None,
         shares: Vec::new(),
         watched: None,
     };

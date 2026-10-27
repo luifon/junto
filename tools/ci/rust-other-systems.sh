@@ -99,6 +99,10 @@ trap 'python3 tools/windows/dialogs.py check "$dialogs" || exit 1; rm -f "$dialo
 # (ADR 0706).
 step "Media tests and screen capture on Windows"
 cargo test --locked -p junto-media --lib --test native_exceptions --test windows_capture
+# The keys of a call in every application: the reader of the keyboard against F24, which the
+# test presses through SendInput (ADR 0776).
+step "Keys of a call read from the keyboard"
+JUNTO_TEST_GLOBAL_KEYS=1 cargo test --locked -p junto-client-core --lib global_keys::windows
 # The ZIP of the client: extracted into a folder of the account, started, updated while its
 # program runs, and rolled back by its recovery program (ADR 0755).
 step "Windows package"

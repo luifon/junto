@@ -28,6 +28,7 @@ mod support;
 mod account;
 mod admin;
 mod admin_pages;
+mod book;
 mod call_notices;
 mod calls;
 mod composing;
@@ -38,6 +39,7 @@ mod files;
 mod flows;
 mod glossary;
 mod gpui_panics;
+mod keybinds;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]

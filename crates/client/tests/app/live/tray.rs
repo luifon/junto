@@ -19,7 +19,7 @@ fn press(window: &mut Window, label: &str) {
     assert!(pressed, "the tray menu has no enabled entry {label:?}");
 }
 
-fn tooltip(window: &mut Window) -> &'static str {
+fn tooltip(window: &mut Window) -> String {
     window
         .state
         .read_with(&window.cx, |state, _| state.kept_tray().shown().tooltip())

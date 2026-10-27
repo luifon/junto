@@ -447,8 +447,15 @@ async fn restart_clocks(
     call_id: CallId,
 ) -> ApiResult<()> {
     sqlx::query(
-        "update call_members set absent_since = null, share_missing_since = null
-         where call_id = $1 and (absent_since is not null or share_missing_since is not null)",
+        "update call_members set absent_since = null
+         where call_id = $1 and absent_since is not null",
+    )
+    .bind(call_id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query(
+        "update call_shares set missing_since = null
+         where call_id = $1 and missing_since is not null",
     )
     .bind(call_id)
     .execute(&mut *connection)
@@ -492,6 +499,10 @@ async fn apply(
         .map(|participant| (participant.identity.as_str(), participant))
         .collect();
 
+    let mut shares: HashMap<AccountId, Vec<store::ShareRow>> = HashMap::new();
+    for share in store::share_rows(&mut *connection, call_id, None).await? {
+        shares.entry(share.account_id).or_default().push(share);
+    }
     let mut allowed: HashSet<String> = HashSet::new();
     let mut presenter_shares = false;
     let mut sight = Sight::default();
@@ -569,53 +580,59 @@ async fn apply(
             .meeting
             .as_ref()
             .is_some_and(|meeting| meeting.presenter == member.account_id);
-        if member.share_audio.is_some() {
-            if participant.publishes(TrackSource::ScreenShare) {
+        let own_shares = shares
+            .get(&member.account_id)
+            .map_or(&[][..], Vec::as_slice);
+        let mut share_ended = false;
+        for share in own_shares {
+            let slot = u8::try_from(share.slot).unwrap_or(u8::MAX);
+            if participant.publishes_share(slot) {
                 presenter_shares |= presents;
-                if member.share_seen_at.is_none() || member.share_missing_since.is_some() {
+                if !share.listed() {
                     sqlx::query(
-                        "update call_members
-                         set share_seen_at = coalesce(share_seen_at, $3),
-                             share_missing_since = null
-                         where call_id = $1 and account_id = $2",
+                        "update call_shares
+                         set seen_at = coalesce(seen_at, $4), missing_since = null
+                         where call_id = $1 and account_id = $2 and slot = $3",
                     )
                     .bind(call_id)
                     .bind(member.account_id)
+                    .bind(share.slot)
                     .bind(now)
                     .execute(&mut *connection)
                     .await?;
+                }
+            } else if let Some(since) = share.missing_since {
+                if now - since >= limits.share_grace {
+                    sqlx::query(
+                        "delete from call_shares
+                         where call_id = $1 and account_id = $2 and slot = $3",
+                    )
+                    .bind(call_id)
+                    .bind(member.account_id)
+                    .bind(share.slot)
+                    .execute(&mut *connection)
+                    .await?;
+                    share_ended = true;
                 }
             } else {
-                let since = member.share_missing_since.unwrap_or(now);
-                if now - since >= limits.share_grace && member.share_missing_since.is_some() {
-                    sqlx::query(
-                        "update call_members
-                         set share_audio = null, share_started_at = null, share_seen_at = null,
-                             share_missing_since = null
-                         where call_id = $1 and account_id = $2",
-                    )
-                    .bind(call_id)
-                    .bind(member.account_id)
-                    .execute(&mut *connection)
-                    .await?;
-                    store::announce_participant(&mut *connection, now, &call, member.account_id)
-                        .await?;
-                    if presents {
-                        let stopped = MeetingEnd::ShareStopped;
-                        store::end_meeting(&mut *connection, now, &call, stopped).await?;
-                        call.meeting = None;
-                    }
-                } else if member.share_missing_since.is_none() {
-                    sqlx::query(
-                        "update call_members set share_missing_since = $3
-                         where call_id = $1 and account_id = $2",
-                    )
-                    .bind(call_id)
-                    .bind(member.account_id)
-                    .bind(now)
-                    .execute(&mut *connection)
-                    .await?;
-                }
+                sqlx::query(
+                    "update call_shares set missing_since = $4
+                     where call_id = $1 and account_id = $2 and slot = $3",
+                )
+                .bind(call_id)
+                .bind(member.account_id)
+                .bind(share.slot)
+                .bind(now)
+                .execute(&mut *connection)
+                .await?;
+            }
+        }
+        if share_ended {
+            store::announce_participant(&mut *connection, now, &call, member.account_id).await?;
+            if store::end_meeting_without_share(&mut *connection, now, &call, member.account_id)
+                .await?
+            {
+                call.meeting = None;
             }
         }
 

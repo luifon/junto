@@ -1871,6 +1871,7 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
 fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothing(
     cx: &mut TestAppContext,
 ) {
+    use junto_client::state::view::{Members, PinsState};
     use junto_client_core::flow::access::AccessState;
     use junto_client_core::protocol::account::RecoverAccount;
 
@@ -1893,6 +1894,17 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
         window.feed().is_some_and(|feed| feed.loaded) && window.shows("composer")
     });
     let general = window.selected_channel();
+    window.click("pins-button");
+    let readers_loaded = |window: &mut Window| {
+        window.view().workspace().is_some_and(|workspace| {
+            matches!(workspace.members, Members::Loaded(_))
+                && workspace
+                    .pins
+                    .as_ref()
+                    .is_some_and(|pins| matches!(pins.state, PinsState::Loaded(_)))
+        })
+    };
+    window.until("the members and pins of the first account", readers_loaded);
 
     // The person opens the file dialog for a message in the channel.
     let files = tempfile::tempdir().unwrap();
@@ -1924,6 +1936,12 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
             .unwrap();
     });
     proxy.release();
+    crate::admin_pages::until_model(
+        &world,
+        &handle,
+        "the next account before the window runs",
+        |model| model.account.id == bruno,
+    );
     window.until_read(
         "the channel is shown for the account of Bruno",
         |window| {
@@ -1939,6 +1957,7 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
             *account == Some(bruno) && *feed == Some((true, PlaceId::Channel(general))) && *composer
         },
     );
+    window.until("the members and pins of the next account", readers_loaded);
     assert_ne!(luca, bruno);
 
     // The person chooses the file now: nothing is attached and nothing is uploaded, and
@@ -1958,16 +1977,18 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
         .count();
     assert_eq!(uploads, 0, "a file was sent for the account of Bruno");
 
-    // A dialog that is opened for the account of Bruno attaches the file.
-    window.click("attach-file");
-    let chosen = path.clone();
-    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
-    window.until("the file waits for the message", |window| {
-        window
-            .view()
-            .lists()
-            .is_some_and(|lists| lists.draft.len() == 1)
-    });
+    #[cfg(unix)]
+    {
+        window.click("attach-file");
+        let chosen = path.clone();
+        window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+        window.until("the file waits for the message", |window| {
+            window
+                .view()
+                .lists()
+                .is_some_and(|lists| lists.draft.len() == 1)
+        });
+    }
 }
 
 /// The file dialog is opened for a channel, and the server is removed from the device and

@@ -1,12 +1,17 @@
 //! Which short tones a change of the call of this device plays (ADR 0707).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use junto_client_core::protocol::call::CallParticipant;
 use junto_client_core::protocol::ids::AccountId;
 use junto_media::audio::DeviceId;
 use junto_media::audio::sounds::Sound;
 use junto_media::calls::{ActiveCall, CallsView, Seat};
+use time::OffsetDateTime;
+
+/// One share of a person: its slot and its start. A new share in the slot of an ended one
+/// has another start (ADR 0510).
+type ShareMark = (u8, OffsetDateTime);
 
 /// What the sounds of a call are decided from: the call of this device, the person's own
 /// settings, and the people whom the server lists in that call.
@@ -16,10 +21,10 @@ pub(crate) struct Heard {
     seat: Option<Seat>,
     muted: bool,
     deafened: bool,
-    /// The people whom the server lists in the call, each with whether the person shares.
-    /// Absent until the server lists the person of this device, so that the people who
-    /// were in the call before the person are not heard as people who join.
-    present: Option<BTreeMap<AccountId, bool>>,
+    /// The people whom the server lists in the call, each with the shares that the person
+    /// runs. Absent until the server lists the person of this device, so that the people
+    /// who were in the call before the person are not heard as people who join.
+    present: Option<BTreeMap<AccountId, BTreeSet<ShareMark>>>,
     /// The output device of the call, on which its sounds play.
     pub(crate) output: Option<DeviceId>,
 }
@@ -40,7 +45,14 @@ pub(crate) fn heard(
         .map(|(participants, _)| {
             participants
                 .iter()
-                .map(|p| (p.account_id, p.screen_share.is_some()))
+                .map(|p| {
+                    let shares = p
+                        .shares()
+                        .iter()
+                        .map(|share| (share.slot, share.started_at))
+                        .collect();
+                    (p.account_id, shares)
+                })
                 .collect()
         });
     Heard {
@@ -100,10 +112,15 @@ pub(crate) fn sounds(before: &Heard, after: &Heard, on: bool) -> Vec<Sound> {
     {
         sounds.push(Sound::PersonLeft);
     }
-    if listed_after
-        .iter()
-        .any(|(id, shares)| *shares && listed_before.get(id) != Some(&true))
-    {
+    // Each share that a person starts plays the sound, also a second share of a person who
+    // shares already (ADR 0707).
+    if listed_after.iter().any(|(id, shares)| {
+        shares.iter().any(|share| {
+            !listed_before
+                .get(id)
+                .is_some_and(|held| held.contains(share))
+        })
+    }) {
         sounds.push(Sound::ShareStarted);
     }
     sounds
@@ -115,7 +132,7 @@ mod tests {
     use junto_client_core::protocol::call::{CallPlace, ScreenShare, ShareAudio};
     use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceId};
     use junto_media::calls::{CallTarget, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
     use junto_media::permission::MicrophoneAccess;
 
     struct Scene {
@@ -153,7 +170,9 @@ mod tests {
                     output_device: None,
                     microphone_block: None,
                     sound_block: None,
-                    share: ShareState::Off,
+                    share_limit: junto_client_core::protocol::call::MAX_SHARES,
+                    own_shares: BTreeMap::new(),
+                    share_ended: None,
                     shares: Vec::new(),
                     watched: None,
                 }),
@@ -168,16 +187,35 @@ mod tests {
         }
 
         fn heard(&self, calls: &CallsView, listed: &[AccountId], sharing: &[AccountId]) -> Heard {
+            let slots = |account_id: &AccountId| -> Vec<u8> {
+                if sharing.contains(account_id) {
+                    vec![0]
+                } else {
+                    Vec::new()
+                }
+            };
             let participants: Vec<CallParticipant> = listed
                 .iter()
-                .map(|account_id| participant(*account_id, sharing.contains(account_id)))
+                .map(|account_id| participant(*account_id, &slots(account_id)))
                 .collect();
             heard(calls, Some(&participants), Some(self.own))
         }
     }
 
-    fn participant(account_id: AccountId, shares: bool) -> CallParticipant {
-        let at = time::OffsetDateTime::UNIX_EPOCH;
+    fn participant(account_id: AccountId, slots: &[u8]) -> CallParticipant {
+        participant_at(account_id, slots, time::OffsetDateTime::UNIX_EPOCH)
+    }
+
+    fn participant_at(account_id: AccountId, slots: &[u8], at: OffsetDateTime) -> CallParticipant {
+        let shares: Vec<ScreenShare> = slots
+            .iter()
+            .map(|slot| ScreenShare {
+                slot: *slot,
+                kind: None,
+                audio: ShareAudio::None,
+                started_at: at,
+            })
+            .collect();
         CallParticipant {
             avatar: None,
             account_id,
@@ -188,10 +226,8 @@ mod tests {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
-            screen_share: shares.then_some(ScreenShare {
-                audio: ShareAudio::None,
-                started_at: at,
-            }),
+            screen_share: shares.first().cloned(),
+            screen_shares: shares,
         }
     }
 
@@ -263,6 +299,29 @@ mod tests {
     }
 
     #[test]
+    fn each_share_of_one_person_plays_the_sound_and_so_does_a_new_share_in_a_used_slot() {
+        let scene = Scene::new();
+        let other = AccountId::generate();
+        let calls = scene.calls("seat");
+        let at = |seconds: i64| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds);
+        let state = |slots: &[u8], since: i64| {
+            let participants = [
+                participant(scene.own, &[]),
+                participant_at(other, slots, at(since)),
+            ];
+            heard(&calls, Some(&participants), Some(scene.own))
+        };
+        let one = state(&[0], 1);
+        let two = state(&[0, 1], 1);
+        assert_eq!(sounds(&one, &two, true), vec![Sound::ShareStarted]);
+        assert!(sounds(&two, &one, true).is_empty());
+        // The share of slot 0 ended and a new one runs there: it started later.
+        let again = state(&[0], 5);
+        assert_eq!(sounds(&one, &again, true), vec![Sound::ShareStarted]);
+        assert!(sounds(&again, &again, true).is_empty());
+    }
+
+    #[test]
     fn the_person_who_leaves_the_call_hears_one_sound() {
         let scene = Scene::new();
         let other = AccountId::generate();
@@ -294,7 +353,7 @@ mod tests {
         assert!(sounds(&outside, &still_outside, true).is_empty());
         let listed = heard(
             &CallsView::default(),
-            Some(&[participant(other, true)]),
+            Some(&[participant(other, &[0])]),
             Some(scene.own),
         );
         assert_eq!(listed, outside);

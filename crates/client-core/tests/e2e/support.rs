@@ -595,7 +595,7 @@ pub struct Seen {
 #[derive(Default)]
 struct ProxyState {
     faults: Vec<(String, Vec<Fault>)>,
-    /// Faults for the requests whose path ends with a text.
+    /// Faults for the requests whose path without its query ends with a text.
     faults_ending: Vec<(String, Vec<Fault>)>,
     seen: Vec<Seen>,
     /// An upgrade request is not passed on: its connection is closed.
@@ -841,7 +841,8 @@ impl FaultProxy {
             .retain(|(planned, _)| planned != path);
     }
 
-    /// The next requests whose path ends with `end` fail in the given ways, in order.
+    /// The next requests whose path without its query ends with `end` fail in the given
+    /// ways, in order.
     pub fn fail_ending(&self, end: &str, faults: impl IntoIterator<Item = Fault>) {
         let mut faults: Vec<Fault> = faults.into_iter().collect();
         faults.reverse();
@@ -869,15 +870,37 @@ impl FaultProxy {
         self.state.lock().unwrap().failures.clone()
     }
 
+    /// The requests to `path`, with any query.
     pub fn seen(&self, path: &str) -> Vec<Seen> {
         self.state
             .lock()
             .unwrap()
             .seen
             .iter()
-            .filter(|seen| seen.path == path)
+            .filter(|seen| names(path, &seen.path))
             .cloned()
             .collect()
+    }
+}
+
+/// True when a rule of the proxy for `planned` covers a request to `path`. A rule without a
+/// query covers the path with any query, such as the `shares` of a join.
+fn names(planned: &str, path: &str) -> bool {
+    if planned.contains('?') {
+        planned == path
+    } else {
+        path.split('?').next() == Some(planned)
+    }
+}
+
+/// As [`names`], for a rule for the paths that end with `end`.
+fn ends_with(end: &str, path: &str) -> bool {
+    if end.contains('?') {
+        path.ends_with(end)
+    } else {
+        path.split('?')
+            .next()
+            .is_some_and(|bare| bare.ends_with(end))
     }
 }
 
@@ -991,12 +1014,12 @@ async fn serve(
         let fault = state
             .faults
             .iter_mut()
-            .find(|(planned, faults)| *planned == path && !faults.is_empty())
+            .find(|(planned, faults)| names(planned, &path) && !faults.is_empty())
             .or_else(|| {
                 state
                     .faults_ending
                     .iter_mut()
-                    .find(|(end, faults)| path.ends_with(end.as_str()) && !faults.is_empty())
+                    .find(|(end, faults)| ends_with(end, &path) && !faults.is_empty())
             })
             .and_then(|(_, faults)| faults.pop());
         (index, fault)
@@ -1007,8 +1030,8 @@ async fn serve(
     released.borrow_and_update();
     let bare = path.split('?').next().unwrap_or_default();
     let held = |state: &ProxyState| {
-        state.held.contains(&path)
-            || state.held_ending.iter().any(|end| path.ends_with(end))
+        state.held.iter().any(|held| names(held, &path))
+            || state.held_ending.iter().any(|end| ends_with(end, &path))
             || state
                 .held_requests
                 .iter()

@@ -497,7 +497,23 @@ pub fn call_refused(reason: &str) -> String {
 // The share of this device.
 pub const SHARE_SCREEN: &str = "Share screen";
 pub const SHARE_STARTING: &str = "Your share starts";
-pub const SHARE_RUNS: &str = "You are sharing your screen. Press to stop.";
+pub const SHARE_RUNS: &str = "You are sharing. Press to stop a share or to share another.";
+pub const YOUR_SHARES: &str = "Your shares";
+pub const SHARE_ANOTHER: &str = "Share another screen or window";
+pub const STOP_ALL_SHARES: &str = "Stop every share";
+pub const SHARE_STARTS: &str = "Starts…";
+
+/// Why "Share another" is disabled: the person runs as many shares as one person can in the
+/// call, `limit`. A server from before several shares allows one (ADR 0502).
+pub fn share_limit(limit: u8) -> String {
+    if limit <= 1 {
+        "This server lets a person run one share at a time. Stop your share to share another \
+         thing."
+            .to_owned()
+    } else {
+        format!("You share {limit} things, the most at once. Stop one to share another.")
+    }
+}
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
     "Share screen. Screen sharing is not available on this system in this version.";
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
@@ -600,18 +616,25 @@ pub fn capture_error(error: &CaptureError) -> String {
         CaptureError::CreatorsUnknown => SOUND_CREATORS_UNKNOWN.to_owned(),
         CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
         CaptureError::Interrupted => "The connection to the call was lost.".to_owned(),
+        CaptureError::TooMany => {
+            "You share as many things as this call allows. Stop one to share another.".to_owned()
+        }
         CaptureError::Failed(reason) => {
             format!("The system reported: {}", sentence(reason))
         }
     }
 }
 
-/// The notice about a share of this device that the person did not end.
-pub fn share_ended(error: &CaptureError) -> String {
-    format!(
-        "Your screen share ended. {} Start the share again when you want to continue.",
-        capture_error(error)
-    )
+/// The notice about a share of this device that the person did not end, or that did not
+/// start because the person runs as many shares as one person can in the call, `limit`.
+pub fn share_ended(error: &CaptureError, limit: u8) -> String {
+    match error {
+        CaptureError::TooMany => format!("Your new share did not start. {}", share_limit(limit)),
+        error => format!(
+            "Your screen share ended. {} Start the share again when you want to continue.",
+            capture_error(error)
+        ),
+    }
 }
 
 // The shares of a call.
@@ -632,16 +655,35 @@ pub fn shares_count(count: usize) -> String {
 
 /// The name of a share: "Carla's screen", "Bruno's window", "Your screen".
 pub fn share_title(share: &ShareCard, is_own: bool) -> String {
-    let what = match share.kind {
-        Some(ShareKind::Screen) => "screen",
-        Some(ShareKind::Window) => "window",
-        None => "share",
-    };
+    let what = share_what(share.kind, share.number);
     if is_own {
         format!("Your {what}")
     } else {
         let name = share.name.as_deref().unwrap_or(UNKNOWN_PERSON);
         format!("{name}'s {what}")
+    }
+}
+
+/// What a share shows, with its number among the shares of one kind of its person:
+/// "screen", "window 2".
+fn share_what(kind: Option<ShareKind>, number: Option<usize>) -> String {
+    let what = match kind {
+        Some(ShareKind::Screen) => "screen",
+        Some(ShareKind::Window) => "window",
+        None => "share",
+    };
+    match number {
+        Some(number) => format!("{what} {number}"),
+        None => what.to_owned(),
+    }
+}
+
+/// The name of a share of this device in the menu of the share button: "Your screen",
+/// "Your window 2", or "Your new share" while it starts.
+pub fn own_share_title(kind: Option<ShareKind>, number: Option<usize>) -> String {
+    match kind {
+        Some(_) => format!("Your {}", share_what(kind, number)),
+        None => "Your new share".to_owned(),
     }
 }
 
@@ -966,7 +1008,7 @@ pub const VOICE_ACTIVATION: &str = "Voice activation";
 pub const PUSH_TO_TALK: &str = "Push to talk";
 pub const TALK_KEY: &str = "Key";
 pub const INPUT_MODE_HELP: &str = "Voice activation sends your open microphone. Push to talk \
-     sends it only while you hold the key, and only while Junto is the focused application.";
+     sends it only while you hold the key.";
 pub const ECHO_CANCELLATION: &str = "Echo cancellation";
 pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";
@@ -980,10 +1022,168 @@ pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or le
 /// The question before the switch to push to talk.
 pub fn push_to_talk_question(key: TalkKey) -> String {
     format!(
-        "With push to talk, your microphone sends sound only while you hold {}, and only while \
-         Junto is the focused application. Switch to push to talk?",
+        "With push to talk, your microphone sends sound only while you hold {}. Switch to push \
+         to talk?",
         talk_key(key)
     )
+}
+
+// The key bindings (ADR 0777) and how the keys of a call reach Junto (ADR 0776).
+pub const KEYBINDS: &str = "Keybinds";
+pub const KEYBINDS_HELP: &str = "Each action can have a key combination. Set records the next keys \
+     that you press; Escape stops. Every binding works while Junto is in front.";
+pub const RESET_ALL_KEYBINDS: &str = "Reset all";
+pub const PRESS_KEYS: &str = "Press the keys…";
+pub const NO_KEYS: &str = "None";
+pub const SET_KEYS: &str = "Set";
+pub const CHANGE_KEYS: &str = "Change";
+pub const REMOVE_KEYS: &str = "Remove";
+pub const RESET_KEYS: &str = "Reset";
+pub const KEYBIND_OUTSIDE: &str = "Also while another application is in front";
+pub const TALK_KEY_FROM_VOICE: &str =
+    "The key of the sound settings, until you set another one here.";
+pub const CALL_KEYS_IN_KEYBINDS: &str =
+    "The mute key, push to mute and the other keys of a call are in Keybinds.";
+
+/// The name of a group of actions in the Keybinds section.
+pub fn keybind_group(group: junto_client_core::keybinds::ActionGroup) -> &'static str {
+    use junto_client_core::keybinds::ActionGroup;
+    match group {
+        ActionGroup::Call => "Call",
+        ActionGroup::Navigation => "Navigation",
+        ActionGroup::Messages => "Messages",
+        ActionGroup::App => "Junto",
+    }
+}
+
+/// The name of an action in the Keybinds section.
+pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'static str {
+    use junto_client_core::keybinds::KeyAction::*;
+    match action {
+        ToggleMute => "Mute or unmute",
+        ToggleSoundOff => "Turn the sound off or on",
+        PushToTalk => "Push to talk",
+        PushToMute => "Push to mute",
+        ToggleCamera => "Turn the camera on or off",
+        ShareScreen => "Share a screen or a window",
+        LeaveCall => "Leave the call",
+        AnswerCall => "Answer a call",
+        DeclineCall => "Decline a call",
+        ShowCall => "Show the call",
+        ToggleCallPanel => "Open or close the panel of the call",
+        Back => "Back",
+        Forward => "Forward",
+        PreviousServer => "Previous server",
+        NextServer => "Next server",
+        PreviousWorkspace => "Previous workspace",
+        NextWorkspace => "Next workspace",
+        PreviousChannel => "Previous channel",
+        NextChannel => "Next channel",
+        PreviousUnreadChannel => "Previous unread channel",
+        NextUnreadChannel => "Next unread channel",
+        ToggleServerBook => "Collapse or expand the server book",
+        Search => "Search",
+        Notices => "Notices",
+        JumpToNewest => "Jump to the newest message",
+        MembersList => "Members",
+        PinnedMessages => "Pinned messages",
+        MarkChannelRead => "Mark the channel as read",
+        MarkServerRead => "Mark the server as read",
+        ReplyToNewest => "Reply to the newest message",
+        EditLastMessage => "Edit the last own message",
+        UploadFile => "Upload a file",
+        OpenDirectMessages => "Direct messages",
+        NewDirectMessage => "New direct message",
+        OpenSettings => "Settings",
+        OpenAdministration => "Administration",
+        OpenKeybinds => "Keybinds",
+    }
+}
+
+/// The other actions that have the same keys.
+pub fn keybind_conflict(others: &[junto_client_core::keybinds::KeyAction]) -> String {
+    let names: Vec<&str> = others
+        .iter()
+        .map(|action| keybind_action(*action))
+        .collect();
+    format!(
+        "Also the keys of {}. A press does the first action in this list.",
+        names.join(", ")
+    )
+}
+
+/// Why recorded keys were not kept.
+pub fn keybind_refused(error: &junto_client_core::keybinds::KeybindError) -> String {
+    use junto_client_core::keybinds::KeybindError;
+    match error {
+        KeybindError::NeedsModifier => {
+            "Add Control, Alt, Shift or the system key, so that typing does not do the action."
+                .to_owned()
+        }
+        KeybindError::NotOutside => "This action works only while Junto is in front.".to_owned(),
+    }
+}
+pub const KEYS_EVERYWHERE: &str =
+    "The key of push to talk and the mute key work also while another application is in front.";
+pub const KEYS_NEED_PERMISSION: &str = "To use the key of push to talk and the mute key while \
+     another application is in front, allow Junto under Input Monitoring in Privacy & Security of \
+     the System Settings. Until then they work while Junto is in front.";
+pub const KEYS_ALLOWED: &str = "Junto may read the keys under Input Monitoring: the key of push \
+     to talk and the mute key work also while another application is in front.";
+pub const ALLOW_INPUT_MONITORING: &str = "Allow";
+pub const OPEN_INPUT_MONITORING: &str = "Open System Settings";
+pub const KEYS_PORTAL: &str = "Your desktop gives Junto the key of push to talk and the mute key \
+     while another application is in front. It asks you to confirm them the first time a call \
+     needs them, and you can change them in its settings.";
+pub const KEYS_WINDOW_ONLY: &str = "On this desktop the key of push to talk and the mute key work \
+     only while a window of Junto is in front: it has no global shortcuts portal.";
+
+/// The sentence when the portal of the desktop did not give the keys.
+pub fn keys_portal_failed(reason: &str) -> String {
+    format!(
+        "Your desktop did not give Junto global shortcuts ({}). The key of push to talk and the \
+         mute key work while a window of Junto is in front.",
+        sentence(reason)
+    )
+}
+
+/// The keys of a binding as the settings name them.
+pub fn key_combo(combo: &junto_client_core::global_keys::KeyCombo) -> String {
+    use junto_client_core::global_keys::Key;
+    combo
+        .keys()
+        .iter()
+        .map(|key| match key {
+            Key::Control => "Control".to_owned(),
+            Key::Alt if cfg!(target_os = "macos") => "Option".to_owned(),
+            Key::Alt => "Alt".to_owned(),
+            Key::Shift => "Shift".to_owned(),
+            Key::Meta if cfg!(target_os = "macos") => "Command".to_owned(),
+            Key::Meta if cfg!(windows) => "Windows".to_owned(),
+            Key::Meta => "Super".to_owned(),
+            Key::Letter(letter) => letter.to_string(),
+            Key::Digit(digit) => digit.to_string(),
+            Key::Function(number) => format!("F{number}"),
+            Key::Up => "Up".to_owned(),
+            Key::Down => "Down".to_owned(),
+            Key::Left => "Left".to_owned(),
+            Key::Right => "Right".to_owned(),
+            Key::Enter if cfg!(target_os = "macos") => "Return".to_owned(),
+            Key::Enter => "Enter".to_owned(),
+            Key::Escape => "Esc".to_owned(),
+            Key::Backspace if cfg!(target_os = "macos") => "Delete".to_owned(),
+            Key::Backspace => "Backspace".to_owned(),
+            Key::PageUp => "Page Up".to_owned(),
+            Key::PageDown => "Page Down".to_owned(),
+            Key::Comma => ",".to_owned(),
+            Key::Slash => "/".to_owned(),
+            Key::Equal => "=".to_owned(),
+            Key::Minus => "-".to_owned(),
+            Key::BracketLeft => "[".to_owned(),
+            Key::BracketRight => "]".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 pub const SENSITIVITY: &str = "Sensitivity";
 pub const SENSITIVITY_HELP: &str =
@@ -992,12 +1192,21 @@ pub const SENSITIVITY_LEVEL_HELP: &str =
     "The bar is your microphone now. It is bright while it reaches the mark and is sent.";
 pub const SENSITIVITY_NO_LEVEL: &str = "Your microphone level shows on the bar when Junto may \
      use the microphone and it opens.";
+/// Why the level test of the sound settings shows no level: the chosen microphone did not
+/// open.
+pub fn microphone_test_failed(error: &junto_media::audio::AudioError) -> String {
+    format!(
+        "Your microphone did not open, so no level shows: {}. Choose another input device, or \
+         connect this one again.",
+        error
+    )
+}
 pub const USE_PUSH_TO_TALK: &str = "Use push to talk";
 pub const KEEP_VOICE_ACTIVATION: &str = "Keep voice activation";
 
 /// The input mode in the call strip while push to talk is on.
-pub fn push_to_talk_mark(key: TalkKey) -> String {
-    format!("Push to talk: hold {} to speak", talk_key(key))
+pub fn push_to_talk_mark(keys: &junto_client_core::global_keys::KeyCombo) -> String {
+    format!("Push to talk: hold {} to speak", key_combo(keys))
 }
 pub const PUSH_TO_TALK_MARK_HELP: &str = "Change the input mode in Settings, under Voice.";
 
@@ -3060,10 +3269,11 @@ mod tests {
         use junto_media::engine::ShareId;
 
         let mut share = ShareCard {
-            id: ShareId::Of(AccountId::generate()),
+            id: ShareId::of(AccountId::generate(), 0),
             account_id: AccountId::generate(),
             name: Some("Carla".to_owned()),
             kind: Some(ShareKind::Screen),
+            number: None,
             sound: Some(ShareAudio::System),
             sound_held: false,
             size: Some((1920, 1200)),
@@ -3074,6 +3284,24 @@ mod tests {
         assert_eq!(share_title(&share, true), "Your screen");
         share.kind = Some(ShareKind::Window);
         assert_eq!(share_title(&share, false), "Carla's window");
+        // Two windows of one person are told apart by their numbers.
+        share.number = Some(2);
+        assert_eq!(share_title(&share, false), "Carla's window 2");
+        assert_eq!(share_title(&share, true), "Your window 2");
+        assert_eq!(
+            own_share_title(Some(ShareKind::Screen), None),
+            "Your screen"
+        );
+        assert_eq!(own_share_title(None, None), "Your new share");
+        assert!(
+            share_ended(&CaptureError::TooMany, 3)
+                .starts_with("Your new share did not start. You share 3 things")
+        );
+        assert!(
+            share_ended(&CaptureError::TooMany, 1)
+                .ends_with("This server lets a person run one share at a time. Stop your share to share another thing.")
+        );
+        share.number = None;
         share.kind = None;
         share.name = None;
         assert_eq!(share_title(&share, false), "Unknown person's share");
@@ -3116,7 +3344,7 @@ mod tests {
             CaptureError::Failed("the stream stopped".to_owned()),
         ] {
             assert!(capture_error(&error).ends_with('.'), "{error:?}");
-            assert!(share_ended(&error).starts_with("Your screen share ended. "));
+            assert!(share_ended(&error, 3).starts_with("Your screen share ended. "));
         }
         assert!(
             capture_error(&CaptureError::Failed("the stream stopped".to_owned()))

@@ -12,7 +12,7 @@ A user in a call works in other applications and on other servers during the cal
 
 Push-to-talk:
 
-- Push-to-talk works while the application or the detached call window is focused.
+- Push-to-talk works while a window of Junto is in front, and also while another application is in front where the system gives Junto the keys (ADR 0776).
 - Voice activation is the default.
 - A switch from voice activation to push to talk in the settings asks first. One click on "Push to talk" shows a question that names the key ("…only while you hold Option…") with "Use push to talk" and "Keep voice activation"; the mode changes only after "Use push to talk". The switch back to voice activation does not ask, because it cannot leave a person without sound. While push to talk is on, the call strip states it under the name of the call with the key: "Push to talk: hold Option to speak". Reason: one click changed the mode with no word, and a person who chose push to talk by accident sent no sound in a call and could not see why. Tests: `calls::the_sound_settings_of_the_application_are_kept_over_a_restart` reads that one click asks and does not change the mode, that "Keep voice activation" keeps it, and that "Use push to talk" changes it; `live::push_to_talk_and_a_block_of_a_moderator_in_the_window` reads the mark in the call strip.
 
@@ -36,7 +36,7 @@ Levels and volume:
 
 ## Consequences
 
-- Push-to-talk does not work while another application is focused. System-wide push-to-talk is in the later list of `docs/scope.md`.
+- Push-to-talk and the key that mutes work while another application is in front on Windows, on X11, on macOS with the permission Input Monitoring, and on a Wayland desktop with the global shortcuts portal (ADR 0776).
 - The speaking marks for other voice channels depend on reports from clients, so a modified client can send a false report.
 - The server receives and distributes speaking reports for every voice channel that does not hide who is inside.
 - A volume per person is a setting of the listener and does not change what other listeners hear.

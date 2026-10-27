@@ -805,18 +805,25 @@ impl Shell {
                 .px(u(16.0))
                 .pt(u(10.0))
                 .child(
-                    Notice::new(text::share_ended(error))
-                        .icon(Icon::Warning)
-                        .selector("share-notice")
-                        .action(
-                            Button::new("dismiss-share-notice")
-                                .label(text::DISMISS)
-                                .selector("dismiss-share-notice")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.dismiss_share_notice(cx));
-                                })),
-                        ),
+                    Notice::new(text::share_ended(
+                        error,
+                        view.call
+                            .as_ref()
+                            .map_or(junto_client_core::protocol::call::MAX_SHARES, |call| {
+                                call.share_limit
+                            }),
+                    ))
+                    .icon(Icon::Warning)
+                    .selector("share-notice")
+                    .action(
+                        Button::new("dismiss-share-notice")
+                            .label(text::DISMISS)
+                            .selector("dismiss-share-notice")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.dismiss_share_notice(cx));
+                            })),
+                    ),
                 )
                 .into_any_element()
         });

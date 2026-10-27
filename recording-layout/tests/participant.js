@@ -7,7 +7,7 @@ window.join = async (url, token) => {
   await publisher.connect(url, token, { autoSubscribe: false });
   await context.resume();
 };
-window.publish = async (source, frequency = 440) => {
+window.publish = async (source, frequency = 440, name = undefined) => {
   let track;
   let cleanup;
   if ([Track.Source.Camera, Track.Source.ScreenShare, Track.Source.Unknown].includes(source)) {
@@ -41,7 +41,7 @@ window.publish = async (source, frequency = 440) => {
   }
   const layers = [new VideoPreset(320, 180, 100_000, 10), new VideoPreset(640, 360, 250_000, 10)];
   const publication = await publisher.localParticipant.publishTrack(track, {
-    source, name: `${source}-${resources.size}`, videoCodec: 'vp8', simulcast: true,
+    source, name: name ?? `${source}-${resources.size}`, videoCodec: 'vp8', simulcast: true,
     videoEncoding: { maxBitrate: 800_000, maxFramerate: 10 },
     videoSimulcastLayers: layers, screenShareSimulcastLayers: layers,
     dtx: false, red: false, audioPreset: { maxBitrate: 64_000 },

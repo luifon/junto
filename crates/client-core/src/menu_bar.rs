@@ -10,7 +10,8 @@ use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSBitmapImageRep, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSSize, NSString};
 
@@ -78,17 +79,28 @@ impl StatusItem {
         })
     }
 
-    /// Shows the PNG picture at `points` by `points` points, the text that the menu bar shows
-    /// when the pointer rests on the item, and the menu with these entries.
-    pub fn set(&self, png: &[u8], points: f64, tooltip: &str, entries: &[Entry<'_>]) {
+    /// Shows the PNG pictures, one for each scale of the display, as one template picture of
+    /// `points` by `points` points: the menu bar draws it in its own colour, light or dark
+    /// (ADR 0759). Also the text that the menu bar shows when the pointer rests on the item,
+    /// and the menu with these entries.
+    pub fn set(&self, pngs: &[&[u8]], points: f64, tooltip: &str, entries: &[Entry<'_>]) {
         if let Some(button) = self.item.button(self.mtm) {
-            let data = NSData::with_bytes(png);
-            match NSImage::initWithData(NSImage::alloc(), &data) {
-                Some(image) => {
-                    image.setSize(NSSize::new(points, points));
-                    button.setImage(Some(&image));
+            let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(points, points));
+            let mut read = 0;
+            for png in pngs {
+                let data = NSData::with_bytes(png);
+                match NSBitmapImageRep::imageRepWithData(&data) {
+                    Some(rep) => {
+                        rep.setSize(NSSize::new(points, points));
+                        image.addRepresentation(&rep);
+                        read += 1;
+                    }
+                    None => tracing::warn!("a picture of the menu bar item was not read"),
                 }
-                None => tracing::warn!("the picture of the menu bar item was not read"),
+            }
+            if read > 0 {
+                image.setTemplate(true);
+                button.setImage(Some(&image));
             }
             button.setToolTip(Some(&NSString::from_str(tooltip)));
         }

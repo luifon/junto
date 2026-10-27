@@ -15,6 +15,7 @@ The owner:
 - An owner is one entry of the server book, by its server identifier and its generation (ADR 0710), and the account that the access flow of that entry shows as logged in (ADR 0712). The client core gives the owner of a server, and gives none in every other state of the flow and for an entry that was removed. The owner stays while an ended session of the same account is renewed.
 - What the client stores of a server belongs to one owner, and its key names that owner: a file, an entry of a cache, a remembered choice, and a prompt that waits. Nothing that was stored for one owner is shown, continued, counted or removed for another.
 - An identifier of a server (a file, a message, an export) is never a key by itself. Two servers can state the same identifier. A list of the window that is keyed by the server identifier and an identifier of that server holds entries of one owner only: it is emptied for a server at the moment the server has another owner, or none.
+- The window checks ownership before deriving the shown place and starting its readers. A changed owner ends the window's message, pin and member reader records and its message anchors, because the stream client has dropped those subscriptions. The shown place opens them for the new owner even when the window did not observe the intermediate logged-out state. The account-switch file-dialog test waits for the new account in the client core before letting the window run, then checks that messages, pins and members load again.
 
 Pictures of messages:
 

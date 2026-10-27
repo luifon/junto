@@ -154,6 +154,7 @@ pub struct MenuItem {
     detail: Option<SharedString>,
     detail_icon: Option<Icon>,
     icon: Option<Icon>,
+    swatch: Option<Hsla>,
     end_icon: Option<Icon>,
     trailing: Option<SharedString>,
     disabled: bool,
@@ -169,6 +170,7 @@ impl MenuItem {
             detail: None,
             detail_icon: None,
             icon: None,
+            swatch: None,
             end_icon: None,
             trailing: None,
             disabled: false,
@@ -186,6 +188,12 @@ impl MenuItem {
 
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// A square of a colour in the place of the icon, for the choice of a colour.
+    pub fn swatch(mut self, colour: Hsla) -> Self {
+        self.swatch = Some(colour);
         self
     }
 
@@ -261,6 +269,18 @@ impl RenderOnce for MenuItem {
             .when_some(self.icon, |item, shown| {
                 item.child(div().mt(u(2.0)).child(icon(shown, 15.0, colors.ink_2)))
             })
+            .when_some(self.swatch, |item, colour| {
+                item.child(
+                    div()
+                        .flex_none()
+                        .mt(u(3.0))
+                        .size(u(13.0))
+                        .rounded(u(3.0))
+                        .border_1()
+                        .border_color(Hsla::from(colors.rule))
+                        .bg(colour),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -282,7 +302,18 @@ impl RenderOnce for MenuItem {
                                 .when_some(self.detail_icon, |line, shown| {
                                     line.child(icon(shown, 12.0, colors.bronze))
                                 })
-                                .child(detail),
+                                // A detail longer than the menu is wide wraps.
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .when_some(self.selector, |text, selector| {
+                                            text.debug_selector(move || {
+                                                format!("{selector}-detail")
+                                            })
+                                        })
+                                        .child(detail),
+                                ),
                         )
                     }),
             )

@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod admin;
+mod arrange;
 mod book;
 pub mod call;
 mod camera;
@@ -16,6 +17,7 @@ mod direct;
 mod feed;
 mod invited;
 mod join;
+mod keybinds;
 pub mod linking;
 mod main_area;
 mod notices;
@@ -46,8 +48,10 @@ use gpui::{
 };
 use gpui_base::input::InputState;
 use junto_client_core::flow::add_server::AddServerFlow;
+use junto_client_core::global_keys::{Key, KeyCombo};
+use junto_client_core::keybinds::KeyAction;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
-use junto_client_core::voice::{InputMode, TalkKey};
+use junto_client_core::voice::InputMode;
 
 use call::{CallTab, DeviceKind, VolumeControl};
 pub use search::FilterKind;
@@ -55,7 +59,7 @@ pub use settings::SettingsSection;
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;
-use crate::state::{AppState, LevelsChanged, OpenAdmin};
+use crate::state::{AppState, KeybindChange, LevelsChanged, OpenAdmin};
 use crate::text;
 use crate::theme::{self, theme};
 use crate::ui::{Field, FieldEvent, StyleExt, tabular_numerals};
@@ -75,6 +79,9 @@ pub(crate) enum Layer {
     /// The dialog in which the person chooses what to share. It holds the lists of the
     /// system, which are larger than every other layer.
     SharePicker(Box<share::SharePicker>),
+    /// The menu of the shares of this device, at the share button of the strip of the
+    /// call: a stop of each share, "Share another" and a stop of every share.
+    ShareMenu,
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
     /// The menu of a message, at the message.
@@ -87,6 +94,14 @@ pub(crate) enum Layer {
     Fork(threads::ForkDialog),
     /// The menu of a channel, at its row.
     ChannelMenu(junto_client_core::protocol::ids::ChannelId),
+    /// The menu of a group of the server book, at its head (ADR 0775).
+    GroupMenu(junto_client_core::arrangement::GroupId),
+    /// The menu of a workspace of the server book, at its row.
+    WorkspaceMenu(ServerId, junto_client_core::protocol::ids::WorkspaceId),
+    /// The choice of the group of the selected server, from its menu.
+    GroupChoice(ServerId),
+    /// The dialog that names a group.
+    RenameGroup(junto_client_core::arrangement::GroupId),
     /// The menu of a direct conversation, at its row.
     DirectMenu(junto_client_core::protocol::ids::ConversationId),
     /// The dialog of the notification settings of a scope.
@@ -171,6 +186,8 @@ pub enum Open {
     InputDevices,
     /// The dialog in which the person chooses what to share.
     SharePicker,
+    /// The menu of the shares of this device.
+    ShareMenu,
     /// What happened to the last recording of the call.
     RecordingDetails,
     /// The list of the members who can be invited into the call.
@@ -196,6 +213,12 @@ pub struct Shell {
     /// The person chose push to talk in the settings, and the settings ask before the
     /// switch (ADR 0507).
     push_to_talk_question: bool,
+    /// The keys that the window holds, and the binding whose keys the settings wait for
+    /// (ADR 0777).
+    pub(crate) keys: keybinds::WindowKeys,
+    /// The window of the last share that the desktop portal asked for, kept while its dialog
+    /// can show: on Wayland it holds the export of the window (ADR 0751).
+    share_dialog_parent: Option<crate::dialog_parent::DialogParent>,
     pub(crate) state: Entity<AppState>,
     focus: FocusHandle,
     /// The focus of the layer that is open.
@@ -235,10 +258,15 @@ pub struct Shell {
     pub(crate) invitations_scroll: ScrollHandle,
     /// The panel of the call lies over the content of a narrow window.
     pub(crate) call_panel_open: bool,
+    /// The person closed the panel of the call beside the stage of a wide window.
+    pub(crate) call_panel_hidden: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
+    /// A press closed the menu of the shares; the click on the share button that follows
+    /// does not open it again.
+    pub(crate) share_menu_closed_by_press: bool,
     /// The pictures of the shares of the call, as images of the window.
     pub(crate) pictures: share::ShownPictures,
     pub(crate) cameras: camera::ShownCameras,
@@ -352,6 +380,9 @@ pub struct Shell {
     pub(crate) linking: linking::LinkingUi,
     /// What the window holds of the update notice (ADR 0780).
     pub(crate) book: book::BookUi,
+    /// The drag that is over the server book, and the field of the name of a group
+    /// (ADR 0775).
+    pub(crate) arrange: arrange::ArrangeUi,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -434,10 +465,13 @@ impl Shell {
         let (account, account_subscriptions) = account::AccountUi::new(window, cx);
         let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
         let book = book::BookUi::new(window, cx);
+        let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
-                this.state
-                    .update(cx, |state, _| state.window_talking(own_entity, false));
+                this.state.update(cx, |state, _| {
+                    state.release_window_keys(own_entity);
+                    state.end_keybind_recording(own_entity);
+                });
             }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
@@ -509,7 +543,15 @@ impl Shell {
                         .update(cx, |state, cx| state.set_window_active(active, cx));
                 }
                 if !window.is_window_active() {
-                    this.set_talking(false, cx);
+                    this.keys.modifiers = Modifiers::none();
+                    this.keys.down = None;
+                    this.keys.talks = false;
+                    this.keys.mutes = false;
+                    let id = cx.entity_id();
+                    this.state
+                        .update(cx, |state, _| state.release_window_keys(id));
+                    this.keys.recording = None;
+                    this.finish_keybind_recording(cx);
                 } else {
                     this.modifiers_changed(window.modifiers(), cx);
                     if let Some(view) = this.view.clone() {
@@ -561,6 +603,15 @@ impl Shell {
                     this.open_admin(event.0, window, cx);
                 }
             }),
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, _, event: &crate::state::WindowKeyAction, window, cx| {
+                    if !this.detached {
+                        this.perform_key_action(event.0, window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {
                     view.show_levels(state.read(cx).shown_levels());
@@ -629,10 +680,12 @@ impl Shell {
             members_open: false,
             call_tab: CallTab::default(),
             call_panel_open: false,
+            call_panel_hidden: false,
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
+            share_menu_closed_by_press: false,
             detached,
             software_video: window
                 .gpu_specs()
@@ -642,6 +695,8 @@ impl Shell {
             focused_camera: std::cell::Cell::new(None),
             stage_area: std::rc::Rc::default(),
             push_to_talk_question: false,
+            keys: keybinds::WindowKeys::default(),
+            share_dialog_parent: None,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
             drawing_call: false,
@@ -705,6 +760,7 @@ impl Shell {
             account,
             linking,
             book,
+            arrange,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -779,18 +835,153 @@ impl Shell {
         self.call_tab
     }
 
-    /// The modifier keys changed. With push-to-talk, the chosen key sends the microphone
-    /// while it is held.
+    /// The modifier keys changed: the held keys of push to talk and push to mute change.
     fn modifiers_changed(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
-        let held = {
-            let voice = self.state.read(cx).voice();
-            voice.input_mode == InputMode::PushToTalk
-                && match voice.talk_key {
-                    TalkKey::Alt => modifiers.alt,
-                    TalkKey::Control => modifiers.control,
-                }
+        self.keys.modifiers = modifiers;
+        self.finish_keybind_recording(cx);
+        self.follow_held_keys(cx);
+    }
+
+    /// The settings stop waiting for keys: they closed or show another section.
+    pub(crate) fn stop_keybind_recording(&mut self, cx: &mut Context<Self>) {
+        if self.keys.recording.take().is_some() {
+            self.keys.refusal = None;
+        }
+        self.finish_keybind_recording(cx);
+    }
+
+    fn finish_keybind_recording(&mut self, cx: &mut Context<Self>) {
+        if self.keys.recording_release
+            && self.keys.recording.is_none()
+            && self.held_keys().is_empty()
+        {
+            self.keys.recording_release = false;
+            let id = cx.entity_id();
+            self.state
+                .update(cx, |state, _| state.end_keybind_recording(id));
+        }
+    }
+
+    /// The keys that the window holds now: its modifiers and the last key that went down.
+    fn held_keys(&self) -> Vec<Key> {
+        let modifiers = self.keys.modifiers;
+        [
+            (modifiers.control, Key::Control),
+            (modifiers.alt, Key::Alt),
+            (modifiers.shift, Key::Shift),
+            (modifiers.platform, Key::Meta),
+        ]
+        .into_iter()
+        .filter_map(|(held, key)| held.then_some(key))
+        .chain(self.keys.down)
+        .collect()
+    }
+
+    /// Push to talk and push to mute while the window holds their keys (ADR 0777).
+    fn follow_held_keys(&mut self, cx: &mut Context<Self>) {
+        let held = if self.state.read(cx).recording_keybind() {
+            Vec::new()
+        } else {
+            self.held_keys()
         };
-        self.set_talking(held, cx);
+        let (talks, mutes) = {
+            let state = self.state.read(cx);
+            let talks = state.voice().input_mode == InputMode::PushToTalk
+                && state.talk_keys().is_some_and(|keys| keys.held_in(&held));
+            let mutes = state
+                .keys_of(KeyAction::PushToMute)
+                .is_some_and(|keys| keys.held_in(&held));
+            (talks, mutes)
+        };
+        if talks != self.keys.talks {
+            self.keys.talks = talks;
+            self.set_talking(talks, cx);
+        }
+        if mutes != self.keys.mutes {
+            self.keys.mutes = mutes;
+            let id = cx.entity_id();
+            self.state.update(cx, |state, _| {
+                state.hold_action(Some(id), KeyAction::PushToMute, mutes)
+            });
+        }
+    }
+
+    /// A key press in the window: the keys of a new binding while the settings wait for them,
+    /// or the action of a binding (ADR 0777).
+    fn call_key_down(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(action) = self.keys.recording {
+            self.keys.modifiers = keystroke.modifiers;
+            self.keys.down = keystroke
+                .key
+                .parse::<Key>()
+                .ok()
+                .filter(|key| !key.is_modifier());
+            if keystroke.key == "escape" && !keystroke.modifiers.modified() {
+                self.keys.recording = None;
+                self.keys.refusal = None;
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            if let Some(pressed) = pressed_combo(keystroke) {
+                let held_alone = pressed.keys().iter().all(|key| key.is_modifier());
+                if held_alone && !action.holds() {
+                    // A modifier alone waits for the rest of the combination.
+                    return;
+                }
+                let result = self.state.update(cx, |state, cx| {
+                    state.change_keybinds(KeybindChange::Set(action, Some(pressed)), cx)
+                });
+                match result {
+                    Ok(()) => {
+                        self.keys.recording = None;
+                        self.keys.refusal = None;
+                    }
+                    Err(error) => self.keys.refusal = Some(text::keybind_refused(&error)),
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
+        if self.state.read(cx).recording_keybind() {
+            cx.stop_propagation();
+            return;
+        }
+        if let Ok(key) = keystroke.key.parse::<Key>()
+            && !key.is_modifier()
+        {
+            self.keys.down = Some(key);
+            self.follow_held_keys(cx);
+        }
+        let Some(pressed) = pressed_combo(keystroke) else {
+            return;
+        };
+        let action = self.state.read(cx).keybinds().action_for(&pressed);
+        let Some(action) = action.filter(|action| !action.holds()) else {
+            return;
+        };
+        // The keyboard of the system gives this binding already: a window would do it a
+        // second time.
+        if self.state.read(cx).system_gives(action) {
+            return;
+        }
+        cx.stop_propagation();
+        self.perform_key_action(action, window, cx);
+    }
+
+    /// A key went up in the window.
+    fn call_key_up(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if keystroke.key.parse::<Key>().ok() == self.keys.down {
+            self.keys.down = None;
+            self.follow_held_keys(cx);
+        }
+        self.finish_keybind_recording(cx);
     }
 
     /// The calls keep the state of the key and act on a change only, so the window tells
@@ -934,20 +1125,24 @@ impl Shell {
             }
             Open::CallTab(tab) => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(tab, cx);
             }
             Open::InputDevices => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(CallTab::Settings, cx);
                 self.open_device_menu(DeviceKind::Input, window, cx);
             }
             Open::SharePicker => self.open_share_picker(window, cx),
+            Open::ShareMenu => self.open_layer(Layer::ShareMenu, window, cx),
             Open::RecordingDetails => {
                 self.recording_details_open = true;
                 cx.notify();
             }
             Open::RoomSettings => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(CallTab::Settings, cx);
                 self.call_settings_scroll.scroll_to_bottom();
             }
@@ -956,6 +1151,7 @@ impl Shell {
             }
             Open::MemberPicker => {
                 self.call_panel_open = true;
+                self.call_panel_hidden = false;
                 self.show_call_tab(CallTab::Members, cx);
                 if !self.invite_open {
                     self.toggle_member_picker(window, cx);
@@ -973,6 +1169,7 @@ impl Shell {
         if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
             self.state
                 .update(cx, |state, _| state.set_input_test(false));
+            self.stop_keybind_recording(cx);
         }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
@@ -1007,6 +1204,7 @@ impl Shell {
         if matches!(self.layer, Layer::Settings) {
             self.state
                 .update(cx, |state, _| state.set_input_test(false));
+            self.stop_keybind_recording(cx);
         }
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
@@ -1259,6 +1457,12 @@ impl Render for Shell {
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx);
             }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.call_key_down(&event.keystroke, window, cx);
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
+                this.call_key_up(&event.keystroke, cx);
+            }))
             .when(frame, |shell| {
                 shell.child(self.render_title_strip(text::APP_NAME.into(), window, cx))
             })
@@ -1324,6 +1528,7 @@ impl Shell {
     fn presses_over(&mut self) {
         self.server_menu_closed_by_press = false;
         self.device_menu_closed_by_press = false;
+        self.share_menu_closed_by_press = false;
         self.recording_details_closed_by_press = false;
         self.invite_closed_by_press = false;
         self.filter_closed_by_press = false;
@@ -1389,6 +1594,14 @@ impl Shell {
             Layer::DirectMenu(conversation_id) => view
                 .lists()
                 .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == *conversation_id)),
+            // The group, the server or the workspace of the menu is no longer listed.
+            Layer::GroupMenu(group) | Layer::RenameGroup(group) => {
+                !view.groups.iter().any(|row| row.id == *group)
+            }
+            Layer::WorkspaceMenu(server_id, workspace_id) => !view.servers.iter().any(|row| {
+                row.id == *server_id && row.workspaces.iter().any(|held| held.id == *workspace_id)
+            }),
+            Layer::GroupChoice(server_id) => !view.servers.iter().any(|row| row.id == *server_id),
             // The scope of the dialog is gone.
             Layer::Notify => view.notify.is_none(),
             Layer::SearchFilter(_) => view
@@ -1415,6 +1628,11 @@ impl Shell {
             // The languages belong to the button that records, which a call of this
             // device without a recording shows to a person who may record.
             Layer::RecordLanguage => !self.records_now(view),
+            // The menu lists the shares of this device, and every share has ended.
+            Layer::ShareMenu => view
+                .call
+                .as_ref()
+                .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
@@ -1437,11 +1655,14 @@ impl Shell {
             | Layer::PersonMenu(_)
             | Layer::MessageMenu(_)
             | Layer::ChannelMenu(_)
+            | Layer::GroupMenu(_)
+            | Layer::WorkspaceMenu(..)
             | Layer::DirectMenu(_)
             | Layer::SearchFilter(_)
             | Layer::RecordingFiles(_)
             | Layer::RecordingParts(_)
-            | Layer::RecordLanguage => div().into_any_element(),
+            | Layer::RecordLanguage
+            | Layer::ShareMenu => div().into_any_element(),
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)
             }
@@ -1453,6 +1674,8 @@ impl Shell {
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
+            Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
+            Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
             Layer::ConfirmRemove(server_id) => self
                 .render_confirm_remove(*server_id, view, window, cx)
                 .into_any_element(),
@@ -1477,4 +1700,24 @@ pub(crate) fn window_controls_height(cx: &App) -> f32 {
     } else {
         10.0
     }
+}
+
+/// The key of a call that a key press in a window gives: its modifiers and its key, when the
+/// key is one that a key of a call can use.
+fn pressed_combo(keystroke: &gpui::Keystroke) -> Option<KeyCombo> {
+    let modifiers = keystroke.modifiers;
+    let mut keys: Vec<Key> = [
+        (modifiers.control, Key::Control),
+        (modifiers.alt, Key::Alt),
+        (modifiers.shift, Key::Shift),
+        (modifiers.platform, Key::Meta),
+    ]
+    .into_iter()
+    .filter_map(|(held, key)| held.then_some(key))
+    .collect();
+    let key: Key = keystroke.key.parse().ok()?;
+    if !key.is_modifier() {
+        keys.push(key);
+    }
+    KeyCombo::new(keys).ok()
 }

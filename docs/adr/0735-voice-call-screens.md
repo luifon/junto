@@ -12,7 +12,7 @@ This version has the voice of a call and no camera, no screen share and no text 
 
 Entering:
 
-- A click on a voice channel shows the channel and joins nothing. Its header has "Join call". The same place shows the state of its call: recording, meeting mode, lock, count. For the call of this device the header has the controls of the room in their place (ADR 0739).
+- A click on a voice channel shows the channel and joins nothing. Its header has "Join call". A double click on a voice channel that this device is not in also asks for a place in its call, through the same request as "Join call": a locked or a full room refuses it and the refusal is told, and from a call in another voice channel the device moves into this one, as the button does (`Calls::join`, one call of a client over all its servers). Its first click shows the channel. A double click on a text channel does nothing more than a click. The channel list is the one place that lists voice channels to enter; the notices and the administration list them for other purposes. Tests: the window test `calls::a_double_click_on_a_voice_channel_asks_for_a_place_and_a_single_click_only_shows_it` and the window live test `live::rules::a_double_click_enters_a_voice_channel_as_the_join_button_does`. The same place shows the state of its call: recording, meeting mode, lock, count. For the call of this device the header has the controls of the room in their place (ADR 0739).
 - A join that the server refuses is told by a notice in the notice area of the shown view, with the name of the channel and what the person can do. The notice stays until the person closes it.
 
 The call in the main area:

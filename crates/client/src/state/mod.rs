@@ -8,6 +8,9 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+mod call_keys;
+mod history;
+pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
 pub mod feed;
@@ -190,7 +193,7 @@ fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
     calls
         .call
         .as_ref()
-        .is_some_and(|call| matches!(call.share, junto_media::engine::ShareState::Ended(_)))
+        .is_some_and(|call| call.share_ended.is_some())
 }
 
 /// The quality of a share as the media engine takes it.
@@ -414,11 +417,34 @@ pub struct OpenAdmin(pub admin::AdminOpen);
 
 impl gpui::EventEmitter<OpenAdmin> for AppState {}
 
+/// A key that works while another application is in front asks the main window, now in
+/// front, for an action that needs a window: show the call, or share (ADR 0777).
+pub struct WindowKeyAction(pub junto_client_core::keybinds::KeyAction);
+
+impl gpui::EventEmitter<WindowKeyAction> for AppState {}
+
 /// What the call window does before it closes.
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
+    /// The source of the system holds the key of push to talk (ADR 0776).
+    talking_globally: bool,
+    /// The keys of a call in every application, and what they were told last.
+    global_keys: junto_client_core::global_keys::GlobalKeys,
+    call_keys_told: Option<junto_client_core::global_keys::CallKeys>,
+    /// The key bindings of the person (ADR 0777), and why their last change was not written.
+    keybinds: junto_client_core::keybinds::Keybinds,
+    keybinds_error: Option<String>,
+    keybind_recordings: HashSet<gpui::EntityId>,
+    keybind_boundary: u64,
+    keybind_global_ready: bool,
+    /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
+    /// keys of push to mute, and whether their hold closed the microphone.
+    mute_holds: HashSet<Option<gpui::EntityId>>,
+    muted_by_hold: bool,
+    /// The places that the window showed, for Back and Forward (ADR 0777).
+    history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
     /// What the call window does before it closes: it gives the text of its composer to
     /// the main window (ADR 0772).
@@ -596,6 +622,8 @@ pub struct AppState {
     kept_tray: crate::tray::KeptTray,
     /// The state that the tray was told last.
     tray_shown: Option<crate::tray::TrayState>,
+    /// The unread mentions that the tray icon shows with its mark (ADR 0759).
+    tray_mentions: u64,
     /// The main window is the active window of the system.
     window_active: bool,
     /// The call window is the active window of the system.
@@ -706,6 +734,10 @@ impl AppState {
             }
         };
         theme::apply(settings.theme, cx);
+        let keybinds = client.settings().load_keybinds().unwrap_or_else(|error| {
+            tracing::warn!(%error, "the key bindings were not read");
+            junto_client_core::keybinds::Keybinds::default()
+        });
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {
@@ -867,6 +899,17 @@ impl AppState {
                 .unwrap_or_default();
         let mut state = Self {
             talking_windows: HashSet::new(),
+            talking_globally: false,
+            global_keys: junto_client_core::global_keys::GlobalKeys::none(),
+            call_keys_told: None,
+            keybinds,
+            keybinds_error: None,
+            keybind_recordings: HashSet::new(),
+            keybind_boundary: 0,
+            keybind_global_ready: true,
+            mute_holds: HashSet::new(),
+            muted_by_hold: false,
+            history: history::History::default(),
             call_window: None,
             call_window_closing: None,
             call_window_settings,
@@ -952,6 +995,7 @@ impl AppState {
             tray: std::rc::Rc::new(kept_tray.clone()),
             kept_tray,
             tray_shown: None,
+            tray_mentions: 0,
             window_active: false,
             call_window_active: false,
             call_window_notices: false,
@@ -1136,20 +1180,30 @@ impl AppState {
         cx.notify();
     }
 
-    /// Starts the share of this device at the seat for which the person chose it, with
-    /// the stored resolution and frame rate. The result is in the view.
-    pub fn start_share(&mut self, seat: &Seat, picture: PictureSource, sound: SoundChoice) {
+    /// Starts a share of this device at the seat for which the person chose it, with the
+    /// stored resolution and frame rate; the shares that run go on. The result is in the
+    /// view. `dialog_parent` names the window over which the portal of Linux shows its
+    /// dialog.
+    pub fn start_share(
+        &mut self,
+        seat: &Seat,
+        picture: PictureSource,
+        sound: SoundChoice,
+        dialog_parent: Option<String>,
+    ) {
         let request = CaptureRequest {
             picture,
             sound,
             quality: share_quality(&self.known.media.voice),
+            dialog_parent,
         };
         self.calls.start_share_in(seat, request);
     }
 
-    /// Ends the share of this device, and puts away the statement that a share ended.
-    pub fn stop_share(&mut self) {
-        self.calls.stop_share();
+    /// Ends the share of this device in `slot`, or every share without a slot, and puts
+    /// away the statement that a share ended.
+    pub fn stop_share(&mut self, slot: Option<u8>) {
+        self.calls.stop_share(slot);
     }
 
     /// Puts away the notice of the own share that ended by itself. The notice goes at
@@ -1157,7 +1211,7 @@ impl AppState {
     /// still state the end.
     pub fn dismiss_share_notice(&mut self, cx: &mut Context<Self>) {
         self.known.share_notice_dismissed = true;
-        self.calls.stop_share();
+        self.calls.forget_share_end();
         self.changed(cx);
     }
 
@@ -2458,11 +2512,14 @@ impl AppState {
         let now = time::OffsetDateTime::now_utc();
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
+        self.follow_owners();
         let snapshots = self.snapshots();
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
         self.keep_logos(cx);
         self.follow_updates();
+        self.follow_arrangement();
+        self.follow_call_keys(&snapshots);
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {
@@ -2537,6 +2594,8 @@ impl AppState {
         }
         self.end_search_of_other_server(shown.server);
         self.drop_lost_search_filter(&snapshots, cx);
+        let before = self.shown;
+        self.follow_history(&before, &shown);
         self.shown = shown;
         self.follow_people(&view, &snapshots, cx);
         self.follow_followed(&view, cx);
@@ -2550,8 +2609,9 @@ impl AppState {
         self.follow_jump(shown);
         self.follow_result_jump(shown);
         self.tell_alerts(&snapshots, shown, call_window, cx);
+        let mentions = tray::tray_mention_count(&view);
+        self.set_tray_mentions(mentions, cx);
         self.follow_tray();
-        self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();
         self.drop_sent_uploads();

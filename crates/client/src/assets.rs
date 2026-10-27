@@ -97,6 +97,7 @@ icons! {
     History => "lucide/rotate-ccw-clock",
     Invite => "lucide/user-plus",
     Key => "lucide/key-round",
+    Keyboard => "lucide/keyboard",
     Layers => "lucide/layers",
     LayoutGrid => "lucide/layout-grid",
     Leaf => "lucide/leaf",

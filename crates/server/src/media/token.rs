@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 
+use junto_protocol::call::{MAX_SHARES, SHOWN_SHARES_ATTRIBUTE};
+
 use crate::media::{JoinGrant, Notification};
 
 const HEADER: &str = r#"{"alg":"HS256","typ":"JWT"}"#;
@@ -46,7 +48,8 @@ pub fn verify(secret: &[u8], token: &str) -> Option<Value> {
 
 /// The claims of a join token: one room, one identity, the display name of the participant,
 /// and the sources that the participant may publish. The participant may subscribe, and may
-/// send no data messages.
+/// send no data messages. A client that shows several shares of one person has the
+/// attribute that states their number (ADR 0510); the participant cannot change it.
 pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
     let sources: Vec<&str> = grant
         .publishing
@@ -54,7 +57,7 @@ pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
         .iter()
         .map(|source| source.token_name())
         .collect();
-    json!({
+    let mut claims = json!({
         "iss": key,
         "sub": grant.identity,
         "name": grant.name,
@@ -69,7 +72,14 @@ pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
             "canPublishSources": sources,
             "canUpdateOwnMetadata": false,
         },
-    })
+    });
+    if let Some(shown) = grant.shown_shares.filter(|shown| *shown > 1) {
+        let shown = shown.min(MAX_SHARES);
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(SHOWN_SHARES_ATTRIBUTE.to_owned(), shown.to_string().into());
+        claims["attributes"] = Value::Object(attributes);
+    }
+    claims
 }
 
 /// What one request of the server to the API of the media server may do.
@@ -224,10 +234,29 @@ mod tests {
             identity: "account:seat",
             name: "Ana Lima",
             publishing: &publishing,
+            shown_shares: None,
             now: now(),
             lifetime: Duration::seconds(60),
         };
         let claims = join_claims("key", &grant);
+        // A client that shows one share has no attribute.
+        assert_eq!(claims.get("attributes"), None);
+        for (stated, attribute) in [
+            (Some(1), None),
+            (Some(3), Some("3")),
+            (Some(200), Some("3")),
+        ] {
+            let stating = JoinGrant {
+                shown_shares: stated,
+                ..grant
+            };
+            let claims = join_claims("key", &stating);
+            assert_eq!(
+                claims["attributes"][SHOWN_SHARES_ATTRIBUTE].as_str(),
+                attribute,
+                "{stated:?}"
+            );
+        }
         assert_eq!(claims["iss"], "key");
         assert_eq!(claims["sub"], "account:seat");
         assert_eq!(claims["name"], "Ana Lima");

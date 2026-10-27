@@ -330,3 +330,177 @@ fn unread_derivation_visits_each_summary_once() {
     assert!((1..=3).contains(&once), "{once}");
     assert_eq!(twice, once);
 }
+
+/// The arrangement of the person in the derivation of the server book (ADR 0775).
+mod arrangement {
+    use junto_client_core::arrangement::{Change, GroupColour, Spot, WorkspaceSpot};
+
+    use super::*;
+
+    fn arranged(servers: &[ServerSnapshot], arrangement: Arrangement) -> ShellView {
+        let known = Known {
+            arrangement,
+            ..Known::default()
+        };
+        derive(servers, &Selection::default(), &known)
+    }
+
+    #[test]
+    fn the_workspaces_take_the_order_of_the_person_and_a_collapsed_server_shows_all_on_its_head() {
+        let scene = scene();
+        let general = MessagePlace::Channel {
+            workspace_id: scene.studio,
+            channel_id: scene.general,
+        };
+        let mut model = scene.model();
+        model.message_states = vec![summary(general, 3, 2)];
+        let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
+        let plain = arranged(std::slice::from_ref(&server), Arrangement::default());
+        let names = |view: &ShellView| -> Vec<String> {
+            view.servers[0]
+                .workspaces
+                .iter()
+                .map(|row| row.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&plain), ["Lab", "Studio"]);
+        assert!(!plain.servers[0].workspaces_collapsed);
+        assert!(!plain.servers[0].head_unread.any());
+        assert!(plain.anything_expanded());
+
+        let mut arrangement = Arrangement::default();
+        let mut order = vec![server.id];
+        arrangement
+            .apply(
+                &mut order,
+                Change::MoveWorkspace {
+                    server: server.id,
+                    workspace: scene.studio,
+                    to: WorkspaceSpot::Before(scene.lab),
+                    shown: vec![scene.lab, scene.studio],
+                },
+            )
+            .unwrap();
+        let moved = arranged(std::slice::from_ref(&server), arrangement.clone());
+        assert_eq!(names(&moved), ["Studio", "Lab"]);
+
+        arrangement
+            .apply(
+                &mut order,
+                Change::CollapseWorkspaces {
+                    server: server.id,
+                    collapsed: true,
+                },
+            )
+            .unwrap();
+        let collapsed = arranged(std::slice::from_ref(&server), arrangement);
+        let row = &collapsed.servers[0];
+        assert!(row.workspaces_collapsed);
+        // The rows of the workspaces stay in the view for the menu of the collapsed book.
+        assert_eq!(names(&collapsed), ["Studio", "Lab"]);
+        // The head shows what the workspace rows showed: the mentions of Studio.
+        assert_eq!(row.head_unread, row.unread);
+        assert_eq!(row.head_unread.mentions, 2);
+        assert!(!collapsed.anything_expanded());
+    }
+
+    #[test]
+    fn a_group_holds_its_servers_in_the_order_of_the_book_with_their_counts() {
+        let scene = scene();
+        let general = MessagePlace::Channel {
+            workspace_id: scene.studio,
+            channel_id: scene.general,
+        };
+        let busy = || {
+            let mut model = scene.model();
+            model.message_states = vec![summary(general, 4, 1)];
+            model
+        };
+        let servers = [
+            server(
+                "Acme",
+                Some(scene.model()),
+                logged_in(scene.own, Vec::new()),
+            ),
+            server("Harbor", Some(busy()), logged_in(scene.own, Vec::new())),
+            server("Mill", Some(busy()), logged_in(scene.own, Vec::new())),
+        ];
+        let ids: Vec<ServerId> = servers.iter().map(|server| server.id).collect();
+        let mut order = ids.clone();
+        let mut arrangement = Arrangement::default();
+        arrangement
+            .apply(
+                &mut order,
+                Change::GroupWith {
+                    server: ids[2],
+                    target: ids[0],
+                },
+            )
+            .unwrap();
+        // The order of the book is the order of the snapshots that the client gives.
+        let in_order: Vec<ServerSnapshot> = order
+            .iter()
+            .map(|id| {
+                servers
+                    .iter()
+                    .find(|server| server.id == *id)
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        let view = arranged(&in_order, arrangement.clone());
+        assert_eq!(view.book, [BookPart::Group(0), BookPart::Server(2)]);
+        let group = &view.groups[0];
+        assert_eq!(group.servers, [0, 1]);
+        assert_eq!(
+            [view.servers[0].name.as_str(), view.servers[1].name.as_str()],
+            ["Acme", "Mill"]
+        );
+        // Without a name the group is named by its servers.
+        assert_eq!(group.shown_name, "Acme, Mill");
+        assert_eq!(group.name, "");
+        assert_eq!(group.colour, GroupColour::Bone);
+        assert!(!group.collapsed);
+        // The unread of Mill, and the selection of the first server, Acme.
+        assert_eq!((group.unread.messages, group.unread.mentions), (4, 1));
+        assert!(group.selected);
+        assert_eq!(view.servers[0].group, Some(group.id));
+        assert_eq!(view.servers[2].group, None);
+        // The form of the client core is the same arrangement.
+        assert_eq!(view.shelves(), arrangement.shelves(&order));
+
+        let id = group.id;
+        arrangement
+            .apply(
+                &mut order,
+                Change::RenameGroup {
+                    group: id,
+                    name: "Work".to_owned(),
+                },
+            )
+            .unwrap();
+        arrangement
+            .apply(
+                &mut order,
+                Change::MoveGroup {
+                    group: id,
+                    to: Spot::End,
+                },
+            )
+            .unwrap();
+        let in_order: Vec<ServerSnapshot> = order
+            .iter()
+            .map(|id| {
+                servers
+                    .iter()
+                    .find(|server| server.id == *id)
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        let view = arranged(&in_order, arrangement);
+        assert_eq!(view.book, [BookPart::Server(0), BookPart::Group(0)]);
+        assert_eq!(view.groups[0].shown_name, "Work");
+        assert_eq!(view.servers[0].name, "Harbor");
+    }
+}

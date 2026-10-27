@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use junto_protocol::ids::{AccountId, ServerId};
 use serde::{Deserialize, Serialize};
 
+use crate::global_keys::{Key, KeyCombo};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
@@ -116,6 +117,17 @@ pub enum TalkKey {
     #[default]
     Alt,
     Control,
+}
+
+impl TalkKey {
+    /// The key as a key binding (ADR 0776): the default key of push to talk.
+    pub fn combo(self) -> KeyCombo {
+        let key = match self {
+            TalkKey::Alt => Key::Alt,
+            TalkKey::Control => Key::Control,
+        };
+        KeyCombo::single(key)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

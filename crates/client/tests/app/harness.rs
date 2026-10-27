@@ -502,7 +502,7 @@ impl Window {
             .cx
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
-        let (down, up) = pointer_press(bounds.center(), gpui::MouseButton::Left);
+        let (down, up) = pointer_press(bounds.center(), gpui::MouseButton::Left, 1);
         self.holding(|this| {
             this.cx.update(|window, cx| {
                 window.dispatch_event(down, cx);
@@ -526,7 +526,18 @@ impl Window {
 
     /// Presses and releases a button of the pointer at a point of the window.
     pub fn press_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
-        let (down, up) = pointer_press(position, button);
+        self.press_at_count(position, button, 1);
+    }
+
+    /// The press number `count` of a series at one point, as the system counts the presses
+    /// of a double click.
+    pub fn press_at_count(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+        count: usize,
+    ) {
+        let (down, up) = pointer_press(position, button, count);
         for input in [down, up] {
             self.holding(|this| {
                 this.cx.update(|window, cx| {
@@ -977,6 +988,24 @@ impl Window {
         self.click(row);
     }
 
+    /// Double-clicks the row of the channel with this name: two presses at one point, the
+    /// second one counted as the second of a series.
+    #[track_caller]
+    pub fn double_click_channel(&mut self, name: &str) {
+        let row = self
+            .channel_row(name)
+            .unwrap_or_else(|| panic!("no channel is named {name}"));
+        self.settle();
+        let middle = self
+            .cx
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("{row} is not drawn"))
+            .center();
+        self.press_at_count(middle, gpui::MouseButton::Left, 1);
+        self.press_at_count(middle, gpui::MouseButton::Left, 2);
+        self.settle();
+    }
+
     /// Clicks an action of the state panel of the selected server once the actions take
     /// clicks. The panel draws its actions disabled while an action of the access flow runs,
     /// also when it shows the outcome of that action before the action has ended (the
@@ -1015,10 +1044,12 @@ impl Window {
     }
 }
 
-/// The two events of one press of a pointer button at one point.
+/// The two events of one press of a pointer button at one point, the press number
+/// `click_count` of a series.
 fn pointer_press(
     position: gpui::Point<gpui::Pixels>,
     button: gpui::MouseButton,
+    click_count: usize,
 ) -> (gpui::PlatformInput, gpui::PlatformInput) {
     use gpui::InputEvent;
     let modifiers = Modifiers::none();
@@ -1026,14 +1057,14 @@ fn pointer_press(
         position,
         modifiers,
         button,
-        click_count: 1,
+        click_count,
         first_mouse: false,
     };
     let up = gpui::MouseUpEvent {
         position,
         modifiers,
         button,
-        click_count: 1,
+        click_count,
     };
     (down.to_platform_input(), up.to_platform_input())
 }

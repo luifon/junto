@@ -688,19 +688,7 @@ impl Shell {
                 true
             }
             Step::Up if empty && self.pen_mut(pane).editing.is_none() => {
-                let last = self.composer_feed(pane).and_then(|feed| {
-                    feed.rows.iter().rev().find_map(|row| match row {
-                        FeedRow::Message(row) if row.can_edit => Some(row.message.id),
-                        _ => None,
-                    })
-                });
-                match last {
-                    Some(message_id) => {
-                        self.edit_message(pane, message_id, window, cx);
-                        true
-                    }
-                    None => false,
-                }
+                self.edit_last_own_message(pane, window, cx)
             }
             _ => false,
         }
@@ -854,7 +842,7 @@ impl Shell {
     /// Opens the file dialog for the next message of the place that the composer writes
     /// to. The dialog does not stop the window: the person, and an event of a server, can
     /// change what the composer shows before the dialog is answered.
-    fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
+    pub(crate) fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
         let Some(asked) = self.pen(pane).place else {
             return;
         };
@@ -973,6 +961,29 @@ impl Shell {
                 FeedRow::Message(row) if row.message.id == message_id => Some(row.message.clone()),
                 _ => None,
             })
+    }
+
+    /// Puts the text of the newest own message that the pane lists into the composer, to
+    /// change it. False when the pane lists none.
+    pub(crate) fn edit_last_own_message(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let last = self.composer_feed(pane).and_then(|feed| {
+            feed.rows.iter().rev().find_map(|row| match row {
+                FeedRow::Message(row) if row.can_edit => Some(row.message.id),
+                _ => None,
+            })
+        });
+        match last {
+            Some(message_id) => {
+                self.edit_message(pane, message_id, window, cx);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Puts the text of an own message into the composer, to change it.

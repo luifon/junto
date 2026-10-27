@@ -110,6 +110,8 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
         // at the first start (ADR 0708).
         state.use_system_permissions(cx);
         state.ask_for_notifications_once(cx);
+        // The keys of a call while another application is in front (ADR 0776).
+        state.install_global_keys(cx);
     });
     state
 }

@@ -49,7 +49,8 @@ impl Drop for Bus {
 #[derive(Debug)]
 enum Event {
     Select(u32, bool, u32, u32),
-    Start,
+    /// The start, with the window over which the dialog shows.
+    Start(String),
     CloseRequest,
     CloseSession,
     Remote,
@@ -187,7 +188,6 @@ impl ScreenCast {
         #[zbus(header)] header: Header<'_>,
     ) -> OwnedObjectPath {
         assert!(session_handle.as_str().contains("/session/"));
-        assert!(parent_window.is_empty());
         let request = path(
             &header,
             "request",
@@ -198,7 +198,10 @@ impl ScreenCast {
             .at(request.clone(), Request(self.0.clone()))
             .await
             .unwrap();
-        self.0.events.send(Event::Start).unwrap();
+        self.0
+            .events
+            .send(Event::Start(parent_window.to_owned()))
+            .unwrap();
         let mode = self.0.mode.load(Ordering::Relaxed);
         if mode == 0 {
             let streams = vec![(
@@ -289,7 +292,10 @@ async fn the_portal_keeps_the_explicit_kind_and_receives_an_early_response() {
         portal.capabilities().await.unwrap().kinds,
         [ShareKind::Screen, ShareKind::Window]
     );
-    let (video, _closed) = portal.start(ShareKind::Window).await.unwrap();
+    let (video, _closed) = portal
+        .start(ShareKind::Window, "x11:2a00004")
+        .await
+        .unwrap();
     assert_eq!(video.node, 42);
     assert_eq!(video.serial, Some(123_456));
     assert!(std::fs::File::from(video.fd).metadata().is_ok());
@@ -297,7 +303,11 @@ async fn the_portal_keeps_the_explicit_kind_and_receives_an_early_response() {
         event(&mut events).await,
         Event::Select(2, false, 2, 0)
     ));
-    assert!(matches!(event(&mut events).await, Event::Start));
+    // The dialog of the desktop shows over the window of the client.
+    assert!(matches!(
+        event(&mut events).await,
+        Event::Start(parent) if parent == "x11:2a00004"
+    ));
     assert!(matches!(event(&mut events).await, Event::Remote));
     drop(portal);
     assert!(matches!(event(&mut events).await, Event::CloseSession));
@@ -308,14 +318,14 @@ async fn cancellation_never_opens_the_video_remote() {
     let bus = Bus::new();
     let (_service, mut portal, mut events) = setup(&bus, 1).await;
     assert!(matches!(
-        portal.start(ShareKind::Screen).await,
+        portal.start(ShareKind::Screen, "").await,
         Err(CaptureError::Cancelled)
     ));
     assert!(matches!(
         event(&mut events).await,
         Event::Select(1, false, 2, 0)
     ));
-    assert!(matches!(event(&mut events).await, Event::Start));
+    assert!(matches!(event(&mut events).await, Event::Start(_)));
     drop(portal);
     assert!(matches!(event(&mut events).await, Event::CloseSession));
 }
@@ -324,12 +334,12 @@ async fn cancellation_never_opens_the_video_remote() {
 async fn a_backend_failure_is_not_a_permission_refusal() {
     let bus = Bus::new();
     let (_service, mut portal, mut events) = setup(&bus, 4).await;
-    let result = portal.start(ShareKind::Screen).await;
+    let result = portal.start(ShareKind::Screen, "").await;
     assert!(matches!(
         event(&mut events).await,
         Event::Select(1, false, 2, 0)
     ));
-    assert!(matches!(event(&mut events).await, Event::Start));
+    assert!(matches!(event(&mut events).await, Event::Start(_)));
     drop(portal);
     assert!(matches!(event(&mut events).await, Event::CloseSession));
     assert!(matches!(result, Err(CaptureError::Failed(_))));
@@ -339,12 +349,12 @@ async fn a_backend_failure_is_not_a_permission_refusal() {
 async fn dropping_a_pending_chooser_closes_its_request_and_session() {
     let bus = Bus::new();
     let (_service, mut portal, mut events) = setup(&bus, 2).await;
-    let mut pending = Box::pin(portal.start(ShareKind::Screen));
+    let mut pending = Box::pin(portal.start(ShareKind::Screen, ""));
     tokio::select! {
         result = &mut pending => panic!("the chooser unexpectedly finished: {}", result.is_ok()),
         _ = async {
             assert!(matches!(event(&mut events).await, Event::Select(1, false, 2, 0)));
-            assert!(matches!(event(&mut events).await, Event::Start));
+            assert!(matches!(event(&mut events).await, Event::Start(_)));
         } => {}
     }
     drop(pending);
@@ -357,7 +367,7 @@ async fn dropping_a_pending_chooser_closes_its_request_and_session() {
 async fn a_revoked_session_ends_even_when_the_chooser_has_not_responded() {
     let bus = Bus::new();
     let (_service, mut portal, mut events) = setup(&bus, 3).await;
-    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen))
+    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen, ""))
         .await
         .unwrap();
     assert!(matches!(result, Err(CaptureError::SourceGone)));
@@ -365,7 +375,7 @@ async fn a_revoked_session_ends_even_when_the_chooser_has_not_responded() {
         event(&mut events).await,
         Event::Select(1, false, 2, 0)
     ));
-    assert!(matches!(event(&mut events).await, Event::Start));
+    assert!(matches!(event(&mut events).await, Event::Start(_)));
     drop(portal);
     assert!(matches!(event(&mut events).await, Event::CloseRequest));
     assert!(matches!(event(&mut events).await, Event::CloseSession));
@@ -376,7 +386,7 @@ async fn a_portal_that_does_not_answer_a_request_without_a_dialog_fails_the_star
     let bus = Bus::new();
     let (_service, mut portal, mut events) = setup(&bus, SILENT_SELECTION).await;
     let started = std::time::Instant::now();
-    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen))
+    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen, ""))
         .await
         .unwrap();
     assert!(
@@ -398,7 +408,7 @@ async fn a_portal_that_does_not_answer_a_request_without_a_dialog_fails_the_star
 async fn a_portal_that_ends_during_the_dialog_fails_the_start() {
     let bus = Bus::new();
     let (_service, mut portal, mut events) = setup(&bus, ENDS_DURING_START).await;
-    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen))
+    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen, ""))
         .await
         .unwrap();
     assert!(
@@ -410,5 +420,5 @@ async fn a_portal_that_ends_during_the_dialog_fails_the_start() {
         event(&mut events).await,
         Event::Select(1, false, 2, 0)
     ));
-    assert!(matches!(event(&mut events).await, Event::Start));
+    assert!(matches!(event(&mut events).await, Event::Start(_)));
 }

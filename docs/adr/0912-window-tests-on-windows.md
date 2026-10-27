@@ -20,6 +20,7 @@ The server opens and creates its files below a directory without following links
 - `tools/check-pins.sh` fails when the version of the program differs from the version of the CI image or when the program has no SHA-256. A unit test fails when its server settings differ from those of `tools/with-test-postgres.sh`.
 - The Windows job runs the window tests in two steps after the package check: `updates::` without a database, and the other tests with the database. The second step leaves out `live::` (LiveKit), `recordings::` and `transcripts::` (the recording server of the tests stores the files of a recording), and the tests that store a file on the server: five of `messages::`, three of `composing::`, one of `files::`, one of `threads::`, one of `thread_actions::` and three of `admin_pages::`. The server reads the free space of its directories on Windows (ADR 0605), so an upload there passes the storage guard and is refused by the file operations.
 - The harness of the window tests sends the log of the client into the output of each test, at the level of `JUNTO_LOG_LEVEL` and `info` without it. The test runner prints that output for a test that fails, on every system.
+- The account-switch file-dialog test runs its owner change and stale-dialog refusal on every system. Only its final successful upload runs on Unix, where the test server stores files.
 
 ## Consequences
 
