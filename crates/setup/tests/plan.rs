@@ -312,7 +312,7 @@ fn rule_43_the_file_of_another_server_uses_the_default_workspace_and_its_everyon
 fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
     let current = server();
     let cases = [
-        (json!({ "format": 3 }), "the file has the format 3"),
+        (json!({ "format": 5 }), "the file has the format 5"),
         (
             json!({ "format": 1, "workspaces": [
                 { "id": id(1), "name": "Main" }, { "id": id(1), "name": "Again" }] }),
@@ -390,7 +390,7 @@ fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
         assert!(found.contains(stated), "{desired}: {found}");
     }
     let several = problems(
-        json!({ "format": 3, "workspaces": [{ "id": id(1), "name": "" },
+        json!({ "format": 5, "workspaces": [{ "id": id(1), "name": "" },
                                              { "id": id(1), "name": "x" }] }),
         &current,
     );
@@ -610,4 +610,271 @@ fn role_order_positions_are_atomic_and_unchanged_roles_are_omitted() {
         )
         .is_err()
     );
+}
+
+/// A server in format 4: the category 20 has an override of role 11, the channel 30 is synced
+/// with it, a text channel 32 in it has its own overrides, and a channel 33 has no category.
+fn synced_value() -> Value {
+    json!({
+        "format": 4,
+        "workspaces": [{
+            "id": id(1), "name": "Main", "default": true,
+            "roles": [
+                { "id": id(10), "name": "everyone", "everyone": true,
+                  "permissions": ["view_channel"] },
+                { "id": id(11), "name": "Helpers", "permissions": [] },
+            ],
+            "categories": [{ "id": id(20), "name": "Projects", "position": 0,
+                "overrides": [{ "role": id(11), "allow": ["manage_messages"], "deny": [] }] }],
+            "channels": [
+                { "id": id(30), "name": "general", "kind": "text", "category": id(20),
+                  "position": 0, "permanent_messages": false, "synced": true,
+                  "overrides": [] },
+                { "id": id(32), "name": "notes", "kind": "text", "category": id(20),
+                  "position": 1, "permanent_messages": false, "synced": false,
+                  "overrides": [{ "role": id(10), "allow": [], "deny": ["view_channel"] }] },
+                { "id": id(33), "name": "loose", "kind": "text", "category": null,
+                  "position": 2, "permanent_messages": false, "overrides": [] },
+            ],
+        }],
+    })
+}
+
+fn lines(desired: &StructureFile, current: &StructureFile) -> Vec<String> {
+    planned(desired, current)
+        .into_iter()
+        .map(|planned| planned.line)
+        .collect()
+}
+
+#[test]
+fn format_4_an_export_with_category_overrides_and_sync_states_plans_no_change() {
+    let current = file(synced_value());
+    assert_eq!(changes(&current, &current), Vec::<Value>::new());
+    for format in 1..=4 {
+        let mut older = current.clone();
+        older.format = format;
+        assert_eq!(changes(&older, &current), Vec::<Value>::new(), "{format}");
+    }
+}
+
+#[test]
+fn format_4_a_category_override_is_planned_against_the_one_of_the_server() {
+    let current = file(synced_value());
+    let mut desired = synced_value();
+    desired["workspaces"][0]["categories"][0]["overrides"] = json!([
+        { "role": id(11), "allow": ["manage_messages"] },
+        { "role": id(10), "deny": ["send_messages"] },
+    ]);
+    let desired_file = file(desired.clone());
+    assert_eq!(
+        changes(&desired_file, &current),
+        [
+            json!({ "change": "set_category_override", "category": id(20), "role": id(10),
+                 "allow": [], "deny": ["send_messages"] })
+        ]
+    );
+    assert_eq!(
+        lines(&desired_file, &current),
+        [format!(
+            "~ override of the role {} in the category \"Projects\" ({}): allow none, deny \
+             send_messages",
+            id(10),
+            id(20)
+        )]
+    );
+    desired["workspaces"][0]["categories"][0]["overrides"] = json!([{ "role": id(11) }]);
+    assert_eq!(
+        changes(&file(desired), &current),
+        [
+            json!({ "change": "set_category_override", "category": id(20), "role": id(11),
+                 "allow": [], "deny": [] })
+        ]
+    );
+}
+
+#[test]
+fn format_4_a_channel_is_synced_again_or_keeps_its_own_overrides() {
+    let current = file(synced_value());
+    let mut desired = synced_value();
+    // The channel with its own overrides is synced again: one change, and no override.
+    desired["workspaces"][0]["channels"][1]["synced"] = json!(true);
+    desired["workspaces"][0]["channels"][1]["overrides"] = json!([]);
+    // The synced channel keeps the override of the category and adds one of its own.
+    desired["workspaces"][0]["channels"][0]["synced"] = json!(false);
+    desired["workspaces"][0]["channels"][0]["overrides"] = json!([
+        { "role": id(11), "allow": ["manage_messages"] },
+        { "role": id(10), "deny": ["attach_files"] },
+    ]);
+    let desired_file = file(desired.clone());
+    assert_eq!(
+        changes(&desired_file, &current),
+        [
+            json!({ "change": "set_channel_sync", "channel": id(30), "synced": false }),
+            json!({ "change": "set_channel_override", "channel": id(30), "role": id(10),
+                    "allow": [], "deny": ["attach_files"] }),
+            json!({ "change": "set_channel_sync", "channel": id(32), "synced": true }),
+        ]
+    );
+    let lines = lines(&desired_file, &current);
+    assert!(
+        lines[0].contains("stop the sync with its category"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains("the rules of people in it are replaced"),
+        "{lines:?}"
+    );
+
+    // An override that the category gives and that the entry does not state is removed
+    // after the channel stops the sync, so that the channel has the overrides of the entry.
+    desired["workspaces"][0]["channels"][0]["overrides"] =
+        json!([{ "role": id(10), "deny": ["attach_files"] }]);
+    let planned = changes(&file(desired), &current);
+    assert_eq!(
+        planned[..3],
+        [
+            json!({ "change": "set_channel_sync", "channel": id(30), "synced": false }),
+            json!({ "change": "set_channel_override", "channel": id(30), "role": id(10),
+                    "allow": [], "deny": ["attach_files"] }),
+            json!({ "change": "set_channel_override", "channel": id(30), "role": id(11),
+                    "allow": [], "deny": [] }),
+        ]
+    );
+}
+
+#[test]
+fn format_4_a_new_channel_in_a_category_is_synced_unless_its_entry_says_otherwise() {
+    let current = file(synced_value());
+    let mut desired = synced_value();
+    desired["workspaces"][0]["channels"] = json!([
+        { "id": id(40), "name": "taken", "kind": "text", "category": id(20), "synced": true },
+        { "id": id(41), "name": "apart", "kind": "text", "category": id(20), "synced": false,
+          "overrides": [{ "role": id(10), "deny": ["view_channel"] }] },
+    ]);
+    assert_eq!(
+        changes(&file(desired), &current),
+        [
+            json!({ "change": "create_channel", "id": id(40), "workspace": id(1),
+                    "kind": "text", "name": "taken", "category": id(20) }),
+            json!({ "change": "create_channel", "id": id(41), "workspace": id(1),
+                    "kind": "text", "name": "apart", "category": id(20) }),
+            json!({ "change": "set_channel_sync", "channel": id(41), "synced": false }),
+            json!({ "change": "set_channel_override", "channel": id(41), "role": id(10),
+                    "allow": [], "deny": ["view_channel"] }),
+            json!({ "change": "set_channel_override", "channel": id(41), "role": id(11),
+                    "allow": [], "deny": [] }),
+        ]
+    );
+}
+
+#[test]
+fn format_4_a_channel_without_a_category_that_moves_into_one_states_every_override() {
+    let current = file(synced_value());
+    let mut desired = synced_value();
+    desired["workspaces"][0]["channels"] = json!([
+        { "id": id(33), "name": "loose", "kind": "text", "category": id(20), "synced": false,
+          "overrides": [{ "role": id(10), "allow": ["attach_files"] }] },
+    ]);
+    // The export does not tell whether the channel takes the overrides of the category when
+    // it moves, so every override of the entry is sent; the server does not change an
+    // override that it holds already.
+    assert_eq!(
+        changes(&file(desired), &current),
+        [
+            json!({ "change": "update_channel", "id": id(33), "category": id(20) }),
+            json!({ "change": "set_channel_sync", "channel": id(33), "synced": false }),
+            json!({ "change": "set_channel_override", "channel": id(33), "role": id(10),
+                    "allow": ["attach_files"], "deny": [] }),
+            json!({ "change": "set_channel_override", "channel": id(33), "role": id(11),
+                    "allow": [], "deny": [] }),
+        ]
+    );
+}
+
+#[test]
+fn format_4_a_format_2_override_of_a_synced_channel_is_compared_with_its_category() {
+    let current = file(synced_value());
+    let mut desired = synced_value();
+    desired["format"] = json!(2);
+    desired["workspaces"][0]["channels"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("synced");
+    desired["workspaces"][0]["channels"][0]["overrides"] =
+        json!([{ "role": id(11), "allow": ["manage_messages"] }]);
+    assert_eq!(
+        changes(&file(desired.clone()), &current),
+        Vec::<Value>::new()
+    );
+    desired["workspaces"][0]["channels"][0]["overrides"] =
+        json!([{ "role": id(11), "allow": ["mention_everyone"] }]);
+    assert_eq!(
+        changes(&file(desired), &current),
+        [
+            json!({ "change": "set_channel_override", "channel": id(30), "role": id(11),
+                 "allow": ["mention_everyone"], "deny": [] })
+        ]
+    );
+}
+
+#[test]
+fn format_4_a_file_with_a_wrong_sync_state_or_category_override_is_refused() {
+    let current = file(synced_value());
+    let cases = [
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "channels": [{ "id": id(30), "name": "general", "kind": "text",
+                    "synced": true, "overrides": [{ "role": id(11), "allow": ["view_channel"] }] }] }] }),
+            "is synced with its category and states overrides",
+        ),
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "channels": [{ "id": id(30), "name": "general", "kind": "text",
+                    "category": null, "synced": true }] }] }),
+            "is synced with its category and has no category",
+        ),
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "channels": [{ "id": id(33), "name": "loose", "kind": "text",
+                    "synced": true }] }] }),
+            "is synced with its category and has no category",
+        ),
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "categories": [{ "id": id(20), "name": "Projects",
+                    "overrides": [{ "role": id(19), "allow": ["view_channel"] }] }] }] }),
+            "which is no role of its workspace",
+        ),
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "categories": [{ "id": id(20), "name": "Projects",
+                    "overrides": [{ "role": id(11), "allow": ["view_channel"],
+                                    "deny": ["view_channel"] }] }] }] }),
+            "in the category",
+        ),
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "categories": [{ "id": id(20), "name": "Projects",
+                    "overrides": [{ "role": id(11), "allow": ["view_channel"] },
+                                  { "role": id(11), "deny": ["view_channel"] }] }] }] }),
+            "two overrides of the role",
+        ),
+        (
+            json!({ "format": 4, "workspaces": [{ "id": id(1), "name": "Main",
+                "categories": [{ "id": id(20), "name": "Projects",
+                    "overrides": [{ "role": id(11), "allow": ["view_channel"] }] }] }],
+                "delete": { "roles": [id(11)] } }),
+            "which is listed for deletion",
+        ),
+    ];
+    for (desired, stated) in cases {
+        let found = problems(desired.clone(), &current);
+        assert!(found.contains(stated), "{desired}: {found}");
+    }
+    for format in [3, 4] {
+        let accepted = file(json!({ "format": format }));
+        assert_eq!(changes(&accepted, &current), Vec::<Value>::new());
+    }
+    assert!(problems(json!({ "format": 5 }), &current).contains("the formats 1 to 4"));
 }

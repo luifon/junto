@@ -4,14 +4,15 @@
 //! the server exported. An entry is matched by its identifier. An entry that the file does
 //! not hold is kept, and an optional field that an entry does not hold keeps its value.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 
+use junto_protocol::WorkspacePermission;
 use junto_protocol::ids::StructureId;
 use junto_protocol::structure::ChannelKind;
 use junto_protocol::structure_file::{
-    CategoryEntry, ChannelEntry, OLDEST_STRUCTURE_FORMAT, RoleEntry, STRUCTURE_FORMAT,
-    StructureChange, StructureFile, WorkspaceEntry,
+    CategoryEntry, ChannelEntry, OLDEST_STRUCTURE_FORMAT, OverrideEntry, RoleEntry,
+    STRUCTURE_FORMAT, StructureChange, StructureFile, WorkspaceEntry,
 };
 
 const NAME_MAX_CHARS: usize = 64;
@@ -224,6 +225,12 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
             unique(planner, "category", category.id);
             planner.check_name("category", category.id, &category.name);
             kept(planner, "category", category.id, &delete.categories);
+            check_overrides(
+                planner,
+                ("category", category.id),
+                &category.overrides,
+                &delete.roles,
+            );
         }
         for channel in &workspace.channels {
             unique(planner, "channel", channel.id);
@@ -246,29 +253,27 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
                     channel.id
                 ));
             }
-            let mut roles = HashSet::new();
-            for entry in &channel.overrides {
-                if !roles.insert(entry.role) {
+            if channel.synced == Some(true) {
+                if !channel.overrides.is_empty() {
                     planner.problem(format!(
-                        "the channel {} has two overrides of the role {}",
-                        channel.id, entry.role
+                        "the channel {} is synced with its category and states overrides; a \
+                         synced channel takes the overrides of its category",
+                        channel.id
                     ));
                 }
-                if delete.roles.contains(&entry.role) {
+                if channel.category == Some(None) {
                     planner.problem(format!(
-                        "the channel {} has an override of the role {}, which is listed for \
-                         deletion",
-                        channel.id, entry.role
-                    ));
-                }
-                if !set(&entry.allow).is_disjoint(&set(&entry.deny)) {
-                    planner.problem(format!(
-                        "the override of the role {} in the channel {} has a permission in \
-                         both allow and deny",
-                        entry.role, channel.id
+                        "the channel {} is synced with its category and has no category",
+                        channel.id
                     ));
                 }
             }
+            check_overrides(
+                planner,
+                ("channel", channel.id),
+                &channel.overrides,
+                &delete.roles,
+            );
         }
     }
     for (what, list) in [
@@ -283,6 +288,38 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
             if !deleted.insert(*id) {
                 planner.problem(format!("the {what} {id} is listed for deletion twice"));
             }
+        }
+    }
+}
+
+/// Refuses two overrides of one role at a place, an override of a role that the file deletes,
+/// and a permission in both sets.
+fn check_overrides(
+    planner: &mut Planner<'_>,
+    (what, id): (&str, StructureId),
+    overrides: &[OverrideEntry],
+    deleted_roles: &[StructureId],
+) {
+    let mut roles = HashSet::new();
+    for entry in overrides {
+        if !roles.insert(entry.role) {
+            planner.problem(format!(
+                "the {what} {id} has two overrides of the role {}",
+                entry.role
+            ));
+        }
+        if deleted_roles.contains(&entry.role) {
+            planner.problem(format!(
+                "the {what} {id} has an override of the role {}, which is listed for deletion",
+                entry.role
+            ));
+        }
+        if !set(&entry.allow).is_disjoint(&set(&entry.deny)) {
+            planner.problem(format!(
+                "the override of the role {} in the {what} {id} has a permission in both allow \
+                 and deny",
+                entry.role
+            ));
         }
     }
 }
@@ -599,12 +636,17 @@ fn existing_workspace(
         .iter()
         .map(|category| category.id)
         .collect();
+    let mut rules: HashMap<StructureId, Rules> = found
+        .categories
+        .iter()
+        .map(|category| (category.id, stored(&category.overrides)))
+        .collect();
     for category in &entry.categories {
-        match found
+        let existing = found
             .categories
             .iter()
-            .find(|existing| existing.id == category.id)
-        {
+            .find(|existing| existing.id == category.id);
+        match existing {
             Some(existing) => update_category(planner, category, existing),
             None => {
                 let elsewhere = places.categories.get(&category.id);
@@ -615,17 +657,22 @@ fn existing_workspace(
             }
         }
         categories.insert(category.id);
+        category_overrides(planner, category, &mut rules, &role_names);
     }
     for channel in &entry.channels {
         if !references_exist(planner, channel, &categories, &role_names) {
             continue;
         }
-        match found
+        let existing = found
             .channels
             .iter()
-            .find(|existing| existing.id == channel.id)
-        {
-            Some(existing) => update_channel(planner, channel, existing, &role_names),
+            .find(|existing| existing.id == channel.id);
+        match existing {
+            Some(existing) => {
+                if !update_channel(planner, channel, existing) {
+                    continue;
+                }
+            }
             None => {
                 let elsewhere = places
                     .channels
@@ -634,9 +681,10 @@ fn existing_workspace(
                 if foreign(planner, "channel", channel.id, elsewhere, id) {
                     continue;
                 }
-                create_channel(planner, id, channel, &role_names);
+                create_channel(planner, id, channel);
             }
         }
+        channel_rules(planner, channel, existing, &rules, &role_names);
     }
 }
 
@@ -718,13 +766,16 @@ fn new_workspace(planner: &mut Planner<'_>, places: &Places<'_>, entry: &Workspa
         }
     }
     let mut categories = HashSet::new();
+    let mut rules: HashMap<StructureId, Rules> = HashMap::new();
     for category in &entry.categories {
         create_category(planner, id, category);
         categories.insert(category.id);
+        category_overrides(planner, category, &mut rules, &role_names);
     }
     for channel in &entry.channels {
         if references_exist(planner, channel, &categories, &role_names) {
-            create_channel(planner, id, channel, &role_names);
+            create_channel(planner, id, channel);
+            channel_rules(planner, channel, None, &rules, &role_names);
         }
     }
 }
@@ -746,22 +797,38 @@ fn references_exist(
         ));
         exist = false;
     }
+    roles_exist(
+        planner,
+        ("channel", channel.id),
+        &channel.overrides,
+        role_names,
+    ) && exist
+}
+
+/// Requires that every override names a role of the workspace, in the file or on the
+/// server, and that no two overrides stand for one role of the server.
+fn roles_exist(
+    planner: &mut Planner<'_>,
+    (what, id): (&str, StructureId),
+    overrides: &[OverrideEntry],
+    role_names: &HashMap<StructureId, StructureId>,
+) -> bool {
+    let mut exist = true;
     let mut named: HashSet<StructureId> = HashSet::new();
-    for entry in &channel.overrides {
+    for entry in overrides {
         let Some(role) = role_names.get(&entry.role) else {
             planner.problem(format!(
-                "the channel {} has an override of the role {}, which is no role of its \
+                "the {what} {id} has an override of the role {}, which is no role of its \
                  workspace in the file or on the server",
-                channel.id, entry.role
+                entry.role
             ));
             exist = false;
             continue;
         };
         if !named.insert(*role) {
             planner.problem(format!(
-                "the channel {} has two overrides that stand for the same role {role} of the \
-                 server",
-                channel.id
+                "the {what} {id} has two overrides that stand for the same role {role} of the \
+                 server"
             ));
             exist = false;
         }
@@ -851,60 +918,240 @@ fn update_category(planner: &mut Planner<'_>, category: &CategoryEntry, existing
     }
 }
 
-fn overrides(
+/// The allow set and the deny set of one override.
+type Sets = (BTreeSet<WorkspacePermission>, BTreeSet<WorkspacePermission>);
+
+/// The role overrides of one place, by the identifier of the role on the server.
+type Rules = BTreeMap<StructureId, Sets>;
+
+/// The overrides of a place as the server states them.
+fn stored(overrides: &[OverrideEntry]) -> Rules {
+    overrides
+        .iter()
+        .map(|entry| (entry.role, (set(&entry.allow), set(&entry.deny))))
+        .collect()
+}
+
+/// The overrides that a file states for a place, by the identifier of the role on the server.
+fn stated(overrides: &[OverrideEntry], role_names: &HashMap<StructureId, StructureId>) -> Rules {
+    overrides
+        .iter()
+        .filter_map(|entry| {
+            let role = role_names.get(&entry.role)?;
+            Some((*role, (set(&entry.allow), set(&entry.deny))))
+        })
+        .collect()
+}
+
+/// The overrides of a place after the stated ones: an override with two empty sets is removed,
+/// and an override that is not stated is kept.
+fn merged(mut base: Rules, stated: &Rules) -> Rules {
+    for (role, sets) in stated {
+        if sets.0.is_empty() && sets.1.is_empty() {
+            base.remove(role);
+        } else {
+            base.insert(*role, sets.clone());
+        }
+    }
+    base
+}
+
+#[derive(Clone, Copy)]
+enum Place<'a> {
+    Category(StructureId, &'a str),
+    Channel(StructureId, &'a str),
+}
+
+/// The changes that set the stated overrides of a place. With `before`, an override that
+/// equals the one of the server is no change; without it, the server state is not known and
+/// every stated override is sent: an override that the server holds already changes nothing.
+fn override_changes(
     planner: &mut Planner<'_>,
-    channel: &ChannelEntry,
-    existing: Option<&ChannelEntry>,
-    role_names: &HashMap<StructureId, StructureId>,
+    place: Place<'_>,
+    stated: &Rules,
+    before: Option<&Rules>,
 ) {
-    for entry in &channel.overrides {
-        let Some(role) = role_names.get(&entry.role).copied() else {
-            continue;
-        };
-        let stored = existing
-            .and_then(|existing| existing.overrides.iter().find(|stored| stored.role == role));
-        let before = stored.map_or_else(Default::default, |stored| {
-            (set(&stored.allow), set(&stored.deny))
-        });
-        let after = (set(&entry.allow), set(&entry.deny));
-        if before == after {
+    for (role, after) in stated {
+        if let Some(before) = before
+            && before.get(role).cloned().unwrap_or_default() == *after
+        {
             continue;
         }
-        let allow: Vec<_> = after.0.into_iter().collect();
-        let deny: Vec<_> = after.1.into_iter().collect();
+        let allow: Vec<_> = after.0.iter().copied().collect();
+        let deny: Vec<_> = after.1.iter().copied().collect();
+        let (what, id, name) = match place {
+            Place::Category(id, name) => ("category", id, name),
+            Place::Channel(id, name) => ("channel", id, name),
+        };
         let line = if allow.is_empty() && deny.is_empty() {
             format!(
-                "- override of the role {role} in the channel {:?} ({}): remove",
-                channel.name.trim(),
-                channel.id
+                "- override of the role {role} in the {what} {:?} ({id}): remove",
+                name.trim()
             )
         } else {
             format!(
-                "~ override of the role {role} in the channel {:?} ({}): allow {}, deny {}",
-                channel.name.trim(),
-                channel.id,
+                "~ override of the role {role} in the {what} {:?} ({id}): allow {}, deny {}",
+                name.trim(),
                 names(&allow),
                 names(&deny)
             )
         };
-        planner.add(
-            StructureChange::SetChannelOverride {
-                channel: channel.id,
-                role,
+        let change = match place {
+            Place::Category(..) => StructureChange::SetCategoryOverride {
+                category: id,
+                role: *role,
                 allow,
                 deny,
             },
-            line,
-        );
+            Place::Channel(..) => StructureChange::SetChannelOverride {
+                channel: id,
+                role: *role,
+                allow,
+                deny,
+            },
+        };
+        planner.add(change, line);
     }
 }
 
-fn create_channel(
+/// The changes of the overrides of a category, and its overrides after them in `rules`.
+fn category_overrides(
     planner: &mut Planner<'_>,
-    workspace: StructureId,
-    channel: &ChannelEntry,
+    category: &CategoryEntry,
+    rules: &mut HashMap<StructureId, Rules>,
     role_names: &HashMap<StructureId, StructureId>,
 ) {
+    if !roles_exist(
+        planner,
+        ("category", category.id),
+        &category.overrides,
+        role_names,
+    ) {
+        return;
+    }
+    let stated = stated(&category.overrides, role_names);
+    let before = rules.remove(&category.id).unwrap_or_default();
+    let place = Place::Category(category.id, &category.name);
+    override_changes(planner, place, &stated, Some(&before));
+    rules.insert(category.id, merged(before, &stated));
+}
+
+/// The category of a channel after the changes of its entry.
+fn category_after(channel: &ChannelEntry, existing: Option<&ChannelEntry>) -> Option<StructureId> {
+    match channel.category {
+        Some(category) => category,
+        None => existing.and_then(|existing| existing.category.flatten()),
+    }
+}
+
+/// What a channel uses after its creation or update, as the server decides it (ADR 0304):
+/// whether it is synced with its category, and its own overrides. `None` when the server
+/// state cannot be told from its export.
+fn after_move(
+    existing: Option<&ChannelEntry>,
+    category: Option<StructureId>,
+    rules: &HashMap<StructureId, Rules>,
+) -> Option<(bool, Rules)> {
+    // A new channel in a category is synced with it; a new channel without one has no
+    // overrides.
+    let Some(existing) = existing else {
+        return Some((category.is_some(), Rules::new()));
+    };
+    let before = existing.category.flatten();
+    let synced = before.is_some() && existing.synced == Some(true);
+    let own = stored(&existing.overrides);
+    if before == category {
+        return Some((synced, own));
+    }
+    match (synced, before, category) {
+        // A synced channel that moves takes the overrides of its new category, or keeps
+        // those of its former category as its own when it leaves for none.
+        (true, _, Some(_)) => Some((true, Rules::new())),
+        (true, former, None) => Some((
+            false,
+            former
+                .and_then(|former| rules.get(&former).cloned())
+                .unwrap_or_default(),
+        )),
+        // A channel with its own overrides keeps them when it moves.
+        (false, Some(_), _) => Some((false, own)),
+        (false, None, _) if !own.is_empty() => Some((false, own)),
+        // A channel without a category and without overrides takes the overrides of the
+        // category that it moves into, unless it had overrides before; the export does not
+        // tell which.
+        (false, None, _) => None,
+    }
+}
+
+/// The changes of the sync state and of the overrides of a channel, after its creation or
+/// update.
+fn channel_rules(
+    planner: &mut Planner<'_>,
+    channel: &ChannelEntry,
+    existing: Option<&ChannelEntry>,
+    rules: &HashMap<StructureId, Rules>,
+    role_names: &HashMap<StructureId, StructureId>,
+) {
+    let id = channel.id;
+    let name = channel.name.trim();
+    let category = category_after(channel, existing);
+    let category_rules = category
+        .and_then(|category| rules.get(&category).cloned())
+        .unwrap_or_default();
+    let mut stated = stated(&channel.overrides, role_names);
+    let state = after_move(existing, category, rules);
+    let uses = match (channel.synced, category) {
+        (Some(true), None) => {
+            planner.problem(format!(
+                "the channel {id} is synced with its category and has no category"
+            ));
+            return;
+        }
+        (Some(true), Some(_)) => {
+            if state.as_ref().is_none_or(|(synced, _)| !synced) {
+                planner.add(
+                    StructureChange::SetChannelSync {
+                        channel: id,
+                        synced: true,
+                    },
+                    format!(
+                        "~ channel {name:?} ({id}): sync with its category; its own \
+                         overrides and the rules of people in it are replaced by those of the \
+                         category"
+                    ),
+                );
+            }
+            Some(category_rules)
+        }
+        (Some(false), Some(_)) => match state {
+            Some((false, own)) => Some(own),
+            synced => {
+                planner.add(
+                    StructureChange::SetChannelSync {
+                        channel: id,
+                        synced: false,
+                    },
+                    format!(
+                        "~ channel {name:?} ({id}): stop the sync with its category; it \
+                         keeps the rules of the category as its own"
+                    ),
+                );
+                // The overrides that the channel takes from its category are its own
+                // after this change; those that the entry does not state are removed,
+                // so that the channel has the overrides of the entry.
+                for role in category_rules.keys() {
+                    stated.entry(*role).or_default();
+                }
+                synced.map(|_| category_rules)
+            }
+        },
+        (Some(false) | None, None) => state.map(|(_, own)| own),
+        (None, Some(_)) => state.map(|(synced, own)| if synced { category_rules } else { own }),
+    };
+    override_changes(planner, Place::Channel(id, name), &stated, uses.as_ref());
+}
+
+fn create_channel(planner: &mut Planner<'_>, workspace: StructureId, channel: &ChannelEntry) {
     let id = channel.id;
     let kind = match channel.kind {
         ChannelKind::Text => "text",
@@ -953,22 +1200,21 @@ fn create_channel(
             ),
         );
     }
-    overrides(planner, channel, None, role_names);
 }
 
+/// The changes of an existing channel. False when the entry cannot be applied.
 fn update_channel(
     planner: &mut Planner<'_>,
     channel: &ChannelEntry,
     existing: &ChannelEntry,
-    role_names: &HashMap<StructureId, StructureId>,
-) {
+) -> bool {
     let id = existing.id;
     if channel.kind != existing.kind {
         planner.problem(format!(
             "the channel {id} has another kind on the server; the kind of a channel does not \
              change"
         ));
-        return;
+        return false;
     }
     let mut differences = Differences::default();
     let name = differences.name(&existing.name, &channel.name);
@@ -1018,7 +1264,7 @@ fn update_channel(
             line,
         );
     }
-    overrides(planner, channel, Some(existing), role_names);
+    true
 }
 
 fn planned_positions(

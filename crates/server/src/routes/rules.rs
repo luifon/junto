@@ -510,6 +510,39 @@ pub(crate) async fn sync_channel_in(
     channel_rules_of(connection, &channel).await
 }
 
+/// Sets whether a channel takes the rules of its category: `true` runs the sync of
+/// [`sync_channel_in`]; `false` keeps the rules of the category as the channel's own, which
+/// changes no permission. A channel already in the requested state is not changed.
+pub(crate) async fn set_channel_sync_in(
+    connection: &mut PgConnection,
+    calls: &Calls,
+    access: &Access,
+    now: OffsetDateTime,
+    (channel_id, synced): (ChannelId, bool),
+) -> ApiResult<ChannelRules> {
+    if synced {
+        return sync_channel_in(connection, calls, access, now, channel_id).await;
+    }
+    let (record, scope) = access.channel(connection, channel_id).await?;
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+    let channel = record.channel;
+    if channel.category_id.is_none() {
+        return Err(ApiError::invalid(
+            "the channel has no category whose rules it could keep",
+        ));
+    }
+    lock_channel(connection, channel_id).await?;
+    if rules::synced(connection, channel_id).await? {
+        crate::access::inheritance::detach_channels(connection, &[channel_id]).await?;
+        let ids = (channel.workspace_id, channel_id);
+        announce_sync(connection, now, Some(access.account_id), ids, None, false).await?;
+    }
+    channel_rules_of(connection, &channel).await
+}
+
 /// What a move of a channel to another category changes in its rules: a synced channel takes
 /// the rules of the destination category, and a synced channel that leaves its category for
 /// none keeps the rules it had, as its own. The caller must hold what the new rules add

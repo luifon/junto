@@ -400,14 +400,14 @@ async fn review_l7_extreme_reorder_cannot_exhaust_creation() {
 }
 
 #[tokio::test]
-async fn review_l5_export_uses_format_two() {
+async fn review_l5_export_uses_format_four() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let exported: StructureExport = server
         .get(&owner, "/api/v1/structure")
         .await
         .ok(StatusCode::OK);
-    assert_eq!(exported.structure.format, 2);
+    assert_eq!(exported.structure.format, 4);
 }
 
 #[tokio::test]

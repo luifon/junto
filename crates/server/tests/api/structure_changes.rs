@@ -143,7 +143,7 @@ async fn rule_20_the_export_holds_the_whole_structure_for_an_administrator() {
     assert_eq!(export.revision.len(), 32);
     assert_eq!(server.structure(&owner).await, export);
     let file = &export.structure;
-    assert_eq!(file.format, 2);
+    assert_eq!(file.format, 4);
     assert!(file.delete.is_empty());
     assert_eq!(file.server_roles.len(), 1);
     assert_eq!(file.server_roles[0].id.as_uuid(), server_role.as_uuid());

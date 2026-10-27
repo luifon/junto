@@ -12,7 +12,7 @@ ADR 0204 decides a setup tool that exports the structure of a server to a file, 
 
 Structure document:
 
-- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, categories, channels that are not deleted, and overrides. It names no account and no member.
+- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, its categories with their role overrides, and its channels that are not deleted with their sync state and their own role overrides. A channel that is synced with its category states no overrides, because it uses those of the category (ADR 0304). It names no account and no member, so it holds no rule of a person.
 - The route needs the administrator permission, because the document holds every channel and every override. The document is read from one snapshot, with a number of statements that does not depend on the size of the structure.
 
 Revision:
@@ -23,7 +23,8 @@ Revision:
 Changes route:
 
 - `POST /api/v1/structure/changes` takes a revision and a list of at most 200 changes, and applies them in their order in one transaction.
-- A change is one of: create, update or delete a server role; create, rename or delete a workspace; create, update or delete a workspace role; create, update or delete a category; create, update or delete a channel; update the call settings of a voice channel; set a channel override.
+- A change is one of: create, update or delete a server role; create, rename or delete a workspace; create, update or delete a workspace role; create, update or delete a category; create, update or delete a channel; update the call settings of a voice channel; set a channel override; set a category override; set the sync state of a channel.
+- An override of a category runs the function of the category rule route, with the grant ceiling in the category and in each of its synced channels (ADR 0306). The sync state `true` runs the function of the sync route. The sync state `false` copies the rules of the category to the channel, which then uses them as its own; it changes no permission, so it has no grant ceiling, and it writes the audit entry and the event `channel_rules_synced` of a detach. A channel already in the requested state is not changed.
 - Each change runs the function of its single route: the same permission checks with the grant rule (ADR 0304), the same limits (ADR 0301), the same ceilings (ADR 0306), the same audit entries and the same events. The single routes and this route share that function.
 - The route needs the administrator permission, because the revision is the revision of the whole structure, which only an administrator reads.
 - The transaction computes the revision of the structure before the first change. When it differs from the revision of the request, the answer is `conflict` and nothing is changed. A request without changes gets the same check.

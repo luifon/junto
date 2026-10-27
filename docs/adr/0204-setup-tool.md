@@ -29,4 +29,4 @@ The structure of a server consists of workspaces, categories, channels, roles an
 - A failed `apply` leaves the structure as it was.
 - The server computes a revision of its structure (ADR 0211) and exposes the endpoint that applies a set of changes in one transaction.
 - The tool has no access that the public API does not give.
-- The file contains only the structure listed above.
+- The file contains only the structure listed above. Permission overrides are those of roles; a rule of a person names an account and is not in the file (ADR 0212).

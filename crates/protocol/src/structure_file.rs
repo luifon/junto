@@ -24,7 +24,7 @@ use crate::structure::{ChannelKind, present};
 
 /// The format version that this build writes. It reads every format from
 /// [`OLDEST_STRUCTURE_FORMAT`] to this one (ADR 0212).
-pub const STRUCTURE_FORMAT: u32 = 2;
+pub const STRUCTURE_FORMAT: u32 = 4;
 
 /// The oldest format version that this build reads.
 pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
@@ -34,16 +34,16 @@ pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
 pub const MOST_CHANGES: usize = 200;
 
 /// The structure of a server: its server roles and its workspaces with their roles,
-/// categories, channels and overrides.
+/// categories, channels and the role overrides of categories and channels.
 ///
 /// An entry is matched by its identifier. An entry that is absent is kept as it is. In an
-/// entry, an absent optional field keeps its value. A file contains no member, no message
-/// and no secret.
+/// entry, an absent optional field keeps its value. A file contains no member, no account,
+/// no rule of a person, no message and no secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StructureFile {
-    /// The version of the file format: 2. This tool also reads format 1.
+    /// The version of the file format: 4. This tool also reads the formats 1 to 3.
     pub format: u32,
     #[serde(default)]
     pub server_roles: Vec<ServerRoleEntry>,
@@ -145,6 +145,10 @@ pub struct CategoryEntry {
     /// Absent: a new category goes after the last one, an existing one keeps its position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,
+    /// The role overrides of the category, which its synced channels take. An override of a
+    /// role that is absent here is kept; an override with two empty sets is removed.
+    #[serde(default)]
+    pub overrides: Vec<OverrideEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +184,12 @@ pub struct ChannelEntry {
     /// For a voice channel only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hides_occupants: Option<bool>,
+    /// For a channel in a category. `true`: the channel takes the overrides of its category,
+    /// and the entry states no overrides of its own. `false`: the channel has its own
+    /// overrides. Absent: a new channel in a category is synced, and an existing channel
+    /// keeps its state until a stated override changes what it uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced: Option<bool>,
     /// The overrides that the file states. An override of a role that is absent here is
     /// kept; an override with two empty sets is removed.
     #[serde(default)]
@@ -318,7 +328,9 @@ pub enum StructureChange {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hides_occupants: Option<bool>,
     },
-    /// Two empty sets remove the override.
+    /// Two empty sets remove the override. The first change of what a synced channel uses
+    /// first copies the overrides of its category to the channel, which is no longer synced
+    /// afterwards.
     SetChannelOverride {
         channel: StructureId,
         role: StructureId,
@@ -326,6 +338,22 @@ pub enum StructureChange {
         allow: Vec<WorkspacePermission>,
         #[serde(default)]
         deny: Vec<WorkspacePermission>,
+    },
+    /// Two empty sets remove the override. The synced channels of the category take it.
+    SetCategoryOverride {
+        category: StructureId,
+        role: StructureId,
+        #[serde(default)]
+        allow: Vec<WorkspacePermission>,
+        #[serde(default)]
+        deny: Vec<WorkspacePermission>,
+    },
+    /// `true`: the channel takes the rules of its category again, and its own rules, also
+    /// those of people, are removed. `false`: the channel keeps the rules of its category as
+    /// its own and is no longer synced. The channel must have a category.
+    SetChannelSync {
+        channel: StructureId,
+        synced: bool,
     },
     DeleteChannel {
         id: StructureId,
@@ -363,6 +391,8 @@ impl StructureChange {
             Self::UpdateChannel { .. } => "update_channel",
             Self::UpdateCallSettings { .. } => "update_call_settings",
             Self::SetChannelOverride { .. } => "set_channel_override",
+            Self::SetCategoryOverride { .. } => "set_category_override",
+            Self::SetChannelSync { .. } => "set_channel_sync",
             Self::DeleteChannel { .. } => "delete_channel",
             Self::DeleteCategory { .. } => "delete_category",
             Self::DeleteWorkspaceRole { .. } => "delete_workspace_role",
@@ -456,6 +486,61 @@ mod tests {
             serde_json::to_value(&cleared).unwrap()["category"],
             serde_json::Value::Null
         );
+    }
+
+    #[test]
+    fn category_overrides_and_the_sync_state_of_a_channel_are_read_and_written() {
+        let text = serde_json::json!({ "format": 4, "server_roles": [], "workspaces": [{
+            "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f", "name": "Main",
+            "roles": [],
+            "categories": [{ "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e60", "name": "Work",
+                "overrides": [{ "role": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e61",
+                    "allow": ["view_channel"], "deny": ["send_messages"] }] }],
+            "channels": [
+                { "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e62", "name": "plans",
+                  "kind": "text", "category": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e60",
+                  "synced": true, "overrides": [] },
+                { "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e63", "name": "notes",
+                  "kind": "text", "category": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e60",
+                  "synced": false,
+                  "overrides": [{ "role": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e61",
+                    "allow": [], "deny": ["view_channel"] }] },
+            ] }] });
+        let file: StructureFile = serde_json::from_value(text.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&file).unwrap(), text);
+
+        // A file of an earlier format has neither field: a category without overrides and a
+        // channel without a stated sync state, which is not written.
+        let older = serde_json::json!({ "format": 2, "workspaces": [{
+            "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f", "name": "Main",
+            "categories": [{ "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e60", "name": "Work" }],
+            "channels": [{ "id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e62", "name": "plans",
+                "kind": "text" }] }] });
+        let older: StructureFile = serde_json::from_value(older).unwrap();
+        let written = serde_json::to_value(&older).unwrap();
+        let workspace = &written["workspaces"][0];
+        assert_eq!(
+            workspace["categories"][0]["overrides"],
+            serde_json::json!([])
+        );
+        assert!(workspace["channels"][0].get("synced").is_none());
+        assert_eq!(STRUCTURE_FORMAT, 4);
+    }
+
+    #[test]
+    fn the_changes_of_category_overrides_and_of_the_sync_state_are_tagged() {
+        for change in [
+            serde_json::json!({ "change": "set_category_override",
+                "category": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e60",
+                "role": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e61",
+                "allow": ["view_channel"], "deny": ["send_messages"] }),
+            serde_json::json!({ "change": "set_channel_sync",
+                "channel": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e62", "synced": false }),
+        ] {
+            let read: StructureChange = serde_json::from_value(change.clone()).unwrap();
+            assert_eq!(read.name(), change["change"]);
+            assert_eq!(serde_json::to_value(&read).unwrap(), change);
+        }
     }
 
     #[test]

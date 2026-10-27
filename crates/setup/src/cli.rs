@@ -40,7 +40,14 @@ options:
 
 The access token is never an argument. `apply` applies all changes of a plan or none.
 `plan` and `apply` do not delete what a file does not hold; a file lists the channels,
-categories, roles, server roles and workspaces to delete under \"delete\".";
+categories, roles, server roles and workspaces to delete under \"delete\".
+
+A file states the overrides of roles in categories and channels, and for each channel in a
+category whether it is synced with its category. It names no account, so it holds no rule of
+a person, and a file of one server applies to a server with other accounts. `apply` keeps
+the rules of people on the server. One exception: a channel that the file syncs with its
+category again takes all rules of the category, and its own rules, also those of people, are
+removed, as the sync route of the server does.";
 
 /// What the binary was started with.
 #[derive(Debug, Clone, Default)]

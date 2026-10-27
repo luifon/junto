@@ -132,7 +132,7 @@ async fn rule_40_export_writes_the_structure_of_the_server() {
         .await
         .ok(StatusCode::OK);
     assert_eq!(file, export.structure);
-    assert_eq!(file.format, 2);
+    assert_eq!(file.format, 4);
     assert_eq!(file.workspaces.len(), 1);
     assert_eq!(file.workspaces[0].channels.len(), 2);
     assert!(
@@ -588,7 +588,7 @@ async fn rule_48_a_file_that_cannot_be_applied_is_refused_before_any_change() {
     let main = server.default_workspace(&owner).await.id.to_string();
     let before = state(&server).await;
     let cases = [
-        (json!({ "format": 3 }), "the file has the format 3"),
+        (json!({ "format": 5 }), "the file has the format 5"),
         (json!({ "format": 1, "workspace": [] }), "unknown field"),
         (json!({ "workspaces": [] }), "missing field `format`"),
         (
@@ -679,7 +679,7 @@ async fn rule_49_the_token_and_the_address_are_given_safely() {
     ];
     let (code, out, _) = run_with(from_file, None, None).await;
     assert_eq!(code, SUCCESS);
-    assert!(out.contains("\"format\": 2"));
+    assert!(out.contains("\"format\": 4"));
 
     let (code, _, err) = run_with(vec!["export"], Some("jat_unknown"), Some(base)).await;
     assert_eq!(code, FAILURE);
@@ -698,6 +698,9 @@ async fn rule_49_the_token_and_the_address_are_given_safely() {
     let (code, out, _) = run_with(vec!["--help"], None, None).await;
     assert_eq!(code, SUCCESS);
     assert!(out.contains("usage: junto-setup"));
+    // The help states that a file holds no rule of a person and that apply keeps them.
+    assert!(out.contains("no rule of\na person"), "{out}");
+    assert!(out.contains("the rules of people on the server"), "{out}");
 }
 
 #[tokio::test]

@@ -70,6 +70,7 @@ mod stream_review2;
 mod stream_support;
 mod structure;
 mod structure_changes;
+mod structure_rules;
 mod support;
 mod telemetry;
 mod time_limits;

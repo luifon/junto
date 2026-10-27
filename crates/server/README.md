@@ -184,13 +184,13 @@ The answer carries the token (`jat_...`) once; the server stores its hash. A tok
 
 ```sh
 export JUNTO_SERVER=https://chat.example.test JUNTO_ACCESS_TOKEN=jat_...
-junto-setup export --out structure.json     # workspaces, roles, categories, channels, overrides
+junto-setup export --out structure.json     # workspaces, roles, categories, channels, role overrides
 junto-setup plan structure.json             # prints what apply would change; changes nothing
 junto-setup apply structure.json            # all changes or none
 junto-setup plan structure.json --out plan.json && junto-setup apply --plan plan.json
 ```
 
-The token is never an argument: it comes from `JUNTO_ACCESS_TOKEN` or from `--token-file`. The tool sends it over `https`, or over `http` to a loopback address. The file format is in [`docs/api/structure-file.json`](../../docs/api/structure-file.json). An entry is matched by its `id`; an entry or an optional field that the file does not hold is kept; only what the file lists under `delete` is deleted: `channels`, `categories`, `roles`, `server_roles` and `workspaces`. A new entry gets a new UUID from its author; the server generates the identifier of the object and keeps the identifier of the file for later files. A workspace with `"default": true` and a role with `"everyone": true` stand for the default workspace and for the everyone role of the server that the file is applied to, so the export of one server can be applied to another.
+The token is never an argument: it comes from `JUNTO_ACCESS_TOKEN` or from `--token-file`. The tool sends it over `https`, or over `http` to a loopback address. The file format is in [`docs/api/structure-file.json`](../../docs/api/structure-file.json). An entry is matched by its `id`; an entry or an optional field that the file does not hold is kept; only what the file lists under `delete` is deleted: `channels`, `categories`, `roles`, `server_roles` and `workspaces`. A new entry gets a new UUID from its author; the server generates the identifier of the object and keeps the identifier of the file for later files. A workspace with `"default": true` and a role with `"everyone": true` stand for the default workspace and for the everyone role of the server that the file is applied to, so the export of one server can be applied to another. A category states the overrides of its roles; a channel in a category states `synced`, and only a channel that is not synced states overrides of its own. The file holds no rule of a person, and `apply` keeps the rules of people of the server, except that a channel that the file syncs with its category again takes all rules of the category (ADR 0212).
 
 `GET /api/v1/structure` returns the document with its revision, and `POST /api/v1/structure/changes` applies at most 200 changes in one transaction. A request that names another revision than the current one gets `conflict`, and so does a plan after any change of the structure. Both routes need the administrator permission.
 

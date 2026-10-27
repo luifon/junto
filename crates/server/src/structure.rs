@@ -167,24 +167,33 @@ pub const EXPORT_ROLES: &str =
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = r.id
      order by r.is_everyone desc, r.id";
 pub const EXPORT_CATEGORIES: &str =
-    "select c.workspace_id, coalesce(i.identifier, c.id), c.name, c.position
+    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.position
      from categories c
      left join structure_identifiers i on i.kind = 'category' and i.object_id = c.id
      order by c.position, c.id";
 pub const EXPORT_CHANNELS: &str =
     "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.kind,
             coalesce(ci.identifier, c.category_id), c.position, c.permanent_messages,
-            c.user_limit, c.hides_occupants
+            c.user_limit, c.hides_occupants, c.category_id is not null and c.permissions_synced
      from channels c
      left join structure_identifiers i on i.kind = 'channel' and i.object_id = c.id
      left join structure_identifiers ci on ci.kind = 'category' and ci.object_id = c.category_id
      where c.deleted_at is null
      order by c.workspace_id, c.position, c.id";
+/// The role overrides that a channel uses as its own: those of a channel that is not synced
+/// with a category (ADR 0304). A synced channel takes the overrides of its category.
 pub const EXPORT_OVERRIDES: &str =
     "select o.channel_id, coalesce(i.identifier, o.role_id), o.allow, o.deny
      from channel_overrides o
+     join channels c on c.id = o.channel_id
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = o.role_id
+     where not c.permissions_synced or c.category_id is null
      order by o.channel_id, o.role_id";
+pub const EXPORT_CATEGORY_OVERRIDES: &str =
+    "select o.category_id, coalesce(i.identifier, o.role_id), o.allow, o.deny
+     from category_overrides o
+     left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = o.role_id
+     order by o.category_id, o.role_id";
 
 type ChannelRow = (
     Uuid,
@@ -196,6 +205,7 @@ type ChannelRow = (
     i32,
     bool,
     Option<i32>,
+    bool,
     bool,
 );
 
@@ -222,6 +232,21 @@ pub async fn export(connection: &mut PgConnection, access: &Access) -> ApiResult
     })
 }
 
+/// The role overrides of each place, in the order of the rows.
+fn override_entries(
+    rows: Vec<(Uuid, Uuid, i64, i64)>,
+) -> ApiResult<HashMap<Uuid, Vec<OverrideEntry>>> {
+    let mut entries: HashMap<Uuid, Vec<OverrideEntry>> = HashMap::new();
+    for (place, role, allow, deny) in rows {
+        entries.entry(place).or_default().push(OverrideEntry {
+            role: StructureId::from_uuid(role),
+            allow: db::workspace_list(db::workspace_permissions(allow)?),
+            deny: db::workspace_list(db::workspace_permissions(deny)?),
+        });
+    }
+    Ok(entries)
+}
+
 /// The whole structure of the server as the transaction sees it.
 async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let default_workspace = store::default_workspace(&mut *connection).await?;
@@ -235,7 +260,7 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let roles: Vec<(WorkspaceId, Uuid, String, i64, bool, i32)> = sqlx::query_as(EXPORT_ROLES)
         .fetch_all(&mut *connection)
         .await?;
-    let categories: Vec<(WorkspaceId, Uuid, String, i32)> = sqlx::query_as(EXPORT_CATEGORIES)
+    let categories: Vec<(Uuid, WorkspaceId, Uuid, String, i32)> = sqlx::query_as(EXPORT_CATEGORIES)
         .fetch_all(&mut *connection)
         .await?;
     let channels: Vec<ChannelRow> = sqlx::query_as(EXPORT_CHANNELS)
@@ -244,18 +269,12 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let overrides: Vec<(Uuid, Uuid, i64, i64)> = sqlx::query_as(EXPORT_OVERRIDES)
         .fetch_all(&mut *connection)
         .await?;
+    let category_overrides: Vec<(Uuid, Uuid, i64, i64)> = sqlx::query_as(EXPORT_CATEGORY_OVERRIDES)
+        .fetch_all(&mut *connection)
+        .await?;
 
-    let mut overrides_of: HashMap<Uuid, Vec<OverrideEntry>> = HashMap::new();
-    for (channel_id, role, allow, deny) in overrides {
-        overrides_of
-            .entry(channel_id)
-            .or_default()
-            .push(OverrideEntry {
-                role: StructureId::from_uuid(role),
-                allow: db::workspace_list(db::workspace_permissions(allow)?),
-                deny: db::workspace_list(db::workspace_permissions(deny)?),
-            });
-    }
+    let mut overrides_of = override_entries(overrides)?;
+    let mut category_overrides_of = override_entries(category_overrides)?;
     let mut entries: Vec<WorkspaceEntry> = Vec::with_capacity(workspaces.len());
     let mut place: HashMap<WorkspaceId, usize> = HashMap::new();
     for (id, entry, name) in workspaces {
@@ -280,18 +299,30 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
                 permissions: Some(db::workspace_list(db::workspace_permissions(permissions)?)),
             });
     }
-    for (workspace_id, entry, name, position) in categories {
+    for (id, workspace_id, entry, name, position) in categories {
         entry_of(&mut entries, &place, workspace_id)?
             .categories
             .push(CategoryEntry {
                 id: StructureId::from_uuid(entry),
                 name,
                 position: Some(position),
+                overrides: category_overrides_of.remove(&id).unwrap_or_default(),
             });
     }
     for row in channels {
-        let (id, workspace_id, entry, name, kind, category, position, permanent, limit, hides) =
-            row;
+        let (
+            id,
+            workspace_id,
+            entry,
+            name,
+            kind,
+            category,
+            position,
+            permanent,
+            limit,
+            hides,
+            synced,
+        ) = row;
         let kind = ChannelKind::read(&kind)?;
         let voice = kind == ChannelKind::Voice;
         entry_of(&mut entries, &place, workspace_id)?
@@ -307,6 +338,7 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
                     .then(|| limit.map(db::count).transpose())
                     .transpose()?,
                 hides_occupants: voice.then_some(hides),
+                synced: category.is_some().then_some(synced),
                 overrides: overrides_of.remove(&id).unwrap_or_default(),
             });
     }
@@ -639,6 +671,46 @@ async fn apply_one(
                 change,
             )
             .await?;
+            Ok(())
+        }
+        StructureChange::SetCategoryOverride {
+            category,
+            role,
+            allow,
+            deny,
+        } => {
+            let category_id = resolve(&mut *connection, Category, *category).await?;
+            let role_id = resolve(&mut *connection, role_kind, *role).await?;
+            let workspace_id = workspace_of(
+                &mut *connection,
+                "select workspace_id from categories where id = $1",
+                category_id,
+            )
+            .await?;
+            let change = crate::routes::rules::Change::set(&SetChannelOverride {
+                allow: allow.clone(),
+                deny: deny.clone(),
+            })?;
+            let subject = RuleSubject::Role {
+                role_id: WorkspaceRoleId::from_uuid(role_id),
+            };
+            let ceiling = app.config.limits.most_person_rules_per_place;
+            crate::routes::rules::set_category_rule_in(
+                connection,
+                (&app.calls, ceiling),
+                access,
+                now,
+                (workspace_id, CategoryId::from_uuid(category_id)),
+                (subject, change),
+            )
+            .await?;
+            Ok(())
+        }
+        StructureChange::SetChannelSync { channel, synced } => {
+            let channel_id = resolve(&mut *connection, Channel, *channel).await?;
+            let ids = (ChannelId::from_uuid(channel_id), *synced);
+            crate::routes::rules::set_channel_sync_in(connection, &app.calls, access, now, ids)
+                .await?;
             Ok(())
         }
         StructureChange::DeleteChannel { id } => {
