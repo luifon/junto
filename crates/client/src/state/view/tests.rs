@@ -494,6 +494,9 @@ fn channels_without_a_category_come_first_by_kind_and_then_each_category_with_it
                 &SectionTitle::Category("Projects".to_owned()),
                 vec!["Daily", "random"]
             ),
+            // The server lists a category without a channel only to a person who can
+            // manage it (ADR 0304).
+            (&SectionTitle::Category("Empty".to_owned()), vec![]),
         ]
     );
 }

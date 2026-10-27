@@ -2260,6 +2260,9 @@ fn sections(
             made.push(ChannelSection { title, rows });
         }
     }
+    // The server lists a category only while it holds a channel that the person sees or
+    // the person can manage it (ADR 0304), so a listed category without a channel here is
+    // one that the person manages.
     for category in &workspace.categories {
         let rows: Vec<ChannelRow> = workspace
             .channels
@@ -2267,12 +2270,10 @@ fn sections(
             .filter(|channel| in_category(channel) == Some(category.id))
             .map(row)
             .collect();
-        if !rows.is_empty() {
-            made.push(ChannelSection {
-                title: SectionTitle::Category(category.name.clone()),
-                rows,
-            });
-        }
+        made.push(ChannelSection {
+            title: SectionTitle::Category(category.name.clone()),
+            rows,
+        });
     }
     made
 }

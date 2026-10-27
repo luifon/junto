@@ -1,13 +1,14 @@
 //! The screens of the permissions of using a channel (ADR 0790): the read-only line in
 //! place of the composer, the refused attach and reactions, a channel without its history,
-//! the refused join, and a call whose channel withholds sources.
+//! the refused join, a call whose channel withholds sources, and a category without a
+//! channel that the person manages.
 
 use std::sync::Arc;
 
 use junto_client::shell::call::CallTab;
 use junto_client::state::view::ServerSnapshot;
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::structure::ChannelPermissions;
+use junto_client_core::protocol::structure::{Category, ChannelPermissions};
 
 use super::messages::{GENERAL, acme_with, general, none, prepare};
 use super::{
@@ -123,6 +124,24 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             harbor(),
         ]),
         show_daily_tab(CallTab::Settings),
+    )?;
+    // The server lists a category without a channel only to a person who manages it
+    // (ADR 0304): the column draws its heading (ADR 0730).
+    let managed = acme_with(|model| {
+        let studio = Arc::make_mut(&mut model.workspaces[0]);
+        studio.categories.push(Category {
+            id: id(66),
+            workspace_id: studio.workspace.id,
+            name: "Planning Board".to_owned(),
+            position: 0,
+        });
+    });
+    studio.draw(
+        Screen::new(
+            "permissions-managed-empty-category",
+            vec![managed, harbor()],
+        ),
+        |shell, _, cx| prepare(shell, none(), cx),
     )?;
     Ok(())
 }
