@@ -5,8 +5,7 @@
 
 use gpui::{
     AnyElement, AppContext, Context, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Point, ScrollWheelEvent,
-    Styled, Window, div,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Point, ScrollWheelEvent, Styled, Window, div,
 };
 use gpui_base::slider::SliderEvent;
 
@@ -28,7 +27,10 @@ impl Shell {
         &mut self,
         zoom: f32,
         cx: &mut Context<Self>,
-    ) -> (gpui::Entity<gpui_base::slider::SliderState>, gpui::FocusHandle) {
+    ) -> (
+        gpui::Entity<gpui_base::slider::SliderState>,
+        gpui::FocusHandle,
+    ) {
         let control = self.picture_zoom.get_or_insert_with(|| {
             let state = cx.new(|_| LevelSlider::state(ZOOM_PERCENT, zoom * 100.0));
             let changes = cx.subscribe(&state, |this, _, event: &SliderEvent, cx| {
@@ -131,12 +133,14 @@ impl Shell {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.picture_drag = None),
             )
-            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
-                let lines = f32::from(event.delta.pixel_delta(window.line_height()).y);
-                let zoom = (crop.zoom * (1.0 + lines * 0.002)).clamp(1.0, MOST_ZOOM);
-                this.state
-                    .update(cx, |state, cx| state.zoom_picture(zoom, cx));
-            }));
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
+                    let lines = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                    let zoom = (crop.zoom * (1.0 + lines * 0.002)).clamp(1.0, MOST_ZOOM);
+                    this.state
+                        .update(cx, |state, cx| state.zoom_picture(zoom, cx));
+                }),
+            );
         div()
             .id("picture-crop-layer")
             .absolute()

@@ -248,7 +248,10 @@ fn a_chosen_picture_is_cut_scaled_and_set_and_removed(cx: &mut TestAppContext) {
     assert!(window.shows("account-picture-choose"));
     assert_eq!(window.profile().unwrap().picture, None);
 
-    for (file, refusal) in [(large, Refusal::TooLarge), (text_file, Refusal::Unsupported)] {
+    for (file, refusal) in [
+        (large, Refusal::TooLarge),
+        (text_file, Refusal::Unsupported),
+    ] {
         window.in_shell(|shell, _, cx| shell.set_account_picture_path(file, cx));
         window.until("the file is refused", |window| {
             window.refused(AskKind::SetPicture).is_some()
@@ -308,7 +311,9 @@ fn a_chosen_picture_is_cut_scaled_and_set_and_removed(cx: &mut TestAppContext) {
     window.in_shell(|shell, _, cx| shell.set_account_picture_path(again, cx));
     window.until_picture_crop();
     window.click("picture-crop-cancel");
-    window.until("the cut is closed", |window| window.picture_crop().is_none());
+    window.until("the cut is closed", |window| {
+        window.picture_crop().is_none()
+    });
     assert_eq!(puts(&proxy), 2);
 
     // "Remove picture" removes it on the server.

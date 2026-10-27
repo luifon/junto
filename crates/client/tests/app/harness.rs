@@ -1321,11 +1321,19 @@ pub fn dispatch_from_the_window(action: Box<dyn gpui::Action>) -> Press {
 /// program writes one.
 pub fn picture_png(width: u32, height: u32) -> Vec<u8> {
     let picture = image::RgbaImage::from_fn(width, height, |x, y| {
-        image::Rgba([(x % 251) as u8, (y % 241) as u8, ((x / 7 + y / 5) % 239) as u8, 255])
+        image::Rgba([
+            (x % 251) as u8,
+            (y % 241) as u8,
+            ((x / 7 + y / 5) % 239) as u8,
+            255,
+        ])
     });
     let mut bytes = Vec::new();
     image::DynamicImage::ImageRgba8(picture)
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
         .unwrap();
     bytes
 }
@@ -1333,7 +1341,8 @@ pub fn picture_png(width: u32, height: u32) -> Vec<u8> {
 impl Window {
     /// The cut of a chosen picture that is open (ADR 0119).
     pub fn picture_crop(&mut self) -> Option<junto_client::state::picture_crop::PictureCropView> {
-        self.state.read_with(&self.cx, |state, _| state.picture_crop())
+        self.state
+            .read_with(&self.cx, |state, _| state.picture_crop())
     }
 
     /// Waits for the cut of a chosen picture and returns it as drawn.

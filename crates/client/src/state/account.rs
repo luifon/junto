@@ -1781,8 +1781,7 @@ pub(crate) mod tests {
     /// The read of a chosen file and the check of what a server stores, as the window does
     /// them before the cut and before a request.
     fn read_picture(path: &std::path::Path) -> Result<Vec<u8>, &'static str> {
-        let bytes =
-            profile::read_avatar_file(path).map_err(|_| text::account::PICTURE_NOT_READ)?;
+        let bytes = profile::read_avatar_file(path).map_err(|_| text::account::PICTURE_NOT_READ)?;
         match profile::check_avatar(&bytes) {
             Ok(_) => Ok(bytes),
             Err(invalid) => Err(text::account::invalid_picture(invalid)),

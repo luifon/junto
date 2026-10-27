@@ -159,7 +159,12 @@ mod tests {
 
     fn png(width: u32, height: u32, alpha: u8) -> Vec<u8> {
         let image = RgbaImage::from_fn(width, height, |x, y| {
-            image::Rgba([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8, alpha])
+            image::Rgba([
+                (x % 251) as u8,
+                (y % 241) as u8,
+                ((x + y) % 239) as u8,
+                alpha,
+            ])
         });
         let mut bytes = Vec::new();
         DynamicImage::ImageRgba8(image)

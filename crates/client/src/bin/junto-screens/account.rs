@@ -178,7 +178,10 @@ fn draw_profile(studio: &mut Studio) -> Result<(), String> {
     ];
     // The cut of a chosen picture over the account page (ADR 0119): at its largest square,
     // and zoomed in.
-    for (name, zoom) in [("account-picture-crop", 1.0), ("account-picture-crop-zoomed", 2.5)] {
+    for (name, zoom) in [
+        ("account-picture-crop", 1.0),
+        ("account-picture-crop-zoomed", 2.5),
+    ] {
         studio.draw(
             Screen::new(name, with_picture()),
             move |shell, window, cx| {
@@ -699,7 +702,9 @@ fn crop_photo() -> Vec<u8> {
         }
     });
     let mut bytes = Vec::new();
-    let _ = image::DynamicImage::ImageRgba8(picture)
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png);
+    let _ = image::DynamicImage::ImageRgba8(picture).write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    );
     bytes
 }

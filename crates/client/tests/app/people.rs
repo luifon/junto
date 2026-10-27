@@ -363,8 +363,7 @@ fn the_picture_of_the_preset_is_set_in_the_settings_and_goes_to_a_server_joined_
     });
     window.use_picture(&files.path().join("missing.png"));
     window.until("the missing file is told", |window| {
-        refusal(window).as_deref()
-            == Some(junto_client::text::picture_refusal(Refusal::Unreadable))
+        refusal(window).as_deref() == Some(junto_client::text::picture_refusal(Refusal::Unreadable))
     });
     let held = |directory: &Path| {
         ["avatar.png", "avatar.jpg", "avatar.webp"]

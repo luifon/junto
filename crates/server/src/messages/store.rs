@@ -31,9 +31,9 @@ pub async fn changed(
 ) -> ApiResult<()> {
     let audience: Option<ChangeAudience> =
         sqlx::query_as("select call_id,readers,thread_root from messages where id=$1")
-        .bind(message_id)
-        .fetch_optional(&mut *connection)
-        .await?;
+            .bind(message_id)
+            .fetch_optional(&mut *connection)
+            .await?;
     let (call_id, readers, thread_root) = audience.unwrap_or_default();
     // The delivery adds the state of the thread of a reply for each account (ADR 0412).
     let event = Event::MessageChanged {

@@ -163,13 +163,8 @@ impl AppState {
     pub fn move_picture(&mut self, by: (f32, f32), cx: &mut Context<Self>) {
         if let Some(crop) = self.picture_crop.as_mut().filter(|crop| !crop.saving) {
             let wanted = (crop.centre.0 + by.0, crop.centre.1 + by.1);
-            crop.centre = Crop::around(
-                crop.chosen.width(),
-                crop.chosen.height(),
-                crop.zoom,
-                wanted,
-            )
-            .centre();
+            crop.centre =
+                Crop::around(crop.chosen.width(), crop.chosen.height(), crop.zoom, wanted).centre();
             cx.notify();
         }
     }

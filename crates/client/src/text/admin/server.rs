@@ -38,7 +38,8 @@ pub fn files(count: u32) -> String {
 // Why a file is not sent as the logo, and why the server did not take it.
 pub const LOGO_NOT_READ: &str =
     "The file could not be read. Check that the file exists and that you may open it.";
-pub const LOGO_TOO_LARGE: &str = "The server did not take the image: it is larger than this server takes.";
+pub const LOGO_TOO_LARGE: &str =
+    "The server did not take the image: it is larger than this server takes.";
 pub const LOGO_UNSUPPORTED: &str = "The server did not take the image. It takes a still PNG, JPEG or WebP image of at most \
      1024 by 1024 pixels.";
 pub const LOGO_NOT_ALLOWED: &str =

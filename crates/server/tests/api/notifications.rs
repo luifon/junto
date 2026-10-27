@@ -449,21 +449,15 @@ async fn rule_34_35_36_notices_read_state_snapshot_and_stream_levels() {
     let mentioned = mention(&server, &owner, &channel, &reader).await;
     let full = events(&server, &reader, cursor, Level::Full).await;
     let background = events(&server, &reader, cursor, Level::Background).await;
-    assert!(
-        full.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
-        )
-    );
-    assert!(
-        !background.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
-        )
-    );
-    assert!(
-        background.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==mentioned.id)
-        )
-    );
+    assert!(full.iter().any(
+        |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
+    ));
+    assert!(!background.iter().any(
+        |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
+    ));
+    assert!(background.iter().any(
+        |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==mentioned.id)
+    ));
     let notice = notices(&server, &reader)
         .await
         .into_iter()
@@ -958,7 +952,9 @@ async fn round2_added_mention_upgrades_a_thread_notice() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==child.id))
+            .any(
+                |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==child.id)
+            )
     );
 }
 
@@ -973,7 +969,9 @@ async fn round2_dnd_checks_replayed_notices_and_channel_invites() {
         events(server, &scene.ben, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==message.id))
+            .any(
+                |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==message.id)
+            )
     );
     settings(
         server,
