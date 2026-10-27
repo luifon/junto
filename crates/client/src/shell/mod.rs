@@ -278,6 +278,11 @@ pub struct Shell {
     /// How often the window was drawn.
     #[cfg(feature = "test-support")]
     draws: usize,
+    /// A change of the state came since the view was last derived (review M8).
+    view_stale: bool,
+    /// How often the view was derived from the state. A test reads it.
+    #[cfg(feature = "test-support")]
+    derivations: usize,
     /// How often received pictures asked for a drawing of the window.
     #[cfg(feature = "test-support")]
     pub(crate) picture_draws: usize,
@@ -549,42 +554,15 @@ impl Shell {
                     }
                 }
             }),
-            cx.observe_in(&state, window, |this, state, window, cx| {
+            // A change of the state marks the view as stale; the next drawing derives it once,
+            // however many changes came since the last drawing (review M8: each answer of a
+            // profile derived the whole view).
+            cx.observe(&state, |this, _, cx| {
                 #[cfg(feature = "test-support")]
                 crate::panics::test_support::reached(
                     crate::panics::test_support::Handler::StateObserver,
                 );
-                // A share that is being chosen belongs to one call, in both windows.
-                this.drop_stale_share_picker(window, cx);
-                // The call window shows the place of the call, with its chat (ADR 0772).
-                let view = if this.detached {
-                    state.read(cx).call_view()
-                } else {
-                    if let Some((submitted, result)) =
-                        state.update(cx, |state, _| state.take_name_result())
-                    {
-                        this.name_was_decided(&submitted, result, window, cx);
-                    }
-                    state.read(cx).view()
-                };
-                // A layer whose server is gone, or whose work is done, has nothing to show.
-                this.drop_stale_layer(&view, window, cx);
-                // The list of the members who can be invited belongs to the call that
-                // the window shows.
-                if view.lists().is_none_or(|lists| lists.call.is_none()) {
-                    this.invite_open = false;
-                }
-                // A search that ended empties its field.
-                let searched = this
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.search_text.is_some());
-                if searched && view.search_text.is_none() {
-                    this.type_search("", window, cx);
-                }
-                this.view = Some(view.clone());
-                this.take_handed_drafts(window, cx);
-                this.feed_changed(&view, window, cx);
+                this.view_stale = true;
                 cx.notify();
             }),
             // Only the main window shows the administration.
@@ -691,6 +669,9 @@ impl Shell {
             main_taken: None,
             #[cfg(feature = "test-support")]
             draws: 0,
+            view_stale: false,
+            #[cfg(feature = "test-support")]
+            derivations: 0,
             #[cfg(feature = "test-support")]
             picture_draws: 0,
             share_reads: 0,
@@ -868,6 +849,52 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn drawn(&self) -> Option<&ShellView> {
         self.drawn.as_ref()
+    }
+
+    /// How often the window derived its view from the state.
+    #[cfg(feature = "test-support")]
+    pub fn derivations(&self) -> usize {
+        self.derivations
+    }
+
+    /// Derives the view from the state once for the changes since the last drawing, and
+    /// does what a change of the view asks of the window.
+    fn take_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "test-support")]
+        {
+            self.derivations += 1;
+        }
+        let state = self.state.clone();
+        // A share that is being chosen belongs to one call, in both windows.
+        self.drop_stale_share_picker(window, cx);
+        // The call window shows the place of the call, with its chat (ADR 0772).
+        let view = if self.detached {
+            state.read(cx).call_view()
+        } else {
+            if let Some((submitted, result)) = state.update(cx, |state, _| state.take_name_result())
+            {
+                self.name_was_decided(&submitted, result, window, cx);
+            }
+            state.read(cx).view()
+        };
+        // A layer whose server is gone, or whose work is done, has nothing to show.
+        self.drop_stale_layer(&view, window, cx);
+        // The list of the members who can be invited belongs to the call that the window
+        // shows.
+        if view.lists().is_none_or(|lists| lists.call.is_none()) {
+            self.invite_open = false;
+        }
+        // A search that ended empties its field.
+        let searched = self
+            .view
+            .as_ref()
+            .is_some_and(|view| view.search_text.is_some());
+        if searched && view.search_text.is_none() {
+            self.type_search("", window, cx);
+        }
+        self.view = Some(view.clone());
+        self.take_handed_drafts(window, cx);
+        self.feed_changed(&view, window, cx);
     }
 
     /// How often the window was drawn for any cause, how often received pictures asked
@@ -1238,6 +1265,9 @@ impl Render for Shell {
             crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
+        if std::mem::take(&mut self.view_stale) {
+            self.take_state(window, cx);
+        }
         if self.detached {
             return self.render_detached(window, cx);
         }

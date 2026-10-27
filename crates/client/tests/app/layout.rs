@@ -208,6 +208,28 @@ fn a_window_that_is_not_active_shows_a_late_notice_at_once(cx: &mut TestAppConte
     );
 }
 
+/// Many changes of the state between two drawings derive the view of the window once: each
+/// answer of a profile derived the whole view, which with 601 members and 2,001 accounts
+/// held the window thread for seconds (review M8).
+#[gpui::test]
+fn many_changes_of_the_state_between_two_drawings_derive_the_view_once(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Layout");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.settle();
+    let before = window.in_shell(|shell, _, _| shell.derivations());
+    for _ in 0..50 {
+        window.state.update(&mut window.cx, |_, cx| cx.notify());
+    }
+    window.settle();
+    let derived = window.in_shell(|shell, _, _| shell.derivations()) - before;
+    assert!(
+        (1..=2).contains(&derived),
+        "50 changes between two drawings derived the view {derived} times"
+    );
+}
+
 /// A system line longer than the message list is wide wraps inside the list, at every width
 /// of the window. The day separator spans the list.
 #[gpui::test]

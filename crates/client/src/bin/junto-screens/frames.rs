@@ -246,7 +246,7 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
                     .collect(),
             );
         });
-        let (window, _, _) = studio.open(
+        let (window, _, state) = studio.open(
             Screen::new("people-frames", people),
             Box::new(move |shell: &mut Shell, window, cx| {
                 if panel {
@@ -273,6 +273,23 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
                 "{members} members (member list {}) and the People page of {accounts} accounts",
                 if panel { "open" } else { "closed" }
             ))
+        );
+        // A burst of answers of profiles: each changes the state, as an answer does, and
+        // one frame follows (review M8).
+        const ANSWERS: u32 = 500;
+        let started = Instant::now();
+        for _ in 0..ANSWERS {
+            studio.cx.update(|cx| state.update(cx, |_, cx| cx.notify()));
+        }
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.refresh())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+        println!(
+            "{members} members and {accounts} accounts: {ANSWERS} changes of the state and one \
+             frame in {:.0} ms",
+            started.elapsed().as_secs_f64() * 1_000.0
         );
         studio
             .cx
