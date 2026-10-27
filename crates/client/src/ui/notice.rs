@@ -3,7 +3,7 @@ use gpui::{
     RenderOnce, StyleRefinement, Styled, Window, div,
 };
 
-use super::held::{Moves, held};
+use super::held::{MovedControls, Moves, held};
 use crate::theme::u;
 
 /// The place of a late result, such as a notice or the answer of a request (ADR 0730). It
@@ -43,6 +43,14 @@ impl NoticeSlot {
     /// height moves every control of the region.
     pub fn centred(mut self) -> Self {
         self.moves = Moves::Column;
+        self
+    }
+
+    /// The slot is in a region whose only controls are `controls`, such as the tiles of the
+    /// stage of a call: a change of its height waits only while the pointer is on one of
+    /// them.
+    pub fn moves_over(mut self, controls: &MovedControls) -> Self {
+        self.moves = Moves::Over(controls.clone());
         self
     }
 

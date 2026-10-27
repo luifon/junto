@@ -663,6 +663,10 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     scene.window.until("the open microphone is told", |window| {
         window.shows("call-told") && window.view().controls.microphone == MicrophoneButton::Open
     });
+    // The notice waits while the pointer rests on the tile, which the end of the meeting made
+    // larger; the person moves the pointer to the notice before the press.
+    let told = scene.window.cx.debug_bounds("call-told").unwrap();
+    scene.window.move_pointer(told.center());
     scene.window.click("dismiss-call-told");
     assert!(!scene.window.shows("call-told"));
 
@@ -1436,7 +1440,7 @@ fn the_own_tile_is_open_while_the_report_of_the_state_waits(cx: &mut TestAppCont
 
 #[gpui::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
-fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
+fn a_late_entry_notice_waits_while_the_pointer_is_on_the_call_tile(cx: &mut TestAppContext) {
     let mut scene = scene(cx);
     enter(&scene.world, &scene.caller, scene.target);
     scene.join_in_the_window();
@@ -1459,6 +1463,8 @@ fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
         .cx
         .debug_bounds(crate::harness::selector(selector.clone()))
         .unwrap();
+    // The pointer rests on the tile: the notice waits, and the tile keeps its place.
+    scene.window.move_pointer(before.center());
     scene
         .world
         .run(scene.admin.handle.api().request_entry(scene.voice))
@@ -1474,6 +1480,17 @@ fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
             .unwrap(),
         before
     );
+    // The pointer leaves the tile toward the notice: the notice takes its height.
+    let place = scene.window.cx.debug_bounds("entry-prompt").unwrap();
+    scene.window.move_pointer(place.center());
+    scene
+        .window
+        .until("the entry notice has its height", |window| {
+            window
+                .cx
+                .debug_bounds("entry-prompt")
+                .is_some_and(|notice| notice.top() < place.top())
+        });
 }
 
 #[gpui::test]

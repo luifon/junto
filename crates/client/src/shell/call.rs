@@ -663,6 +663,7 @@ impl Shell {
                                                 .role(Role::List)
                                                 .aria_label(text::IN_THE_CALL)
                                                 .debug_selector(|| "call-people".to_owned())
+                                                .relative()
                                                 .flex()
                                                 .flex_wrap()
                                                 .justify_center()
@@ -675,7 +676,8 @@ impl Shell {
                                                     large
                                                         .into_iter()
                                                         .map(|(index, p)| tile(index, p)),
-                                                ),
+                                                )
+                                                .child(self.stage_controls.mark()),
                                         )
                                         .when(!strip.is_empty(), |area| {
                                             area.child(
@@ -683,6 +685,7 @@ impl Shell {
                                                     .debug_selector(|| {
                                                         "call-focus-strip".to_owned()
                                                     })
+                                                    .relative()
                                                     .flex()
                                                     .flex_wrap()
                                                     .justify_center()
@@ -694,7 +697,8 @@ impl Shell {
                                                         strip
                                                             .into_iter()
                                                             .map(|(index, p)| tile(index, p)),
-                                                    ),
+                                                    )
+                                                    .child(self.stage_controls.mark()),
                                             )
                                         }),
                                 ),
@@ -2051,6 +2055,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<(Panel, AnyElement)>) {
         let theme = theme(cx);
+        self.stage_controls.clear();
         let stage = if self.state.read(cx).is_call_detached() && !self.detached {
             div()
                 .flex()

@@ -1681,6 +1681,7 @@ impl Shell {
             .role(Role::List)
             .aria_label(text::IN_THE_CALL)
             .debug_selector(|| "call-people".to_owned())
+            .relative()
             .flex()
             .flex_none()
             .items_start()
@@ -1703,7 +1704,8 @@ impl Shell {
                     .overflow_y_scroll()
             })
             .children(tiles)
-            .children(hidden_note);
+            .children(hidden_note)
+            .child(self.stage_controls.mark());
 
         div()
             .id("call-stage")

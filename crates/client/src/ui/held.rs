@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
@@ -11,7 +11,7 @@ use gpui::{
 use crate::text;
 
 /// The controls that a change of the height of a part moves (ADR 0730).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Moves {
     /// The controls under the top of the part, between its left and right edges: the part
     /// is in a region whose top does not move.
@@ -19,15 +19,48 @@ pub enum Moves {
     /// Every control between the left and right edges of the part: the part is in a region
     /// whose content is centred, such as a dialog or the stage of a call.
     Column,
+    /// The controls that wrote their bounds at the last drawing: the part is in a region
+    /// whose controls are a known group, such as the tiles of the stage of a call, and the
+    /// rest of the region holds no control.
+    Over(MovedControls),
 }
 
 impl Moves {
-    fn covers(self, part: Bounds<Pixels>, at: Point<Pixels>) -> bool {
+    fn covers(&self, part: Bounds<Pixels>, at: Point<Pixels>) -> bool {
         let beside = at.x < part.left() || at.x > part.right();
         match self {
             Self::Below => !beside && at.y >= part.top(),
             Self::Column => !beside,
+            Self::Over(controls) => controls.contain(at),
         }
+    }
+}
+
+/// The bounds of the controls that a change of the height of a part moves, written at each
+/// drawing of those controls ([`Moves::Over`]).
+#[derive(Debug, Clone, Default)]
+pub struct MovedControls(Rc<RefCell<Vec<Bounds<Pixels>>>>);
+
+impl MovedControls {
+    /// Forgets the bounds of the last drawing, before the controls are drawn again.
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+    }
+
+    /// An element over the whole of its parent, which must be positioned, that writes the
+    /// bounds of the parent.
+    pub fn mark(&self) -> impl IntoElement {
+        let controls = self.clone();
+        canvas(
+            move |bounds, _, _| controls.0.borrow_mut().push(bounds),
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    fn contain(&self, at: Point<Pixels>) -> bool {
+        self.0.borrow().iter().any(|bounds| bounds.contains(&at))
     }
 }
 
@@ -170,7 +203,8 @@ impl RenderOnce for Held {
                 .absolute()
                 .size_full(),
             );
-        let (most, moves, grows_at_once) = (self.most, self.moves, self.grows_at_once);
+        let (most, grows_at_once) = (self.most, self.grows_at_once);
+        let (moves, waits) = (self.moves.clone(), self.moves);
         let wanted = move |heights: Heights, rem: Pixels| match most {
             Some(most) => heights.content.min(most.to_pixels(rem)),
             None => heights.content,
@@ -242,6 +276,7 @@ impl RenderOnce for Held {
                         bounds
                     },
                     move |_, bounds, window, _| {
+                        let moves = waits.clone();
                         let pressing = waiting.clone();
                         window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
                             if phase == DispatchPhase::Capture {

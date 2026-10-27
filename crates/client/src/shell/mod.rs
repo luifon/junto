@@ -249,6 +249,9 @@ pub struct Shell {
     /// The panel of the call lies over the stage in this window, as it was drawn last: its
     /// open state then lasts only while it is open, and is not kept in the settings.
     pub(crate) call_panel_overlay: bool,
+    /// The tiles of the stage of the call as they were drawn last: a notice under the stage
+    /// waits while the pointer is on one of them (ADR 0730).
+    pub(crate) stage_controls: crate::ui::MovedControls,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
@@ -653,6 +656,7 @@ impl Shell {
             call_tab: CallTab::default(),
             call_panel_open: false,
             call_panel_overlay: false,
+            stage_controls: crate::ui::MovedControls::default(),
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
             volumes: HashMap::new(),
