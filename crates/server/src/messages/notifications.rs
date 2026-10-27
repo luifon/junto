@@ -437,7 +437,10 @@ pub async fn publish(
         now,
         notice_id,
         &audience,
-        &Event::NotificationChanged { message_id: id, notice: None },
+        &Event::NotificationChanged {
+            message_id: id,
+            notice: None,
+        },
     )
     .await
 }

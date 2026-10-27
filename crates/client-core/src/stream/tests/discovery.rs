@@ -337,7 +337,13 @@ async fn a_notice_event_reads_the_notices_and_the_messages_that_they_name() {
         chat.notices = vec![notice.clone()];
     });
     room.peer
-        .event(41, Event::NotificationChanged { message_id: far.id, notice: None })
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: far.id,
+                notice: None,
+            },
+        )
         .await;
     let model = rig
         .model_when("the notice with its message", |model| {
@@ -360,7 +366,13 @@ async fn a_notice_event_reads_the_notices_and_the_messages_that_they_name() {
     // The notice is read on another device: the list is read again and names nothing.
     room.chat(|chat| chat.notices.clear());
     room.peer
-        .event(43, Event::NotificationChanged { message_id: far.id, notice: None })
+        .event(
+            43,
+            Event::NotificationChanged {
+                message_id: far.id,
+                notice: None,
+            },
+        )
         .await;
     let model = rig
         .model_when("no notice", |model| model.notices.is_empty())
@@ -797,7 +809,13 @@ async fn a_named_message_that_the_server_answers_with_another_message_is_not_ask
         chat.answered_wrongly = vec![wanted];
     });
     room.peer
-        .event(41, Event::NotificationChanged { message_id: wanted, notice: None })
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: wanted,
+                notice: None,
+            },
+        )
         .await;
     rig.model_when("the read that failed", |model| {
         model.named(wanted) == Some(&Named::Failed)

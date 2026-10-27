@@ -964,7 +964,7 @@ impl ServerModel {
                 let inside = |message: &junto_protocol::message::Message| {
                     message.thread_root == Some(*root_id)
                 };
-                if self.read_covers_notice(&inside, *position)
+                if self.read_covers_notice(inside, *position)
                     && !self.notices_read_here(&inside, *position, at)
                 {
                     load.push(Part::Notices);
@@ -1007,7 +1007,7 @@ impl ServerModel {
                 let inside = |message: &junto_protocol::message::Message| {
                     message.thread_root.is_none() && PlaceId::of(&message.place) == id
                 };
-                if self.read_covers_notice(&inside, *position)
+                if self.read_covers_notice(inside, *position)
                     && !self.notices_read_here(&inside, *position, at)
                 {
                     load.push(Part::Notices);

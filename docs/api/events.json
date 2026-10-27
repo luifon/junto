@@ -1302,6 +1302,28 @@
           "minimum": 0,
           "type": "integer"
         },
+        "thread": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/ThreadState",
+              "description": "For a reply, the state of its thread for the account that receives the event, as\nthe unread threads list it: absent when the account neither follows the thread nor\nis named in it (revision 2, ADR 0412)."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thread_root": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/MessageId",
+              "description": "The root of the thread of a reply. Absent: the message is no reply (revision 2)."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "type": {
           "enum": [
             "message_changed"
@@ -1378,6 +1400,17 @@
       "properties": {
         "message_id": {
           "$ref": "#/components/schemas/MessageId"
+        },
+        "notice": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Notification",
+              "description": "The notice of the message for the account that receives the event, as the list\nof notices states it (revision 2, ADR 0409)."
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "type": {
           "enum": [
@@ -4465,6 +4498,28 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "thread": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ThreadState",
+                    "description": "For a reply, the state of its thread for the account that receives the event, as\nthe unread threads list it: absent when the account neither follows the thread nor\nis named in it (revision 2, ADR 0412)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "thread_root": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageId",
+                    "description": "The root of the thread of a reply. Absent: the message is no reply (revision 2)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "type": {
                 "enum": [
                   "message_changed"
@@ -4485,6 +4540,17 @@
             "properties": {
               "message_id": {
                 "$ref": "#/components/schemas/MessageId"
+              },
+              "notice": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Notification",
+                    "description": "The notice of the message for the account that receives the event, as the list\nof notices states it (revision 2, ADR 0409)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -5249,6 +5315,48 @@
         ],
         "type": "string"
       },
+      "Notification": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NotificationKind"
+          },
+          "message_id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "kind",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "NotificationKind": {
+        "enum": [
+          "message",
+          "mention",
+          "direct",
+          "thread",
+          "missed_call"
+        ],
+        "type": "string"
+      },
       "NotificationLevel": {
         "enum": [
           "all",
@@ -5827,6 +5935,52 @@
           "id",
           "at",
           "event"
+        ],
+        "type": "object"
+      },
+      "ThreadState": {
+        "properties": {
+          "follow_setting": {
+            "description": "The choice of the account. Absent: none, and the account follows a thread that it\nwrote in or was named in (ADR 0412).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "following": {
+            "description": "Whether the account follows the thread: its replies count as unread and notify.",
+            "type": "boolean"
+          },
+          "last_read": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "latest": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mentions": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "root_id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "unread": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "root_id",
+          "last_read",
+          "latest",
+          "unread",
+          "mentions"
         ],
         "type": "object"
       },

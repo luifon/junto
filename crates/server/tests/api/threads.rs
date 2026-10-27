@@ -1325,7 +1325,10 @@ async fn the_events_of_a_reply_state_the_thread_and_the_notice_of_the_account() 
         .unwrap();
     assert_eq!(
         (notice.message_id, notice.kind),
-        (answer.id, junto_protocol::discovery::NotificationKind::Thread)
+        (
+            answer.id,
+            junto_protocol::discovery::NotificationKind::Thread
+        )
     );
     // The root is no reply: its change names no thread.
     assert!(told.iter().all(|event| !matches!(
