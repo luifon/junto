@@ -1176,6 +1176,9 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
     });
     window.close();
     let mut window = crate::harness::open(cx, directory.path());
+    window.until("the window holds the first page", |window| {
+        window.unread_notices() == 50
+    });
     window.open_notices();
     window.until("the first page holds the notices of the bench", |window| {
         window.notices().is_some_and(|panel| {
