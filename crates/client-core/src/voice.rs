@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 5;
+pub const VOICE_FORMAT_VERSION: u32 = 6;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -35,6 +35,7 @@ const VOICE: Versioned = Versioned {
         settings_of_camera,
         settings_of_call_sounds,
         settings_of_sound_kinds,
+        settings_of_individual_sounds,
     ],
     limit: 512 * 1024,
 };
@@ -111,52 +112,101 @@ fn settings_of_sound_kinds(mut value: serde_json::Value) -> Result<serde_json::V
     Ok(value)
 }
 
-/// A kind of the sounds of the application (ADR 0707). Each kind has a switch of its own,
-/// as Discord has one for each sound.
+fn settings_of_individual_sounds(
+    mut value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let off = value
+        .get_mut("sounds")
+        .and_then(|sounds| sounds.get_mut("off"))
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("the sound switches are absent")?;
+    let mut expanded = Vec::new();
+    for kind in off.iter() {
+        let names: &[&str] = match kind.as_str() {
+            Some("people") => &["person_joined", "person_left"],
+            Some("own_microphone_and_sound") => {
+                &["microphone_off", "microphone_on", "sound_off", "sound_on"]
+            }
+            Some("own_call") => &["call_joined", "call_left", "moved", "connection_lost"],
+            Some("push_to_talk") => &["talk_starts", "talk_ends"],
+            Some("shares") => &[
+                "share_started",
+                "share_ended",
+                "viewer_joined",
+                "viewer_left",
+            ],
+            Some("requests") => &["invitation", "request"],
+            Some("recording") => &["recording_started", "recording_stopped"],
+            Some("hands") => &["hand_raised"],
+            _ => {
+                expanded.push(kind.clone());
+                continue;
+            }
+        };
+        expanded.extend(names.iter().map(|name| serde_json::Value::from(*name)));
+    }
+    *off = expanded;
+    Ok(value)
+}
+
+/// Each notification or call sound has an independent switch (ADR 0707).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoundKind {
-    /// A message of a place with the level "all messages", a reply in a followed thread.
     Messages,
-    /// A mention, a direct message, a missed call.
     Mentions,
-    /// The ring of an incoming direct-message call.
     Ring,
-    /// Other people join and leave the call.
-    People,
-    /// The microphone and the sound of the person turn on and off.
-    OwnMicrophoneAndSound,
-    /// The person joins, leaves or is moved, and the connection of the call is lost.
-    OwnCall,
-    /// The key of push-to-talk is pressed and released.
-    PushToTalk,
-    /// A share starts or ends, and people start or stop watching the share of the person.
-    Shares,
-    /// An invitation into a call, a request to enter the call, a request to join the
-    /// server.
-    Requests,
-    /// A recording of the call starts or stops.
-    Recording,
-    /// A hand is raised in meeting mode.
-    Hands,
+    CallJoined,
+    CallLeft,
+    Moved,
+    ConnectionLost,
+    PersonJoined,
+    PersonLeft,
+    MicrophoneOff,
+    MicrophoneOn,
+    SoundOff,
+    SoundOn,
+    TalkStarts,
+    TalkEnds,
+    ShareStarted,
+    ShareEnded,
+    ViewerJoined,
+    ViewerLeft,
+    Invitation,
+    Request,
+    RecordingStarted,
+    RecordingStopped,
+    HandRaised,
 }
 
 impl SoundKind {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 24] = [
         Self::Messages,
         Self::Mentions,
         Self::Ring,
-        Self::People,
-        Self::OwnMicrophoneAndSound,
-        Self::OwnCall,
-        Self::PushToTalk,
-        Self::Shares,
-        Self::Requests,
-        Self::Recording,
-        Self::Hands,
+        Self::CallJoined,
+        Self::CallLeft,
+        Self::Moved,
+        Self::ConnectionLost,
+        Self::PersonJoined,
+        Self::PersonLeft,
+        Self::MicrophoneOff,
+        Self::MicrophoneOn,
+        Self::SoundOff,
+        Self::SoundOn,
+        Self::TalkStarts,
+        Self::TalkEnds,
+        Self::ShareStarted,
+        Self::ShareEnded,
+        Self::ViewerJoined,
+        Self::ViewerLeft,
+        Self::Invitation,
+        Self::Request,
+        Self::RecordingStarted,
+        Self::RecordingStopped,
+        Self::HandRaised,
     ];
 
-    /// The kinds that the one switch of call sounds of version 4 turned off.
     fn of_a_call(self) -> bool {
         !matches!(self, Self::Messages | Self::Mentions | Self::Ring)
     }
@@ -491,7 +541,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 5"), "{text}");
+        assert!(text.contains("\"format_version\": 6"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -548,11 +598,11 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":6,"later":true}"#;
+        let newer = r#"{"format_version":7,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 6, .. })
+            Err(StorageError::NewerFormat { found: 7, .. })
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -608,7 +658,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 5"), "{text}");
+        assert!(text.contains("\"format_version\": 6"), "{text}");
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
     }
 
@@ -628,14 +678,15 @@ mod tests {
         assert_eq!(read.output_device.as_deref(), Some("phones"));
 
         let written = store
-            .update(|settings| settings.sounds.set(SoundKind::People, false))
+            .update(|settings| settings.sounds.set(SoundKind::PersonJoined, false))
             .unwrap();
         assert!(
-            !written.sounds.plays(SoundKind::People) && written.sounds.plays(SoundKind::Messages)
+            !written.sounds.plays(SoundKind::PersonJoined)
+                && written.sounds.plays(SoundKind::Messages)
         );
         assert_eq!(store.load().unwrap(), written);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"people\""), "{text}");
+        assert!(text.contains("\"person_joined\""), "{text}");
     }
 
     #[test]
@@ -669,7 +720,7 @@ mod tests {
         // The switch of all sounds turns every kind off and keeps the switch of each kind.
         let written = store
             .update(|settings| {
-                settings.sounds.set(SoundKind::Hands, false);
+                settings.sounds.set(SoundKind::HandRaised, false);
                 settings.sounds.all = false;
             })
             .unwrap();
@@ -679,11 +730,43 @@ mod tests {
                 .all(|kind| !written.sounds.plays(kind))
         );
         assert!(
-            !written.sounds.kind_on(SoundKind::Hands) && written.sounds.kind_on(SoundKind::Ring)
+            !written.sounds.kind_on(SoundKind::HandRaised)
+                && written.sounds.kind_on(SoundKind::Ring)
         );
         assert_eq!(store.load().unwrap(), written);
         let text = fs::read_to_string(&file).unwrap();
         assert!(!text.contains("call_sounds"), "{text}");
+    }
+
+    #[test]
+    fn version_five_expands_disabled_groups_without_enabling_any_of_their_sounds() {
+        let (_directory, data_dir, store) = store();
+        store.update(|_| {}).unwrap();
+        let file = data_dir.root().join(VOICE_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        value["format_version"] = 5.into();
+        value["sounds"]["off"] = serde_json::json!([
+            "people",
+            "own_microphone_and_sound",
+            "own_call",
+            "push_to_talk",
+            "shares",
+            "requests",
+            "recording",
+            "hands"
+        ]);
+        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        let read = store.load().unwrap();
+        for kind in SoundKind::ALL {
+            assert_eq!(read.sounds.plays(kind), !kind.of_a_call(), "{kind:?}");
+        }
+        let changed = store
+            .update(|settings| settings.sounds.set(SoundKind::PersonJoined, true))
+            .unwrap();
+        assert!(changed.sounds.plays(SoundKind::PersonJoined));
+        assert!(!changed.sounds.plays(SoundKind::PersonLeft));
+        assert_eq!(store.load().unwrap(), changed);
     }
 
     #[test]

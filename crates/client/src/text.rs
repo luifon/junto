@@ -1002,35 +1002,33 @@ pub fn sound_kind(kind: junto_client_core::voice::SoundKind) -> (&'static str, &
             "A mention of you, a direct message, a call that you missed.",
         ),
         SoundKind::Ring => ("Incoming call", "The ring of a direct call to you."),
-        SoundKind::People => (
-            "People who join and leave",
-            "Another person joins or leaves your call.",
+        SoundKind::CallJoined => ("You join a call", "You enter a call."),
+        SoundKind::CallLeft => ("You leave a call", "You leave a call or it ends."),
+        SoundKind::Moved => ("You are moved", "A moderator moves you to another call."),
+        SoundKind::ConnectionLost => (
+            "Call connection lost",
+            "The call reconnects after losing its connection.",
         ),
-        SoundKind::OwnMicrophoneAndSound => (
-            "Your microphone and sound",
-            "Your microphone or your sound turns off or on, also by a moderator.",
+        SoundKind::PersonJoined => ("Someone joins", "Another person joins your call."),
+        SoundKind::PersonLeft => ("Someone leaves", "Another person leaves your call."),
+        SoundKind::MicrophoneOff => ("Microphone off", "Your microphone closes."),
+        SoundKind::MicrophoneOn => ("Microphone on", "Your microphone opens."),
+        SoundKind::SoundOff => ("Sound off", "You turn the sound off."),
+        SoundKind::SoundOn => ("Sound on", "You turn the sound on."),
+        SoundKind::TalkStarts => ("Push to talk pressed", "You press the push to talk key."),
+        SoundKind::TalkEnds => ("Push to talk released", "You release the push to talk key."),
+        SoundKind::ShareStarted => ("Share starts", "A share starts in your call."),
+        SoundKind::ShareEnded => ("Share ends", "A share ends in your call."),
+        SoundKind::ViewerJoined => ("Viewer joins", "Someone starts watching your share."),
+        SoundKind::ViewerLeft => ("Viewer leaves", "Someone stops watching your share."),
+        SoundKind::Invitation => ("Call invitation", "Someone invites you into a call."),
+        SoundKind::Request => (
+            "Entry or join request",
+            "Someone asks to enter your call or join your server.",
         ),
-        SoundKind::OwnCall => (
-            "Your call",
-            "You join or leave a call, a moderator moves you, or the connection of the call is lost.",
-        ),
-        SoundKind::PushToTalk => (
-            "Push to talk",
-            "You press and release the key of push to talk.",
-        ),
-        SoundKind::Shares => (
-            "Shares",
-            "A share starts or ends in your call, and a person starts or stops watching your share.",
-        ),
-        SoundKind::Requests => (
-            "Invitations and requests",
-            "An invitation into a call, a person who asks to enter your call, a request to join a server that you decide.",
-        ),
-        SoundKind::Recording => ("Recording", "A recording of your call starts or stops."),
-        SoundKind::Hands => (
-            "Raised hands",
-            "A person raises a hand in meeting mode, when you may lower it.",
-        ),
+        SoundKind::RecordingStarted => ("Recording starts", "Your call starts being recorded."),
+        SoundKind::RecordingStopped => ("Recording stops", "Your call stops being recorded."),
+        SoundKind::HandRaised => ("Hand raised", "Someone raises a hand that you may lower."),
     }
 }
 

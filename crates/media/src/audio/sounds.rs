@@ -163,20 +163,27 @@ impl Sound {
         match self {
             Sound::Message => SoundKind::Messages,
             Sound::Mention => SoundKind::Mentions,
-            Sound::CallJoined | Sound::CallLeft | Sound::Moved | Sound::ConnectionLost => {
-                SoundKind::OwnCall
-            }
-            Sound::PersonJoined | Sound::PersonLeft => SoundKind::People,
-            Sound::MicrophoneOff | Sound::MicrophoneOn | Sound::SoundOff | Sound::SoundOn => {
-                SoundKind::OwnMicrophoneAndSound
-            }
-            Sound::TalkStarts | Sound::TalkEnds => SoundKind::PushToTalk,
-            Sound::ShareStarted | Sound::ShareEnded | Sound::ViewerJoined | Sound::ViewerLeft => {
-                SoundKind::Shares
-            }
-            Sound::Invitation | Sound::Request => SoundKind::Requests,
-            Sound::RecordingStarted | Sound::RecordingStopped => SoundKind::Recording,
-            Sound::HandRaised => SoundKind::Hands,
+            Sound::CallJoined => SoundKind::CallJoined,
+            Sound::CallLeft => SoundKind::CallLeft,
+            Sound::Moved => SoundKind::Moved,
+            Sound::ConnectionLost => SoundKind::ConnectionLost,
+            Sound::PersonJoined => SoundKind::PersonJoined,
+            Sound::PersonLeft => SoundKind::PersonLeft,
+            Sound::MicrophoneOff => SoundKind::MicrophoneOff,
+            Sound::MicrophoneOn => SoundKind::MicrophoneOn,
+            Sound::SoundOff => SoundKind::SoundOff,
+            Sound::SoundOn => SoundKind::SoundOn,
+            Sound::TalkStarts => SoundKind::TalkStarts,
+            Sound::TalkEnds => SoundKind::TalkEnds,
+            Sound::ShareStarted => SoundKind::ShareStarted,
+            Sound::ShareEnded => SoundKind::ShareEnded,
+            Sound::ViewerJoined => SoundKind::ViewerJoined,
+            Sound::ViewerLeft => SoundKind::ViewerLeft,
+            Sound::Invitation => SoundKind::Invitation,
+            Sound::Request => SoundKind::Request,
+            Sound::RecordingStarted => SoundKind::RecordingStarted,
+            Sound::RecordingStopped => SoundKind::RecordingStopped,
+            Sound::HandRaised => SoundKind::HandRaised,
         }
     }
 
@@ -485,6 +492,21 @@ mod tests {
                 Duration::from_secs_f64((last - first + 1) as f64 / f64::from(rate))
             }
             _ => Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn every_sound_can_be_switched_off_without_changing_another() {
+        for sound in Sound::ALL {
+            let mut settings = junto_client_core::voice::Sounds::default();
+            settings.set(sound.kind(), false);
+            for other in Sound::ALL {
+                assert_eq!(
+                    settings.plays(other.kind()),
+                    other != sound,
+                    "{sound:?} and {other:?}"
+                );
+            }
         }
     }
 

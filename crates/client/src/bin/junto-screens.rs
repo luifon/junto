@@ -2205,7 +2205,7 @@ fn draw_sound_settings(studio: &mut Studio) -> Result<(), String> {
     one_off
         .voice
         .sounds
-        .set(junto_client_core::voice::SoundKind::PushToTalk, false);
+        .set(junto_client_core::voice::SoundKind::TalkStarts, false);
     studio.draw(
         Screen::new("settings-sounds", two_servers()).media(one_off.clone()),
         |shell, window, cx| {

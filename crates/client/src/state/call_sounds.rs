@@ -140,7 +140,18 @@ pub(crate) fn sounds(before: &Heard, after: &Heard) -> Vec<Sound> {
         (Some(before), Some(after)) if before == after => {}
         // A call that begins, or a seat in another call: the sound of the entry plays when
         // the server lists the person; a move plays its sound at once.
-        (_, Some(_)) if after.moved && !after.deafened => return vec![Sound::Moved],
+        (_, Some(_)) if !after.deafened => {
+            let mut sounds = Vec::new();
+            if after.moved {
+                sounds.push(Sound::Moved);
+            } else if after.present.is_some() {
+                sounds.push(Sound::CallJoined);
+            }
+            if after.present.is_some() && after.recording.is_some() {
+                sounds.push(Sound::RecordingStarted);
+            }
+            return sounds;
+        }
         _ => return Vec::new(),
     }
     let mut sounds = Vec::new();
@@ -619,6 +630,37 @@ mod tests {
         assert_eq!(sounds(&before, &after), vec![Sound::Request]);
         assert!(sounds(&after, &after).is_empty());
         assert!(sounds(&after, &before).is_empty());
+    }
+
+    #[test]
+    fn a_new_seat_already_listed_plays_its_entry_and_recording_once() {
+        let scene = Scene::new();
+        let server = Server {
+            listed: vec![scene.own, AccountId::generate()],
+            recording: Some((RecordingId::generate(), false)),
+            ..Server::default()
+        };
+        for before in [Heard::default(), scene.in_call(&[scene.own], &[])] {
+            let joined = scene.with(&scene.calls("new seat"), &server, &before);
+            assert_eq!(
+                sounds(&before, &joined),
+                vec![Sound::CallJoined, Sound::RecordingStarted]
+            );
+            assert!(sounds(&joined, &joined).is_empty());
+            let moved = scene.with(
+                &scene.calls("new seat"),
+                &Server {
+                    moved_here: true,
+                    ..server.clone()
+                },
+                &before,
+            );
+            assert_eq!(
+                sounds(&before, &moved),
+                vec![Sound::Moved, Sound::RecordingStarted]
+            );
+            assert!(sounds(&moved, &moved).is_empty());
+        }
     }
 
     #[test]
