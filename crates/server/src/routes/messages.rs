@@ -170,6 +170,7 @@ pub(super) async fn send(
         let access = Access::open(connection, bearer, now).await?;
         let place = target.open(connection, &access, Purpose::Change).await?;
         place.require_open()?;
+        place.require_send(&access, matches!(target, Target::Thread(_)))?;
         rate(app, &access, &mut counted)?;
         if let Some(reply) = body.reply_to {
             let (parent, _) = messages::get(connection, &access, reply, Purpose::Read).await?;
@@ -187,6 +188,16 @@ pub(super) async fn send(
             let (_, replied) = messages::get(connection, &access, reply, Purpose::Read).await?;
             if reply != root && replied.thread_root != Some(root) {
                 return Err(ApiError::invalid("a thread reply stays in its thread"));
+            }
+        }
+        if let Some(root) = thread_root {
+            let exists: bool =
+                sqlx::query_scalar("select exists(select 1 from messages where thread_root=$1) or exists(select 1 from thread_reads where root_id=$1 and writer)")
+                    .bind(root)
+                    .fetch_one(&mut *connection)
+                    .await?;
+            if !exists {
+                place.require(&access, WorkspacePermission::CreateThreads)?;
             }
         }
         // A reply makes its author, the author of the root and the accounts that it names
@@ -319,6 +330,7 @@ pub async fn edit_message(
         }
         place.require_open()?;
         place.edit(&access, &message)?;
+        place.require_send(&access, message.thread_root.is_some())?;
         rate(&app, &access, &mut counted)?;
         if !document::has_content(&body.document) && message.attachments.is_empty() {
             return Err(ApiError::invalid("a message needs text or an attachment"));
@@ -473,6 +485,9 @@ async fn reaction(
             return Err(ApiError::not_found());
         }
         place.require_open()?;
+        if add {
+            place.require(&access, WorkspacePermission::AddReactions)?;
+        }
         rate(app, &access, &mut counted)?;
         if add
             && message.reactions.len() >= 20

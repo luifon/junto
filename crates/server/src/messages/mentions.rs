@@ -130,12 +130,14 @@ pub async fn mentions(
                         .ok_or_else(|| {
                             ApiError::invalid("mentioned role is not in this workspace")
                         })?;
-                        if is_everyone {
-                            access.require(Request::Channel {
-                                scope: place.scope.as_ref().ok_or_else(ApiError::not_found)?,
-                                permission: WorkspacePermission::MentionEveryone,
-                            })?;
-                        }
+                        place.require(
+                            access,
+                            if is_everyone {
+                                WorkspacePermission::MentionEveryone
+                            } else {
+                                WorkspacePermission::MentionRoles
+                            },
+                        )?;
                     }
                 }
                 MessagePlace::Direct {

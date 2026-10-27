@@ -52,6 +52,13 @@ Attachment uploads:
 - Starting an upload, adding a chunk and completing it require attach files and at least one of send messages or send messages in threads. The destination thread is not chosen until the message is sent. Each phase rechecks the current permission; final binding rechecks attach files.
 - A person who loses attach files may still inspect or cancel their pending upload while they can see its channel. This lets the person release an unused upload without restoring the write permission.
 
+Messages and threads:
+
+- Sending or editing a top-level channel message requires send messages. A thread reply requires send messages in threads instead, on both send and edit. Direct conversations retain their participant rules.
+- The first reply additionally requires create threads. A stored reply or a retained thread writer record establishes an existing thread, including after its last reply was deleted. Following an empty root does not establish a thread.
+- Adding a reaction requires add reactions. Removing one's existing reaction remains allowed.
+- Adding an ordinary role mention on send or edit requires mention roles. The everyone role and the everyone mention require mention everyone. An unchanged mention retained by an edit requires no new grant and sends no new mention notice.
+
 Message edits:
 
 - Editing a message is denied when the message is permanent, when the caller is not its author, and in a direct message when the caller is not a participant. These are limits. No permission lets a person edit the message of another person.

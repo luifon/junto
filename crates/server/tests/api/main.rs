@@ -23,6 +23,7 @@ mod category_refresh;
 mod category_timing;
 mod category_visibility;
 mod change_positions;
+mod channel_use;
 mod concurrency;
 mod contacts;
 mod deletions;
