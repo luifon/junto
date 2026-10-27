@@ -439,6 +439,18 @@ pub(crate) fn reveal_under_form(
     form_row: &str,
     under: &'static str,
 ) -> gpui::Bounds<gpui::Pixels> {
+    reveal_pair(window, form, under);
+    under_form(window, form_row, under)
+}
+
+/// Brings the control `form` and `under` into the visible part of the page at the same
+/// time, as [`reveal_under_form`] does, and returns the bounds of `under`.
+#[track_caller]
+pub(crate) fn reveal_pair(
+    window: &mut Window,
+    form: &'static str,
+    under: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
     awaited(
         window,
         &format!("{form} and {under} are in view"),
@@ -479,7 +491,7 @@ pub(crate) fn reveal_under_form(
             None
         },
     );
-    under_form(window, form_row, under)
+    in_view(window, under).unwrap_or_else(|| panic!("{under} is not in view"))
 }
 
 /// The key of the row of the open page of the administration that holds the focused

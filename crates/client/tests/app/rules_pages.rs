@@ -6,8 +6,11 @@
 //! A test acts on the drawn controls by their names and reads the result from the server
 //! and from the state of the client of the person whom a rule concerns.
 
-use gpui::TestAppContext;
+use std::iter::repeat_n;
+
+use gpui::{Modifiers, TestAppContext};
 use junto_client_core::ServerHandle;
+use junto_client_core::api::RetryPolicy;
 use junto_client_core::protocol::ids::{CategoryId, WorkspaceId, WorkspaceRoleId};
 use junto_client_core::protocol::roles::CreateWorkspaceRole;
 use junto_client_core::protocol::structure::{
@@ -22,11 +25,11 @@ use junto_client::state::admin::view::person::PersonPageView;
 
 use crate::admin_pages::{
     assert_drawn_label, awaited, click_in_page, default_workspace, grant_server, grant_workspace,
-    idle, invite, joined, open_channel_settings, open_page, owner_window, sel, text_channel,
-    try_reveal, until_model,
+    idle, invite, joined, open_channel_settings, open_page, owner_window, owner_window_at,
+    reveal_pair, sel, text_channel, try_reveal, until_model,
 };
 use crate::harness::{Window, World, member};
-use crate::support::logged_in;
+use crate::support::{Fault, FaultProxy, logged_in};
 
 /// The role that every member of a workspace holds.
 fn everyone_of(world: &World, handle: &ServerHandle, workspace_id: WorkspaceId) -> WorkspaceRoleId {
@@ -752,5 +755,217 @@ fn a_member_who_may_set_the_user_limit_alone_changes_it_on_the_overview(cx: &mut
             .iter()
             .any(|channel| channel.id == huddle && channel.user_limit.is_some()),
         "{listed:?}"
+    );
+}
+
+/// The answers that make the client state a refusal for the request of a choice.
+fn busy() -> impl Iterator<Item = Fault> {
+    repeat_n(Fault::Busy, RetryPolicy::default().attempts as usize)
+}
+
+/// The pointer rests over `under` while the request that `trigger` sends is refused.
+/// `under` keeps its top in the window.
+#[track_caller]
+fn refusal_keeps_the_row_under_the_pointer(
+    window: &mut Window,
+    trigger: &'static str,
+    under: &'static str,
+) {
+    let before = reveal_pair(window, trigger, under);
+    let control = window
+        .cx
+        .debug_bounds(trigger)
+        .unwrap_or_else(|| panic!("{trigger} is not drawn"));
+    window.simulate(|cx| cx.simulate_click(control.center(), Modifiers::none()));
+    window.park();
+    window.move_pointer(before.center());
+    assert!(
+        answered(window).is_none(),
+        "the request answered before the pointer rested on {under}"
+    );
+    let refused = awaited(window, "the request is answered", answered);
+    assert!(
+        refused.is_some(),
+        "the request of {trigger} was not refused"
+    );
+    window.settle();
+    let after = window
+        .cx
+        .debug_bounds(under)
+        .unwrap_or_else(|| panic!("{under} is not drawn after the refusal"));
+    assert_eq!(after.top(), before.top(), "{under} moved");
+}
+
+/// The pointer rests over the row of a second role, below the first role whose choice is
+/// refused on the permissions page of a channel; the row keeps its top.
+#[gpui::test]
+fn a_refused_choice_on_the_permissions_page_of_a_channel_keeps_the_row_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let default = default_workspace(&world, &owner);
+    let everyone = everyone_of(&world, &owner, default);
+    let leads = role(&world, &owner, default, "Leads", &[]);
+    let plans = text_channel(&world, &owner, default, "plans");
+    world
+        .run(owner.api().change_channel_rule(
+            plans,
+            RuleSubject::Role { role_id: leads },
+            WorkspacePermission::AttachFiles,
+            OverrideState::Deny,
+        ))
+        .unwrap();
+    open_channel_settings(&mut window, "plans", plans);
+    open_page(&mut window, "channel-nav-permissions", |window| {
+        window.shows("rules-add")
+    });
+    awaited(&mut window, "the second role is listed", |window| {
+        try_reveal(window, sel("rules-subject-role", leads))
+    });
+    proxy.fail_ending(&format!("/rules/roles/{everyone}"), busy());
+    let last = WorkspacePermission::ALL.last().unwrap().name();
+    refusal_keeps_the_row_under_the_pointer(
+        &mut window,
+        sel(&format!("override-{last}"), "deny"),
+        sel("rules-subject-role", leads),
+    );
+}
+
+/// The pointer rests over the row of a second role, below the first role whose choice is
+/// refused on the permissions page of a category; the row keeps its top.
+#[gpui::test]
+fn a_refused_choice_on_the_permissions_page_of_a_category_keeps_the_row_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let default = default_workspace(&world, &owner);
+    let everyone = everyone_of(&world, &owner, default);
+    let leads = role(&world, &owner, default, "Leads", &[]);
+    let teams = category(&world, &owner, default, "Teams");
+    world
+        .run(owner.api().change_category_rule(
+            (default, teams),
+            RuleSubject::Role { role_id: leads },
+            WorkspacePermission::AttachFiles,
+            OverrideState::Deny,
+        ))
+        .unwrap();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-channels", |window| {
+        window.shows(sel("category-permissions", teams))
+    });
+    click_in_page(&mut window, sel("category-permissions", teams));
+    window.until("the page of the category is open", |window| {
+        window.shows("category-nav-permissions") && window.shows("rules-add")
+    });
+    awaited(&mut window, "the second role is listed", |window| {
+        try_reveal(window, sel("rules-subject-role", leads))
+    });
+    proxy.fail_ending(&format!("/rules/roles/{everyone}"), busy());
+    let last = WorkspacePermission::ALL.last().unwrap().name();
+    refusal_keeps_the_row_under_the_pointer(
+        &mut window,
+        sel(&format!("override-{last}"), "deny"),
+        sel("rules-subject-role", leads),
+    );
+}
+
+/// The pointer rests over the control that adds a role or a person, below the refused
+/// "Sync again" of a channel; the control keeps its top.
+#[gpui::test]
+fn a_refused_sync_again_keeps_the_row_under_the_pointer(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let default = default_workspace(&world, &owner);
+    let everyone = everyone_of(&world, &owner, default);
+    let teams = category(&world, &owner, default, "Teams");
+    let plans = channel_in(&world, &owner, (default, teams), "plans");
+    world
+        .run(owner.api().change_channel_rule(
+            plans,
+            RuleSubject::Role { role_id: everyone },
+            WorkspacePermission::AddReactions,
+            OverrideState::Deny,
+        ))
+        .unwrap();
+    open_channel_settings(&mut window, "plans", plans);
+    open_page(&mut window, "channel-nav-permissions", |window| {
+        window.shows("rules-sync-again")
+    });
+    click_in_page(&mut window, "rules-sync-again");
+    window.until("the question is drawn", |window| {
+        window.shows("rules-sync-confirm")
+    });
+    proxy.fail_ending("/rules/sync", busy());
+    refusal_keeps_the_row_under_the_pointer(&mut window, "rules-sync-confirm", "rules-add");
+}
+
+/// The pointer rests over the choice of the next permission, below the place of the
+/// refusal of the first permission on the page of a member; the choice keeps its top.
+#[gpui::test]
+fn a_refused_choice_on_the_page_of_a_member_keeps_the_row_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let code = invite(&world, &owner, Vec::new());
+    let (_device, member) = joined(&world, &server, &code, "Bruno");
+    let bruno = logged_in(&member);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-members", |window| {
+        window.shows(sel("member-permissions", bruno))
+    });
+    click_in_page(&mut window, sel("member-permissions", bruno));
+    window.until("the page of the member is open", |window| {
+        window.shows("person-nav-permissions") && window.shows("override-manage_roles-neutral")
+    });
+    proxy.fail_ending(&format!("/members/{bruno}/permissions"), busy());
+    refusal_keeps_the_row_under_the_pointer(
+        &mut window,
+        "override-view_channel-deny",
+        "override-manage_roles-neutral",
+    );
+}
+
+/// The pointer rests over the choice of the next permission, below the place of the
+/// refusal of the first permission on the server permissions of an account; the choice
+/// keeps its top.
+#[gpui::test]
+fn a_refused_choice_on_the_server_permissions_of_an_account_keeps_the_row_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let code = invite(&world, &owner, Vec::new());
+    let (_device, member) = joined(&world, &server, &code, "Bruno");
+    let bruno = logged_in(&member);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        window.shows(sel("account-permissions", bruno))
+    });
+    click_in_page(&mut window, sel("account-permissions", bruno));
+    window.until(
+        "the server permissions of the account are shown",
+        |window| {
+            window.shows("person-nav-server") && window.shows("override-create_invites-neutral")
+        },
+    );
+    proxy.fail_ending(&format!("/accounts/{bruno}/server-permissions"), busy());
+    refusal_keeps_the_row_under_the_pointer(
+        &mut window,
+        "override-create_workspace-allow",
+        "override-create_invites-neutral",
     );
 }

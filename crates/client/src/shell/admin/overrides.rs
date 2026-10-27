@@ -16,9 +16,7 @@ use junto_client_core::protocol::structure::RuleSubject;
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use super::list::Row;
-use super::{
-    Mode, Question, group_label, line, line_text, named, page_title, refusal_at_end, sentence,
-};
+use super::{Mode, Question, group_label, line, line_text, named, page_title, refusal, sentence};
 use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::state::admin::view::overrides::{
@@ -423,7 +421,7 @@ impl Shell {
             block = block.child(permissions);
         }
         block
-            .child(refusal_at_end(view.refused(what), "override-refused"))
+            .children(refusal(view.refused(what), "override-refused"))
             .into_any_element()
     }
 
@@ -764,7 +762,7 @@ impl Shell {
                         .child(content),
                 ),
             )
-            .child(refusal_at_end(view.refused(what), "rules-sync-refused"))
+            .children(refusal(view.refused(what), "rules-sync-refused"))
             .into_any_element()
     }
 

@@ -14,7 +14,7 @@ use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use super::list::Row;
 use super::overrides::OnChoose;
-use super::{line, line_text, page_title, refusal_at_end, sentence};
+use super::{line, line_text, page_title, refusal, sentence};
 use crate::shell::Shell;
 use crate::state::admin::AskKind;
 use crate::state::admin::view::person::{
@@ -107,7 +107,7 @@ impl Shell {
                         ))
                         .child(sentence(text::admin::overrides::MEMBER_CHANNELS, &theme))
                         .children(Self::person_locked(locked, &theme))
-                        .child(refusal_at_end(view.refused(what), "person-refused"));
+                        .children(refusal(view.refused(what), "person-refused"));
                     if let Some(reading) = this.person_reading(&view, part, &page.lines, &theme, cx)
                     {
                         column = column.child(reading);
@@ -273,7 +273,7 @@ impl Shell {
                     }
                     column = column
                         .children(Self::person_locked(locked, &theme))
-                        .child(refusal_at_end(view.refused(what), "person-refused"));
+                        .children(refusal(view.refused(what), "person-refused"));
                     let part = AdminPart::ServerPermissions(account_id);
                     if let Some(reading) = this.person_reading(&view, part, &page.lines, &theme, cx)
                     {

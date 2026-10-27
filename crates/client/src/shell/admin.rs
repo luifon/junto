@@ -311,15 +311,6 @@ pub(crate) fn refusal(reason: Option<&str>, selector: &'static str) -> Option<An
     )
 }
 
-/// The statement of a refusal under a row of a list, which takes the height of the
-/// refusal and no more, so that a list draws no empty band under each row.
-pub(crate) fn refusal_at_end(reason: Option<&str>, selector: &'static str) -> AnyElement {
-    crate::ui::notice_slot(selector)
-        .at_end()
-        .children(reason.map(|reason| Notice::error(reason.to_owned()).selector(selector)))
-        .into_any_element()
-}
-
 /// A question in the row that it is about: the sentence, and the two answers.
 pub(crate) struct Question {
     pub sentence: SharedString,
