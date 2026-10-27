@@ -1,4 +1,4 @@
-# 0301. Two levels of roles and one evaluation rule
+# 0301. Role and person permissions at each level
 
 ## Status
 
@@ -6,51 +6,86 @@ Accepted
 
 ## Context
 
-A server hosts several workspaces (ADR 0102), and each workspace needs its own roles. An invite, an approval of a join request, a ban and the server audit log are not inside any one workspace, so a workspace role cannot hold the permissions for them. Permissions are checked in several places: the API, the event stream, downloads, exports, search and call admission. Two implementations of the check can give two different answers for the same person and channel. A permission that passes every check must still not open direct messages or change a permanent message.
+A server has several workspaces. Each workspace needs independent roles, category defaults,
+channel exceptions and exceptions for individual members. The API, events, downloads, search,
+exports and calls must use the same evaluation. Administration cannot open direct messages or
+change permanent content. Permissions follow Discord's override order, with Junto's separate
+server and workspace scopes and existing grant ceilings.
 
 ## Decision
 
-Two levels of roles:
+Server permissions are administrator, create workspace, create invites, approve join requests,
+ban members and view server audit log. Server roles grant these permissions. A person can have
+an allow and deny set on the server; evaluation combines roles, removes person denies and adds
+person allows. The owner bypasses this result. Only the owner can remove an administrator role's
+administrator pass with a person deny. Direct grants do not create a role position (ADR 0309).
 
-- Server roles hold the permissions that act on the whole server.
-- Workspace roles hold all other permissions. They are created per workspace as needed.
-- Server permissions: administrator, create workspace, create invites, approve join requests, ban members, view the server audit log.
-- Workspace permissions named so far: manage roles, manage channel, manage messages, mention everyone in a channel, manage glossary, record calls, manage recordings, export channel, move members, mute members, deafen members, disconnect members, lock room, run meeting mode, view the workspace's audit entries, admit to full call (bit 16: get the requests to enter a full call and let the person in above the user limit, ADR 0514). No default role holds "admit to full call"; an administrator holds it as every workspace permission. Migration `0033_admit_to_full_call` widens the stored range of role permissions and overrides to 17 bits.
-- Channel-use permission names reserve bits 17–30: send messages, send messages in threads, create threads, read message history, attach files, add reactions, mention roles, connect, speak, video, share screen, use voice activity, set call user limit, and set voice channel status. They separate actions that previously followed view channel. Their storage, defaults and route enforcement are introduced together by the permission migration; reserving these names alone changes no existing grant. Link previews, external emoji and priority-speaker attenuation have no permission because the application has no such feature.
-- Defaults: administrators have "create invites" and "export channel"; all members have "lock room" and "run meeting mode".
+Workspace permissions retain their existing bits: view channel, manage roles, manage channel,
+manage messages, mention everyone, manage glossary, record calls, manage recordings, export
+channel, move members, mute members, deafen members, disconnect members, lock room, run meeting
+mode, view audit entries and admit to full call (bits 0–16).
 
-Channel overrides:
+Bits 17–30 are, in order: send messages, send messages in threads, create threads, read message
+history, attach files, add reactions, mention roles, connect, speak, video, share screen, use
+voice activity, set call user limit and set voice channel status. Camera and screen publication
+have separate permissions; screen sound follows screen share, not microphone permission.
 
-- A workspace role can have allow overrides and deny overrides per channel.
-- Overrides exist per channel only. A category has no overrides, and a channel takes no override from its category.
-- A person has an allow and a deny set at server, workspace, category and channel level. Each set is disjoint. Server permissions use server sets; the other levels use workspace sets.
+Everyone and workspace roles grant workspace permissions. A workspace person override applies
+after their union: deny then allow. Category and channel overrides exist for everyone, roles and
+people, using disjoint allow and deny sets. Neutral removes an override for that permission.
+Workspace administration checks workspace scope; a channel grant cannot grant workspace authority.
 
-Evaluation rule:
+A channel uses its category's overrides while synced, and otherwise its own complete set.
+The chosen set applies in this order: everyone deny and allow, the union of held role denies,
+the union of held role allows, then person deny and allow. Role positions do not change this
+order. Categories use the same order. Overrides do not grant workspace membership.
 
-- Server permissions combine all server roles, then remove the person's denies and add the person's allows. The owner bypasses the result. Only the owner may use a person override to remove the administrator pass of an administrator role.
-- A member's base permissions combine the workspace's "everyone" role and every held workspace role, then remove the workspace person's denies and add their allows.
-- In a channel, the override of the "everyone" role applies first, then the denies of the member's roles, then the allows of the member's roles. An allow from one role wins over a deny from another role. The channel person's denies and allows apply last. Role order has no effect on this evaluation.
-- One function applies this rule for the API, events, downloads, exports, search and call admission.
+A new channel is synced. Its first effective override change copies the category set and detaches
+it atomically; a no-op does not detach. Moving a synced channel selects the new category's set.
+An unsynced channel keeps its set. Sync again replaces the detached set after checking the grant
+ceiling. Category deletion preserves the effective sets of synced children before clearing their
+category, preventing deletion from exposing their contents.
 
-Administrator permission and its limits:
+Every channel action requires view channel. Top-level sends and thread replies have distinct
+permissions; a thread inherits its channel's permissions. Attachments and mentions require the
+send permission of their destination as well as their own permission. Reading stored messages,
+threads, pins, attached files, search results and exports requires read message history. Without
+that permission, a single message read requires creation after the start of the caller's current
+live stream connection and current channel visibility. The server records the connection start;
+replay grants no older message. Reconnect establishes a new start while the client retains
+messages already held. Search, pins, exports, file lists and thread history never use this
+exception. The time bound requires no stored list of message grants. Forwarding
+requires history in the source and sending in the destination. Channel references respect
+visibility; both @everyone and @channel require mention everyone. Invite links use create invites.
+The voice user limit has its own permission; other channel settings retain manage channel.
 
-- The administrator permission passes the checks above and sees every channel, including private channels.
-- These limits are checked before the administrator permission and apply to administrators too:
-  - Direct messages are closed to everyone except their two participants (ADR 0302).
-  - Nobody edits a permanent message (ADR 0402).
-  - Recovery (ADR 0104), assigning the server owner, and deleting a channel that contains permanent messages (ADR 0402) belong to the server owner only.
+Connecting requires view channel and connect. Microphone, camera and screen publication each
+require connect and their corresponding permission. Recording retains record calls and the
+in-call rules. The media server restricts track sources. Without use voice activity the supported
+client forces push-to-talk; a media server cannot prove that audio came from a physical key press.
+Priority-speaker attenuation, link previews, external emoji, stickers, soundboards, webhooks,
+application commands, scheduled events, polls and slow mode have no permissions because the
+application does not implement these features. Existing message management covers pins and
+thread management. Meeting mode retains Junto's hand and presenter rules.
 
-Invitations:
+Limits run before the administrator pass: direct conversations belong only to their participants,
+including group conversations; nobody edits permanent messages or another author's message;
+recovery, owner transfer and permanent-content deletion belong to the owner; owner protection,
+self-moderation restrictions and access-token restrictions remain. Administrator then passes other
+permission checks, including private channels. Role order still restricts administration actions.
+An invitation or move cannot grant permission; entry still checks the destination permissions.
 
-- An invitation never passes a permission. An invitation into a voice channel works only for a person who already has access to that channel. It passes the lock and the user limit, and nothing else (ADR 0504).
+Default everyone grants include view channel, lock room, run meeting mode and the channel-use
+permissions except set call user limit. Admit to full call, recording and other management
+permissions remain ungranted by default. Migration 0039 preserves earlier access, copies the
+old manage-channel authority into set call user limit, widens the stored bit range, and renews
+the event epoch. ADR 0304 defines storage and ceilings; ADR 0310 defines effective snapshot lists.
 
 ## Consequences
 
-- A person, an event, a download, an export, a search result and a call admission are all decided by the same function, so one test suite covers the rule for all of them.
-- A member with two roles, one that denies and one that allows a permission in a channel, has the permission.
-- A channel cannot be hidden from an administrator.
-- An exception for one member uses a person override and needs no separate role.
-- The server owner is a single position above the administrator permission. It is assigned by the first start of the server and by the server command line (ADR 0201).
-- The list of workspace permissions is not closed; later records can add to it.
-
-Role order and its action-specific exemptions are decided in ADR 0309.
+The same person can have different access in separate workspaces, categories and channels,
+without creating a role for each exception. Removing a deny can grant access and therefore
+requires the same ceiling as adding an allow. A category is shown only with a visible channel
+or category management authority. Hidden identifiers receive the same answer as absent ones.
+The client uses the server's effective lists and withdraws content on permission changes
+(ADRs 0748 and 0790). The server decides every request again in its transaction.
