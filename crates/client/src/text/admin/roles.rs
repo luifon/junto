@@ -183,14 +183,19 @@ pub const EVERYONE_STAYS: &str =
 pub fn permission_name(permission: RolePermission) -> &'static str {
     match permission {
         RolePermission::Workspace(permission) => super::overrides::name(permission),
-        RolePermission::Server(permission) => match permission {
-            ServerPermission::Administrator => "Administrator",
-            ServerPermission::CreateWorkspace => "Create workspace",
-            ServerPermission::CreateInvites => "Create invites",
-            ServerPermission::ApproveJoinRequests => "Approve join requests",
-            ServerPermission::BanMembers => "Ban members",
-            ServerPermission::ViewServerAuditLog => "View server audit log",
-        },
+        RolePermission::Server(permission) => server_permission_name(permission),
+    }
+}
+
+/// What a server permission is called.
+pub const fn server_permission_name(permission: ServerPermission) -> &'static str {
+    match permission {
+        ServerPermission::Administrator => "Administrator",
+        ServerPermission::CreateWorkspace => "Create workspace",
+        ServerPermission::CreateInvites => "Create invites",
+        ServerPermission::ApproveJoinRequests => "Approve join requests",
+        ServerPermission::BanMembers => "Ban members",
+        ServerPermission::ViewServerAuditLog => "View server audit log",
     }
 }
 
@@ -198,53 +203,65 @@ pub fn permission_name(permission: RolePermission) -> &'static str {
 pub fn permission_help(permission: RolePermission) -> &'static str {
     match permission {
         RolePermission::Workspace(permission) => workspace_help_of(permission),
-        RolePermission::Server(permission) => match permission {
-            ServerPermission::Administrator => {
-                "Every permission in every workspace, the server roles, the workspaces and the \
-                 access tokens. It sees every channel, also a private one. It does not open \
-                 direct messages."
-            }
-            ServerPermission::CreateWorkspace => "Create a workspace on this server.",
-            ServerPermission::CreateInvites => {
-                "Create invite codes for the workspaces that the account is a member of."
-            }
-            ServerPermission::ApproveJoinRequests => {
-                "Approve and deny the requests of people who ask to join the server."
-            }
-            ServerPermission::BanMembers => {
-                "Remove, ban and unban accounts that stand below the account in the order of the \
-                 server roles."
-            }
-            ServerPermission::ViewServerAuditLog => "Read the audit log of the server.",
-        },
+        RolePermission::Server(permission) => server_permission_help(permission),
+    }
+}
+
+/// What a server permission lets an account do.
+pub const fn server_permission_help(permission: ServerPermission) -> &'static str {
+    match permission {
+        ServerPermission::Administrator => {
+            "Every permission in every workspace, the server roles, the workspaces and the \
+             access tokens. It sees every channel, also a private one. It does not open \
+             direct messages."
+        }
+        ServerPermission::CreateWorkspace => "Create a workspace on this server.",
+        ServerPermission::CreateInvites => {
+            "Create invite codes for the workspaces that the account is a member of."
+        }
+        ServerPermission::ApproveJoinRequests => {
+            "Approve and deny the requests of people who ask to join the server."
+        }
+        ServerPermission::BanMembers => {
+            "Remove, ban and unban accounts that stand below the account in the order of the \
+             server roles."
+        }
+        ServerPermission::ViewServerAuditLog => "Read the audit log of the server.",
     }
 }
 
 /// What a workspace permission lets the holders of a role do in every channel of the
 /// workspace, unless a channel overrides it.
-fn workspace_help_of(permission: junto_client_core::protocol::WorkspacePermission) -> &'static str {
+pub(crate) const fn workspace_help_of(
+    permission: junto_client_core::protocol::WorkspacePermission,
+) -> &'static str {
     use junto_client_core::protocol::WorkspacePermission as P;
     match permission {
-        P::ViewChannel => "See the channels of the workspace, and read and write in them.",
-        P::SendMessages => "Send messages in the channel.",
+        P::ViewChannel => {
+            "See the channels of the workspace; every other permission in a channel needs it."
+        }
+        P::SendMessages => "Send messages in the channels.",
         P::SendMessagesInThreads => "Send replies in threads.",
-        P::CreateThreads => "Start threads in this channel.",
+        P::CreateThreads => "Start threads under messages.",
         P::ReadMessageHistory => "Read stored messages, threads and pins.",
         P::AttachFiles => "Attach files to messages you may send.",
         P::AddReactions => "Add reactions to messages.",
         P::MentionRoles => "Mention workspace roles in messages you may send.",
-        P::Connect => "Join the call in this channel.",
-        P::Speak => "Publish microphone sound in the call.",
-        P::Video => "Publish your camera in the call.",
-        P::ShareScreen => "Share a screen or window, including its sound.",
+        P::Connect => "Join the calls of voice channels.",
+        P::Speak => "Publish microphone sound in a call.",
+        P::Video => "Publish the camera in a call.",
+        P::ShareScreen => "Share a screen or a window in a call. Its sound also needs “speak”.",
         P::UseVoiceActivity => "Use the microphone without holding the push-to-talk key.",
-        P::SetCallUserLimit => "Change the number of people who may join the call.",
+        P::SetCallUserLimit => {
+            "Change the user limit of a voice channel, without “manage channel”."
+        }
         P::SetVoiceChannelStatus => "Change the status text of a voice channel.",
         P::ManageRoles => {
             "Create, change, delete, give and take the roles below the own highest role."
         }
         P::ManageChannel => {
-            "Create, change, archive and delete channels and categories, and set overrides."
+            "Create, change, archive and delete channels and categories, and set their \
+             permission rules."
         }
         P::ManageMessages => "Delete the messages of other people, and pin messages.",
         P::MentionEveryone => "Mention “@everyone” in a message.",
@@ -292,4 +309,33 @@ pub fn roles_of(name: &str) -> String {
 
 pub fn role_label(role: &str, account: &str) -> String {
     format!("The role {role} for {account}")
+}
+
+#[cfg(test)]
+mod tests {
+    use junto_client_core::protocol::WorkspacePermission;
+
+    use super::*;
+
+    #[test]
+    fn the_help_of_a_permission_of_a_role_describes_the_workspace() {
+        let all = WorkspacePermission::ALL;
+        for (index, permission) in all.iter().copied().enumerate() {
+            let help = permission_help(RolePermission::Workspace(permission));
+            assert!(help.ends_with('.'), "{help}");
+            assert!(!help.contains("this channel"), "{help}");
+            assert!(!help.contains("overrides"), "{help}");
+            for other in all[..index].iter().copied() {
+                assert_ne!(help, permission_help(RolePermission::Workspace(other)));
+            }
+            assert!(!permission_name(RolePermission::Workspace(permission)).is_empty());
+        }
+        let view = permission_help(RolePermission::Workspace(WorkspacePermission::ViewChannel));
+        assert!(!view.contains("write"), "{view}");
+        let share = permission_help(RolePermission::Workspace(WorkspacePermission::ShareScreen));
+        assert!(share.contains("“speak”"), "{share}");
+        for permission in ServerPermission::ALL.iter().copied() {
+            assert!(permission_help(RolePermission::Server(permission)).ends_with('.'));
+        }
+    }
 }
