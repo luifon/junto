@@ -56,40 +56,62 @@ thread_local! {
 /// inherited copy of what the test process inherited, such as the lock of the machine.
 static CHILDREN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
+/// The latest time at which the holders of the lock of the tests end, cleanup included: each
+/// holder that takes the lock ([`restart_limit`]) moves it to its own limit and cleanup limit
+/// from then, if that is later.
+static HELD_UNTIL: Mutex<Option<tokio::time::Instant>> = Mutex::new(None);
+
 /// When the limit of a body ends, on the clock of the runtime, which a test of a limit
-/// pauses. While the body waits for others it has no end; a restart gives it its whole limit
-/// again.
+/// pauses. While the body waits for others, its end is its whole limit after the start of the
+/// wait, or the end of the holders of the lock when that is later; a restart gives it its
+/// whole limit again.
 struct Deadline {
-    /// The end, and whether the body waits for others.
-    state: Mutex<(tokio::time::Instant, bool)>,
+    /// The end, and since when the body waits for others.
+    state: Mutex<(tokio::time::Instant, Option<tokio::time::Instant>)>,
     limit: Duration,
+    cleanup: Duration,
 }
 
 impl Deadline {
-    fn new(limit: Duration) -> Arc<Self> {
+    fn new(limit: Duration, cleanup: Duration) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new((tokio::time::Instant::now() + limit, false)),
+            state: Mutex::new((tokio::time::Instant::now() + limit, None)),
             limit,
+            cleanup,
         })
     }
 
-    /// The end as it stands now; while the body waits for others, a whole limit from now.
+    /// The end as it stands now.
     fn at(&self) -> tokio::time::Instant {
         let (at, waits) = *self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if waits {
-            tokio::time::Instant::now() + self.limit
-        } else {
-            at
+        match waits {
+            Some(since) => {
+                let held = *HELD_UNTIL.lock().unwrap_or_else(PoisonError::into_inner);
+                held.map_or(since + self.limit, |held| held.max(since + self.limit))
+            }
+            None => at,
         }
     }
 
+    fn waits(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
+            .is_some()
+    }
+
     fn wait_for_others(&self) {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner).1 = true;
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.1.get_or_insert_with(tokio::time::Instant::now);
     }
 
     fn restart(&self) {
-        *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
-            (tokio::time::Instant::now() + self.limit, false);
+        let now = tokio::time::Instant::now();
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = (now + self.limit, None);
+        let mut held = HELD_UNTIL.lock().unwrap_or_else(PoisonError::into_inner);
+        let until = now + self.limit + self.cleanup;
+        *held = Some(held.map_or(until, |held| held.max(until)));
     }
 }
 
@@ -100,14 +122,16 @@ tokio::task_local! {
 }
 
 /// The test of this body waits for a lock that other tests hold under their own limits: the
-/// time until [`restart_limit`] does not count, because the holders end within their limits.
-/// Outside a limited body it does nothing.
+/// time until [`restart_limit`] does not count while the lock changes holder within the limits
+/// of its holders. A wait that outlasts both its own limit and the limits of the last holder
+/// fails. Outside a limited body it does nothing.
 pub fn wait_for_others() {
     let _ = RUNNING.try_with(|deadline| deadline.wait_for_others());
 }
 
-/// The test of this body holds the lock that it waited for: its whole limit starts again.
-/// Outside a limited body it does nothing.
+/// The test of this body holds the lock that it waited for: its whole limit starts again, and
+/// the waiters of the lock wait at most until it ended with its cleanup. Outside a limited body
+/// it does nothing.
 pub fn restart_limit() {
     let _ = RUNNING.try_with(|deadline| deadline.restart());
 }
@@ -264,7 +288,7 @@ pub async fn limited_within<F: Future>(
     cleanup_limit: Duration,
     body: F,
 ) -> F::Output {
-    let deadline = Deadline::new(limit);
+    let deadline = Deadline::new(limit, cleanup_limit);
     let watch = Watch::start(
         deadline.clone(),
         cleanup_limit,
@@ -288,8 +312,14 @@ pub async fn limited_within<F: Future>(
             Err(_) => break,
         }
     }
+    let waited = if deadline.waits() {
+        " while it waited for a lock of other tests that did not change holder within the \
+         limits of its holders"
+    } else {
+        ""
+    };
     let failure = format!(
-        "{}: this did not end within {limit:?}; the last steps of the test:{}",
+        "{}: this did not end within {limit:?}{waited}; the last steps of the test:{}",
         this_test(),
         last_steps()
     );
@@ -311,7 +341,7 @@ pub struct Watch {
 /// included.
 pub fn watch(limit: Duration) -> Watch {
     Watch::start(
-        Deadline::new(limit),
+        Deadline::new(limit, Duration::ZERO),
         Duration::ZERO,
         format!("{}: this did not end within {limit:?}", this_test()),
     )

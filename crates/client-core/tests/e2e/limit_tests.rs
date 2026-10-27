@@ -42,12 +42,22 @@ async fn a_body_that_does_not_end_is_dropped_and_fails_with_its_last_steps() {
     );
 }
 
-/// A body that waits for a lock that other tests hold has no end until it holds the lock, and
-/// then its whole limit: it ends after more than its limit in all. A body that restarts its
-/// limit and then does not end still fails at the limit.
+/// A body that waits for a lock that other tests hold has no end while the lock changes
+/// holder, and then its whole limit: it ends after more than its limit in all. A body that
+/// restarts its limit and then does not end still fails at the limit.
 #[tokio::test(start_paused = true)]
 async fn the_wait_for_a_lock_of_other_tests_does_not_count() {
     let limit = Duration::from_secs(300);
+    // Three holders take the lock one after the other, each for its whole limit.
+    let holders = tokio::spawn(async move {
+        for _ in 0..3 {
+            limited_for(limit, async move {
+                crate::limit::restart_limit();
+                tokio::time::sleep(limit - Duration::from_secs(1)).await;
+            })
+            .await;
+        }
+    });
     let output = limited_for(limit, async {
         step("waits for a lock that another test holds");
         crate::limit::wait_for_others();
@@ -58,6 +68,7 @@ async fn the_wait_for_a_lock_of_other_tests_does_not_count() {
     })
     .await;
     assert_eq!(output, 7);
+    holders.await.unwrap();
     let failed = tokio::spawn(limited_for(limit, async {
         tokio::time::sleep(Duration::from_secs(250)).await;
         crate::limit::restart_limit();
@@ -68,6 +79,26 @@ async fn the_wait_for_a_lock_of_other_tests_does_not_count() {
     assert!(failed.is_panic());
     // Outside a limited body a restart does nothing.
     crate::limit::restart_limit();
+}
+
+/// A wait for a lock that does not change holder fails once the last holder is past its limit
+/// and its cleanup limit, and the failure says that it waited.
+#[tokio::test(start_paused = true)]
+async fn a_wait_for_a_lock_that_does_not_change_holder_fails() {
+    let limit = Duration::from_secs(300);
+    limited_for(limit, async { crate::limit::restart_limit() }).await;
+    let started = tokio::time::Instant::now();
+    let waiting = tokio::spawn(limited_for(limit, async {
+        crate::limit::wait_for_others();
+        std::future::pending::<()>().await;
+    }));
+    let ended = tokio::time::timeout(Duration::from_secs(24 * 3600), waiting)
+        .await
+        .expect("the wait has no end");
+    let message = ended.unwrap_err().into_panic();
+    let message = message.downcast_ref::<String>().unwrap();
+    assert!(message.contains("did not change holder"), "{message}");
+    assert!(started.elapsed() < Duration::from_secs(3600));
 }
 
 #[tokio::test]
