@@ -2,8 +2,9 @@
 //! the people in its voice channels, and the profile strip of the person.
 
 use gpui::{
-    AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    Role, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    AnyElement, AppContext as _, ClickEvent, Context, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::ServerId;
 use junto_client_core::protocol::structure::ChannelKind;
@@ -12,8 +13,8 @@ use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::person_drop::PersonDrag;
 use crate::state::view::{
-    Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, SelectedServer, ServerLists,
-    ServerStatus, ShellView, VoiceState, WorkspaceView,
+    Microphone, MicrophoneButton, Occupant, Presence, Relation, SectionTitle, SelectedServer,
+    ServerLists, ServerStatus, ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -357,6 +358,11 @@ impl Shell {
                 let channel_id = channel.id;
                 let index = channel_index;
                 channel_index += 1;
+                // A double click on a voice channel that this device is not in also enters its
+                // call, as the button of its header does; its first click selects it.
+                let enters = channel.voice.as_ref().is_some_and(|voice| {
+                    !matches!(voice.relation, Relation::Inside | Relation::Joining)
+                });
                 let row = ChannelRow::new(
                     ("channel", index),
                     match channel.kind {
@@ -379,9 +385,15 @@ impl Shell {
                         .map(channel_states)
                         .unwrap_or_default(),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.select_channel(workspace_id, channel_id, cx);
+                        if let Some(server_id) = server_id
+                            && enters
+                            && event.click_count() == 2
+                        {
+                            state.join_call(server_id, workspace_id, channel_id, cx);
+                        }
                     });
                 }));
                 let menu =

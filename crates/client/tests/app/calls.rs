@@ -95,6 +95,47 @@ fn the_futures_of_the_calls_end_on_the_executor_of_the_window(cx: &mut TestAppCo
     window.until("every future of the calls has ended", |_| ended.get());
 }
 
+/// A double click on a voice channel enters its call through the path of the join button
+/// (round 2 item 15): here the server has no media server, so the request is refused and told
+/// as at the button. A single click only shows the channel, and a double click on a text
+/// channel enters nothing.
+#[gpui::test]
+fn a_double_click_on_a_voice_channel_asks_for_a_place_and_a_single_click_only_shows_it(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+
+    window.click_channel("Daily");
+    window.settle();
+    assert!(window.shows("join-call") && !window.shows("call-notice"));
+    assert_eq!(relation(&mut window, "Daily"), Relation::Outside);
+
+    window.double_click_channel("general");
+    window.settle();
+    assert!(!window.shows("call-notice"));
+    assert!(window.view().call.is_none());
+
+    window.double_click_channel("Daily");
+    window.until(
+        "the request for a place is told as at the button",
+        |window| window.shows("call-notice"),
+    );
+    assert!(
+        matches!(
+            &window.view().call_notice,
+            Some(CallNotice::JoinFailed { channel, error: FlowError::Refused { code, .. } })
+                if channel.as_deref() == Some("Daily") && *code == ErrorCode::MediaUnavailable
+        ),
+        "{:?}",
+        window.view().call_notice
+    );
+    assert_eq!(relation(&mut window, "Daily"), Relation::Outside);
+}
+
 #[gpui::test]
 fn a_join_that_the_server_refuses_is_told_and_leaves_the_person_outside(cx: &mut TestAppContext) {
     let world = World::new();

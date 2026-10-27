@@ -1638,3 +1638,85 @@ fn an_invitation_into_a_full_room_is_a_card_in_every_window_and_passes_the_limit
     drop(detached);
     scene.world.run(scene.caller.calls.leave());
 }
+
+/// A double click on a voice channel enters it as the join button does (round 2 item 15): a
+/// locked room and a full room refuse it and the refusal is told; an open room is entered;
+/// from a call, a double click on another voice channel moves the device into that call.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_double_click_enters_a_voice_channel_as_the_join_button_does(cx: &mut TestAppContext) {
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let voice = scene.voice;
+    let second = second_room(&scene.world, &scene.admin, &mut scene.window, "Second");
+    let CallPlace::Channel {
+        channel_id: second, ..
+    } = second.place
+    else {
+        unreachable!("the second room is a voice channel");
+    };
+    enter(&scene.world, &scene.caller, scene.target);
+
+    // A locked room: the request is refused and told.
+    scene.world.run(api.lock_call(voice)).unwrap();
+    scene.window.until("the lock is shown", |window| {
+        voice_of(window).closed == Some(Closed::Locked)
+    });
+    scene.window.double_click_channel(ROOM);
+    scene
+        .window
+        .until("the refusal of the locked room is told", |window| {
+            window.shows("call-notice")
+        });
+    assert!(scene.window.view().call.is_none());
+    scene.window.click("dismiss-call-notice");
+    scene.world.run(api.unlock_call(voice)).unwrap();
+
+    // A full room: Ada is inside and the limit is one.
+    let limit = |user_limit| UpdateCallSettings {
+        user_limit: Some(user_limit),
+        hides_occupants: None,
+    };
+    scene
+        .world
+        .run(api.update_call_settings(voice, &limit(Some(1))))
+        .unwrap();
+    scene.window.until("the room is full", |window| {
+        voice_of(window).closed == Some(Closed::Full)
+    });
+    scene.window.double_click_channel(ROOM);
+    scene
+        .window
+        .until("the refusal of the full room is told", |window| {
+            window.shows("call-notice")
+        });
+    assert!(scene.window.view().call.is_none());
+    scene.window.click("dismiss-call-notice");
+    scene
+        .world
+        .run(api.update_call_settings(voice, &limit(None)))
+        .unwrap();
+    scene.window.until("the room is open", |window| {
+        voice_of(window).closed.is_none()
+    });
+
+    // An open room is entered.
+    scene.window.double_click_channel(ROOM);
+    scene.window.until("the person is in the room", connected);
+    assert_eq!(scene.window.view().call.unwrap().channel_id, Some(voice));
+
+    // From the call, a double click on another voice channel moves the device there.
+    scene.window.double_click_channel("Second");
+    scene
+        .window
+        .until("the person is in the second room", |window| {
+            window.view().call.is_some_and(|call| {
+                call.channel_id == Some(second) && call.phase == Phase::Connected
+            })
+        });
+    scene
+        .window
+        .until("Ada is alone in the first room", |window| {
+            occupants(window).len() == 1
+        });
+}
