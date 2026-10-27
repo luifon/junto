@@ -173,7 +173,7 @@ mod tests {
     fn permission_bits_round_trip_and_unknown_bits_are_refused() {
         let all = WorkspacePermissions::ALL;
         assert_eq!(workspace_permissions(workspace_bits(all)).unwrap(), all);
-        assert!(workspace_permissions(1 << 17).is_err());
+        assert!(workspace_permissions(1 << 31).is_err());
         assert!(workspace_permissions(-1).is_err());
         assert_eq!(
             server_permissions(server_bits(ServerPermissions::ALL)).unwrap(),

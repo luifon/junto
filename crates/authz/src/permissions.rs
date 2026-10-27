@@ -167,8 +167,24 @@ permission_set! {
 }
 
 impl WorkspacePermissions {
+    /// Channel actions that members could use before separate use permissions.
+    pub const CHANNEL_USE_DEFAULT: Self = Self::EMPTY
+        .with(WorkspacePermission::SendMessages)
+        .with(WorkspacePermission::SendMessagesInThreads)
+        .with(WorkspacePermission::CreateThreads)
+        .with(WorkspacePermission::ReadMessageHistory)
+        .with(WorkspacePermission::AttachFiles)
+        .with(WorkspacePermission::AddReactions)
+        .with(WorkspacePermission::MentionRoles)
+        .with(WorkspacePermission::Connect)
+        .with(WorkspacePermission::Speak)
+        .with(WorkspacePermission::Video)
+        .with(WorkspacePermission::ShareScreen)
+        .with(WorkspacePermission::UseVoiceActivity)
+        .with(WorkspacePermission::SetVoiceChannelStatus);
+
     /// The permissions of the "everyone" role of a new workspace.
-    pub const EVERYONE_DEFAULT: Self = Self::EMPTY
+    pub const EVERYONE_DEFAULT: Self = Self::CHANNEL_USE_DEFAULT
         .with(WorkspacePermission::ViewChannel)
         .with(WorkspacePermission::LockRoom)
         .with(WorkspacePermission::RunMeetingMode);
@@ -298,7 +314,20 @@ mod tests {
             [
                 WorkspacePermission::ViewChannel,
                 WorkspacePermission::LockRoom,
-                WorkspacePermission::RunMeetingMode
+                WorkspacePermission::RunMeetingMode,
+                WorkspacePermission::SendMessages,
+                WorkspacePermission::SendMessagesInThreads,
+                WorkspacePermission::CreateThreads,
+                WorkspacePermission::ReadMessageHistory,
+                WorkspacePermission::AttachFiles,
+                WorkspacePermission::AddReactions,
+                WorkspacePermission::MentionRoles,
+                WorkspacePermission::Connect,
+                WorkspacePermission::Speak,
+                WorkspacePermission::Video,
+                WorkspacePermission::ShareScreen,
+                WorkspacePermission::UseVoiceActivity,
+                WorkspacePermission::SetVoiceChannelStatus,
             ]
         );
     }

@@ -39,6 +39,7 @@ mod lost_answers;
 mod maintenance;
 mod migration_identifiers;
 mod moderation;
+mod permissions_migration;
 mod processing;
 mod profiles;
 mod recordings;

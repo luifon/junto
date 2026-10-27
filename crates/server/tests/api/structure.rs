@@ -287,7 +287,9 @@ async fn a_new_workspace_has_an_everyone_role_and_its_creator_as_member() {
     assert!(listed[0].is_everyone);
     assert_eq!(
         listed[0].permissions,
-        [W::ViewChannel, W::LockRoom, W::RunMeetingMode]
+        junto_authz::WorkspacePermissions::EVERYONE_DEFAULT
+            .iter()
+            .collect::<Vec<_>>()
     );
     let members: Vec<WorkspaceMember> = server
         .get(
@@ -1243,7 +1245,7 @@ async fn the_database_refuses_states_that_break_the_invariants() {
         ),
         (
             "a role holds an unknown permission bit",
-            format!("update workspace_roles set permissions = 131072 where id = '{}'", local.id),
+            format!("update workspace_roles set permissions = 2147483648 where id = '{}'", local.id),
         ),
         (
             "an override allows and denies one permission",
