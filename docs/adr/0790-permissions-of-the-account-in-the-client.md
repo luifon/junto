@@ -61,3 +61,7 @@ The permissions of using a channel (ADR 0301). An action that the server refuses
 - The list of archived channels offers restore and deletion by the list of the workspace. An override of one archived channel can differ; the server decides, and the settings of that channel read its own list.
 - A state that a test or the screen tool builds by hand states its lists. A helper states them as a server without overrides does.
 - The server still decides every request.
+
+Categories:
+
+- The server states no list of the permissions of the account in a category. The page of the rules of a category evaluates them with `ChannelScope::usable_permissions` of `junto-authz`, the function that the server uses: the list of the workspace that the server stated, then the rule of the "everyone" role, the rules of the roles of the account and the rule of the account in the category. An administrator holds every permission. The result decides only which choices the page disables before a request; the server decides each request. Test: `state::admin::view::overrides::tests::the_permissions_of_the_person_in_a_category_follow_its_rules`.

@@ -9,6 +9,7 @@ mod list;
 mod notifications;
 pub mod overrides;
 pub mod people;
+mod person;
 mod recordings;
 pub mod records;
 pub mod roles;
@@ -28,8 +29,11 @@ use junto_client_core::protocol::structure::ChannelKind;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
-use crate::state::admin::view::{AdminView, ChannelPageView, ChannelSettings, Scope, ServerPage};
-use crate::state::admin::{AdminOpen, AdminPage, AskKind, ChannelPage};
+use crate::state::admin::view::person::{PersonPageView, PersonSettings};
+use crate::state::admin::view::{
+    AdminView, CategorySettings, ChannelPageView, ChannelSettings, Scope, ServerPage,
+};
+use crate::state::admin::{AdminOpen, AdminPage, AskKind, ChannelPage, PersonPage};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -74,6 +78,8 @@ pub enum Mode {
     RemoveTerm(u32),
     /// One limit of the files of messages is typed (ADR 0408).
     Limit(server::Limit),
+    /// The question before a channel takes the rules of its category again (ADR 0304).
+    SyncRules,
 }
 
 /// What the layer of the administration holds of the window itself: the text of its
@@ -303,6 +309,15 @@ pub(crate) fn refusal(reason: Option<&str>, selector: &'static str) -> Option<An
             .children(reason.map(|reason| Notice::error(reason.to_owned()).selector(selector)))
             .into_any_element(),
     )
+}
+
+/// The statement of a refusal under a row of a list, which takes the height of the
+/// refusal and no more, so that a list draws no empty band under each row.
+pub(crate) fn refusal_at_end(reason: Option<&str>, selector: &'static str) -> AnyElement {
+    crate::ui::notice_slot(selector)
+        .at_end()
+        .children(reason.map(|reason| Notice::error(reason.to_owned()).selector(selector)))
+        .into_any_element()
 }
 
 /// A question in the row that it is about: the sentence, and the two answers.
@@ -782,6 +797,18 @@ impl Shell {
                 self.render_channel_nav(settings, &theme, cx),
                 self.render_channel_page(&view, settings, window, cx),
             ),
+            Scope::Category(settings) => (
+                text::admin::overrides::CATEGORY_SETTINGS,
+                settings.name.clone(),
+                self.render_category_nav(settings, &theme, cx),
+                self.render_category_permissions_page(&view, settings, &settings.page, window, cx),
+            ),
+            Scope::Person(settings) => (
+                text::admin::overrides::PERSON_SETTINGS,
+                settings.name.clone(),
+                self.render_person_nav(settings, &theme, cx),
+                self.render_person_page(&view, settings, window, cx),
+            ),
         };
         let virtual_page = self.admin.list.drawn;
         let page = if virtual_page {
@@ -956,6 +983,154 @@ impl Shell {
             );
         }
         column.into_any_element()
+    }
+
+    /// The heading of the list of pages of settings, and the row that returns to the page
+    /// of the administration that opened them.
+    fn settings_nav_head(
+        &mut self,
+        title: String,
+        back: AdminPage,
+        selector: &'static str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let name = text::admin::page_name(back);
+        div()
+            .flex()
+            .flex_col()
+            .pt(u(6.0))
+            .pb(u(10.0))
+            .child(
+                ChannelRow::new(
+                    text::admin::overrides::BACK,
+                    Icon::ChevronLeft,
+                    text::admin::overrides::back_to(name),
+                )
+                .selector(selector)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_server_admin(back, window, cx);
+                })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .pt(u(10.0))
+                    .px(u(14.0))
+                    .pb(u(4.0))
+                    .typeface(theme.types.label, theme)
+                    .ink(theme.colors.bronze)
+                    .truncate()
+                    .child(title),
+            )
+    }
+
+    fn render_category_nav(
+        &mut self,
+        settings: &CategorySettings,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = text::admin::overrides::PERMISSIONS;
+        self.settings_nav_head(
+            settings.name.clone(),
+            AdminPage::Channels,
+            "category-nav-back",
+            theme,
+            cx,
+        )
+        .child(
+            ChannelRow::new(name, Icon::ShieldCheck, name)
+                .selected(true)
+                .selector("category-nav-permissions"),
+        )
+        .into_any_element()
+    }
+
+    fn render_person_nav(
+        &mut self,
+        settings: &PersonSettings,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let account_id = settings.account_id;
+        let mut column = self.settings_nav_head(
+            settings.name.clone(),
+            settings.listed_on(),
+            "person-nav-back",
+            theme,
+            cx,
+        );
+        for page in settings.pages.iter().copied() {
+            let name = text::admin::overrides::person_page_name(page);
+            column = column.child(
+                ChannelRow::new(name, text::admin::overrides::person_page_icon(page), name)
+                    .selected(page == settings.selected)
+                    .selector(text::admin::overrides::person_page_selector(page))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_person_settings(account_id, page, window, cx);
+                    })),
+            );
+        }
+        column.into_any_element()
+    }
+
+    /// Opens the settings of a person of the selected server.
+    pub(crate) fn open_person_settings(
+        &mut self,
+        account_id: junto_client_core::protocol::ids::AccountId,
+        page: PersonPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server_id = self.state.read(cx).view().selected.map(|server| server.id);
+        if let Some(server_id) = server_id {
+            let open = AdminOpen::Person {
+                server_id,
+                account_id,
+                page,
+            };
+            self.open_admin(open, window, cx);
+        }
+    }
+
+    /// Opens the settings of a category of the selected server.
+    pub(crate) fn open_category_settings(
+        &mut self,
+        workspace_id: WorkspaceId,
+        category_id: CategoryId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server_id = self.state.read(cx).view().selected.map(|server| server.id);
+        if let Some(server_id) = server_id {
+            let open = AdminOpen::Category {
+                server_id,
+                workspace_id,
+                category_id,
+            };
+            self.open_admin(open, window, cx);
+        }
+    }
+
+    fn render_person_page(
+        &mut self,
+        view: &AdminView,
+        settings: &PersonSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match &settings.page {
+            PersonPageView::Permissions(page) => {
+                self.render_member_permissions_page(view, settings, page, window, cx)
+            }
+            PersonPageView::Access(page) => {
+                self.render_access_page(view, settings, page, window, cx)
+            }
+            PersonPageView::Server(page) => {
+                self.render_server_permissions_page(view, settings, page, window, cx)
+            }
+        }
     }
 
     fn render_server_page(

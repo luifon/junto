@@ -7,6 +7,7 @@ pub mod glossary;
 pub mod notifications;
 pub mod overrides;
 pub mod people;
+pub mod person;
 pub mod recordings;
 pub mod records;
 pub mod roles;
@@ -22,7 +23,7 @@ use junto_client_core::protocol::structure::{
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
-use super::{AdminOpen, AdminPage, AdminState, Ask, ChannelPage, Made, RoleLevel};
+use super::{AdminOpen, AdminPage, AdminState, Ask, ChannelPage, Made, PersonPage, RoleLevel};
 use crate::state::view::{Known, Selection, ServerSnapshot, shown_model, shown_workspace, status};
 
 /// A collection of the client core as a page shows it.
@@ -389,6 +390,9 @@ pub struct ChannelSettings {
     pub archived: bool,
     /// The person holds "manage channel" in the channel.
     pub may_manage: bool,
+    /// The person changes the user limit of the voice channel: with "manage channel" or
+    /// with "set call user limit" (ADR 0514).
+    pub may_set_user_limit: bool,
     /// The state holds what the person may do in the channel. False for an archived
     /// channel until its own list is read (ADR 0790).
     pub permissions_read: bool,
@@ -419,6 +423,15 @@ pub enum ServerPage {
     Roles(roles::RolesPage),
 }
 
+/// The settings of a category: its permission rules (ADR 0304).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategorySettings {
+    pub workspace_id: WorkspaceId,
+    pub category_id: CategoryId,
+    pub name: String,
+    pub page: overrides::CategoryPermissionsPage,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     Server {
@@ -427,6 +440,8 @@ pub enum Scope {
         page: ServerPage,
     },
     Channel(Box<ChannelSettings>),
+    Category(Box<CategorySettings>),
+    Person(Box<person::PersonSettings>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -699,9 +714,67 @@ pub fn needs(
             if may_manage && matches!(page, ChannelPage::Overview | ChannelPage::Permissions) {
                 parts.push(AdminPart::Rules(channel_id));
             }
+            if page == ChannelPage::Permissions {
+                parts.extend(order_parts(model));
+            }
+            parts
+        }
+        // The synced channels of a category are counted from the rules of each channel
+        // that the person manages.
+        AdminOpen::Category {
+            workspace_id,
+            category_id,
+            ..
+        } => {
+            let mut parts = vec![AdminPart::CategoryRules(workspace_id, category_id)];
+            if let Some(workspace) = model.workspace(workspace_id) {
+                parts.extend(
+                    overrides::counted_channels(model, workspace, category_id)
+                        .into_iter()
+                        .map(AdminPart::Rules),
+                );
+            }
+            parts.extend(order_parts(model));
+            parts
+        }
+        AdminOpen::Person {
+            account_id, page, ..
+        } => {
+            let mut parts = order_parts(model);
+            match page {
+                PersonPage::Permissions(workspace_id) => {
+                    parts.push(AdminPart::MemberPermissions(workspace_id, account_id));
+                }
+                PersonPage::Access(workspace_id) => {
+                    parts.push(AdminPart::MemberAccess(workspace_id, account_id));
+                }
+                PersonPage::Server => {
+                    if !parts.contains(&AdminPart::Accounts) {
+                        parts.push(AdminPart::Accounts);
+                    }
+                    if !parts.contains(&AdminPart::ServerRoles) {
+                        parts.push(AdminPart::ServerRoles);
+                    }
+                    parts.push(AdminPart::ServerPermissions(account_id));
+                }
+            }
             parts
         }
     }
+}
+
+/// The collections that role order needs on a page that changes what concerns a member:
+/// an administrator reads the accounts and the server roles, which state where each
+/// account stands (ADR 0309).
+fn order_parts(model: &ServerModel) -> Vec<AdminPart> {
+    let mut parts = Vec::new();
+    if model.is_administrator() {
+        parts.push(AdminPart::Accounts);
+        if !model.account.is_owner {
+            parts.push(AdminPart::ServerRoles);
+        }
+    }
+    parts
 }
 
 fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> WorkspacesPage {
@@ -869,10 +942,10 @@ fn archive_page(model: &ServerModel, workspace: &WorkspaceModel, known: &Known) 
 
 fn channel_settings(
     model: &ServerModel,
-    workspace_id: WorkspaceId,
-    channel_id: ChannelId,
+    (workspace_id, channel_id): (WorkspaceId, ChannelId),
     selected: ChannelPage,
     known: &Known,
+    added: &[junto_client_core::protocol::structure::RuleSubject],
 ) -> Option<ChannelSettings> {
     let workspace = model.workspace(workspace_id)?;
     let channel = model
@@ -880,9 +953,14 @@ fn channel_settings(
         .filter(|channel| channel.workspace_id == workspace_id)?;
     let archived = model.admin.archived_channel(channel_id);
     let may_manage = model.holds_in(channel_id, WorkspacePermission::ManageChannel);
+    let may_set_user_limit = channel.kind == ChannelKind::Voice
+        && (may_manage || model.holds_in(channel_id, WorkspacePermission::SetCallUserLimit));
     let mut pages = Vec::new();
     if may_manage {
         pages.extend([ChannelPage::Overview, ChannelPage::Permissions]);
+    } else if may_set_user_limit {
+        // The overview shows the user limit alone (ADR 0514).
+        pages.push(ChannelPage::Overview);
     }
     pages.push(ChannelPage::Archive);
     let selected = if pages.contains(&selected) {
@@ -923,7 +1001,7 @@ fn channel_settings(
             })
         }
         ChannelPage::Permissions => {
-            ChannelPageView::Permissions(overrides::derive(model, workspace, channel))
+            ChannelPageView::Permissions(overrides::derive(model, workspace, channel, added))
         }
         ChannelPage::Archive => {
             let export_needs = [
@@ -953,6 +1031,7 @@ fn channel_settings(
         kind: channel.kind,
         archived: archived.is_some(),
         may_manage,
+        may_set_user_limit,
         permissions_read: model.permissions_in(channel_id).is_some(),
         pages,
         selected,
@@ -979,6 +1058,19 @@ pub fn derive(
     let server = servers.iter().find(|server| server.id == server_id)?;
     let model = shown(server)?;
     let workspace = shown_workspace(model, selection.workspaces.get(&server_id).copied());
+    // A page of a person that the person may not use gives way to the list that holds the
+    // person.
+    let (person, listed) = match open {
+        AdminOpen::Person {
+            account_id, page, ..
+        } => match person::settings(model, account_id, page) {
+            Some(settings) => (Some(settings), AdminPage::Members),
+            None if page == PersonPage::Server => (None, AdminPage::People),
+            None => (None, AdminPage::Members),
+        },
+        AdminOpen::Server { page, .. } => (None, page),
+        AdminOpen::Channel { .. } | AdminOpen::Category { .. } => (None, AdminPage::Workspaces),
+    };
     let scope = match open {
         AdminOpen::Channel {
             workspace_id,
@@ -987,12 +1079,33 @@ pub fn derive(
             ..
         } => Scope::Channel(Box::new(channel_settings(
             model,
-            workspace_id,
-            channel_id,
+            (workspace_id, channel_id),
             page,
             known,
+            &admin.rules_added,
         )?)),
-        AdminOpen::Server { page, .. } => {
+        AdminOpen::Category {
+            workspace_id,
+            category_id,
+            ..
+        } => {
+            let workspace = model.workspace(workspace_id)?;
+            let category = workspace
+                .categories
+                .iter()
+                .find(|category| category.id == category_id)?;
+            Scope::Category(Box::new(CategorySettings {
+                workspace_id,
+                category_id,
+                name: category.name.clone(),
+                page: overrides::category_page(model, workspace, category_id, &admin.rules_added),
+            }))
+        }
+        AdminOpen::Person { .. } | AdminOpen::Server { .. } if person.is_some() => {
+            Scope::Person(Box::new(person?))
+        }
+        AdminOpen::Person { .. } | AdminOpen::Server { .. } => {
+            let page = listed;
             let nav = nav(model, workspace);
             // A page that the person may not use any more gives way to the first one.
             let selected = if nav.iter().any(|group| group.pages.contains(&page)) {

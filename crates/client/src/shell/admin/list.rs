@@ -1049,6 +1049,10 @@ impl Shell {
             Some(Scope::Channel(settings)) => {
                 crate::text::admin::channel_page_name(settings.selected)
             }
+            Some(Scope::Category(_)) => crate::text::admin::overrides::PERMISSIONS,
+            Some(Scope::Person(settings)) => {
+                crate::text::admin::overrides::person_page_name(settings.selected)
+            }
             None => crate::text::admin::TITLE,
         };
         element(self, label.into(), render, window, cx)

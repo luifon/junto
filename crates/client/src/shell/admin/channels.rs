@@ -21,7 +21,7 @@ use crate::state::admin::view::{
     AdminView, CategoryLine, ChannelGroup, ChannelLine, ChannelSettings, ChannelsPage,
     OverviewPage, Privacy, Scope, ServerPage,
 };
-use crate::state::admin::{AdminPage, AskKind, AskState, ChannelPage};
+use crate::state::admin::{AdminPage, AskKind, AskState, ChannelPage, RulesOf};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{Button, Notice, Segmented, Stepper, StyleExt, Toggle, icon};
@@ -291,6 +291,41 @@ impl Shell {
         )
     }
 
+    /// The user limit of a voice channel with the controls that lower and raise it.
+    fn render_user_limit(
+        &mut self,
+        (server_id, channel_id): (ServerId, ChannelId),
+        limit: Option<u32>,
+        held: Option<&'static str>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let lower = stepped_limit(limit, false)
+            .filter(|_| held.is_none())
+            .map(|next| Self::user_limit_listener(server_id, channel_id, next, cx));
+        let raise = stepped_limit(limit, true)
+            .filter(|_| held.is_none())
+            .map(|next| Self::user_limit_listener(server_id, channel_id, next, cx));
+        option_row(
+            text::USER_LIMIT,
+            text::USER_LIMIT_HELP,
+            Stepper::new(
+                "channel-limit",
+                text::USER_LIMIT,
+                limit.map_or_else(|| text::NO_USER_LIMIT.to_owned(), |limit| limit.to_string()),
+                text::LOWER_USER_LIMIT,
+                text::RAISE_USER_LIMIT,
+            )
+            .selector("channel-limit")
+            .held(held)
+            .on_lower(lower)
+            .on_raise(raise)
+            .into_any_element(),
+            theme,
+        )
+        .px(u(0.0))
+    }
+
     fn user_limit_listener(
         server_id: ServerId,
         channel_id: ChannelId,
@@ -554,6 +589,15 @@ impl Shell {
                             false,
                             cx,
                         ),
+                    ))
+                    .child(row_action(
+                        ("category-permissions", number),
+                        text::admin::overrides::PERMISSIONS,
+                        format!("category-permissions-{category_id}"),
+                        None,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_category_settings(workspace_id, category_id, window, cx);
+                        }),
                     ))
                     .child(row_action(
                         ("category-rename", number),
@@ -1099,6 +1143,39 @@ impl Shell {
         let answering = self.admin_form_awaited(view, AskKind::UpdateChannel(channel_id));
         let waiting = answering.then_some(text::admin::FORM_SENT);
         let held = self.channel_settings_hold(view, settings);
+        if !settings.may_manage {
+            // A person with "set call user limit" alone changes the user limit, and no
+            // other setting (ADR 0514).
+            let mut column = div()
+                .flex()
+                .flex_col()
+                .child(page_title(
+                    text::admin::channel_page_name(ChannelPage::Overview),
+                    text::admin::LIMIT_ONLY_HELP,
+                    &theme,
+                ))
+                .children(archived.map(|archived| {
+                    div()
+                        .flex_none()
+                        .mb(u(8.0))
+                        .child(Notice::new(archived).selector("channel-archived-notice"))
+                }));
+            if let Some(voice) = page.voice {
+                column = column.child(self.render_user_limit(
+                    (server_id, channel_id),
+                    voice.user_limit,
+                    held,
+                    &theme,
+                    cx,
+                ));
+            }
+            return column
+                .children(refusal(
+                    view.refused(AskKind::CallSettings(channel_id)),
+                    "channel-settings-refused",
+                ))
+                .into_any_element();
+        }
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::channel_page_name(ChannelPage::Overview),
             text::admin::OVERVIEW_HELP,
@@ -1239,38 +1316,15 @@ impl Shell {
             .px(u(0.0)),
         );
         if let Some(voice) = page.voice {
-            let limit = voice.user_limit;
             let hides = voice.hides_occupants;
-            let lower = stepped_limit(limit, false)
-                .filter(|_| held.is_none())
-                .map(|next| Self::user_limit_listener(server_id, channel_id, next, cx));
-            let raise = stepped_limit(limit, true)
-                .filter(|_| held.is_none())
-                .map(|next| Self::user_limit_listener(server_id, channel_id, next, cx));
             column = column
-                .child(
-                    option_row(
-                        text::USER_LIMIT,
-                        text::USER_LIMIT_HELP,
-                        Stepper::new(
-                            "channel-limit",
-                            text::USER_LIMIT,
-                            limit.map_or_else(
-                                || text::NO_USER_LIMIT.to_owned(),
-                                |limit| limit.to_string(),
-                            ),
-                            text::LOWER_USER_LIMIT,
-                            text::RAISE_USER_LIMIT,
-                        )
-                        .selector("channel-limit")
-                        .held(held)
-                        .on_lower(lower)
-                        .on_raise(raise)
-                        .into_any_element(),
-                        &theme,
-                    )
-                    .px(u(0.0)),
-                )
+                .child(self.render_user_limit(
+                    (server_id, channel_id),
+                    voice.user_limit,
+                    held,
+                    &theme,
+                    cx,
+                ))
                 .child(
                     option_row(
                         text::HIDE_OCCUPANTS,
@@ -1309,7 +1363,7 @@ impl Shell {
                 (
                     AskKind::UpdateChannel(of)
                     | AskKind::CallSettings(of)
-                    | AskKind::SetOverride(of, _),
+                    | AskKind::SetRule(RulesOf::Channel(of), _),
                     AskState::Refused(reason),
                 ) if *of == channel_id => Some(reason.as_str()),
                 _ => None,

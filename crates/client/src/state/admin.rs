@@ -7,6 +7,7 @@ mod moves;
 mod notifications;
 mod overrides;
 mod people;
+mod person_permissions;
 pub(crate) mod recordings;
 pub mod records;
 pub mod roles;
@@ -23,11 +24,12 @@ use junto_client_core::live::LoadError;
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::ids::{
     AccessTokenId, AccountId, CategoryId, ChannelId, ExportId, InviteId, JoinRequestId, ServerId,
-    WorkspaceId, WorkspaceRoleId,
+    WorkspaceId,
 };
 
 use junto_client_core::protocol::ServerPermission;
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
+use junto_client_core::protocol::structure::RuleSubject;
 
 pub use recordings::RecordingList;
 pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, AuditTarget, ExportFiles};
@@ -79,6 +81,18 @@ pub enum ChannelPage {
     Archive,
 }
 
+/// A page of the settings of one person (ADR 0761).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PersonPage {
+    /// The workspace permissions of a member of this workspace (ADR 0306).
+    Permissions(WorkspaceId),
+    /// What the member can use in each channel of this workspace that the account sees
+    /// (ADR 0304).
+    Access(WorkspaceId),
+    /// The server permissions of the account (ADR 0306).
+    Server,
+}
+
 /// What the administration shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminOpen {
@@ -92,14 +106,36 @@ pub enum AdminOpen {
         channel_id: ChannelId,
         page: ChannelPage,
     },
+    /// The settings of a category: its permission rules (ADR 0304).
+    Category {
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        category_id: CategoryId,
+    },
+    /// The settings of one person: of a member of a workspace, or of an account.
+    Person {
+        server_id: ServerId,
+        account_id: AccountId,
+        page: PersonPage,
+    },
 }
 
 impl AdminOpen {
     pub const fn server_id(&self) -> ServerId {
         match self {
-            Self::Server { server_id, .. } | Self::Channel { server_id, .. } => *server_id,
+            Self::Server { server_id, .. }
+            | Self::Channel { server_id, .. }
+            | Self::Category { server_id, .. }
+            | Self::Person { server_id, .. } => *server_id,
         }
     }
+}
+
+/// The place of the rules that a request changes (ADR 0304).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RulesOf {
+    Channel(ChannelId),
+    Category(WorkspaceId, CategoryId),
 }
 
 /// What a request of the administration asks for. A page shows the state of a request at
@@ -122,7 +158,14 @@ pub enum AskKind {
     ArchiveChannel(ChannelId),
     RestoreChannel(ChannelId),
     CallSettings(ChannelId),
-    SetOverride(ChannelId, WorkspaceRoleId),
+    /// A change of the rule of a role or a person in a channel or a category.
+    SetRule(RulesOf, RuleSubject),
+    /// A channel takes the rules of its category again.
+    SyncRules(ChannelId),
+    /// A change of the workspace permissions of a member (ADR 0306).
+    SetMemberPermission(WorkspaceId, AccountId),
+    /// A change of the server permissions of an account (ADR 0306).
+    SetServerPermission(AccountId),
     ArchivePeriod,
     /// The notification level of a workspace is set or removed.
     NotificationDefault(WorkspaceId),
@@ -174,8 +217,10 @@ enum AskPlace {
     Own(AskKind),
     Workspace(WorkspaceId),
     Category(CategoryId),
-    /// The settings of a channel: its overview, its call settings and its overrides.
+    /// The settings of a channel: its overview, its call settings and its rules.
     ChannelSettings(ChannelId),
+    /// The rules of a category.
+    CategoryRules(CategoryId),
     ArchivedChannel(ChannelId),
     Account(AccountId),
     /// The roles of an account, open under its row.
@@ -195,7 +240,9 @@ impl AskKind {
             AskKind::UpdateCategory(id) | AskKind::DeleteCategory(id) => AskPlace::Category(id),
             AskKind::UpdateChannel(id)
             | AskKind::CallSettings(id)
-            | AskKind::SetOverride(id, _) => AskPlace::ChannelSettings(id),
+            | AskKind::SyncRules(id)
+            | AskKind::SetRule(RulesOf::Channel(id), _) => AskPlace::ChannelSettings(id),
+            AskKind::SetRule(RulesOf::Category(_, id), _) => AskPlace::CategoryRules(id),
             AskKind::ArchiveChannel(id) | AskKind::RestoreChannel(id) => {
                 AskPlace::ArchivedChannel(id)
             }
@@ -312,6 +359,9 @@ pub struct AdminState {
     pub(crate) glossary_answered: Option<glossary::Answered>,
     /// The moves of channels that the person sent and that the state does not show yet.
     pub(crate) channel_moves: moves::ChannelMoves,
+    /// The roles and the people that the person added to the rules of the open page and
+    /// that have no rule yet (ADR 0304). They belong to the page.
+    pub(crate) rules_added: Vec<RuleSubject>,
 }
 
 /// The request that an answer belongs to.
@@ -346,6 +396,7 @@ impl AdminState {
             self.recordings = recordings::RecordingList::default();
             self.glossary_answered = None;
             self.channel_moves.release();
+            self.rules_added.clear();
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
@@ -364,6 +415,7 @@ impl AdminState {
         self.recordings = recordings::RecordingList::default();
         self.glossary_answered = None;
         self.channel_moves.release();
+        self.rules_added.clear();
     }
 
     /// Binds the open layer to the account that its server shows now. A layer that was
@@ -537,12 +589,13 @@ impl AppState {
             return;
         };
         let shown = match (open, &view.scope) {
-            (AdminOpen::Server { server_id, .. }, Scope::Server { selected, .. }) => {
-                AdminOpen::Server {
-                    server_id,
-                    page: *selected,
-                }
-            }
+            (
+                AdminOpen::Server { server_id, .. } | AdminOpen::Person { server_id, .. },
+                Scope::Server { selected, .. },
+            ) => AdminOpen::Server {
+                server_id,
+                page: *selected,
+            },
             (
                 AdminOpen::Channel {
                     server_id,
@@ -555,6 +608,18 @@ impl AppState {
                 server_id,
                 workspace_id,
                 channel_id,
+                page: settings.selected,
+            },
+            (
+                AdminOpen::Person {
+                    server_id,
+                    account_id,
+                    ..
+                },
+                Scope::Person(settings),
+            ) => AdminOpen::Person {
+                server_id,
+                account_id,
                 page: settings.selected,
             },
             _ => return,

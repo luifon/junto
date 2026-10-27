@@ -159,7 +159,9 @@ mod tests {
         .unwrap();
         match view.scope {
             Scope::Server { selected, page, .. } => (selected, page),
-            Scope::Channel(_) => panic!("a page of the server was opened"),
+            Scope::Channel(_) | Scope::Category(_) | Scope::Person(_) => {
+                panic!("a page of the server was opened")
+            }
         }
     }
 

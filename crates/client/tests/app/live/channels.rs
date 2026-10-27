@@ -47,7 +47,7 @@ fn shown_settings(window: &mut Window) -> Option<(Option<u32>, bool)> {
                 .map(|voice| (voice.user_limit, voice.hides_occupants)),
             ChannelPageView::Permissions(_) | ChannelPageView::Archive(_) => None,
         },
-        Scope::Server { .. } => None,
+        Scope::Server { .. } | Scope::Category(_) | Scope::Person(_) => None,
     }
 }
 

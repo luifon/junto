@@ -748,7 +748,7 @@ impl Shell {
     fn render_account_row(
         &mut self,
         view: &AdminView,
-        row: &AccountLine,
+        (row, may_set_permissions): (&AccountLine, bool),
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -866,6 +866,22 @@ impl Shell {
                         held(None),
                         cx.listener(move |this, _, _, cx| {
                             this.show_account_roles((!shown).then_some(account_id), cx);
+                        }),
+                    ));
+                }
+                // An administrator sets the server permissions of an account (ADR 0306).
+                // The page of the owner states that it takes no rule.
+                if may_set_permissions
+                    && !matches!(row.status, AccountStatus::Removed | AccountStatus::Deleted)
+                {
+                    content = content.child(row_action(
+                        ("account-permissions", account_id.as_uuid().as_u128() as u64),
+                        text::admin::overrides::PERMISSIONS,
+                        format!("account-permissions-{account_id}"),
+                        held(None),
+                        cx.listener(move |this, _, window, cx| {
+                            let page = crate::state::admin::PersonPage::Server;
+                            this.open_person_settings(account_id, page, window, cx);
                         }),
                     ));
                 }
@@ -1057,7 +1073,12 @@ impl Shell {
                     return this.render_people_header(&view, &page, window, cx);
                 }
                 if let Some(row) = rows.get(index - 1) {
-                    return this.render_account_row(&view, row, &theme, cx);
+                    return this.render_account_row(
+                        &view,
+                        (row, page.may_set_permissions),
+                        &theme,
+                        cx,
+                    );
                 }
                 div()
                     .flex()
@@ -1354,6 +1375,19 @@ impl Shell {
                     cx,
                 ));
             }
+        }
+        if page.may_set_permissions {
+            let workspace_id = page.workspace_id;
+            content = content.child(row_action(
+                ("member-permissions", account_id.as_uuid().as_u128() as u64),
+                text::admin::overrides::PERMISSIONS,
+                format!("member-permissions-{account_id}"),
+                None,
+                cx.listener(move |this, _, window, cx| {
+                    let page = crate::state::admin::PersonPage::Permissions(workspace_id);
+                    this.open_person_settings(account_id, page, window, cx);
+                }),
+            ));
         }
         if let Some(remove) = row.remove {
             content = content.child(row_action(

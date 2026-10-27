@@ -311,6 +311,8 @@ pub fn archive_channel_question(name: &str) -> String {
 
 // The settings of a channel.
 pub const OVERVIEW_HELP: &str = "The name, the category and the rules of this channel.";
+pub const LIMIT_ONLY_HELP: &str = "You can change the user limit of this voice channel. Its other settings need the \
+     “manage channel” permission.";
 pub const PERMANENT_MESSAGES_HELP: &str = "Nobody can edit a message that is sent while this is on. Only an administrator can \
      delete one, and each deletion is recorded.";
 pub const PRIVATE_CHANNEL: &str = "Private channel";

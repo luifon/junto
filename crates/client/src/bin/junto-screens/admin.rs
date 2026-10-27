@@ -45,16 +45,16 @@ use super::messages::{self, acme_with, none, prepare};
 use super::{PEOPLE, Screen, Studio, at, channel, harbor, id, person};
 
 // The numbers of the identifiers of "Acme Studio" (see `studio` and `acme_model`).
-const ACME: u32 = 1;
-const STUDIO: u32 = 10;
+pub(crate) const ACME: u32 = 1;
+pub(crate) const STUDIO: u32 = 10;
 const CLIENT_ALPHA: u32 = 11;
 const CLIENT_BETA: u32 = 12;
-const EVERYONE: u32 = 20;
-const LEADS: u32 = 21;
+pub(crate) const EVERYONE: u32 = 20;
+pub(crate) const LEADS: u32 = 21;
 const ENGINEERS: u32 = 22;
 const GENERAL: u32 = 30;
-const ALPHA: u32 = 31;
-const DEPLOYS: u32 = 32;
+pub(crate) const ALPHA: u32 = 31;
+pub(crate) const DEPLOYS: u32 = 32;
 const RANDOM: u32 = 33;
 const DAILY: u32 = 34;
 const HR: u32 = 36;
@@ -65,7 +65,7 @@ const ROADMAP: u32 = 38;
 const MODERATORS: u32 = 50;
 const INVITERS: u32 = 51;
 const ADMINISTRATORS: u32 = 54;
-const PROJECTS: u32 = 60;
+pub(crate) const PROJECTS: u32 = 60;
 const ROOMS: u32 = 61;
 const INVITE: u32 = 600;
 const REQUEST: u32 = 620;
@@ -89,19 +89,19 @@ pub(crate) fn servers(change: impl FnOnce(&mut ServerModel)) -> Vec<ServerSnapsh
 }
 
 /// Luca owns the server.
-fn owner(model: &mut ServerModel) {
+pub(crate) fn owner(model: &mut ServerModel) {
     model.account.is_owner = true;
 }
 
 /// Luca is an administrator by the server role "Administrators", and another account
 /// owns the server.
-fn administrator(model: &mut ServerModel) {
+pub(crate) fn administrator(model: &mut ServerModel) {
     model.account.server_role_ids = vec![id(ADMINISTRATORS)];
     model.account.server_permissions = vec![ServerPermission::Administrator];
 }
 
 /// Luca holds the role "Leads" of "Studio", and that role gives these permissions.
-fn lead(model: &mut ServerModel, permissions: &[WorkspacePermission]) {
+pub(crate) fn lead(model: &mut ServerModel, permissions: &[WorkspacePermission]) {
     let studio = Arc::make_mut(&mut model.workspaces[0]);
     let leads: WorkspaceRoleId = id(LEADS);
     studio.own_role_ids = vec![leads];
@@ -122,7 +122,7 @@ fn lead(model: &mut ServerModel, permissions: &[WorkspacePermission]) {
 
 /// Gives "Studio" the categories "Projects" and "Rooms". `#general` and `#random` stay
 /// without a category, `#deploys` has permanent messages, and "HR" has a user limit.
-fn structure(model: &mut ServerModel) {
+pub(crate) fn structure(model: &mut ServerModel) {
     let studio = Arc::make_mut(&mut model.workspaces[0]);
     let workspace_id = studio.workspace.id;
     studio.categories = vec![
@@ -181,7 +181,7 @@ pub(crate) fn accounts(owner: &str) -> Vec<AccountSummary> {
         .collect()
 }
 
-fn server_roles() -> Vec<ServerRole> {
+pub(crate) fn server_roles() -> Vec<ServerRole> {
     vec![
         ServerRole {
             position: 3,
@@ -809,7 +809,7 @@ pub(crate) fn open_page(
 }
 
 /// Opens the settings of a channel of "Studio" at a page.
-fn open_channel(
+pub(crate) fn open_channel(
     shell: &mut Shell,
     channel: u32,
     page: ChannelPage,

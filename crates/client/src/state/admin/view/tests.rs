@@ -240,7 +240,9 @@ impl Scene {
                 selected,
                 page,
             } => (nav, selected, page),
-            Scope::Channel(_) => panic!("a page of the server was opened"),
+            Scope::Channel(_) | Scope::Category(_) | Scope::Person(_) => {
+                panic!("a page of the server was opened")
+            }
         }
     }
 
@@ -253,7 +255,9 @@ impl Scene {
         };
         self.view(open).map(|view| match view.scope {
             Scope::Channel(settings) => *settings,
-            Scope::Server { .. } => panic!("the settings of a channel were opened"),
+            Scope::Server { .. } | Scope::Category(_) | Scope::Person(_) => {
+                panic!("the settings of a channel were opened")
+            }
         })
     }
 
@@ -605,15 +609,24 @@ fn each_page_holds_open_the_collections_that_it_shows() {
             AdminPart::DirectRetention
         ]
     );
-    for page in [ChannelPage::Overview, ChannelPage::Permissions] {
-        assert_eq!(
-            needs(&channel(page), &model, studio),
-            [
-                AdminPart::Archived(scene.studio),
-                AdminPart::Rules(scene.general)
-            ]
-        );
-    }
+    assert_eq!(
+        needs(&channel(ChannelPage::Overview), &model, studio),
+        [
+            AdminPart::Archived(scene.studio),
+            AdminPart::Rules(scene.general)
+        ]
+    );
+    // The rules of a person need role order, which an administrator reads from the
+    // accounts and the server roles (ADR 0309).
+    assert_eq!(
+        needs(&channel(ChannelPage::Permissions), &model, studio),
+        [
+            AdminPart::Archived(scene.studio),
+            AdminPart::Rules(scene.general),
+            AdminPart::Accounts,
+            AdminPart::ServerRoles
+        ]
+    );
     assert_eq!(
         needs(&channel(ChannelPage::Archive), &model, studio),
         [AdminPart::Archived(scene.studio)]

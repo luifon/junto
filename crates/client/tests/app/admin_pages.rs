@@ -9,7 +9,9 @@
 use std::sync::Arc;
 
 use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
-use junto_client::state::admin::view::overrides::{Choice, PermissionLine, Refused, RoleLine};
+use junto_client::state::admin::view::overrides::{
+    Choice, PermissionLine, Refused, SubjectKind, SubjectLine,
+};
 use junto_client::state::admin::view::people::{
     AccountLine, AddableLine, Blocked, EXPIRY_DAYS, InviteLine, InviteState, MemberList,
     RequestLine, USES,
@@ -71,14 +73,14 @@ mod actions;
 #[path = "admin_exports.rs"]
 mod exports_actions;
 
-fn drawn_text(window: &mut Window) -> Vec<junto_client::ui::PaintedText> {
+pub(crate) fn drawn_text(window: &mut Window) -> Vec<junto_client::ui::PaintedText> {
     let _record = junto_client::ui::record_painted_text();
     window.cx.update(|window, _| window.refresh());
     window.settle();
     junto_client::ui::take_painted_text()
 }
 
-fn assert_drawn_label(window: &mut Window, label: &str) {
+pub(crate) fn assert_drawn_label(window: &mut Window, label: &str) {
     let text = drawn_text(window);
     assert!(
         text.iter()
@@ -215,7 +217,7 @@ fn asks_to_join(
 }
 
 /// Gives an account a new server role with one permission, as the owner does.
-fn grant_server(
+pub(crate) fn grant_server(
     world: &World,
     owner: &ServerHandle,
     account_id: AccountId,
@@ -233,7 +235,7 @@ fn grant_server(
 }
 
 /// Gives a member a new role of a workspace with one permission, as the owner does.
-fn grant_workspace(
+pub(crate) fn grant_workspace(
     world: &World,
     owner: &ServerHandle,
     workspace_id: WorkspaceId,
@@ -514,7 +516,7 @@ pub(crate) fn open_page(
 
 /// Shows a channel of the channel list and opens its settings with the gear of its header.
 #[track_caller]
-fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId) {
+pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId) {
     window.until("the channel is in the channel list", |window| {
         window.shows_channel(name)
     });
@@ -607,8 +609,8 @@ fn shows_permissions(window: &mut Window) -> bool {
     )
 }
 
-/// The "everyone" role on the page of the permissions, once the overrides are read.
-fn everyone_role(window: &mut Window) -> Option<RoleLine> {
+/// The "everyone" role on the page of the permissions, once the rules are read.
+fn everyone_role(window: &mut Window) -> Option<SubjectLine> {
     let Scope::Channel(settings) = window.admin()?.scope else {
         return None;
     };
@@ -616,14 +618,25 @@ fn everyone_role(window: &mut Window) -> Option<RoleLine> {
     let ChannelPageView::Permissions(page) = settings.page else {
         return None;
     };
-    page.roles
+    page.rules
         .loaded()?
+        .subjects
         .iter()
-        .find(|role| role.is_everyone)
+        .find(|line| line.kind == SubjectKind::Everyone)
         .cloned()
 }
 
-fn permission_line(role: &RoleLine, permission: WorkspacePermission) -> PermissionLine {
+/// The identifier of the role of a line of the page of the permissions.
+fn role_of(line: &SubjectLine) -> junto_client_core::protocol::ids::WorkspaceRoleId {
+    match line.subject {
+        junto_client_core::protocol::structure::RuleSubject::Role { role_id } => role_id,
+        junto_client_core::protocol::structure::RuleSubject::Person { .. } => {
+            panic!("the line is of a person")
+        }
+    }
+}
+
+fn permission_line(role: &SubjectLine, permission: WorkspacePermission) -> PermissionLine {
     *role
         .permissions
         .iter()
@@ -634,7 +647,7 @@ fn permission_line(role: &RoleLine, permission: WorkspacePermission) -> Permissi
 const fn choice_word(choice: Choice) -> &'static str {
     match choice {
         Choice::Allow => "allow",
-        Choice::Default => "default",
+        Choice::Neutral => "neutral",
         Choice::Deny => "deny",
     }
 }
@@ -644,7 +657,7 @@ const fn choice_word(choice: Choice) -> &'static str {
 /// again after a change of the permissions, so a click that started no request is made
 /// again, as a person does.
 #[track_caller]
-fn choose(window: &mut Window, permission: WorkspacePermission, choice: Choice) -> RoleLine {
+fn choose(window: &mut Window, permission: WorkspacePermission, choice: Choice) -> SubjectLine {
     let button = sel(
         &format!("override-{}", permission.name()),
         choice_word(choice),
@@ -1280,9 +1293,9 @@ fn the_owner_hides_a_channel_from_everyone_and_shows_it_again_on_the_permissions
         "the overrides of the channel are read",
         everyone_role,
     );
-    assert!(everyone.is_everyone && !everyone.has_override);
+    assert!(everyone.kind == SubjectKind::Everyone && !everyone.has_rule);
     let line = permission_line(&everyone, view_channel);
-    assert_eq!((line.current, line.held), (Choice::Default, true));
+    assert_eq!((line.current, line.held), (Choice::Neutral, true));
     // The owner may make every choice: no row states a reason.
     assert!(
         everyone
@@ -1296,7 +1309,7 @@ fn the_owner_hides_a_channel_from_everyone_and_shows_it_again_on_the_permissions
 
     // "Deny" for "view channel": the member has the channel no longer.
     let everyone = choose(&mut window, view_channel, Choice::Deny);
-    assert!(everyone.has_override);
+    assert!(everyone.has_rule);
     assert_eq!((everyone.allowed(), everyone.denied()), (0, 1));
     until_model(
         &world,
@@ -1306,8 +1319,8 @@ fn the_owner_hides_a_channel_from_everyone_and_shows_it_again_on_the_permissions
     );
 
     // "Default" removes the deny, and the channel returns.
-    let everyone = choose(&mut window, view_channel, Choice::Default);
-    assert!(!everyone.has_override);
+    let everyone = choose(&mut window, view_channel, Choice::Neutral);
+    assert!(!everyone.has_rule);
     until_model(
         &world,
         &member,
@@ -1370,7 +1383,7 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         everyone_role,
     );
     let line = permission_line(&everyone, messages);
-    assert_eq!((line.current, line.held), (Choice::Default, false));
+    assert_eq!((line.current, line.held), (Choice::Neutral, false));
     assert_eq!(line.refused(Choice::Allow), Some(Refused::Allows));
     assert_eq!(line.refused(Choice::Deny), None);
     assert_eq!(line.reason(), Some(Refused::Allows));
@@ -1398,7 +1411,7 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
                 .admin
                 .rules(plans)
                 .loaded()
-                .and_then(|rules| rules.of_role(everyone.id))
+                .and_then(|rules| rules.of_role(role_of(&everyone)))
                 .is_some_and(|held| held.allow.is_empty() && held.deny == [messages])
         },
     );
@@ -1407,20 +1420,20 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
     // would give "manage messages", which the member does not hold.
     let line = permission_line(&everyone, messages);
     assert_eq!((line.current, line.held), (Choice::Deny, false));
-    assert_eq!(line.refused(Choice::Default), Some(Refused::LiftsDeny));
+    assert_eq!(line.refused(Choice::Neutral), Some(Refused::LiftsDeny));
     assert_eq!(line.refused(Choice::Allow), Some(Refused::LiftsDeny));
     assert_eq!(everyone.blocks_removal(), [messages]);
     window.until("the page states the reason of the deny", |window| {
-        window.shows("override-manage_messages-default") && window.shows("override-ceiling")
+        window.shows("override-manage_messages-neutral") && window.shows("override-ceiling")
     });
-    for word in ["default", "allow"] {
+    for word in ["neutral", "allow"] {
         click_in_page(&mut window, sel("override-manage_messages", word));
         assert!(
             window.admin().is_none_or(|view| view.asks.is_empty()),
             "{word} sent a request"
         );
     }
-    click_in_page(&mut window, sel("override-clear", everyone.id));
+    click_in_page(&mut window, sel("override-clear", role_of(&everyone)));
     assert!(window.admin().is_none_or(|view| view.asks.is_empty()));
     let stored = world.run(api.channel_rules(plans)).unwrap().rules;
     assert_eq!(stored.len(), 1);
@@ -1428,7 +1441,7 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         (stored[0].subject, stored[0].deny.as_slice()),
         (
             junto_client_core::protocol::structure::RuleSubject::Role {
-                role_id: everyone.id
+                role_id: role_of(&everyone)
             },
             [messages].as_slice()
         )

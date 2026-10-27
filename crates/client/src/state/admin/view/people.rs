@@ -273,6 +273,9 @@ pub struct PeoplePage {
     pub accounts: Listed<Vec<AccountLine>>,
     /// The number of banned accounts.
     pub banned: usize,
+    /// The person is an administrator, who sets the server permissions of an account
+    /// (ADR 0306).
+    pub may_set_permissions: bool,
 }
 
 /// One member of the shown workspace.
@@ -323,6 +326,9 @@ pub struct MembersPage {
     /// workspace (ADR 0115), in the order of their names. They are on their way until the
     /// accounts and the members are read.
     pub addable: Option<Listed<Vec<AddableLine>>>,
+    /// The person holds "manage roles" in the workspace, which reads and sets the
+    /// workspace permissions of a member (ADR 0306).
+    pub may_set_permissions: bool,
 }
 
 /// A workspace that an invite or an approval can grant.
@@ -645,7 +651,11 @@ pub fn people(model: &ServerModel, known: &Known) -> PeoplePage {
             .filter(|row| row.status == AccountStatus::Banned)
             .count()
     });
-    PeoplePage { accounts, banned }
+    PeoplePage {
+        accounts,
+        banned,
+        may_set_permissions: model.is_administrator(),
+    }
 }
 
 /// The page of the members of the shown workspace.
@@ -730,6 +740,7 @@ pub fn members(
         workspace_name: workspace.workspace.name.clone(),
         members: list,
         addable,
+        may_set_permissions: may_assign,
     }
 }
 
