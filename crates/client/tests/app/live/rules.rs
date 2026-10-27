@@ -19,6 +19,7 @@ use junto_client_core::protocol::call::{
 use junto_client_core::protocol::ids::{AccountId, CallInvitationId, ChannelId};
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
 use junto_media::calls::{CallTarget, EndReason, Outcome, Phase};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
@@ -277,10 +278,27 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         voice.locked && voice.closed == Some(Closed::Locked)
     });
 
-    // The box that asks to enter belongs to the room that the person chose.
+    // The box that asks to enter belongs to the room that the person chose. In the narrowest
+    // channel column its text takes the most lines, and the whole box stays in view.
     assert!(!scene.window.shows("entry-box"));
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.set_panel_width(Panel::Channels, 200.0, cx);
+        });
     scene.window.click_channel(ROOM);
     assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
+    let area = scene
+        .window
+        .cx
+        .debug_bounds("channel-entry-notices")
+        .unwrap();
+    let entry = scene.window.cx.debug_bounds("entry-box").unwrap();
+    assert!(
+        entry.top() >= area.top() && entry.bottom() <= area.bottom(),
+        "entry box {entry:?} outside its area {area:?}"
+    );
     // A join is refused, and the refusal is told.
     scene.window.click("join-call");
     scene

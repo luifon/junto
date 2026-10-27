@@ -323,11 +323,16 @@ impl Shell {
             .min_h_0()
             .child(server_part)
             .child(list)
+            // The entry boxes take their height from the end of the channel list, whose rows
+            // stay in place. They scroll only when the column has no room for them, so the
+            // action of a box stays in view at every width of the column (ADR 0739).
             .child(
                 div()
                     .id("channel-entry-notices")
-                    .flex_none()
-                    .max_h(u(180.0))
+                    .debug_selector(|| "channel-entry-notices".to_owned())
+                    .flex_grow_0()
+                    .flex_shrink_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .children(entries),
             )
