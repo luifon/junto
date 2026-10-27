@@ -1,4 +1,5 @@
 mod lists;
+mod recordings;
 
 use crate::messages_support::{channel, message, send, text};
 use crate::support::{Member, TestServer};

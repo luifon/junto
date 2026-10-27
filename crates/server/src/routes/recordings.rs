@@ -221,7 +221,7 @@ pub async fn list_recordings(
                     && record.channel.kind == ChannelKind::Voice
                     && access.allows(Request::Channel {
                         scope: channel_scope,
-                        permission: WorkspacePermission::ViewChannel,
+                        permission: WorkspacePermission::ReadMessageHistory,
                     })
             })
             .map(|(record, _)| record.channel.id)
@@ -254,7 +254,7 @@ pub async fn list_recordings(
 }
 
 /// A recording that the caller may read, with the caller's standing in its voice channel
-/// (ADR 0604): the caller sees the channel, and while the call of the recording runs in a
+/// (ADR 0604): the caller sees the channel and can read its history. While the call runs in a
 /// channel that hides who is inside, the caller is inside. With `for_change`, the row of
 /// the recording is locked. Every route about a recording, its files and its transcript
 /// uses this rule.
@@ -300,6 +300,10 @@ async fn read_by(
     if !store::reads_call_of(&mut *connection, row.call_id, access.account_id).await? {
         return Err(ApiError::not_found());
     }
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ReadMessageHistory,
+    })?;
     let archived = record.archived_at.is_some();
     if !for_change {
         return Ok((row, scope, archived));
