@@ -1,7 +1,7 @@
 //! The requests of the administration about the server itself: its logo (ADR 0101) and
 //! the limits of the files of messages (ADR 0408).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::Context;
 use junto_client_core::profile;
@@ -12,30 +12,39 @@ use super::{Answered, AskKind};
 use crate::state::AppState;
 use crate::text::admin::server as txt;
 
-/// Reads a file that the person chose as the logo. Only a regular file is read, and at
-/// most one byte more than the largest logo, whatever the size of the file. A file that
-/// no server stores has its reason, and is not sent.
-fn read_logo(file: &Path) -> Result<Vec<u8>, &'static str> {
-    let bytes = profile::read_avatar_file(file).map_err(|_| txt::LOGO_NOT_READ)?;
-    match profile::check_avatar(&bytes) {
-        Ok(_) => Ok(bytes),
-        Err(invalid) => Err(txt::invalid_logo(invalid)),
-    }
-}
-
 impl AppState {
-    /// Sends the file at `file` as the logo of the server. The file is read on a
-    /// background thread, and its size and its first bytes are checked before a request.
-    /// The page shows the request as sending from the start of the read. The image
-    /// itself arrives with the event that states the new logo.
+    /// Opens the cut of a file for the logo of the server (ADR 0119).
     pub fn set_server_logo(&mut self, server_id: ServerId, file: PathBuf, cx: &mut Context<Self>) {
+        self.choose_picture(
+            crate::state::picture_crop::PicturePurpose::Logo(server_id),
+            file,
+            cx,
+        );
+    }
+
+    /// A chosen file that is not a picture, told at the logo control of the page.
+    pub(in crate::state) fn server_logo_refused(&mut self, reason: &'static str) {
+        let stamp = self.admin.begin(AskKind::SetLogo);
+        self.admin.settle(stamp, Some(reason.to_owned()));
+    }
+
+    /// Sends a cut picture as the logo of the server. Its size and its first bytes are
+    /// checked before a request. The image itself arrives with the event that states the
+    /// new logo.
+    pub(in crate::state) fn send_server_logo(
+        &mut self,
+        server_id: ServerId,
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
         let what = AskKind::SetLogo;
         let stamp = self.admin.begin(what);
-        let reading = cx
-            .background_executor()
-            .spawn(async move { read_logo(&file) });
+        let checked = match profile::check_avatar(&bytes) {
+            Ok(_) => Ok(bytes),
+            Err(invalid) => Err(txt::invalid_logo(invalid)),
+        };
         cx.spawn(async move |this, cx| {
-            let read = reading.await;
+            let read = checked;
             let _ = this.update(cx, |this, cx| {
                 // The person left the page or asked for something else meanwhile.
                 if this.admin.answered(stamp) != Answered::Current {

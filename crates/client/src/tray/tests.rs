@@ -173,9 +173,9 @@ fn a_mention_adds_the_mark_to_every_picture_and_its_number_to_the_tooltip() {
                 mention: true
             }
         );
-        assert_eq!(state.tooltip(), format!("{plain}, 3 unread mentions"));
+        assert_eq!(state.tooltip(), format!("{plain}, 3 unread mentions and direct messages"));
         state.mentions = 1;
-        assert_eq!(state.tooltip(), format!("{plain}, 1 unread mention"));
+        assert_eq!(state.tooltip(), format!("{plain}, 1 unread mention or direct message"));
     }
     assert_eq!(
         IconPicture {

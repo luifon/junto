@@ -210,6 +210,7 @@ impl RenderOnce for WorkspaceRow {
 pub struct CategoryHeader {
     name: SharedString,
     first: bool,
+    count: Option<SharedString>,
 }
 
 impl CategoryHeader {
@@ -217,7 +218,14 @@ impl CategoryHeader {
         Self {
             name: name.into(),
             first: false,
+            count: None,
         }
+    }
+
+    /// The count of what waits in the section, drawn after its name.
+    pub fn count(mut self, count: Option<SharedString>) -> Self {
+        self.count = count;
+        self
     }
 
     /// The first header of a list has less space above it.
@@ -248,6 +256,18 @@ impl RenderOnce for CategoryHeader {
                     .truncate()
                     .child(self.name),
             )
+            // The count, taller than the name, keeps the height of the header: the rows
+            // under it do not move when a count appears (ADR 0730).
+            .when_some(self.count, |header, count| {
+                header.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h(gpui::px(0.0))
+                        .child(Badge::new(count)),
+                )
+            })
             .child(
                 div()
                     .flex_1()

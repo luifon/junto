@@ -163,6 +163,7 @@ impl DataDir {
 
 pub(crate) const BOOK_FILE: &str = "servers.json";
 pub(crate) const PROFILE_FILE: &str = "profile.json";
+pub(crate) const SAVED_EXPORTS_FILE: &str = "saved-exports.json";
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 pub(crate) const VOICE_FILE: &str = "voice.json";
 

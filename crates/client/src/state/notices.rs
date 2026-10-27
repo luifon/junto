@@ -20,6 +20,7 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::message::{Message, MessagePlace};
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_media::audio::sounds::Sound;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -103,7 +104,7 @@ pub struct NoticesPanel {
     /// The notices of the state that the person has not read, also those that the list
     /// does not show while their messages are read.
     pub unread: usize,
-    /// The server may hold more notices after the listed ones.
+    /// The server may hold notices older than the listed ones.
     pub more: bool,
     /// The messages of some notices are not read yet.
     pub reading: bool,
@@ -293,12 +294,13 @@ fn author_of(
         .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
 }
 
-/// The notices of a server as the side panel lists them, the newest first. A notice whose
-/// message the server no longer has for the account is not listed, and a notice whose
-/// place the state does not hold is not listed either. A notice of a channel that is in no
-/// channel list waits for the archived list of its workspace, and so do the notices after
-/// it: they are added at the end when the list answers, and no listed row moves. A list
-/// that failed is named in the panel, and its notices are not listed.
+/// The notices of a server as the side panel lists them: the oldest first and the newest
+/// last, as a message list orders its messages. A notice whose message the server no longer
+/// has for the account is not listed, and a notice whose place the state does not hold is
+/// not listed either. A notice of a channel that is in no channel list waits for the
+/// archived list of its workspace, and so do the older notices: they are added before the
+/// listed rows when the list answers. A list that failed is named in the panel, and its
+/// notices are not listed.
 pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) -> NoticesPanel {
     let accounts = account_names(server_id, model, known);
     let departed = known.people.departures(server_id);
@@ -376,6 +378,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
         };
         rows.push(row);
     }
+    rows.reverse();
     NoticesPanel {
         // The notices of the state count, also those whose messages are being read: the
         // panel offers "Mark all as read" for them (ADR 0742).
@@ -557,6 +560,7 @@ pub struct NotifyPanel {
     /// The name of the server, of the workspace or of the channel.
     pub name: String,
     pub level: LevelView,
+    pub hide_text: Option<bool>,
     /// Present for a channel.
     pub channel: Option<ChannelNotify>,
     /// Present for a workspace.
@@ -581,6 +585,19 @@ pub fn stored_settings(
         .map(|sent| sent.settings.clone())
         .or_else(|| model.notification_settings(scope).cloned())
         .unwrap_or_default()
+}
+
+/// The level of a channel for the person: its own, or the level that it inherits.
+pub(super) fn channel_level(
+    server_id: ServerId,
+    channel_id: ChannelId,
+    model: &ServerModel,
+    known: &Known,
+) -> NotificationLevel {
+    stored_settings(server_id, SettingsScope::Channel(channel_id), model, known)
+        .level
+        .or_else(|| inherited_level(server_id, SettingsScope::Channel(channel_id), model, known))
+        .unwrap_or(NotificationLevel::Mentions)
 }
 
 /// The level that holds for a scope while the account stored none for it (ADR 0409): the
@@ -657,6 +674,7 @@ pub fn notify_panel(
             stored: settings.level,
             inherited: inherited_level(server_id, scope, model, known),
         },
+        hide_text: (scope == SettingsScope::Account).then_some(settings.hide_text),
         channel,
         workspace_default,
         busy: known.notify_busy.contains(&key),
@@ -678,6 +696,11 @@ pub struct QuietView {
     /// Absent: the device has a session on no server.
     pub do_not_disturb: Option<Agreement<bool>>,
     pub daily: Option<Agreement<Option<DailyQuiet>>>,
+    /// The system notifications of messages leave out their text (ADR 0742).
+    pub hide_text: Option<Agreement<bool>>,
+    /// System notifications and the sounds of messages wait while the person shares a
+    /// screen or presents (ADR 0742).
+    pub hold_while_presenting: Option<Agreement<bool>>,
     /// The account of the shown server is in its quiet time now.
     pub quiet_now: bool,
     pub busy: bool,
@@ -721,9 +744,19 @@ pub fn quiet_view(
         .iter()
         .map(|(server_id, _, model)| account(*server_id, model).daily_quiet)
         .collect();
+    let hide_text: Vec<bool> = servers
+        .iter()
+        .map(|(server_id, _, model)| account(*server_id, model).hide_text)
+        .collect();
+    let hold: Vec<bool> = servers
+        .iter()
+        .map(|(server_id, _, model)| holds_while_presenting(&account(*server_id, model)))
+        .collect();
     QuietView {
         do_not_disturb: agreement(&dnd),
         daily: agreement(&daily),
+        hide_text: agreement(&hide_text),
+        hold_while_presenting: agreement(&hold),
         quiet_now: known.clock.is_some_and(|now| {
             servers
                 .iter()
@@ -743,6 +776,12 @@ pub fn quiet_view(
 
 /// True while the account of a server wants no alert at an instant. The clock of the zone
 /// that the daily quiet time names decides, as on the server (ADR 0412, ADR 0798).
+/// The account holds its notifications while the person shares a screen or presents; on
+/// unless the account turned it off (ADR 0742).
+pub fn holds_while_presenting(settings: &NotificationSettings) -> bool {
+    settings.hold_while_presenting != Some(false)
+}
+
 pub(super) fn quiet_at(model: &ServerModel, at: OffsetDateTime) -> bool {
     model.is_quiet(|zone| zones::minute_in(zone, at))
 }
@@ -810,6 +849,11 @@ pub struct Seen {
     do_not_disturb: bool,
     /// When the last system notifications of this server were shown.
     recent: Vec<OffsetDateTime>,
+    /// The system notifications of single events that are shown, with what a press on
+    /// each leads to (ADR 0742).
+    events: Vec<(String, AlertTarget)>,
+    /// The recordings, transcripts and exports whose end was told.
+    told: Vec<String>,
 }
 
 /// A system notification of a notice that is shown.
@@ -825,9 +869,50 @@ struct ShownAlert {
 }
 
 impl Seen {
+    pub(super) fn forget_outcome(&mut self, key: &str) {
+        self.told.retain(|held| held != key);
+    }
+
+    /// True the first time a key is told: an end of a recording, of a transcript or of an
+    /// export is told once.
+    pub(super) fn tell_once(&mut self, key: String) -> bool {
+        if self.told.contains(&key) {
+            return false;
+        }
+        if self.told.len() >= MOST_SHOWN {
+            self.told.remove(0);
+        }
+        self.told.push(key);
+        true
+    }
+
+    /// True while this server has shown fewer than [`MOST_ALERTS`] system notifications
+    /// within [`ALERT_SPAN`].
+    pub(super) fn room_for_alert(&mut self, now: OffsetDateTime) -> bool {
+        self.recent
+            .retain(|at| *at <= now && now - *at < ALERT_SPAN);
+        self.recent.len() < MOST_ALERTS
+    }
+
+    /// A system notification of a single event is shown. Returns the tag of the one that
+    /// the application forgets for it.
+    pub(super) fn event_shown(
+        &mut self,
+        tag: String,
+        target: AlertTarget,
+        now: OffsetDateTime,
+    ) -> Option<String> {
+        self.recent.push(now);
+        self.events.push((tag, target));
+        (self.events.len() > MOST_SHOWN).then(|| self.events.remove(0).0)
+    }
+
     /// What a press on a system notification of this server leads to, while the
     /// notification is shown.
     pub fn target(&self, server_id: ServerId, tag: &str) -> Option<AlertTarget> {
+        if let Some((_, target)) = self.events.iter().find(|(shown, _)| shown == tag) {
+            return Some(*target);
+        }
         if let Some(shown) = self.shown.iter().find(|shown| shown.tag == tag) {
             return Some(AlertTarget::Notice {
                 server_id,
@@ -872,10 +957,12 @@ impl Seen {
             .entry_requests
             .iter()
             .map(|request_id| entry_request_tag(server_id, *request_id));
+        let events = self.events.iter().map(|(tag, _)| tag.clone());
         notices
             .chain(invitations)
             .chain(requests)
             .chain(entries)
+            .chain(events)
             .collect()
     }
 }
@@ -893,6 +980,9 @@ pub struct AlertScene<'a> {
     pub active: bool,
     /// What the window shows.
     pub shown: Shown,
+    /// The person shares a screen or presents in meeting mode, and the account holds its
+    /// notifications meanwhile: nothing is shown and no sound of messages plays (ADR 0742).
+    pub presenting: bool,
 }
 
 /// The system notifications to show and the tags to take away after a change, and the
@@ -905,6 +995,20 @@ pub struct Alerts {
     /// system notification, outside the quiet times of the account. A direct-message call
     /// rings with its tone (ADR 0515).
     pub arrived: Vec<CallInvitationId>,
+    /// The sounds of the change (ADR 0707): one for the new notices that pass the rules of
+    /// a system notification, whatever the bound of the time span, the mention sound when
+    /// one of them is for the person alone; and the request sound for a new join request.
+    pub sounds: Vec<Sound>,
+}
+
+/// The sound of a new notice: a message for the person alone has a sound of its own.
+fn notice_sound(kind: NotificationKind) -> Sound {
+    match kind {
+        NotificationKind::Mention | NotificationKind::Direct | NotificationKind::MissedCall => {
+            Sound::Mention
+        }
+        NotificationKind::Message | NotificationKind::Thread => Sound::Message,
+    }
 }
 
 /// What a press on a system notification leads to.
@@ -922,6 +1026,23 @@ pub enum AlertTarget {
     JoinRequests(ServerId),
     /// The call of this device, on a server.
     Call(ServerId),
+    /// A server, whatever its state.
+    Server(ServerId),
+    /// A channel of a workspace.
+    Channel {
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+    },
+    /// A workspace.
+    Workspace {
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+    },
+    /// A page of the administration of a server.
+    Admin(ServerId, super::admin::AdminPage),
+    /// A page of the account on a server: its devices, its recoveries.
+    Account(ServerId, super::account::AccountPage),
 }
 
 pub fn notice_tag(server_id: ServerId, notice_id: Uuid) -> String {
@@ -942,7 +1063,7 @@ pub fn entry_request_tag(server_id: ServerId, request_id: EntryRequestId) -> Str
 
 /// A text of a server as a system notification takes it: one line without control
 /// characters, of at most `most` characters.
-fn one_line(text: &str, most: usize) -> String {
+pub(super) fn one_line(text: &str, most: usize) -> String {
     let mut line: String = text
         .chars()
         .map(|character| {
@@ -1043,6 +1164,10 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
     let do_not_disturb = model
         .notification_settings(SettingsScope::Account)
         .is_some_and(|settings| settings.do_not_disturb);
+    // The account keeps the text of messages out of the notifications of the system.
+    let hide_text = model
+        .notification_settings(SettingsScope::Account)
+        .is_some_and(|settings| settings.hide_text);
     // The notices of the first state of a server are not new. An invitation of that
     // state waits for an answer now, and follows its rule.
     let first = !seen.started;
@@ -1051,7 +1176,7 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
         seen.newest = newest;
         seen.do_not_disturb = do_not_disturb;
     }
-    let quiet = quiet_at(model, scene.now);
+    let quiet = quiet_at(model, scene.now) || scene.presenting;
     let held_back = seen.do_not_disturb && !do_not_disturb;
     seen.do_not_disturb = do_not_disturb;
     seen.recent
@@ -1183,14 +1308,23 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                     accounts(),
                     &scene.known.people.departures(scene.server_id),
                 );
+                let body = if hide_text {
+                    text::ALERT_TEXT_HIDDEN.to_owned()
+                } else {
+                    excerpt(message, &names_of(&message.place, model, accounts()))
+                };
                 (
                     text::alert_title(notice.kind, &author, &place, server),
-                    excerpt(message, &names_of(&message.place, model, accounts())),
+                    body,
                     Some(Jump::to(scene.server_id, message)),
                     Some(message.place),
                 )
             }
         };
+        let sound = notice_sound(notice.kind);
+        if !alerts.sounds.contains(&sound) {
+            alerts.sounds.push(sound);
+        }
         // A notice above the bound of the time span is in the list only.
         if seen.recent.len() >= MOST_ALERTS {
             continue;
@@ -1214,6 +1348,10 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
                 jump,
             },
         ));
+    }
+    // One sound for the notices of one change: the mention sound covers the others.
+    if alerts.sounds.contains(&Sound::Mention) {
+        alerts.sounds.retain(|sound| *sound != Sound::Message);
     }
     // A notice that still waits for its message when the bound of the time span is
     // reached gets no system notification later.
@@ -1326,6 +1464,11 @@ fn join_request_alerts(seen: &mut Seen, scene: &AlertScene<'_>, quiet: bool, ale
             continue;
         }
         held.push(request.id);
+        // The request sound plays also while a window is active, as the sound of a request
+        // to enter a call does (ADR 0707).
+        if !quiet && !alerts.sounds.contains(&Sound::Request) {
+            alerts.sounds.push(Sound::Request);
+        }
         if quiet || scene.active || seen.recent.len() >= MOST_ALERTS {
             continue;
         }

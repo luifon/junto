@@ -11,21 +11,19 @@ use crate::support::TestServer;
 
 const MESSAGES: u32 = 5;
 
-/// The trigger of the product runs once for each notice. The other form, measured for
-/// comparison, runs once for each statement and reads the inserted notices from a
-/// transition table.
-const PER_STATEMENT: &str = "
+/// The trigger of the product runs once for each statement and reads the inserted notices
+/// from a transition table. The other form, measured for comparison, is the earlier one,
+/// which runs once for each notice.
+const PER_ROW: &str = "
     drop trigger queue_notification_trim on notifications;
-    create function queue_notification_trim_of_statement() returns trigger language plpgsql as $$
+    create function queue_notification_trim_of_row() returns trigger language plpgsql as $$
     begin
-        insert into notification_trim_accounts select distinct account_id from inserted
-            on conflict do nothing;
+        insert into notification_trim_accounts values(new.account_id) on conflict do nothing;
         return null;
     end;
     $$;
     create trigger queue_notification_trim after insert on notifications
-        referencing new table as inserted
-        for each statement execute function queue_notification_trim_of_statement();";
+        for each row execute function queue_notification_trim_of_row();";
 
 struct Measured {
     request_ms: f64,
@@ -45,8 +43,8 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
          current_database()); end $$"
             .to_owned(),
     ];
-    if per_statement {
-        setup.push(PER_STATEMENT.to_owned());
+    if !per_statement {
+        setup.push(PER_ROW.to_owned());
     }
     for statement in setup {
         sqlx::raw_sql(sqlx::AssertSqlSafe(statement))
@@ -99,7 +97,7 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
     let (calls, insert_total): (i64, f64) = sqlx::query_as(
         "select coalesce(sum(calls), 0)::bigint, coalesce(sum(total_exec_time), 0)::float8
          from pg_stat_statements
-         where query like 'insert into notifications(id,account_id,message_id,kind%'",
+         where query like '%insert into notifications(id,account_id,message_id,kind%'",
     )
     .fetch_one(&server.db)
     .await
@@ -122,7 +120,7 @@ async fn measure(members: i64, per_statement: bool) -> Measured {
             "select coalesce(sum(calls), 0)::bigint, coalesce(sum(total_time), 0)::float8
              from pg_stat_user_functions
              where funcname in
-                 ('queue_notification_trim', 'queue_notification_trim_of_statement')",
+                 ('queue_notification_trim', 'queue_notification_trim_of_row')",
         )
         .fetch_one(&server.db)
         .await
@@ -161,7 +159,7 @@ async fn measure_the_queue_of_the_notice_cap_at_large_fan_out() {
         "members | form | request ms | notice insert ms | trigger ms | trigger share | \
          calls read at once"
     );
-    for members in [100, 1_000, 5_000, 10_000] {
+    for members in [100, 1_000, 5_000, 10_000, 20_000] {
         for per_statement in [false, true] {
             let measured = measure(members, per_statement).await;
             println!(

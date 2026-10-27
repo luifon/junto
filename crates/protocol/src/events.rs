@@ -134,6 +134,10 @@ pub enum ServerMessage {
         /// `idle_seconds`.
         heartbeat_seconds: u32,
         idle_seconds: u32,
+        /// The revision of the messages and events that the server sends ([`EVENT_REVISION`]).
+        /// Absent: 0, a server before the revisions.
+        #[serde(default)]
+        event_revision: u32,
     },
     /// The answer to a `subscribe`. Events after `cursor` follow.
     Subscribed { level: Level, cursor: Cursor },
@@ -246,6 +250,14 @@ impl CloseCode {
         Self::ALL.iter().copied().find(|known| known.code() == code)
     }
 }
+
+/// The revision of the messages and the events that a server of this build sends within its
+/// API version (ADR 0206). It is raised by one whenever a message type, an event type or a
+/// field of either is added; `docs/api/event-revisions.json` keeps the digest of the event
+/// document of each revision, and the generator of the documents refuses a changed document
+/// under a revision that has a digest. A server states it in `hello`, so that a client of an
+/// older build knows that the server sends what the client does not read.
+pub const EVENT_REVISION: u32 = 2;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -609,9 +621,21 @@ pub enum Event {
         message_id: crate::ids::MessageId,
         position: u64,
         deleted: bool,
+        /// The root of the thread of a reply. Absent: the message is no reply (revision 2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread_root: Option<crate::ids::MessageId>,
+        /// For a reply, the state of its thread for the account that receives the event, as
+        /// the unread threads list it: absent when the account neither follows the thread nor
+        /// is named in it (revision 2, ADR 0412).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<crate::message::ThreadState>,
     },
     NotificationChanged {
         message_id: crate::ids::MessageId,
+        /// The notice of the message for the account that receives the event, as the list
+        /// of notices states it (revision 2, ADR 0409).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notice: Option<crate::discovery::Notification>,
     },
     NotificationSettingsChanged {},
     RetentionChanged {
@@ -899,7 +923,7 @@ pub enum Received {
         events: Vec<ReadEvent>,
     },
     /// A message of a type that this version does not know. The client skips it.
-    UnknownMessage,
+    UnknownMessage { message_type: String },
 }
 
 /// One event of a `change` as a client of this API version reads it.
@@ -913,7 +937,7 @@ pub enum ReadEvent {
     Known { event: StreamEvent, bytes: usize },
     /// An event of a type that this version does not know. The client moves its cursor to
     /// `id` and applies nothing.
-    Unknown { id: u64 },
+    Unknown { id: u64, event_type: String },
 }
 
 /// The events of a `change` message as text, so that each is read on its own.
@@ -933,7 +957,7 @@ pub fn decode(text: &str) -> Result<Received, serde_json::Error> {
         return serde_json::from_value(value).map(Received::Message);
     };
     if !ServerMessage::NAMES.contains(&message_type.as_str()) {
-        return Ok(Received::UnknownMessage);
+        return Ok(Received::UnknownMessage { message_type });
     }
     if message_type != "change" {
         return serde_json::from_value(value).map(Received::Message);
@@ -950,7 +974,7 @@ pub fn decode(text: &str) -> Result<Received, serde_json::Error> {
             if let (Some(event_type), Some(id)) = (event_type, id)
                 && !Event::NAMES.contains(&event_type.as_str())
             {
-                return Ok(ReadEvent::Unknown { id });
+                return Ok(ReadEvent::Unknown { id, event_type });
             }
             Ok(ReadEvent::Known {
                 event: serde_json::from_value(item)?,
@@ -1010,6 +1034,7 @@ mod tests {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: None,
             screen_shares: Vec::new(),
         };
@@ -1418,6 +1443,8 @@ mod tests {
                 message_id: crate::ids::MessageId::generate(),
                 position: 1,
                 deleted: false,
+                thread_root: None,
+                thread: None,
             },
             Event::ThreadRead {
                 root_id: crate::ids::MessageId::generate(),
@@ -1452,6 +1479,7 @@ mod tests {
             },
             Event::NotificationChanged {
                 message_id: crate::ids::MessageId::generate(),
+                notice: None,
             },
             Event::NotificationSettingsChanged {},
             Event::RetentionChanged {
@@ -1540,6 +1568,7 @@ mod tests {
                 epoch: cursor.epoch,
                 heartbeat_seconds: 25,
                 idle_seconds: 60,
+                event_revision: EVENT_REVISION,
             },
             ServerMessage::Subscribed {
                 level: Level::Background,
@@ -1615,7 +1644,13 @@ mod tests {
         };
         assert_eq!(position, 20);
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], ReadEvent::Unknown { id: 9 });
+        assert_eq!(
+            events[0],
+            ReadEvent::Unknown {
+                id: 9,
+                event_type: "message_created".to_owned()
+            }
+        );
         assert!(matches!(
             &events[1],
             ReadEvent::Known { event, bytes } if event.id == 10 && *bytes == known.len()
@@ -1629,8 +1664,20 @@ mod tests {
         );
         assert_eq!(
             decode(r#"{"type":"notice","text":"hello"}"#).unwrap(),
-            Received::UnknownMessage
+            Received::UnknownMessage {
+                message_type: "notice".to_owned()
+            }
         );
+        // A hello of a server before the revisions states revision 0.
+        let Received::Message(ServerMessage::Hello { event_revision, .. }) = decode(
+            r#"{"type":"hello","server_version":"0.1.0","api_versions":[1],
+                "epoch":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","heartbeat_seconds":25,
+                "idle_seconds":60}"#,
+        )
+        .unwrap() else {
+            panic!("a hello is read as a hello");
+        };
+        assert_eq!(event_revision, 0);
         assert!(decode(r#"{"type":"change","position":9,"events":[{"id":9}]}"#).is_err());
         assert!(decode(r#"{"type":"change","position":9}"#).is_err());
         assert!(decode(r#"{"type":"change","events":[]}"#).is_err());

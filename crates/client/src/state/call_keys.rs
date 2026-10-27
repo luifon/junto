@@ -293,10 +293,26 @@ impl AppState {
     }
 
     /// The calls send the microphone with push to talk while a window or the source of the
-    /// system holds the key.
+    /// system holds the key. A press and a release in a call with push to talk play their
+    /// sounds (ADR 0707).
     pub(super) fn sync_talking(&mut self) {
-        self.calls
-            .set_talking(!self.talking_windows.is_empty() || self.talking_globally);
+        let before = self.calls.talking();
+        let now = !self.talking_windows.is_empty() || self.talking_globally;
+        self.calls.set_talking(now);
+        if before != now
+            && self.known.media.calls.call.is_some()
+            && self.known.media.voice.input_mode == InputMode::PushToTalk
+        {
+            let output = self.heard.output.clone();
+            self.play_sound(
+                if now {
+                    junto_media::audio::sounds::Sound::TalkStarts
+                } else {
+                    junto_media::audio::sounds::Sound::TalkEnds
+                },
+                output.as_ref(),
+            );
+        }
     }
 
     pub fn keybinds(&self) -> &Keybinds {

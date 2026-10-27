@@ -210,23 +210,32 @@ async fn joining_further_workspaces_and_join_requests_are_recorded() {
         .await
         .empty(StatusCode::NO_CONTENT);
 
-    assert_eq!(
-        events(server.traffic(&guest, &mut of_guest).await),
-        [
-            Event::PermissionsChanged {
-                workspace_id: Some(second.id)
-            },
-            Event::PermissionsChanged {
-                workspace_id: Some(third.id)
-            },
-        ]
-    );
     let member = WorkspaceMember {
         avatar: None,
         account_id: guest.account_id,
         name: "Guest".to_owned(),
         role_ids: vec![],
     };
+    // The guest is told of each own addition, for its system notification (ADR 0107).
+    assert_eq!(
+        events(server.traffic(&guest, &mut of_guest).await),
+        [
+            Event::WorkspaceMemberAdded {
+                workspace_id: second.id,
+                member: member.clone(),
+            },
+            Event::PermissionsChanged {
+                workspace_id: Some(second.id)
+            },
+            Event::WorkspaceMemberAdded {
+                workspace_id: third.id,
+                member: member.clone(),
+            },
+            Event::PermissionsChanged {
+                workspace_id: Some(third.id)
+            },
+        ]
+    );
     assert_eq!(
         events(server.traffic(&owner, &mut of_owner).await),
         [
@@ -408,6 +417,8 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
             message_id: m.id,
             position: m.position,
             deleted: false,
+            thread_root: None,
+            thread: None,
         })
         .collect();
     // The second request repeats the override: it writes no line and tells nothing.

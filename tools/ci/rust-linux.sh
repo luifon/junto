@@ -37,6 +37,10 @@ tools/linux-container.sh tools/linux/display.sh wayland sh -c 'JUNTO_TEST_NATIVE
 # server of the run, whose keys xdotool presses (ADR 0776).
 step "Keys of a call read from the X server"
 tools/linux-container.sh tools/linux/display.sh x11 sh -c 'JUNTO_TEST_GLOBAL_KEYS=1 cargo test --locked -p junto-client-core --lib global_keys::x11'
+# A press on a notification gives the main window the focus under Wayland, with the activation
+# token of the press (ADR 0752).
+step "Focus after a press on a notification"
+tools/linux-container.sh tools/linux/display.sh wayland sh -c 'JUNTO_TEST_NOTIFICATION_FOCUS=1 cargo test --locked -p junto-client --test notification_focus'
 # The camera unit tests with the counts that the device checks read (ADR 0913); they open no
 # device.
 step "Camera unit tests of the device checks"

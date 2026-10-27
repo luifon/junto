@@ -208,6 +208,7 @@ impl Scene {
             stream: StreamStatus::Live,
             model: Some(Arc::new(self.model())),
             server_version: None,
+            server_events: None,
         }
     }
 
@@ -1100,6 +1101,8 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
                 actor_id: None,
                 recording_id: Some(RecordingId::generate()),
                 duration_seconds: None,
+                name: None,
+                previous_name: None,
             }),
             reply_to: None,
             permanent: false,

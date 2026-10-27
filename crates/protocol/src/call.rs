@@ -113,6 +113,25 @@ pub struct SoundBlock {
     pub by: AccountId,
 }
 
+/// The share that a person watches: the person who shares it, and the slot of the share
+/// among the shares of that person (ADR 0502). A client that runs one share per person
+/// states slot 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WatchedShare {
+    pub account_id: AccountId,
+    #[serde(default)]
+    pub slot: u8,
+}
+
+/// The share that the person of the device watches now, or none (ADR 0502).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReportWatching {
+    pub watching: Option<WatchedShare>,
+}
+
 /// One person in a call. A block and the person's own setting are separate: removing a block
 /// returns the microphone or the sound to `muted` or `deafened`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +158,10 @@ pub struct CallParticipant {
     /// shares sends none; [`CallParticipant::shares`] then reads `screen_share`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screen_shares: Vec<ScreenShare>,
+    /// The share of another person in the call that the person watches now, as the client
+    /// of the person reports it (ADR 0502). Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watching: Option<WatchedShare>,
 }
 
 impl CallParticipant {
@@ -587,6 +610,7 @@ mod tests {
             }),
             sound_block: None,
             hand_raised: true,
+            watching: None,
             screen_share: Some(ScreenShare {
                 slot: 0,
                 kind: None,
@@ -634,6 +658,7 @@ mod tests {
             hand_raised: false,
             screen_share: shares.first().cloned(),
             screen_shares: shares.clone(),
+            watching: None,
         };
         let json = serde_json::to_value(&participant).unwrap();
         assert_eq!(json["screen_share"]["audio"], "system");

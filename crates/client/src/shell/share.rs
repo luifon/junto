@@ -1674,6 +1674,35 @@ impl Shell {
                             .child(div().min_w_0().truncate().child(sentence)),
                     )
                 })
+                // The people who watch the share of this device (ADR 0502).
+                .when(own && !share.viewers.is_empty(), |header| {
+                    let names: Vec<String> = share
+                        .viewers
+                        .iter()
+                        .map(|(_, name)| {
+                            name.clone()
+                                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                        })
+                        .collect();
+                    let named: SharedString = text::share_viewer_names(&names).into();
+                    header.child(
+                        div()
+                            .id("share-viewers")
+                            .debug_selector(|| "share-viewers".to_owned())
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(u(5.0))
+                            .aria_label(named.clone())
+                            .tooltip(crate::ui::tooltip(named))
+                            .ink(colors.bone_2)
+                            .child(icon(Icon::People, 14.0, colors.bone_2))
+                            .child(crate::ui::paint_text(
+                                text::share_viewers(names.len()).into(),
+                                None,
+                            )),
+                    )
+                })
                 .child(div().flex_1())
                 .child(
                     div()

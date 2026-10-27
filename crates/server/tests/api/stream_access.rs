@@ -77,6 +77,52 @@ async fn role(
         .ok(StatusCode::CREATED)
 }
 
+/// The events that give a system notification reach a background connection, each with the
+/// audience that it has on a full connection (ADR 0107, ADR 0742). The start of a call is
+/// checked in `calls_state`, with the fake media server.
+#[tokio::test]
+async fn the_background_level_receives_the_events_of_system_notifications() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let mut owner_background = server.subscribed(&owner, Level::Background).await;
+    let mut background = server.subscribed(&member, Level::Background).await;
+
+    let lab: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Lab" }))
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .put_empty(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}",
+                lab.id, member.account_id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let proof = server
+        .proof(&DeviceKey::generate(), ChallengeOperation::RequestToJoin)
+        .await;
+    server
+        .open(
+            "/api/v1/join-requests",
+            &json!({ "proof": proof, "name": "Waiting" }),
+        )
+        .await
+        .ok::<JoinRequest>(StatusCode::CREATED);
+
+    let received = server.traffic(&member, &mut background).await;
+    let received = types(&received);
+    assert!(received.contains(&"workspace_member_added"), "{received:?}");
+    // A member without the permission to decide join requests is not told of one.
+    assert!(!received.contains(&"join_request_created"), "{received:?}");
+    let received = server.traffic(&owner, &mut owner_background).await;
+    let received = types(&received);
+    assert!(received.contains(&"join_request_created"), "{received:?}");
+}
+
 #[tokio::test]
 async fn the_background_level_receives_control_events_only() {
     let server = TestServer::start().await;
@@ -439,10 +485,10 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         )
         .await
         .ok::<Value>(StatusCode::OK);
-    // The second change records two system lines: the change of the position and the
-    // permanent messages that it turns on (ADR 0402).
-    let mut to_manager = managing.events(7).await;
-    let mut to_insider = inside.events(6).await;
+    // The second change records one system line: the permanent messages that it turns on.
+    // A change of the position has no line (ADR 0402, ADR 0408).
+    let mut to_manager = managing.events(6).await;
+    let mut to_insider = inside.events(5).await;
     server
         .delete(owner, &format!("/api/v1/channels/{channel_id}"))
         .await
@@ -455,7 +501,6 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
             "message_changed",
             "channel_updated",
             "message_changed",
-            "message_changed",
             "channel_updated",
             "message_changed",
             "channel_deleted"
@@ -467,7 +512,6 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         [
             "message_changed",
             "channel_updated",
-            "message_changed",
             "message_changed",
             "channel_updated",
             "message_changed",
@@ -511,6 +555,8 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         types(&to_background),
         [
             "device_added",
+            // The own addition to the workspace, for its system notification (ADR 0107).
+            "workspace_member_added",
             "permissions_changed",
             "device_logged_in",
             "permissions_changed",

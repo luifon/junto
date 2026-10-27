@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, RenderImage};
@@ -1251,8 +1251,6 @@ fn admin_people(view: &AdminView) -> Vec<AccountId> {
 enum PictureRefusal {
     TooLarge,
     Unsupported,
-    /// The file could not be read.
-    Unreadable,
     /// The data directory did not take the picture.
     Storage(String),
 }
@@ -1262,7 +1260,6 @@ impl PictureRefusal {
         match self {
             Self::TooLarge => text::people::PICTURE_TOO_LARGE.to_owned(),
             Self::Unsupported => text::people::PICTURE_UNSUPPORTED.to_owned(),
-            Self::Unreadable => text::people::PICTURE_UNREADABLE.to_owned(),
             Self::Storage(reason) => text::flow_error(&FlowError::Storage(reason.clone())),
         }
     }
@@ -1278,15 +1275,13 @@ impl From<profile::ProfileError> for PictureRefusal {
     }
 }
 
-/// Reads a file of the person and stores it as the picture of the preset. Only a regular
-/// file is read, and a file that is larger than an avatar can be is not read into memory.
+/// Stores a cut picture as the picture of the preset.
 fn store_picture(
     store: &ProfileStore,
-    file: &Path,
+    bytes: &[u8],
 ) -> Result<Option<Arc<RenderImage>>, PictureRefusal> {
-    let bytes = profile::read_avatar_file(file).map_err(|_| PictureRefusal::Unreadable)?;
-    store.set_avatar(&bytes)?;
-    Ok(decode(&bytes, PRESET_SIDE))
+    store.set_avatar(bytes)?;
+    Ok(decode(bytes, PRESET_SIDE))
 }
 
 /// The people whose profiles the window reads, apart from the cache.
@@ -1514,10 +1509,23 @@ impl AppState {
         .detach();
     }
 
-    /// Stores a file as the picture of the profile preset. The file is read, checked and
-    /// written on the background queue of the writes; the result is in
-    /// [`AppState::preset_picture`].
+    /// Opens the cut of a file for the picture of the profile preset (ADR 0119).
     pub fn set_preset_picture(&mut self, file: PathBuf, cx: &mut Context<Self>) {
+        if self.preset_picture.saving {
+            return;
+        }
+        self.preset_picture.failed = None;
+        self.choose_picture(super::picture_crop::PicturePurpose::Preset, file, cx);
+    }
+
+    /// A chosen file that is not a picture, told at the picture of the preset.
+    pub(super) fn preset_picture_refused(&mut self, reason: &'static str) {
+        self.preset_picture.failed = Some(reason.to_owned());
+    }
+
+    /// Stores a cut picture as the picture of the profile preset, on the background queue
+    /// of the writes; the result is in [`AppState::preset_picture`].
+    pub(super) fn store_preset_picture(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         if self.preset_picture.saving {
             return;
         }
@@ -1526,7 +1534,7 @@ impl AppState {
         let store = self.client.profile().clone();
         Self::queue_write(
             cx,
-            move || store_picture(&store, &file),
+            move || store_picture(&store, &bytes),
             |this, stored, cx| {
                 this.preset_picture.saving = false;
                 match stored {

@@ -15,6 +15,11 @@ use junto_client_core::protocol::ids::{
     AccountId, CallInvitationId, ChannelId, ServerId, WorkspaceId,
 };
 use time::OffsetDateTime;
+
+/// The shortest time between two sounds of messages (ADR 0707).
+const MESSAGE_SOUND_SPAN: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long an addition to a workspace waits for the workspace in the state (ADR 0742).
+const ADDED_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 use uuid::Uuid;
 
 use super::AppState;
@@ -577,6 +582,17 @@ impl AppState {
         .detach();
     }
 
+    pub fn set_server_hide_text(
+        &mut self,
+        server_id: ServerId,
+        hide: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_scope(server_id, SettingsScope::Account, cx, |settings| {
+            settings.hide_text = hide
+        });
+    }
+
     /// Sets the level of a scope. `None` takes the level of the scope above it.
     pub fn set_notify_level(
         &mut self,
@@ -727,6 +743,62 @@ impl AppState {
     /// Turns "do not disturb" on or off (ADR 0404).
     pub fn set_do_not_disturb(&mut self, on: bool, cx: &mut Context<Self>) {
         self.change_quiet(cx, move |settings| settings.do_not_disturb = on);
+    }
+
+    /// Holds the system notifications and the sounds of messages while the person shares a
+    /// screen or presents, or turns that off, on every server of the device (ADR 0742).
+    pub fn set_hold_while_presenting(&mut self, hold: bool, cx: &mut Context<Self>) {
+        self.change_quiet(cx, move |settings| {
+            settings.hold_while_presenting = (!hold).then_some(false);
+        });
+    }
+
+    /// The person shares a screen in the call of this device or presents in its meeting
+    /// mode, and the account on `server_id` holds its notifications then (ADR 0742).
+    pub(super) fn holds_for_presenting(
+        &self,
+        server_id: ServerId,
+        model: Option<&junto_client_core::model::ServerModel>,
+    ) -> bool {
+        let calls = &self.known.media.calls;
+        #[cfg(feature = "test-support")]
+        let calls = self
+            .media_fixture
+            .as_ref()
+            .map_or(calls, |media| &media.calls);
+        let Some(call) = calls.call.as_ref() else {
+            return false;
+        };
+        let sharing = call
+            .own_shares
+            .values()
+            .any(|share| matches!(share, junto_media::engine::ShareState::Running(_)));
+        let presents = self
+            .client
+            .server(call.target.server_id)
+            .and_then(|server| server.live().view().model)
+            .is_some_and(|held| {
+                held.call_at(&call.target.place)
+                    .and_then(|held_call| held_call.meeting.as_ref())
+                    .is_some_and(|meeting| meeting.presenter == held.account.id)
+            });
+        let settings = model
+            .map(|model| {
+                super::notices::stored_settings(
+                    server_id,
+                    junto_client_core::api::SettingsScope::Account,
+                    model,
+                    &self.known,
+                )
+            })
+            .unwrap_or_default();
+        (sharing || presents) && super::notices::holds_while_presenting(&settings)
+    }
+
+    /// Leaves the text of messages out of the notifications of the system, or shows it,
+    /// on every server of the device (ADR 0742).
+    pub fn set_hide_text(&mut self, hide: bool, cx: &mut Context<Self>) {
+        self.change_quiet(cx, move |settings| settings.hide_text = hide);
     }
 
     /// Sets the daily quiet time as two minutes of a day on the clock of a named time
@@ -916,10 +988,26 @@ impl AppState {
                 self.notifier.dismiss(&tag, cx);
             }
         }
+        // The answer to a join request goes only with its server.
+        let removed: Vec<ServerId> = self
+            .join_seen
+            .keys()
+            .filter(|server_id| !servers.iter().any(|server| server.id == **server_id))
+            .copied()
+            .collect();
+        for server_id in removed {
+            if let Some(seen) = self.join_seen.remove(&server_id) {
+                for tag in seen.tags(server_id) {
+                    self.notifier.dismiss(&tag, cx);
+                }
+            }
+        }
+        let mut sounds: Vec<junto_media::audio::sounds::Sound> = Vec::new();
         for server in servers {
             let Some(model) = super::view::shown_model(server) else {
                 continue;
             };
+            let presenting = self.holds_for_presenting(server.id, Some(model));
             let seen = self.seen.entry(server.id).or_default();
             let told = alerts(
                 seen,
@@ -932,6 +1020,7 @@ impl AppState {
                     now,
                     active,
                     shown,
+                    presenting,
                 },
             );
             for tag in told.dismiss {
@@ -940,23 +1029,239 @@ impl AppState {
             for invitation_id in told.arrived {
                 self.invitation_sound(server.id, invitation_id);
             }
+            for sound in told.sounds {
+                if !sounds.contains(&sound) {
+                    sounds.push(sound);
+                }
+            }
             // What a press leads to is kept with what was seen of the server, for as
             // long as the notification is shown.
             for (alert, _) in told.show {
                 self.notifier.show(&alert, cx);
             }
         }
+        self.notice_sounds(sounds);
     }
 
-    /// An invitation into a voice channel arrived for the person: one short tone, unless
-    /// the person turned the tones or the sound off (ADR 0707, ADR 0739).
+    /// Plays the sounds of the notices and requests of one change of every server: one
+    /// sound of messages, the mention sound when one of them is for the person alone, at
+    /// most one in [`MESSAGE_SOUND_SPAN`] (ADR 0707).
+    fn notice_sounds(&mut self, mut sounds: Vec<junto_media::audio::sounds::Sound>) {
+        use junto_media::audio::sounds::Sound;
+        if sounds.contains(&Sound::Mention) {
+            sounds.retain(|sound| *sound != Sound::Message);
+        }
+        let now = std::time::Instant::now();
+        let recent = self
+            .message_sound_at
+            .is_some_and(|at| now.duration_since(at) < MESSAGE_SOUND_SPAN);
+        for sound in sounds {
+            let message = matches!(sound, Sound::Message | Sound::Mention);
+            if message && recent {
+                continue;
+            }
+            if message && self.known.media.voice.sounds.plays(sound.kind()) {
+                self.message_sound_at = Some(now);
+            }
+            self.play_sound(sound, None);
+        }
+    }
+
+    /// An invitation into a voice channel arrived for the person: one short sound, unless
+    /// the person turned the sound of requests or the own sound off (ADR 0707, ADR 0739).
     fn invitation_sound(&mut self, _server_id: ServerId, _invitation_id: CallInvitationId) {
-        if self.known.media.voice.call_sounds && !self.known.media.calls.deafened {
-            let device = self.chosen_output();
-            self.sounds.play(
-                junto_media::audio::sounds::Sound::Invitation,
-                device.as_ref(),
+        self.play_sound(junto_media::audio::sounds::Sound::Invitation, None);
+    }
+
+    /// The scene of the rules of a system notification: the person looks at the active
+    /// window of the application, the main window with what it shows, or the call window
+    /// with the place of the call.
+    fn looked_at(&self) -> (bool, Shown) {
+        let shown = self.shown;
+        if self.window_active {
+            (true, shown)
+        } else if self.call_window_active {
+            (true, Shown::of_place(self.call_window_shows))
+        } else {
+            (false, shown)
+        }
+    }
+
+    /// Tells the system notification of one event of a server, when the event means
+    /// something that the person needs to know (ADR 0742).
+    pub(super) fn tell_event(
+        &mut self,
+        server_id: ServerId,
+        event: &junto_client_core::protocol::events::Event,
+        cx: &mut Context<Self>,
+    ) {
+        use super::event_alerts::{EventScene, TellScene, event_alert, fact_of, quiet_now};
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let Some(model) = server.live().view().model else {
+            return;
+        };
+        let own_device = match &server.access().state {
+            AccessState::LoggedIn { device_id, .. } => Some(*device_id),
+            _ => None,
+        };
+        // The place of the call of the person; after a removal the media engine can have
+        // ended the call before the event is read, and the ended call names the place.
+        let calls = &self.known.media.calls;
+        let call = calls
+            .call
+            .as_ref()
+            .map(|call| call.target)
+            .or(match (&calls.outcome, event) {
+                (
+                    Some(junto_media::calls::Outcome::Ended { target, .. }),
+                    junto_client_core::protocol::events::Event::OwnCallChanged {
+                        call: None,
+                        left: Some(_),
+                    },
+                ) => Some(*target),
+                _ => None,
+            })
+            .filter(|target| target.server_id == server_id)
+            .map(|target| target.place);
+        let entry = self
+            .known
+            .entry
+            .as_ref()
+            .filter(|entry| entry.server_id == server_id)
+            .and_then(|entry| Some((entry.channel_id, entry.request_id?)));
+        let Some(fact) = fact_of(
+            event,
+            &EventScene {
+                server_id,
+                model: &model,
+                known: &self.known,
+                own_device,
+                call,
+                entry,
+            },
+        ) else {
+            return;
+        };
+        // The workspace of an addition reaches the state after the event; the notification
+        // waits for its name.
+        if let super::event_alerts::Fact::AddedToWorkspace { workspace, .. } = &fact
+            && workspace.is_empty()
+        {
+            self.added_waiting
+                .push((server_id, event.clone(), std::time::Instant::now()));
+            return;
+        }
+        let (active, _) = self.looked_at();
+        let now = OffsetDateTime::now_utc();
+        let several_servers = self.client.servers().len() > 1;
+        let name = server.entry().name;
+        let presenting = self.holds_for_presenting(server_id, Some(&model));
+        let seen = self.seen.entry(server_id).or_default();
+        let told = event_alert(
+            seen,
+            &TellScene {
+                server_id,
+                server_name: &name,
+                several_servers,
+                quiet: quiet_now(Some(&model), now) || presenting,
+                active,
+                now,
+            },
+            &fact,
+            Some(event),
+        );
+        for tag in told.dismiss {
+            self.notifier.dismiss(&tag, cx);
+        }
+        for (alert, _) in told.show {
+            self.notifier.show(&alert, cx);
+        }
+    }
+
+    /// Tells the additions to a workspace whose workspace the state holds now. One that is
+    /// not known after [`ADDED_WAIT`] is dropped: the person was removed again or the
+    /// workspace is gone.
+    pub(super) fn tell_added_workspaces(&mut self, cx: &mut Context<Self>) {
+        if self.added_waiting.is_empty() {
+            return;
+        }
+        for (server_id, event, since) in std::mem::take(&mut self.added_waiting) {
+            let junto_client_core::protocol::events::Event::WorkspaceMemberAdded {
+                workspace_id,
+                ..
+            } = &event
+            else {
+                continue;
+            };
+            let known = self
+                .client
+                .server(server_id)
+                .and_then(|server| server.live().view().model)
+                .is_some_and(|model| model.workspace(*workspace_id).is_some());
+            if known {
+                self.tell_event(server_id, &event, cx);
+            } else if since.elapsed() < ADDED_WAIT {
+                self.added_waiting.push((server_id, event, since));
+            }
+        }
+    }
+
+    /// The join request of this device on a server was decided: the access went from a
+    /// waiting request to an account or to a refusal (ADR 0742).
+    pub(super) fn tell_join_answers(&mut self, cx: &mut Context<Self>) {
+        use super::event_alerts::{TellScene, event_alert, join_answer, quiet_now};
+        let servers = self.client.servers();
+        let several = servers.len() > 1;
+        let (active, _) = self.looked_at();
+        let now = OffsetDateTime::now_utc();
+        for server in &servers {
+            let state = &server.access().state;
+            let waiting = matches!(state, AccessState::WaitingForApproval { .. });
+            let was_waiting = if waiting {
+                self.join_waiting.insert(server.id());
+                false
+            } else {
+                self.join_waiting.remove(&server.id())
+            };
+            let logged_in = matches!(state, AccessState::LoggedIn { .. });
+            let refused = matches!(
+                state,
+                AccessState::NoAccount {
+                    notice: Some(
+                        junto_client_core::flow::access::Notice::RequestDenied
+                            | junto_client_core::flow::access::Notice::RequestExpired
+                    )
+                }
             );
+            let name = server.entry().name;
+            let Some(fact) = join_answer(was_waiting, logged_in, refused, &name) else {
+                continue;
+            };
+            let model = server.live().view().model;
+            let presenting = self.holds_for_presenting(server.id(), model.as_deref());
+            let quiet = quiet_now(model.as_deref(), now) || presenting;
+            let seen = self.join_seen.entry(server.id()).or_default();
+            let told = event_alert(
+                seen,
+                &TellScene {
+                    server_id: server.id(),
+                    server_name: &name,
+                    several_servers: several,
+                    quiet,
+                    active,
+                    now,
+                },
+                &fact,
+                None,
+            );
+            for tag in told.dismiss {
+                self.notifier.dismiss(&tag, cx);
+            }
+            for (alert, _) in told.show {
+                self.notifier.show(&alert, cx);
+            }
         }
     }
 
@@ -966,6 +1271,7 @@ impl AppState {
         let target = self
             .seen
             .iter()
+            .chain(&self.join_seen)
             .find_map(|(server_id, seen)| seen.target(*server_id, tag));
         let Some(target) = target else {
             return;
@@ -993,6 +1299,27 @@ impl AppState {
                     server_id,
                     page: super::admin::AdminPage::JoinRequests,
                 }));
+            }
+            AlertTarget::Server(server_id) => self.select_server(server_id, cx),
+            AlertTarget::Channel {
+                server_id,
+                workspace_id,
+                channel_id,
+            } => self.show_channel(server_id, workspace_id, channel_id, cx),
+            AlertTarget::Workspace {
+                server_id,
+                workspace_id,
+            } => self.select_workspace(server_id, workspace_id, cx),
+            AlertTarget::Admin(server_id, page) => {
+                self.select_server(server_id, cx);
+                cx.emit(super::OpenAdmin(super::admin::AdminOpen::Server {
+                    server_id,
+                    page,
+                }));
+            }
+            AlertTarget::Account(server_id, page) => {
+                self.select_server(server_id, cx);
+                cx.emit(super::OpenAccount(page));
             }
         }
     }

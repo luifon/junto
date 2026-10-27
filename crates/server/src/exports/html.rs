@@ -444,6 +444,8 @@ mod tests {
             actor_id: Some(account_id),
             recording_id: None,
             duration_seconds: Some(125),
+            name: None,
+            previous_name: None,
         });
         let page = format!(
             "{}{}{TAIL}",

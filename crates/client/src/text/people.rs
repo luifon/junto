@@ -6,11 +6,11 @@ pub const PROFILE_PICTURE: &str = "The picture of your profile";
 pub const CHOOSE_PICTURE: &str = "Choose a picture…";
 pub const REMOVE_PICTURE: &str = "Remove picture";
 pub const SAVING_PICTURE: &str = "Saving…";
-pub const PICTURE_HELP: &str = "A new account on a server starts with this picture. Use a PNG, JPEG or WebP file of at most 256 KiB. A server takes a picture of at most 1024 by 1024 pixels.";
+pub const PICTURE_HELP: &str = "A new account on a server starts with this picture. Choose a PNG, JPEG, WebP or GIF file of at most 10 MiB, then the square that the picture shows.";
 pub const NO_PICTURE: &str = "No picture is set. Junto draws a generated picture for you.";
 pub const PICTURE_NOT_SHOWN: &str =
     "The picture is stored. This window cannot draw it, and a server may not accept it.";
-pub const PICTURE_TOO_LARGE: &str = "The file is larger than 256 KiB. Choose a smaller picture.";
+pub const PICTURE_TOO_LARGE: &str = "The picture is larger than 2 MiB. Choose a smaller picture.";
 pub const PICTURE_UNSUPPORTED: &str =
     "The file is not a PNG, JPEG or WebP picture. Choose a file in one of these formats.";
 pub const PICTURE_UNREADABLE: &str =

@@ -91,7 +91,7 @@ pub enum Mark {
     Strikethrough,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SystemMessage {
     pub action: String,
@@ -101,9 +101,16 @@ pub struct SystemMessage {
     pub recording_id: Option<RecordingId>,
     /// Present for the line `direct_call_ended`: the seconds from the moment at which both
     /// accounts were in the room of the call to the moment from which one of them was
-    /// alone until its end (ADR 0518).
+    /// alone until its end (ADR 0518); and for the line `call_ended` of a voice channel:
+    /// the seconds from the first person in the room to the end of the call.
     #[serde(default)]
     pub duration_seconds: Option<u64>,
+    /// Present for the line `channel_renamed`: the new name of the channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Present for the line `channel_renamed`: the name before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_name: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

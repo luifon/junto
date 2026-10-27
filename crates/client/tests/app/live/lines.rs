@@ -1,16 +1,19 @@
 //! The lines of a direct call in the conversation of its two accounts (ADR 0518), in a
 //! window that starts after the call: the conversation, its unread sign, and the lines. The
-//! lines of the call of a voice channel in the chat of the channel (ADR 0501).
+//! lines of the call of a voice channel in the chat of the channel (ADR 0501): what happened
+//! in the call, the reasons of the end of meeting mode, and a move by a moderator.
 
 use gpui::TestAppContext;
 use junto_client::state::feed::{FeedRow, SystemKind};
 use junto_client_core::protocol::call::{CallPlace, UpdateCallSettings};
+use junto_client_core::protocol::ids::{AccountId, ChannelId};
+use junto_client_core::protocol::structure::ChannelKind;
 use junto_media::calls::{CallTarget, Phase};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
-use super::{ROOM, enter, room};
+use super::{ROOM, channel_of, enter, room, second_room};
 use crate::calls::voice_channel;
-use crate::harness::{PATIENCE, Window, World, member, open};
+use crate::harness::{Admin, Caller, PATIENCE, Window, World, member, open};
 use crate::support::logged_in;
 
 /// The system lines of the shown list, as sentences with their kind, in their order.
@@ -30,6 +33,84 @@ fn system_lines(window: &mut Window) -> Vec<(String, SystemKind)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The end of a call states its measured length: a test reads that it is stated.
+fn length_hidden(text: String) -> String {
+    match text.strip_prefix("Call ended after ") {
+        Some(length) if length.ends_with("seconds") || length.ends_with("second") => {
+            "Call ended after …".to_owned()
+        }
+        _ => text,
+    }
+}
+
+/// The sentences of the system lines of the shown list, with the length of a call hidden.
+fn sentences(window: &mut Window) -> Vec<String> {
+    system_lines(window)
+        .into_iter()
+        .map(|(text, _)| length_hidden(text))
+        .collect()
+}
+
+/// Every system line of the shown list is drawn.
+#[track_caller]
+fn assert_lines_drawn(window: &mut Window) {
+    let feed = window.feed().unwrap();
+    for row in feed.rows.iter() {
+        if let FeedRow::System(row) = row {
+            assert!(
+                window.shows_named(format!("system:{}", row.message.id)),
+                "the line {:?} is not drawn",
+                row.parts
+            );
+        }
+    }
+}
+
+/// True when the server lists the person in the call of the voice channel with this name.
+fn listed(window: &mut Window, name: &str, account_id: AccountId) -> bool {
+    window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.name == name)
+        .and_then(|row| row.voice)
+        .is_some_and(|voice| {
+            voice
+                .occupants
+                .iter()
+                .any(|occupant| occupant.account_id == account_id)
+        })
+}
+
+/// The administrator shares a screen, until the window has the share.
+fn share_screen(caller: &Caller, window: &mut Window) {
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Display(1),
+        sound: SoundChoice::None,
+        quality: ShareQuality::default(),
+        dialog_parent: None,
+    });
+    window.until("the share of Ada arrives", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().call)
+            .is_some_and(|call| !call.shares.is_empty())
+    });
+}
+
+/// The administrator turns meeting mode on. The server turns it on when its admission check
+/// has seen the share, a moment after the report of the share.
+fn turn_meeting_on(world: &World, window: &mut Window, ada: &Admin, voice: ChannelId) {
+    let started = std::time::Instant::now();
+    while let Err(error) = world.run(ada.handle.api().start_meeting(voice)) {
+        assert!(
+            started.elapsed() < PATIENCE,
+            "meeting mode did not start: {error}"
+        );
+        window.run_tasks();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 #[gpui::test]
@@ -150,18 +231,7 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
     window.until("the server lists Luca", in_call);
     world.run(api.block_microphone(voice, luca)).unwrap();
     world.run(api.unblock_microphone(voice, luca)).unwrap();
-    caller.calls.start_share(CaptureRequest {
-        picture: PictureSource::Display(1),
-        sound: SoundChoice::None,
-        quality: ShareQuality::default(),
-        dialog_parent: None,
-    });
-    window.until("the share of Ada arrives", |window| {
-        window
-            .state
-            .read_with(&window.cx, |state, _| state.calls().view().call)
-            .is_some_and(|call| !call.shares.is_empty())
-    });
+    share_screen(&caller, &mut window);
     let settings = UpdateCallSettings {
         user_limit: Some(Some(5)),
         hides_occupants: None,
@@ -169,18 +239,19 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
     world
         .run(api.update_call_settings(voice, &settings))
         .unwrap();
-    // The server turns meeting mode on when its admission check has seen the share, a
-    // moment after the report of the share.
-    let started = std::time::Instant::now();
-    while let Err(error) = world.run(api.start_meeting(voice)) {
-        assert!(
-            started.elapsed() < PATIENCE,
-            "meeting mode did not start: {error}"
-        );
-        window.run_tasks();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+    turn_meeting_on(&world, &mut window, &ada, voice);
     world.run(api.end_meeting(voice)).unwrap();
+    caller.calls.stop_share();
+    // The media engine of Ada reports the end of the share to the server after the stop:
+    // the lock follows once the window has the end, so that the lines keep this order.
+    window.until("the share of Ada ends", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().call)
+            .is_some_and(|call| call.shares.is_empty())
+    });
+    world.run(api.lock_call(voice)).unwrap();
+    world.run(api.unlock_call(voice)).unwrap();
 
     // Luca leaves, then Ada: the call ends.
     window.click("leave-call");
@@ -198,17 +269,24 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
         ("Ada started sharing", SystemKind::Start),
         ("Ada changed the settings of the room", SystemKind::Plain),
         ("Ada turned meeting mode on", SystemKind::Start),
-        ("Meeting mode ended", SystemKind::Plain),
-        // Luca leaves first, while Ada is inside; the departure of Ada ends the call.
+        ("Ada turned meeting mode off", SystemKind::Plain),
+        ("Ada stopped sharing", SystemKind::Plain),
+        ("Ada locked the room", SystemKind::Plain),
+        ("Ada unlocked the room", SystemKind::Plain),
+        // Luca leaves first, while Ada is inside; the departure of Ada ends the call, whose
+        // line states its length.
         ("Luca left the call", SystemKind::Plain),
-        ("Call ended", SystemKind::Plain),
+        ("Call ended after …", SystemKind::Plain),
     ]
     .map(|(text, kind)| (text.to_owned(), kind));
     let mut seen = Vec::new();
     window.until(
         "the chat of the channel holds the lines of the call",
         |window| {
-            let now = system_lines(window);
+            let now: Vec<(String, SystemKind)> = system_lines(window)
+                .into_iter()
+                .map(|(text, kind)| (length_hidden(text), kind))
+                .collect();
             if now != seen {
                 eprintln!("the lines of the chat: {now:?}");
                 seen = now;
@@ -216,14 +294,161 @@ fn the_chat_of_a_voice_channel_tells_what_happened_in_its_call(cx: &mut TestAppC
             seen == expected
         },
     );
-    let feed = window.feed().unwrap();
-    for row in feed.rows.iter() {
-        if let FeedRow::System(row) = row {
-            assert!(
-                window.shows_named(format!("system:{}", row.message.id)),
-                "the line {:?} is not drawn",
-                row.parts
-            );
-        }
-    }
+    assert_lines_drawn(&mut window);
+}
+
+/// Meeting mode ends when its presenter stops sharing, and when its presenter leaves the
+/// call; the line of each end states the reason and names the presenter. The line of a
+/// presenter who turns it off is in the test above.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_chat_of_a_voice_channel_tells_why_meeting_mode_ended(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let ada = world.owner(&server);
+    let caller = ada.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &ada, "Luca");
+    voice_channel(&world, &ada, &mut window, ROOM);
+    let voice = room(&mut window).id;
+    let target = CallTarget {
+        server_id: ada.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: voice,
+        },
+    };
+    let luca = window.view().person.account_id.unwrap();
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    window.until("the server lists Luca", |window| listed(window, ROOM, luca));
+
+    share_screen(&caller, &mut window);
+    turn_meeting_on(&world, &mut window, &ada, voice);
+    caller.calls.stop_share();
+    window.until("the share of Ada ends", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().call)
+            .is_some_and(|call| call.shares.is_empty())
+    });
+
+    // Luca leaves while Ada presents; then Ada, the presenter, leaves as the last person.
+    share_screen(&caller, &mut window);
+    turn_meeting_on(&world, &mut window, &ada, voice);
+    window.click("leave-call");
+    window.until("the server no longer lists Luca", |window| {
+        !listed(window, ROOM, luca)
+    });
+    world.run(caller.calls.leave());
+    window.until_read(
+        "the chat of the channel holds the lines",
+        sentences,
+        |lines| {
+            lines
+                == &[
+                    "Ada created this channel",
+                    "Call started by Ada",
+                    "Luca joined the call",
+                    "Ada started sharing",
+                    "Ada turned meeting mode on",
+                    "Ada stopped sharing",
+                    "Meeting mode ended: Ada stopped sharing",
+                    "Ada started sharing",
+                    "Ada turned meeting mode on",
+                    "Luca left the call",
+                    "Meeting mode ended: Ada left the call",
+                    "Call ended after …",
+                ]
+        },
+    );
+    assert_lines_drawn(&mut window);
+}
+
+/// A moderator moves a person from the call of one voice channel into the call of another:
+/// the chat of each channel tells the move, with the moderator and the person.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_move_by_a_moderator_is_a_line_in_the_chat_of_each_voice_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let ada = world.owner(&server);
+    let caller = ada.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &ada, "Luca");
+    voice_channel(&world, &ada, &mut window, ROOM);
+    let voice = room(&mut window).id;
+    let target = CallTarget {
+        server_id: ada.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: voice,
+        },
+    };
+    let second = second_room(&world, &ada, &mut window, "Second");
+    let luca = window.view().person.account_id.unwrap();
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    window.until("the server lists Luca", |window| listed(window, ROOM, luca));
+
+    world
+        .run(
+            ada.handle
+                .api()
+                .move_participant(voice, luca, channel_of(&second)),
+        )
+        .unwrap();
+    window.until("the device of Luca is in the call of Second", |window| {
+        window.view().call.is_some_and(|call| {
+            call.phase == Phase::Connected && call.name.as_deref() == Some("Second")
+        })
+    });
+    window.until("the server lists Luca in Second", |window| {
+        listed(window, "Second", luca)
+    });
+    window.click("leave-call");
+    window.until("the server no longer lists Luca in Second", |window| {
+        !listed(window, "Second", luca)
+    });
+    world.run(caller.calls.leave());
+
+    window.click_channel(ROOM);
+    window.until_read(
+        "the chat of the first channel holds the lines",
+        sentences,
+        |lines| {
+            lines
+                == &[
+                    "Ada created this channel",
+                    "Call started by Ada",
+                    "Luca joined the call",
+                    "Ada moved Luca to another voice channel",
+                    "Call ended after …",
+                ]
+        },
+    );
+    assert_lines_drawn(&mut window);
+    window.click_channel("Second");
+    window.until_read("the chat of Second holds the lines", sentences, |lines| {
+        lines
+            == &[
+                "Ada created this channel",
+                "Call started by Luca",
+                "Ada moved Luca into this voice channel",
+                "Call ended after …",
+            ]
+    });
+    assert_lines_drawn(&mut window);
 }

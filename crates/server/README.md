@@ -364,6 +364,8 @@ system lines that share a public position. Each line keeps the audience it had w
 
 Set `JUNTO_ATTACHMENTS_DIR` to a dedicated existing absolute directory for attachments.
 `JUNTO_ATTACHMENT_BYTES` defaults to 100,000,000 and `JUNTO_ATTACHMENTS_PER_MESSAGE` to 10.
+`JUNTO_PICTURE_BYTES`, the largest account picture and server logo, defaults to 2,097,152
+(2 MiB, the largest request body); a picture has at most 1024 by 1024 pixels.
 Administrators can persist overrides with `PUT /api/v1/attachment-limits`; every authenticated
 client can read the effective values with GET.
 Start an upload at `POST /api/v1/attachments`, send 1 MiB chunks to its `chunks/{offset}`

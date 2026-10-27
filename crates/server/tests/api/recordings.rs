@@ -44,6 +44,11 @@ async fn a_participant_with_the_permission_starts_a_recording_with_one_job_per_a
     let voice = scene.voice.id;
     let mut inside = server.full_stream(ben).await;
     let mut outside = server.full_stream(owner).await;
+    // A background connection is told of the changes of a recording only for the person
+    // who started it (ADR 0107): the owner outside the call is told nothing.
+    let mut background = server
+        .subscribed(owner, junto_protocol::events::Level::Background)
+        .await;
 
     let started = server.record(ann, voice).await;
     assert_eq!(started.state, RecordingState::Starting);
@@ -123,6 +128,12 @@ async fn a_participant_with_the_permission_starts_a_recording_with_one_job_per_a
         );
         assert_eq!(events[2].1, detail.recording);
     }
+    assert!(
+        server
+            .recording_events(owner, &mut background)
+            .await
+            .is_empty()
+    );
     let call = server.channel_call(ben, voice).await.call.unwrap();
     assert_eq!(call.recording, Some(detail.recording.clone()));
     let snapshot = server.snapshot(owner).await;

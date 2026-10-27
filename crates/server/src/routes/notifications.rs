@@ -9,14 +9,14 @@ use crate::{
     state::AppState,
     transact,
 };
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{Json, extract::State};
 use junto_authz::{Request, ServerPermission};
 use junto_protocol::{
     audit::AuditEvent,
     discovery::{
         MarkNotificationsRead, Notification, NotificationDefault, NotificationPage,
-        NotificationSettings, NotificationsRead,
+        NotificationSettings, NotificationSettingsRequest, NotificationsRead,
     },
     events::Event,
     ids::{ChannelId, MessageId, WorkspaceId},
@@ -28,6 +28,23 @@ use uuid::Uuid;
 /// The longest name of a time zone that a quiet time states. The names of the IANA
 /// database are shorter.
 const LONGEST_ZONE_NAME: usize = 64;
+
+pub(super) fn extended_preferences(headers: &HeaderMap) -> bool {
+    headers
+        .get("Junto-Notification-Preferences")
+        .is_some_and(|value| value == "1")
+}
+
+pub(super) fn compatible_settings(
+    mut settings: NotificationSettings,
+    extended: bool,
+) -> NotificationSettings {
+    if !extended {
+        settings.hide_text = false;
+        settings.hold_while_presenting = None;
+    }
+    settings
+}
 
 async fn scope(connection: &mut PgConnection, access: &Access, id: Uuid) -> ApiResult<bool> {
     if id.is_nil() {
@@ -51,11 +68,12 @@ async fn scope(connection: &mut PgConnection, access: &Access, id: Uuid) -> ApiR
     }
 }
 
-#[utoipa::path(get,path="/api/v1/notification-settings/{scope_id}",tag="messages",params(("scope_id"=Uuid,Path,description="Nil UUID for account/server defaults, otherwise workspace or channel")),security(("session"=[])),responses((status=200,body=NotificationSettings),ApiError))]
+#[utoipa::path(get,path="/api/v1/notification-settings/{scope_id}",tag="messages",params(("scope_id"=Uuid,Path,description="Nil UUID for account/server defaults, otherwise workspace or channel"),("Junto-Notification-Preferences"=Option<String>,Header,description="1 includes the text privacy and presentation preferences")),security(("session"=[])),responses((status=200,body=NotificationSettings),ApiError))]
 pub async fn get_settings(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<Uuid>,
+    headers: HeaderMap,
 ) -> ApiResult<Json<NotificationSettings>> {
     let mut counted = false;
     read!(app, |connection| {
@@ -69,18 +87,24 @@ pub async fn get_settings(
         .bind(id)
         .fetch_optional(connection)
         .await?;
-        Ok(value.map(|value| value.0).unwrap_or_default())
+        Ok(compatible_settings(
+            value.map(|value| value.0).unwrap_or_default(),
+            extended_preferences(&headers),
+        ))
     })
     .map(Json)
 }
 
-#[utoipa::path(put,path="/api/v1/notification-settings/{scope_id}",tag="messages",params(("scope_id"=Uuid,Path)),request_body=NotificationSettings,security(("session"=[])),responses((status=200,body=NotificationSettings),ApiError))]
+#[utoipa::path(put,path="/api/v1/notification-settings/{scope_id}",tag="messages",params(("scope_id"=Uuid,Path),("Junto-Notification-Preferences"=Option<String>,Header,description="1 replaces the text privacy and presentation preferences; otherwise they are preserved")),request_body=NotificationSettingsRequest,security(("session"=[])),responses((status=200,body=NotificationSettings),ApiError))]
 pub async fn set_settings(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<Uuid>,
-    ApiJson(body): ApiJson<NotificationSettings>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<NotificationSettingsRequest>,
 ) -> ApiResult<Json<NotificationSettings>> {
+    let body = request.settings;
+    let extended = extended_preferences(&headers);
     if body.daily_quiet.as_ref().is_some_and(|quiet| {
         quiet.start_minute == quiet.end_minute
             || quiet.start_minute >= 1440
@@ -92,7 +116,12 @@ pub async fn set_settings(
     {
         return Err(ApiError::invalid("invalid notification settings"));
     }
-    if !id.is_nil() && (body.do_not_disturb || body.daily_quiet.is_some()) {
+    if !id.is_nil()
+        && (body.do_not_disturb
+            || body.daily_quiet.is_some()
+            || body.hide_text
+            || body.hold_while_presenting.is_some())
+    {
         return Err(ApiError::invalid("do not disturb is an account setting"));
     }
     let mut counted = false;
@@ -125,14 +154,22 @@ pub async fn set_settings(
                 ));
             }
         }
+        let body = compatible_settings(body.clone(), extended);
         let changed = sqlx::query(
             "insert into notification_settings(account_id,scope_id,settings) values($1,$2,$3) on
-             conflict(account_id,scope_id) do update set settings=excluded.settings where
-             notification_settings.settings<>excluded.settings",
+             conflict(account_id,scope_id) do update set settings=excluded.settings ||
+             case when $4 then '{}'::jsonb else jsonb_strip_nulls(jsonb_build_object(
+                 'hide_text', notification_settings.settings->'hide_text',
+                 'hold_while_presenting', notification_settings.settings->'hold_while_presenting')) end
+             where notification_settings.settings is distinct from (excluded.settings ||
+             case when $4 then '{}'::jsonb else jsonb_strip_nulls(jsonb_build_object(
+                 'hide_text', notification_settings.settings->'hide_text',
+                 'hold_while_presenting', notification_settings.settings->'hold_while_presenting')) end)",
         )
         .bind(access.account_id)
         .bind(id)
         .bind(sqlx::types::Json(&body))
+        .bind(extended)
         .execute(&mut *connection)
         .await?
         .rows_affected();
@@ -145,7 +182,7 @@ pub async fn set_settings(
             )
             .await?;
         }
-        Ok(body.clone())
+        Ok(compatible_settings(body, extended))
     })
     .map(Json)
 }

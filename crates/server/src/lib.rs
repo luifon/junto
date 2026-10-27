@@ -139,6 +139,59 @@ pub fn events_document() -> Result<String, serde_json::Error> {
     Ok(document)
 }
 
+/// The relative path of the committed digests of the event document, one for each revision of
+/// the messages and events (ADR 0206).
+pub const EVENT_REVISIONS_PATH: &str = "docs/api/event-revisions.json";
+
+/// One revision of the messages and events with the SHA-256 of its event document.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EventRevision {
+    pub revision: u32,
+    pub sha256: String,
+}
+
+/// The committed digests with the one of the present event document: the same list when
+/// the present revision has that digest, the present revision added when it has none. An
+/// event document that changed under a revision that has another digest is refused: a
+/// change of the messages or the events raises `EVENT_REVISION`, so that a client of an
+/// older build knows that the server sends what it does not read.
+pub fn event_revisions_document(committed: &str) -> Result<String, String> {
+    use sha2::Digest as _;
+    let mut revisions: Vec<EventRevision> = if committed.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(committed).map_err(|error| error.to_string())?
+    };
+    let events = events_document().map_err(|error| error.to_string())?;
+    let digest = sha2::Sha256::digest(events.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let revision = junto_protocol::events::EVENT_REVISION;
+    match revisions.iter().find(|held| held.revision == revision) {
+        Some(held) if held.sha256 == digest => {}
+        Some(_) => {
+            return Err(format!(
+                "the messages or the events changed under revision {revision}: raise \
+                 junto_protocol::events::EVENT_REVISION"
+            ));
+        }
+        None => {
+            if revisions.iter().any(|held| held.revision > revision) {
+                return Err(format!("revision {revision} is older than a committed one"));
+            }
+            revisions.push(EventRevision {
+                revision,
+                sha256: digest,
+            });
+        }
+    }
+    let mut document =
+        serde_json::to_string_pretty(&revisions).map_err(|error| error.to_string())?;
+    document.push('\n');
+    Ok(document)
+}
+
 /// The tasks that run beside the requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {

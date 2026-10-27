@@ -66,7 +66,9 @@ impl BookUi {
 /// what the head shows as unread, and the join requests that wait.
 pub(crate) fn head_label(row: &ServerRow) -> SharedString {
     let mut label = row.name.clone();
-    if let Some(sign) = super::channels::unread_sign(row.head_unread) {
+    if row.for_person > 0 {
+        label = format!("{label}, {}", crate::text::for_person(row.for_person));
+    } else if let Some(sign) = super::channels::unread_sign(row.head_unread) {
         label = format!("{label}, {}", sign.label);
     }
     if row.waiting_join_requests > 0 {
@@ -78,17 +80,22 @@ pub(crate) fn head_label(row: &ServerRow) -> SharedString {
     label.into()
 }
 
-/// The unread sign of the head of a server in the expanded server book: the sign of the
-/// channel list, for what no row of a workspace shows.
+/// The unread sign of the head of a server in the expanded server book: the count of the
+/// messages for the person on the whole server (mentions and direct messages, as the
+/// collapsed server book and Discord draw it), or the dot for what no row of a workspace
+/// shows.
 pub(crate) fn head_sign(row: &ServerRow, index: usize, cx: &App) -> Option<AnyElement> {
-    let sign = super::channels::unread_sign(row.head_unread)?;
-    let mark = match sign.mentions {
-        Some(count) => Badge::new(count).into_any_element(),
-        None => div()
+    if row.for_person == 0 && !row.head_unread.any() {
+        return None;
+    }
+    let mark = if row.for_person > 0 {
+        Badge::new(crate::text::unread_count(row.for_person)).into_any_element()
+    } else {
+        div()
             .flex_none()
             .mr(u(2.0))
             .child(unread_dot(cx))
-            .into_any_element(),
+            .into_any_element()
     };
     Some(
         div()
@@ -849,6 +856,7 @@ mod tests {
             has_recovery: false,
             unread: head_unread,
             head_unread,
+            for_person: head_unread.mentions,
             waiting_join_requests: 0,
             workspaces: Vec::new(),
             group: None,
@@ -976,6 +984,11 @@ mod tests {
                 .unwrap()
                 .mentions
                 .is_none()
+        );
+        // The messages for the person on the whole server are named with their count.
+        assert_eq!(
+            head_label(&row(mention)).as_ref(),
+            format!("Harbor, {}", text::for_person(2))
         );
     }
 }

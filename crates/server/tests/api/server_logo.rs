@@ -150,13 +150,23 @@ async fn logo_uploads_use_avatar_limits() {
             .await
             .error(ErrorCode::ImageUnsupported);
     }
+    // A logo of 2 MiB is stored; a server with a smaller limit refuses a larger one.
     let mut bytes = samples::png(1, 1);
-    bytes.resize(262145, 0);
+    bytes.resize(2 * 1024 * 1024, 0);
     server
         .put_bytes(&owner, ROUTE, None, bytes)
         .await
+        .ok::<Avatar>(StatusCode::OK);
+    let smaller = TestServer::start_with(|config| config.limits.avatar_bytes = 256 * 1024).await;
+    let smaller_owner = smaller.owner().await;
+    let mut bytes = samples::png(1, 1);
+    bytes.resize(256 * 1024 + 1, 0);
+    smaller
+        .put_bytes(&smaller_owner, ROUTE, None, bytes)
+        .await
         .error(ErrorCode::ImageTooLarge);
-    for i in 0..30 {
+    // With the logo of 2 MiB above, 30 changes reach the limit.
+    for i in 0..29 {
         server
             .put_bytes(&owner, ROUTE, None, samples::png(i + 1, 1))
             .await

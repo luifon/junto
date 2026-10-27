@@ -77,6 +77,8 @@ pub struct TestServer {
     /// The server uses the LiveKit server of `tools/with-test-livekit.sh`, and gives its
     /// clients this address of it.
     media: Option<String>,
+    /// Settings of the process beside the ones of every test server.
+    settings: Vec<(String, String)>,
     /// Where the server stores the files of messages.
     attachments: tempfile::TempDir,
     /// Where the server writes the files of exports.
@@ -107,7 +109,26 @@ impl TestServer {
         Self::start_as(name, Some(address.to_owned())).await
     }
 
+    /// A server with these settings of its process, such as `JUNTO_PICTURE_BYTES`. The
+    /// window tests use it.
+    #[allow(dead_code)]
+    pub async fn start_with_settings(name: &str, settings: &[(&str, &str)]) -> Self {
+        let settings = settings
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        Self::start_configured(name, None, settings).await
+    }
+
     async fn start_as(name: &str, media: Option<String>) -> Self {
+        Self::start_configured(name, media, Vec::new()).await
+    }
+
+    async fn start_configured(
+        name: &str,
+        media: Option<String>,
+        settings: Vec<(String, String)>,
+    ) -> Self {
         let database = TestDatabase::create().await;
         let proxy = StdListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_port = proxy.local_addr().unwrap().port();
@@ -121,6 +142,7 @@ impl TestServer {
             proxy: Mutex::new(Some(proxy)),
             proxy_port,
             media,
+            settings,
             attachments: tempfile::tempdir().unwrap(),
             exports: tempfile::tempdir().unwrap(),
             database,
@@ -223,6 +245,7 @@ impl TestServer {
             // The server stops when the process of the tests ends, also when that process is
             // killed (ADR 0915).
             .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
+            .envs(self.settings.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

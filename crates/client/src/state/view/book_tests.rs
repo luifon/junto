@@ -255,10 +255,15 @@ fn the_selected_server_states_its_version_and_a_newer_release_of_the_source() {
         Some(ServerRelease {
             version: stated.clone(),
             newer,
+            newer_events: false,
         })
     };
     // Without a source only the version is known.
     assert_eq!(release(&server, UpdatesKnown::default()), shown(None));
+    // A server of a newer revision of the events is stated (ADR 0206).
+    server.server_events = Some(junto_client_core::protocol::events::EVENT_REVISION + 1);
+    assert!(release(&server, UpdatesKnown::default()).is_some_and(|release| release.newer_events));
+    server.server_events = Some(junto_client_core::protocol::events::EVENT_REVISION);
     let newest = |version: Version| UpdatesKnown {
         has_source: true,
         state: UpdateState::Current,

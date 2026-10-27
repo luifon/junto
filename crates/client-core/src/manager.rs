@@ -47,6 +47,7 @@ use crate::live::{LiveServer, Shared};
 use crate::paths::DataDir;
 use crate::profile::ProfileStore;
 use crate::runtime::Runtime;
+use crate::saved_exports::SavedExportsStore;
 use crate::secret::SecretToken;
 use crate::settings::SettingsStore;
 use crate::storage::StorageError;
@@ -260,6 +261,11 @@ impl Client {
     /// The sound settings of this installation (ADR 0710).
     pub fn voice(&self) -> VoiceStore {
         VoiceStore::new(self.inner.core.data_dir.clone())
+    }
+
+    /// The exports whose files this device saved (ADR 0710, ADR 0761).
+    pub fn saved_exports(&self) -> SavedExportsStore {
+        SavedExportsStore::new(self.inner.core.data_dir.clone())
     }
 
     /// Whether a newer build of the client exists (ADR 0704). Its periodic check starts

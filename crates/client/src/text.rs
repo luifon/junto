@@ -514,6 +514,16 @@ pub fn share_limit(limit: u8) -> String {
         format!("You share {limit} things, the most at once. Stop one to share another.")
     }
 }
+
+/// The people who watch the share of the person: "watched by 2", and their names for the
+/// tooltip (ADR 0502).
+pub fn share_viewers(count: usize) -> String {
+    format!("watched by {count}")
+}
+
+pub fn share_viewer_names(names: &[String]) -> String {
+    format!("Watching: {}", names.join(", "))
+}
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
     "Share screen. Screen sharing is not available on this system in this version.";
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
@@ -1016,8 +1026,55 @@ pub const NOISE_SUPPRESSION: &str = "Noise suppression";
 pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
-pub const CALL_SOUNDS: &str = "Call sounds";
-pub const CALL_SOUNDS_HELP: &str = "Plays a short tone when a person joins or leaves your call, when your microphone or sound turns on or off, when a share starts, and when you leave.";
+/// The section of the settings with the switches of the sounds (ADR 0707).
+pub const SOUNDS: &str = "Sounds";
+pub const ALL_SOUNDS: &str = "All sounds";
+pub const ALL_SOUNDS_HELP: &str =
+    "Turns every sound of Junto off, the ring of a call too. The switches below keep their choice.";
+pub const ALL_SOUNDS_ARE_OFF: &str = "All sounds are off.";
+
+/// The name and the sentence of the switch of a kind of sounds.
+pub fn sound_kind(kind: junto_client_core::voice::SoundKind) -> (&'static str, &'static str) {
+    use junto_client_core::voice::SoundKind;
+    match kind {
+        SoundKind::Messages => (
+            "Messages",
+            "A new message in a place that you do not look at, when the place notifies you of all messages, and a reply in a thread that you follow.",
+        ),
+        SoundKind::Mentions => (
+            "Mentions and direct messages",
+            "A mention of you, a direct message, a call that you missed.",
+        ),
+        SoundKind::Ring => ("Incoming call", "The ring of a direct call to you."),
+        SoundKind::CallJoined => ("You join a call", "You enter a call."),
+        SoundKind::CallLeft => ("You leave a call", "You leave a call or it ends."),
+        SoundKind::Moved => ("You are moved", "A moderator moves you to another call."),
+        SoundKind::ConnectionLost => (
+            "Call connection lost",
+            "The call reconnects after losing its connection.",
+        ),
+        SoundKind::PersonJoined => ("Someone joins", "Another person joins your call."),
+        SoundKind::PersonLeft => ("Someone leaves", "Another person leaves your call."),
+        SoundKind::MicrophoneOff => ("Microphone off", "Your microphone closes."),
+        SoundKind::MicrophoneOn => ("Microphone on", "Your microphone opens."),
+        SoundKind::SoundOff => ("Sound off", "You turn the sound off."),
+        SoundKind::SoundOn => ("Sound on", "You turn the sound on."),
+        SoundKind::TalkStarts => ("Push to talk pressed", "You press the push to talk key."),
+        SoundKind::TalkEnds => ("Push to talk released", "You release the push to talk key."),
+        SoundKind::ShareStarted => ("Share starts", "A share starts in your call."),
+        SoundKind::ShareEnded => ("Share ends", "A share ends in your call."),
+        SoundKind::ViewerJoined => ("Viewer joins", "Someone starts watching your share."),
+        SoundKind::ViewerLeft => ("Viewer leaves", "Someone stops watching your share."),
+        SoundKind::Invitation => ("Call invitation", "Someone invites you into a call."),
+        SoundKind::Request => (
+            "Entry or join request",
+            "Someone asks to enter your call or join your server.",
+        ),
+        SoundKind::RecordingStarted => ("Recording starts", "Your call starts being recorded."),
+        SoundKind::RecordingStopped => ("Recording stops", "Your call stops being recorded."),
+        SoundKind::HandRaised => ("Hand raised", "Someone raises a hand that you may lower."),
+    }
+}
 
 /// The question before the switch to push to talk.
 pub fn push_to_talk_question(key: TalkKey) -> String {
@@ -2037,6 +2094,16 @@ pub fn mention_badge(mentions: u64) -> String {
     format!("@ {}", unread_count(mentions))
 }
 
+/// The messages for the person alone that a count states: the mentions and the direct
+/// messages.
+pub fn for_person(count: u64) -> String {
+    if count == 1 {
+        "1 mention or direct message".to_owned()
+    } else {
+        format!("{} mentions and direct messages", unread_count(count))
+    }
+}
+
 pub fn unread_tooltip(messages: u64, mentions: u64) -> String {
     let plural = |count: u64, one: &str, many: &str| {
         if count == 1 {
@@ -2070,20 +2137,42 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
     use crate::state::feed::SystemKind::{Plain, Recording, Start};
     match action {
         "call_started" => (Start, "Call started by {actor}"),
-        "call_ended" => (Plain, "Call ended"),
+        "call_ended" => (Plain, "Call ended{duration}"),
         "screen_share_started" => (Start, "{actor} started sharing"),
+        "screen_share_ended" => (Plain, "{actor} stopped sharing"),
         "entry_requested" => (Plain, "{actor} asked to enter"),
+        "entry_accepted" => (Plain, "{actor} let {subject} in"),
+        "entry_denied" => (Plain, "{actor} did not let {subject} in"),
+        "call_locked" => (Plain, "{actor} locked the room"),
+        "call_unlocked" => (Plain, "{actor} unlocked the room"),
         "joined_by_invitation" => (Plain, "{actor} joined by invitation"),
         "person_joined" => (Plain, "{actor} joined the call"),
         "person_left" => (Plain, "{actor} left the call"),
+        // A person who left and joined again within a minute, drawn as one line; no server
+        // writes this action.
+        "person_rejoined" => (Plain, "{actor} left the call and joined again"),
         "meeting_started" => (Start, "{actor} turned meeting mode on"),
         "meeting_ended" => (Plain, "Meeting mode ended"),
+        "meeting_turned_off" => (Plain, "{actor} turned meeting mode off"),
+        "meeting_ended_share_stopped" => (Plain, "Meeting mode ended: {actor} stopped sharing"),
+        "meeting_ended_presenter_left" => (Plain, "Meeting mode ended: {actor} left the call"),
         "recording_started" => (Recording, "Recording started by {actor}"),
         "recording_stopped" => (Recording, "Recording stopped"),
         "recording_failed" => (Recording, "Recording failed"),
         "recording_ready" => (Recording, "The recording of the call is ready"),
         "recording_removed" => (Recording, "{actor} removed a recording"),
         "transcript_requested" => (Plain, "{actor} asked for a transcript"),
+        "transcript_ready" => (Recording, "The transcript of the recording is ready"),
+        "transcript_partial" => (
+            Recording,
+            "The transcript of the recording is ready, with parts missing",
+        ),
+        "transcript_failed" => (Recording, "The transcript of the recording failed"),
+        "message_pinned" => (Plain, "{actor} pinned a message"),
+        "channel_renamed" => (
+            Plain,
+            "{actor} renamed this channel from {previous_name} to {name}",
+        ),
         "channel_created" => (Plain, "{actor} created this channel"),
         "channel_updated" => (Plain, "{actor} changed this channel"),
         "permanent_messages_turned_on" => (Plain, "{actor} turned on permanent messages"),
@@ -2109,6 +2198,15 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "direct_call_declined" => (Plain, "{actor} declined the call"),
         "direct_call_ended" => (Plain, "The call ended{duration}"),
         _ => (Plain, "An event that this version of Junto does not know"),
+    }
+}
+
+/// The people beyond the first three names of a line: " and 2 others".
+pub fn and_others(count: usize) -> String {
+    if count == 1 {
+        " and 1 other".to_owned()
+    } else {
+        format!(" and {count} others")
     }
 }
 
@@ -2351,6 +2449,33 @@ pub fn place_name(place: &crate::state::notices::Whereabouts) -> String {
 
 pub const ALERT_WITHOUT_TEXT: &str = "New notification";
 
+/// Why a chosen file is not a picture (ADR 0119).
+pub const fn picture_refusal(refusal: crate::picture::Refusal) -> &'static str {
+    use crate::picture::Refusal;
+    match refusal {
+        Refusal::Unreadable => {
+            "The file could not be read. Check that the file exists and that you may open it."
+        }
+        Refusal::TooLarge => "The file is larger than 10 MiB. Choose a smaller picture.",
+        Refusal::Unsupported => "The file is not a PNG, JPEG, WebP or GIF picture.",
+        Refusal::TooManyPixels => "The picture has too many pixels. Choose a smaller picture.",
+    }
+}
+pub const PICTURE_CROP_ACCOUNT: &str = "Picture of your account";
+pub const PICTURE_CROP_PRESET: &str = "Picture of new accounts";
+pub const PICTURE_CROP_LOGO: &str = "Logo of the server";
+pub const PICTURE_CROP_HELP: &str =
+    "Drag the picture to place it in the square, and zoom with the slider or the wheel.";
+pub const PICTURE_ZOOM: &str = "Zoom";
+pub const PICTURE_SAVE: &str = "Save";
+pub const PICTURE_SAVING: &str = "Saving…";
+/// The body of the system notification of a message while the account hides the text.
+pub const ALERT_TEXT_HIDDEN: &str = "New message";
+pub const NOTIFICATION_TEXT: &str = "Message text in notifications";
+pub const NOTIFICATION_TEXT_HELP: &str = "Off: a notification names who wrote and where, without the text. Each server keeps the choice of your account.";
+pub const HOLD_WHILE_PRESENTING: &str = "Hold notifications while you share or present";
+pub const HOLD_WHILE_PRESENTING_HELP: &str = "While you share your screen or present in meeting mode, no notification appears and messages play no sound. They stay in the list of notifications.";
+
 /// The title of the system notification of a notice. It names the server when the device
 /// has more than one.
 pub fn alert_title(
@@ -2400,6 +2525,95 @@ pub fn entry_request_alert(name: Option<&str>, channel: Option<&str>) -> String 
 pub fn join_request_alert(name: &str) -> String {
     format!("{name} asks to join")
 }
+
+/// The titles of the system notifications of single events (ADR 0742).
+pub fn entry_answered_alert(
+    outcome: junto_client_core::protocol::call::EntryOutcome,
+    channel: &str,
+) -> String {
+    use junto_client_core::protocol::call::EntryOutcome;
+    match outcome {
+        EntryOutcome::Accepted => format!("You were let into {channel}"),
+        EntryOutcome::Denied => format!("You were not let into {channel}"),
+        EntryOutcome::Expired | EntryOutcome::Cancelled => {
+            format!("Nobody answered your request to enter {channel}")
+        }
+    }
+}
+
+pub fn moved_alert(by: Option<&str>, channel: &str) -> String {
+    format!("{} moved you to {channel}", by.unwrap_or(UNKNOWN_PERSON))
+}
+
+pub fn removed_alert(channel: &str) -> String {
+    format!("You were removed from the call in {channel}")
+}
+
+pub fn recording_started_alert(by: Option<&str>, channel: &str) -> String {
+    format!(
+        "{} started recording {channel}",
+        by.unwrap_or(UNKNOWN_PERSON)
+    )
+}
+
+pub fn recording_done_alert(
+    state: junto_client_core::protocol::recording::RecordingState,
+    channel: &str,
+) -> String {
+    use junto_client_core::protocol::recording::RecordingState;
+    match state {
+        RecordingState::PartlyFailed => {
+            format!("The recording of {channel} is ready, with parts missing")
+        }
+        RecordingState::Failed => format!("The recording of {channel} failed"),
+        _ => format!("The recording of {channel} is ready"),
+    }
+}
+
+pub fn transcript_done_alert(
+    state: junto_client_core::protocol::transcript::TranscriptState,
+    channel: &str,
+) -> String {
+    use junto_client_core::protocol::transcript::TranscriptState;
+    match state {
+        TranscriptState::Partial => {
+            format!("The transcript of {channel} is ready, with parts missing")
+        }
+        TranscriptState::Failed => format!("The transcript of {channel} failed"),
+        _ => format!("The transcript of {channel} is ready"),
+    }
+}
+
+pub fn export_done_alert(ready: bool, place: &str) -> String {
+    if ready {
+        format!("Your export of {place} is ready")
+    } else {
+        format!("Your export of {place} failed")
+    }
+}
+
+pub const DEVICE_ADDED_ALERT: &str = "A device was added to your account";
+pub const RECOVERED_ALERT: &str = "The owner gave a new device access to your account";
+
+pub fn added_to_workspace_alert(workspace: &str) -> String {
+    format!("You were added to {workspace}")
+}
+
+pub fn call_started_alert(channel: &str) -> String {
+    format!("A call started in {channel}")
+}
+
+pub fn join_answered_alert(approved: bool, server: &str) -> String {
+    if approved {
+        format!("Your request to join {server} was approved")
+    } else {
+        format!("Your request to join {server} was refused")
+    }
+}
+
+/// A channel or a conversation whose name the state does not hold.
+pub const A_CHANNEL: &str = "a channel";
+pub const A_DIRECT_CONVERSATION: &str = "a direct conversation";
 
 pub const NOTIFICATION_SETTINGS: &str = "Notification settings";
 pub const NOTIFICATION_SETTINGS_ITEM: &str = "Notification settings…";
@@ -3279,6 +3493,7 @@ mod tests {
             size: Some((1920, 1200)),
             frame_rate: Some(30),
             watched: true,
+            viewers: Vec::new(),
         };
         assert_eq!(share_title(&share, false), "Carla's screen");
         assert_eq!(share_title(&share, true), "Your screen");

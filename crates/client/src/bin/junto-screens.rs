@@ -154,6 +154,7 @@ fn participant(name: &str) -> CallParticipant {
         microphone_block: None,
         sound_block: None,
         hand_raised: false,
+        watching: None,
         screen_share: None,
         screen_shares: Vec::new(),
     }
@@ -415,6 +416,7 @@ fn acme() -> ServerSnapshot {
         stream: StreamStatus::Live,
         model: Some(acme_model(|_| {})),
         server_version: ServerVersion::parse("0.3.1"),
+        server_events: None,
     }
 }
 
@@ -434,6 +436,7 @@ fn harbor() -> ServerSnapshot {
             vec![workspace(13, "Lounge", true)],
         ))))),
         server_version: ServerVersion::parse("0.3.0"),
+        server_events: None,
     }
 }
 
@@ -446,6 +449,7 @@ fn harbor_as(access: AccessState, reach: Reach, error: Option<FlowError>) -> Ser
         stream: StreamStatus::Off,
         model: None,
         server_version: None,
+        server_events: None,
         ..harbor()
     }
 }
@@ -2291,6 +2295,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
     let mut talking = in_call(Phase::Connected);
     talking.voice.input_mode = InputMode::PushToTalk;
     studio.draw(Screen::call("call-push-to-talk", talking), show_daily)?;
+    draw_sound_settings(studio)?;
     // The sensitivity of voice activation, with the live level of a call.
     let mut sensitive = in_call(Phase::Connected);
     sensitive.voice.voice_threshold = Some(-40);
@@ -2303,6 +2308,32 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
     Ok(())
+}
+
+/// The section of the sounds of the settings: all sounds on with one kind off, and all
+/// sounds off (ADR 0707).
+fn draw_sound_settings(studio: &mut Studio) -> Result<(), String> {
+    let mut one_off = no_call();
+    one_off
+        .voice
+        .sounds
+        .set(junto_client_core::voice::SoundKind::TalkStarts, false);
+    studio.draw(
+        Screen::new("settings-sounds", two_servers()).media(one_off.clone()),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Sounds, window, cx);
+        },
+    )?;
+    let mut all_off = one_off;
+    all_off.voice.sounds.all = false;
+    studio.draw(
+        Screen::new("settings-sounds-all-off", two_servers()).media(all_off),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Sounds, window, cx);
+        },
+    )
 }
 
 fn recovery() -> RecoveryNotice {
@@ -3060,6 +3091,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("logo") => logo::draw(&mut studio),
         Some("permissions") => draw_permissions(&mut studio),
         Some("calls") => draw_calls(&mut studio),
+        Some("sounds") => draw_sound_settings(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))

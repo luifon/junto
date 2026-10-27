@@ -980,6 +980,7 @@ fn event_details(event: &Event) -> String {
             message_id,
             position,
             deleted,
+            ..
         } => format!(
             "{} message={message_id} position={position} deleted={deleted}",
             message_place(place)
@@ -990,7 +991,7 @@ fn event_details(event: &Event) -> String {
         Event::ThreadRead { root_id, position } => {
             format!("thread={root_id} position={position}")
         }
-        Event::NotificationChanged { message_id } => format!("message={message_id}"),
+        Event::NotificationChanged { message_id, .. } => format!("message={message_id}"),
         Event::NotificationSettingsChanged {} => String::new(),
         Event::RetentionChanged { workspace_id } => match workspace_id {
             Some(workspace_id) => format!("workspace={workspace_id}"),

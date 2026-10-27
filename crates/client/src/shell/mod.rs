@@ -25,6 +25,7 @@ mod panic_notice;
 mod people;
 mod permissions;
 mod person_drag;
+mod picture_crop;
 mod pictures;
 mod prepared;
 mod rail;
@@ -55,11 +56,11 @@ use junto_client_core::voice::InputMode;
 
 use call::{CallTab, DeviceKind, VolumeControl};
 pub use search::FilterKind;
-pub use settings::SettingsSection;
+pub use settings::{SettingsSection, sound_kind_selector};
 pub use transcript_edit::Incoming;
 
 use crate::state::view::ShellView;
-use crate::state::{AppState, KeybindChange, LevelsChanged, OpenAdmin};
+use crate::state::{AppState, KeybindChange, LevelsChanged, OpenAccount, OpenAdmin};
 use crate::text;
 use crate::theme::{self, theme};
 use crate::ui::{Field, FieldEvent, StyleExt, tabular_numerals};
@@ -256,6 +257,8 @@ pub struct Shell {
     /// The invitations beyond the first ones are shown (ADR 0739).
     pub(crate) invitations_open: bool,
     pub(crate) invitations_scroll: ScrollHandle,
+    /// The newest invitation that the cards drew.
+    pub(crate) invitations_newest: Option<junto_client_core::protocol::ids::CallInvitationId>,
     /// The panel of the call lies over the content of a narrow window.
     pub(crate) call_panel_open: bool,
     /// The person closed the panel of the call beside the stage of a wide window.
@@ -292,6 +295,11 @@ pub struct Shell {
     pub(crate) share_volume: Option<VolumeControl>,
     /// The slider of the sensitivity of voice activation in the settings.
     pub(crate) voice_threshold: Option<VolumeControl>,
+    /// The zoom slider of the cut of a chosen picture, the point of a drag of the picture,
+    /// and the focus of its dialog (ADR 0119).
+    pub(crate) picture_zoom: Option<VolumeControl>,
+    pub(crate) picture_drag: Option<gpui::Point<gpui::Pixels>>,
+    pub(crate) picture_focus: FocusHandle,
     /// The details of the last recording of the call are shown.
     pub(crate) recording_details_open: bool,
     /// The press of the pointer that closed the details was on their button: the click
@@ -343,7 +351,10 @@ pub struct Shell {
     pub(crate) contact_part: Entity<InputState>,
     pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
-    pub(crate) notices_scroll: ScrollHandle,
+    pub(crate) notice_list: notices::NoticeList,
+    /// The count of the messages for the person that the icon of the application and the
+    /// title of the main window show (ADR 0741).
+    badge: Option<u64>,
     pub(crate) search_scroll: ScrollHandle,
     pub(crate) transcript_list: recorded::TranscriptList,
     /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
@@ -612,6 +623,16 @@ impl Shell {
                     }
                 },
             ),
+            // Only the main window shows the account.
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, _, event: &OpenAccount, window, cx| {
+                    if !this.detached {
+                        this.open_account(event.0, window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {
                     view.show_levels(state.read(cx).shown_levels());
@@ -683,6 +704,7 @@ impl Shell {
             call_panel_hidden: false,
             invitations_open: false,
             invitations_scroll: ScrollHandle::new(),
+            invitations_newest: None,
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
             share_menu_closed_by_press: false,
@@ -712,6 +734,9 @@ impl Shell {
             share_reads: 0,
             share_volume: None,
             voice_threshold: None,
+            picture_zoom: None,
+            picture_drag: None,
+            picture_focus: cx.focus_handle(),
             recording_details_open: false,
             recording_details_closed_by_press: false,
             invite_open: false,
@@ -741,7 +766,8 @@ impl Shell {
             fork_name,
             contact_part,
             contacts_scroll: ScrollHandle::new(),
-            notices_scroll: ScrollHandle::new(),
+            notice_list: notices::NoticeList::new(),
+            badge: None,
             search_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
@@ -1011,6 +1037,11 @@ impl Shell {
     /// dialog was open then.
     pub fn join_results(&self) -> u64 {
         self.join_results
+    }
+
+    /// The count that the icon of the application and the title of the main window show.
+    pub fn badge(&self) -> Option<u64> {
+        self.badge
     }
 
     /// What the window drew last.
@@ -1380,6 +1411,7 @@ impl Render for Shell {
             crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
+        self.notice_list.frame_starts();
         if self.detached {
             return self.render_detached(window, cx);
         }
@@ -1397,6 +1429,18 @@ impl Render for Shell {
             self.drawn = Some(view.clone());
         }
         window.set_rem_size(theme::rem_size(settings.scale_percent));
+        // The icon of the application and the title count the messages for the person on
+        // every server (ADR 0741).
+        let for_person = view
+            .servers
+            .iter()
+            .map(|row| row.for_person)
+            .fold(0, u64::saturating_add);
+        if self.badge != Some(for_person) {
+            self.badge = Some(for_person);
+            window.set_window_title(&crate::app_badge::title(for_person));
+            crate::app_badge::show(for_person, window);
+        }
         self.refresh_picture_owner(cx);
         self.sync_camera_visibility(cx);
         // The frame sets this again when it draws the list of messages.
@@ -1440,6 +1484,16 @@ impl Render for Shell {
             .when(!matches!(self.layer, Layer::None), |body| {
                 body.child(self.render_layer(&view, window, cx))
             });
+        // The cut of a chosen picture lies over the layer that chose the picture.
+        let picture_crop = self.state.read(cx).picture_crop();
+        if picture_crop.is_none() {
+            self.picture_zoom = None;
+            self.picture_drag = None;
+        }
+        let body = match picture_crop {
+            Some(crop) => body.child(self.render_picture_crop(crop, window, cx)),
+            None => body,
+        };
         div()
             .id("shell")
             .key_context("Shell")

@@ -6,6 +6,7 @@
 
 pub mod address;
 pub mod api;
+pub mod app_badge;
 pub mod app_identity;
 pub mod arrangement;
 pub mod book;
@@ -29,6 +30,7 @@ pub mod profile;
 pub mod release_configuration;
 pub mod releases;
 pub mod runtime;
+pub mod saved_exports;
 pub mod secret;
 pub mod settings;
 pub mod storage;

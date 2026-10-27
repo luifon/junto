@@ -68,6 +68,8 @@ pub struct ServerSnapshot {
     pub model: Option<Arc<ServerModel>>,
     /// The release version that the server stated on its event stream (ADR 0780).
     pub server_version: Option<ServerVersion>,
+    /// The revision of the messages and events that the server stated (ADR 0206).
+    pub server_events: Option<u32>,
 }
 
 impl ServerSnapshot {
@@ -88,6 +90,7 @@ impl ServerSnapshot {
             stream: live.status,
             model: live.model,
             server_version: live.server_version,
+            server_events: live.server_events,
         }
     }
 }
@@ -382,6 +385,20 @@ impl Unreads {
         self.0.get(&place).copied().unwrap_or_default()
     }
 
+    /// The unread messages for the person alone in the places that `counted` names: the
+    /// mentions of a channel, and every unread message of a direct conversation that shows
+    /// its sign. A muted place counts nothing.
+    fn for_person(&self, counted: impl Fn(PlaceId) -> bool) -> u64 {
+        self.0
+            .iter()
+            .filter(|(place, unread)| counted(**place) && unread.any() && !unread.muted)
+            .map(|(place, unread)| match place {
+                PlaceId::Direct(_) => unread.messages.max(unread.mentions),
+                _ => unread.mentions,
+            })
+            .fold(0, u64::saturating_add)
+    }
+
     /// Every place of the server together.
     fn total(&self) -> Unread {
         let mut unread = Unread::default();
@@ -639,6 +656,10 @@ pub struct ServerRow {
     /// What of it no listed workspace shows: the direct conversations, and every place
     /// of a server without a listed workspace. The head of the server shows its sign.
     pub head_unread: Unread,
+    /// The unread messages for the person alone: the mentions, and the messages of the
+    /// direct conversations (ADR 0741). The collapsed server book and the badge of the
+    /// application count them.
+    pub for_person: u64,
     /// The join requests that wait for a decision of the person (ADR 0761).
     pub waiting_join_requests: usize,
     /// The workspaces in the order of the person (ADR 0775).
@@ -965,6 +986,9 @@ pub struct ShareCard {
     pub frame_rate: Option<u32>,
     /// The person of this device gets the picture and the sound of this share.
     pub watched: bool,
+    /// For the share of this device: the people in the call who watch it, with their names
+    /// (ADR 0502). Empty for the share of another person.
+    pub viewers: Vec<(AccountId, Option<String>)>,
 }
 
 /// The shares of the call of this device. Present while at least one share runs.
@@ -1442,6 +1466,9 @@ pub struct ServerRelease {
     pub version: ServerVersion,
     /// The newest release, when it comes after `version`. Absent without a source.
     pub newer: Option<Version>,
+    /// The server sends messages and events of a newer revision than this build reads
+    /// (ADR 0206): the person updates Junto to see them.
+    pub newer_events: bool,
 }
 
 /// The person as the profile strip shows them.
@@ -1540,7 +1567,7 @@ pub struct Invited {
     pub by: Option<String>,
     /// The name of the voice channel. Absent for a direct-message call.
     pub channel: Option<String>,
-    /// When the invitation was made: the window shows the newest ones first.
+    /// When the invitation was made: the window orders the cards by it, the newest last.
     pub created_at: OffsetDateTime,
 }
 
@@ -3077,6 +3104,7 @@ fn share_stage(
                 size: seen.size,
                 frame_rate: seen.frame_rate,
                 watched: active.watched == Some(id),
+                viewers: Vec::new(),
             }
         })
         .collect();
@@ -3094,6 +3122,18 @@ fn share_stage(
                 size: Some(info.size),
                 frame_rate: Some(info.frame_rate),
                 watched: active.watched == Some(id),
+                viewers: call
+                    .map(|call| call.participants.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|participant| {
+                        participant.account_id != model.account.id
+                            && participant.watching.is_some_and(|watched| {
+                                watched.account_id == model.account.id && watched.slot == *slot
+                            })
+                    })
+                    .map(|participant| (participant.account_id, name_of(participant.account_id)))
+                    .collect(),
             });
         }
     }
@@ -3832,6 +3872,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                         }
                     })
                     .unwrap_or_default(),
+                for_person: unreads
+                    .as_ref()
+                    .map_or(0, |(_, unreads)| unreads.for_person(|_| true)),
                 waiting_join_requests: unreads.as_ref().map_or(0, |(model, _)| {
                     super::admin::view::waiting_join_requests(model)
                 }),
@@ -3881,6 +3924,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             release: server.server_version.as_ref().map(|version| ServerRelease {
                 version: version.clone(),
                 newer: super::book::newer_server_release(&known.updates, version),
+                newer_events: server.server_events.is_some_and(|revision| {
+                    revision > junto_client_core::protocol::events::EVENT_REVISION
+                }),
             }),
             content,
         }

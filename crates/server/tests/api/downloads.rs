@@ -334,6 +334,11 @@ async fn a_person_with_the_permission_removes_a_recording_with_its_files_and_its
             ..
         },
         Event::MessageChanged {
+            message_id: transcript_line,
+            deleted: true,
+            ..
+        },
+        Event::MessageChanged {
             message_id: line,
             deleted: false,
             ..
@@ -350,10 +355,13 @@ async fn a_person_with_the_permission_removes_a_recording_with_its_files_and_its
             channel_id: scene.voice.id
         }
     );
-    server
-        .get(ben, &format!("/api/v1/messages/{post}"))
-        .await
-        .error(ErrorCode::NotFound);
+    // The card of the recording and the line of its transcript go with it.
+    for gone in [post, transcript_line] {
+        server
+            .get(ben, &format!("/api/v1/messages/{gone}"))
+            .await
+            .error(ErrorCode::NotFound);
+    }
     let system: junto_protocol::message::Message = server
         .get(ben, &format!("/api/v1/messages/{line}"))
         .await

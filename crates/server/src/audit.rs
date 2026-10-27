@@ -58,10 +58,14 @@ pub async fn record(
     .bind(named_recording)
     .execute(&mut *connection)
     .await?;
+    // A recording writes its own notes, and a change of a channel writes the line of a
+    // rename only (ADR 0408).
     if let Some(channel_id) = channel_id
         && !matches!(
             event,
-            AuditEvent::RecordingStarted { .. } | AuditEvent::RecordingStopped { .. }
+            AuditEvent::RecordingStarted { .. }
+                | AuditEvent::RecordingStopped { .. }
+                | AuditEvent::ChannelUpdated { .. }
         )
     {
         let recording_id = match event {
@@ -105,6 +109,8 @@ pub async fn record(
                     | AuditEvent::CallMemberMovedIn { account_id } => Some(*account_id),
                     _ => None,
                 },
+                name: None,
+                previous_name: None,
             },
             call_id,
         )

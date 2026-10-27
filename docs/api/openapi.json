@@ -343,7 +343,7 @@
         "tags": [
           "account"
         ],
-        "summary": "Stores the avatar of the caller's account. The body is the image itself: a still PNG,\nJPEG or WebP image of at most 262144 bytes and at most 1024 by 1024 pixels. The server\nreads the format from the bytes, not from `Content-Type`.",
+        "summary": "Stores the avatar of the caller's account. The body is the image itself: a still PNG,\nJPEG or WebP image of at most 2097152 bytes (`JUNTO_PICTURE_BYTES`) and at most 1024 by\n1024 pixels. The server reads the format from the bytes, not from `Content-Type`.",
         "operationId": "set_avatar",
         "requestBody": {
           "content": {
@@ -2811,6 +2811,52 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ReportCallState"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/call/watching": {
+      "put": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Reports which share of another person in the call the person watches now, or none. The\nsharer and the people who see the call read it on the participant (ADR 0502). A share of a\nperson who is not in the call, and the own share, are refused.",
+        "operationId": "report_watching",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportWatching"
               }
             }
           },
@@ -7368,6 +7414,18 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7419,13 +7477,25 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 replaces the text privacy and presentation preferences; otherwise they are preserved",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NotificationSettings"
+                "$ref": "#/components/schemas/NotificationSettingsRequest"
               }
             }
           },
@@ -8896,6 +8966,20 @@
         ],
         "summary": "The state that a client starts from, with the cursor from which the event stream\ncontinues it.",
         "operationId": "get_snapshot",
+        "parameters": [
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -13904,6 +13988,17 @@
                 "type": "null"
               }
             ]
+          },
+          "watching": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchedShare",
+                "description": "The share of another person in the call that the person watches now, as the client\nof the person reports it (ADR 0502). Absent: none."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -16287,6 +16382,17 @@
               "null"
             ]
           },
+          "hide_text": {
+            "type": "boolean",
+            "description": "Account scope: the system notifications of messages name who wrote and where,\nwithout the text (ADR 0742)."
+          },
+          "hold_while_presenting": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Account scope: system notifications and the sounds of messages wait while the person\nshares a screen or presents in meeting mode. Absent: they wait (ADR 0742)."
+          },
           "level": {
             "oneOf": [
               {
@@ -16313,8 +16419,15 @@
               "null"
             ]
           }
-        },
-        "additionalProperties": false
+        }
+      },
+      "NotificationSettingsRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/NotificationSettings"
+          }
+        ],
+        "description": "Strict request fields, separate from extensible settings returned by the server."
       },
       "NotificationsRead": {
         "type": "object",
@@ -17148,6 +17261,23 @@
             "type": "boolean"
           }
         }
+      },
+      "ReportWatching": {
+        "type": "object",
+        "description": "The share that the person of the device watches now, or none (ADR 0502).",
+        "properties": {
+          "watching": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchedShare"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "RequestDeviceLink": {
         "type": "object",
@@ -18760,8 +18890,22 @@
               "null"
             ],
             "format": "int64",
-            "description": "Present for the line `direct_call_ended`: the seconds from the moment at which both\naccounts were in the room of the call to the moment from which one of them was\nalone until its end (ADR 0518).",
+            "description": "Present for the line `direct_call_ended`: the seconds from the moment at which both\naccounts were in the room of the call to the moment from which one of them was\nalone until its end (ADR 0518); and for the line `call_ended` of a voice channel:\nthe seconds from the first person in the room to the end of the call.",
             "minimum": 0
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present for the line `channel_renamed`: the new name of the channel."
+          },
+          "previous_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present for the line `channel_renamed`: the name before."
           },
           "recording_id": {
             "oneOf": [
@@ -19365,6 +19509,23 @@
           "received": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "WatchedShare": {
+        "type": "object",
+        "description": "The share that a person watches: the person who shares it, and the slot of the share\namong the shares of that person (ADR 0502). A client that runs one share per person\nstates slot 0.",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
             "minimum": 0
           }
         }

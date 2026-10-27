@@ -61,6 +61,14 @@ path = "tests/endurance/main.rs"
 harness = false
 required-features = ["test-support"]
 
+# A press on a notification gives the main window the focus under the Wayland compositor sway
+# (ADR 0742). It does nothing unless `JUNTO_TEST_NOTIFICATION_FOCUS` is 1.
+[[test]]
+name = "notification_focus"
+path = "tests/notification_focus/main.rs"
+harness = false
+required-features = ["test-support"]
+
 # A panic in code that the platform of the system calls, on the run loop of the system: the
 # application continues, saves the report and states it (ADR 0757). It does nothing unless
 # `JUNTO_TEST_NATIVE_PANICS` is 1.
@@ -111,7 +119,7 @@ futures-util = { workspace = true }
 backtrace = "0.3"
 # The picture of a share is given to gpui as an image of this crate, in the version that
 # gpui uses.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # The time zone of the system, for the times of messages. gpui uses the same crate.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The names and the rules of the IANA time zones, carried in the binary: a daily quiet
@@ -183,6 +191,12 @@ tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }
 # The address of the test database in the support code of the client core tests.
 url = "2"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The activation token that the notification service of the test `notification_focus` asks
+# of the compositor. gpui uses the same crates.
+wayland-client = "0.31.11"
+wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video = { version = "0.5.2", features = ["metal"] }

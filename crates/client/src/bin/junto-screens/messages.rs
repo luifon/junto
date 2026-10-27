@@ -118,6 +118,8 @@ impl Made {
             actor_id: actor.map(person),
             recording_id: None,
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         });
     }
 

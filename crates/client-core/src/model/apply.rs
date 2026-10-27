@@ -12,6 +12,7 @@ use junto_protocol::ids::{CallId, ChannelId, MessageId, RecordingId, WorkspaceId
 use junto_protocol::message::MessagePlace;
 use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
+use time::OffsetDateTime;
 
 use super::rank::sort_workspace_roles;
 use super::{
@@ -304,11 +305,31 @@ impl WorkspaceModel {
 }
 
 impl ServerModel {
+    /// Marks the notices that a read position covers when the events state the lists and
+    /// the time of the read is known. False when the list must be read again.
+    fn notices_read_here(
+        &mut self,
+        inside: &impl Fn(&junto_protocol::message::Message) -> bool,
+        position: u64,
+        at: Option<OffsetDateTime>,
+    ) -> bool {
+        match at {
+            Some(at) if self.lists_follow_events => self.mark_notices_read(inside, position, at),
+            _ => false,
+        }
+    }
+
     /// Applies one event. The caller moves the cursor.
     pub(crate) fn apply(&mut self, event: &Event) -> Follow {
+        self.apply_at(event, None)
+    }
+
+    /// Applies one event that the server recorded at `at`. The time marks the notices that
+    /// a read position of the account covers, as the server marked them (ADR 0409).
+    pub(crate) fn apply_at(&mut self, event: &Event, at: Option<OffsetDateTime>) -> Follow {
         let stale = self.apply_admin(event);
         let had_notices = !self.notices.is_empty();
-        let mut follow = self.apply_event(event);
+        let mut follow = self.apply_event(event, at);
         follow.load.extend(stale.into_iter().map(Part::Admin));
         // A further page of the notices continues from the last held notice. When the
         // event took every held notice and the server holds more, no notice is left to
@@ -325,7 +346,7 @@ impl ServerModel {
         follow
     }
 
-    fn apply_event(&mut self, event: &Event) -> Follow {
+    fn apply_event(&mut self, event: &Event, at: Option<OffsetDateTime>) -> Follow {
         match event {
             Event::PermissionsChanged { workspace_id } => {
                 self.withdraw(*workspace_id);
@@ -879,17 +900,21 @@ impl ServerModel {
             }
             Event::MessageMentioned { channel_id, .. } => {
                 if self.channel(*channel_id).is_some() {
-                    // The mention can be one of a thread (ADR 0409).
-                    return Follow::loads(vec![
-                        Part::MessageState(PlaceId::Channel(*channel_id)),
-                        Part::UnreadThreads,
-                    ]);
+                    let mut load = vec![Part::MessageState(PlaceId::Channel(*channel_id))];
+                    // The mention can be one of a thread (ADR 0409); a server of revision 2
+                    // states the thread with the change of the reply.
+                    if !self.lists_follow_events {
+                        load.push(Part::UnreadThreads);
+                    }
+                    return Follow::loads(load);
                 }
             }
             Event::MessageChanged {
                 place,
                 message_id,
                 position,
+                deleted,
+                thread,
                 ..
             } => {
                 if !self.holds_place(place) {
@@ -904,10 +929,27 @@ impl ServerModel {
                 if self.wants_message(id, *message_id, Some(*position)) {
                     load.push(Part::Message(id, *message_id));
                 }
-                // The event names no thread. A message of a channel that is not new can
-                // be the root of a thread whose replies changed.
-                if known && matches!(id, PlaceId::Channel(_)) {
+                if self.lists_follow_events {
+                    // A server of revision 2 states the thread of a reply for the account;
+                    // a deleted root takes its thread with it (ADR 0412).
+                    if let Some(state) = thread
+                        && !self.take_thread(state.clone())
+                    {
+                        load.push(Part::UnreadThreads);
+                    }
+                    if *deleted {
+                        self.drop_thread(*message_id);
+                    }
+                } else if known && matches!(id, PlaceId::Channel(_)) {
+                    // The event names no thread. A message of a channel that is not new can
+                    // be the root of a thread whose replies changed.
                     load.push(Part::UnreadThreads);
+                }
+                if let Some(state) = thread
+                    && self.lists_follow_events
+                    && self.needs_named(state.root_id)
+                {
+                    load.push(Part::Named(state.root_id));
                 }
                 return Follow::loads(load);
             }
@@ -922,7 +964,9 @@ impl ServerModel {
                 let inside = |message: &junto_protocol::message::Message| {
                     message.thread_root == Some(*root_id)
                 };
-                if self.read_covers_notice(inside, *position) {
+                if self.read_covers_notice(inside, *position)
+                    && !self.notices_read_here(&inside, *position, at)
+                {
                     load.push(Part::Notices);
                 }
                 if self.move_thread_read(*root_id, *position) == ThreadMoved::Unsettled {
@@ -930,7 +974,19 @@ impl ServerModel {
                 }
                 return Follow::loads(load);
             }
-            Event::NotificationChanged { .. } => {
+            Event::NotificationChanged { notice, .. } => {
+                // A server of revision 2 states the notice of the account, and the thread
+                // of a reply with the change of the reply (ADR 0409, ADR 0412).
+                if let Some(notice) = notice
+                    && self.lists_follow_events
+                {
+                    let message_id = notice.message_id;
+                    self.take_notice(notice.clone());
+                    if self.needs_named(message_id) {
+                        return Follow::load(Part::Named(message_id));
+                    }
+                    return Follow::default();
+                }
                 // A notice of a reply or of a mention in a thread changes the unread
                 // threads too.
                 return Follow::loads(vec![Part::Notices, Part::UnreadThreads]);
@@ -951,7 +1007,9 @@ impl ServerModel {
                 let inside = |message: &junto_protocol::message::Message| {
                     message.thread_root.is_none() && PlaceId::of(&message.place) == id
                 };
-                if self.read_covers_notice(inside, *position) {
+                if self.read_covers_notice(inside, *position)
+                    && !self.notices_read_here(&inside, *position, at)
+                {
                     load.push(Part::Notices);
                 }
                 return Follow::loads(load);

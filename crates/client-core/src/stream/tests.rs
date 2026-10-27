@@ -55,6 +55,14 @@ struct Peer {
 }
 
 impl Peer {
+    /// Sends a text frame as the server writes it.
+    async fn send_text(&self, text: &str) {
+        self.to_client
+            .send(Incoming::Text(text.to_owned()))
+            .await
+            .unwrap();
+    }
+
     async fn send(&self, message: &ServerMessage) {
         let text = serde_json::to_string(message).unwrap();
         self.to_client.send(Incoming::Text(text)).await.unwrap();
@@ -65,12 +73,22 @@ impl Peer {
     }
 
     async fn hello_as(&self, epoch: StreamEpoch, server_version: &str) {
+        self.hello_of(
+            epoch,
+            server_version,
+            junto_protocol::events::EVENT_REVISION,
+        )
+        .await;
+    }
+
+    async fn hello_of(&self, epoch: StreamEpoch, server_version: &str, event_revision: u32) {
         self.send(&ServerMessage::Hello {
             server_version: server_version.to_owned(),
             api_versions: vec![1],
             epoch,
             heartbeat_seconds: 25,
             idle_seconds: 60,
+            event_revision,
         })
         .await;
     }
@@ -482,8 +500,13 @@ impl Rig {
 
     /// The next connection, greeted and with its `subscribe` served.
     async fn served(&mut self) -> (Peer, Level, Cursor) {
+        self.served_at(junto_protocol::events::EVENT_REVISION).await
+    }
+
+    /// As [`Rig::served`], by a server that states this event revision.
+    async fn served_at(&mut self, revision: u32) -> (Peer, Level, Cursor) {
         let mut peer = self.peer().await;
-        peer.hello(self.epoch()).await;
+        peer.hello_of(self.epoch(), "0.1.0", revision).await;
         let (level, cursor) = peer.serve().await;
         self.when("live", |view| view.status == StreamStatus::Live)
             .await;
@@ -774,6 +797,42 @@ async fn the_view_states_the_version_of_the_last_hello_until_the_state_is_forgot
         .when("off", |view| view.status == StreamStatus::Off)
         .await;
     assert_eq!(view.server_version, None);
+}
+
+/// A server of a newer revision of the events is stated in the view, and an event of a type
+/// that this build does not read moves the cursor and changes nothing (open item CD4, ADR
+/// 0206).
+#[tokio::test(start_paused = true)]
+async fn the_view_states_the_revision_of_the_events_of_the_server() {
+    use junto_protocol::events::EVENT_REVISION;
+    let mut rig = rig();
+    assert_eq!(rig.live.view().server_events, None);
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    assert_eq!(rig.live.view().server_events, Some(EVENT_REVISION));
+    peer.close(4003).await;
+    let mut peer = rig.peer().await;
+    peer.hello_of(rig.epoch(), "0.2.0", EVENT_REVISION + 1)
+        .await;
+    rig.when("the newer revision", |view| {
+        view.server_events == Some(EVENT_REVISION + 1)
+    })
+    .await;
+    peer.serve().await;
+    rig.when("live", |view| view.status == StreamStatus::Live)
+        .await;
+    let before = rig.model_when("a model", |_| true).await;
+    peer.send_text(&format!(
+        r#"{{"type":"change","position":{position},"events":[{{"id":{position},"at":"2030-01-01T00:00:00Z","event":{{"type":"a_later_event","more":1}}}}]}}"#,
+        position = before.cursor.position + 1
+    ))
+    .await;
+    let after = rig
+        .model_when("the cursor moved", |model| {
+            model.cursor.position == before.cursor.position + 1
+        })
+        .await;
+    assert_eq!(after.workspaces, before.workspaces);
 }
 
 #[tokio::test(start_paused = true)]

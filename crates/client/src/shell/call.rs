@@ -138,6 +138,29 @@ fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
     states
 }
 
+/// The counts of the tabs of the panel of a call (ADR 0761): the unread messages of the
+/// chat of the call, and on Members the requests to enter that wait and, for a person who
+/// may lower them, the raised hands.
+pub(crate) fn call_tab_counts(view: &ShellView, panel: &CallPanel) -> (u64, u64) {
+    let chat = view
+        .lists()
+        .and_then(|lists| lists.feed.as_ref())
+        .map_or(0, |feed| feed.unread);
+    let lowers_hands = panel.room().is_some_and(|room| {
+        room.allowed.mute || room.meeting.as_ref().is_some_and(|meeting| meeting.by_self)
+    });
+    let hands = if lowers_hands {
+        panel
+            .people
+            .iter()
+            .filter(|person| person.hand_raised && !person.is_self)
+            .count()
+    } else {
+        0
+    };
+    (chat, (view.entry_prompts.len() + hands) as u64)
+}
+
 impl Shell {
     /// The volume control of one person of the call. A control is made when its person is
     /// drawn first and follows the stored volume when that changes elsewhere.
@@ -297,8 +320,13 @@ impl Shell {
     }
 
     /// The buttons of the header that open the panel of the call at one tab, in a narrow
-    /// window and in the call window.
+    /// window and in the call window, with the counts of the tabs.
     pub(crate) fn render_call_panel_buttons(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let (chat_waits, members_wait) = self
+            .view
+            .as_ref()
+            .and_then(|view| Some((view, view.lists()?.call.as_ref()?)))
+            .map_or((0, 0), |(view, panel)| call_tab_counts(view, panel));
         [
             (CallTab::Chat, Icon::Chat, text::CHAT, "open-call-chat"),
             (
@@ -316,9 +344,15 @@ impl Shell {
         ]
         .into_iter()
         .map(|(tab, shown, label, selector)| {
+            let waits = match tab {
+                CallTab::Chat => chat_waits,
+                CallTab::Members => members_wait,
+                CallTab::Settings => 0,
+            };
             Button::new(selector)
                 .icon(shown)
                 .tooltip(label)
+                .count((waits > 0).then(|| text::unread_count(waits)))
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.show_call_tab(tab, cx);
@@ -747,13 +781,21 @@ impl Shell {
             .lists()
             .and_then(|lists| lists.notices.as_ref())
             .zip(view.selected.as_ref().map(|server| server.id));
+        let (chat_waits, members_wait) = call_tab_counts(view, panel);
         let tab = |tab: CallTab,
                    shown: Icon,
                    label: &'static str,
                    selector: &'static str,
                    cx: &mut Context<Self>| {
+            let open = self.call_tab == tab && notices.is_none();
+            let waits = match tab {
+                CallTab::Chat => chat_waits,
+                CallTab::Members => members_wait,
+                CallTab::Settings => 0,
+            };
             Tab::new(selector, shown, label)
-                .on(self.call_tab == tab && notices.is_none())
+                .on(open)
+                .count((waits > 0 && !open).then(|| text::unread_count(waits)))
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| this.show_call_tab(tab, cx)))
         };

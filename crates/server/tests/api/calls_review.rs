@@ -626,6 +626,11 @@ async fn every_request_that_changes_a_call_is_limited() {
             "/api/v1/call/screen-share".to_owned(),
             none.clone(),
         ),
+        (
+            Method::PUT,
+            "/api/v1/call/watching".to_owned(),
+            json!({ "watching": null }),
+        ),
         (Method::PUT, "/api/v1/call/hand".to_owned(), none.clone()),
         (Method::DELETE, "/api/v1/call/hand".to_owned(), none.clone()),
         (

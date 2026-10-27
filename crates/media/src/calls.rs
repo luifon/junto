@@ -1460,6 +1460,7 @@ fn start(
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_reports: ShareReports::new(timing.share_spacing),
+        watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
         speaking: false,
@@ -1528,6 +1529,16 @@ impl<T: PartialEq + Clone> Reporter<T> {
         self.sent = Some(value);
         self.last = Some(now);
         self.in_flight = true;
+    }
+
+    /// Retains statements received during a request: a later reset can precede its answer.
+    pub(crate) fn stated(&mut self, value: T) {
+        self.sent = Some(value);
+    }
+
+    /// The events that state the value were lost: the wanted value is sent again.
+    pub(crate) fn untold(&mut self) {
+        self.sent = None;
     }
 
     /// The request has ended. A value that the server did not take is sent again, not
@@ -2065,6 +2076,7 @@ enum Done {
     State(bool),
     Speaking(bool),
     Share(bool),
+    Watch(bool),
     /// The answer to a request for a new token. The session confirms that it took the
     /// answer; an answer that no session takes gives a place that nobody uses.
     Rejoined(Box<Result<CallJoin, ApiError>>, oneshot::Sender<()>),
@@ -2333,6 +2345,8 @@ struct Session {
     speaking_report: Reporter<bool>,
     /// What the server was told of the shares of this device.
     share_reports: ShareReports,
+    /// The share of another person that the server was told the person watches (ADR 0502).
+    watch_report: Reporter<Option<junto_client_core::protocol::call::WatchedShare>>,
     /// The move of the person of this device that waits (ADR 0511).
     moving: Option<Moving>,
     /// The work of moves that have ended. Each closes the connection that it made.
@@ -2552,6 +2566,23 @@ impl Session {
                 self.end_kept_block();
                 self.place.note(*id, event);
                 self.note_move(event);
+                // The server ends the watch of a share when a new share starts in its slot
+                // (ADR 0502); the client then reports the watch again.
+                if let Event::CallParticipantJoined {
+                    call_id,
+                    participant,
+                    ..
+                }
+                | Event::CallParticipantUpdated {
+                    call_id,
+                    participant,
+                    ..
+                } = &**event
+                    && *call_id == self.grants.call_id
+                    && participant.identity == self.place.identity()
+                {
+                    self.watch_report.stated(participant.watching);
+                }
             }
             Notice::Reloaded { cursor } => {
                 if self.grants.cursor.epoch != cursor.epoch {
@@ -2562,6 +2593,7 @@ impl Session {
                 }
                 self.place.untold();
                 self.place.reloaded(cursor.epoch);
+                self.watch_report.untold();
                 if let Some(moving) = &mut self.moving {
                     moving.reloaded = true;
                 }
@@ -3231,6 +3263,7 @@ impl Session {
             Done::State(taken) => self.state_report.done(taken, REPORT_RETRY, now),
             Done::Speaking(taken) => self.speaking_report.done(taken, REPORT_RETRY, now),
             Done::Share(taken) => self.share_reports.done(taken, REPORT_RETRY, now),
+            Done::Watch(taken) => self.watch_report.done(taken, REPORT_RETRY, now),
             Done::Rejoined(answer, taken) => {
                 let _ = taken.send(());
                 self.rejoining = false;
@@ -3254,6 +3287,7 @@ impl Session {
                             }
                             self.state_report = Reporter::new(self.timing.state_spacing, None);
                             self.share_reports = ShareReports::new(self.timing.share_spacing);
+                            self.watch_report = Reporter::holding(self.timing.share_spacing, None);
                         }
                         // The answer states that the seat exists at its cursor. The newest
                         // such answer is the membership until a state is as new.
@@ -3470,6 +3504,31 @@ impl Session {
             }
             ReportStep::Wait(at) => wake = wake.min(at),
             ReportStep::Idle => {}
+        }
+        // The sharer hears and sees who watches a share: the share of another person that
+        // the person watches is reported (ADR 0502).
+        let watching = match state.watched {
+            Some(ShareId {
+                person: Person::Of(account_id),
+                slot,
+            }) => Some(junto_client_core::protocol::call::WatchedShare { account_id, slot }),
+            Some(ShareId {
+                person: Person::Own,
+                ..
+            })
+            | None => None,
+        };
+        match self.watch_report.step(&watching, false, now) {
+            Step::Send => {
+                self.watch_report.sending(watching, now);
+                let (api, done) = (self.server.api(), done.clone());
+                self.inner.runtime.spawn(async move {
+                    let taken = api.report_watching(watching).await.is_ok();
+                    let _ = done.send(Done::Watch(taken));
+                });
+            }
+            Step::Wait(at) => wake = wake.min(at),
+            Step::Idle => {}
         }
         if matches!(self.target.place, CallPlace::Channel { .. }) {
             let speaking = self.speaking;
@@ -4104,6 +4163,44 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_value_that_the_server_states_otherwise_is_sent_again() {
+        let spacing = Duration::from_millis(700);
+        let mut reporter: Reporter<Option<u8>> = Reporter::holding(spacing, None);
+        let start = Instant::now();
+        reporter.sending(Some(1), start);
+        // A reset after the report committed can precede its HTTP response.
+        reporter.stated(None);
+        reporter.done(true, REPORT_RETRY, start);
+        let later = start + spacing;
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        // The server ended the watch: the wanted value is sent again.
+        reporter.stated(None);
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        reporter.sending(Some(1), later);
+        reporter.done(true, REPORT_RETRY, later);
+        reporter.stated(Some(1));
+        assert_eq!(reporter.step(&Some(1), false, later + spacing), Step::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reload_during_a_report_resends_the_wanted_value() {
+        let spacing = Duration::from_millis(700);
+        let mut reporter = Reporter::holding(spacing, None);
+        let start = Instant::now();
+        reporter.sending(Some(1u8), start);
+        reporter.untold();
+        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Idle);
+        reporter.done(true, REPORT_RETRY, start);
+        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Send);
+        reporter.sending(Some(1), start + spacing);
+        reporter.done(true, REPORT_RETRY, start + spacing);
+        assert_eq!(
+            reporter.step(&Some(1), false, start + spacing * 2),
+            Step::Idle
+        );
+    }
+
     #[test]
     fn at_most_the_reports_that_the_server_takes_are_sent() {
         // 30 reports of the state in 10 seconds (ADR 0510), 20 of speaking (ADR 0513). The
@@ -4291,6 +4388,7 @@ mod tests {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: None,
             screen_shares: Vec::new(),
         };

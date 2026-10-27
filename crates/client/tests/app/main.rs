@@ -28,6 +28,7 @@ mod support;
 mod account;
 mod admin;
 mod admin_pages;
+mod badges;
 mod book;
 mod call_notices;
 mod calls;
@@ -35,6 +36,7 @@ mod composing;
 mod contacts;
 mod data_directory;
 mod departures;
+mod event_alerts;
 mod files;
 mod flows;
 mod glossary;
@@ -60,6 +62,7 @@ mod people;
 mod permissions;
 mod recordings;
 mod recovery;
+mod system_lines;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.
 #[allow(dead_code)]

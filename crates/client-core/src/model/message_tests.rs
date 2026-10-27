@@ -87,6 +87,8 @@ pub(crate) fn changed(message: &Message, deleted: bool) -> Event {
         message_id: message.id,
         position: message.position,
         deleted,
+        thread_root: None,
+        thread: None,
     }
 }
 

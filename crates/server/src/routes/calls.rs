@@ -11,7 +11,7 @@ use junto_protocol::call::{
     DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
     LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
     MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
-    ReportSpeaking, UpdateCallSettings, ViewerQuery,
+    ReportSpeaking, ReportWatching, UpdateCallSettings, ViewerQuery,
 };
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
@@ -361,6 +361,7 @@ pub async fn report_screen_share(
             if new {
                 let started = store::Note::ScreenShareStarted;
                 store::note(connection, now, &call, started, Some(access.account_id)).await?;
+                store::end_watches(connection, now, &call, access.account_id, body.slot).await?;
             }
             store::announce_participant(connection, now, &call, access.account_id).await?;
             app.calls.mark(call.room.as_str());
@@ -403,8 +404,63 @@ pub async fn end_screen_share(
         .rows_affected();
         if ended > 0 {
             app.calls.mark(call.room.as_str());
+            for _ in 0..ended {
+                let ended = store::Note::ScreenShareEnded;
+                store::note(connection, now, &call, ended, Some(access.account_id)).await?;
+            }
             store::announce_participant(connection, now, &call, access.account_id).await?;
             store::end_meeting_without_share(connection, now, &call, access.account_id).await?;
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reports which share of another person in the call the person watches now, or none. The
+/// sharer and the people who see the call read it on the participant (ADR 0502). A share of a
+/// person who is not in the call, and the own share, are refused.
+#[utoipa::path(
+    put,
+    path = "/api/v1/call/watching",
+    tag = "calls",
+    request_body = ReportWatching,
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn report_watching(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<ReportWatching>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let (call, _) = own(connection, &access).await?;
+        if let Some(watched) = body.watching {
+            let sharer_inside = watched.account_id != access.account_id
+                && store::is_inside(connection, call.id, watched.account_id).await?;
+            if !sharer_inside || watched.slot >= MAX_SHARES {
+                return Err(ApiError::invalid(
+                    "the watched share belongs to another person in the call",
+                ));
+            }
+        }
+        let changed = sqlx::query(
+            "update call_members set watching_account_id = $3, watching_slot = $4
+             where call_id = $1 and account_id = $2
+               and (watching_account_id is distinct from $3 or watching_slot <> $4)",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(body.watching.map(|watched| watched.account_id))
+        .bind(body.watching.map_or(0, |watched| i16::from(watched.slot)))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if changed > 0 {
+            store::announce_participant(connection, now, &call, access.account_id).await?;
         }
         Ok(())
     })?;
@@ -804,6 +860,12 @@ async fn set_lock(
             .bind(lock.as_ref().map(|lock| lock.at))
             .execute(&mut *connection)
             .await?;
+        let noted = if locked {
+            store::Note::CallLocked
+        } else {
+            store::Note::CallUnlocked
+        };
+        store::note(connection, now, &call, noted, Some(access.account_id)).await?;
         let changed = Event::CallLockChanged {
             call_id: call.id,
             place: call.place,
@@ -1020,12 +1082,14 @@ pub async fn answer_entry_request(
             .bind(admits_until)
             .execute(&mut *connection)
             .await?;
+            store::entry_line(connection, now, &call, true, access.account_id, account_id).await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Accepted, by).await
         } else {
             sqlx::query("delete from call_entry_requests where id = $1")
                 .bind(request_id)
                 .execute(&mut *connection)
                 .await?;
+            store::entry_line(connection, now, &call, false, access.account_id, account_id).await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Denied, by).await
         }
     })?;
@@ -1627,7 +1691,8 @@ pub async fn end_meeting(
             None => Ok(()),
             Some(meeting) if meeting.presenter == access.account_id => {
                 app.calls.mark(call.room.as_str());
-                store::end_meeting(connection, now, &call, MeetingEnd::TurnedOff).await
+                let by = Some(access.account_id);
+                store::end_meeting(connection, now, &call, MeetingEnd::TurnedOff, by).await
             }
             Some(_) => Err(ApiError::new(
                 junto_protocol::error::ErrorCode::Forbidden,
@@ -1957,6 +2022,15 @@ pub async fn disconnect_participant(
         let disconnected = LeaveReason::Disconnected;
         app.calls.mark(call.room.as_str());
         store::remove_member(connection, now, &call, &member, disconnected).await?;
+        // A later entry of the person into this call is a join (ADR 0408).
+        store::note(
+            connection,
+            now,
+            &call,
+            store::Note::PersonOut,
+            Some(account_id),
+        )
+        .await?;
         let removed = AuditEvent::CallMemberDisconnected { account_id };
         let actor = Some(access.account_id);
         audit::record(connection, now, actor, voice.about(), &removed).await?;

@@ -685,7 +685,7 @@ async fn a_replaced_invitation_a_new_move_and_a_meeting_that_ends_with_its_call_
             .await
             .unwrap();
     let last: Vec<&str> = notes.iter().rev().take(2).map(String::as_str).collect();
-    assert_eq!(last, ["call_ended", "meeting_ended"]);
+    assert_eq!(last, ["call_ended", "meeting_ended_presenter_left"]);
 }
 
 async fn notify(server: &TestServer, authorization: &str, body: &str) -> Reply {

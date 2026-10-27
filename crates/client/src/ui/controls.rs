@@ -374,6 +374,7 @@ pub struct Tab {
     icon: Icon,
     label: SharedString,
     on: bool,
+    count: Option<SharedString>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
 }
@@ -385,9 +386,16 @@ impl Tab {
             icon,
             label: label.into(),
             on: false,
+            count: None,
             selector: None,
             on_click: None,
         }
+    }
+
+    /// The count of what waits in the pane of the tab, drawn after its name.
+    pub fn count(mut self, count: Option<String>) -> Self {
+        self.count = count.map(Into::into);
+        self
     }
 
     /// The tab whose pane is shown.
@@ -419,7 +427,10 @@ impl RenderOnce for Tab {
         div()
             .id(self.id)
             .role(Role::Tab)
-            .aria_label(self.label.clone())
+            .aria_label(match &self.count {
+                Some(count) => SharedString::from(format!("{}, {count}", self.label)),
+                None => self.label.clone(),
+            })
             .aria_selected(self.on)
             .when_some(self.selector, |tab, selector| {
                 tab.debug_selector(|| selector.to_owned())
@@ -475,6 +486,9 @@ impl RenderOnce for Tab {
                 },
             ))
             .child(self.label)
+            .when_some(self.count, |tab, count| {
+                tab.child(super::CornerCount::new(count))
+            })
     }
 }
 
@@ -639,6 +653,8 @@ pub struct LevelSlider {
     /// The live level as a share of the track, from 0 to 1, while it is known.
     level: Option<f32>,
     selector: Option<SharedString>,
+    /// The value is a percentage; else decibels.
+    percent: bool,
 }
 
 impl LevelSlider {
@@ -657,7 +673,14 @@ impl LevelSlider {
             range,
             level: None,
             selector: None,
+            percent: false,
         }
+    }
+
+    /// Writes the value as a percentage, as the zoom of a picture (ADR 0119).
+    pub fn in_percent(mut self) -> Self {
+        self.percent = true;
+        self
     }
 
     pub fn state(range: (f32, f32), value: f32) -> SliderState {
@@ -773,7 +796,11 @@ impl RenderOnce for LevelSlider {
                     .text_right()
                     .typeface(theme.types.mono_field, &theme)
                     .ink(colors.ink)
-                    .child(format!("{} dB", value.round() as i32)),
+                    .child(if self.percent {
+                        format!("{}%", value.round() as i32)
+                    } else {
+                        format!("{} dB", value.round() as i32)
+                    }),
             )
     }
 }

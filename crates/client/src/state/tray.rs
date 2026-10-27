@@ -8,14 +8,6 @@ use gpui::Context;
 use super::AppState;
 use crate::tray::{KeptTray, SystemTray, derive};
 
-/// The number of unread mentions that the tray icon shows: the unread mentions of every server
-/// as the server book counts them.
-pub(super) fn tray_mention_count(view: &super::view::ShellView) -> u64 {
-    view.servers
-        .iter()
-        .fold(0u64, |sum, row| sum.saturating_add(row.unread.mentions))
-}
-
 impl AppState {
     /// Uses this tray for the tray icon, and tells it the state of now.
     pub fn set_tray(&mut self, tray: Rc<dyn SystemTray>, cx: &mut Context<Self>) {
@@ -25,8 +17,8 @@ impl AppState {
         cx.notify();
     }
 
-    /// Tells the tray icon the unread mentions that the application counts: the icon shows
-    /// its mention mark while there is one, and the tooltip states the number (ADR 0759).
+    /// Tells the tray icon the messages for the person that the application counts: the icon
+    /// shows its mention mark while there is one, and the tooltip states the number (ADR 0759).
     pub fn set_tray_mentions(&mut self, mentions: u64, cx: &mut Context<Self>) {
         if self.tray_mentions != mentions {
             self.tray_mentions = mentions;

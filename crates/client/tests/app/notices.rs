@@ -18,7 +18,7 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message};
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, SetChannelOverride};
 
-use crate::harness::{Admin, Window, World, member};
+use crate::harness::{Admin, Window, World, member, selector};
 use crate::messages::document;
 
 /// A text that names an account.
@@ -936,17 +936,24 @@ fn two_marks_asked_for_one_after_the_other_are_both_sent(cx: &mut TestAppContext
     });
 }
 
-/// gpui has no activation of the application on Linux, so the press asks the window.
+/// gpui has no activation of the application on Linux, so the press asks the window, with
+/// the activation token of the press when the system gave one. The window of the test
+/// platform is activated with or without a token; the Wayland compositor is checked by the
+/// test target `notification_focus`.
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn a_pressed_notification_brings_the_window_to_the_front(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let mut window = crate::harness::open(cx, directory.path());
-    window.simulate(|cx| cx.deactivate_window());
-    assert!(!window.cx.update(|window, _| window.is_window_active()));
-    TestAppContext::update(&window.cx, junto_client::notify::bring_to_front);
-    window.run_tasks();
-    assert!(window.cx.update(|window, _| window.is_window_active()));
+    for token in [None, Some("a token of the press")] {
+        window.simulate(|cx| cx.deactivate_window());
+        assert!(!window.cx.update(|window, _| window.is_window_active()));
+        TestAppContext::update(&window.cx, |cx| {
+            junto_client::notify::bring_to_front(token, cx)
+        });
+        window.run_tasks();
+        assert!(window.cx.update(|window, _| window.is_window_active()));
+    }
     window.close();
 }
 
@@ -1096,7 +1103,7 @@ fn a_notice_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
     });
 
     // The list of the notices names the archived channel at the notice of its message,
-    // in the order of the notices.
+    // in the order of the notices: the oldest first.
     window.open_notices();
     window.until("the notice of the archived channel is listed", |window| {
         window.notices().is_some_and(|panel| panel.rows.len() == 3)
@@ -1105,7 +1112,7 @@ fn a_notice_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
     let texts: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
     assert_eq!(
         texts,
-        ["last, @Luca", "in the old channel, @Luca", "first, @Luca"]
+        ["first, @Luca", "in the old channel, @Luca", "last, @Luca"]
     );
     assert_eq!(
         panel.rows[1].place,
@@ -1140,7 +1147,7 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
-    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let (_server, admin, directory, mut window, general) = scene(cx, &world);
     let own = window.own_account();
     admin.mention(&world, general, "older, ", own);
 
@@ -1167,6 +1174,16 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
     for number in 1..=50 {
         admin.mention(&world, bench, &format!("bench {number}, "), own);
     }
+    // The notices follow the events; a window that starts now holds the first page of them
+    // (ADR 0722).
+    window.until("every notice arrived", |window| {
+        window.unread_notices() == 51
+    });
+    window.close();
+    let mut window = crate::harness::open(cx, directory.path());
+    window.until("the window holds the first page", |window| {
+        window.unread_notices() == 50
+    });
     window.open_notices();
     window.until("the first page holds the notices of the bench", |window| {
         window.notices().is_some_and(|panel| {
@@ -1185,4 +1202,180 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
         })
     });
     assert!(!window.shows("no-notices"));
+}
+
+/// The notices are ordered as the messages of a list are (ADR 0742): the oldest at the top
+/// and the newest at the bottom. The list opens at its end, a new notice is drawn at the
+/// bottom while the list stands at its end, and a list that the person moved away from its
+/// end keeps the rows in view.
+#[gpui::test]
+fn the_notices_are_ordered_as_messages_with_the_newest_at_the_bottom(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let mut sent = Vec::new();
+    for number in 0..16 {
+        sent.push(admin.mention(&world, general, &format!("number {number}, "), own));
+    }
+    window.until("the notices are counted", |window| {
+        window.unread_notices() == 16
+    });
+    window.open_notices();
+    window.until("every notice is listed", |window| {
+        window
+            .notices()
+            .is_some_and(|panel| panel.rows.len() == 16 && !panel.reading)
+    });
+    let texts: Vec<String> = window
+        .notices()
+        .unwrap()
+        .rows
+        .iter()
+        .map(|row| row.text.clone())
+        .collect();
+    let expected: Vec<String> = (0..16)
+        .map(|number| format!("number {number}, @Luca"))
+        .collect();
+    assert_eq!(texts, expected);
+
+    // The list opens at its end: the newest notice is drawn whole at the bottom, and each
+    // drawn notice lies above the next newer one.
+    let row = |message: &Message| selector(format!("notice:{}", message.id.as_uuid()));
+    let list = notice_bounds(&mut window, "notice-list");
+    let newest = notice_bounds(&mut window, row(&sent[15]));
+    assert!(
+        newest.bottom() <= list.bottom() && newest.bottom() >= list.bottom() - gpui::px(12.0),
+        "the newest notice {newest:?} is not at the bottom of the list {list:?}"
+    );
+    let older = notice_bounds(&mut window, row(&sent[14]));
+    assert!(older.bottom() <= newest.top() + gpui::px(1.0));
+    assert!(
+        window
+            .cx
+            .debug_bounds(row(&sent[0]))
+            .is_none_or(|oldest| oldest.bottom() <= list.top()),
+        "the oldest notice is in view of a list that opened at its end"
+    );
+
+    // A new notice while the list stands at its end is drawn at the bottom, in view.
+    let next = admin.mention(&world, general, "number 16, ", own);
+    window.until("the new notice is drawn at the bottom", |window| {
+        window.cx.debug_bounds(row(&next)).is_some_and(|shown| {
+            shown.bottom() <= list.bottom() && shown.bottom() >= list.bottom() - gpui::px(12.0)
+        })
+    });
+
+    // The person scrolls up: a new notice is added below and the rows in view stay.
+    window.dispatch(gpui::ScrollWheelEvent {
+        position: list.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(300.0))),
+        ..Default::default()
+    });
+    window.settle();
+    let kept = notice_bounds(&mut window, row(&sent[12]));
+    let last = admin.mention(&world, general, "number 17, ", own);
+    window.until("the newest notice is listed", |window| {
+        window.notices().is_some_and(|panel| {
+            panel
+                .rows
+                .last()
+                .is_some_and(|newest| newest.id == last.id.as_uuid())
+        })
+    });
+    assert_eq!(notice_bounds(&mut window, row(&sent[12])), kept);
+    assert!(
+        window
+            .cx
+            .debug_bounds(row(&last))
+            .is_none_or(|shown| shown.top() >= list.bottom())
+    );
+}
+
+/// The bounds of an element that the window draws now.
+fn notice_bounds(window: &mut Window, selector: &'static str) -> gpui::Bounds<gpui::Pixels> {
+    window.settle();
+    window
+        .cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is not drawn"))
+}
+
+/// A new notice plays its sound under the rules of a system notification (ADR 0707): the
+/// mention sound for a mention, the message sound for a message of a channel with the level
+/// "all messages", none while the active window shows the place, and none in a muted
+/// channel. Each step waits longer than the shortest time between two sounds of messages.
+#[gpui::test]
+fn a_notice_plays_its_sound_under_the_rules_of_a_system_notification(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::discovery::NotificationSettings;
+    use junto_media::audio::sounds::{Sound, heard};
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    let pause = |world: &World| {
+        world.run(async { tokio::time::sleep(std::time::Duration::from_millis(2_200)).await });
+    };
+    let last_sound = |window: &mut Window| {
+        let (played, rate) = window.tones.played_since_clear();
+        heard::recognise(&played, rate)
+    };
+    let count = |window: &mut Window| window.tones.opened_outputs().len();
+
+    // A mention while no window is active: the mention sound.
+    admin.mention(&world, general, "first, ", own);
+    window.until("the mention sound", |window| {
+        count(window) == 1 && last_sound(window) == Some(Sound::Mention)
+    });
+
+    // The active window shows the channel: a mention there plays nothing.
+    pause(&world);
+    window.cx.update(|window, _| window.activate_window());
+    admin.mention(&world, general, "second, ", own);
+    window.until_message("second, @Luca");
+    pause(&world);
+    window.settle();
+    assert_eq!(count(&mut window), 1);
+
+    // The channel has the level "all messages" and the active window shows another
+    // channel: a message without a mention plays the message sound.
+    world
+        .run(window.handle().api().set_notification_settings(
+            SettingsScope::Channel(general),
+            &NotificationSettings {
+                level: Some(NotificationLevel::All),
+                ..NotificationSettings::default()
+            },
+        ))
+        .unwrap();
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    admin.send(&world, general, document("for everyone"));
+    window.until("the message sound", |window| {
+        count(window) == 2 && last_sound(window) == Some(Sound::Message)
+    });
+
+    // A muted channel plays nothing.
+    pause(&world);
+    world
+        .run(window.handle().api().set_notification_settings(
+            SettingsScope::Channel(general),
+            &NotificationSettings {
+                level: Some(NotificationLevel::All),
+                mute: true,
+                ..NotificationSettings::default()
+            },
+        ))
+        .unwrap();
+    window.until("the channel is muted", |window| {
+        window.channel(general).unread.muted
+    });
+    admin.mention(&world, general, "muted, ", own);
+    window.until("the message of the muted channel arrived", |window| {
+        window.channel(general).unread.messages >= 2
+    });
+    pause(&world);
+    window.settle();
+    assert_eq!(count(&mut window), 2);
 }

@@ -1670,7 +1670,11 @@ async fn a_background_connection_of_an_account_in_a_call_receives_the_events_of_
 
     server.enter_call(ann, voice).await;
     server.enter_call(owner, other).await;
-    assert!(server.call_events(ben, &mut background).await.is_empty());
+    // The start of a call reaches a background connection for its system notification
+    // (ADR 0107); nothing else of a call that Ben is outside of reaches it.
+    let outside = server.call_events(ben, &mut background).await;
+    let outside: Vec<&str> = outside.iter().map(|event| event.name()).collect();
+    assert_eq!(outside, ["call_started", "call_started"]);
 
     server.enter_call(ben, voice).await;
     report_state(server, ann, true, false)
@@ -2031,7 +2035,8 @@ async fn what_happens_in_the_call_of_a_voice_channel_is_kept_for_the_lines_of_it
         ("call_started", ann_id),
         ("screen_share_started", ann_id),
         ("meeting_started", ann_id),
-        ("meeting_ended", ann_id),
+        ("meeting_turned_off", ann_id),
+        ("call_locked", ann_id),
         ("entry_requested", ben_id),
         ("joined_by_invitation", Some(owner.account_id.as_uuid())),
         ("call_ended", None),
@@ -2242,4 +2247,122 @@ async fn rule_64_a_join_token_carries_the_display_name_of_the_account() {
 
     let direct = server.enter_direct(&scene.ben, ann).await;
     assert_eq!(claims(&direct.join)["name"], "Ben");
+}
+
+/// A person reports the share that the person watches; the participant states it to the
+/// people who see the call, and an end of the watch takes it away (ADR 0502). The own share
+/// and a person outside the call are refused.
+#[tokio::test]
+async fn the_share_that_a_person_watches_is_stated_on_the_participant() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    let watch = |account_id| json!({ "watching": { "account_id": account_id, "slot": 0 } });
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ann.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let watching = participant(server, ann, voice, ben.account_id)
+        .await
+        .watching
+        .unwrap();
+    assert_eq!((watching.account_id, watching.slot), (ann.account_id, 0));
+    // The own share and a person who is not in the call are refused.
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ben.account_id))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .put(ben, "/api/v1/call/watching", &watch(owner.account_id))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    // A new share of the watched person ends the watch until the client reports it again.
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ann.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    // A change of the sound of the running share is no new share.
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "application" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching
+            .is_some()
+    );
+    // With several shares the watch names the slot: a new share in another slot keeps it,
+    // a report of the same share keeps it, and a new share in the watched slot (another
+    // identifier) ends it (ADR 0510).
+    let share = |slot: u8, id: uuid::Uuid| {
+        json!({ "audio": "none", "slot": slot, "kind": "screen", "share_id": id })
+    };
+    let first = uuid::Uuid::now_v7();
+    server
+        .put(ann, "/api/v1/call/screen-share", &share(1, first))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let watch_slot = json!({ "watching": { "account_id": ann.account_id, "slot": 1 } });
+    server
+        .put(ben, "/api/v1/call/watching", &watch_slot)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    for (slot, id) in [(0, uuid::Uuid::now_v7()), (1, first)] {
+        server
+            .put(ann, "/api/v1/call/screen-share", &share(slot, id))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let watching = participant(server, ann, voice, ben.account_id)
+            .await
+            .watching
+            .unwrap();
+        assert_eq!((watching.account_id, watching.slot), (ann.account_id, 1));
+    }
+    server
+        .put(ann, "/api/v1/call/screen-share", &share(1, uuid::Uuid::now_v7()))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
+    // A slot that no person can share in is refused.
+    let beyond = json!({ "watching": { "account_id": ann.account_id, "slot": 3 } });
+    server
+        .put(ben, "/api/v1/call/watching", &beyond)
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .put(ben, "/api/v1/call/watching", &json!({ "watching": null }))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
 }

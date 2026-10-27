@@ -32,8 +32,8 @@ pub struct TrayState {
     /// code of an entry holds it, so a press on a menu that was drawn before a change is
     /// refused (ADR 0788).
     pub generation: u32,
-    /// The unread mentions of every server, as the server book counts them; the icon shows
-    /// its mark while there is one.
+    /// The unread messages for the person on every server, mentions and direct messages, as
+    /// the server book counts them; the icon shows its mark while there is one.
     pub mentions: u64,
 }
 
@@ -270,7 +270,7 @@ pub fn press(state: &Entity<AppState>, action: &TrayAction, cx: &mut App) {
         TrayAction::Microphone(action) => state.update(cx, |state, _| state.use_microphone(action)),
         TrayAction::Sound(off) => state.update(cx, |state, _| state.set_sound_off(*off)),
         TrayAction::Leave => state.update(cx, |state, cx| state.leave_call(cx)),
-        TrayAction::Open => crate::notify::bring_to_front(cx),
+        TrayAction::Open => crate::notify::bring_to_front(None, cx),
         TrayAction::Quit => crate::app::quit(cx),
     }
 }

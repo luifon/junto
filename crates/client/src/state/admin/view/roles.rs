@@ -1211,14 +1211,14 @@ mod tests {
 
     #[test]
     fn the_pages_of_the_roles_are_offered_to_the_people_who_manage_roles_of_that_level() {
-        use crate::state::admin::view::{nav, needs};
+        use crate::state::admin::view::{Waiting, nav, needs};
         use crate::state::admin::{AdminOpen, AdminPage};
         use junto_client_core::model::AdminPart;
         use junto_client_core::protocol::ids::ServerId;
 
         let mut scene = scene();
         let pages = |model: &ServerModel| -> Vec<AdminPage> {
-            nav(model, model.workspace(scene.studio))
+            nav(model, model.workspace(scene.studio), &Waiting::default())
                 .into_iter()
                 .flat_map(|group| group.pages)
                 .collect()

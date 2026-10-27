@@ -108,6 +108,17 @@ fn scroll_away_and_back(
     send: &dyn Fn(&str),
     stored: &dyn Fn() -> u64,
 ) {
+    // The server takes 120 history requests a minute from an account, the reads of the
+    // window included: the waits read the stored count at most once a second.
+    let last: std::cell::Cell<Option<(std::time::Instant, u64)>> = std::cell::Cell::new(None);
+    let stored = || match last.get() {
+        Some((at, count)) if at.elapsed() < std::time::Duration::from_secs(1) => count,
+        _ => {
+            let count = stored();
+            last.set(Some((std::time::Instant::now(), count)));
+            count
+        }
+    };
     window.cx.update(|window, _| window.activate_window());
     window.settle();
     window.until("the list is read to its end", |window| {

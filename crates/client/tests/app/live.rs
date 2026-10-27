@@ -779,6 +779,24 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the administrator hears the share", |_| {
         heard(&caller.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
     });
+    // The device of the administrator tells the server that it watches the share: the
+    // window states the viewer on its share and plays the sound of a viewer (ADR 0502).
+    window.until("the window states the viewer of its share", |window| {
+        window.shows("share-viewers")
+            && stage(window).is_some_and(|stage| {
+                stage.shares[0]
+                    .viewers
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>()
+                    == [admin.handle.account().unwrap()]
+            })
+    });
+    window.until("the sound of a viewer", |window| {
+        let (played, rate) = window.tones.played_since_clear();
+        junto_media::audio::sounds::heard::recognise(&played, rate)
+            == Some(junto_media::audio::sounds::Sound::ViewerJoined)
+    });
 
     // The administrator shares a window with the sound of its application. The window
     // shows the bar of the two shares, watches the share of the administrator and plays

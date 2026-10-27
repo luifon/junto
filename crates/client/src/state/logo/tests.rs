@@ -113,6 +113,7 @@ fn server(id: ServerId) -> ServerSnapshot {
         stream: StreamStatus::Off,
         model: None,
         server_version: None,
+        server_events: None,
     }
 }
 

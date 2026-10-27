@@ -88,9 +88,9 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
     // shows them: a test and the screen tool keep what they would show (ADR 0742).
     let held = state.downgrade();
     let data_dir = state.read(cx).client().data_dir().root().to_path_buf();
-    let notifier = crate::notify::platform(cx, &data_dir, move |tag, cx| {
+    let notifier = crate::notify::platform(cx, &data_dir, move |tag, token, cx| {
         if let Some(state) = held.upgrade() {
-            crate::notify::bring_to_front(cx);
+            crate::notify::bring_to_front(token, cx);
             state.update(cx, |state, cx| state.alert_pressed(tag, cx));
         }
     });

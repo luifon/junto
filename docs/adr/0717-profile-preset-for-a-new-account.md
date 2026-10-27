@@ -24,7 +24,7 @@ ADR 0105 states that a new server account starts from the profile preset of the 
 - Every other failure counts one failed try, and the state stays `pending`: a failed request, and an avatar file that cannot be read. The next successful action of the access flow tries again.
 - The tries of one server run one after the other. A try reads the state after the try before it has recorded its result. The try after an action of the access flow does not start while another try runs.
 - A try uses the session that the device has when the try starts. Its request is not sent again with a renewed session. Its result is recorded only when the device has not left the account since the try started, also when the device has returned to the same account.
-- The preset accepts an avatar of at most 256 KiB that is a PNG, JPEG or WebP image by its first bytes (ADR 0710). The client does not read the size in pixels; the server does.
+- The preset accepts an avatar of at most 2 MiB that is a PNG, JPEG or WebP image by its first bytes (ADR 0710): the cut of a chosen file (ADR 0119), at most 1024 by 1024 pixels. A server with a lower `JUNTO_PICTURE_BYTES` can refuse it; the settings name that server.
 - The state is written to the book with the same rule as the membership: a write that failed is tried again (ADR 0710).
 - `forget account` sets the state to `not_needed` (ADR 0712).
 
