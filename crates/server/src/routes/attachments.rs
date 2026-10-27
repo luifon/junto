@@ -64,6 +64,7 @@ pub async fn start_upload(
             _ => return Err(ApiError::invalid("give one channel or conversation")),
         };
         place.require_open()?;
+        place.require_upload(&access)?;
         // An upload counts while it waits for its message and while its reservation
         // exists, so one account holds at most 20 reservations (ADR 0408).
         let count: i64 = sqlx::query_scalar(

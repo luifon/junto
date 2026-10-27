@@ -32,6 +32,37 @@ pub struct Place {
     pub archived: bool,
 }
 impl Place {
+    pub fn require(&self, access: &Access, permission: WorkspacePermission) -> ApiResult<()> {
+        match &self.scope {
+            Some(scope) => access.require(Request::Channel { scope, permission }),
+            None => Ok(()),
+        }
+    }
+
+    pub fn require_send(&self, access: &Access, thread: bool) -> ApiResult<()> {
+        self.require(
+            access,
+            if thread {
+                WorkspacePermission::SendMessagesInThreads
+            } else {
+                WorkspacePermission::SendMessages
+            },
+        )
+    }
+
+    pub fn require_upload(&self, access: &Access) -> ApiResult<()> {
+        self.require(access, WorkspacePermission::AttachFiles)?;
+        if let Some(scope) = &self.scope
+            && !access.allows(Request::Channel {
+                scope,
+                permission: WorkspacePermission::SendMessagesInThreads,
+            })
+        {
+            self.require_send(access, false)?;
+        }
+        Ok(())
+    }
+
     /// Refuses a change of the content of an archived channel.
     pub fn require_open(&self) -> ApiResult<()> {
         if self.archived {

@@ -2,6 +2,7 @@
 
 mod access_tokens;
 mod archive;
+mod attachment_permissions;
 mod audit;
 mod audit_requests;
 mod authorization;

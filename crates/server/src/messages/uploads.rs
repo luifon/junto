@@ -101,6 +101,7 @@ pub async fn writable(
 ) -> ApiResult<(Place, Upload)> {
     let found = owned(connection, access, id, now).await?;
     found.0.require_open()?;
+    found.0.require_upload(access)?;
     Ok(found)
 }
 
@@ -144,6 +145,9 @@ pub async fn attach(
     message: MessageId,
     ids: &[AttachmentId],
 ) -> ApiResult<()> {
+    if !ids.is_empty() {
+        place.require(access, junto_authz::WorkspacePermission::AttachFiles)?;
+    }
     let limits = limits(connection, app).await?;
     if ids.len() > limits.files_per_message as usize
         || ids.iter().enumerate().any(|(i, id)| ids[..i].contains(id))

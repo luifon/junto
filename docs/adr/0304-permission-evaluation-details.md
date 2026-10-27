@@ -47,6 +47,11 @@ Managing permissions:
 - Creating an invite or approving a join request needs its server permission, and the caller must be a member of every workspace that it grants.
 - The account that creates a workspace becomes its first member and gets no role in it.
 
+Attachment uploads:
+
+- Starting an upload, adding a chunk and completing it require attach files and at least one of send messages or send messages in threads. The destination thread is not chosen until the message is sent. Each phase rechecks the current permission; final binding rechecks attach files.
+- A person who loses attach files may still inspect or cancel their pending upload while they can see its channel. This lets the person release an unused upload without restoring the write permission.
+
 Message edits:
 
 - Editing a message is denied when the message is permanent, when the caller is not its author, and in a direct message when the caller is not a participant. These are limits. No permission lets a person edit the message of another person.
