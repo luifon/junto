@@ -29,6 +29,13 @@ async fn delivery_batch_statement_bound() {
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "root").await;
+    // The changes of one batch are spread over several channels, so that a statement per
+    // channel would show in the counts.
+    let mut roots = vec![root.clone()];
+    for words in ["second", "third", "fourth"] {
+        let other = crate::messages_support::channel(&server, &owner, "text").await;
+        roots.push(send(&server, &owner, &other, words).await);
+    }
     for mixed in [false, true] {
         let start = server.snapshot(&reader).await.cursor;
         let mut tx = server.db.begin().await.unwrap();
@@ -61,13 +68,14 @@ async fn delivery_batch_statement_bound() {
                 .await
                 .unwrap();
             } else {
+                let changed = &roots[n % roots.len()];
                 log::publish(
                     &mut tx,
                     server.state.now(),
                     &Event::MessageChanged {
-                        place: root.place,
-                        message_id: root.id,
-                        position: root.position,
+                        place: changed.place,
+                        message_id: changed.id,
+                        position: changed.position,
                         deleted: false,
                     },
                 )
@@ -135,7 +143,24 @@ async fn delivery_batch_statement_bound() {
             .filter(|(sql, _)| !sql.contains("pg_stat_statements"))
             .map(|(_, calls)| calls)
             .sum();
-        let bound = if mixed { 19 } else { 14 };
+        // The rules of the reader as a person (ADR 0304) are read once per batch: the rule
+        // of the server, the rule of the workspace of the batch and the rules of all its
+        // channels in one statement, with the events spread over four channels. The bounds
+        // are the measured counts, 16 statements per batch of changes and 21 per mixed
+        // batch, three of them these reads.
+        for person_rules in [
+            "select allow,deny from server_person_overrides",
+            "select allow,deny from workspace_person_overrides",
+            "select channel_id,allow,deny from effective_channel_person_overrides",
+        ] {
+            let calls: i64 = counts
+                .iter()
+                .filter(|(sql, _)| sql.starts_with(person_rules))
+                .map(|(_, calls)| calls)
+                .sum();
+            assert_eq!(calls, 20, "{person_rules}: {counts:#?}");
+        }
+        let bound = if mixed { 21 } else { 16 };
         assert!(
             statements <= bound * 20,
             "batch statement bound: {counts:#?}"

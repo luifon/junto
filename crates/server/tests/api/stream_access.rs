@@ -84,6 +84,16 @@ async fn the_background_level_receives_control_events_only() {
     let member = server.join(&owner, "Member").await;
     let workspace = server.default_workspace(&owner).await;
     let helpers = role(&server, &owner, workspace.id, "helpers").await;
+    // An empty category is shown only to a member who can manage channels (ADR 0304), so
+    // the member holds that permission and receives its creation on the full level.
+    server
+        .grant_workspace(
+            &owner,
+            &member,
+            workspace.id,
+            &[WorkspacePermission::ManageChannel],
+        )
+        .await;
     let mut full = server.subscribed(&member, Level::Full).await;
     let mut background = server.subscribed(&member, Level::Background).await;
 

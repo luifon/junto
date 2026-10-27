@@ -1,6 +1,7 @@
 //! The permissions of the account in the snapshot and in the route of one channel
 //! (ADR 0310). Every set is what the permission function decides now.
 
+use junto_authz::WorkspacePermissions;
 use junto_protocol::access_token::TokenAction;
 use junto_protocol::events::Level;
 use junto_protocol::message::Message;
@@ -78,15 +79,11 @@ async fn the_snapshot_states_the_permissions_of_the_workspace() {
     let member = server.join(&owner, "Member").await;
     let workspace = server.default_workspace(&owner).await;
 
+    // The "everyone" role of a new workspace holds the permissions of using a channel
+    // (ADR 0301); a member without another role holds exactly those.
+    let defaults = WorkspacePermissions::EVERYONE_DEFAULT;
     let plain = server.snapshot(&member).await;
-    assert_eq!(
-        of(&plain).permissions,
-        [
-            WorkspacePermission::ViewChannel,
-            WorkspacePermission::LockRoom,
-            WorkspacePermission::RunMeetingMode
-        ]
-    );
+    assert_eq!(of(&plain).permissions, defaults.iter().collect::<Vec<_>>());
 
     server
         .grant_workspace(
@@ -99,12 +96,10 @@ async fn the_snapshot_states_the_permissions_of_the_workspace() {
     let granted = server.snapshot(&member).await;
     assert_eq!(
         of(&granted).permissions,
-        [
-            WorkspacePermission::ViewChannel,
-            WorkspacePermission::ManageMessages,
-            WorkspacePermission::LockRoom,
-            WorkspacePermission::RunMeetingMode
-        ]
+        defaults
+            .with(WorkspacePermission::ManageMessages)
+            .iter()
+            .collect::<Vec<_>>()
     );
     assert!(of(&granted).channel_permissions.is_empty());
 }

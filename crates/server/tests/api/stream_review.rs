@@ -38,6 +38,18 @@ fn types(events: &[(u64, Event)]) -> Vec<&'static str> {
     events.iter().map(|(_, event)| event.name()).collect()
 }
 
+async fn manage_channels(
+    server: &TestServer,
+    owner: &Member,
+    member: &Member,
+    workspace_id: junto_protocol::ids::WorkspaceId,
+) {
+    let permissions = [junto_protocol::WorkspacePermission::ManageChannel];
+    server
+        .grant_workspace(owner, member, workspace_id, &permissions)
+        .await;
+}
+
 pub async fn role(server: &TestServer, owner: &Member, workspace: &Workspace, name: &str) -> Reply {
     server
         .post(
@@ -214,6 +226,9 @@ async fn the_replay_decision_counts_only_the_events_that_the_account_may_receive
         .post(&owner, "/api/v1/workspaces", &json!({ "name": "Closed" }))
         .await
         .ok(StatusCode::CREATED);
+    // An empty category is shown only to a member who can manage channels (ADR 0304): the
+    // member manages channels of its own workspace and is no member of the closed one.
+    manage_channels(&server, &owner, &plain, workspace.id).await;
     let start = server.snapshot(&plain).await.cursor;
 
     for index in 0..5 {
@@ -573,6 +588,7 @@ async fn a_stored_event_that_is_too_large_is_skipped_and_the_client_is_told_to_r
     let owner = server.owner().await;
     let plain = server.join(&owner, "Plain").await;
     let workspace = server.default_workspace(&owner).await;
+    manage_channels(&server, &owner, &plain, workspace.id).await;
     let mut stream = server.stream(&owner).await;
     let start = stream.subscribe(Level::Full, None).await;
     let mut unaffected = server.subscribed(&plain, Level::Full).await;
