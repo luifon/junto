@@ -477,7 +477,7 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
             "message_changed",
             "channel_updated",
             "message_changed",
-            "channel_override_set",
+            "permission_rule_set",
             "channel_deleted"
         ]
     );

@@ -567,7 +567,8 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
             "channel_updated",
             "channel_created",
             "channel_updated",
-            "channel_override_set",
+            "channel_rules_synced",
+            "permission_rule_set",
             "workspace_created",
             "workspace_role_created",
             "workspace_member_added",
@@ -618,6 +619,7 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
             "channel_created",
             "channel_call_settings_updated",
             "channel_override_set",
+            "channel_rules_synced",
             "category_updated",
         ]
     );

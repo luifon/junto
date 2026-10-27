@@ -185,6 +185,21 @@ async fn world() -> World {
         )
         .await
         .ok(StatusCode::CREATED);
+    // A category without a channel that a member sees is hidden from the member (ADR 0304),
+    // so each category holds one visible channel.
+    let mut inside = Vec::new();
+    for held in [&category, &spare_category] {
+        let channel: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{}/channels", workspace.id),
+                &json!({ "name": "inside", "kind": "text", "category_id": held.id }),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        inside.push(channel.id);
+    }
+    let synced = inside[0];
     let doomed: Workspace = server
         .post(&owner, "/api/v1/workspaces", &json!({ "name": "Doomed" }))
         .await
@@ -847,6 +862,111 @@ async fn world() -> World {
             "/api/v1/channels/{channel_id}/rules/roles/{role_id}",
             &[&channel.id, &role.id],
             json!({ "allow": ["manage_channel"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/rules/people/{account_id}",
+            &[&channel.id, &target_id],
+            json!({ "allow": ["manage_channel"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/channels/{channel_id}/rules/people/{account_id}",
+            &[&channel.id, &target_id],
+            json!({"permission":"manage_channel", "state":"allow"}),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/channels/{channel_id}/rules/sync",
+            &[&synced],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules",
+            &[&ws, &category.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
+            &[&ws, &category.id, &role.id],
+            json!({ "allow": ["manage_channel"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/roles/{role_id}",
+            &[&ws, &category.id, &role.id],
+            json!({"permission":"manage_channel", "state":"allow"}),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/people/{account_id}",
+            &[&ws, &category.id, &target_id],
+            json!({ "allow": ["manage_channel"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}/rules/people/{account_id}",
+            &[&ws, &category.id, &target_id],
+            json!({"permission":"manage_channel", "state":"allow"}),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
+            &[&ws, &target_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
+            &[&ws, &target_id],
+            json!({ "allow": ["manage_channel"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
+            &[&ws, &target_id],
+            json!({"permission":"manage_channel", "state":"allow"}),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/access",
+            &[&ws, &target_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/accounts/{account_id}/server-permissions",
+            &[&target_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/accounts/{account_id}/server-permissions",
+            &[&target_id],
+            json!({ "allow": ["create_invites"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/accounts/{account_id}/server-permissions",
+            &[&target_id],
+            json!({"permission":"create_invites", "state":"allow"}),
             &forbidden,
         ),
         operation(

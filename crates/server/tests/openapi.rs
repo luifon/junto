@@ -323,7 +323,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         FileCheck, FileProblem, RecordingFailure, RecordingState, RecordingStopReason,
         SegmentFailure, SegmentSource, SegmentState,
     };
-    use junto_protocol::structure::{ChannelKind, OverrideState};
+    use junto_protocol::structure::{ChannelKind, OverrideState, RulePlace, RuleSubject};
     use junto_protocol::structure_file::{StructureChange, StructureKind};
     use junto_protocol::transcript::{
         LineSource, SegmentReason, SegmentTranscription, SpeakerSeparation, SpeakersReason,
@@ -401,6 +401,8 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         RecordingState,
         RecordingStopReason,
         ResyncReason,
+        RulePlace by "kind",
+        RuleSubject by "kind",
         SegmentFailure,
         SegmentReason,
         SegmentSource,

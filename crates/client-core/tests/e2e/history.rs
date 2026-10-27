@@ -8,7 +8,7 @@ use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::ChannelId;
 use junto_client_core::protocol::message::{Message, SendMessage};
-use junto_client_core::protocol::structure::SetChannelOverride;
+use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
 
 use crate::messages::{both_open, document, message_when, texts, timeline_when};
 use crate::stream::{Pair, live, model_when, pair, text_channel, when};
@@ -39,7 +39,7 @@ async fn deny_history(scene: &Pair, channel_id: ChannelId) {
     scene
         .owner
         .api()
-        .set_channel_override(channel_id, everyone, &deny)
+        .set_channel_rule(channel_id, RuleSubject::Role { role_id: everyone }, &deny)
         .await
         .unwrap();
     model_when(&scene.member, "the history denied", |model| {
