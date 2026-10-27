@@ -215,7 +215,13 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
     use junto_client_core::protocol::structure::WorkspaceMember;
 
     const WARM_UP: usize = 5;
-    for (members, accounts) in [(7usize, 7usize), (601, 2_001)] {
+    for (members, accounts, panel) in [
+        (7usize, 7usize, true),
+        (601, 7, false),
+        (601, 7, true),
+        (7, 2_001, true),
+        (601, 2_001, true),
+    ] {
         let people = super::admin::servers(move |model| {
             let listed: Vec<AccountSummary> = (0..accounts)
                 .map(|index| AccountSummary {
@@ -242,8 +248,10 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
         });
         let (window, _, _) = studio.open(
             Screen::new("people-frames", people),
-            Box::new(|shell: &mut Shell, window, cx| {
-                shell.open(junto_client::shell::Open::Members, window, cx);
+            Box::new(move |shell: &mut Shell, window, cx| {
+                if panel {
+                    shell.open(junto_client::shell::Open::Members, window, cx);
+                }
                 super::admin::open_page(shell, AdminPage::People, window, cx);
             }),
         )?;
@@ -262,7 +270,8 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
         println!(
             "{}",
             Times(times).line(&format!(
-                "{members} members and the People page of {accounts} accounts"
+                "{members} members (member list {}) and the People page of {accounts} accounts",
+                if panel { "open" } else { "closed" }
             ))
         );
         studio

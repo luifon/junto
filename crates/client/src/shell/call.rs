@@ -5,6 +5,8 @@
 //! Every function here draws from the derived view and reads no window: the call view can
 //! be drawn in a window of its own without a change (ADR 0507).
 
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement,
@@ -64,7 +66,11 @@ pub(crate) struct VolumeControl {
 }
 
 /// A person outside the call in the member list of a call, with the line of the state.
-struct OutsideRow {
+/// The people that the member list of a call lists: in the call and outside it.
+pub(crate) type CallMemberRows = (Rc<Vec<Occupant>>, Rc<Vec<OutsideRow>>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutsideRow {
     account_id: AccountId,
     name: SharedString,
     state: Option<(Icon, SharedString)>,
@@ -933,11 +939,105 @@ impl Shell {
         view: &ShellView,
         panel: &CallPanel,
         theme: &Theme,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
         let server_id = view.selected.as_ref().map(|server| server.id);
+        let people: Rc<Vec<Occupant>> = Rc::new(panel.people.clone());
+        // Outside the call: the members of the workspace, or the other person of a
+        // direct-message call while it rings.
+        let outside: Rc<Vec<OutsideRow>> = Rc::new(match &panel.place {
+            PanelPlace::Channel(channel) => channel
+                .outside
+                .iter()
+                .map(|member| OutsideRow {
+                    account_id: member.account_id,
+                    name: member.name.clone().into(),
+                    state: member
+                        .place
+                        .as_ref()
+                        .map(|place| (Icon::Speaker, text::in_channel(place).into())),
+                })
+                .collect(),
+            PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
+                account_id: direct.other,
+                name: panel.place_name().to_owned().into(),
+                state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
+            }],
+            PanelPlace::Direct(_) => Vec::new(),
+        });
+        // The list lays out only the rows in view: a call in a workspace of hundreds of
+        // members lists all of them outside the call (open item CD8).
+        let shape = (people.clone(), outside.clone());
+        if self.call_member_rows.as_ref() != Some(&shape) {
+            let count = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
+            super::changed_rows(&self.call_members_list, count);
+            self.call_member_rows = Some(shape);
+        }
+        let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
+            div()
+                .w_full()
+                .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
+                .into_any_element()
+        });
+        let state = self.call_members_list.clone();
+        let list = div()
+            .id("call-members")
+            .debug_selector(|| "call-members".to_owned())
+            .role(Role::List)
+            .aria_label(text::MEMBERS)
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(gpui::list(state.clone(), render).size_full())
+            .child(crate::ui::area("call-members"))
+            .child(div().absolute().inset_0().child(
+                gpui_base::Scrollbar::vertical(&state)
+                    .viewport_from_layout()
+                    .mode(gpui_base::ScrollbarMode::Always)
+                    .styles(move |styles| {
+                        let thumb = Hsla::from(colors.rule);
+                        let held = Hsla::from(colors.ink_3);
+                        styles
+                            .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
+                            .track_hover(|track| track.bg(gpui::transparent_black()))
+                            .track_active(|track| track.bg(gpui::transparent_black()))
+                            .thumb(|bar| bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0)))
+                            .thumb_hover(|bar| bar.bg(held))
+                            .thumb_active(|bar| bar.bg(held))
+                    }),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(list)
+            .children(
+                panel
+                    .channel()
+                    .map(|channel| self.render_invite_area(channel, theme, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// One item of the member list of a call: the label of the people in the call, a
+    /// person in the call, the label of the people outside it, a person outside, or the
+    /// space at the end.
+    fn call_member_item(
+        &mut self,
+        index: usize,
+        people: &[Occupant],
+        outside: &[OutsideRow],
+        server_id: Option<ServerId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
         let faces = self.shown_faces();
         let state_line = |states: Vec<(Icon, SharedString)>| {
             let mut line = div()
@@ -945,7 +1045,7 @@ impl Shell {
                 .flex_wrap()
                 .items_center()
                 .gap(u(5.0))
-                .typeface(theme.types.small, theme)
+                .typeface(theme.types.small, &theme)
                 .line_height(u(18.0))
                 .ink(colors.ink_2);
             for (index, (shown, label)) in states.into_iter().enumerate() {
@@ -995,7 +1095,7 @@ impl Shell {
                     div()
                         .min_w_0()
                         .truncate()
-                        .typeface(theme.types.name, theme)
+                        .typeface(theme.types.name, &theme)
                         .line_height(u(19.0))
                         .ink(colors.ink)
                         .child(name),
@@ -1013,15 +1113,19 @@ impl Shell {
                     line.child(
                         div()
                             .flex_none()
-                            .typeface(theme.types.small, theme)
+                            .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
                             .child(text::YOU),
                     )
                 })
         };
-        let people = panel.people.as_slice();
-        let mut inside: Vec<AnyElement> = Vec::new();
-        for (index, occupant) in people.iter().enumerate() {
+        if index == 0 {
+            return SectionLabel::new(text::IN_THE_CALL)
+                .count(people.len())
+                .into_any_element();
+        }
+        if let Some(occupant) = people.get(index - 1) {
+            let index = index - 1;
             let name = occupant_name(occupant);
             let (_, label) = tile_marks(occupant);
             let mark: AnyElement = match occupant.microphone {
@@ -1050,7 +1154,7 @@ impl Shell {
                             .items_center()
                             .gap(u(8.0))
                             .mt(u(3.0))
-                            .typeface(theme.types.small, theme)
+                            .typeface(theme.types.small, &theme)
                             .ink(colors.ink_2)
                             .child(text::VOLUME)
                             .child(
@@ -1066,97 +1170,51 @@ impl Shell {
                 }
                 _ => None,
             };
-            inside.push(
-                row(index, occupant.account_id, label.into())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                name_line(
-                                    name,
-                                    occupant.is_self,
-                                    self.camera_request(occupant, cx)
-                                        .map(|_| occupant.account_id),
-                                )
+            let camera = self
+                .camera_request(occupant, cx)
+                .map(|_| occupant.account_id);
+            return row(index, occupant.account_id, label.into())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            name_line(name, occupant.is_self, camera)
                                 .child(div().flex_1())
                                 .child(div().flex().flex_none().items_center().child(mark)),
-                            )
-                            .child(state_line(member_states(occupant)))
-                            .children(volume),
-                    )
-                    .into_any_element(),
-            );
-        }
-        // Outside the call: the members of the workspace, or the other person of a
-        // direct-message call while it rings.
-        let outside: Vec<OutsideRow> = match &panel.place {
-            PanelPlace::Channel(channel) => channel
-                .outside
-                .iter()
-                .map(|member| OutsideRow {
-                    account_id: member.account_id,
-                    name: member.name.clone().into(),
-                    state: member
-                        .place
-                        .as_ref()
-                        .map(|place| (Icon::Speaker, text::in_channel(place).into())),
-                })
-                .collect(),
-            PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
-                account_id: direct.other,
-                name: panel.place_name().to_owned().into(),
-                state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
-            }],
-            PanelPlace::Direct(_) => Vec::new(),
-        };
-        let outside: Vec<AnyElement> = outside
-            .into_iter()
-            .enumerate()
-            .map(
-                |(
-                    index,
-                    OutsideRow {
-                        account_id,
-                        name,
-                        state,
-                    },
-                )| {
-                    row(people.len() + index, account_id, name.clone())
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(name_line(name, false, None))
-                                .when_some(state, |column, state| {
-                                    column.child(state_line(vec![state]))
-                                }),
                         )
-                        .into_any_element()
-                },
-            )
-            .collect();
-        let list = ScrollArea::new("call-members", &self.call_members_scroll, text::MEMBERS)
-            .selector("call-members")
-            .child(SectionLabel::new(text::IN_THE_CALL).count(people.len()))
-            .children(inside)
-            .when(!outside.is_empty(), |list| {
-                list.child(SectionLabel::new(text::NOT_IN_THE_CALL).count(outside.len()))
-                    .children(outside)
-            })
-            .child(div().flex_none().h(u(4.0)));
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(list)
-            .children(
-                panel
-                    .channel()
-                    .map(|channel| self.render_invite_area(channel, theme, cx)),
-            )
-            .into_any_element()
+                        .child(state_line(member_states(occupant)))
+                        .children(volume),
+                )
+                .into_any_element();
+        }
+        let rest = index - 1 - people.len();
+        if outside.is_empty() {
+            return div().h(u(4.0)).into_any_element();
+        }
+        if rest == 0 {
+            return SectionLabel::new(text::NOT_IN_THE_CALL)
+                .count(outside.len())
+                .into_any_element();
+        }
+        match outside.get(rest - 1) {
+            Some(OutsideRow {
+                account_id,
+                name,
+                state,
+            }) => row(people.len() + rest - 1, *account_id, name.clone())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(name_line(name.clone(), false, None))
+                        .when_some(state.clone(), |column, state| {
+                            column.child(state_line(vec![state]))
+                        }),
+                )
+                .into_any_element(),
+            None => div().h(u(4.0)).into_any_element(),
+        }
     }
 
     fn render_call_settings(

@@ -292,8 +292,14 @@ pub struct Shell {
     pub(crate) servers_scroll: ScrollHandle,
     pub(crate) channels_scroll: ScrollHandle,
     pub(crate) directs_scroll: ScrollHandle,
-    pub(crate) members_scroll: ScrollHandle,
-    pub(crate) call_members_scroll: ScrollHandle,
+    /// The member list of the side panel, which lays out only the rows in view, and the
+    /// rows that it holds.
+    pub(crate) members_list: gpui::ListState,
+    pub(crate) member_rows: Option<std::rc::Rc<Vec<crate::state::view::MemberRow>>>,
+    /// The member list of the panel of a call, which lays out only the rows in view, and
+    /// the people that it lists.
+    pub(crate) call_members_list: gpui::ListState,
+    pub(crate) call_member_rows: Option<call::CallMemberRows>,
     pub(crate) call_settings_scroll: ScrollHandle,
 
     // The fields of the layers.
@@ -678,8 +684,10 @@ impl Shell {
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
             directs_scroll: ScrollHandle::new(),
-            members_scroll: ScrollHandle::new(),
-            call_members_scroll: ScrollHandle::new(),
+            members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
+            member_rows: None,
+            call_members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
+            call_member_rows: None,
             call_settings_scroll: ScrollHandle::new(),
             name,
             name_error: None,
@@ -1180,6 +1188,18 @@ impl Focusable for Shell {
 fn logical_width(window: &Window) -> f32 {
     let rem = window.rem_size();
     window.viewport_size().width / rem * theme::REM_AT_100
+}
+
+/// The rows of a list that lays out only the rows in view changed: rows are added or
+/// removed at its end, and every row is measured again, with the place of the list kept.
+pub(crate) fn changed_rows(list: &gpui::ListState, count: usize) {
+    let before = list.item_count();
+    if count > before {
+        list.splice(before..before, count - before);
+    } else if count < before {
+        list.splice(count..before, 0);
+    }
+    list.remeasure_items(0..count);
 }
 
 /// The height of the window in pixels of the design.
