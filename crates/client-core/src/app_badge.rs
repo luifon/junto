@@ -109,6 +109,12 @@ pub fn set_dock(label: Option<&str>) {
     tile.setBadgeLabel(text.as_deref());
 }
 
+#[cfg(any(windows, test))]
+fn overlay_mask(side: u32) -> Vec<u8> {
+    let stride = side.div_ceil(16) * 2;
+    vec![0; (stride * side) as usize]
+}
+
 /// Sets the overlay of the taskbar button of a window: the picture of the count, or none,
 /// with its description for a screen reader.
 #[cfg(windows)]
@@ -146,7 +152,7 @@ pub fn set_overlay(window: isize, count: u64, description: &str) -> windows::cor
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let mask = vec![0u8; (side * side / 8) as usize];
+    let mask = overlay_mask(side);
     let side = side as i32;
     // SAFETY: each buffer holds the bits of a bitmap of `side` by `side` pixels at its
     // depth; the bitmaps are deleted after the icon copied them.
@@ -199,6 +205,40 @@ mod tests {
         match (columns.iter().min(), columns.iter().max()) {
             (Some(first), Some(last)) => last - first + 1,
             _ => 0,
+        }
+    }
+
+    #[test]
+    fn the_overlay_mask_has_word_aligned_rows() {
+        for (side, stride) in [(16, 2), (20, 4), (24, 4), (32, 4), (40, 6), (64, 8)] {
+            let mask = overlay_mask(side);
+            assert_eq!(mask.len(), (stride * side) as usize, "side {side}");
+            assert!(mask.iter().all(|byte| *byte == 0));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn the_overlay_mask_matches_the_native_bitmap_stride() {
+        use windows::Win32::Graphics::Gdi::{BITMAP, CreateBitmap, DeleteObject, GetObjectW};
+        for side in [20, 24, 40] {
+            let mask = overlay_mask(side);
+            let mut bitmap = BITMAP::default();
+            // SAFETY: a null data pointer creates an uninitialised bitmap; GetObjectW writes
+            // one BITMAP to its correctly sized buffer, and the bitmap is deleted below.
+            unsafe {
+                let handle = CreateBitmap(side as i32, side as i32, 1, 1, None);
+                assert!(!handle.is_invalid());
+                let read = GetObjectW(
+                    handle.into(),
+                    std::mem::size_of::<BITMAP>() as i32,
+                    Some((&raw mut bitmap).cast()),
+                );
+                let _ = DeleteObject(handle.into());
+                assert_ne!(read, 0);
+            }
+            assert_eq!(mask.len(), (bitmap.bmWidthBytes * bitmap.bmHeight) as usize);
         }
     }
 
