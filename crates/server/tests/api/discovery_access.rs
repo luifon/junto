@@ -415,7 +415,8 @@ async fn rule_60_concurrent_pins_preserve_limit_and_rollback_refused_events() {
             .iter()
             .filter(|e| matches!(e, Event::MessageChanged { .. }))
             .count(),
-        1
+        // The pin that was taken and its line in the chat; the refused pin left none.
+        2
     );
 }
 
