@@ -658,6 +658,7 @@ impl AppState {
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();
+        self.settle_saved_exports(&snapshots, cx);
         let model_of = |server_id: ServerId| {
             snapshots
                 .iter()

@@ -881,6 +881,10 @@ impl AppState {
             junto_client_core::call_window::CallWindowStore::new(client.data_dir().clone())
                 .load()
                 .unwrap_or_default();
+        let saved_exports = client.saved_exports().load().unwrap_or_else(|error| {
+            tracing::warn!(%error, "the saved exports were not read");
+            junto_client_core::saved_exports::SavedExports::default()
+        });
         let mut state = Self {
             talking_windows: HashSet::new(),
             call_window: None,
@@ -1001,6 +1005,7 @@ impl AppState {
             // reads why, wherever the window is.
             state.pending.call_told = Some(text::SOUND_SETTINGS_NOT_READ.to_owned());
         }
+        state.admin.exports.saved = saved_exports;
         state.load_preset_picture(cx);
         state.changed(cx);
         state

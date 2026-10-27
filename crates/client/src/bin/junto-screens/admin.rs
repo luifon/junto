@@ -349,20 +349,23 @@ fn exports() -> Vec<Export> {
 /// The files of the exports on this device: one that is saved now, and one that was
 /// saved. The path names no directory of a real machine.
 fn export_files() -> ExportFiles {
-    ExportFiles::of([
-        (
-            (id(ACME), id(EXPORT + 4)),
-            ExportSave::Saving {
-                written: 310_000_000,
-            },
-        ),
-        (
-            (id(ACME), id(EXPORT + 5)),
-            ExportSave::Saved(
-                PathBuf::from("Downloads").join("junto-export-conversation-2026-10-08.zip"),
+    ExportFiles::of(
+        person("Luca"),
+        [
+            (
+                (id(ACME), id(EXPORT + 4)),
+                ExportSave::Saving {
+                    written: 310_000_000,
+                },
             ),
-        ),
-    ])
+            (
+                (id(ACME), id(EXPORT + 5)),
+                ExportSave::Saved(
+                    PathBuf::from("Downloads").join("junto-export-conversation-2026-10-08.zip"),
+                ),
+            ),
+        ],
+    )
 }
 
 /// The archived channels of "Studio", in the order of their archiving. The server does
@@ -1575,7 +1578,7 @@ fn draw_records(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| {
             open_page(shell, AdminPage::Exports, window, cx);
             let failed = ExportSave::Failed(text::admin::records::SAVE_ENDED.to_owned());
-            let files = ExportFiles::of([((id(ACME), id(EXPORT + 3)), failed)]);
+            let files = ExportFiles::of(person("Luca"), [((id(ACME), id(EXPORT + 3)), failed)]);
             show_records(shell, AuditLog::default(), files, cx);
         },
     )?;

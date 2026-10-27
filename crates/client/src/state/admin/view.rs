@@ -506,7 +506,7 @@ pub fn waiting_join_requests(model: &ServerModel) -> usize {
 pub const DELETION_DUE: time::Duration = time::Duration::days(7);
 
 /// The work beside the join requests that waits for the person (ADR 0761): the exports of
-/// the account that are ready and that this device has not saved in this run, and in each
+/// the account that are ready and that this device has not saved for the account, and in each
 /// workspace the archived channels whose deletion is due, for a person who may restore
 /// them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1059,11 +1059,12 @@ pub fn derive(
             known,
         )?)),
         AdminOpen::Server { page, .. } => {
+            let account_id = model.account.id;
             let saved = |server_id, export_id| {
-                matches!(
-                    admin.exports.files.get(&(server_id, export_id)),
-                    Some(records::ExportSave::Saved(_))
-                )
+                admin
+                    .exports
+                    .saved
+                    .contains(server_id, account_id, export_id)
             };
             let waiting = waiting(server_id, model, &saved, known.clock);
             let nav = nav(model, workspace, &waiting);

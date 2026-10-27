@@ -1619,6 +1619,14 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
     assert!(file.starts_with(b"PK"));
     // The unfinished file of the save is gone.
     assert_eq!(std::fs::read_dir(downloads.path()).unwrap().count(), 1);
+    // The data directory keeps the export as saved.
+    let marks = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().root().join("saved-exports.json")
+    });
+    let marked = export_id.to_string();
+    window.until("the saved export is in the data directory", |_| {
+        std::fs::read_to_string(&marks).is_ok_and(|text| text.contains(&marked))
+    });
 
     // The removal asks first. It removes the export on the server, and the saved file
     // stays on this device.
@@ -1632,6 +1640,10 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
     let gone = world.run(owner.api().export(export_id)).unwrap_err();
     assert_eq!(gone.category(), Some(ErrorCategory::NotFound));
     assert!(saved.exists());
+    // The removed export is not kept as saved.
+    window.until("the removed export left the data directory", |_| {
+        std::fs::read_to_string(&marks).is_ok_and(|text| !text.contains(&marked))
+    });
 }
 
 #[gpui::test]
