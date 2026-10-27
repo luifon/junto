@@ -533,6 +533,98 @@ impl ServerModel {
         true
     }
 
+    /// Takes the notice of a message that an event states (event revision 2): it replaces
+    /// the notice of the same message and stands in the order of the list, the newest
+    /// first. A notice older than every held one, while the server holds more, belongs to a
+    /// later page and is read with it.
+    pub(crate) fn take_notice(&mut self, notice: Notification) {
+        self.notices
+            .retain(|held| held.message_id != notice.message_id && held.id != notice.id);
+        let key = (notice.created_at, notice.id);
+        let at = self
+            .notices
+            .iter()
+            .position(|held| (held.created_at, held.id) < key)
+            .unwrap_or(self.notices.len());
+        if at == self.notices.len() && self.notices_more {
+            self.prune_named();
+            return;
+        }
+        self.notices.insert(at, notice);
+        if self.notices.len() > MOST_NOTICES {
+            self.notices.truncate(MOST_NOTICES);
+            self.notices_more = true;
+        }
+        self.prune_named();
+    }
+
+    /// Takes the state of a thread for the account that an event states (event revision
+    /// 2). The unread threads hold a thread that the account follows with a reply after its
+    /// read position, or with an unread mention, as the server lists them (ADR 0412); a
+    /// thread with a newer reply comes first. False when the list is full and the state
+    /// cannot be placed: the list is read again.
+    pub(crate) fn take_thread(&mut self, state: ThreadState) -> bool {
+        let listed = (state.following && state.last_read < state.latest) || state.mentions > 0;
+        let held = self
+            .threads
+            .iter()
+            .position(|held| held.root_id == state.root_id);
+        match (held, listed) {
+            (Some(at), true) if state.latest > self.threads[at].latest => {
+                self.threads.remove(at);
+                self.threads.insert(0, state);
+            }
+            (Some(at), true) => self.threads[at] = state,
+            (Some(at), false) => {
+                self.threads.remove(at);
+            }
+            (None, true) if self.threads.len() >= MOST_THREADS => return false,
+            (None, true) => self.threads.insert(0, state),
+            (None, false) => {}
+        }
+        self.prune_named();
+        true
+    }
+
+    /// A root that was deleted takes its thread out of the unread threads.
+    pub(crate) fn drop_thread(&mut self, root_id: MessageId) {
+        let before = self.threads.len();
+        self.threads.retain(|held| held.root_id != root_id);
+        if self.threads.len() != before {
+            self.prune_named();
+        }
+    }
+
+    /// Marks read, at `at`, the unread notices whose message a read position covers, as the
+    /// server does in the request that moves the position (ADR 0409). False, and nothing
+    /// marked, when a notice names a message whose place is not known: the list is read
+    /// again.
+    pub(crate) fn mark_notices_read(
+        &mut self,
+        inside: impl Fn(&Message) -> bool,
+        position: u64,
+        at: OffsetDateTime,
+    ) -> bool {
+        let mut covered = Vec::new();
+        for notice in self.unread_notices() {
+            match self.named(notice.message_id) {
+                Some(Named::Read(message)) => {
+                    if inside(message) && message.position <= position {
+                        covered.push(notice.id);
+                    }
+                }
+                Some(Named::Gone) => {}
+                Some(Named::Failed) | None => return false,
+            }
+        }
+        for held in &mut self.notices {
+            if covered.contains(&held.id) {
+                held.read_at = Some(at);
+            }
+        }
+        true
+    }
+
     /// True when a read position can have marked a notice of the state as read. The
     /// server marks the notices of the messages up to a read position in the request that
     /// moves it, and sends no event of the notices for that (ADR 0409). `inside` tells

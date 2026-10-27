@@ -1279,3 +1279,61 @@ async fn rule_13_a_fork_records_and_tells_each_override_that_it_copies() {
                 && *deny == [junto_protocol::WorkspacePermission::ViewChannel]
     )));
 }
+
+/// The change of a reply names its thread and carries the state of the thread for the
+/// account that receives it, and a notice event carries the notice of that account, so
+/// that a client keeps its lists without reading them again (event revision 2, ADR 0409,
+/// ADR 0412).
+#[tokio::test]
+async fn the_events_of_a_reply_state_the_thread_and_the_notice_of_the_account() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Author").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = send(&server, &owner, &channel, "root").await;
+    // The owner writes in the thread and so follows it.
+    reply(&server, &owner, root.id, "own").await;
+    let cursor = server.snapshot(&owner).await.cursor;
+    let answer = reply(&server, &author, root.id, "an answer").await;
+    let told = events(&server, &owner, cursor, Level::Full).await;
+    let (thread_root, thread) = told
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageChanged {
+                message_id,
+                thread_root,
+                thread,
+                ..
+            } if *message_id == answer.id => Some((*thread_root, thread.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(thread_root, Some(root.id));
+    let state = thread.unwrap();
+    assert_eq!(
+        (state.root_id, state.unread, state.following),
+        (root.id, 1, true)
+    );
+    let notice = told
+        .iter()
+        .find_map(|event| match event {
+            Event::NotificationChanged { message_id, notice } if *message_id == answer.id => {
+                notice.clone()
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (notice.message_id, notice.kind),
+        (answer.id, junto_protocol::discovery::NotificationKind::Thread)
+    );
+    // The root is no reply: its change names no thread.
+    assert!(told.iter().all(|event| !matches!(
+        event,
+        Event::MessageChanged {
+            message_id,
+            thread_root: Some(_),
+            ..
+        } if *message_id == root.id
+    )));
+}

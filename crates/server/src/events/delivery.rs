@@ -336,11 +336,26 @@ fn decide(
         return Ok(Decision::Hidden);
     }
     match (candidate.class, candidate.event) {
-        (Some(_), Some(event)) => Ok(Decision::Deliver(Box::new(Receivable {
-            position: candidate.position,
-            at: candidate.recorded_at,
-            event,
-        }))),
+        (Some(_), Some(mut event)) => {
+            // The notice and the state of a thread are the ones of this account: its client
+            // keeps its lists from them without reading them again (ADR 0409, ADR 0412).
+            match &mut event {
+                Event::NotificationChanged { message_id, notice } => {
+                    *notice = standing.notifications.get(message_id).cloned();
+                }
+                Event::MessageChanged {
+                    thread_root: Some(root),
+                    thread,
+                    ..
+                } => *thread = standing.threads.get(root).cloned(),
+                _ => {}
+            }
+            Ok(Decision::Deliver(Box::new(Receivable {
+                position: candidate.position,
+                at: candidate.recorded_at,
+                event,
+            })))
+        }
         _ => Ok(Decision::Unsendable),
     }
 }
@@ -753,8 +768,11 @@ struct Standing {
     mentioned: HashSet<junto_protocol::ids::MessageId>,
     mention_notices: HashSet<Uuid>,
     notification_notices: HashMap<Uuid, (bool, bool)>,
-    notifications:
-        HashMap<junto_protocol::ids::MessageId, junto_protocol::discovery::NotificationKind>,
+    /// The notice of the account for each message that a notice event of the batch names.
+    notifications: HashMap<junto_protocol::ids::MessageId, junto_protocol::discovery::Notification>,
+    /// The state for the account of each thread whose reply an event of the batch names
+    /// (ADR 0412).
+    threads: HashMap<junto_protocol::ids::MessageId, junto_protocol::message::ThreadState>,
 }
 
 impl Standing {
@@ -806,8 +824,29 @@ impl Standing {
             )
             .await?
             .into_iter()
-            .map(|notice| (notice.message_id, notice.kind))
+            .map(|notice| (notice.message_id, notice))
             .collect()
+        };
+        let mut roots: Vec<junto_protocol::ids::MessageId> = candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.event {
+                Some(Event::MessageChanged {
+                    thread_root: Some(root),
+                    ..
+                }) => Some(*root),
+                _ => None,
+            })
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        let threads = if roots.is_empty() {
+            HashMap::new()
+        } else {
+            crate::messages::threads::states(&mut *connection, access.account_id, &roots)
+                .await?
+                .into_iter()
+                .map(|state| (state.root_id, state))
+                .collect()
         };
         let notice_ids: Vec<_> = candidates
             .iter()
@@ -1011,6 +1050,7 @@ impl Standing {
             mention_notices,
             notification_notices,
             notifications,
+            threads,
         })
     }
 }

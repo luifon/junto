@@ -161,9 +161,11 @@ async fn a_call_that_is_not_answered_is_a_line_a_notice_and_an_unread_sign_for_t
 
     // A connection at the background level receives the line and the notice.
     let told = events(server, ben, before.cursor, Level::Background).await;
+    // The event states the notice of the account (event revision 2).
     assert!(
         told.contains(&Event::NotificationChanged {
-            message_id: missed.id
+            message_id: missed.id,
+            notice: Some(listed[0].clone()),
         }),
         "{told:?}"
     );

@@ -257,7 +257,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 1;
+pub const EVENT_REVISION: u32 = 2;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -621,9 +621,21 @@ pub enum Event {
         message_id: crate::ids::MessageId,
         position: u64,
         deleted: bool,
+        /// The root of the thread of a reply. Absent: the message is no reply (revision 2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread_root: Option<crate::ids::MessageId>,
+        /// For a reply, the state of its thread for the account that receives the event, as
+        /// the unread threads list it: absent when the account neither follows the thread nor
+        /// is named in it (revision 2, ADR 0412).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<crate::message::ThreadState>,
     },
     NotificationChanged {
         message_id: crate::ids::MessageId,
+        /// The notice of the message for the account that receives the event, as the list
+        /// of notices states it (revision 2, ADR 0409).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notice: Option<crate::discovery::Notification>,
     },
     NotificationSettingsChanged {},
     RetentionChanged {
@@ -1430,6 +1442,8 @@ mod tests {
                 message_id: crate::ids::MessageId::generate(),
                 position: 1,
                 deleted: false,
+                thread_root: None,
+                thread: None,
             },
             Event::ThreadRead {
                 root_id: crate::ids::MessageId::generate(),
@@ -1464,6 +1478,7 @@ mod tests {
             },
             Event::NotificationChanged {
                 message_id: crate::ids::MessageId::generate(),
+                notice: None,
             },
             Event::NotificationSettingsChanged {},
             Event::RetentionChanged {

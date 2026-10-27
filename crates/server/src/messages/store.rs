@@ -22,20 +22,24 @@ pub async fn changed(
     position: u64,
     deleted: bool,
 ) -> ApiResult<()> {
+    let audience: Option<(
+        Option<junto_protocol::ids::CallId>,
+        Option<Vec<junto_protocol::ids::AccountId>>,
+        Option<MessageId>,
+    )> = sqlx::query_as("select call_id,readers,thread_root from messages where id=$1")
+        .bind(message_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+    let (call_id, readers, thread_root) = audience.unwrap_or_default();
+    // The delivery adds the state of the thread of a reply for each account (ADR 0412).
     let event = Event::MessageChanged {
         place,
         message_id,
         position,
         deleted,
+        thread_root,
+        thread: None,
     };
-    let audience: Option<(
-        Option<junto_protocol::ids::CallId>,
-        Option<Vec<junto_protocol::ids::AccountId>>,
-    )> = sqlx::query_as("select call_id,readers from messages where id=$1")
-        .bind(message_id)
-        .fetch_optional(&mut *connection)
-        .await?;
-    let (call_id, readers) = audience.unwrap_or_default();
     if let (
         Some(call_id),
         MessagePlace::Channel {
@@ -490,6 +494,8 @@ pub async fn system_notifying(
                 message_id: id,
                 position: position as u64,
                 deleted: false,
+                thread_root: None,
+                thread: None,
             },
         )
         .await

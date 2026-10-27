@@ -561,7 +561,8 @@ fn notices_are_replaced_by_their_first_page_and_continued_from_their_last_one() 
     assert_eq!(
         model
             .apply(&Event::NotificationChanged {
-                message_id: next.message_id
+                message_id: next.message_id,
+                notice: None,
             })
             .load,
         [Part::Notices, Part::UnreadThreads]
@@ -923,4 +924,53 @@ fn a_reload_keeps_the_named_messages_for_display_until_each_is_read_again() {
     other_account.set_notices(page(&[&noticed]));
     other_account.carry_named(&before);
     assert!(other_account.named(noticed.id).is_none());
+}
+
+/// With a server of event revision 2 the notices and the unread threads follow the states
+/// that the events carry (ADR 0409, ADR 0412): a notice replaces the one of its message
+/// and stands with the newest first; a thread that the account follows with a reply after
+/// its read position, or with an unread mention, is listed, and is taken out otherwise.
+#[test]
+fn the_stated_notices_and_threads_keep_the_lists_without_a_read() {
+    let scene = scene();
+    let mut model = scene.model();
+    model.lists_follow_events = true;
+    let older = notice(MessageId::generate());
+    let mut newer = notice(MessageId::generate());
+    newer.created_at = older.created_at + ::time::Duration::seconds(5);
+    for stated in [&older, &newer] {
+        let follow = model.apply(&Event::NotificationChanged {
+            message_id: stated.message_id,
+            notice: Some(stated.clone()),
+        });
+        assert!(!follow.load.contains(&Part::Notices));
+    }
+    assert_eq!(model.notices, [newer.clone(), older.clone()]);
+    // An upgrade of the older notice to a mention moves it to the front.
+    let mut upgraded = older.clone();
+    upgraded.kind = NotificationKind::Mention;
+    upgraded.created_at = newer.created_at + ::time::Duration::seconds(5);
+    model.take_notice(upgraded.clone());
+    assert_eq!(model.notices, [upgraded, newer]);
+
+    let root = MessageId::generate();
+    let state = |last_read, latest, mentions, following| ThreadState {
+        root_id: root,
+        last_read,
+        latest,
+        unread: latest - last_read,
+        mentions,
+        following,
+        follow_setting: None,
+    };
+    assert!(model.take_thread(state(1, 3, 0, true)));
+    assert_eq!(model.threads.len(), 1);
+    // Read to its end: taken out; an unread mention of a thread that is not followed:
+    // listed.
+    assert!(model.take_thread(state(3, 3, 0, true)));
+    assert!(model.threads.is_empty());
+    assert!(model.take_thread(state(3, 3, 1, false)));
+    assert_eq!(model.threads.len(), 1);
+    model.drop_thread(root);
+    assert!(model.threads.is_empty());
 }

@@ -97,7 +97,13 @@ Notifications:
   except the line of a call that was not answered (ADR 0518).
 - There is one durable notice per recipient and message. Its identifier is the message
   identifier within that account's notice collection. It contains no message text.
-  `notification_changed` prompts a refresh of the caller's notices. Ordinary-message
+  `notification_changed` carries the notice of the receiving account (`notice`, filled at
+  delivery from the row that the delivery reads to decide the event), and the
+  `message_changed` of a reply names its root (`thread_root`, stored with the event) and
+  carries the state of that thread for the receiving account (`thread`, read at delivery
+  for the roots of the batch in one statement; absent when the account neither follows
+  the thread nor is named in it). A client keeps its notices and unread threads from them
+  (ADR 0722). Ordinary-message
   and thread notices reach full connections; only mention and direct notices reach background.
   Read state is idempotent and shared across devices. `notification_settings_changed`
   refreshes policy at every connection level. A change of the own settings is told to the

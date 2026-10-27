@@ -511,6 +511,8 @@ async fn remove_notes(
                 message_id: id,
                 position: position as u64,
                 deleted: true,
+                thread_root: None,
+                thread: None,
             },
         )
         .await?;

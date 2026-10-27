@@ -408,6 +408,8 @@ async fn a_channel_override_is_told_to_the_managers_of_the_channel() {
             message_id: m.id,
             position: m.position,
             deleted: false,
+            thread_root: None,
+            thread: None,
         })
         .collect();
     // The second request repeats the override: it writes no line and tells nothing.

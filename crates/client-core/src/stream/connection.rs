@@ -528,6 +528,9 @@ impl Client {
     fn set_server_events(&mut self, revision: Option<u32>) {
         if self.server_events != revision {
             self.server_events = revision;
+            if let Some(model) = &mut self.model {
+                model.lists_follow_events = lists_follow_events(revision);
+            }
             self.version_changed = true;
             if let Some(revision) = revision.filter(|revision| *revision > EVENT_REVISION) {
                 tracing::warn!(
@@ -1018,7 +1021,7 @@ impl Client {
                 model.own_seat.clone(),
             )
         });
-        let follow = model.apply(&event);
+        let follow = model.apply_at(&event, Some(at));
         if let Some((call, entry_requests, own_seat)) = saved_call {
             if let Some(mut call) = call {
                 // The answer holds no speaking marks: they follow the events (ADR 0785).
@@ -1401,6 +1404,7 @@ impl Client {
     fn install(&mut self, answer: SnapshotResponse) {
         let mut model = ServerModel::from_snapshot(answer.snapshot);
         model.take_moderation_notices(answer.moderation_notices);
+        model.lists_follow_events = lists_follow_events(self.server_events);
         let cursor = model.cursor;
         let in_call = model.own_call.is_some();
         let before = self.model.take();
@@ -1621,4 +1625,10 @@ impl Client {
             self.host.in_call(in_call);
         }
     }
+}
+
+/// A server of event revision 2 or later states the notice and the thread state of the
+/// account in its events (ADR 0206).
+fn lists_follow_events(revision: Option<u32>) -> bool {
+    revision.is_some_and(|revision| revision >= 2)
 }

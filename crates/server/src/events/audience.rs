@@ -751,7 +751,7 @@ impl Audience {
     pub fn fits(&self, event: &Event) -> bool {
         match (event, self) {
             (
-                Event::NotificationChanged { message_id },
+                Event::NotificationChanged { message_id, .. },
                 Self::Notification {
                     message_id: subject,
                     ..

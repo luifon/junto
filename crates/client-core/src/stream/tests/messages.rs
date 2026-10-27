@@ -372,6 +372,8 @@ impl Room {
                     message_id: held.id,
                     position: held.position,
                     deleted,
+                    thread_root: None,
+                    thread: None,
                 },
             )
             .await;
