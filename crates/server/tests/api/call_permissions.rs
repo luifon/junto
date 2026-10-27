@@ -214,3 +214,63 @@ async fn set_call_user_limit_changes_the_user_limit_without_manage_channel() {
         .await
         .error(ErrorCode::Forbidden);
 }
+
+#[tokio::test]
+async fn a_screen_share_report_needs_share_screen_and_a_share_sound_needs_speak() {
+    let scene = Scene::start().await;
+    scene.server.enter_call(&scene.ann, scene.voice.id).await;
+    deny(&scene, &[W::ShareScreen]).await;
+    scene
+        .server
+        .put(
+            &scene.ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .error(ErrorCode::Forbidden);
+    deny(&scene, &[W::Speak]).await;
+    scene
+        .server
+        .put(
+            &scene.ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .empty(reqwest::StatusCode::NO_CONTENT);
+    scene
+        .server
+        .put(
+            &scene.ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "application" }),
+        )
+        .await
+        .error(ErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn a_call_state_report_does_not_open_the_microphone_without_speak() {
+    let scene = Scene::start().await;
+    scene.server.enter_call(&scene.ann, scene.voice.id).await;
+    deny(&scene, &[W::Speak]).await;
+    scene
+        .server
+        .put(
+            &scene.ann,
+            "/api/v1/call/state",
+            &json!({ "muted": false, "deafened": false }),
+        )
+        .await
+        .error(ErrorCode::Forbidden);
+    scene
+        .server
+        .put(
+            &scene.ann,
+            "/api/v1/call/state",
+            &json!({ "muted": true, "deafened": false }),
+        )
+        .await
+        .empty(reqwest::StatusCode::NO_CONTENT);
+}

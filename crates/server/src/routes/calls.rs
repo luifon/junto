@@ -10,8 +10,10 @@ use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallJoinQuery, CallMove, CallPlace, ChannelCall,
     DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery,
     LeaveReason, MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState,
-    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
+    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, ShareAudio,
+    UpdateCallSettings,
 };
+use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::structure::{Channel, ChannelKind};
@@ -30,6 +32,7 @@ use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
 use crate::events;
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
+use crate::media::TrackSource;
 use crate::proof;
 use crate::state::AppState;
 use crate::{read, transact};
@@ -263,6 +266,20 @@ pub async fn report_call_state(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         let (call, member) = own(connection, &access).await?;
+        if !body.muted
+            && !store::may_publish(
+                connection,
+                &call,
+                access.account_id,
+                &[TrackSource::Microphone],
+            )
+            .await?
+        {
+            return Err(ApiError::new(
+                ErrorCode::Forbidden,
+                "the microphone needs the permission to speak in the channel",
+            ));
+        }
         if (member.self_muted, member.self_deafened) != (body.muted, body.deafened) {
             sqlx::query(
                 "update call_members set self_muted = $3, self_deafened = $4,
@@ -304,6 +321,16 @@ pub async fn report_screen_share(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         let (call, member) = own(connection, &access).await?;
+        let mut sources = vec![TrackSource::ScreenShare];
+        if body.audio != ShareAudio::None {
+            sources.push(TrackSource::ScreenShareAudio);
+        }
+        if !store::may_publish(connection, &call, access.account_id, &sources).await? {
+            return Err(ApiError::new(
+                ErrorCode::Forbidden,
+                "sharing the screen needs the permission to share the screen in the channel",
+            ));
+        }
         if member.share_audio.as_deref() != Some(body.audio.stored()) {
             sqlx::query(
                 "update call_members

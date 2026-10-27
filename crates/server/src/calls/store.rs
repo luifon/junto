@@ -755,6 +755,21 @@ pub async fn publishing_of(
     allowed_publishing(connection, call, account_id, publishing).await
 }
 
+/// Whether the account holds the channel permissions for every one of `sources` in the
+/// channel of the call (always true for a call that is not in a channel).
+pub async fn may_publish(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+    sources: &[crate::media::TrackSource],
+) -> ApiResult<bool> {
+    let wanted = Publishing {
+        sources: sources.iter().copied().collect(),
+    };
+    let allowed = allowed_publishing(connection, call, account_id, wanted.clone()).await?;
+    Ok(allowed == wanted)
+}
+
 async fn allowed_publishing(
     connection: &mut PgConnection,
     call: &CallRow,
