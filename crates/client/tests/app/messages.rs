@@ -2123,9 +2123,21 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
             window.settle();
             junto_client::ui::take_painted_text()
         };
-        let names: Vec<_> = painted
+        // The refresh and the settle can draw more than one frame: a name painted again at
+        // the same place is the same name.
+        let painted_names: Vec<_> = painted
             .iter()
             .filter(|text| EMOJI_GROUPS.contains(&text.text.as_ref()))
+            .collect();
+        let names: Vec<_> = painted_names
+            .iter()
+            .enumerate()
+            .filter(|(index, text)| {
+                !painted_names[..*index]
+                    .iter()
+                    .any(|held| held.text == text.text && held.bounds == text.bounds)
+            })
+            .map(|(_, text)| *text)
             .collect();
         for (index, name) in names.iter().enumerate() {
             for other in &names[index + 1..] {
