@@ -94,6 +94,9 @@ impl RenderOnce for Menu {
                 menu.debug_selector(|| selector.to_owned())
             })
             .occlude()
+            .relative()
+            // A menu is a layer: the areas that it lies over are not measured (ADR 0730).
+            .child(super::cover())
             .flex()
             .flex_col()
             .w(u(self.width.unwrap_or(if self.dark {

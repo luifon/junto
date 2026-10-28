@@ -299,9 +299,11 @@ impl Shell {
                 Layer::GroupMenu(_) | Layer::WorkspaceMenu(..) | Layer::ServerMenu
             );
 
-        // An empty server book says so above the field that adds a server.
-        if servers.is_empty() {
-            servers.push(
+        // An empty server book says so above the field that adds a server. The rows can hold
+        // the bands of the arrangement without a server, so the servers of the view decide.
+        if view.servers.is_empty() {
+            servers.insert(
+                0,
                 div()
                     .px(u(14.0))
                     .pt(u(10.0))
