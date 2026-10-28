@@ -239,7 +239,21 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
 fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) {
     let world = World::new();
     let (_server, admin, _directory, mut window, _, root_id) = with_root(cx, &world);
+    let replies = |window: &mut Window| {
+        window
+            .messages()
+            .iter()
+            .find(|row| row.message.id == root_id)
+            .and_then(|row| row.thread.as_ref().map(|thread| thread.replies))
+            .unwrap_or(0)
+    };
+    let before = replies(&mut window);
     admin.reply(&world, root_id, document("One per speaker."));
+    // A person opens the menu of the root after the reply is drawn on it: the reply makes
+    // the row taller, and a press read from a frame before it lands where the menu was.
+    window.until("the reply is counted on the root", |window| {
+        replies(window) > before
+    });
     window.open_thread_of(root_id);
     let fork_state = |window: &mut Window| {
         window
