@@ -867,8 +867,8 @@ impl FaultProxy {
             .retain(|(planned, _)| planned != path);
     }
 
-    /// The next requests whose path without its query ends with `end` fail in the given
-    /// ways, in order.
+    /// The next requests whose path ends with `end` fail in the given ways, in order: the
+    /// path without its query, or with it for an end that names a part of the query.
     pub fn fail_ending(&self, end: &str, faults: impl IntoIterator<Item = Fault>) {
         let mut faults: Vec<Fault> = faults.into_iter().collect();
         faults.reverse();
@@ -919,9 +919,10 @@ fn names(planned: &str, path: &str) -> bool {
     }
 }
 
-/// As [`names`], for a rule for the paths that end with `end`.
+/// As [`names`], for a rule for the paths that end with `end`. An end that names a part
+/// of the query (with `?`, `&` or `=`) is compared with the path and its query.
 fn ends_with(end: &str, path: &str) -> bool {
-    if end.contains('?') {
+    if end.contains(['?', '&', '=']) {
         path.ends_with(end)
     } else {
         path.split('?')
