@@ -123,11 +123,43 @@ mod tests {
         assert!(status.success(), "xdotool {arguments:?}");
     }
 
+    /// Gives the X server of the run a key for `symbol`, as a layout with that key does: the
+    /// first key code without a symbol gets it. The server of the run has no key for the
+    /// function keys after F12, and `xdotool` would map one only for the moment of its press.
+    fn add_key(symbol: u32) {
+        let (connection, _) = x11rb::connect(None).unwrap();
+        let setup = connection.setup();
+        let (first, last) = (setup.min_keycode, setup.max_keycode);
+        let mapping = connection
+            .get_keyboard_mapping(first, last - first + 1)
+            .unwrap()
+            .reply()
+            .unwrap();
+        if mapping.keysyms.contains(&symbol) {
+            return;
+        }
+        let per_code = usize::from(mapping.keysyms_per_keycode.max(1));
+        let free = mapping
+            .keysyms
+            .chunks(per_code)
+            .position(|symbols| symbols.iter().all(|symbol| *symbol == 0))
+            .expect("a key code without a symbol");
+        let code = u8::try_from(usize::from(first) + free).unwrap();
+        let mut symbols = vec![0; per_code];
+        symbols[0] = symbol;
+        connection
+            .change_keyboard_mapping(1, code, mapping.keysyms_per_keycode, &symbols)
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+
     #[test]
     fn the_keys_that_the_x_server_holds_are_read_whichever_window_has_the_focus() {
         if std::env::var_os("JUNTO_TEST_GLOBAL_KEYS").is_none() {
             return;
         }
+        add_key(0xffbe + 13 - 1);
         let mut reader = Reader::connect().unwrap();
         let keys = [
             Key::Alt,
