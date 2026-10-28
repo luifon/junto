@@ -1234,3 +1234,74 @@ fn publishing_requires_connect_even_when_a_person_is_allowed_the_source() {
         assert!(scope.usable_permissions().contains(permission));
     }
 }
+
+#[test]
+fn a_workspace_person_rule_comes_before_the_channel_rules() {
+    let mut base = workspace(&[W::ViewChannel, W::Connect], vec![role(1, &[])]);
+    base.person_override = rule(&[W::SendMessages], &[]);
+    let denied_by_role = channel(
+        base.clone(),
+        Override::NONE,
+        vec![role_rule(1, &[], &[W::SendMessages])],
+    );
+    let request = |scope| Request::Channel {
+        scope,
+        permission: W::SendMessages,
+    };
+    assert_eq!(
+        authorize(&plain(), &request(&denied_by_role)),
+        missing(W::SendMessages)
+    );
+    let allowed = channel(base.clone(), Override::NONE, vec![]);
+    assert_eq!(authorize(&plain(), &request(&allowed)), Allow);
+
+    let mut denied = workspace(&[W::ViewChannel, W::Connect, W::SendMessages], vec![]);
+    denied.person_override = rule(&[], &[W::SendMessages]);
+    let none = channel(denied.clone(), Override::NONE, vec![]);
+    assert_eq!(
+        authorize(&plain(), &request(&none)),
+        missing(W::SendMessages)
+    );
+    let opened = channel(denied, rule(&[W::SendMessages], &[]), vec![]);
+    assert_eq!(authorize(&plain(), &request(&opened)), Allow);
+}
+
+#[test]
+fn a_person_rule_counts_toward_what_a_caller_may_grant() {
+    let mut scope = channel(
+        workspace(&[W::ViewChannel], vec![role(1, &[W::ManageChannel])]),
+        Override::NONE,
+        vec![],
+    );
+    scope.person_override = rule(&[W::RecordCalls], &[]);
+    let cases = [
+        (set(&[W::RecordCalls]), Allow),
+        (
+            set(&[W::ExportChannel]),
+            Deny(Denial::ExceedsOwnPermissions),
+        ),
+    ];
+    for (granting, expected) in cases {
+        let request = Request::ManageChannelOverrides {
+            scope: &scope,
+            granting,
+        };
+        assert_eq!(authorize(&plain(), &request), expected);
+    }
+    let mut manager = workspace(&[W::ViewChannel], vec![role(1, &[W::ManageRoles])]);
+    manager.person_override = rule(&[W::RecordCalls], &[]);
+    for (granting, expected) in [
+        (set(&[W::RecordCalls]), Allow),
+        (
+            set(&[W::ExportChannel]),
+            Deny(Denial::ExceedsOwnPermissions),
+        ),
+    ] {
+        let request = Request::ManageWorkspaceRoles {
+            scope: &manager,
+            granting,
+            in_channels: &[],
+        };
+        assert_eq!(authorize(&plain(), &request), expected);
+    }
+}
