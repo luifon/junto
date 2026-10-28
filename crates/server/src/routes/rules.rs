@@ -268,7 +268,12 @@ pub async fn get_channel_rules(
             scope: &scope,
             permission: WorkspacePermission::ManageChannel,
         })?;
-        channel_rules_of(connection, &record.channel).await
+        let mut held = channel_rules_of(connection, &record.channel).await?;
+        if access.token_id.is_some() {
+            held.rules
+                .retain(|rule| matches!(rule.subject, RuleSubject::Role { .. }));
+        }
+        Ok(held)
     })
     .map(Json)
 }
@@ -492,7 +497,12 @@ pub async fn sync_channel_rules(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        sync_channel_in(connection, &app.calls, &access, now, channel_id).await
+        let mut held = sync_channel_in(connection, &app.calls, &access, now, channel_id).await?;
+        if access.token_id.is_some() {
+            held.rules
+                .retain(|rule| matches!(rule.subject, RuleSubject::Role { .. }));
+        }
+        Ok(held)
     })
     .map(Json)
 }
@@ -635,9 +645,13 @@ pub async fn get_category_rules(
             permission: WorkspacePermission::ManageChannel,
         })?;
         let held = rules::of_category(connection, category_id).await?;
+        let mut listed = rules::listed(&held);
+        if access.token_id.is_some() {
+            listed.retain(|rule| matches!(rule.subject, RuleSubject::Role { .. }));
+        }
         Ok(CategoryRules {
             category_id,
-            rules: rules::listed(&held),
+            rules: listed,
         })
     })
     .map(Json)
