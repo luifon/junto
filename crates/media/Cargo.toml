@@ -74,6 +74,8 @@ thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+# The identifier of each own share (ADR 0510).
+uuid = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Call sound is played through a PipeWire connection of the client itself (ADR 0502).
@@ -83,7 +85,6 @@ cpal = { version = "0.18.2", features = ["pipewire"] }
 pipewire = { version = "0.10.1", features = ["v0_3_64"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 serde = { workspace = true }
-uuid = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video = { version = "0.5.2", features = ["metal"] }

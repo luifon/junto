@@ -1,3 +1,5 @@
+// Modified: this file differs from the published gpui-pre 0.3.8. A list aligned at its end
+// whose items do not fill it starts them at its top.
 //! A list element that can be used to render a large number of differently sized elements
 //! efficiently. Clients of this API need to ensure that elements outside of the scrolled
 //! area do not change their height for this element to function correctly. If your elements
@@ -1166,9 +1168,11 @@ impl StateInner {
                     self.logical_scroll_top = Some(scroll_top);
                 }
                 ListAlignment::Bottom => {
+                    // Modified: items that do not fill the list start at its top; the
+                    // published version put them at its end.
                     scroll_top = ListOffset {
                         item_ix: cursor.start().0,
-                        offset_in_item: rendered_height - available_height,
+                        offset_in_item: (rendered_height - available_height).max(px(0.)),
                     };
                     self.logical_scroll_top = None;
                 }

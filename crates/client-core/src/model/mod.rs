@@ -396,6 +396,10 @@ pub struct ServerModel {
     pub notices: Vec<Notification>,
     /// The server may hold more notices after the loaded ones.
     pub notices_more: bool,
+    /// The events of the server state the notice and the thread state of the account
+    /// (event revision 2): the notices and the unread threads follow the events and are read
+    /// again only when an event cannot be applied (ADR 0409, ADR 0412).
+    pub(crate) lists_follow_events: bool,
     /// The notification settings that the account stored, by their scope.
     pub notification_settings: Vec<ScopedNotificationSettings>,
     /// The messages that the unread threads and the notices name, as far as they were
@@ -524,6 +528,7 @@ impl ServerModel {
             threads_next: snapshot.threads_next,
             notices,
             notices_more,
+            lists_follow_events: false,
             notification_settings: snapshot.notification_settings,
             named: Vec::new(),
             named_carried: Vec::new(),

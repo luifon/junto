@@ -111,7 +111,8 @@ async fn start(
         return Err(error("unsupported share frame rate"));
     }
     let mut portal = portal::Portal::connect().await?;
-    let (source, mut closed) = portal.start(kind).await?;
+    let parent = request.dialog_parent.as_deref().unwrap_or_default();
+    let (source, mut closed) = portal.start(kind, parent).await?;
     let life = Arc::new(Life::default());
     let (stop_portal, stopped) = oneshot::channel();
     let pictures = Arc::new(Latest::default());

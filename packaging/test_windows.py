@@ -1,8 +1,10 @@
 """The Windows ZIP, assembled from stand-in programs on any system."""
 import json
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -54,11 +56,15 @@ class WindowsPackageTests(unittest.TestCase):
             client, recover = root / "junto.exe", root / "junto-recover.exe"
             client.write_bytes(b"MZ client")
             recover.write_bytes(b"MZ recover")
+            installer = root / "junto-installer.exe"
+            installer.write_bytes(b"MZ installer")
             (root / "junto.pdb").write_bytes(b"symbols")
             output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000,
-                                      build=fixtures.build_directory(root / "build", TRIPLE))
+                                      build=fixtures.build_directory(root / "build", TRIPLE), installer=installer)
             with zipfile.ZipFile(output / "Junto-1.2.3-windows-x86_64.zip") as archive:
                 names = archive.namelist()
+                # The uninstall program of the folder is the installer without an archive (ADR 0728).
+                self.assertEqual(archive.read("Junto/uninstall.exe"), b"MZ installer")
                 self.assertTrue(all(name.startswith("Junto/") for name in names), names)
                 self.assertEqual(archive.read("Junto/junto.exe"), b"MZ client")
                 self.assertEqual(json.loads(archive.read("Junto/junto-package.json")),
@@ -84,7 +90,7 @@ class WindowsPackageTests(unittest.TestCase):
             recover.write_bytes(b"MZ recover")
             (root / "junto.pdb").write_bytes(b"symbols")
             output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000,
-                                      build=fixtures.build_directory(root / "build", TRIPLE))
+                                      build=fixtures.build_directory(root / "build", TRIPLE), installer=recover)
             with zipfile.ZipFile(output / "Junto-1.2.3-windows-x86_64.zip") as archive:
                 self.assertFalse(any(name.endswith(".pdb") for name in archive.namelist()))
             self.assertEqual((output / "Junto-1.2.3-windows-x86_64.pdb").read_bytes(), b"symbols")
@@ -98,7 +104,32 @@ class WindowsPackageTests(unittest.TestCase):
             recover.write_bytes(b"MZ recover")
             with self.assertRaisesRegex(ValueError, "no symbols"):
                 windows.assemble(client, recover, "1.2.3", root / "out",
-                                 build=fixtures.build_directory(root / "build", TRIPLE))
+                                 build=fixtures.build_directory(root / "build", TRIPLE), installer=recover)
+
+    def test_the_release_tool_writes_the_setup_program_from_the_installer_and_the_folder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            client, recover, installer = root / "junto.exe", root / "junto-recover.exe", root / "junto-installer.exe"
+            for program in [client, recover, installer]:
+                program.write_bytes(b"MZ " + program.name.encode())
+            (root / "junto.pdb").write_bytes(b"symbols")
+            # A stand-in release tool that records its arguments and writes the output. Windows
+            # runs a command file, not a script with a #! line.
+            script = root / "junto-release.py"
+            script.write_text("import pathlib, sys\n"
+                              "pathlib.Path(sys.argv[4]).write_text(' '.join(sys.argv[1:4]))\n")
+            if os.name == "nt":
+                tool = root / "junto-release.cmd"
+                tool.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+            else:
+                tool = root / "junto-release"
+                tool.write_text(f"#!{sys.executable}\n" + script.read_text())
+                tool.chmod(0o755)
+            output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000,
+                                      build=fixtures.build_directory(root / "build", TRIPLE), installer=installer,
+                                      release_tool=tool)
+            written = (output / "Junto-1.2.3-windows-x86_64-setup.exe").read_text()
+            self.assertEqual(written, f"setup {installer} {output / 'package-directory'}")
 
     def test_a_file_that_is_not_a_windows_program_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -106,7 +137,7 @@ class WindowsPackageTests(unittest.TestCase):
             client = root / "junto.exe"
             client.write_bytes(b"\x7fELF")
             with self.assertRaisesRegex(ValueError, "not a Windows program"):
-                windows.assemble(client, client, "1.2.3", root / "out", build=root)
+                windows.assemble(client, client, "1.2.3", root / "out", build=root, installer=client)
             self.assertFalse((root / "out").exists())
 
 

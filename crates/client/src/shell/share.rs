@@ -9,11 +9,11 @@ use std::sync::Arc;
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, RenderImage, Role,
     ScrollHandle, SharedString, StatefulInteractiveElement, Styled, StyledImage, StyledText,
-    Window, canvas, div, prelude::FluentBuilder,
+    Window, anchored, canvas, deferred, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::call::ShareAudio;
 use junto_media::calls::{ActiveCall, CallsView, Seat};
-use junto_media::engine::ShareId;
+use junto_media::engine::{Person, ShareId};
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::{
     ApplicationId, CaptureError, PictureSource, ScreenAccess, ShareKind, ShareSources, SoundChoice,
@@ -27,8 +27,9 @@ use crate::state::view::{CallPanel, Microphone, ShareCard, ShareStage};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, DrawnPicture, Notice, PersonTile, ScrollArea, Segmented, StyleExt,
-    dialog_footer, focus_ring, focus_ring_inside, icon, tooltip,
+    Button, ButtonKind, Dialog, DrawnPicture, Menu, MenuItem, Notice, PersonTile, ScrollArea,
+    Segmented, StyleExt, dialog_footer, focus_ring, focus_ring_inside, icon, menu_separator,
+    tooltip,
 };
 
 /// The kinds of sound that a share can have (ADR 0502).
@@ -484,19 +485,109 @@ impl Shell {
         prepared::take(&mut self.pictures.small, pictures, cx)
     }
 
-    /// The share button of the strip of the call: it opens the dialog, or ends the share
-    /// that runs.
+    /// The share button of the strip of the call: it opens the dialog, or, while this
+    /// device shares, the menu of its shares.
     pub(crate) fn toggle_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A click on the button of an open menu closes the menu: the press closed it, and
+        // the click must not open it again.
+        if std::mem::take(&mut self.share_menu_closed_by_press) {
+            return;
+        }
         // The button does what it shows: the view that the window draws decides.
         let sharing = self
             .drawn_view(cx)
             .call
-            .is_some_and(|strip| strip.share != crate::state::view::OwnShare::Off);
+            .is_some_and(|strip| !strip.own_shares.is_empty());
         if sharing {
-            self.state.update(cx, |state, _| state.stop_share());
+            self.open_layer(Layer::ShareMenu, window, cx);
         } else {
             self.open_share_picker(window, cx);
         }
+    }
+
+    /// The menu of the shares of this device, under the share button: each share with its
+    /// stop, "Share another" while the person runs fewer than the most shares, and a stop
+    /// of every share. It holds the keyboard focus while it is open.
+    pub(crate) fn render_share_menu(
+        &mut self,
+        shares: &[crate::state::view::OwnShareItem],
+        limit: u8,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let full = shares.len() >= usize::from(limit);
+        let items: Vec<AnyElement> = shares
+            .iter()
+            .map(|share| {
+                let slot = share.slot;
+                let item = MenuItem::new(("share-stop", usize::from(slot)), {
+                    text::own_share_title(share.kind, share.number)
+                })
+                .icon(Icon::Screen)
+                .trailing(text::STOP)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.state
+                        .update(cx, |state, _| state.stop_share(Some(slot)));
+                    this.close_layer(window, cx);
+                }));
+                let item = if share.kind.is_none() {
+                    item.detail(text::SHARE_STARTS)
+                } else {
+                    item
+                };
+                div()
+                    .flex_none()
+                    .debug_selector(move || format!("share-stop:{slot}"))
+                    .child(item)
+                    .into_any_element()
+            })
+            .collect();
+        let another = MenuItem::new("share-another", text::SHARE_ANOTHER)
+            .icon(Icon::Screen)
+            .disabled(full)
+            .selector("share-another")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.close_layer(window, cx);
+                this.open_share_picker(window, cx);
+            }));
+        div()
+            .absolute()
+            .left_0()
+            .top(u(34.0))
+            .child(deferred(
+                anchored().snap_to_window().child(
+                    Menu::new("share-menu", text::YOUR_SHARES, self.layer_focus())
+                        .width(theme.metrics.call_panel_width - 28.0)
+                        .selector("share-menu")
+                        .on_close(Self::handler(cx, |this, window, cx| {
+                            this.share_menu_closed_by_press = !window.last_input_was_keyboard();
+                            this.close_layer(window, cx);
+                        }))
+                        .children(items)
+                        .child(menu_separator(cx))
+                        .child(if full {
+                            div()
+                                .flex_none()
+                                .id("share-another-limit")
+                                .tooltip(tooltip(text::share_limit(limit)))
+                                .child(another)
+                                .into_any_element()
+                        } else {
+                            another.into_any_element()
+                        })
+                        .child(
+                            MenuItem::new("share-stop-all", text::STOP_ALL_SHARES)
+                                .icon(Icon::Stop)
+                                .selector("share-stop-all")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.state.update(cx, |state, _| state.stop_share(None));
+                                    this.close_layer(window, cx);
+                                })),
+                        )
+                        .child(div().h(u(4.0))),
+                ),
+            ))
+            .into_any_element()
     }
 
     /// Opens the dialog of a share, and reads what the system lists. Without the
@@ -769,7 +860,7 @@ impl Shell {
 
     /// The width at which each camera picture that the window holds was sent.
     #[cfg(feature = "test-support")]
-    pub fn camera_widths(&self) -> HashMap<ShareId, u32> {
+    pub fn camera_widths(&self) -> HashMap<Person, u32> {
         self.cameras
             .iter()
             .map(|(id, (frame, _))| (*id, frame.source.0))
@@ -816,9 +907,43 @@ impl Shell {
             return;
         };
         let seat = picker.seat.clone();
-        self.state
-            .update(cx, |state, _| state.start_share(&seat, picture, sound));
+        // The portal of Linux shows its own dialog, over the window that asked for it.
+        let parent = match picture {
+            PictureSource::Portal(_) => crate::dialog_parent::DialogParent::of(window),
+            _ => crate::dialog_parent::Pending::Ready(None),
+        };
+        match parent {
+            crate::dialog_parent::Pending::Ready(parent) => {
+                self.start_share_over(&seat, picture, sound, parent, cx);
+            }
+            crate::dialog_parent::Pending::Waiting(parent) => {
+                cx.spawn(async move |this, cx| {
+                    let parent = parent.await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.start_share_over(&seat, picture, sound, parent, cx);
+                    });
+                })
+                .detach();
+            }
+        }
         self.close_layer(window, cx);
+    }
+
+    fn start_share_over(
+        &mut self,
+        seat: &Seat,
+        picture: PictureSource,
+        sound: SoundChoice,
+        parent: Option<crate::dialog_parent::DialogParent>,
+        cx: &mut Context<Self>,
+    ) {
+        let identifier = parent
+            .as_ref()
+            .map(crate::dialog_parent::DialogParent::identifier);
+        self.share_dialog_parent = parent;
+        self.state.update(cx, |state, _| {
+            state.start_share(seat, picture, sound, identifier);
+        });
     }
 
     /// Closes the dialog of a share when the device is not in the call, at the seat, that
@@ -1329,7 +1454,7 @@ impl Shell {
         let faces = self.shown_faces();
         let watched = stage.watched();
         let several = stage.shares.len() > 1;
-        let title_of = |share: &ShareCard| text::share_title(share, share.id == ShareId::Own);
+        let title_of = |share: &ShareCard| text::share_title(share, share.id.person == Person::Own);
 
         let bar = several.then(|| {
             let cards = stage.shares.iter().enumerate().map(|(index, share)| {
@@ -1346,9 +1471,9 @@ impl Shell {
                     .role(Role::RadioButton)
                     .aria_label(title.clone())
                     .aria_selected(share.watched)
-                    .debug_selector(move || match id {
-                        ShareId::Own => "share-card:own".to_owned(),
-                        ShareId::Of(account_id) => format!("share-card:{account_id}"),
+                    .debug_selector(move || match id.person {
+                        Person::Own => format!("share-card:own:{}", id.slot),
+                        Person::Of(account_id) => format!("share-card:{account_id}:{}", id.slot),
                     })
                     .tooltip(tooltip(format!("{} {title}", text::WATCH)))
                     .flex()
@@ -1475,7 +1600,7 @@ impl Shell {
         });
 
         let header = watched.map(|share| {
-            let own = share.id == ShareId::Own;
+            let own = share.id.person == Person::Own;
             let name: SharedString = share
                 .name
                 .clone()
@@ -1484,13 +1609,13 @@ impl Shell {
             // The sentence about the share, with its strong part.
             let (line, strong) = if several {
                 let title = title_of(share);
-                let line = format!("You watch {title}");
+                let line = text::watching_share(&title);
                 let range = line.len() - title.len()..line.len();
                 (line, range)
             } else if own {
-                ("You are sharing".to_owned(), 0..3)
+                (text::YOU_ARE_SHARING.to_owned(), 0..3)
             } else {
-                (format!("{name} is sharing"), 0..name.len())
+                (text::is_sharing(&name), 0..name.len())
             };
             let muted = !own && stage.volume == 0 && share.sound != Some(ShareAudio::None);
             let sound: Option<(SharedString, bool)> = if share.sound_held {
@@ -1562,6 +1687,35 @@ impl Shell {
                             .ink(ink)
                             .child(icon(Icon::Speaker, 14.0, ink))
                             .child(div().min_w_0().truncate().child(sentence)),
+                    )
+                })
+                // The people who watch the share of this device (ADR 0502).
+                .when(own && !share.viewers.is_empty(), |header| {
+                    let names: Vec<String> = share
+                        .viewers
+                        .iter()
+                        .map(|(_, name)| {
+                            name.clone()
+                                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                        })
+                        .collect();
+                    let named: SharedString = text::share_viewer_names(&names).into();
+                    header.child(
+                        div()
+                            .id("share-viewers")
+                            .debug_selector(|| "share-viewers".to_owned())
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(u(5.0))
+                            .aria_label(named.clone())
+                            .tooltip(crate::ui::tooltip(named))
+                            .ink(colors.bone_2)
+                            .child(icon(Icon::People, 14.0, colors.bone_2))
+                            .child(crate::ui::paint_text(
+                                text::share_viewers(names.len()).into(),
+                                None,
+                            )),
                     )
                 })
                 .child(div().flex_1())
@@ -1696,6 +1850,7 @@ impl Shell {
             .role(Role::List)
             .aria_label(text::IN_THE_CALL)
             .debug_selector(|| "call-people".to_owned())
+            .relative()
             .flex()
             .flex_none()
             .items_start()
@@ -1718,7 +1873,8 @@ impl Shell {
                     .overflow_y_scroll()
             })
             .children(tiles)
-            .children(hidden_note);
+            .children(hidden_note)
+            .child(self.stage_controls.mark());
 
         div()
             .id("call-stage")
@@ -1753,7 +1909,7 @@ mod tests {
     use junto_client_core::protocol::call::CallPlace;
     use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceId};
     use junto_media::calls::{CallTarget, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
     use junto_media::permission::MicrophoneAccess;
     use junto_media::share::{ApplicationSource, DisplaySource, WindowSource};
 
@@ -1842,7 +1998,9 @@ mod tests {
                 output_device: None,
                 microphone_block: None,
                 sound_block: None,
-                share: ShareState::Off,
+                share_limit: junto_client_core::protocol::call::MAX_SHARES,
+                own_shares: std::collections::BTreeMap::new(),
+                share_ended: None,
                 shares: Vec::new(),
                 watched: None,
                 withheld: Default::default(),

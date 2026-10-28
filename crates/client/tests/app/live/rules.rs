@@ -1,7 +1,8 @@
 //! The rules of the room of a call in the window (ADR 0739), with the real server and a
 //! real media server: a room that is locked, full or hidden and the request to enter,
 //! meeting mode as participant and as presenter, invitations, the menu of a person with
-//! the blocks, the removal and the move, and the settings of the room.
+//! the blocks, the removal and the move, the settings of the room, the double click on a
+//! voice channel, push to mute and the call actions at their keys.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -9,8 +10,8 @@ use std::time::{Duration, Instant};
 use gpui::TestAppContext;
 use junto_client::shell::Open;
 use junto_client::state::view::{
-    CallPanel, Closed, EntryState, MeetingStart, Microphone, MicrophoneButton, OwnShare, Presence,
-    RoomView, VoiceState,
+    CallNotice, CallPanel, Closed, EntryState, MeetingStart, Microphone, MicrophoneButton,
+    OwnShare, Presence, RoomView, VoiceState,
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{
@@ -19,13 +20,14 @@ use junto_client_core::protocol::call::{
 use junto_client_core::protocol::ids::{AccountId, CallInvitationId, ChannelId};
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
 use junto_media::calls::{CallTarget, EndReason, Outcome, Phase};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
 use super::{ROOM, enter, moved_without_a_drawing, occupants, own, own_share, room, second_room};
 use crate::calls::voice_channel;
 use crate::harness::{
-    Admin, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World, heard, member,
+    ABSENT_DBFS, Admin, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World, heard, member,
 };
 
 /// One server with the administrator Ada, who is in calls without a window, and the
@@ -219,6 +221,7 @@ impl Scene {
             picture: PictureSource::Display(1),
             sound: SoundChoice::None,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         });
         let api = self.admin.handle.api();
         let started = Instant::now();
@@ -277,10 +280,27 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         voice.locked && voice.closed == Some(Closed::Locked)
     });
 
-    // The box that asks to enter belongs to the room that the person chose.
+    // The box that asks to enter belongs to the room that the person chose. In the narrowest
+    // channel column its text takes the most lines, and the whole box stays in view.
     assert!(!scene.window.shows("entry-box"));
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.set_panel_width(Panel::Channels, 200.0, cx);
+        });
     scene.window.click_channel(ROOM);
     assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
+    let area = scene
+        .window
+        .cx
+        .debug_bounds("channel-entry-notices")
+        .unwrap();
+    let entry = scene.window.cx.debug_bounds("entry-box").unwrap();
+    assert!(
+        entry.top() >= area.top() && entry.bottom() <= area.bottom(),
+        "entry box {entry:?} outside its area {area:?}"
+    );
     // A join is refused, and the refusal is told.
     scene.window.click("join-call");
     scene
@@ -645,13 +665,17 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     scene.window.until("the open microphone is told", |window| {
         window.shows("call-told") && window.view().controls.microphone == MicrophoneButton::Open
     });
+    // The notice waits while the pointer rests on the tile, which the end of the meeting made
+    // larger; the person moves the pointer to the notice before the press.
+    let told = scene.window.cx.debug_bounds("call-told").unwrap();
+    scene.window.move_pointer(told.center());
     scene.window.click("dismiss-call-told");
     assert!(!scene.window.shows("call-told"));
 
     // The person presents: Ada stops sharing, the person shares and turns meeting mode
     // on. The server accepts it when its check has seen the share; a refusal before
     // that is told.
-    scene.caller.calls.stop_share();
+    scene.caller.calls.stop_share(None);
     scene.window.click("call-share");
     scene
         .window
@@ -1418,7 +1442,7 @@ fn the_own_tile_is_open_while_the_report_of_the_state_waits(cx: &mut TestAppCont
 
 #[gpui::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
-fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
+fn a_late_entry_notice_waits_while_the_pointer_is_on_the_call_tile(cx: &mut TestAppContext) {
     let mut scene = scene(cx);
     enter(&scene.world, &scene.caller, scene.target);
     scene.join_in_the_window();
@@ -1441,6 +1465,10 @@ fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
         .cx
         .debug_bounds(crate::harness::selector(selector.clone()))
         .unwrap();
+    // The pointer rests on the tile of the active window: the notice waits, and the tile
+    // keeps its place.
+    scene.window.cx.update(|window, _| window.activate_window());
+    scene.window.move_pointer(before.center());
     scene
         .world
         .run(scene.admin.handle.api().request_entry(scene.voice))
@@ -1456,6 +1484,17 @@ fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
             .unwrap(),
         before
     );
+    // The pointer leaves the tile toward the notice: the notice takes its height.
+    let place = scene.window.cx.debug_bounds("entry-prompt").unwrap();
+    scene.window.move_pointer(place.center());
+    scene
+        .window
+        .until("the entry notice has its height", |window| {
+            window
+                .cx
+                .debug_bounds("entry-prompt")
+                .is_some_and(|notice| notice.top() < place.top())
+        });
 }
 
 #[gpui::test]
@@ -1635,5 +1674,760 @@ fn an_invitation_into_a_full_room_is_a_card_in_every_window_and_passes_the_limit
     assert_eq!(voice_of(&mut scene.window).user_limit, Some(1));
     assert!(!scene.window.shows("call-invitation"));
     drop(detached);
+    scene.world.run(scene.caller.calls.leave());
+}
+
+/// A double click on a voice channel enters it as the join button does (round 2 item 15): a
+/// locked room and a full room refuse it and the refusal is told; an open room is entered;
+/// from a call, a double click on another voice channel moves the device into that call.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_double_click_enters_a_voice_channel_as_the_join_button_does(cx: &mut TestAppContext) {
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let voice = scene.voice;
+    let second = second_room(&scene.world, &scene.admin, &mut scene.window, "Second");
+    let CallPlace::Channel {
+        channel_id: second, ..
+    } = second.place
+    else {
+        unreachable!("the second room is a voice channel");
+    };
+    enter(&scene.world, &scene.caller, scene.target);
+
+    // A locked room: the request is refused and told.
+    scene.world.run(api.lock_call(voice)).unwrap();
+    scene.window.until("the lock is shown", |window| {
+        voice_of(window).closed == Some(Closed::Locked)
+    });
+    scene.window.double_click_channel(ROOM);
+    scene
+        .window
+        .until("the refusal of the locked room is told", |window| {
+            window.shows("call-notice")
+        });
+    assert!(scene.window.view().call.is_none());
+    scene.window.click("dismiss-call-notice");
+    scene.world.run(api.unlock_call(voice)).unwrap();
+
+    // A full room: Ada is inside and the limit is one.
+    let limit = |user_limit| UpdateCallSettings {
+        user_limit: Some(user_limit),
+        hides_occupants: None,
+    };
+    scene
+        .world
+        .run(api.update_call_settings(voice, &limit(Some(1))))
+        .unwrap();
+    scene.window.until("the room is full", |window| {
+        voice_of(window).closed == Some(Closed::Full)
+    });
+    scene.window.double_click_channel(ROOM);
+    scene
+        .window
+        .until("the refusal of the full room is told", |window| {
+            window.shows("call-notice")
+        });
+    assert!(scene.window.view().call.is_none());
+    scene.window.click("dismiss-call-notice");
+    scene
+        .world
+        .run(api.update_call_settings(voice, &limit(None)))
+        .unwrap();
+    scene.window.until("the room is open", |window| {
+        voice_of(window).closed.is_none()
+    });
+
+    // An open room is entered.
+    scene.window.double_click_channel(ROOM);
+    scene.window.until("the person is in the room", connected);
+    assert_eq!(scene.window.view().call.unwrap().channel_id, Some(voice));
+
+    // From the call, a double click on another voice channel moves the device there.
+    scene.window.double_click_channel("Second");
+    scene
+        .window
+        .until("the person is in the second room", |window| {
+            window.view().call.is_some_and(|call| {
+                call.channel_id == Some(second) && call.phase == Phase::Connected
+            })
+        });
+    scene
+        .window
+        .until("Ada is alone in the first room", |window| {
+            occupants(window).len() == 1
+        });
+}
+
+/// The notice of the last refused join, once the window shows it.
+fn refusal(window: &mut Window, what: &str) -> CallNotice {
+    window.until(what, |window| {
+        matches!(
+            window.view().call_notice,
+            Some(CallNotice::JoinFailed { .. })
+        ) && window.shows("call-notice")
+    });
+    window.view().call_notice.unwrap()
+}
+
+/// A double click on a voice channel that the person may no longer see is refused as the
+/// join button is refused. Sight of the channel is the only permission that entering a call
+/// needs, and a window does not draw a channel without it: the window still draws the row
+/// here because the events of the change wait at the proxy.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_double_click_without_the_permission_is_refused_as_the_join_button_is(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let mut scene = make_scene(cx, Proxied::Window);
+    let api = scene.admin.handle.api();
+    let CallPlace::Channel { workspace_id, .. } = scene.target.place else {
+        unreachable!("the room is a voice channel");
+    };
+    let roles = scene.world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap().id;
+    let proxy = scene.proxy.take().unwrap();
+    proxy.hold_events();
+    scene
+        .world
+        .run(api.set_channel_rule(
+            scene.voice,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ViewChannel],
+            },
+        ))
+        .unwrap();
+
+    scene.window.double_click_channel(ROOM);
+    let at_double_click = refusal(&mut scene.window, "the refusal of the double click");
+    assert!(scene.window.view().call.is_none());
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("join-call");
+    let at_button = refusal(&mut scene.window, "the refusal of the join button");
+    assert_eq!(at_double_click, at_button);
+    assert!(scene.window.view().call.is_none());
+
+    proxy.release();
+    scene
+        .window
+        .until("the room is no longer listed", |window| {
+            !window.shows_channel(ROOM)
+        });
+}
+
+/// A double click on a locked room and on a full room is refused as the join button is, and
+/// the request to enter that follows lets the device in once the people inside accept it.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_double_click_on_a_locked_or_full_room_is_refused_and_the_request_enters_it(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let voice = scene.voice;
+    enter(&scene.world, &scene.caller, scene.target);
+
+    scene.world.run(api.lock_call(voice)).unwrap();
+    scene.window.until("the lock is shown", |window| {
+        voice_of(window).closed == Some(Closed::Locked)
+    });
+    scene.window.double_click_channel(ROOM);
+    let at_double_click = refusal(&mut scene.window, "the refusal of the locked room");
+    assert!(scene.window.view().call.is_none());
+    assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("join-call");
+    let at_button = refusal(&mut scene.window, "the refusal of the join button");
+    assert_eq!(at_double_click, at_button);
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("ask-to-enter");
+    let request = scene.entry_request();
+    assert_eq!(request.account_id, scene.luca);
+    scene
+        .world
+        .run(api.answer_entry_request(request.id, true))
+        .unwrap();
+    scene
+        .window
+        .until("the person is in the locked room", connected);
+    assert_eq!(scene.window.view().call.unwrap().channel_id, Some(voice));
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the call has ended", |window| window.view().call.is_none());
+    scene.world.run(api.unlock_call(voice)).unwrap();
+
+    scene
+        .world
+        .run(api.update_call_settings(
+            voice,
+            &UpdateCallSettings {
+                user_limit: Some(Some(1)),
+                hides_occupants: None,
+            },
+        ))
+        .unwrap();
+    scene.window.until("the room is full", |window| {
+        voice_of(window).closed == Some(Closed::Full)
+    });
+    scene.window.double_click_channel(ROOM);
+    let at_double_click = refusal(&mut scene.window, "the refusal of the full room");
+    assert!(scene.window.view().call.is_none());
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("join-call");
+    let at_button = refusal(&mut scene.window, "the refusal of the join button");
+    assert_eq!(at_double_click, at_button);
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("ask-to-enter");
+    let request = scene.entry_request();
+    scene
+        .world
+        .run(api.answer_entry_request(request.id, true))
+        .unwrap();
+    scene
+        .window
+        .until("the person is in the full room", connected);
+    scene.window.until("the room holds two people", |window| {
+        occupants(window).len() == 2
+    });
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the call has ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}
+
+fn show_server(window: &mut Window, server_id: junto_client_core::protocol::ids::ServerId) {
+    let state = window.state.clone();
+    state.update(&mut window.cx, |state, cx| {
+        state.select_server(server_id, cx)
+    });
+    window.until("the server is shown", |window| {
+        let view = window.view();
+        view.selected
+            .as_ref()
+            .is_some_and(|server| server.id == server_id)
+            && view.workspace().is_some()
+    });
+}
+
+fn listed(
+    handle: &junto_client_core::ServerHandle,
+    target: &CallTarget,
+    person: AccountId,
+) -> bool {
+    handle.live().view().model.is_some_and(|model| {
+        model
+            .call_at(&target.place)
+            .is_some_and(|call| call.participant(person).is_some())
+    })
+}
+
+/// From a call on one server, a double click on a voice channel of a second server does what
+/// the join button does there: a locked room refuses it and the call on the first server
+/// goes on; an open room is entered and the first server no longer lists the person; the
+/// join button on the first server brings the device back in the same way.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::view::ServerStatus;
+    let mut scene = scene(cx);
+    let first = scene.window.view().selected.unwrap().id;
+    let second_server = scene.world.server_with_media("Second Studio");
+    let bea = scene.world.owner(&second_server);
+    let bea_calls = bea.caller(&scene.world);
+    let code = bea.invite(&scene.world, 1);
+    scene.window.find_server(&second_server.address());
+    scene.window.join_with_code(code.expose());
+    scene.window.until("the second server is shown", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view.servers[1].selected
+            && view.servers[1].status == ServerStatus::Ready
+            && view.workspace().is_some()
+    });
+    let second = scene.window.view().selected.unwrap().id;
+    assert_eq!(second, bea.handle.id());
+    voice_channel(&scene.world, &bea, &mut scene.window, "Review");
+    let review = scene
+        .window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.name == "Review")
+        .unwrap()
+        .id;
+    let review_target = CallTarget {
+        server_id: second,
+        place: CallPlace::Channel {
+            workspace_id: scene.window.view().workspace().unwrap().id,
+            channel_id: review,
+        },
+    };
+    enter(&scene.world, &bea_calls, review_target);
+    let bea_api = bea.handle.api();
+    scene.world.run(bea_api.lock_call(review)).unwrap();
+
+    show_server(&mut scene.window, first);
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.join_in_the_window();
+    let voice = scene.voice;
+    let in_first = |window: &mut Window| {
+        window.view().call.is_some_and(|call| {
+            call.server_id == first
+                && call.channel_id == Some(voice)
+                && call.phase == Phase::Connected
+        })
+    };
+
+    // A locked room of the second server refuses the double click as it refuses the join
+    // button, and the call on the first server goes on.
+    show_server(&mut scene.window, second);
+    let closed = |window: &mut Window| {
+        window
+            .channels()
+            .into_iter()
+            .find(|row| row.id == review)
+            .and_then(|row| row.voice)
+            .and_then(|voice| voice.closed)
+    };
+    scene.window.until("the lock is shown", |window| {
+        closed(window) == Some(Closed::Locked)
+    });
+    scene.window.double_click_channel("Review");
+    let at_double_click = refusal(&mut scene.window, "the refusal of the locked room");
+    assert!(in_first(&mut scene.window));
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("join-call");
+    let at_button = refusal(&mut scene.window, "the refusal of the join button");
+    assert_eq!(at_double_click, at_button);
+    assert!(in_first(&mut scene.window));
+    scene.window.click("dismiss-call-notice");
+
+    // The open room is entered: the device leaves the call of the first server.
+    scene.world.run(bea_api.unlock_call(review)).unwrap();
+    scene
+        .window
+        .until("the lock is gone", |window| closed(window).is_none());
+    scene.window.double_click_channel("Review");
+    scene
+        .window
+        .until("the person is in the second room", |window| {
+            window.view().call.is_some_and(|call| {
+                call.server_id == second
+                    && call.channel_id == Some(review)
+                    && call.phase == Phase::Connected
+            })
+        });
+    let (luca, luca_second) = (scene.luca, scene.window.own_account());
+    let (ada_handle, bea_handle) = (scene.admin.handle.clone(), bea.handle.clone());
+    scene
+        .window
+        .until("each server lists the person in one call", |_| {
+            !listed(&ada_handle, &scene.target, luca)
+                && listed(&bea_handle, &review_target, luca_second)
+        });
+    assert_eq!(scene.window.view().call_notice, None);
+
+    // The join button of the first server brings the device back.
+    show_server(&mut scene.window, first);
+    scene.window.click_channel(ROOM);
+    scene.window.click("join-call");
+    scene
+        .window
+        .until("the person is in the first room", in_first);
+    scene
+        .window
+        .until("each server lists the person in one call", |_| {
+            listed(&ada_handle, &scene.target, luca)
+                && !listed(&bea_handle, &review_target, luca_second)
+        });
+    assert_eq!(scene.window.view().call_notice, None);
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the call has ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+    scene.world.run(bea_calls.calls.leave());
+}
+
+/// Push to mute in a connected call (ADR 0777): the microphone of the call is closed while
+/// the window holds its keys and opens at their release; a window that loses the focus
+/// while it holds them lets them go, as a release in another application does; a
+/// microphone that the person closed stays closed after a hold; the keyboard of the system
+/// holds the keys too.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn push_to_mute_closes_the_microphone_of_a_connected_call_while_it_is_held(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::KeybindChange;
+    use junto_client_core::global_keys::{HeldKeys, Key};
+    use junto_client_core::keybinds::KeyAction;
+    let mut scene = scene(cx);
+    super::turn_processing_off(&mut scene.window);
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state
+                .change_keybinds(
+                    KeybindChange::Set(KeyAction::PushToMute, Some("f13".parse().unwrap())),
+                    cx,
+                )
+                .unwrap();
+        });
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.join_in_the_window();
+    let sound = scene.caller.sound.clone();
+    let sends = move |_: &mut Window| heard(&sound, WINDOW_TONE_HZ) > HEARD_DBFS;
+    let sound = scene.caller.sound.clone();
+    let silent = move |_: &mut Window| heard(&sound, WINDOW_TONE_HZ) < ABSENT_DBFS;
+    let open = |window: &mut Window| {
+        window.view().controls.microphone == MicrophoneButton::Open
+            && own(window).is_some_and(|own| matches!(own.microphone, Microphone::Open { .. }))
+    };
+    let closed = |window: &mut Window| {
+        window.view().controls.microphone == MicrophoneButton::Muted
+            && own(window).is_some_and(|own| own.microphone == Microphone::Closed)
+    };
+    let holds = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.holds_mute())
+    };
+    let f13 = || gpui::Keystroke::parse("f13").unwrap();
+    let hold = |window: &mut Window| {
+        window.dispatch(gpui::KeyDownEvent {
+            keystroke: f13(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+    };
+    let release = |window: &mut Window| window.dispatch(gpui::KeyUpEvent { keystroke: f13() });
+    scene
+        .window
+        .until("the administrator hears the window", sends.clone());
+
+    hold(&mut scene.window);
+    scene
+        .window
+        .until("the held key closed the microphone", |window| {
+            holds(window) && closed(window) && silent(window)
+        });
+    release(&mut scene.window);
+    scene
+        .window
+        .until("the release opened the microphone", |window| {
+            !holds(window) && open(window) && sends(window)
+        });
+
+    // The window loses the focus while it holds the key: the key-up goes to another
+    // application.
+    scene.window.cx.update(|window, _| window.activate_window());
+    scene.window.settle();
+    hold(&mut scene.window);
+    scene
+        .window
+        .until("the held key closed the microphone", |window| {
+            closed(window) && silent(window)
+        });
+    scene.window.simulate(|cx| cx.deactivate_window());
+    assert!(
+        !scene
+            .window
+            .cx
+            .update(|window, _| window.is_window_active())
+    );
+    scene
+        .window
+        .until("the deactivation ended the hold", |window| !holds(window));
+    scene
+        .window
+        .until("the deactivation opened the microphone", |window| {
+            open(window) && sends(window)
+        });
+    scene.window.cx.update(|window, _| window.activate_window());
+    scene.window.settle();
+
+    // The person closed the microphone: a hold and its release leave it closed.
+    scene.window.click("microphone");
+    scene
+        .window
+        .until("the person closed the microphone", |window| {
+            closed(window) && silent(window)
+        });
+    hold(&mut scene.window);
+    scene.window.until("the key is held", holds);
+    release(&mut scene.window);
+    scene
+        .window
+        .until("the key is released", |window| !holds(window));
+    super::stays(&mut scene.window, "the microphone stays closed", |view| {
+        view.muted
+    });
+    scene.window.click("microphone");
+    scene
+        .window
+        .until("the person opened the microphone", |window| {
+            open(window) && sends(window)
+        });
+
+    // The keyboard of the system holds the key while another application is in front.
+    let held = HeldKeys::default();
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.install_held_keys(held.clone(), cx);
+        });
+    scene.window.simulate(|cx| cx.deactivate_window());
+    held.hold(Ok(vec![Key::Function(13)]));
+    scene
+        .window
+        .until("the key of the system closed the microphone", |window| {
+            holds(window) && closed(window) && silent(window)
+        });
+    held.hold(Ok(Vec::new()));
+    scene.window.until(
+        "the release on the system opened the microphone",
+        |window| !holds(window) && open(window) && sends(window),
+    );
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the call has ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}
+
+/// The gpui keystroke of the default keys of an action, as `Window::press` takes it.
+fn press_default(window: &mut Window, action: junto_client_core::keybinds::KeyAction) {
+    use junto_client_core::global_keys::Key;
+    let keys = junto_client_core::keybinds::Keybinds::default_binding(action)
+        .keys
+        .unwrap();
+    let keystroke = keys
+        .keys()
+        .iter()
+        .map(|key| match key {
+            Key::Control => "ctrl".to_owned(),
+            Key::Alt => "alt".to_owned(),
+            Key::Shift => "shift".to_owned(),
+            Key::Meta => "cmd".to_owned(),
+            Key::Letter(letter) => letter.to_ascii_lowercase().to_string(),
+            Key::Enter => "enter".to_owned(),
+            Key::Backspace => "backspace".to_owned(),
+            other => panic!("no call action has the default key {other:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join("-");
+    window.press(&keystroke);
+}
+
+/// The call actions at their default keys in a real call (ADR 0777): the share dialog opens,
+/// the call is shown from another channel, the device leaves, a ringing invitation is
+/// declined and another one answered, and the call panel closes and opens.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_call_actions_at_their_default_keys(cx: &mut TestAppContext) {
+    use junto_client_core::keybinds::KeyAction;
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let (voice, luca) = (scene.voice, scene.luca);
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.join_in_the_window();
+
+    assert!(scene.window.view().call.unwrap().can_share);
+    press_default(&mut scene.window, KeyAction::ShareScreen);
+    assert!(scene.window.shows("share-picker"));
+    scene.window.press("escape");
+    assert!(!scene.window.shows("share-picker"));
+
+    let text = scene
+        .window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Text)
+        .unwrap();
+    scene.window.click_channel(&text.name);
+    scene.window.until("the call is not shown", |window| {
+        window.view().call.is_some_and(|call| !call.shown)
+    });
+    press_default(&mut scene.window, KeyAction::ShowCall);
+    scene.window.until("the call is shown", |window| {
+        window.view().call.is_some_and(|call| call.shown) && window.shows("call-stage")
+    });
+
+    press_default(&mut scene.window, KeyAction::LeaveCall);
+    scene
+        .window
+        .until("the device left", |window| window.view().call.is_none());
+    let admin = scene.admin.handle.clone();
+    scene
+        .window
+        .until("the server no longer lists the person", |_| {
+            !listed(&admin, &scene.target, luca)
+        });
+
+    scene.world.run(api.invite_to_call(voice, luca)).unwrap();
+    scene.window.until("the invitation rings", |window| {
+        window.shows("call-invitation")
+    });
+    press_default(&mut scene.window, KeyAction::DeclineCall);
+    scene.window.until("the invitation is gone", |window| {
+        !window.shows("call-invitation") && window.view().invitations.is_empty()
+    });
+    scene.window.until("the server ended the invitation", |_| {
+        admin
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.invitations.is_empty())
+    });
+    assert!(scene.window.view().call.is_none());
+
+    scene.world.run(api.invite_to_call(voice, luca)).unwrap();
+    scene.window.until("the invitation rings", |window| {
+        window.shows("call-invitation")
+    });
+    press_default(&mut scene.window, KeyAction::AnswerCall);
+    scene.window.until("the answer entered the call", connected);
+    assert!(!scene.window.shows("call-invitation"));
+    assert_eq!(scene.window.view().call.unwrap().channel_id, Some(voice));
+
+    assert!(scene.window.shows("call-panel"));
+    press_default(&mut scene.window, KeyAction::ToggleCallPanel);
+    scene.window.settle();
+    assert!(
+        !scene.window.shows("call-panel"),
+        "the key of the call panel did not close the panel"
+    );
+    press_default(&mut scene.window, KeyAction::ToggleCallPanel);
+    scene.window.settle();
+    assert!(scene.window.shows("call-panel"));
+
+    press_default(&mut scene.window, KeyAction::LeaveCall);
+    scene
+        .window
+        .until("the device left", |window| window.view().call.is_none());
+}
+
+/// The events of a call that a person needs to know while no window of the application is
+/// active are system notifications (ADR 0742): a call that starts in a voice channel whose
+/// messages all notify the person, the answers to the own request to enter, a removal and a
+/// move by a moderator.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::api::SettingsScope;
+    use junto_client_core::protocol::discovery::{NotificationLevel, NotificationSettings};
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let voice = scene.voice;
+    let own_server = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.client().servers())
+        .remove(0);
+    scene
+        .world
+        .run(own_server.api().set_notification_settings(
+            SettingsScope::Channel(voice),
+            &NotificationSettings {
+                level: Some(NotificationLevel::All),
+                ..NotificationSettings::default()
+            },
+        ))
+        .unwrap();
+    let held = own_server.clone();
+    scene.window.until("the level of the room is held", |_| {
+        held.live().view().model.is_some_and(|model| {
+            model
+                .notification_settings(SettingsScope::Channel(voice))
+                .is_some_and(|settings| settings.level == Some(NotificationLevel::All))
+        })
+    });
+    let told =
+        |window: &mut Window, title: &str| window.shown_titles().iter().any(|shown| shown == title);
+
+    let second = scene.world.server("Harbor");
+    let second_owner = scene.world.owner(&second);
+    scene
+        .window
+        .join_further(&scene.world, &second, &second_owner);
+
+    // Ada starts a call in the room.
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .window
+        .until("the start of the call is told", |window| {
+            told(window, &format!("A call started in {ROOM}"))
+        });
+
+    scene
+        .window
+        .press_alert(&format!("A call started in {ROOM}"));
+    scene.window.until("the notified channel opens", |window| {
+        window.selected_channel() == voice
+    });
+
+    // The room is locked; the people inside deny the request of Luca, then let Luca in.
+    scene.world.run(api.lock_call(voice)).unwrap();
+    scene
+        .window
+        .until("the lock is shown", |window| voice_of(window).locked);
+    scene.window.click_channel(ROOM);
+    scene.window.click("ask-to-enter");
+    let request = scene.entry_request();
+    scene
+        .world
+        .run(api.answer_entry_request(request.id, false))
+        .unwrap();
+    scene.window.until("the denial is told", |window| {
+        told(window, &format!("You were not let into {ROOM}"))
+    });
+    scene.window.until("the first request has ended", |window| {
+        voice_of(window).entry != Some(EntryState::Waiting)
+    });
+    scene.window.click("ask-to-enter");
+    scene.window.until("the second request waits", |window| {
+        voice_of(window).entry == Some(EntryState::Waiting)
+    });
+    let request = scene.entry_request();
+    scene
+        .world
+        .run(api.answer_entry_request(request.id, true))
+        .unwrap();
+    scene.window.until("the acceptance is told", |window| {
+        told(window, &format!("You were let into {ROOM}"))
+    });
+    scene.window.until("the person is inside", |window| {
+        connected(window) && own(window).is_some_and(|own| own.presence == Presence::Here)
+    });
+
+    // Ada removes Luca from the call.
+    scene
+        .world
+        .run(api.disconnect_participant(voice, scene.luca))
+        .unwrap();
+    scene.window.until("the removal is told", |window| {
+        told(window, &format!("You were removed from the call in {ROOM}"))
+    });
+    scene.world.run(api.unlock_call(voice)).unwrap();
+
+    // Luca enters again, and Ada moves Luca into another room.
+    scene.join_in_the_window();
+    let other = second_room(&scene.world, &scene.admin, &mut scene.window, "Second");
+    scene
+        .world
+        .run(api.move_participant(voice, scene.luca, other.place.channel_id().unwrap()))
+        .unwrap();
+    scene.window.until("the move is told", |window| {
+        told(window, "Ada moved you to Second")
+    });
     scene.world.run(scene.caller.calls.leave());
 }

@@ -278,6 +278,21 @@ fn addressed_query(before: &'static str, after: &'static str) -> sqlx::AssertSql
     ))
 }
 
+/// Of the events that give a system notification, a background connection receives an
+/// addition to a workspace and a change of a recording only for the person they tell, and
+/// the start of a call only in a channel; a direct call is told by its invitation
+/// (ADR 0107).
+fn told_in_background(event: Option<&Event>, account_id: AccountId) -> bool {
+    match event {
+        Some(Event::WorkspaceMemberAdded { member, .. }) => member.account_id == account_id,
+        Some(Event::RecordingUpdated { recording }) => recording.started_by == account_id,
+        Some(Event::CallStarted { place, .. }) => {
+            matches!(place, junto_protocol::call::CallPlace::Channel { .. })
+        }
+        _ => true,
+    }
+}
+
 fn decide(
     access: &Access,
     standing: &Standing,
@@ -372,7 +387,9 @@ fn decide(
     if standing.quiet && alert {
         return Ok(Decision::Hidden);
     }
-    let wanted = candidate.class.is_none_or(|class| class.reaches(level))
+    let wanted = (candidate.class.is_none_or(|class| class.reaches(level))
+        && (level == Level::Full
+            || told_in_background(candidate.event.as_ref(), access.account_id)))
         || (in_call.is_some() && audience.call_key() == in_call);
     let recipient = Recipient {
         account_id: access.account_id,
@@ -415,11 +432,26 @@ fn decide(
             workspace_id,
             channel_id,
         }),
-        (Some(_), Some(event), None) => Ok(Decision::Deliver(Box::new(Receivable {
-            position: candidate.position,
-            at: candidate.recorded_at,
-            event,
-        }))),
+        (Some(_), Some(mut event), None) => {
+            // The notice and the state of a thread are the ones of this account: its client
+            // keeps its lists from them without reading them again (ADR 0409, ADR 0412).
+            match &mut event {
+                Event::NotificationChanged { message_id, notice } => {
+                    *notice = standing.notifications.get(message_id).cloned();
+                }
+                Event::MessageChanged {
+                    thread_root: Some(root),
+                    thread,
+                    ..
+                } => *thread = standing.threads.get(root).cloned(),
+                _ => {}
+            }
+            Ok(Decision::Deliver(Box::new(Receivable {
+                position: candidate.position,
+                at: candidate.recorded_at,
+                event,
+            })))
+        }
         _ => Ok(Decision::Unsendable),
     }
 }
@@ -878,8 +910,11 @@ struct Standing {
     mentioned: HashSet<junto_protocol::ids::MessageId>,
     mention_notices: HashSet<Uuid>,
     notification_notices: HashMap<Uuid, (bool, bool)>,
-    notifications:
-        HashMap<junto_protocol::ids::MessageId, junto_protocol::discovery::NotificationKind>,
+    /// The notice of the account for each message that a notice event of the batch names.
+    notifications: HashMap<junto_protocol::ids::MessageId, junto_protocol::discovery::Notification>,
+    /// The state for the account of each thread whose reply an event of the batch names
+    /// (ADR 0412).
+    threads: HashMap<junto_protocol::ids::MessageId, junto_protocol::message::ThreadState>,
 }
 
 impl Standing {
@@ -933,8 +968,29 @@ impl Standing {
             )
             .await?
             .into_iter()
-            .map(|notice| (notice.message_id, notice.kind))
+            .map(|notice| (notice.message_id, notice))
             .collect()
+        };
+        let mut roots: Vec<junto_protocol::ids::MessageId> = candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.event {
+                Some(Event::MessageChanged {
+                    thread_root: Some(root),
+                    ..
+                }) => Some(*root),
+                _ => None,
+            })
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        let threads = if roots.is_empty() {
+            HashMap::new()
+        } else {
+            crate::messages::threads::states(&mut *connection, access.account_id, &roots)
+                .await?
+                .into_iter()
+                .map(|state| (state.root_id, state))
+                .collect()
         };
         let notice_ids: Vec<_> = candidates
             .iter()
@@ -1166,6 +1222,7 @@ impl Standing {
             mention_notices,
             notification_notices,
             notifications,
+            threads,
         })
     }
 }
@@ -1173,6 +1230,68 @@ impl Standing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_connection_is_told_only_what_concerns_its_person() {
+        use junto_protocol::call::CallPlace;
+        use junto_protocol::ids::RecordingId;
+        use junto_protocol::recording::{Recording, RecordingState};
+        use junto_protocol::structure::WorkspaceMember;
+        use junto_protocol::transcript::TranscriptState;
+        let (own, other) = (AccountId::generate(), AccountId::generate());
+        let added = |account_id| Event::WorkspaceMemberAdded {
+            workspace_id: WorkspaceId::generate(),
+            member: WorkspaceMember {
+                avatar: None,
+                account_id,
+                name: "Member".to_owned(),
+                role_ids: Vec::new(),
+            },
+        };
+        let recording = |started_by| Event::RecordingUpdated {
+            recording: Box::new(Recording {
+                id: RecordingId::generate(),
+                workspace_id: WorkspaceId::generate(),
+                channel_id: ChannelId::generate(),
+                call_id: CallId::generate(),
+                state: RecordingState::Ready,
+                started_by,
+                requested_at: OffsetDateTime::UNIX_EPOCH,
+                recording_since: None,
+                stop: None,
+                ended_at: None,
+                failure: None,
+                language: "auto".to_owned(),
+                segments: 1,
+                failed_segments: 0,
+                bytes: None,
+                timeline_started_at: None,
+                transcript: TranscriptState::Ready,
+                transcript_lines: 1,
+            }),
+        };
+        let started = |place| Event::CallStarted {
+            hides_occupants: None,
+            call_id: CallId::generate(),
+            place,
+            started_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        let channel = CallPlace::Channel {
+            workspace_id: WorkspaceId::generate(),
+            channel_id: ChannelId::generate(),
+        };
+        let direct = CallPlace::Direct {
+            low_account_id: own,
+            high_account_id: other,
+        };
+        assert!(told_in_background(Some(&added(own)), own));
+        assert!(!told_in_background(Some(&added(other)), own));
+        assert!(told_in_background(Some(&recording(own)), own));
+        assert!(!told_in_background(Some(&recording(other)), own));
+        assert!(told_in_background(Some(&started(channel)), own));
+        assert!(!told_in_background(Some(&started(direct)), own));
+        assert!(told_in_background(None, own));
+    }
 
     #[test]
     fn a_call_selects_every_class_and_a_level_selects_its_own() {

@@ -306,6 +306,14 @@ async fn run_worker(
                     break Run::Abandoned;
                 }
             }
+            // A removal of a recording: the run looks at once whether its job is gone, so
+            // that the worker ends before the files of the recording are deleted.
+            () = app.recordings.asked_to_look_at_the_job() => {
+                if matches!(renew(app, id).await, Ok(false)) {
+                    group.end(&mut child, grace).await;
+                    break Run::Abandoned;
+                }
+            }
         }
     };
     group.finish();
@@ -415,6 +423,15 @@ async fn transcribe(
         }
         Err(error) => Run::NotStarted(error),
     };
+    // The worker has ended: the files of a recording that was removed while it ran do not
+    // wait for the lease of the job any more (ADR 0608).
+    if matches!(run, Run::Abandoned) {
+        let (now, place) = (app.now(), Place::recording(id));
+        transact!(app.background(), |connection| {
+            store::removal_due(connection, now, &place).await
+        })?;
+        app.recordings.process_now();
+    }
     let outcome = match run {
         Run::Abandoned => Ok(None),
         Run::NotStarted(error) => {

@@ -230,9 +230,9 @@ fn a_person_sets_the_level_of_a_workspace_and_gives_a_channel_back_to_it(cx: &mu
     window.until("the three notices", |window| {
         window.notice_texts()
             == [
-                "only this, @Luca",
-                "for the workspace again",
                 "for the workspace",
+                "for the workspace again",
+                "only this, @Luca",
             ]
     });
 }
@@ -346,11 +346,11 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
     window.until("the five notices", |window| {
         window.notice_texts()
             == [
-                "third step, @Luca",
-                "second step, @Luca",
-                "all of you, @everyone",
-                "first step, @Luca",
                 "editors, @Editors",
+                "first step, @Luca",
+                "all of you, @everyone",
+                "second step, @Luca",
+                "third step, @Luca",
             ]
     });
     // Every message arrived and counts as a message.
@@ -699,28 +699,37 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
 #[gpui::test]
 fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
     let world = World::new();
-    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let (_server, admin, directory, mut window, general) = scene(cx, &world);
     let own = window.own_account();
     for number in 0..55 {
         admin.send(&world, general, mention(&format!("number {number}, "), own));
     }
-    // The window counts the notices that it holds: the first page.
+    // The notices follow the events: the window holds every one that arrived (ADR 0722).
+    window.until("every notice arrived", |window| {
+        window.unread_notices() == 55
+    });
+    // A window that starts now holds the first page of the notices.
+    window.close();
+    let mut window = crate::harness::open(cx, directory.path());
     window.until("the notices are counted", |window| {
         window.unread_notices() == 50
     });
     window.open_notices();
-    // The list is read again after each notice: the first page is the one with the newest.
+    // The first page is the one with the newest.
     window.until("the first page of notices", |window| {
         window.notices().is_some_and(|panel| {
             panel.rows.len() == 50
                 && panel.more
                 && !panel.reading
-                && panel.rows[0].text == "number 54, @Luca"
+                && panel
+                    .rows
+                    .last()
+                    .is_some_and(|row| row.text == "number 54, @Luca")
         })
     });
 
-    // The person scrolls to the end of the list, where "Show older" is.
-    window.wheel_to("notice-list", "more-notices");
+    // The person scrolls to the start of the list, where "Show older" is.
+    window.wheel_up_to("notice-list", "more-notices");
     window.click("more-notices");
     window.until("every notice", |window| {
         window
@@ -729,7 +738,7 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
     });
     assert!(!window.shows("more-notices"));
     let texts = window.notice_texts();
-    assert_eq!(texts.last().map(String::as_str), Some("number 0, @Luca"));
+    assert_eq!(texts.first().map(String::as_str), Some("number 0, @Luca"));
     let listed: Vec<uuid::Uuid> = window
         .notices()
         .unwrap()
@@ -743,6 +752,138 @@ fn show_older_lists_the_notices_after_the_first_page(cx: &mut TestAppContext) {
         .notifications
         .iter()
         .map(|notice| notice.id)
+        .rev()
         .collect();
     assert_eq!(listed, stored);
+}
+
+/// The switch of the message text in notifications: off, the system notification of a
+/// message names who wrote and where, without the text; the account keeps the choice on
+/// its server (ADR 0742).
+#[gpui::test]
+fn the_text_of_a_message_can_be_left_out_of_its_system_notification(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (general, own) = (window.selected_channel(), window.own_account());
+    let handle = window.handle();
+    admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    let told = |window: &mut Window, text: &str| {
+        window
+            .kept()
+            .told
+            .iter()
+            .find(|alert| alert.title.contains("general") && alert.body.contains(text))
+            .cloned()
+    };
+    admin.mention(&world, general, "the plan, ", own);
+    window.until("the notification with its text", |window| {
+        told(window, "the plan").is_some()
+    });
+    let title = told(&mut window, "the plan").unwrap().title;
+
+    window.click("app-settings");
+    window.click("settings-section-notifications");
+    window.until("the switch shows the text", |window| {
+        let quiet = window.view().quiet;
+        quiet.hide_text == Some(Agreement::All(false)) && !quiet.busy
+    });
+    window.click_in_settings("notification-text");
+    window.until("the text is hidden", |window| {
+        let quiet = window.view().quiet;
+        quiet.hide_text == Some(Agreement::All(true)) && !quiet.busy
+    });
+    assert!(stored(&world, &handle, SettingsScope::Account).hide_text);
+    window.click("dialog-close");
+
+    admin.mention(&world, general, "the budget, ", own);
+    window.until("the notification without its text", |window| {
+        window.kept().told.len() == 2
+    });
+    let hidden = window.kept().told[1].clone();
+    assert_eq!(hidden.title, title);
+    assert_eq!(hidden.body, junto_client::text::ALERT_TEXT_HIDDEN);
+}
+
+#[gpui::test]
+fn notification_text_is_configured_for_one_server(cx: &mut TestAppContext) {
+    let world = World::new();
+    let first = world.server("Studio");
+    let second = world.server("Harbor");
+    let owner = world.owner(&first);
+    let other_owner = world.owner(&second);
+    let (_directory, mut window) = member(cx, &world, &first.address(), &owner, "Reader");
+    let first_id = window.view().selected.unwrap().id;
+    window.join_further(&world, &second, &other_owner);
+    let second_id = window.view().selected.unwrap().id;
+    window.in_shell(|shell, window, cx| {
+        shell.open_notify_settings(first_id, SettingsScope::Account, window, cx)
+    });
+    window.click("server-notification-text");
+    window.until("the server preference is saved", |window| {
+        window.view().notify.is_some_and(|panel| !panel.busy)
+    });
+    for (id, hidden) in [(first_id, true), (second_id, false)] {
+        let server = window
+            .state
+            .read_with(&window.cx, |state, _| state.server(id))
+            .unwrap();
+        assert_eq!(
+            world
+                .run(server.api().notification_settings(SettingsScope::Account))
+                .unwrap()
+                .hide_text,
+            hidden
+        );
+    }
+}
+
+/// While the call of this device runs a share, a mention gives no system notification; the
+/// notice stays in the list and is not shown when the share ends, and the next mention is
+/// told again (ADR 0742).
+#[gpui::test]
+fn a_running_share_holds_the_notification_of_a_mention(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_media::engine::{ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (general, own) = (window.selected_channel(), window.own_account());
+    crate::calls::voice_channel(&world, &admin, &mut window, "Daily");
+    admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    let mut call = crate::calls::connected_call(&mut window, "Daily");
+    call.own_shares = std::collections::BTreeMap::from([(
+        0,
+        ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(1),
+            kind: ShareKind::Screen,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size: (64, 36),
+            frame_rate: 30,
+        }),
+    )]);
+    crate::calls::show_call(&mut window, call.clone());
+
+    admin.mention(&world, general, "during the share, ", own);
+    window.until("the notice is listed", |window| {
+        window.unread_notices() == 1
+    });
+    window.settle();
+    assert!(window.kept().told.is_empty());
+
+    call.own_shares.clear();
+    crate::calls::show_call(&mut window, call);
+    window.settle();
+    assert!(window.kept().told.is_empty());
+    admin.mention(&world, general, "after the share, ", own);
+    window.until("the mention after the share is told", |window| {
+        window.kept().told.len() == 1
+    });
+    assert!(window.kept().told[0].body.contains("after the share"));
 }

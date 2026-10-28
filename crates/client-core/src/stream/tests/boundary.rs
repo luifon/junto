@@ -65,6 +65,8 @@ impl LiveRoom {
                     message_id: held.id,
                     position,
                     deleted: false,
+                    thread_root: None,
+                    thread: None,
                 },
             )
             .await;
@@ -219,6 +221,8 @@ async fn losing_the_history_drops_the_messages_that_its_pages_gave() {
             message_id: fresh.id,
             position: 4,
             deleted: false,
+            thread_root: None,
+            thread: None,
         },
     )
     .await;

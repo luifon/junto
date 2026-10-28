@@ -1235,6 +1235,13 @@ async fn world() -> World {
             &own,
         ),
         operation(
+            Method::PUT,
+            "/api/v1/call/watching",
+            &[],
+            json!({ "watching": null }),
+            &own,
+        ),
+        operation(
             Method::POST,
             "/api/v1/direct-calls/{account_id}/refusal",
             &[&outsider.account_id],

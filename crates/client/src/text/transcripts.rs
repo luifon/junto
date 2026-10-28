@@ -73,12 +73,12 @@ pub const PARTS: &str = "Parts";
 pub const PARTS_HELP: &str = "Every file of this recording with the time range that it holds";
 
 // The language of a new recording.
-pub const LANGUAGE_MENU: &str = "Record with the language of the speech";
+pub const LANGUAGE_MENU: &str = "Choose the spoken language to start recording";
 pub const DETECT: &str = "Detect the language of each sentence";
 pub const DETECT_HELP: &str = "For speech in more than one language";
-pub const ONE_LANGUAGE: &str = "Speech in one language";
+pub const ONE_LANGUAGE: &str = "One language for the whole recording";
 pub const CANCEL_RECORDING: &str = "Cancel";
-pub const CANCEL_RECORDING_HELP: &str = "Stop the recording before the recorder starts";
+pub const CANCEL_RECORDING_HELP: &str = "Cancel the recording before it starts";
 
 pub fn changed_by(by: &str, at: &str) -> String {
     if at.is_empty() {
@@ -133,16 +133,18 @@ pub fn part_span(started: Option<&str>, ended: Option<&str>) -> String {
 pub fn part_state(segment: &RecordingSegment, processed: bool) -> String {
     use junto_client_core::protocol::recording::FileCheck;
     match (segment.state, &segment.file) {
-        (SegmentState::Starting, _) => "the recorder starts it".to_owned(),
+        (SegmentState::Starting, _) => "starting…".to_owned(),
         (SegmentState::Recording, _) => "being recorded".to_owned(),
         (SegmentState::Failed, file) => {
             let reason = match segment.failure {
-                Some(SegmentFailure::RecorderUnavailable) => "no recorder took it",
+                Some(SegmentFailure::RecorderUnavailable) => "no recorder was available",
                 Some(SegmentFailure::StartRefused) => "the recorder refused to start it",
                 Some(SegmentFailure::StartInterrupted) => {
                     "the server stopped before the recorder started it"
                 }
-                Some(SegmentFailure::RecorderLost) => "the recorder was lost while it ran",
+                Some(SegmentFailure::RecorderLost) => {
+                    "the recorder lost its connection while recording"
+                }
                 Some(SegmentFailure::RecorderError) => "the recorder ended it with an error",
                 Some(SegmentFailure::Unknown) | None => {
                     "for a reason that this version does not know"
@@ -160,7 +162,7 @@ pub fn part_state(segment: &RecordingSegment, processed: bool) -> String {
         ),
         (SegmentState::Ended, Some(_)) => "saved".to_owned(),
         (SegmentState::Ended, None) if processed => "no file was found".to_owned(),
-        (SegmentState::Ended, None) => "ended; the server checks its file".to_owned(),
+        (SegmentState::Ended, None) => "ended; the server is checking its file".to_owned(),
     }
 }
 
@@ -359,6 +361,8 @@ pub fn language_name(code: &str) -> Option<&'static str> {
         .find(|(known, _)| *known == code)
         .map(|(_, name)| *name)
 }
+
+pub const CHANGE_SAVED: &str = "The change is saved.";
 
 #[cfg(test)]
 mod tests {

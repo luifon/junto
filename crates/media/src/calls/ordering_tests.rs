@@ -89,7 +89,9 @@ fn fixture() -> Fixture {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: None,
+            screen_shares: Vec::new(),
         }],
     };
     let answer = CallJoin {
@@ -106,6 +108,7 @@ fn fixture() -> Fixture {
         meeting_grant: None,
         microphone_block: None,
         sound_block: None,
+        shares: None,
     };
     let model = ServerModel::from_snapshot(Snapshot {
         cursor: Cursor {
@@ -220,7 +223,8 @@ fn fixture() -> Fixture {
         grant_closed: false,
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
-        share_report: Reporter::holding(timing.share_spacing, None),
+        share_reports: ShareReports::new(timing.share_spacing),
+        watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
         speaking: false,
@@ -1174,6 +1178,7 @@ fn a_share() -> CaptureRequest {
         picture: crate::share::PictureSource::Display(1),
         sound: crate::share::SoundChoice::System,
         quality: crate::share::ShareQuality::default(),
+        dialog_parent: None,
     }
 }
 

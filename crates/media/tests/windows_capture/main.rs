@@ -347,6 +347,71 @@ fn the_lists_name_the_screens_the_window_of_another_program_and_its_application(
     );
 }
 
+/// The preview of a window whose application does not answer fails at once instead of
+/// waiting for the application, and the window gets its preview again once it answers
+/// (ADR 0736).
+#[test]
+fn the_preview_of_a_window_whose_application_does_not_answer_fails_without_waiting() {
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let source = PictureSource::Window(fixture.window);
+    let bound = junto_media::share::PREVIEW_BOUND;
+    assert!(runtime().block_on(capture.preview(source, bound)).is_ok());
+    fixture.send("stall 14");
+    // Windows marks a window as not answering after five seconds without a message read.
+    std::thread::sleep(Duration::from_secs(7));
+    let asked = Instant::now();
+    let refused = runtime().block_on(capture.preview(source, bound));
+    assert!(
+        matches!(refused, Err(CaptureError::Failed(_))),
+        "{refused:?}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        asked.elapsed()
+    );
+    let started = Instant::now();
+    loop {
+        if runtime().block_on(capture.preview(source, bound)).is_ok() {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "no preview after the stall"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[test]
+fn a_preview_does_not_wait_for_a_window_that_has_just_stopped_answering() {
+    let mut fixture = Fixture::open();
+    fixture.send("stall 10");
+    assert_eq!(fixture.line(), "stalling");
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let started = Instant::now();
+    let result = runtime.block_on(capture.preview(
+        PictureSource::Window(fixture.window),
+        junto_media::share::PREVIEW_BOUND,
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "native capture took {:?}",
+        started.elapsed()
+    );
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        runtime
+            .block_on(capture.preview(
+                PictureSource::Display(fixture.screen),
+                junto_media::share::PREVIEW_BOUND,
+            ))
+            .is_ok()
+    );
+}
+
 #[test]
 fn a_window_share_shows_its_colours_follows_a_change_and_ends_when_the_window_closes() {
     let mut fixture = Fixture::open();
@@ -362,6 +427,7 @@ fn a_window_share_shows_its_colours_follows_a_change_and_ends_when_the_window_cl
                     resolution: Resolution::Source,
                     frame_rate: 30,
                 },
+                dialog_parent: None,
             },
             pictures.clone(),
         ))
@@ -432,6 +498,7 @@ fn a_screen_share_shows_the_window_where_it_is_and_stops_when_dropped() {
                     resolution: Resolution::Source,
                     frame_rate: 15,
                 },
+                dialog_parent: None,
             },
             pictures.clone(),
         ))
@@ -483,6 +550,7 @@ fn a_share_with_the_sound_of_one_application_or_of_the_system_starts_and_gives_s
                     picture: PictureSource::Window(fixture.window),
                     sound: sound.clone(),
                     quality: ShareQuality::default(),
+                    dialog_parent: None,
                 },
                 pictures.clone(),
             ))
@@ -568,6 +636,7 @@ fn a_share_with_sound_starts_after_the_sound_devices_were_listed_on_the_threads_
                 picture: PictureSource::Window(fixture.window),
                 sound: sound.clone(),
                 quality: ShareQuality::default(),
+                dialog_parent: None,
             },
             Arc::new(Pictures::default()),
         ));
@@ -673,6 +742,7 @@ fn a_source_that_is_not_there_does_not_start() {
                 picture,
                 sound: sound.clone(),
                 quality: ShareQuality::default(),
+                dialog_parent: None,
             },
             Arc::new(Pictures::default()),
         ));
@@ -734,6 +804,7 @@ fn a_client_started_by_the_fixture() {
                 picture: PictureSource::Window(window),
                 sound,
                 quality: ShareQuality::default(),
+                dialog_parent: None,
             },
             Arc::new(Pictures::default()),
         ))
@@ -1219,6 +1290,7 @@ fn the_graphics_memory_of_a_window_share_does_not_grow_with_its_pictures() {
                     resolution: Resolution::Source,
                     frame_rate: 30,
                 },
+                dialog_parent: None,
             },
             pictures.clone(),
         ))

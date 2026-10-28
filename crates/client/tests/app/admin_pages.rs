@@ -726,6 +726,8 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     let server = world.server("Acme Studio");
     let (_directory, mut window, owner) = owner_window(cx, &server);
     let code = invite(&world, &owner, Vec::new());
+    // The test moves the clock itself to measure the bounds of the window.
+    window.hold_clock();
     let (_device, member) = joined(&world, &server, &code, "Bruno");
     let (ada, bruno) = (logged_in(&owner), logged_in(&member));
     let on_server = |account_id: AccountId| {
@@ -813,6 +815,34 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
         (banned.remove, banned.ban, banned.unban),
         (Ok(()), Err(Blocked::Banned), Ok(()))
     );
+    // The row keeps the height of the question while the pointer is on the confirmation,
+    // and that space states the result instead of staying empty (open item UP2).
+    assert!(
+        window.shows("kept-result"),
+        "the kept space of the row is empty"
+    );
+    let kept = window.cx.debug_bounds("kept-result").unwrap();
+    assert!(kept.size.height > px(20.0), "{kept:?}");
+    // The kept space keeps the height of the question for at most a bound; then the result
+    // has the height of its sentence and stays (review L2).
+    window
+        .cx
+        .executor()
+        .advance_clock(junto_client::ui::WAIT_BOUND + std::time::Duration::from_millis(50));
+    window.settle();
+    let bounded = window
+        .cx
+        .debug_bounds("kept-result")
+        .unwrap_or_else(|| panic!("the result went with the bound"));
+    assert!(
+        bounded.size.height < kept.size.height && bounded.size.height < px(80.0),
+        "the result {bounded:?} after the bound, {kept:?} before"
+    );
+    // A press in the rows that moved under the pointer is refused for a short time.
+    window
+        .cx
+        .executor()
+        .advance_clock(junto_client::ui::MOVED_GUARD);
     assert!(!window.shows(sel("account-ban", bruno)) && !window.shows("account-confirm"));
     let entry_of = |action: &str| {
         let query = AuditFilterQuery {
@@ -1644,6 +1674,14 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
     assert!(file.starts_with(b"PK"));
     // The unfinished file of the save is gone.
     assert_eq!(std::fs::read_dir(downloads.path()).unwrap().count(), 1);
+    // The data directory keeps the export as saved.
+    let marks = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().root().join("saved-exports.json")
+    });
+    let marked = export_id.to_string();
+    window.until("the saved export is in the data directory", |_| {
+        std::fs::read_to_string(&marks).is_ok_and(|text| text.contains(&marked))
+    });
 
     // The removal asks first. It removes the export on the server, and the saved file
     // stays on this device.
@@ -1657,6 +1695,10 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
     let gone = world.run(owner.api().export(export_id)).unwrap_err();
     assert_eq!(gone.category(), Some(ErrorCategory::NotFound));
     assert!(saved.exists());
+    // The removed export is not kept as saved.
+    window.until("the removed export left the data directory", |_| {
+        std::fs::read_to_string(&marks).is_ok_and(|text| !text.contains(&marked))
+    });
 }
 
 #[gpui::test]

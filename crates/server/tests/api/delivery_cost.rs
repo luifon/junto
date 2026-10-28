@@ -77,6 +77,8 @@ async fn delivery_batch_statement_bound() {
                         message_id: changed.id,
                         position: changed.position,
                         deleted: false,
+                        thread_root: None,
+                        thread: None,
                     },
                 )
                 .await

@@ -77,7 +77,7 @@ An invitation or move cannot grant permission; entry still checks the destinatio
 
 Default everyone grants include view channel, lock room, run meeting mode and the channel-use
 permissions except set call user limit. Admit to full call, recording and other management
-permissions remain ungranted by default. Migration 0039 preserves earlier access, copies the
+permissions remain ungranted by default. Migration 0042 preserves earlier access, copies the
 old manage-channel authority into set call user limit, widens the stored bit range, and renews
 the event epoch. ADR 0304 defines storage and ceilings; ADR 0310 defines effective snapshot lists.
 

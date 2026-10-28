@@ -10,6 +10,7 @@ use junto_client::state::feed::Zone;
 use junto_client::state::view::ServerSnapshot;
 use junto_client::text;
 use junto_client_core::Reach;
+use junto_client_core::arrangement::{Arrangement, Change, GroupColour, GroupId, WorkspaceSpot};
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::StreamStatus;
 use junto_client_core::protocol::ids::{ChannelId, RecordingId};
@@ -140,6 +141,130 @@ fn show_updates(shell: &mut Shell, updates: UpdatesKnown, cx: &mut gpui::Context
         .state()
         .clone()
         .update(cx, |state, cx| state.show_updates_fixture(updates, cx));
+}
+
+/// Acme Studio and Harbor in the group "Work", in cypress, before Quarry; the workspace
+/// "Client Beta" of Acme Studio first. `collapsed`: the group is collapsed.
+fn arranged(collapsed: bool, workspaces_collapsed: bool) -> (Arrangement, GroupId) {
+    let mut order = vec![id(ACME), id(HARBOR), id(QUARRY)];
+    let mut arrangement = Arrangement::default();
+    let mut change = |change: Change| {
+        arrangement
+            .apply(&mut order, change)
+            .unwrap_or_else(|error| panic!("{error}"));
+    };
+    change(Change::NewGroup {
+        server: id(ACME),
+        name: "Work".to_owned(),
+    });
+    change(Change::MoveWorkspace {
+        server: id(ACME),
+        workspace: id(12),
+        to: WorkspaceSpot::Before(id(STUDIO)),
+        shown: vec![id(STUDIO), id(11), id(12)],
+    });
+    change(Change::CollapseWorkspaces {
+        server: id(ACME),
+        collapsed: workspaces_collapsed,
+    });
+    let group = arrangement
+        .group_of(id(ACME))
+        .unwrap_or_else(|| panic!("a group"));
+    let mut change = |change: Change| {
+        arrangement
+            .apply(&mut order, change)
+            .unwrap_or_else(|error| panic!("{error}"));
+    };
+    change(Change::MoveServer {
+        server: id(HARBOR),
+        to: junto_client_core::arrangement::Spot::InGroup(group),
+    });
+    change(Change::ColourGroup {
+        group,
+        colour: GroupColour::Cypress,
+    });
+    change(Change::CollapseGroup { group, collapsed });
+    (arrangement, group)
+}
+
+fn arrange(shell: &mut Shell, arrangement: Arrangement, cx: &mut gpui::Context<Shell>) {
+    shell.state().clone().update(cx, |state, cx| {
+        state.show_arrangement_fixture(arrangement, cx)
+    });
+}
+
+fn draw_arrangement(studio: &mut Studio) -> Result<(), String> {
+    // A group of two servers, expanded, with a mention in Harbor; the workspaces of Acme
+    // Studio in the order of the person.
+    studio.draw(
+        Screen::new("book-group-expanded", three_servers(2)),
+        |shell, _, cx| arrange(shell, arranged(false, false).0, cx),
+    )?;
+    // Collapsed: the head counts its servers and shows the mention of Harbor.
+    studio.draw(
+        Screen::new("book-group-collapsed", three_servers(2)),
+        |shell, _, cx| arrange(shell, arranged(true, false).0, cx),
+    )?;
+    // The workspaces of Acme Studio collapsed: its head shows what they hold.
+    studio.draw(
+        Screen::new("book-workspaces-collapsed", three_servers(0)),
+        |shell, _, cx| arrange(shell, arranged(false, true).0, cx),
+    )?;
+    // The collapsed server book: the tile of the collapsed group with the pictures of its
+    // servers, and the expanded group on the wash of its colour.
+    for (name, collapsed) in [
+        ("book-group-collapsed-rail", true),
+        ("book-group-expanded-rail", false),
+    ] {
+        studio.draw(Screen::new(name, three_servers(2)), move |shell, _, cx| {
+            arrange(shell, arranged(collapsed, false).0, cx);
+            shell
+                .state()
+                .clone()
+                .update(cx, |state, cx| state.set_server_book_collapsed(true, cx));
+        })?;
+    }
+    // The menu of the group, the choice of the group of a server, and the dialog of the
+    // name.
+    studio.draw(
+        Screen::new("book-group-menu", three_servers(2)),
+        |shell, window, cx| {
+            let (arrangement, group) = arranged(false, false);
+            arrange(shell, arrangement, cx);
+            shell.open_group_menu(group, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("book-group-choice", three_servers(0)),
+        |shell, window, cx| {
+            arrange(shell, arranged(false, false).0, cx);
+            shell.open_group_choice(id(ACME), window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("book-group-rename", three_servers(0)),
+        |shell, window, cx| {
+            let (arrangement, group) = arranged(false, false);
+            arrange(shell, arrangement, cx);
+            shell.open_rename_dialog(group, window, cx);
+        },
+    )?;
+    // The menu of a workspace, and the menu of a server in a group.
+    studio.draw(
+        Screen::new("book-workspace-menu", three_servers(0)),
+        |shell, window, cx| {
+            arrange(shell, arranged(false, false).0, cx);
+            shell.open_workspace_menu(id(ACME), id(12), window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("book-menu-in-group", three_servers(0)),
+        |shell, window, cx| {
+            arrange(shell, arranged(false, false).0, cx);
+            shell.open(Open::ServerMenu, window, cx);
+        },
+    )?;
+    Ok(())
 }
 
 fn draw_book(studio: &mut Studio) -> Result<(), String> {
@@ -290,6 +415,105 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
         )?;
     }
 
+    // The version of this copy below "Add server" in each state and each way of its
+    // update, expanded and collapsed (ADR 0780).
+    {
+        use junto_client::state::update_install::UpdateWay;
+        const SITE: &str = "https://releases.example.test/junto/";
+        let ways: [(&'static str, UpdatesKnown, UpdateWay, bool); 9] = [
+            (
+                "book-version-current",
+                checked(UpdateState::Current),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-no-source",
+                UpdatesKnown {
+                    build: BUILD,
+                    ..UpdatesKnown::default()
+                },
+                UpdateWay::NoSource,
+                false,
+            ),
+            (
+                "book-version-failed",
+                checked(UpdateState::Failed),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-available",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                false,
+            ),
+            (
+                "book-version-installed",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                true,
+            ),
+            (
+                "book-version-deb",
+                available(Some(PAGE)),
+                UpdateWay::SystemPackage,
+                false,
+            ),
+            (
+                "book-version-move-first",
+                available(Some(PAGE)),
+                UpdateWay::MoveFirst,
+                false,
+            ),
+            (
+                "book-version-not-a-package",
+                available(Some(PAGE)),
+                UpdateWay::NotAPackage,
+                false,
+            ),
+            (
+                "book-version-available-collapsed",
+                available(Some(PAGE)),
+                UpdateWay::InApp,
+                false,
+            ),
+        ];
+        for (name, updates, way, installed) in ways {
+            let collapsed = name.ends_with("-collapsed");
+            studio.draw(Screen::new(name, three_servers(0)), move |shell, _, cx| {
+                show_updates(shell, updates, cx);
+                shell.state().clone().update(cx, |state, cx| {
+                    state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                    if collapsed {
+                        state.set_server_book_collapsed(true, cx);
+                    }
+                });
+            })?;
+        }
+        for (name, way, installed) in [
+            ("settings-version-deb", UpdateWay::SystemPackage, false),
+            ("settings-version-move-first", UpdateWay::MoveFirst, false),
+            (
+                "settings-version-not-a-package",
+                UpdateWay::NotAPackage,
+                false,
+            ),
+            ("settings-version-installed", UpdateWay::InApp, true),
+        ] {
+            studio.draw(
+                Screen::new(name, three_servers(0)),
+                move |shell, window, cx| {
+                    show_updates(shell, available(Some(PAGE)), cx);
+                    shell.state().clone().update(cx, |state, cx| {
+                        state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                    });
+                    shell.open_version_settings(window, cx);
+                },
+            )?;
+        }
+    }
+
     // A server that needs a newer client, with the newer version that is known and
     // without one.
     let too_old = || {
@@ -433,6 +657,17 @@ fn draw_recordings(studio: &mut Studio) -> Result<(), String> {
         Screen::new("admin-recordings", servers()),
         |shell, window, cx| open_recordings(shell, |list| list, recordings(), true, window, cx),
     )?;
+    // A recording was removed: its row is gone from the page.
+    studio.draw(
+        Screen::new("admin-recording-removed", servers()),
+        |shell, window, cx| {
+            let mut fewer = recordings();
+            if !fewer.is_empty() {
+                fewer.remove(0);
+            }
+            open_recordings(shell, |list| list, fewer, true, window, cx)
+        },
+    )?;
     studio.draw(
         Screen::new("admin-recordings-scale-150", servers()).scale(150),
         |shell, window, cx| open_recordings(shell, |list| list, recordings(), false, window, cx),
@@ -509,6 +744,7 @@ fn draw_recordings(studio: &mut Studio) -> Result<(), String> {
 
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     draw_book(studio)?;
+    draw_arrangement(studio)?;
     draw_update(studio)?;
     draw_recordings(studio)
 }

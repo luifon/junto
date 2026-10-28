@@ -975,6 +975,7 @@ pub(crate) fn element<V: ListHost>(
         })
         .relative()
         .size_full()
+        .child(crate::ui::area("admin-page"))
         .children(entry("admin-list-start", start))
         .child(
             div()

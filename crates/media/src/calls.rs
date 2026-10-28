@@ -6,7 +6,7 @@
 //! blocks that the server reports, connects again after a loss, and ends the engine when
 //! the server ends the place.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -20,7 +20,7 @@ use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{
     Call, CallJoin, CallMove, CallPlace, LeaveReason, MicrophoneBlock, MoveOutcome, OwnCall,
-    ShareAudio, SoundBlock,
+    ShareAudio, ShareKind as ReportedKind, SoundBlock,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::{Cursor, Event};
@@ -32,17 +32,19 @@ use livekit::prelude::{Room, RoomOptions};
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use crate::audio::capture::CaptureLink;
 use crate::audio::{AudioError, AudioHost, DeviceInfo, Devices};
 use crate::engine::{
     Connection, Controls, Engine, EngineOptions, EngineState, Levels, Lost, MainPicture, MediaJoin,
-    MicrophoneState, OutputState, SeenShare, ShareId, ShareState, VoiceConfig, Watching,
+    MicrophoneState, OutputState, Person, SeenShare, ShareId, ShareState, VoiceConfig, Watching,
 };
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::VideoPicture;
 use crate::share::{
-    CaptureError, CaptureRequest, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareSources,
+    CaptureError, CaptureRequest, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareKind,
+    ShareSources,
 };
 
 /// The times of the work that the calls do by themselves.
@@ -185,8 +187,14 @@ pub struct ActiveCall {
     /// The server closed the microphone of the person (ADR 0503, ADR 0512).
     pub microphone_block: Option<MicrophoneBlock>,
     pub sound_block: Option<SoundBlock>,
-    /// The share of this device.
-    pub share: ShareState,
+    /// How many shares this device can run at once in the call: three, or one on a server
+    /// from before several shares (ADR 0502).
+    pub share_limit: u8,
+    /// The shares of this device by their slots.
+    pub own_shares: BTreeMap<u8, ShareState>,
+    /// Why the last own share that ended by itself ended, until the person starts or stops
+    /// a share or puts the statement away.
+    pub share_ended: Option<CaptureError>,
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets.
@@ -319,6 +327,9 @@ pub struct CallsView {
     /// Why the calls closed the microphone setting last. It stays until
     /// [`Calls::dismiss_closed`].
     pub closed: Option<MicrophoneClosed>,
+    /// Why the level test of the sound settings could not open the microphone. It stays
+    /// until a test opens one or the test stops.
+    pub input_test_failed: Option<AudioError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -350,15 +361,18 @@ enum SessionCommand {
     Config(VoiceConfig),
     RetryMicrophone(Seat),
     StartShare(Seat, CaptureRequest),
-    StopShare,
+    StopShare(Option<u8>),
+    ForgetShareEnd,
     Watch(Option<ShareId>),
     ShareVolume(f32),
     ViewSize(u32, u32),
-    CameraViews(HashMap<ShareId, (u32, u32)>),
+    CameraViews(HashMap<Person, (u32, u32)>),
     #[cfg(feature = "test-support")]
     SimulateFullReconnect,
     #[cfg(feature = "test-support")]
     SimulateConnectionLoss,
+    #[cfg(feature = "test-support")]
+    HoldPermissions(bool),
     #[cfg(feature = "test-support")]
     Statistics(crate::engine::statistics::Reply),
     #[cfg(feature = "test-support")]
@@ -398,7 +412,7 @@ struct Shared {
     share_volume: Option<f32>,
     /// The size in pixels inside which the interface draws the watched share.
     view_size: Option<(u32, u32)>,
-    camera_views: Option<HashMap<ShareId, (u32, u32)>>,
+    camera_views: Option<HashMap<Person, (u32, u32)>>,
     joining: Option<Joining>,
     next_key: u64,
     active: Option<ActiveHandle>,
@@ -416,7 +430,7 @@ struct Shared {
 type Turn = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 struct Inner {
-    camera_pictures: watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>,
+    camera_pictures: watch::Sender<HashMap<Person, Arc<VideoPicture>>>,
     client: Client,
     runtime: tokio::runtime::Handle,
     options: MediaOptions,
@@ -614,6 +628,11 @@ impl Calls {
     }
 
     /// The push-to-talk key is held or released (ADR 0507).
+    /// True while the key of push to talk is held, as the calls were told last.
+    pub fn talking(&self) -> bool {
+        self.inner.shared().talking
+    }
+
     pub fn set_talking(&self, talking: bool) {
         let mut shared = self.inner.shared();
         if shared.talking != talking {
@@ -669,12 +688,33 @@ impl Calls {
                 inner.levels.clone(),
                 &inner.runtime,
             );
-            let Ok(test) = opened else {
-                return;
+            let test = match opened {
+                Ok(test) => test,
+                Err(error) => {
+                    // The device of the earlier test is not the chosen one any more: that
+                    // test ends, and the settings state why no level shows.
+                    let ended = {
+                        let mut shared = inner.shared();
+                        if shared.input_tests != generation || shared.active.is_some() {
+                            return;
+                        }
+                        shared.input_test.take()
+                    };
+                    tracing::warn!(%error, "the microphone of the level test did not open");
+                    drop(ended);
+                    inner.levels.send_modify(|levels| levels.input = 0.0);
+                    inner
+                        .view
+                        .send_modify(|view| view.input_test_failed = Some(error));
+                    return;
+                }
             };
             let replaced = {
                 let mut shared = inner.shared();
                 if shared.input_tests == generation && shared.active.is_none() {
+                    inner
+                        .view
+                        .send_if_modified(|view| view.input_test_failed.take().is_some());
                     shared.input_test.replace(test)
                 } else {
                     Some(test)
@@ -695,6 +735,9 @@ impl Calls {
             self.inner.runtime.spawn_blocking(move || drop(test));
             self.inner.levels.send_modify(|levels| levels.input = 0.0);
         }
+        self.inner
+            .view
+            .send_if_modified(|view| view.input_test_failed.take().is_some());
     }
 
     /// The microphone of the sound settings is open.
@@ -748,6 +791,42 @@ impl Calls {
         self.inner.options.capture.open_settings();
     }
 
+    /// Makes the system list this application for the screen permission and show its
+    /// question when it has not shown it before, without opening its settings (ADR 0708).
+    pub fn request_screen_access(&self) {
+        self.inner.options.capture.request_access();
+    }
+
+    /// The camera permission of the system now. The call shows no question.
+    pub fn camera_access(&self) -> crate::camera::CameraAccess {
+        self.inner.options.camera.access()
+    }
+
+    /// Makes the system ask the person for the camera when it has not asked yet, and
+    /// returns the state after the answer. The question runs in a task of the runtime of
+    /// the client (ADR 0733).
+    pub fn request_camera_access(&self) -> Pending<crate::camera::CameraAccess> {
+        let camera = self.inner.options.camera.clone();
+        let asking = crate::executor::on_runtime(&self.inner.runtime, async move {
+            camera.request_access().await
+        });
+        let now = self.inner.options.camera.clone();
+        Box::pin(async move { asking.await.unwrap_or_else(|_| now.access()) })
+    }
+
+    /// Makes the system ask the person for the microphone when it has not asked yet, and
+    /// returns the state after the answer.
+    pub fn request_microphone_access(&self) -> Pending<MicrophoneAccess> {
+        let permission = self.inner.options.permission.clone();
+        let asking =
+            crate::executor::on_runtime(
+                &self.inner.runtime,
+                async move { permission.request().await },
+            );
+        let now = self.inner.options.permission.clone();
+        Box::pin(async move { asking.await.unwrap_or_else(|_| now.state()) })
+    }
+
     /// The screens, windows and applications that can be shared now. The capture reads
     /// them in a task of the runtime of the client: the capture of each system waits with
     /// Tokio, and the window polls the returned future on an executor without a runtime
@@ -776,7 +855,13 @@ impl Calls {
     ) -> Pending<Result<crate::share::picture::PictureFrame, CaptureError>> {
         let capture = self.inner.options.capture.clone();
         let reading = crate::executor::on_runtime(&self.inner.runtime, async move {
-            capture.preview(source, bound).await
+            tokio::time::timeout(crate::share::PREVIEW_LIMIT, capture.preview(source, bound))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(CaptureError::Failed(
+                        "the system did not make the picture in time".to_owned(),
+                    ))
+                })
         });
         Box::pin(async move {
             reading
@@ -785,9 +870,10 @@ impl Calls {
         })
     }
 
-    /// Starts the share of this device at the seat for which the person chose it. The
-    /// result is in the view of the call. Without a call nothing starts, and at another
-    /// seat nothing starts and the view tells it (ADR 0788).
+    /// Starts a share of this device at the seat for which the person chose it, in the
+    /// lowest free slot; the shares that run go on. The result is in the view of the
+    /// call. Without a call nothing starts, and at another seat nothing starts and the
+    /// view tells it (ADR 0788).
     pub fn start_share_in(&self, seat: &Seat, request: CaptureRequest) {
         self.inner
             .tell(SessionCommand::StartShare(seat.clone(), request));
@@ -801,10 +887,15 @@ impl Calls {
         }
     }
 
-    /// Ends the share of this device, and puts away the statement that a share ended by
-    /// itself.
-    pub fn stop_share(&self) {
-        self.inner.tell(SessionCommand::StopShare);
+    /// Ends the share of this device in `slot`, or every share without a slot, and puts
+    /// away the statement that a share ended by itself.
+    pub fn stop_share(&self, slot: Option<u8>) {
+        self.inner.tell(SessionCommand::StopShare(slot));
+    }
+
+    /// Puts away the statement that a share ended by itself. The shares that run go on.
+    pub fn forget_share_end(&self) {
+        self.inner.tell(SessionCommand::ForgetShareEnd);
     }
 
     /// The share that the person chose to watch in the call of this device (ADR 0502).
@@ -833,7 +924,7 @@ impl Calls {
 
     /// The camera pictures currently drawn by the interface and their pixel bounds.
     /// An empty map suspends remote video until a drawing window asks for it again.
-    pub fn set_camera_views(&self, views: HashMap<ShareId, (u32, u32)>) {
+    pub fn set_camera_views(&self, views: HashMap<Person, (u32, u32)>) {
         let mut shared = self.inner.shared();
         if shared.camera_views.as_ref() != Some(&views) {
             shared.camera_views = Some(views.clone());
@@ -843,7 +934,7 @@ impl Calls {
     }
 
     /// Reports the actual pixel size of one camera tile in the drawing window.
-    pub fn set_camera_view(&self, id: ShareId, size: (u32, u32)) {
+    pub fn set_camera_view(&self, id: Person, size: (u32, u32)) {
         let mut views = self.inner.shared().camera_views.clone().unwrap_or_default();
         if views.insert(id, size) != Some(size) {
             self.set_camera_views(views);
@@ -851,7 +942,7 @@ impl Calls {
     }
 
     /// Removes requests for cameras which the drawing window no longer shows.
-    pub fn retain_camera_views(&self, visible: &[ShareId]) {
+    pub fn retain_camera_views(&self, visible: &[Person]) {
         let mut views = self.inner.shared().camera_views.clone().unwrap_or_default();
         views.retain(|id, _| visible.contains(id));
         self.set_camera_views(views);
@@ -883,7 +974,7 @@ impl Calls {
     /// Gives pictures of the cameras to the readers, as the session of a call does, for a
     /// test of a reader.
     #[cfg(feature = "test-support")]
-    pub fn show_camera_pictures_for_test(&self, pictures: HashMap<ShareId, Arc<VideoPicture>>) {
+    pub fn show_camera_pictures_for_test(&self, pictures: HashMap<Person, Arc<VideoPicture>>) {
         self.inner.camera_pictures.send_replace(pictures);
     }
 
@@ -894,6 +985,12 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn simulate_connection_loss(&self) {
         self.inner.tell(SessionCommand::SimulateConnectionLoss);
+    }
+    /// Holds back the track permissions of the media connection of the call, or applies
+    /// them again.
+    #[cfg(feature = "test-support")]
+    pub fn hold_permissions(&self, held: bool) {
+        self.inner.tell(SessionCommand::HoldPermissions(held));
     }
 
     /// Queries the connection statistics for a failed live test.
@@ -964,7 +1061,7 @@ impl Calls {
         self.inner.tell(SessionCommand::StopCamera);
     }
 
-    pub fn camera_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>> {
+    pub fn camera_pictures(&self) -> watch::Receiver<HashMap<Person, Arc<VideoPicture>>> {
         self.inner.camera_pictures.subscribe()
     }
 
@@ -1268,6 +1365,7 @@ fn media_join(answer: &CallJoin) -> MediaJoin {
     MediaJoin {
         url: answer.media_url.clone(),
         token: answer.token.clone(),
+        shares: answer.shares.unwrap_or(1),
     }
 }
 
@@ -1415,7 +1513,8 @@ fn start(
         grant_closed: granted.is_some(),
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
-        share_report: Reporter::holding(timing.share_spacing, None),
+        share_reports: ShareReports::new(timing.share_spacing),
+        watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
         speaking: false,
@@ -1495,6 +1594,16 @@ impl<T: PartialEq + Clone> Reporter<T> {
         self.in_flight = true;
     }
 
+    /// Retains statements received during a request: a later reset can precede its answer.
+    pub(crate) fn stated(&mut self, value: T) {
+        self.sent = Some(value);
+    }
+
+    /// The events that state the value were lost: the wanted value is sent again.
+    pub(crate) fn untold(&mut self) {
+        self.sent = None;
+    }
+
     /// The request has ended. A value that the server did not take is sent again, not
     /// before `retry` has passed.
     pub(crate) fn done(&mut self, taken: bool, retry: Duration, now: Instant) {
@@ -1502,6 +1611,117 @@ impl<T: PartialEq + Clone> Reporter<T> {
         if !taken {
             self.sent = None;
             self.last = Some(now + retry.saturating_sub(self.spacing));
+        }
+    }
+}
+
+/// What the server holds of one share of this device: the share, its sound and what it
+/// shows. Another share in the same slot is reported anew (ADR 0510).
+type ToldShare = (Uuid, ShareAudio, ReportedKind);
+
+fn reported_kind(kind: ShareKind) -> ReportedKind {
+    match kind {
+        ShareKind::Screen => ReportedKind::Screen,
+        ShareKind::Window => ReportedKind::Window,
+    }
+}
+
+/// One report of a share of this device to the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShareRequest {
+    Report(u8, ToldShare),
+    End(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Share(ToldShare),
+    /// A request about the slot failed: the server may hold the share or not.
+    Unknown,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReportStep {
+    Send(ShareRequest),
+    Wait(Instant),
+    Idle,
+}
+
+/// The reports of the shares of this device: one request at a time about one slot, each at
+/// least the spacing after the one before (ADR 0737). The server holds no share of a new
+/// seat.
+#[derive(Debug)]
+pub(crate) struct ShareReports {
+    spacing: Duration,
+    last: Option<Instant>,
+    /// What the server holds by the answers to the requests so far.
+    held: BTreeMap<u8, Held>,
+    in_flight: Option<ShareRequest>,
+}
+
+impl ShareReports {
+    pub(crate) fn new(spacing: Duration) -> Self {
+        Self {
+            spacing,
+            last: None,
+            held: BTreeMap::new(),
+            in_flight: None,
+        }
+    }
+
+    /// The next request towards the shares that run: first a share that the server does
+    /// not hold as it runs, so that the presenter of meeting mode who replaces one share by
+    /// another always holds one, then the end of a share that does not run, each in the
+    /// order of the slots.
+    fn next(&self, running: &BTreeMap<u8, ToldShare>) -> Option<ShareRequest> {
+        running
+            .iter()
+            .find(|(slot, share)| self.held.get(slot) != Some(&Held::Share(**share)))
+            .map(|(slot, share)| ShareRequest::Report(*slot, *share))
+            .or_else(|| {
+                self.held
+                    .keys()
+                    .find(|slot| !running.contains_key(slot))
+                    .map(|slot| ShareRequest::End(*slot))
+            })
+    }
+
+    pub(crate) fn step(&self, running: &BTreeMap<u8, ToldShare>, now: Instant) -> ReportStep {
+        if self.in_flight.is_some() {
+            return ReportStep::Idle;
+        }
+        let Some(request) = self.next(running) else {
+            return ReportStep::Idle;
+        };
+        match self.last.map(|last| last + self.spacing) {
+            Some(earliest) if now < earliest => ReportStep::Wait(earliest),
+            _ => ReportStep::Send(request),
+        }
+    }
+
+    pub(crate) fn sending(&mut self, request: ShareRequest, now: Instant) {
+        self.in_flight = Some(request);
+        self.last = Some(now);
+    }
+
+    /// The request has ended. After a request that the server did not take, the server
+    /// may hold the share of its slot or not, and that slot is told again, not before
+    /// `retry` has passed.
+    pub(crate) fn done(&mut self, taken: bool, retry: Duration, now: Instant) {
+        let Some(request) = self.in_flight.take() else {
+            return;
+        };
+        match (request, taken) {
+            (ShareRequest::Report(slot, share), true) => {
+                self.held.insert(slot, Held::Share(share));
+            }
+            (ShareRequest::End(slot), true) => {
+                self.held.remove(&slot);
+            }
+            (ShareRequest::Report(slot, _) | ShareRequest::End(slot), false) => {
+                self.held.insert(slot, Held::Unknown);
+                self.last = Some(now + retry.saturating_sub(self.spacing));
+            }
         }
     }
 }
@@ -1919,6 +2139,7 @@ enum Done {
     State(bool),
     Speaking(bool),
     Share(bool),
+    Watch(bool),
     /// The answer to a request for a new token. The session confirms that it took the
     /// answer; an answer that no session takes gives a place that nobody uses.
     Rejoined(Box<Result<CallJoin, ApiError>>, oneshot::Sender<()>),
@@ -2186,8 +2407,10 @@ struct Session {
     grant_closed: bool,
     state_report: Reporter<(bool, bool)>,
     speaking_report: Reporter<bool>,
-    /// The sound of the share that the server was told. Absent: no share.
-    share_report: Reporter<Option<ShareAudio>>,
+    /// What the server was told of the shares of this device.
+    share_reports: ShareReports,
+    /// The share of another person that the server was told the person watches (ADR 0502).
+    watch_report: Reporter<Option<junto_client_core::protocol::call::WatchedShare>>,
     /// The move of the person of this device that waits (ADR 0511).
     moving: Option<Moving>,
     /// The work of moves that have ended. Each closes the connection that it made.
@@ -2407,6 +2630,23 @@ impl Session {
                 self.end_kept_block();
                 self.place.note(*id, event);
                 self.note_move(event);
+                // The server ends the watch of a share when a new share starts in its slot
+                // (ADR 0502); the client then reports the watch again.
+                if let Event::CallParticipantJoined {
+                    call_id,
+                    participant,
+                    ..
+                }
+                | Event::CallParticipantUpdated {
+                    call_id,
+                    participant,
+                    ..
+                } = &**event
+                    && *call_id == self.grants.call_id
+                    && participant.identity == self.place.identity()
+                {
+                    self.watch_report.stated(participant.watching);
+                }
             }
             Notice::Reloaded { cursor } => {
                 if self.grants.cursor.epoch != cursor.epoch {
@@ -2417,6 +2657,7 @@ impl Session {
                 }
                 self.place.untold();
                 self.place.reloaded(cursor.epoch);
+                self.watch_report.untold();
                 if let Some(moving) = &mut self.moving {
                     moving.reloaded = true;
                 }
@@ -2661,7 +2902,8 @@ impl Session {
                     self.engine.start_share(request);
                 }
             }
-            SessionCommand::StopShare => self.engine.stop_share(),
+            SessionCommand::StopShare(slot) => self.engine.stop_share(slot),
+            SessionCommand::ForgetShareEnd => self.engine.forget_share_end(),
             SessionCommand::Watch(choice) => self.engine.watch(choice),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),
@@ -2678,6 +2920,8 @@ impl Session {
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateConnectionLoss => self.engine.simulate_connection_loss(),
+            #[cfg(feature = "test-support")]
+            SessionCommand::HoldPermissions(held) => self.engine.hold_permissions(held),
             // The loop takes this command itself.
             SessionCommand::End { .. } => {}
         }
@@ -3050,7 +3294,7 @@ impl Session {
             self.engine.stop_camera();
         }
         if withheld.share && !before.share {
-            self.engine.stop_share();
+            self.engine.stop_share(None);
         }
         self.apply_controls();
         self.show();
@@ -3108,7 +3352,8 @@ impl Session {
         match result {
             Done::State(taken) => self.state_report.done(taken, REPORT_RETRY, now),
             Done::Speaking(taken) => self.speaking_report.done(taken, REPORT_RETRY, now),
-            Done::Share(taken) => self.share_report.done(taken, REPORT_RETRY, now),
+            Done::Share(taken) => self.share_reports.done(taken, REPORT_RETRY, now),
+            Done::Watch(taken) => self.watch_report.done(taken, REPORT_RETRY, now),
             Done::Rejoined(answer, taken) => {
                 let _ = taken.send(());
                 self.rejoining = false;
@@ -3131,7 +3376,8 @@ impl Session {
                                 self.grants.unordered();
                             }
                             self.state_report = Reporter::new(self.timing.state_spacing, None);
-                            self.share_report = Reporter::holding(self.timing.share_spacing, None);
+                            self.share_reports = ShareReports::new(self.timing.share_spacing);
+                            self.watch_report = Reporter::holding(self.timing.share_spacing, None);
                         }
                         // The answer states that the seat exists at its cursor. The newest
                         // such answer is the membership until a state is as new.
@@ -3319,22 +3565,56 @@ impl Session {
             Step::Wait(at) => wake = wake.min(at),
             Step::Idle => {}
         }
-        // The server shows a share from this report, and only while the media server lists
-        // its picture track (ADR 0510). The share is reported when its track is published.
-        let shared = match &state.share {
-            ShareState::Running(info) => Some(info.sound),
-            ShareState::Off | ShareState::Starting | ShareState::Ended(_) => None,
-        };
-        match self.share_report.step(&shared, false, now) {
-            Step::Send => {
-                self.share_report.sending(shared, now);
+        // The server shows a share from its report, and only while the media server lists
+        // its picture track (ADR 0510). A share is reported when its track is published.
+        let running = state
+            .own_shares
+            .iter()
+            .filter_map(|(slot, share)| match share {
+                ShareState::Running(info) => {
+                    Some((*slot, (info.id, info.sound, reported_kind(info.kind))))
+                }
+                ShareState::Starting => None,
+            })
+            .collect();
+        match self.share_reports.step(&running, now) {
+            ReportStep::Send(request) => {
+                self.share_reports.sending(request, now);
                 let (api, done) = (self.server.api(), done.clone());
                 self.inner.runtime.spawn(async move {
-                    let told = match shared {
-                        Some(audio) => api.report_screen_share(audio).await,
-                        None => api.end_screen_share().await,
+                    let told = match request {
+                        ShareRequest::Report(slot, (id, audio, kind)) => {
+                            api.report_screen_share(slot, Some(kind), audio, Some(id))
+                                .await
+                        }
+                        ShareRequest::End(slot) => api.end_screen_share(Some(slot)).await,
                     };
                     let _ = done.send(Done::Share(told.is_ok()));
+                });
+            }
+            ReportStep::Wait(at) => wake = wake.min(at),
+            ReportStep::Idle => {}
+        }
+        // The sharer hears and sees who watches a share: the share of another person that
+        // the person watches is reported (ADR 0502).
+        let watching = match state.watched {
+            Some(ShareId {
+                person: Person::Of(account_id),
+                slot,
+            }) => Some(junto_client_core::protocol::call::WatchedShare { account_id, slot }),
+            Some(ShareId {
+                person: Person::Own,
+                ..
+            })
+            | None => None,
+        };
+        match self.watch_report.step(&watching, false, now) {
+            Step::Send => {
+                self.watch_report.sending(watching, now);
+                let (api, done) = (self.server.api(), done.clone());
+                self.inner.runtime.spawn(async move {
+                    let taken = api.report_watching(watching).await.is_ok();
+                    let _ = done.send(Done::Watch(taken));
                 });
             }
             Step::Wait(at) => wake = wake.min(at),
@@ -3384,7 +3664,9 @@ impl Session {
             output_device: state.output_device.clone(),
             microphone_block: self.microphone_block.clone(),
             sound_block: self.sound_block.clone(),
-            share: state.share.clone(),
+            share_limit: state.share_limit,
+            own_shares: state.own_shares.clone(),
+            share_ended: state.share_ended.clone(),
             shares: state.shares.clone(),
             watched: state.watched,
             withheld: self.withheld,
@@ -3609,6 +3891,76 @@ mod tests {
         assert_eq!(permission.asked(), 0);
     }
 
+    /// A change of the device of the level test opens the new device before it closes the
+    /// earlier one. When the new one does not open, the earlier test ends, its level goes, and
+    /// the view states why; a later test that opens puts the statement away.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_device_of_the_level_test_that_does_not_open_ends_the_earlier_test_and_says_why() {
+        use crate::audio::AudioError;
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-input-replaced-")
+            .tempdir()
+            .unwrap();
+        let wait = |what: &str, done: &dyn Fn() -> bool| {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(started.elapsed() < Duration::from_secs(20), "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let host = crate::audio::synthetic::SyntheticHost::with_tone(440.0);
+        let (client, _) = client_with_a_silent_server(&directory.path().join("client"));
+        let calls = Calls::new(
+            client,
+            MediaOptions {
+                host: Arc::new(host.clone()),
+                ..options_with(Arc::new(crate::share::NoCapture))
+            },
+        );
+        let levels = calls.levels();
+        calls.start_input_test();
+        wait("the level of the first device arrives", &|| {
+            calls.input_test_runs() && levels.borrow().input > 0.0
+        });
+        let failure = AudioError::Failed("unplugged".to_owned());
+        host.fail_next_input(failure.clone());
+        calls.start_input_test();
+        wait("the earlier test ends", &|| !calls.input_test_runs());
+        assert_eq!(levels.borrow().input, 0.0);
+        assert_eq!(calls.view().input_test_failed, Some(failure));
+        calls.start_input_test();
+        wait("a later test opens", &|| calls.input_test_runs());
+        assert_eq!(calls.view().input_test_failed, None);
+        calls.stop_input_test();
+    }
+
+    /// A window of an application that does not answer makes its preview wait: the preview
+    /// fails after its time limit, and the next one is made.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_preview_that_the_system_does_not_make_in_time_fails_and_the_next_one_is_made() {
+        use crate::share::synthetic::SyntheticCapture;
+        use crate::share::{PREVIEW_BOUND, PREVIEW_LIMIT};
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-preview-late-")
+            .tempdir()
+            .unwrap();
+        let (client, _) = client_with_a_silent_server(&directory.path().join("client"));
+        let capture = SyntheticCapture::new();
+        capture.set_preview_delay(PictureSource::Window(11), Duration::from_secs(600));
+        let calls = Calls::new(client, options_with(Arc::new(capture.clone())));
+        without_runtime(move || {
+            use futures_executor::block_on;
+            let started = std::time::Instant::now();
+            let late = block_on(calls.share_preview(PictureSource::Window(11), PREVIEW_BOUND));
+            assert!(matches!(late, Err(CaptureError::Failed(_))), "{late:?}");
+            assert!(started.elapsed() < PREVIEW_LIMIT + Duration::from_secs(5));
+            let next = block_on(calls.share_preview(PictureSource::Display(1), PREVIEW_BOUND));
+            assert!(next.is_ok(), "{next:?}");
+        });
+    }
+
     /// The dialog of a share shows a still picture of each listed screen and window. The
     /// capture makes it on the runtime of the client, inside the bound and with the
     /// proportions of the source; two screens of one size give two pictures. A system
@@ -3768,6 +4120,107 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn each_share_is_reported_by_its_slot_one_request_at_a_time() {
+        use ShareRequest::{End, Report};
+        let spacing = Duration::from_secs(1);
+        let mut reports = ShareReports::new(spacing);
+        let screen = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Screen);
+        let window = (Uuid::now_v7(), ShareAudio::None, ReportedKind::Window);
+        let mut now = Instant::now();
+        let send = |reports: &mut ShareReports, running: &BTreeMap<u8, ToldShare>, at| {
+            let ReportStep::Send(request) = reports.step(running, at) else {
+                panic!("no request at {at:?}: {:?}", reports.step(running, at));
+            };
+            reports.sending(request, at);
+            request
+        };
+
+        let running = BTreeMap::from([(0, screen), (1, window)]);
+        assert_eq!(send(&mut reports, &running, now), Report(0, screen));
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+        reports.done(true, REPORT_RETRY, now);
+        assert_eq!(reports.step(&running, now), ReportStep::Wait(now + spacing));
+        now += spacing;
+        assert_eq!(send(&mut reports, &running, now), Report(1, window));
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+
+        // Slot 0 ends and slot 2 starts: the start is told before the end, so that a
+        // presenter of meeting mode holds a share at the server all the time.
+        let running = BTreeMap::from([(1, window), (2, screen)]);
+        assert_eq!(send(&mut reports, &running, now), Report(2, screen));
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(send(&mut reports, &running, now), End(0));
+        // The end fails: the slot is told again, not before the time of a retry.
+        reports.done(false, REPORT_RETRY, now);
+        assert_eq!(
+            reports.step(&running, now + spacing),
+            ReportStep::Wait(now + REPORT_RETRY)
+        );
+        now += REPORT_RETRY;
+        assert_eq!(send(&mut reports, &running, now), End(0));
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+
+        // A report that failed for a share that has ended since: the server may hold it,
+        // so its end is told.
+        let running = BTreeMap::from([(1, window), (2, screen), (0, window)]);
+        assert_eq!(send(&mut reports, &running, now), Report(0, window));
+        reports.done(false, REPORT_RETRY, now);
+        now += REPORT_RETRY;
+        let running = BTreeMap::from([(1, window), (2, screen)]);
+        assert_eq!(send(&mut reports, &running, now), End(0));
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+    }
+
+    /// A share ends and another one with the same sound and kind starts in its slot while
+    /// the report of a share of another slot is on its way: the new share is reported, so
+    /// that the server gives it its own start (ADR 0510).
+    #[tokio::test(start_paused = true)]
+    async fn a_new_share_in_the_slot_of_an_ended_one_is_reported_after_a_delayed_report() {
+        use ShareRequest::Report;
+        let spacing = Duration::from_secs(1);
+        let mut reports = ShareReports::new(spacing);
+        let first = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Window);
+        let second = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Window);
+        let third = (Uuid::now_v7(), ShareAudio::System, ReportedKind::Window);
+        let mut now = Instant::now();
+        let running = BTreeMap::from([(0, first)]);
+        let ReportStep::Send(request) = reports.step(&running, now) else {
+            panic!("the first share is reported");
+        };
+        assert_eq!(request, Report(0, first));
+        reports.sending(request, now);
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        let running = BTreeMap::from([(0, first), (1, second)]);
+        let ReportStep::Send(request) = reports.step(&running, now) else {
+            panic!("the second share is reported");
+        };
+        assert_eq!(request, Report(1, second));
+        reports.sending(request, now);
+        // While the report of the second share is on its way, the first share ends and the
+        // third one starts in its slot.
+        let running = BTreeMap::from([(0, third), (1, second)]);
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(
+            reports.step(&running, now),
+            ReportStep::Send(Report(0, third))
+        );
+        reports.sending(Report(0, third), now);
+        reports.done(true, REPORT_RETRY, now);
+        now += spacing;
+        assert_eq!(reports.step(&running, now), ReportStep::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_changed_value_is_sent_at_once_and_never_closer_than_the_spacing() {
         let spacing = Duration::from_millis(500);
         let mut reporter: Reporter<bool> = Reporter::new(spacing, None);
@@ -3825,6 +4278,44 @@ mod tests {
         assert_eq!(
             reporter.step(&true, false, start + REPORT_RETRY),
             Step::Send
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_value_that_the_server_states_otherwise_is_sent_again() {
+        let spacing = Duration::from_millis(700);
+        let mut reporter: Reporter<Option<u8>> = Reporter::holding(spacing, None);
+        let start = Instant::now();
+        reporter.sending(Some(1), start);
+        // A reset after the report committed can precede its HTTP response.
+        reporter.stated(None);
+        reporter.done(true, REPORT_RETRY, start);
+        let later = start + spacing;
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        // The server ended the watch: the wanted value is sent again.
+        reporter.stated(None);
+        assert_eq!(reporter.step(&Some(1), false, later), Step::Send);
+        reporter.sending(Some(1), later);
+        reporter.done(true, REPORT_RETRY, later);
+        reporter.stated(Some(1));
+        assert_eq!(reporter.step(&Some(1), false, later + spacing), Step::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reload_during_a_report_resends_the_wanted_value() {
+        let spacing = Duration::from_millis(700);
+        let mut reporter = Reporter::holding(spacing, None);
+        let start = Instant::now();
+        reporter.sending(Some(1u8), start);
+        reporter.untold();
+        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Idle);
+        reporter.done(true, REPORT_RETRY, start);
+        assert_eq!(reporter.step(&Some(1), false, start + spacing), Step::Send);
+        reporter.sending(Some(1), start + spacing);
+        reporter.done(true, REPORT_RETRY, start + spacing);
+        assert_eq!(
+            reporter.step(&Some(1), false, start + spacing * 2),
+            Step::Idle
         );
     }
 
@@ -4015,7 +4506,9 @@ mod tests {
             microphone_block: None,
             sound_block: None,
             hand_raised: false,
+            watching: None,
             screen_share: None,
+            screen_shares: Vec::new(),
         };
         let call = |hides_occupants, participants| Call {
             id: junto_client_core::protocol::ids::CallId::generate(),

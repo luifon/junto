@@ -1,23 +1,19 @@
 use super::*;
 use junto_media::camera::{CameraAccess, CameraError, CameraState};
+use junto_media::engine::Person;
 use junto_media::share::picture::VideoPicture;
 use std::collections::HashMap;
 
-fn pictures() -> HashMap<ShareId, Arc<VideoPicture>> {
+fn pictures() -> HashMap<Person, Arc<VideoPicture>> {
     [
-        (ShareId::Own, (35, 90, 130), (180, 90, 35)),
-        (ShareId::Of(person("Ana")), (110, 160, 90), (65, 60, 120)),
-        (
-            ShareId::Of(person("Carla")),
-            (175, 120, 100),
-            (60, 110, 130),
-        ),
+        (Person::Own, (35, 90, 130), (180, 90, 35)),
+        (Person::Of(person("Ana")), (110, 160, 90), (65, 60, 120)),
+        (Person::Of(person("Carla")), (175, 120, 100), (60, 110, 130)),
     ]
     .into_iter()
     .filter_map(|(id, left, right)| {
         let pixels = junto_media::share::synthetic::two_colours(640, 360, left, right);
-        VideoPicture::new(&pixels, id == ShareId::Own, (640, 360))
-            .map(|frame| (id, Arc::new(frame)))
+        VideoPicture::new(&pixels, id == Person::Own, (640, 360)).map(|frame| (id, Arc::new(frame)))
     })
     .collect()
 }
@@ -83,7 +79,7 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
             );
         })?;
     }
-    let carla = ShareId::Of(person("Carla"));
+    let carla = ShareId::of(person("Carla"), 0);
     let mut media = with_call(in_call(Phase::Connected), |call| {
         call.shares = vec![seen("Carla", ShareKind::Screen, (1920, 1200))];
         call.watched = Some(carla);
@@ -121,6 +117,20 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
         }
         studio.draw(Screen::call(name, media), show_daily)?;
     }
+    // A refusal of macOS: the notice has the button of the page of System Settings (ADR 0708).
+    let mut media = in_call(Phase::Connected);
+    if let Some(call) = &mut media.calls.call {
+        call.camera = CameraState::Failed(CameraError::NoPermission(CameraAccess::Refused));
+    }
+    studio.draw(
+        Screen::call("camera-refused-macos", media),
+        |shell, window, cx| {
+            shell.state().clone().update(cx, |state, cx| {
+                state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
+            });
+            show_daily(shell, window, cx);
+        },
+    )?;
     studio.draw(
         Screen::call("camera-settings", in_call(Phase::Connected)),
         show_daily_tab(CallTab::Settings),

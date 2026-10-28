@@ -5,7 +5,7 @@ use gpui::{
     Role, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder, px,
 };
-use gpui_base::{Scrollbar, ScrollbarMode};
+use gpui_base::{Scrollbar, ScrollbarHandle, ScrollbarMode};
 
 use crate::theme::theme;
 
@@ -55,9 +55,14 @@ impl ParentElement for ScrollArea {
     }
 }
 
-/// The thin scroll bar of the design over the right edge of what `handle` scrolls. It
-/// lies in an element that covers the scrolled one.
-pub(super) fn scroll_bar(handle: &ScrollHandle, dark: bool, cx: &App) -> impl IntoElement + use<> {
+/// The thin scroll bar of the design over the right edge of what `handle` scrolls: an
+/// element with a scroll handle or a list. It lies in an element that covers the scrolled
+/// one.
+pub fn scroll_bar<H: ScrollbarHandle + Clone + 'static>(
+    handle: &H,
+    dark: bool,
+    cx: &App,
+) -> impl IntoElement + use<H> {
     let colors = theme(cx).colors;
     let thumb = Hsla::from(if dark {
         colors.basalt_rule
@@ -83,12 +88,16 @@ pub(super) fn scroll_bar(handle: &ScrollHandle, dark: bool, cx: &App) -> impl In
 
 impl RenderOnce for ScrollArea {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let name = self
+            .selector
+            .map_or_else(|| self.label.clone(), SharedString::from);
         div()
             .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(super::area(name))
             .child(
                 div()
                     .id(self.id)

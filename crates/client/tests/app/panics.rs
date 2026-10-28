@@ -203,9 +203,13 @@ fn a_render_that_panics_at_every_call_does_not_draw_at_every_frame(cx: &mut Test
 
 /// The observer of the state in the shell panics at each change of the state. The notice of a
 /// panic changes the state, so each update of the task of the reports panics and sends a new
-/// report. The task waits after such a panic: the work of the window comes to rest, and the
-/// panics stay two. When the observer works again, the task takes the waiting report and the
-/// window states both panics.
+/// report. The task waits after such a panic: the work of the window comes to rest, with the
+/// panic of the test and one of the task of the reports. Another task of the state that takes
+/// a change of its source in the meantime, such as an event of the server that arrives late on
+/// a slow machine, panics once in the same way and waits too; an update that runs once, such
+/// as the answer of a read, panics once and ends; no task panics twice. When the
+/// observer works again, the task of the reports takes the waiting reports and the window
+/// states every panic.
 #[gpui::test]
 fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut TestAppContext) {
     let world = World::new();
@@ -214,7 +218,6 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     window.settle();
     let before = panics::panics_on_this_thread();
-    window.expect_panics(2);
     panics::test_support::panic_in_every(panics::test_support::Handler::StateObserver);
     window.cx.update(|_, cx| {
         cx.spawn(async move |_| {
@@ -223,7 +226,29 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
         .detach();
     });
     window.park();
-    assert_eq!(panics::panics_on_this_thread(), before + 2);
+    let paused = panics::test_support::paused_tasks();
+    // An update that runs once, such as the answer of a read that arrives during the park on
+    // a slow machine, panics once and ends; it does not pause.
+    let once = panics::test_support::panics_in_single_updates();
+    window.expect_panics(1 + paused.len() + once);
+    assert_eq!(
+        paused.iter().filter(|task| **task == "reports").count(),
+        1,
+        "the tasks that paused: {paused:?}"
+    );
+    let mut distinct = paused.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        paused.len(),
+        "a task panicked twice: {paused:?}"
+    );
+    assert_eq!(
+        panics::panics_on_this_thread(),
+        before + 1 + paused.len() + once,
+        "the tasks that paused: {paused:?}, the single updates that panicked: {once}"
+    );
 
     panics::test_support::stop_panicking();
     window
@@ -237,8 +262,12 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
         .state
         .read_with(&window.cx, |state, _| state.panic_notice().cloned())
         .expect("the state holds the notice");
-    assert_eq!(notice.count, 2);
-    assert_eq!(panics::panics_on_this_thread(), before + 2);
+    // The notice counts every panic that the hook recorded, also those of single updates.
+    assert_eq!(notice.count, 1 + paused.len() + once);
+    assert_eq!(
+        panics::panics_on_this_thread(),
+        before + 1 + paused.len() + once
+    );
 }
 
 /// The calls change outside a press of the window: the observer of the state in the shell

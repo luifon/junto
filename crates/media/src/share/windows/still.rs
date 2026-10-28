@@ -1,7 +1,11 @@
-//! One still picture of a screen or a window for the dialog of a share, with GDI: a copy of
-//! the part of the desktop that a monitor shows, and the drawing that a window makes of
-//! itself on request (`PrintWindow`), so that a window behind other windows gives its own
-//! picture (ADR 0736). A share itself uses Windows Graphics Capture.
+//! Screen previews use GDI; window previews read the compositor through Windows Graphics
+//! Capture without asking the target application to draw (ADR 0736).
+
+use super::graphics::{Session, Target};
+use crate::share::Resolution;
+use crate::share::delivery::{Latest, Life};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -10,8 +14,7 @@ use windows::Win32::Graphics::Gdi::{
     HDC, HGDIOBJ, HMONITOR, MONITORINFO, ReleaseDC, SRCCOPY, SelectObject, SetBrushOrgEx,
     SetStretchBltMode, StretchBlt,
 };
-use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, PW_RENDERFULLCONTENT};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsHungAppWindow};
 
 use crate::share::CaptureError;
 use crate::share::picture::{PictureFrame, fit};
@@ -194,21 +197,13 @@ pub(super) fn picture(still: &Still, bound: (u32, u32)) -> Result<PictureFrame, 
     match still {
         Still::Monitor(_) => shown.take(screen.0, (area.left, area.top), size)?,
         Still::Window(window) => {
-            // SAFETY: as above.
-            let full = unsafe { Canvas::new(screen.0, size)? };
-            // SAFETY: the window handle names a listed window; a window that has closed
-            // makes the call fail.
-            let drawn = unsafe {
-                PrintWindow(
-                    *window,
-                    full.context,
-                    PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT),
-                )
-            };
-            if !drawn.as_bool() {
-                return Err(CaptureError::SourceGone);
+            // PrintWindow waits for the application of the window. A window that the system
+            // marks as not answering gets no picture.
+            // SAFETY: the handle names a listed window; a closed one answers false.
+            if unsafe { IsHungAppWindow(*window) }.as_bool() {
+                return Err(failed("the application of the window does not answer"));
             }
-            shown.take(full.context, (0, 0), size)?;
+            return window_picture(*window, bound);
         }
     }
     Ok(PictureFrame {
@@ -217,4 +212,24 @@ pub(super) fn picture(still: &Still, bound: (u32, u32)) -> Result<PictureFrame, 
         bgra: shown.pixels()?,
         source: (size.0 as u32, size.1 as u32),
     })
+}
+
+fn window_picture(window: HWND, bound: (u32, u32)) -> Result<PictureFrame, CaptureError> {
+    crate::com::keep_multithreaded().map_err(CaptureError::Failed)?;
+    let life = Arc::new(Life::default());
+    let pictures = Arc::new(Latest::default());
+    let session = Session::start(Target::Window(window), life.clone(), pictures.clone())?;
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let arrived = pictures.take(|| life.stopped() || Instant::now() >= deadline);
+    life.stop();
+    life.result()?;
+    if arrived.is_none() {
+        return Err(failed("the compositor gave no picture"));
+    }
+    let frame = session
+        .gpu
+        .read()?
+        .ok_or_else(|| failed("no captured picture"))?;
+    crate::share::picture::convert(&frame.convert(Resolution::Source), bound)
+        .ok_or_else(|| failed("the captured picture could not be read"))
 }

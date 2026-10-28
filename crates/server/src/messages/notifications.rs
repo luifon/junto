@@ -69,6 +69,85 @@ pub async fn missed_call(
     publish(connection, now, id, &recipients, true).await
 }
 
+/// Inserts the notices of a message (`$1`) at `$2` for the recipients `$3` that may read its
+/// place; `$4`: only the mentions that an edit added count. One statement for every
+/// recipient: the notification policy of each recipient (its level, its mute and its two
+/// mention switches, as `notification_policy` gives them), whether the message mentions the
+/// recipient (as `notification_mentioned` decides), and the read boundary of each are joined
+/// once for all of them, in place of functions that run for each recipient (open item CD6,
+/// ADR 0409).
+const INSERT_NOTICES: &str = "with m as materialized (
+        select id, place_id, thread_root, readers from messages
+        where id = $1 and author_id is not null and not deleted),
+    place as materialized (
+        select m.place_id, c.workspace_id, cv.id as conversation_id, cv.low_account_id,
+            cv.high_account_id
+        from m left join channels c on c.id = m.place_id
+        left join conversations cv on cv.id = m.place_id),
+    recipients as materialized (
+        select distinct a.id from unnest($3::uuid[]) a(id) cross join m
+        where m.readers is null or a.id = any(m.readers)),
+    mentions as materialized (
+        select account_id, everyone, role_id from message_mentions where message_id = $1),
+    named as materialized (
+        select distinct account_id from mentions where account_id is not null),
+    by_role as materialized (
+        select distinct mr.account_id from mentions mm
+        join workspace_roles r on r.id = mm.role_id and not r.is_everyone
+        join member_roles mr on mr.role_id = r.id),
+    by_everyone_role as materialized (
+        select distinct w.account_id from mentions mm
+        join workspace_roles r on r.id = mm.role_id and r.is_everyone
+        join workspace_members w on w.workspace_id = r.workspace_id),
+    policy as materialized (
+        select r.id,
+            case when p.conversation_id is not null then 'all'
+                else coalesce(ch.settings->>'level', ws.settings->>'level', d.level,
+                    ac.settings->>'level', 'mentions') end as level,
+            (coalesce((ch.settings->>'mute')::boolean, false)
+                and (ch.settings->>'muted_until' is null
+                    or (ch.settings->>'muted_until')::timestamptz > $2))
+            or (dm.account_id is not null and (dm.muted_until is null or dm.muted_until > $2))
+                as muted,
+            coalesce((ch.settings->>'role_mentions')::boolean, true) as roles,
+            coalesce((ch.settings->>'everyone_mentions')::boolean, true) as everyone
+        from recipients r cross join place p
+        left join direct_mutes dm on dm.account_id = r.id and dm.other_account_id =
+            case when p.low_account_id = r.id then p.high_account_id else p.low_account_id end
+        left join notification_settings ch on ch.account_id = r.id and ch.scope_id = p.place_id
+        left join notification_settings ws on ws.account_id = r.id
+            and ws.scope_id = p.workspace_id
+        left join workspace_notification_defaults d on d.workspace_id = p.workspace_id
+        left join notification_settings ac on ac.account_id = r.id
+            and ac.scope_id = '00000000-0000-0000-0000-000000000000'),
+    judged as materialized (
+        select pol.id, pol.level, pol.muted,
+            n.account_id is not null
+                or (pol.everyone and ((select bool_or(everyone) from mentions) is true
+                    or e.account_id is not null))
+                or (pol.roles and br.account_id is not null) as mentioned
+        from policy pol
+        left join named n on n.account_id = pol.id
+        left join by_role br on br.account_id = pol.id
+        left join by_everyone_role e on e.account_id = pol.id)
+    insert into notifications(id,account_id,message_id,kind,created_at,read_at)
+    select m.id, j.id, m.id,
+        case when p.conversation_id is not null then 'direct' when j.mentioned then 'mention'
+            when m.thread_root is not null then 'thread' else 'message' end,
+        $2, b.read_at
+    from judged j cross join m cross join place p
+    left join notification_read_boundaries b on b.account_id = j.id and b.read_until >= $2
+    where not j.muted and (p.conversation_id is not null or (j.level <> 'nothing' and (
+        j.mentioned
+        or (not $4 and m.thread_root is not null and exists(select 1 from thread_reads tr
+            where tr.root_id = m.thread_root and tr.account_id = j.id
+              and coalesce(tr.follow_setting, tr.writer)))
+        or (not $4 and m.thread_root is null and j.level = 'all'))))
+    on conflict(account_id,message_id) do update
+        set kind = 'mention', read_at = excluded.read_at, created_at = excluded.created_at
+        where excluded.kind = 'mention' and notifications.kind in ('message','thread')
+    returning account_id, kind";
+
 pub async fn create(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -109,18 +188,7 @@ pub async fn create(
     .filter(|(_, places)| places.ids().contains(&place_id))
     .map(|(account, _)| account)
     .collect();
-    let inserted: Vec<(AccountId, String)> = sqlx::query_as("insert into notifications(id,account_id,message_id,kind,created_at,read_at) select m.id,a.id,m.id,case when cv.id
-             is not null then 'direct' when notification_mentioned(a.id,m.id,p.roles,p.everyone) then 'mention' when
-             m.thread_root is not null then 'thread' else 'message' end,$2,
-             (select read_at from notification_read_boundaries where account_id=a.id and read_until >= $2) from messages m left join conversations cv
-             on cv.id=m.place_id cross join unnest($3::uuid[]) a(id) cross join lateral
-             notification_policy(a.id,m.place_id,$2) p where m.id=$1 and m.author_id is not null and not m.deleted and
-             (m.readers is null or a.id=any(m.readers)) and not p.muted and (cv.id is not null or (p.level<> 'nothing'
-             and ( notification_mentioned(a.id,m.id,p.roles,p.everyone) or (not $4 and m.thread_root is not null and
-             exists(select 1 from thread_reads tr where tr.root_id=m.thread_root and tr.account_id=a.id and coalesce(tr.follow_setting,tr.writer)))
-             or (not $4 and m.thread_root is null and p.level= 'all' )))) on conflict(account_id,message_id) do update
-             set kind= 'mention' ,read_at=excluded.read_at,created_at=excluded.created_at where excluded.kind= 'mention' and
-             notifications.kind in ('message','thread') returning account_id,kind")
+    let inserted: Vec<(AccountId, String)> = sqlx::query_as(INSERT_NOTICES)
         .bind(id)
         .bind(now)
         .bind(allowed)
@@ -377,7 +445,10 @@ pub async fn publish(
         now,
         notice_id,
         &audience,
-        &Event::NotificationChanged { message_id: id },
+        &Event::NotificationChanged {
+            message_id: id,
+            notice: None,
+        },
     )
     .await
 }

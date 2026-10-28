@@ -5,16 +5,20 @@
 
 use std::ops::Range;
 
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, HighlightStyle, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, StyledText, Window,
-    deferred, div, prelude::FluentBuilder,
+    AnyElement, Context, Entity, FollowMode, FontWeight, HighlightStyle, Hsla, InteractiveElement,
+    IntoElement, ListAlignment, ListState, ParentElement, Role, SharedString,
+    StatefulInteractiveElement, Styled, StyledText, Window, deferred, div, list,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::input::InputState;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::protocol::discovery::NotificationLevel;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, ServerId};
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::settings::Panel;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
@@ -28,9 +32,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice, ScrollArea,
-    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
-    menu_separator, unread_dot,
+    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice, Segmented,
+    SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label, menu_separator,
+    scroll_bar, unread_dot,
 };
 
 /// The icon of the place of a message.
@@ -217,6 +221,7 @@ pub(crate) fn side_panel(
     theme: &Theme,
     label: impl Into<SharedString>,
     selector: &'static str,
+    width: f32,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id("side-panel")
@@ -226,11 +231,95 @@ pub(crate) fn side_panel(
         .flex()
         .flex_col()
         .flex_none()
-        .w(u(theme.metrics.side_panel_width))
+        .w(u(width))
         .h_full()
         .bg(Hsla::from(theme.colors.plaster))
         .border_l_1()
         .border_color(Hsla::from(theme.colors.rule))
+}
+
+/// One entry of the list of notices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NoticeItem {
+    /// The control that reads the notices older than the listed ones.
+    Older,
+    Notice(Box<NoticeRow>),
+}
+
+/// The list of the notices in a side panel (ADR 0742). It orders its entries as a message
+/// list does: the oldest at the top and the newest at the bottom. A list shorter than its
+/// area starts at the top of the area; a longer one opens at its end, and while it stands at
+/// its end a new notice is drawn at the bottom in view. Older notices are added above the
+/// listed ones, and the rows in view do not move.
+pub(crate) struct NoticeList {
+    server_id: Option<ServerId>,
+    pub(crate) list: ListState,
+    items: Rc<Vec<NoticeItem>>,
+    /// The frame that is drawn now draws the list.
+    drawn: bool,
+    /// The frame before it drew the list.
+    was_drawn: bool,
+}
+
+impl NoticeList {
+    pub(crate) fn new() -> Self {
+        Self {
+            server_id: None,
+            list: ListState::new(0, ListAlignment::Top, px(400.0)),
+            items: Rc::default(),
+            drawn: false,
+            was_drawn: false,
+        }
+    }
+
+    /// A frame of the window starts.
+    pub(crate) fn frame_starts(&mut self) {
+        self.was_drawn = std::mem::take(&mut self.drawn);
+    }
+
+    /// Takes the entries of the panel. A list that was not drawn in the frame before, or
+    /// that shows another server now, starts at its end and follows it. Otherwise only the
+    /// entries that changed are measured again, and the list keeps its position.
+    fn take(&mut self, server_id: ServerId, panel: &NoticesPanel) {
+        let items: Vec<NoticeItem> = panel
+            .more
+            .then_some(NoticeItem::Older)
+            .into_iter()
+            .chain(
+                panel
+                    .rows
+                    .iter()
+                    .map(|row| NoticeItem::Notice(Box::new(row.clone()))),
+            )
+            .collect();
+        let opened = !self.was_drawn || self.server_id != Some(server_id);
+        self.drawn = true;
+        if opened {
+            self.server_id = Some(server_id);
+            self.list.reset(items.len());
+            self.list.set_follow_mode(FollowMode::Tail);
+            self.items = Rc::new(items);
+            return;
+        }
+        let old = &self.items;
+        if **old == items {
+            return;
+        }
+        let prefix = old
+            .iter()
+            .zip(items.iter())
+            .take_while(|(one, other)| one == other)
+            .count();
+        let suffix = old[prefix..]
+            .iter()
+            .rev()
+            .zip(items[prefix..].iter().rev())
+            .take_while(|(one, other)| one == other)
+            .count();
+        self.list
+            .splice(prefix..old.len() - suffix, items.len() - suffix - prefix);
+        self.items = Rc::new(items);
+    }
 }
 
 impl Shell {
@@ -281,7 +370,7 @@ impl Shell {
                         // A narrow window draws the panel of the call over the stage
                         // only while it is open.
                         if in_call {
-                            this.call_panel_open = true;
+                            this.open_call_panel(cx);
                         }
                     })),
             )
@@ -339,6 +428,25 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        // "Mark all as read" is in the header, which has a height of its own: it appears
+        // with the first unread notice and moves nothing (ADR 0730).
+        let mark_all = (panel.unread > 0).then(|| {
+            Button::new("mark-all-read")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::CheckDouble)
+                .tooltip(if panel.marking {
+                    text::MARKING_ALL_READ
+                } else {
+                    text::MARK_ALL_READ
+                })
+                .disabled(panel.marking)
+                .selector("mark-all-read")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.mark_all_notices_read(server_id, cx);
+                    });
+                }))
+        });
         let header = SideHeader::new(text::NOTIFICATIONS)
             .title_bar()
             .icon(Icon::Bell)
@@ -348,47 +456,26 @@ impl Shell {
                 String::new()
             })
             .trailing(
-                Button::new("close-notices")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_NOTIFICATIONS)
-                    .selector("close-notices")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if in_call {
-                            this.close_call_notices(cx);
-                        } else {
-                            this.state.update(cx, |state, cx| state.close_notices(cx));
-                        }
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(4.0))
+                    .children(mark_all)
+                    .child(
+                        Button::new("close-notices")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::X)
+                            .tooltip(text::CLOSE_NOTIFICATIONS)
+                            .selector("close-notices")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if in_call {
+                                    this.close_call_notices(cx);
+                                } else {
+                                    this.state.update(cx, |state, cx| state.close_notices(cx));
+                                }
+                            })),
+                    ),
             );
-        let bar = (panel.unread > 0).then(|| {
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .px(u(14.0))
-                .pt(u(8.0))
-                .pb(u(9.0))
-                .bg(Hsla::from(colors.limestone))
-                .border_b_1()
-                .border_color(Hsla::from(colors.rule))
-                .child(
-                    Button::new("mark-all-read")
-                        .icon(Icon::CheckDouble)
-                        .label(if panel.marking {
-                            text::MARKING_ALL_READ
-                        } else {
-                            text::MARK_ALL_READ
-                        })
-                        .disabled(panel.marking)
-                        .selector("mark-all-read")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                state.mark_all_notices_read(server_id, cx);
-                            });
-                        })),
-                )
-        });
         let failed = panel.failed.clone().map(|reason| {
             div().flex_none().px(u(14.0)).pt(u(10.0)).child(
                 Notice::error(reason).selector("notices-failed").action(
@@ -434,45 +521,120 @@ impl Shell {
                 .selector("no-notices")
                 .into_any_element()
         } else {
-            let faces = self.faces(server_id);
-            let rows = panel.rows.iter().enumerate().map(|(index, row)| {
-                let notice_id = row.id;
-                let shown = Excerpt {
-                    icon: place_icon(&row.place),
-                    place: text::place_name(&row.place).into(),
-                    day: row.day.clone().into(),
-                    action: row.jump.map(|_| text::GO_TO_MESSAGE.into()),
-                    seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
-                    picture: row.author_id.and_then(|id| faces.image(id)),
-                    author: row.author.clone().into(),
-                    time: row.time.clone().into(),
-                    tag: row.jump.map(|_| text::notice_kind(row.kind).into()),
-                    text: row.text.clone().into(),
-                    marks: Vec::new(),
-                    unread: !row.read,
-                };
-                let label: SharedString = format!(
-                    "{}, {}: {}{}",
-                    row.author,
-                    text::place_name(&row.place),
-                    row.text,
-                    if row.read {
-                        String::new()
-                    } else {
-                        format!(", {}", text::NOTICE_UNREAD)
+            self.notice_list.take(server_id, panel);
+            let state = self.notice_list.list.clone();
+            let items = Rc::clone(&self.notice_list.items);
+            // The list lays out each entry as a root: the block gives it the width of the
+            // list, so that its text wraps.
+            let render =
+                cx.processor(move |this: &mut Self, index: usize, _window, cx| {
+                    match items.get(index) {
+                        Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
+                        Some(NoticeItem::Notice(row)) => {
+                            let below_a_notice = index
+                                .checked_sub(1)
+                                .and_then(|above| items.get(above))
+                                .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
+                            this.render_notice_row(server_id, index, below_a_notice, row, cx)
+                        }
+                        None => div().into_any_element(),
                     }
+                });
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .id("notice-list")
+                        .role(Role::List)
+                        .aria_label(text::NOTIFICATIONS)
+                        .debug_selector(|| "notice-list".to_owned())
+                        .size_full()
+                        .child(list(state.clone(), render).size_full().pb(u(6.0))),
                 )
-                .into();
-                let ring =
-                    crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-                let held = row.clone();
+                .child(scroll_bar(&state, false, cx))
+                .into_any_element()
+        };
+        let frame = if in_call {
+            div()
+                .id("call-notices")
+                .debug_selector(|| "notices-panel".to_owned())
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+        } else {
+            side_panel(
+                &theme,
+                text::NOTIFICATIONS,
+                "notices-panel",
+                self.panel_width(Panel::Notices, theme.metrics.side_panel_width, cx),
+            )
+        };
+        frame
+            .child(header)
+            .child(
+                crate::ui::notice_slot("notices-failed-slot")
+                    .children(failed)
+                    .children(archive_failed),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// One notice of the list. `below_a_notice`: a line divides it from the notice above.
+    fn render_notice_row(
+        &mut self,
+        server_id: ServerId,
+        index: usize,
+        below_a_notice: bool,
+        row: &NoticeRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let faces = self.faces(server_id);
+        let notice_id = row.id;
+        let shown = Excerpt {
+            icon: place_icon(&row.place),
+            place: text::place_name(&row.place).into(),
+            day: row.day.clone().into(),
+            action: row.jump.map(|_| text::GO_TO_MESSAGE.into()),
+            seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
+            picture: row.author_id.and_then(|id| faces.image(id)),
+            author: row.author.clone().into(),
+            time: row.time.clone().into(),
+            tag: row.jump.map(|_| text::notice_kind(row.kind).into()),
+            text: row.text.clone().into(),
+            marks: Vec::new(),
+            unread: !row.read,
+        };
+        let label: SharedString = format!(
+            "{}, {}: {}{}",
+            row.author,
+            text::place_name(&row.place),
+            row.text,
+            if row.read {
+                String::new()
+            } else {
+                format!(", {}", text::NOTICE_UNREAD)
+            }
+        )
+        .into();
+        let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+        let held = row.clone();
+        div()
+            .w_full()
+            .child(
                 div()
                     .id(("notice", index))
                     .role(Role::ListItem)
                     .aria_label(label)
                     .debug_selector(move || format!("notice:{notice_id}"))
-                    .flex_none()
-                    .when(index > 0, |entry| {
+                    .when(below_a_notice, |entry| {
                         entry
                             .border_t_1()
                             .border_color(Hsla::from(colors.rule_soft))
@@ -488,47 +650,27 @@ impl Shell {
                                 this.go_to_notice(&held, cx);
                             }))
                     })
-                    .child(shown.element(&theme, cx))
-                    .into_any_element()
-            });
-            let more = panel.more.then(|| {
-                div().flex().flex_none().px(u(14.0)).py(u(8.0)).child(
-                    Button::new("more-notices")
-                        .label(text::SHOW_OLDER)
-                        .selector("more-notices")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state
-                                .update(cx, |state, _| state.read_more_notices(server_id));
-                        })),
-                )
-            });
-            ScrollArea::new("notice-list", &self.notices_scroll, text::NOTIFICATIONS)
-                .selector("notice-list")
-                .children(rows)
-                .children(more)
-                .child(div().flex_none().h(u(6.0)))
-                .into_any_element()
-        };
-        let frame = if in_call {
-            div()
-                .id("call-notices")
-                .debug_selector(|| "notices-panel".to_owned())
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-        } else {
-            side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
-        };
-        frame
-            .child(header)
-            .child(crate::ui::notice_slot("notices-bar-slot").children(bar))
-            .child(
-                crate::ui::notice_slot("notices-failed-slot")
-                    .children(failed)
-                    .children(archive_failed),
+                    .child(shown.element(&theme, cx)),
             )
-            .child(body)
+            .into_any_element()
+    }
+
+    /// The control above the oldest listed notice that reads the older ones.
+    fn render_older_notices(&mut self, server_id: ServerId, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w_full()
+            .flex()
+            .px(u(14.0))
+            .py(u(8.0))
+            .child(
+                Button::new("more-notices")
+                    .label(text::SHOW_OLDER)
+                    .selector("more-notices")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, _| state.read_more_notices(server_id));
+                    })),
+            )
             .into_any_element()
     }
 
@@ -826,6 +968,32 @@ impl Shell {
                 .debug_selector(|| "level-default".to_owned())
         }))
         .child(help(about_level));
+
+        if let Some(hidden) = panel.hide_text {
+            dialog = dialog.child(
+                div()
+                    .mt(u(12.0))
+                    .flex()
+                    .justify_between()
+                    .child(text::NOTIFICATION_TEXT)
+                    .child(
+                        Toggle::new(
+                            "server-notification-text",
+                            text::NOTIFICATION_TEXT,
+                            !hidden,
+                            (text::ON, text::OFF),
+                        )
+                        .selector("server-notification-text")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !busy {
+                                this.state.update(cx, |state, cx| {
+                                    state.set_server_hide_text(server_id, !hidden, cx)
+                                });
+                            }
+                        })),
+                    ),
+            );
+        }
 
         if let (Some(channel), SettingsScope::Channel(channel_id)) = (&panel.channel, scope) {
             let switches = [

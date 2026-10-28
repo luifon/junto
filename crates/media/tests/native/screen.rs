@@ -210,7 +210,7 @@ pub async fn capture(audio_only: bool) {
     room.member(&owner, &peer, "Peer").await;
     local.enter(room.target).await;
     peer.enter(room.target).await;
-    let share = ShareId::Of(account(&owner));
+    let share = ShareId::of(account(&owner), 0);
     peer.calls.set_view_size(3840, 2160);
     let mut remote = peer.calls.main_picture();
     let quality = ShareQuality {
@@ -231,11 +231,12 @@ pub async fn capture(audio_only: bool) {
                 picture,
                 sound: SoundChoice::None,
                 quality,
+                dialog_parent: None,
             });
             super::calls::state(&local, |v| {
                 v.call
                     .as_ref()
-                    .is_some_and(|c| matches!(c.share, ShareState::Running(_)))
+                    .is_some_and(|c| matches!(c.own_shares.get(&0), Some(ShareState::Running(_))))
             })
             .await;
             peer.calls.watch_share(share);
@@ -281,13 +282,11 @@ pub async fn capture(audio_only: bool) {
                 );
             }
             if display {
-                local.calls.stop_share();
+                local.calls.stop_share(None);
             } else {
                 fixture.close();
                 super::calls::state(&local, |v| {
-                    v.call
-                        .as_ref()
-                        .is_some_and(|c| matches!(c.share, ShareState::Ended(_)))
+                    v.call.as_ref().is_some_and(|c| c.share_ended.is_some())
                 })
                 .await;
             }
@@ -335,10 +334,11 @@ pub async fn capture(audio_only: bool) {
                 picture: PictureSource::Window(window.id),
                 sound,
                 quality,
+                dialog_parent: None,
             });
             super::calls::state(&local, |v| {
                 v.call.as_ref().is_some_and(
-                    |c| matches!(&c.share, ShareState::Running(info) if info.sound == reported),
+                    |c| matches!(c.own_shares.get(&0), Some(ShareState::Running(info)) if info.sound == reported),
                 )
             })
             .await;
@@ -379,7 +379,7 @@ pub async fn capture(audio_only: bool) {
                     "None must have no shared-audio publication"
                 );
             }
-            local.calls.stop_share();
+            local.calls.stop_share(None);
             tokio::time::timeout(
                 Duration::from_secs(2),
                 stops.wait_for(|count| *count == index + 1),

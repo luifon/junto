@@ -289,6 +289,11 @@ pub struct SystemRow {
     pub time: String,
     pub kind: SystemKind,
     pub parts: Vec<Part>,
+    /// The people whom the line names: more than one when it joins the lines of several
+    /// people (ADR 0740).
+    pub people: Vec<AccountId>,
+    /// The line is a person who left and joined again: no other line joins it.
+    pub rejoined: bool,
 }
 
 /// A finished recording in the chat of its voice channel (ADR 0744).
@@ -681,9 +686,93 @@ fn quote<'a>(source: &Source<'a>, loaded: &mut Loaded<'a>, message_id: MessageId
     }
 }
 
+/// The actions whose consecutive lines of different people are drawn as one line that
+/// names them all, within [`JOINED_LINES`] of the first one (ADR 0740).
+const JOINED_PEOPLE: [&str; 5] = [
+    "person_joined",
+    "person_left",
+    "joined_by_invitation",
+    "screen_share_started",
+    "screen_share_ended",
+];
+/// The time within which consecutive lines of one kind are joined, and within which a
+/// person who left and joined again is drawn as one line.
+const JOINED_LINES: time::Duration = time::Duration::minutes(5);
+const REJOINED_WITHIN: time::Duration = time::Duration::seconds(60);
+
+/// How a system line is drawn with the lines before it: on its own, joined to the line
+/// before it with more people, or as a person who left and joined again.
+fn joined_line(
+    rows: &[FeedRow],
+    message: &Message,
+    system: &SystemMessage,
+) -> Option<Vec<AccountId>> {
+    let actor = system.actor_id?;
+    let Some(FeedRow::System(before)) = rows.last() else {
+        return None;
+    };
+    if before.rejoined {
+        return None;
+    }
+    let earlier = before.message.system.as_ref()?;
+    let within = message.created_at - before.message.created_at;
+    let mut people = before.people.clone();
+    if earlier.action == system.action
+        && JOINED_PEOPLE.contains(&system.action.as_str())
+        && within < JOINED_LINES
+    {
+        if !people.contains(&actor) {
+            people.push(actor);
+        }
+        return Some(people);
+    }
+    None
+}
+
 /// The text of a system line and the mark at its start. A line of an action that this
 /// build does not know states that something happened.
 pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<Part>) {
+    system_parts_of(system, names, &[])
+}
+
+/// The names of several people as one text: "Ada and Ben", "Ada, Ben and Cy", "Ada, Ben,
+/// Cy and 2 others", as parts with the names drawn bold.
+fn people_parts(people: &[String]) -> Vec<Part> {
+    let strong = |text: &str| Part {
+        text: text.to_owned(),
+        strong: true,
+    };
+    let plain = |text: String| Part {
+        text,
+        strong: false,
+    };
+    let shown = people.len().min(3);
+    let others = people.len() - shown;
+    let mut parts = Vec::new();
+    for (index, name) in people[..shown].iter().enumerate() {
+        if index > 0 {
+            let last = index + 1 == shown && others == 0;
+            parts.push(plain(if last {
+                " and ".to_owned()
+            } else {
+                ", ".to_owned()
+            }));
+        }
+        parts.push(strong(name));
+    }
+    if others > 0 {
+        parts.push(plain(crate::text::and_others(others)));
+    }
+    parts
+}
+
+/// As [`system_parts`], with the people of a line that joins the lines of several people:
+/// `{actor}` names them all.
+fn system_parts_of(
+    system: &SystemMessage,
+    names: &Names,
+    people: &[AccountId],
+) -> (SystemKind, Vec<Part>) {
     let name = |account_id: Option<AccountId>| {
         account_id.map(|id| {
             names
@@ -711,6 +800,12 @@ pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<P
         push(&rest[..at], false);
         let end = rest[at..].find('}').map_or(rest.len(), |end| at + end + 1);
         match &rest[at..end] {
+            "{actor}" if people.len() > 1 => {
+                let named: Vec<String> = people.iter().filter_map(|id| name(Some(*id))).collect();
+                for part in people_parts(&named) {
+                    push(&part.text, part.strong);
+                }
+            }
             "{actor}" => push(
                 actor.as_deref().unwrap_or(crate::text::SOMEBODY),
                 actor.is_some(),
@@ -720,6 +815,14 @@ pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<P
                 subject.is_some(),
             ),
             "{duration}" => push(&crate::text::call_length(system.duration_seconds), false),
+            "{name}" => push(
+                &crate::text::label(system.name.as_deref().unwrap_or_default()),
+                true,
+            ),
+            "{previous_name}" => push(
+                &crate::text::label(system.previous_name.as_deref().unwrap_or_default()),
+                true,
+            ),
             other => push(other, false),
         }
         rest = &rest[end..];
@@ -943,12 +1046,46 @@ pub fn derive(source: &Source<'_>) -> Feed {
                 group = None;
                 continue;
             }
+            // A line that repeats the line before it for another person joins it; a person
+            // who left and joined again within a minute is one line (ADR 0740).
+            if let Some(people) = joined_line(&rows, message, system)
+                && let Some(FeedRow::System(before)) = rows.last_mut()
+            {
+                let earlier = before.message.system.clone().unwrap_or_default();
+                let (kind, parts) = system_parts_of(&earlier, names, &people);
+                before.kind = kind;
+                before.parts = parts;
+                before.people = people;
+                continue;
+            }
+            if let Some(FeedRow::System(before)) = rows.last_mut()
+                && system.action == "person_joined"
+                && before.people == [system.actor_id.unwrap_or(own)]
+                && before
+                    .message
+                    .system
+                    .as_ref()
+                    .is_some_and(|earlier| earlier.action == "person_left")
+                && message.created_at - before.message.created_at < REJOINED_WITHIN
+            {
+                let rejoined = SystemMessage {
+                    action: "person_rejoined".to_owned(),
+                    ..system.clone()
+                };
+                let (kind, parts) = system_parts(&rejoined, names);
+                before.kind = kind;
+                before.parts = parts;
+                before.rejoined = true;
+                continue;
+            }
             let (kind, parts) = system_parts(system, names);
             rows.push(FeedRow::System(SystemRow {
                 message: message.clone(),
                 time: clock(local),
                 kind,
                 parts,
+                people: system.actor_id.into_iter().collect(),
+                rejoined: false,
             }));
             group = None;
             continue;
@@ -1590,6 +1727,97 @@ mod tests {
         assert_eq!(feed.rows.last(), Some(&FeedRow::Later { reading: true }));
     }
 
+    /// A line of the system at a minute of the morning.
+    fn line(scene: &Scene, position: u64, minutes: i64, action: &str, actor: AccountId) -> Message {
+        let mut line = scene.message(position, actor, 0, "");
+        line.created_at = morning() + Duration::seconds(minutes * 60);
+        line.author_id = None;
+        line.author_name = None;
+        line.document = None;
+        line.system = Some(SystemMessage {
+            action: action.to_owned(),
+            actor_id: Some(actor),
+            ..SystemMessage::default()
+        });
+        line
+    }
+
+    fn texts(feed: &Feed) -> Vec<String> {
+        feed.rows
+            .iter()
+            .filter_map(|row| match row {
+                FeedRow::System(line) => {
+                    Some(line.parts.iter().map(|part| part.text.as_str()).collect())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn consecutive_lines_of_several_people_are_one_line_and_a_quick_return_is_one_line() {
+        let scene = scene();
+        let third = AccountId::generate();
+        let name = |id| scene.names.accounts[&id].clone();
+        let timeline = scene.timeline(vec![
+            line(&scene, 1, 0, "person_joined", scene.ana),
+            line(&scene, 2, 1, "person_joined", scene.own),
+            line(&scene, 3, 2, "person_joined", third),
+            line(&scene, 4, 3, "person_joined", scene.ana),
+            // A person who leaves and joins again within a minute.
+            line(&scene, 5, 10, "person_left", scene.own),
+            {
+                let mut back = line(&scene, 6, 10, "person_joined", scene.own);
+                back.created_at += Duration::seconds(20);
+                back
+            },
+            // Lines more than 5 minutes apart, and of another kind, stay apart.
+            line(&scene, 7, 20, "person_left", scene.ana),
+            line(&scene, 8, 30, "person_left", scene.own),
+            line(&scene, 9, 31, "screen_share_started", scene.ana),
+        ]);
+        let feed = scene.feed(&timeline, false);
+        assert_eq!(
+            texts(&feed),
+            [
+                format!(
+                    "{}, {} and {} joined the call",
+                    name(scene.ana),
+                    name(scene.own),
+                    crate::text::UNKNOWN_PERSON
+                ),
+                format!("{} left the call and joined again", name(scene.own)),
+                format!("{} left the call", name(scene.ana)),
+                format!("{} left the call", name(scene.own)),
+                format!("{} started sharing", name(scene.ana)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rename_names_both_names_and_the_end_of_a_call_its_length() {
+        let scene = scene();
+        let mut renamed = line(&scene, 1, 0, "channel_renamed", scene.ana);
+        if let Some(system) = renamed.system.as_mut() {
+            system.previous_name = Some("general".to_owned());
+            system.name = Some("lobby".to_owned());
+        }
+        let mut ended = line(&scene, 2, 1, "call_ended", scene.ana);
+        if let Some(system) = ended.system.as_mut() {
+            system.actor_id = None;
+            system.duration_seconds = Some(754);
+        }
+        let feed = scene.feed(&scene.timeline(vec![renamed, ended]), false);
+        let name = scene.names.accounts[&scene.ana].clone();
+        assert_eq!(
+            texts(&feed),
+            [
+                format!("{name} renamed this channel from general to lobby"),
+                "Call ended after 12 minutes 34 seconds".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn replies_system_lines_deleted_messages_and_mentions_are_derived() {
         let mut scene = scene();
@@ -1603,6 +1831,7 @@ mod tests {
             media_type: "application/octet-stream".to_owned(),
             width: None,
             height: None,
+            frames: None,
         }];
         let mut marker = scene.message(3, scene.ana, 2, "");
         marker.deleted = true;
@@ -1635,6 +1864,8 @@ mod tests {
             actor_id: Some(scene.ana),
             recording_id: None,
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         });
         let mut unknown = system.clone();
         unknown.id = MessageId::generate();
@@ -1644,6 +1875,8 @@ mod tests {
             actor_id: None,
             recording_id: None,
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         });
         let mention = |position, text: &str, target| {
             let at = text.find('@').unwrap();
@@ -1734,7 +1967,7 @@ mod tests {
             [
                 (
                     SystemKind::Plain,
-                    "[Ana] closed the microphone of [Luca]".to_owned()
+                    "[Ana] blocked the microphone of [Luca]".to_owned()
                 ),
                 (
                     SystemKind::Plain,
@@ -1775,6 +2008,8 @@ mod tests {
             actor_id: None,
             recording_id: Some(recording_id),
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         });
         let mut started = post.clone();
         started.id = MessageId::generate();
@@ -1981,6 +2216,8 @@ mod tests {
                 actor_id: Some(actor),
                 recording_id: None,
                 duration_seconds,
+                name: None,
+                previous_name: None,
             };
             let (kind, parts) = system_parts(&system, &scene.names);
             let text: String = parts

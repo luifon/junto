@@ -14,6 +14,15 @@ use sqlx::{PgConnection, Row, types::Json};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// The call, the readers, the root and the creation time of a message, which its change
+/// event needs.
+type ChangeAudience = (
+    Option<junto_protocol::ids::CallId>,
+    Option<Vec<junto_protocol::ids::AccountId>>,
+    Option<MessageId>,
+    OffsetDateTime,
+);
+
 pub async fn changed(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -45,26 +54,32 @@ async fn record_message(
     deleted: bool,
     creation: bool,
 ) -> ApiResult<()> {
+    let audience: Option<ChangeAudience> =
+        sqlx::query_as("select call_id,readers,thread_root,created_at from messages where id=$1")
+            .bind(message_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let (call_id, readers, thread_root, created_at) = match audience {
+        Some((call_id, readers, thread_root, created_at)) => {
+            (call_id, readers, thread_root, Some(created_at))
+        }
+        None => (None, None, None, None),
+    };
+    // The delivery adds the state of the thread of a reply for each account (ADR 0412).
     let event = Event::MessageChanged {
         place,
         message_id,
         position,
         deleted,
+        thread_root,
+        thread: None,
     };
-    let audience: Option<(
-        Option<junto_protocol::ids::CallId>,
-        Option<Vec<junto_protocol::ids::AccountId>>,
-        OffsetDateTime,
-    )> = sqlx::query_as("select call_id,readers,created_at from messages where id=$1")
-        .bind(message_id)
-        .fetch_optional(&mut *connection)
-        .await?;
     let audience = if let MessagePlace::Channel {
         workspace_id,
         channel_id,
     } = place
     {
-        let (call_id, readers, created_at) = audience.ok_or_else(|| {
+        let created_at = created_at.ok_or_else(|| {
             ApiError::internal(&"a channel message event needs its creation time")
         })?;
         match call_id {
@@ -315,14 +330,15 @@ pub async fn snapshot(
     states(connection, access, &places, now).await
 }
 
-/// The actions whose line states only that a person changed settings of the channel. These
-/// lines are public. The line is not written again while the latest public line of the
+/// The actions whose line states only that a person changed settings of the channel or
+/// pinned a message. These lines are public. The line is not written again while the latest public line of the
 /// channel is the same action by the same person, written less than [`JOINED_LINES_WITHIN`]
 /// earlier (ADR 0408).
-const JOINED_ACTIONS: [&str; 3] = [
+const JOINED_ACTIONS: [&str; 4] = [
     "channel_updated",
     "channel_override_set",
     "channel_call_settings_updated",
+    "message_pinned",
 ];
 pub const JOINED_LINES_WITHIN: time::Duration = time::Duration::minutes(5);
 
@@ -364,6 +380,70 @@ async fn repeats_latest(
     .await?)
 }
 
+/// The line of a rename of a channel: "{actor} renamed this channel from A to B". A rename by
+/// the same person less than [`JOINED_LINES_WITHIN`] after the latest public line, which is
+/// that person's rename, changes that line to the new name, so that a person who renames
+/// twice in a row leaves one line from the first name to the last (ADR 0408).
+pub async fn rename_line(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    channel: ChannelId,
+    actor: junto_protocol::ids::AccountId,
+    previous: &str,
+    name: &str,
+) -> ApiResult<()> {
+    type Latest = (
+        MessageId,
+        i64,
+        Option<Json<SystemMessage>>,
+        Uuid,
+        OffsetDateTime,
+    );
+    let latest: Option<Latest> = sqlx::query_as(
+        "select m.id, m.position, m.system, c.workspace_id, m.created_at from messages m
+         join channels c on c.id = m.place_id
+         where m.place_id = $1 and m.thread_root is null and m.readers is null
+         order by m.position desc, m.created_at desc, m.id desc limit 1",
+    )
+    .bind(channel)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let latest = latest.and_then(|(id, position, line, workspace, created_at)| {
+        (created_at > now - JOINED_LINES_WITHIN).then_some((id, position, line?, workspace))
+    });
+    if let Some((id, position, Json(mut line), workspace)) = latest
+        && line.action == "channel_renamed"
+        && line.actor_id == Some(actor)
+    {
+        line.name = Some(name.to_owned());
+        sqlx::query("update messages set system = $2 where id = $1")
+            .bind(id)
+            .bind(Json(&line))
+            .execute(&mut *connection)
+            .await?;
+        let place = MessagePlace::Channel {
+            workspace_id: junto_protocol::ids::WorkspaceId::from_uuid(workspace),
+            channel_id: channel,
+        };
+        return changed(connection, now, place, id, position as u64, false).await;
+    }
+    system(
+        connection,
+        now,
+        channel,
+        MessageId::generate(),
+        &SystemMessage {
+            action: "channel_renamed".to_owned(),
+            actor_id: Some(actor),
+            name: Some(name.to_owned()),
+            previous_name: Some(previous.to_owned()),
+            ..SystemMessage::default()
+        },
+        None,
+    )
+    .await
+}
+
 pub async fn system(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -371,6 +451,21 @@ pub async fn system(
     id: MessageId,
     system: &SystemMessage,
     call_id: Option<junto_protocol::ids::CallId>,
+) -> ApiResult<()> {
+    system_notifying(connection, now, channel, id, system, call_id, None).await
+}
+
+/// As [`system`], with an account for which the line counts as an unread message, as the
+/// line of a direct call that was not answered does for the callee (ADR 0518): the line of
+/// a finished recording and of its transcript for the person who started the recording.
+pub async fn system_notifying(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    channel: ChannelId,
+    id: MessageId,
+    system: &SystemMessage,
+    call_id: Option<junto_protocol::ids::CallId>,
+    notifies: Option<junto_protocol::ids::AccountId>,
 ) -> ApiResult<()> {
     let workspace =
         sqlx::query_scalar("select workspace_id from channels where id=$1 and deleted_at is null")
@@ -423,8 +518,9 @@ pub async fn system(
         place.next(connection).await?
     };
     sqlx::query(
-        "insert into messages(id,place_id,position,created_at,system,call_id,recording_id,readers)
-             values($1,$2,$3,$4,$5,$6,$7,$8)",
+        "insert into messages(id,place_id,position,created_at,system,call_id,recording_id,readers,
+             notifies)
+             values($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     )
     .bind(id)
     .bind(place.id)
@@ -434,6 +530,7 @@ pub async fn system(
     .bind(call_id)
     .bind(system.recording_id)
     .bind(&readers)
+    .bind(notifies)
     .execute(&mut *connection)
     .await?;
     if let Some(call_id) = call_id {
@@ -453,6 +550,8 @@ pub async fn system(
                 message_id: id,
                 position: position as u64,
                 deleted: false,
+                thread_root: None,
+                thread: None,
             },
         )
         .await

@@ -34,21 +34,28 @@ pub enum SettingsSection {
     Picture,
     Interface,
     Voice,
+    /// The key bindings (ADR 0777).
+    Keybinds,
     Quiet,
     Notifications,
+    Sounds,
     Devices,
+    Permissions,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
         Self::Voice,
+        Self::Keybinds,
         Self::Quiet,
         Self::Notifications,
+        Self::Sounds,
         Self::Devices,
+        Self::Permissions,
         Self::About,
     ];
 
@@ -58,9 +65,12 @@ impl SettingsSection {
             Self::Picture => text::PICTURE,
             Self::Interface => text::INTERFACE,
             Self::Voice => text::VOICE,
+            Self::Keybinds => text::KEYBINDS,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
+            Self::Sounds => text::SOUNDS,
             Self::Devices => text::account::DEVICES_SECTION,
+            Self::Permissions => text::permissions::PERMISSIONS,
             Self::About => text::ABOUT,
         }
     }
@@ -71,9 +81,12 @@ impl SettingsSection {
             Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
             Self::Voice => Icon::Microphone,
+            Self::Keybinds => Icon::Keyboard,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
+            Self::Sounds => Icon::Speaker,
             Self::Devices => Icon::Devices,
+            Self::Permissions => Icon::Lock,
             Self::About => Icon::Document,
         }
     }
@@ -85,13 +98,50 @@ impl SettingsSection {
             Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
             Self::Voice => "settings-section-voice",
+            Self::Keybinds => "settings-section-keybinds",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
+            Self::Sounds => "settings-section-sounds",
             Self::Devices => "settings-section-devices",
+            Self::Permissions => "settings-section-permissions",
             Self::About => "settings-section-about",
         }
     }
 }
+
+/// The name of the switch of a kind of sounds, for a test.
+pub fn sound_kind_selector(kind: junto_client_core::voice::SoundKind) -> &'static str {
+    use junto_client_core::voice::SoundKind;
+    match kind {
+        SoundKind::Messages => "sound-kind-messages",
+        SoundKind::Mentions => "sound-kind-mentions",
+        SoundKind::Ring => "sound-kind-ring",
+        SoundKind::CallJoined => "sound-kind-call-joined",
+        SoundKind::CallLeft => "sound-kind-call-left",
+        SoundKind::Moved => "sound-kind-moved",
+        SoundKind::ConnectionLost => "sound-kind-connection-lost",
+        SoundKind::PersonJoined => "sound-kind-person-joined",
+        SoundKind::PersonLeft => "sound-kind-person-left",
+        SoundKind::MicrophoneOff => "sound-kind-microphone-off",
+        SoundKind::MicrophoneOn => "sound-kind-microphone-on",
+        SoundKind::SoundOff => "sound-kind-sound-off",
+        SoundKind::SoundOn => "sound-kind-sound-on",
+        SoundKind::TalkStarts => "sound-kind-talk-starts",
+        SoundKind::TalkEnds => "sound-kind-talk-ends",
+        SoundKind::ShareStarted => "sound-kind-share-started",
+        SoundKind::ShareEnded => "sound-kind-share-ended",
+        SoundKind::ViewerJoined => "sound-kind-viewer-joined",
+        SoundKind::ViewerLeft => "sound-kind-viewer-left",
+        SoundKind::Invitation => "sound-kind-invitation",
+        SoundKind::Request => "sound-kind-request",
+        SoundKind::RecordingStarted => "sound-kind-recording-started",
+        SoundKind::RecordingStopped => "sound-kind-recording-stopped",
+        SoundKind::HandRaised => "sound-kind-hand-raised",
+    }
+}
+
+/// What a press on a switch of the sounds does.
+type SwitchPress = Box<dyn Fn(&mut Shell, &mut Context<Shell>)>;
 
 fn row_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
@@ -103,7 +153,7 @@ fn row_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(label)
 }
 
-fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mb(u(5.0))
         .typeface(theme.types.label, theme)
@@ -111,7 +161,15 @@ fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
         .child(label)
 }
 
-fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+pub(super) fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .mt(u(5.0))
+        .typeface(theme.types.small, theme)
+        .ink(theme.colors.ink_2)
+        .child(sentence)
+}
+
+pub(super) fn help_owned(sentence: String, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mt(u(5.0))
         .typeface(theme.types.small, theme)
@@ -187,13 +245,6 @@ impl Shell {
                     .mt(u(12.0))
                     .child(Field::new(&self.name, text::NAME_FIELD).selector("name-field")),
             )
-            .child(
-                crate::ui::notice_slot("name-error-slot").children(
-                    self.name_error
-                        .clone()
-                        .map(|error| Notice::error(error).selector("name-error")),
-                ),
-            )
             .child(dialog_footer([Button::new("continue")
                 .kind(ButtonKind::Primary)
                 .label(text::CONTINUE)
@@ -202,6 +253,15 @@ impl Shell {
                 .px(u(12.0))
                 .on_click(cx.listener(|this, _, window, cx| this.submit_name(window, cx)))
                 .into_any_element()]))
+            .child(
+                crate::ui::notice_slot("name-error-slot").children(self.name_error.clone().map(
+                    |error| {
+                        div()
+                            .mt(u(12.0))
+                            .child(Notice::error(error).selector("name-error"))
+                    },
+                )),
+            )
     }
 
     /// Shows one section of the settings. The page starts at its top.
@@ -212,12 +272,22 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if self.settings_section != section {
+            if section != SettingsSection::Keybinds {
+                self.stop_keybind_recording(cx);
+            }
             self.settings_section = section;
             self.settings_scroll().set_offset(gpui::Point::default());
         }
         // The microphone is open for its level while the Voice section is shown (ADR 0733).
-        self.state.update(cx, |state, _| {
-            state.set_input_test(section == SettingsSection::Voice)
+        // The permissions are read again when a section shows them (ADR 0708).
+        self.state.update(cx, |state, cx| {
+            state.set_input_test(section == SettingsSection::Voice);
+            if matches!(
+                section,
+                SettingsSection::Permissions | SettingsSection::Notifications
+            ) {
+                state.read_permissions(cx);
+            }
         });
         cx.notify();
     }
@@ -258,6 +328,7 @@ impl Shell {
                 parts.extend(self.render_voice_settings(&theme, window, cx));
                 parts
             }
+            SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
             SettingsSection::Quiet => {
                 let quiet = self
                     .view
@@ -269,7 +340,9 @@ impl Shell {
                 parts
             }
             SettingsSection::Notifications => self.render_notifications_section(&theme, cx),
+            SettingsSection::Sounds => self.render_sounds_section(&theme, cx),
             SettingsSection::Devices => self.render_devices_settings(&theme, cx),
+            SettingsSection::Permissions => self.render_permissions_section(&theme, cx),
             SettingsSection::About => self.render_about_section(&theme, window, cx),
         };
         let page = div()
@@ -418,25 +491,115 @@ impl Shell {
 
     /// Whether the system shows the notifications of Junto. What a server notifies is
     /// chosen in the menu of that server.
+    /// The switch of all sounds and one switch for each kind (ADR 0707). A kind is drawn
+    /// as off while all sounds are off, and keeps its own choice.
+    fn render_sounds_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let sounds = self.state.read(cx).voice().sounds.clone();
+        let colors = theme.colors;
+        let switch = |selector: &'static str,
+                      title: &'static str,
+                      sentence: &'static str,
+                      on: bool,
+                      held: Option<&'static str>,
+                      press: SwitchPress,
+                      cx: &mut Context<Shell>| {
+            div()
+                .debug_selector(move || format!("{selector}-row"))
+                .flex()
+                .items_start()
+                .gap(u(10.0))
+                .mt(u(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .typeface(theme.types.control, theme)
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .ink(colors.ink)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_2)
+                                .child(sentence),
+                        ),
+                )
+                .child(
+                    Toggle::new(selector, title, on, (text::ON, text::OFF))
+                        .selector(selector)
+                        .held(held)
+                        .on_click(cx.listener(move |this, _, _, cx| press(this, cx))),
+                )
+                .into_any_element()
+        };
+        let mut parts = vec![group_label(text::SOUNDS, theme).into_any_element()];
+        let all = sounds.all;
+        parts.push(switch(
+            "all-sounds",
+            text::ALL_SOUNDS,
+            text::ALL_SOUNDS_HELP,
+            all,
+            None,
+            Box::new(move |this, cx| {
+                this.state
+                    .update(cx, |state, cx| state.set_all_sounds(!all, cx));
+            }),
+            cx,
+        ));
+        for kind in junto_client_core::voice::SoundKind::ALL {
+            let (title, sentence) = text::sound_kind(kind);
+            let on = sounds.kind_on(kind);
+            parts.push(switch(
+                sound_kind_selector(kind),
+                title,
+                sentence,
+                all && on,
+                (!all).then_some(text::ALL_SOUNDS_ARE_OFF),
+                Box::new(move |this, cx| {
+                    this.state
+                        .update(cx, |state, cx| state.set_sound_kind(kind, !on, cx));
+                }),
+                cx,
+            ));
+        }
+        parts
+    }
+
     fn render_notifications_section(
         &mut self,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let unavailable = self.state.read(cx).notifications_unavailable();
-        vec![
+        let refused = self
+            .state
+            .read(cx)
+            .permission_access(crate::permissions::Permission::Notifications)
+            == crate::permissions::Access::Refused;
+        let quiet = self
+            .view
+            .as_ref()
+            .map(|view| view.quiet.clone())
+            .unwrap_or_default();
+        let mut parts = vec![
             group_label(text::NOTIFICATIONS, theme).into_any_element(),
             div()
                 .typeface(theme.types.control, theme)
                 .ink(theme.colors.ink)
                 .debug_selector(|| "notifications-state".to_owned())
-                .child(if unavailable.is_some() {
+                .child(if unavailable.is_some() || refused {
                     text::NOTIFICATIONS_OFF_BY_SYSTEM
                 } else {
                     text::NOTIFICATIONS_SHOWN
                 })
                 .into_any_element(),
             help(text::NOTIFICATIONS_HELP, theme).into_any_element(),
+            div()
+                .children(self.render_notification_permission(theme, cx))
+                .into_any_element(),
             crate::ui::notice_slot("notifications-unavailable-slot")
                 .at_end()
                 .children(unavailable.map(|reason| {
@@ -445,7 +608,97 @@ impl Shell {
                         .child(Notice::new(reason).selector("notifications-unavailable"))
                 }))
                 .into_any_element(),
-        ]
+        ];
+        // Settings of the account on each server; the window sets them on every server of
+        // the device, as the quiet times (ADR 0742).
+        if let Some(hide_text) = quiet.hide_text {
+            let shown = hide_text == crate::state::notices::Agreement::All(false);
+            let busy = quiet.busy;
+            parts.push(self.switch_row(
+                theme,
+                Setting {
+                    selector: "notification-text",
+                    title: text::NOTIFICATION_TEXT,
+                    sentence: text::NOTIFICATION_TEXT_HELP,
+                    on: shown,
+                },
+                Box::new(move |this: &mut Shell, cx: &mut Context<Shell>| {
+                    if !busy {
+                        this.state
+                            .update(cx, |state, cx| state.set_hide_text(shown, cx));
+                    }
+                }),
+                cx,
+            ));
+        }
+        if let Some(hold) = quiet.hold_while_presenting {
+            let on = hold == crate::state::notices::Agreement::All(true);
+            let busy = quiet.busy;
+            parts.push(self.switch_row(
+                theme,
+                Setting {
+                    selector: "hold-while-presenting",
+                    title: text::HOLD_WHILE_PRESENTING,
+                    sentence: text::HOLD_WHILE_PRESENTING_HELP,
+                    on,
+                },
+                Box::new(move |this: &mut Shell, cx: &mut Context<Shell>| {
+                    if !busy {
+                        this.state
+                            .update(cx, |state, cx| state.set_hold_while_presenting(!on, cx));
+                    }
+                }),
+                cx,
+            ));
+        }
+        parts
+    }
+
+    /// A setting with its title, its sentence and its switch.
+    fn switch_row(
+        &self,
+        theme: &Theme,
+        setting: Setting,
+        press: SwitchPress,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Setting {
+            selector,
+            title,
+            sentence,
+            on,
+        } = setting;
+        let colors = &theme.colors;
+        div()
+            .debug_selector(move || format!("{selector}-row"))
+            .flex()
+            .items_start()
+            .gap(u(10.0))
+            .mt(u(12.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .typeface(theme.types.control, theme)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .ink(colors.ink)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink_2)
+                            .child(sentence),
+                    ),
+            )
+            .child(
+                Toggle::new(selector, title, on, (text::ON, text::OFF))
+                    .selector(selector)
+                    .on_click(cx.listener(move |this, _, _, cx| press(this, cx))),
+            )
+            .into_any_element()
     }
 
     /// The data directory, the version of this build and its updates.
@@ -591,16 +844,22 @@ impl Shell {
                     .level(level)
                     .selector("voice-threshold-slider"),
                 )
-                .child(
+                .child({
+                    let failed = self.state.read(cx).calls().view().input_test_failed;
                     div()
                         .typeface(theme.types.small, theme)
-                        .ink(colors.ink_2)
-                        .child(if level.is_some() {
-                            text::SENSITIVITY_LEVEL_HELP
+                        .ink(if failed.is_some() && level.is_none() {
+                            colors.cinnabar_ink
                         } else {
-                            text::SENSITIVITY_NO_LEVEL
-                        }),
-                );
+                            colors.ink_2
+                        })
+                        .debug_selector(|| "sensitivity-level-help".to_owned())
+                        .child(match (level, failed) {
+                            (Some(_), _) => text::SENSITIVITY_LEVEL_HELP.to_owned(),
+                            (None, Some(error)) => text::microphone_test_failed(&error),
+                            (None, None) => text::SENSITIVITY_NO_LEVEL.to_owned(),
+                        })
+                });
         }
         column.into_any_element()
     }
@@ -774,37 +1033,56 @@ impl Shell {
             );
         }
         rows.push(help(text::INPUT_MODE_HELP, theme).into_any_element());
+        // The key that mutes, push to mute and the other keys of a call are in the Keybinds
+        // section (ADR 0777).
+        rows.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .mt(u(10.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(help(text::CALL_KEYS_IN_KEYBINDS, theme)),
+                )
+                .child(
+                    Button::new("open-keybinds")
+                        .label(text::KEYBINDS)
+                        .selector("open-keybinds")
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_settings_section(SettingsSection::Keybinds, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        );
         if voice.input_mode == InputMode::VoiceActivation {
             rows.push(self.render_voice_threshold(voice.voice_threshold, theme, window, cx));
         }
         for (part, on, title, sentence, selector) in [
             (
-                Some(ProcessingPart::EchoCancellation),
+                ProcessingPart::EchoCancellation,
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                Some(ProcessingPart::NoiseSuppression),
+                ProcessingPart::NoiseSuppression,
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                Some(ProcessingPart::AutomaticGain),
+                ProcessingPart::AutomaticGain,
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
                 "automatic-gain",
-            ),
-            (
-                None,
-                voice.call_sounds,
-                text::CALL_SOUNDS,
-                text::CALL_SOUNDS_HELP,
-                "call-sounds",
             ),
         ] {
             rows.push(
@@ -836,10 +1114,8 @@ impl Shell {
                         Toggle::new(selector, title, on, (text::ON, text::OFF))
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| match part {
-                                    Some(part) => state.set_processing(part, !on, cx),
-                                    None => state.set_call_sounds(!on, cx),
-                                });
+                                this.state
+                                    .update(cx, |state, cx| state.set_processing(part, !on, cx));
                             })),
                     )
                     .into_any_element(),
@@ -853,4 +1129,12 @@ impl Shell {
         );
         rows
     }
+}
+
+/// The texts and the state of the switch of a setting.
+struct Setting {
+    selector: &'static str,
+    title: &'static str,
+    sentence: &'static str,
+    on: bool,
 }

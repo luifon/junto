@@ -553,9 +553,14 @@ impl Access {
         .bind(channel_id)
         .fetch_optional(&mut *connection)
         .await?;
+        // An absent channel runs the same statements as one that the caller may not see,
+        // against a workspace that does not exist, so that the time of the answer does not
+        // tell an absent channel from a hidden one (ADR 0304).
         let workspace_id = row
             .as_ref()
             .map_or(WorkspaceId::from_uuid(Uuid::nil()), |row| row.1);
+        // Only the absence of the workspace waits for the end; a failure of the database
+        // ends the request at once, before a later statement runs on the failed transaction.
         let workspace = match self.workspace(&mut *connection, workspace_id).await {
             Err(error) if error.code() != ErrorCode::NotFound => return Err(error),
             workspace => workspace,

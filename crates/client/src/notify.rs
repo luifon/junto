@@ -12,6 +12,7 @@ mod linux;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui::{App, SystemNotification};
+use junto_client_core::notification_access::{self, NotificationAccess};
 
 use crate::state::notices::Alert;
 
@@ -73,16 +74,23 @@ impl SystemNotifier for PlatformNotifier {
     }
 }
 
-/// Brings the application to the front after a press on one of its notifications.
-pub fn bring_to_front(cx: &mut App) {
+/// Brings the application to the front after a press on one of its notifications or on the
+/// tray. `token`: the activation token that the system gave for the press.
+pub fn bring_to_front(token: Option<&str>, cx: &mut App) {
     cx.activate(true);
     // gpui activates no application on Linux and on Windows. The main window, which is the
-    // first one, is asked instead: it is restored when it is minimized, X11 and Windows give
-    // it the focus, and a Wayland compositor decides by itself.
+    // first one, is asked instead: it is restored when it is minimized, and X11 and Windows
+    // give it the focus. A Wayland compositor gives the focus only for a token that it
+    // issued, such as the token of the press (ADR 0742).
     #[cfg(any(target_os = "linux", windows))]
     if let Some(window) = cx.windows().first() {
-        let _ = window.update(cx, |_, window, _| window.activate_window());
+        let _ = window.update(cx, |_, window, _| match token {
+            Some(token) => window.activate_with_token(token),
+            None => window.activate_window(),
+        });
     }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = token;
 }
 
 /// Installs the system backend and its activation route only for the real application.
@@ -90,7 +98,7 @@ pub fn bring_to_front(cx: &mut App) {
 pub fn platform(
     cx: &mut App,
     data_dir: &std::path::Path,
-    pressed: impl Fn(&str, &mut App) + 'static,
+    pressed: impl Fn(&str, Option<&str>, &mut App) + 'static,
 ) -> std::rc::Rc<dyn SystemNotifier> {
     #[cfg(windows)]
     windows_identity(cx, data_dir);
@@ -105,7 +113,9 @@ pub fn platform(
         // Without an application bundle macOS has no notifications of the application,
         // and nothing is asked of the system.
         if PlatformNotifier::available() {
-            cx.on_system_notification_response(move |response, cx| pressed(&response.tag, cx));
+            cx.on_system_notification_response(move |response, cx| {
+                pressed(&response.tag, None, cx)
+            });
         }
         std::rc::Rc::new(PlatformNotifier)
     }
@@ -170,5 +180,81 @@ impl SystemNotifier for KeptNotifier {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         kept.shown.retain(|held| held.tag != tag);
         kept.dismissed.push(tag.to_owned());
+    }
+}
+
+/// The permission of the system to show notifications of the application (ADR 0708).
+pub trait NotificationPermission: 'static {
+    /// The state now. It shows no question.
+    fn read(&self) -> notification_access::Answer;
+    /// Makes the system ask the person when it has not asked yet, and returns the state
+    /// after the answer.
+    fn request(&self) -> notification_access::Answer;
+}
+
+/// The permission as the system holds it. On macOS a process that does not run as an
+/// application bundle has no notifications: its state is "refused", and nothing is asked.
+pub struct PlatformPermission;
+
+impl NotificationPermission for PlatformPermission {
+    fn read(&self) -> notification_access::Answer {
+        if !PlatformNotifier::available() {
+            return Box::pin(std::future::ready(NotificationAccess::Refused));
+        }
+        notification_access::read()
+    }
+
+    fn request(&self) -> notification_access::Answer {
+        if !PlatformNotifier::available() {
+            return Box::pin(std::future::ready(NotificationAccess::Refused));
+        }
+        notification_access::request()
+    }
+}
+
+/// A permission with a fixed state and a fixed answer to the question, which a test and
+/// the screen tool change as a person does in the settings of the system.
+#[derive(Debug, Clone)]
+pub struct FixedNotificationPermission {
+    held: Arc<Mutex<(NotificationAccess, NotificationAccess, u32)>>,
+}
+
+impl Default for FixedNotificationPermission {
+    fn default() -> Self {
+        Self::new(NotificationAccess::Allowed, NotificationAccess::Allowed)
+    }
+}
+
+impl FixedNotificationPermission {
+    /// `state` is what the system holds, and `answer` what the person answers when asked.
+    pub fn new(state: NotificationAccess, answer: NotificationAccess) -> Self {
+        Self {
+            held: Arc::new(Mutex::new((state, answer, 0))),
+        }
+    }
+
+    pub fn set(&self, state: NotificationAccess) {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).0 = state;
+    }
+
+    /// How often the system was made to ask.
+    pub fn asked(&self) -> u32 {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).2
+    }
+}
+
+impl NotificationPermission for FixedNotificationPermission {
+    fn read(&self) -> notification_access::Answer {
+        let state = self.held.lock().unwrap_or_else(PoisonError::into_inner).0;
+        Box::pin(std::future::ready(state))
+    }
+
+    fn request(&self) -> notification_access::Answer {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.0 == NotificationAccess::NotAsked {
+            held.2 += 1;
+            held.0 = held.1;
+        }
+        Box::pin(std::future::ready(held.0))
     }
 }

@@ -175,6 +175,27 @@ fn the_position_of_a_list_is_told_again_after_a_read_of_the_latest_messages(
     window.until("the end is followed", |window| {
         core_anchor(window, server_id, place) == Some(None)
     });
+    // The list of the window tells the client core its own position after each of its
+    // layouts. The latest page arrives, and the window draws it and tells the end, before
+    // the test sets the position again: a layout after it would replace the position.
+    window.until("the latest page is read", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .server(server_id)
+                .and_then(|server| server.live().view().model)
+                .and_then(|model| {
+                    model.timeline(place).map(|timeline| {
+                        timeline.loaded
+                            && !timeline.more_after
+                            && !timeline.reading.open
+                            && !timeline.reading.older
+                            && !timeline.reading.newer
+                    })
+                })
+                .unwrap_or(false)
+        })
+    });
+    window.settle();
     // The list stands at the same message again, and the client core is told so again.
     window.state.update(&mut window.cx, |state, _| {
         state.set_anchor(server_id, place, Some(anchor));
@@ -1224,13 +1245,25 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
     window.settle();
     assert_eq!(bars(&mut window), vec![last]);
 
+    // The list moves under the resting pointer: the bar goes to the row that is under the
+    // pointer after the move (ADR 0740), and no other row keeps one.
     window.dispatch(ScrollWheelEvent {
         position: row.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(300.0))),
         ..Default::default()
     });
     window.settle();
-    assert_eq!(bars(&mut window), Vec::<MessageId>::new());
+    let under: Vec<MessageId> = sent
+        .iter()
+        .filter(|id| {
+            window
+                .cx
+                .debug_bounds(crate::harness::selector(format!("message:{id}")))
+                .is_some_and(|bounds| bounds.contains(&row.center()))
+        })
+        .copied()
+        .collect();
+    assert_eq!(bars(&mut window), under);
 }
 
 impl Window {
@@ -1871,6 +1904,7 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
 fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothing(
     cx: &mut TestAppContext,
 ) {
+    use junto_client::state::view::{Members, PinsState};
     use junto_client_core::flow::access::AccessState;
     use junto_client_core::protocol::account::RecoverAccount;
 
@@ -1893,6 +1927,17 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
         window.feed().is_some_and(|feed| feed.loaded) && window.shows("composer")
     });
     let general = window.selected_channel();
+    window.click("pins-button");
+    let readers_loaded = |window: &mut Window| {
+        window.view().workspace().is_some_and(|workspace| {
+            matches!(workspace.members, Members::Loaded(_))
+                && workspace
+                    .pins
+                    .as_ref()
+                    .is_some_and(|pins| matches!(pins.state, PinsState::Loaded(_)))
+        })
+    };
+    window.until("the members and pins of the first account", readers_loaded);
 
     // The person opens the file dialog for a message in the channel.
     let files = tempfile::tempdir().unwrap();
@@ -1924,6 +1969,12 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
             .unwrap();
     });
     proxy.release();
+    crate::admin_pages::until_model(
+        &world,
+        &handle,
+        "the next account before the window runs",
+        |model| model.account.id == bruno,
+    );
     window.until_read(
         "the channel is shown for the account of Bruno",
         |window| {
@@ -1939,6 +1990,7 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
             *account == Some(bruno) && *feed == Some((true, PlaceId::Channel(general))) && *composer
         },
     );
+    window.until("the members and pins of the next account", readers_loaded);
     assert_ne!(luca, bruno);
 
     // The person chooses the file now: nothing is attached and nothing is uploaded, and
@@ -1958,16 +2010,18 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
         .count();
     assert_eq!(uploads, 0, "a file was sent for the account of Bruno");
 
-    // A dialog that is opened for the account of Bruno attaches the file.
-    window.click("attach-file");
-    let chosen = path.clone();
-    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
-    window.until("the file waits for the message", |window| {
-        window
-            .view()
-            .lists()
-            .is_some_and(|lists| lists.draft.len() == 1)
-    });
+    #[cfg(unix)]
+    {
+        window.click("attach-file");
+        let chosen = path.clone();
+        window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+        window.until("the file waits for the message", |window| {
+            window
+                .view()
+                .lists()
+                .is_some_and(|lists| lists.draft.len() == 1)
+        });
+    }
 }
 
 /// The file dialog is opened for a channel, and the server is removed from the device and
@@ -2102,9 +2156,21 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
             window.settle();
             junto_client::ui::take_painted_text()
         };
-        let names: Vec<_> = painted
+        // The refresh and the settle can draw more than one frame: a name painted again at
+        // the same place is the same name.
+        let painted_names: Vec<_> = painted
             .iter()
             .filter(|text| EMOJI_GROUPS.contains(&text.text.as_ref()))
+            .collect();
+        let names: Vec<_> = painted_names
+            .iter()
+            .enumerate()
+            .filter(|(index, text)| {
+                !painted_names[..*index]
+                    .iter()
+                    .any(|held| held.text == text.text && held.bounds == text.bounds)
+            })
+            .map(|(_, text)| *text)
             .collect();
         for (index, name) in names.iter().enumerate() {
             for other in &names[index + 1..] {

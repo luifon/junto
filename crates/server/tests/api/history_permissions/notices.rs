@@ -76,10 +76,10 @@ async fn notification_events_do_not_replay_old_notices_but_deliver_live_notices(
     let live = mention(&server, &owner, &channel, &reader).await;
     let events = server.traffic(&reader, &mut stream).await;
     assert!(events.iter().any(
-        |(_, event)| matches!(event,Event::NotificationChanged{message_id} if *message_id==live.id)
+        |(_, event)| matches!(event,Event::NotificationChanged{message_id, ..} if *message_id==live.id)
     ));
     assert!(!events.iter().any(
-        |(_, event)| matches!(event,Event::NotificationChanged{message_id} if *message_id==old.id)
+        |(_, event)| matches!(event,Event::NotificationChanged{message_id, ..} if *message_id==old.id)
     ));
 }
 

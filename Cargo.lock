@@ -271,6 +271,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "getrandom 0.4.3",
+ "raw-window-handle",
  "serde",
  "serde_repr",
  "wayland-backend",
@@ -2812,8 +2813,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1131746fad5c87b5de74dc9c73105655b0c820a2dd4bb247586573e7cf5720e"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3818,6 +3817,7 @@ dependencies = [
 name = "junto-client"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
  "backtrace",
  "chrono",
  "chrono-tz",
@@ -3842,6 +3842,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "proc-macro2",
  "raw-window-handle",
  "serde",
  "serde_json",
@@ -3856,6 +3857,8 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "uuid",
+ "wayland-client",
+ "wayland-protocols",
  "x11rb",
  "zbus",
 ]
@@ -3865,6 +3868,7 @@ name = "junto-client-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "block2 0.6.2",
  "bytes",
  "ed25519-dalek",
  "futures-executor",
@@ -3877,6 +3881,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "reqwest 0.12.28",
  "rustix",
  "semver",
@@ -3896,6 +3901,8 @@ dependencies = [
  "windows 0.62.2",
  "windows-registry",
  "windows-sys 0.61.2",
+ "x11rb",
+ "zbus",
  "zeroize",
 ]
 

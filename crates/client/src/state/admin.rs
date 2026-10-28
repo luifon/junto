@@ -27,9 +27,9 @@ use junto_client_core::protocol::ids::{
     WorkspaceId,
 };
 
-use junto_client_core::protocol::ServerPermission;
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 use junto_client_core::protocol::structure::RuleSubject;
+use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 pub use recordings::RecordingList;
 pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, AuditTarget, ExportFiles};
@@ -647,10 +647,19 @@ impl AppState {
             }
         };
         for server in snapshots {
-            if view::shown(server).is_some_and(|model| {
-                view::holds_server(model, ServerPermission::ApproveJoinRequests)
-            }) {
+            let Some(model) = view::shown(server) else {
+                continue;
+            };
+            if view::holds_server(model, ServerPermission::ApproveJoinRequests) {
                 want((server.id, AdminPart::JoinRequests));
+            }
+            // The counts of the navigation (ADR 0761): the exports of the account, and the
+            // archived channels of each workspace whose channels the person may restore.
+            want((server.id, AdminPart::Exports));
+            for workspace in &model.workspaces {
+                if view::holds_workspace(workspace, WorkspacePermission::ManageChannel) {
+                    want((server.id, AdminPart::Archived(workspace.workspace.id)));
+                }
             }
         }
         let call_notices = self
@@ -714,6 +723,7 @@ impl AppState {
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();
+        self.settle_saved_exports(&snapshots, cx);
         let model_of = |server_id: ServerId| {
             snapshots
                 .iter()

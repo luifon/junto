@@ -545,7 +545,12 @@ async fn a_seat_that_never_connects_reads_no_private_line_of_a_hidden_call() {
     assert_eq!(server.count("call_members").await, 1);
     server.leave_call(ann).await;
 
-    let of_the_call = ["call_started", "screen_share_started", "call_ended"];
+    let of_the_call = [
+        "call_started",
+        "screen_share_started",
+        "screen_share_ended",
+        "call_ended",
+    ];
     assert_eq!(system_lines(server, ann, voice).await[2..], of_the_call);
     assert_eq!(
         system_lines(server, ben, voice).await,

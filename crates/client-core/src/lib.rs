@@ -6,11 +6,15 @@
 
 pub mod address;
 pub mod api;
+pub mod app_badge;
 pub mod app_identity;
+pub mod arrangement;
 pub mod book;
 pub mod console;
 pub mod events;
 pub mod flow;
+pub mod global_keys;
+pub mod keybinds;
 pub mod keys;
 pub mod link;
 pub mod live;
@@ -18,6 +22,7 @@ pub mod manager;
 #[cfg(target_os = "macos")]
 pub mod menu_bar;
 pub mod model;
+pub mod notification_access;
 #[cfg(windows)]
 pub mod notification_area;
 pub mod paths;
@@ -25,6 +30,7 @@ pub mod profile;
 pub mod release_configuration;
 pub mod releases;
 pub mod runtime;
+pub mod saved_exports;
 pub mod secret;
 pub mod settings;
 pub mod storage;

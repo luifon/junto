@@ -2,8 +2,9 @@
 //! the people in its voice channels, and the profile strip of the person.
 
 use gpui::{
-    AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    Role, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    AnyElement, AppContext as _, ClickEvent, Context, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder,
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::ServerId;
@@ -13,11 +14,13 @@ use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::person_drop::PersonDrag;
 use crate::state::view::{
-    Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, SelectedServer, ServerLists,
-    ServerStatus, ShellView, VoiceState, WorkspaceView,
+    Microphone, MicrophoneButton, Occupant, Presence, Relation, SectionTitle, SelectedServer,
+    ServerLists, ServerStatus, ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
+use junto_client_core::settings::Panel;
+
 use crate::ui::{
     Avatar, Band, BandKind, Button, ButtonKind, CategoryHeader, ChannelRow, ChannelState,
     OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
@@ -175,7 +178,22 @@ impl Shell {
             (Some(server), Some(lists)) => self
                 .render_channel_list(view, server, lists, &theme, window, cx)
                 .into_any_element(),
-            _ => div().flex_1().into_any_element(),
+            // Without the lists of a server the column says why it lists nothing.
+            (selected, _) => div()
+                .relative()
+                .flex_1()
+                .px(u(14.0))
+                .pt(u(12.0))
+                .typeface(theme.types.small, &theme)
+                .ink(colors.ink_2)
+                .debug_selector(|| "no-channel-list".to_owned())
+                .child(if selected.is_some() {
+                    text::CHANNELS_AFTER_ANSWER
+                } else {
+                    text::NO_SERVER_CHANNELS
+                })
+                .child(crate::ui::area("channel-column-empty"))
+                .into_any_element(),
         };
         let stale = view
             .selected
@@ -189,7 +207,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.channel_column_width))
+            .w(u(self.panel_width(
+                Panel::Channels,
+                theme.metrics.channel_column_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.limestone))
             .border_r_1()
@@ -303,11 +325,16 @@ impl Shell {
             .min_h_0()
             .child(server_part)
             .child(list)
+            // The entry boxes take their height from the end of the channel list, whose rows
+            // stay in place. They scroll only when the column has no room for them, so the
+            // action of a box stays in view at every width of the column (ADR 0739).
             .child(
                 div()
                     .id("channel-entry-notices")
-                    .flex_none()
-                    .max_h(u(180.0))
+                    .debug_selector(|| "channel-entry-notices".to_owned())
+                    .flex_grow_0()
+                    .flex_shrink_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .children(entries),
             )
@@ -358,6 +385,11 @@ impl Shell {
                 let channel_id = channel.id;
                 let index = channel_index;
                 channel_index += 1;
+                // A double click on a voice channel that this device is not in also enters its
+                // call, as the button of its header does; its first click selects it.
+                let enters = channel.voice.as_ref().is_some_and(|voice| {
+                    !matches!(voice.relation, Relation::Inside | Relation::Joining)
+                });
                 let row = ChannelRow::new(
                     ("channel", index),
                     match channel.kind {
@@ -380,9 +412,15 @@ impl Shell {
                         .map(channel_states)
                         .unwrap_or_default(),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.select_channel(workspace_id, channel_id, cx);
+                        if let Some(server_id) = server_id
+                            && enters
+                            && event.click_count() == 2
+                        {
+                            state.join_call(server_id, workspace_id, channel_id, cx);
+                        }
                     });
                 }));
                 let menu =
@@ -585,7 +623,23 @@ impl Shell {
             Layer::DirectMenu(conversation_id) => Some(*conversation_id),
             _ => None,
         };
-        let mut rows = vec![CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element()];
+        // The heading counts the unread messages of the conversations that are not muted,
+        // as Discord and Slack count them (ADR 0741).
+        let waiting: u64 = lists
+            .directs
+            .iter()
+            .filter(|direct| direct.unread.any() && !direct.mute.is_on())
+            .map(|direct| direct.unread.messages.max(direct.unread.mentions))
+            .sum();
+        let mut rows = vec![
+            div()
+                .debug_selector(|| "directs-heading".to_owned())
+                .child(
+                    CategoryHeader::new(text::DIRECT_MESSAGES)
+                        .count((waiting > 0).then(|| text::unread_count(waiting).into())),
+                )
+                .into_any_element(),
+        ];
         // A new conversation, with an account that the server lists for the person
         // (ADR 0307). It stands before the conversations, so that a conversation that
         // arrives does not move it.
@@ -609,7 +663,7 @@ impl Shell {
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .picture(faces.image(direct.account_id))
                 .selected(direct.selected)
-                .unread(unread_sign(direct.unread))
+                .unread(direct_sign(direct.unread))
                 .muted(direct.unread.muted || direct.mute.is_on())
                 .open(direct_menu == Some(conversation_id))
                 .on_menu(Self::handler(cx, move |this, window, cx| {
@@ -634,19 +688,34 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if conversations.is_empty() {
+            conversations.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .h(u(theme.metrics.channel_row_height))
+                    .px(u(14.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_3)
+                    .debug_selector(|| "no-direct-conversations".to_owned())
+                    .child(text::NO_DIRECT_CONVERSATIONS)
+                    .into_any_element(),
+            );
+        }
+        // The list has the height of its rows up to five, and scrolls beyond them. A
+        // conversation that arrives makes it taller when the pointer is not on a control
+        // that it moves (ADR 0730).
         rows.push(
-            div()
-                .flex()
-                .flex_col()
-                .flex_grow_0()
+            crate::ui::held("direct-list-part")
+                .scroll(&self.directs_scroll)
+                .label(text::DIRECT_MESSAGES)
+                .selector("direct-list")
+                .most(u(theme.metrics.channel_row_height * DIRECT_ROWS))
                 .flex_shrink_1()
-                .flex_basis(u(theme.metrics.channel_row_height * DIRECT_ROWS))
                 .min_h(u(theme.metrics.channel_row_height))
-                .child(
-                    ScrollArea::new("direct-list", &self.directs_scroll, text::DIRECT_MESSAGES)
-                        .selector("direct-list")
-                        .children(conversations),
-                )
+                .children(conversations)
+                .child(crate::ui::area("direct-list"))
                 .into_any_element(),
         );
         rows
@@ -778,6 +847,15 @@ pub(crate) fn name_seed(name: &str) -> u128 {
 }
 
 /// The sign of a channel, a workspace or a server that holds what the person has not read.
+/// The sign of a direct conversation: the count of its unread messages, each of which is
+/// for the person alone, as Discord and Slack count them.
+pub(crate) fn direct_sign(unread: crate::state::view::Unread) -> Option<crate::ui::UnreadSign> {
+    unread.any().then(|| crate::ui::UnreadSign {
+        mentions: Some(text::unread_count(unread.messages.max(unread.mentions).max(1)).into()),
+        label: text::unread_tooltip(unread.messages, unread.mentions).into(),
+    })
+}
+
 pub(crate) fn unread_sign(unread: crate::state::view::Unread) -> Option<crate::ui::UnreadSign> {
     unread.any().then(|| crate::ui::UnreadSign {
         mentions: (unread.mentions > 0).then(|| text::mention_badge(unread.mentions).into()),

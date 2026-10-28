@@ -549,15 +549,13 @@ async fn fix_fork_copies_more_than_one_thousand_replies_and_reply_references() {
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "root").await;
-    for (first, last) in crate::support::fixture_batches(1001) {
-        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,thread_root) select
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,thread_root) select
              gen_random_uuid(),place_id,position+n,author_id,created_at,document,id,id from messages cross join
-             generate_series($2::int,$3::int) n where id=$1")
-        .bind(root.id).bind(first).bind(last)
-        .execute(&server.db)
+             generate_series(1,1001) n where id=$1")
+        .bind(root.id)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
-    }
     sqlx::query("update messages set reply_to=(select id from messages where thread_root=$1 order by position limit 1) where id=(select id from messages where thread_root=$1 order by position desc limit 1)").bind(root.id).execute(&server.db).await.unwrap();
     let copied = fork(&server, &owner, root.id, "text").await;
     let page: MessagePage = server
@@ -761,7 +759,7 @@ async fn fix_fork_copies_more_than_one_thousand_attachments_in_batches() {
              copies.id,c.offset_bytes,c.bytes,c.sha256,c.stored from copies cross join attachment_chunks c where
              c.attachment_id=$1")
         .bind(upload.id)
-        .execute(&files.server.db)
+        .execute(&mut files.server.test_data().await)
         .await
         .unwrap();
     let copied = fork(&files.server, &files.owner, root.id, "text").await;
@@ -948,7 +946,7 @@ async fn round2_unread_threads_are_bounded_and_paged() {
     let reader = server.join(&owner, "Reader").await;
     let source = channel(&server, &owner, "text").await;
     let root = send(&server, &reader, &source, "root").await;
-    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,204) n where id=$1").bind(root.id).execute(&server.db).await.unwrap();
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,204) n where id=$1").bind(root.id).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,thread_root) select gen_random_uuid(),place_id,position+1000,$2,created_at,document,id from messages where place_id=$1 and author_id=$3").bind(source.id).bind(owner.account_id).bind(reader.account_id).execute(&server.db).await.unwrap();
     sqlx::query("with roots as (insert into messages(id,place_id,position,author_id,created_at,document)
         select gen_random_uuid(),place_id,position+2000+n,$2,created_at,document from messages
@@ -957,7 +955,7 @@ async fn round2_unread_threads_are_bounded_and_paged() {
         select gen_random_uuid(),place_id,position+1000,author_id,created_at,document,id from roots returning *)
         insert into message_mention_accounts(place_id,account_id,position,message_id,thread_root)
         select place_id,$3,position,id,thread_root from replies")
-        .bind(root.id).bind(owner.account_id).bind(reader.account_id).execute(&server.db).await.unwrap();
+        .bind(root.id).bind(owner.account_id).bind(reader.account_id).execute(&mut server.test_data().await).await.unwrap();
     let snapshot: Value = server
         .get(&reader, "/api/v1/snapshot")
         .await
@@ -1294,4 +1292,99 @@ async fn rule_13_a_fork_records_and_tells_each_override_that_it_copies() {
                 && allow.is_empty()
                 && *deny == [junto_protocol::WorkspacePermission::ViewChannel]
     )));
+}
+
+/// The change of a reply names its thread and carries the state of the thread for the
+/// account that receives it, and a notice event carries the notice of that account, so
+/// that a client keeps its lists without reading them again (event revision 2, ADR 0409,
+/// ADR 0412).
+#[tokio::test]
+async fn the_events_of_a_reply_state_the_thread_and_the_notice_of_the_account() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Author").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = send(&server, &owner, &channel, "root").await;
+    // The owner writes in the thread and so follows it.
+    reply(&server, &owner, root.id, "own").await;
+    let cursor = server.snapshot(&owner).await.cursor;
+    let answer = reply(&server, &author, root.id, "an answer").await;
+    let told = events(&server, &owner, cursor, Level::Full).await;
+    let (thread_root, thread) = told
+        .iter()
+        .find_map(|event| match event {
+            Event::MessageChanged {
+                message_id,
+                thread_root,
+                thread,
+                ..
+            } if *message_id == answer.id => Some((*thread_root, thread.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(thread_root, Some(root.id));
+    let state = thread.unwrap();
+    assert_eq!(
+        (state.root_id, state.unread, state.following),
+        (root.id, 1, true)
+    );
+    let notice = told
+        .iter()
+        .find_map(|event| match event {
+            Event::NotificationChanged { message_id, notice } if *message_id == answer.id => {
+                notice.clone()
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (notice.message_id, notice.kind),
+        (
+            answer.id,
+            junto_protocol::discovery::NotificationKind::Thread
+        )
+    );
+    // The root is no reply: its change names no thread.
+    assert!(told.iter().all(|event| !matches!(
+        event,
+        Event::MessageChanged {
+            message_id,
+            thread_root: Some(_),
+            ..
+        } if *message_id == root.id
+    )));
+}
+
+#[tokio::test]
+async fn deleting_unread_replies_states_the_remaining_thread_count() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Author").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = send(&server, &owner, &channel, "root").await;
+    reply(&server, &owner, root.id, "own").await;
+    let first = reply(&server, &author, root.id, "first").await;
+    let second = reply(&server, &author, root.id, "second").await;
+    for (removed, remaining) in [(first, 1), (second, 0)] {
+        let cursor = server.snapshot(&owner).await.cursor;
+        server
+            .delete(&author, &message(removed.id))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let told = events(&server, &owner, cursor, Level::Full).await;
+        let state = told
+            .iter()
+            .find_map(|event| match event {
+                Event::MessageChanged {
+                    message_id,
+                    deleted: true,
+                    thread: Some(state),
+                    ..
+                } if *message_id == removed.id => Some(state),
+                _ => None,
+            })
+            .expect("the deletion must carry its surviving root's state");
+        assert_eq!(state.root_id, root.id);
+        assert_eq!(state.unread, remaining);
+    }
 }

@@ -94,9 +94,9 @@ fn a_camera_failure_can_open_settings_or_be_dismissed_in_both_windows(cx: &mut T
     });
     window.click("call-camera");
     window.until("failure shown", |window| window.shows("camera-failed"));
+    // The button opens the Settings tab of the call, where the camera is chosen.
     window.click("camera-settings");
-    assert!(window.shows("settings-dialog"));
-    window.simulate(|cx| cx.simulate_keystrokes("escape"));
+    assert!(window.shows("camera-device"));
     window.click("camera-dismiss");
     window.until("failure dismissed", |window| !window.shows("camera-failed"));
     window.click("call-camera");
@@ -118,8 +118,15 @@ fn a_camera_failure_can_open_settings_or_be_dismissed_in_both_windows(cx: &mut T
         .center();
     detached.simulate(|cx| cx.simulate_click(settings, Modifiers::none()));
     detached.run_tasks();
-    assert!(detached.cx.debug_bounds("settings-dialog").is_some());
-    detached.simulate(|cx| cx.simulate_keystrokes("escape"));
+    assert!(detached.cx.debug_bounds("camera-device").is_some());
+    // The narrow call window draws the panel over the stage; it is closed before the notice
+    // is reached.
+    let close = detached
+        .cx
+        .debug_bounds("close-call-panel")
+        .unwrap()
+        .center();
+    detached.simulate(|cx| cx.simulate_click(close, Modifiers::none()));
     detached.run_tasks();
     let dismiss = detached.cx.debug_bounds("camera-dismiss").unwrap().center();
     detached.simulate(|cx| cx.simulate_click(dismiss, Modifiers::none()));
@@ -498,6 +505,7 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
         picture: PictureSource::Display(1),
         sound: SoundChoice::None,
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("the strip of the share leaves Ada out", |window| {
         window.shows("share-viewport") && only_own(window)
@@ -509,7 +517,7 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     call.until("the call window leaves Ada out of the strip", |call| {
         call.shows("share-viewport") && only_own(call)
     });
-    caller.calls.stop_share();
+    caller.calls.stop_share(None);
     call.until("the call window leaves Ada out of the grid", |call| {
         !call.shows("share-viewport") && only_own(call)
     });
@@ -529,4 +537,39 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     });
     window.click("leave-call");
     world.run(caller.calls.leave());
+}
+
+/// A camera that the system refused: the notice of the call has the button of the page of
+/// the settings of the system (ADR 0708).
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_camera_that_the_system_refused_opens_the_page_of_its_settings(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Camera refused");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
+    });
+    voice_channel(&world, &admin, &mut window, ROOM);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    window
+        .camera
+        .set_access(junto_media::camera::CameraAccess::Refused);
+    window.click("call-camera");
+    window.until("failure shown", |window| window.shows("camera-failed"));
+    window.click("camera-permission-action");
+    assert_eq!(
+        window.cx.opened_url().as_deref(),
+        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+    );
+    window.click("camera-dismiss");
+    window.click("leave-call");
 }

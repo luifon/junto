@@ -712,6 +712,8 @@ fn quiet(daily_quiet: Option<DailyQuiet>) -> NotificationSettings {
         everyone_mentions: None,
         do_not_disturb: false,
         daily_quiet,
+        hide_text: false,
+        hold_while_presenting: None,
     }
 }
 

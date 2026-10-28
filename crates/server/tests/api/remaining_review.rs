@@ -355,7 +355,7 @@ async fn review2_actual_audit_queries_bound_time_ranges_and_combined_filters() {
     let workspace = server.default_workspace(&owner).await;
     let channel = server.channel(&owner, workspace.id, "text").await;
     sqlx::query("insert into audit_entries(id,occurred_at,actor_id,workspace_id,channel_id,action,event) select ('00000000-0000-7000-8000-'||lpad(to_hex(n),12,'0'))::uuid,$1 - case when n>5000 then interval '60 days' else interval '1 day' end,case when n%2=0 then $2 else $3 end,$4,$5,case when n%2=0 then 'channel_created' else 'channel_updated' end,jsonb_build_object('action',case when n%2=0 then 'channel_created' else 'channel_updated' end,'name','example') from generate_series(1,10000) n")
-        .bind(server.clock.now()).bind(owner.account_id).bind(other.account_id).bind(workspace.id).bind(channel.id).execute(&server.db).await.unwrap();
+        .bind(server.clock.now()).bind(owner.account_id).bind(other.account_id).bind(workspace.id).bind(channel.id).execute(&mut server.test_data().await).await.unwrap();
     analyze(&server.db, &["audit_entries", "audit_entry_targets"]).await;
     let queries = [
         AuditFilterQuery {
@@ -552,12 +552,13 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
         let pairs = |count: u32| {
             let (primary, notice, server) = (&primary, &notice, &server);
             async move {
+                let mut data = server.test_data().await;
                 for _ in 0..count {
                     sqlx::query(insert)
                         .bind(primary)
                         .bind(notice)
                         .bind(i32::from(notice.is_some()))
-                        .execute(&server.db)
+                        .execute(&mut data)
                         .await
                         .unwrap();
                 }
@@ -1033,7 +1034,7 @@ async fn review2_workspace_invite_withdrawal_reads_indexed_creator_pages() {
     use crate::plan_support::{analyze, explained, index_names, visited_rows};
     let server = TestServer::start().await;
     let owner = server.owner().await;
-    sqlx::query("insert into invites(id,code_hash,created_by,created_at,expires_at,max_uses) select gen_random_uuid(),decode(md5(n::text)||md5(n::text),'hex'),$1,$2,$2+interval '1 day',1 from generate_series(1,10000) n").bind(owner.account_id).bind(server.clock.now()).execute(&server.db).await.unwrap();
+    sqlx::query("insert into invites(id,code_hash,created_by,created_at,expires_at,max_uses) select gen_random_uuid(),decode(md5(n::text)||md5(n::text),'hex'),$1,$2,$2+interval '1 day',1 from generate_series(1,10000) n").bind(owner.account_id).bind(server.clock.now()).execute(&mut server.test_data().await).await.unwrap();
     analyze(&server.db, &["invites", "invite_workspaces", "accounts"]).await;
     let plan: Value = sqlx::query_scalar(explained(
         &junto_server::routes::invites::withdrawal_statement(),

@@ -142,6 +142,10 @@ pub(crate) struct Stamp {
 }
 
 impl AccountState {
+    pub(super) fn picture_destination(&self) -> Option<(ServerId, AccountId, u64)> {
+        Some((self.open?.server_id, self.account?, self.session))
+    }
+
     /// Shows a page. What the page before told about a request, the devices that it
     /// listed and the code that it looked up are put away, and a later answer to a
     /// request of that page is dropped.
@@ -673,16 +677,6 @@ pub fn derive(
     })
 }
 
-/// Reads a file that the person chose as a picture. Only a regular file is read, and at
-/// most one byte more than the largest picture, whatever the size of the file.
-fn read_picture(path: &std::path::Path) -> Result<Vec<u8>, &'static str> {
-    let bytes = profile::read_avatar_file(path).map_err(|_| text::account::PICTURE_NOT_READ)?;
-    match profile::check_avatar(&bytes) {
-        Ok(_) => Ok(bytes),
-        Err(invalid) => Err(text::account::invalid_picture(invalid)),
-    }
-}
-
 impl AppState {
     /// The account layer as the window shows it.
     pub fn account_view(&self) -> Option<AccountView> {
@@ -1006,29 +1000,46 @@ impl AppState {
         }
     }
 
-    /// Sends the file at `path` as the picture of the account. The file is read on a
-    /// background thread, and its size and its first bytes are checked before a request:
-    /// a file that no server stores is not sent. Nothing is read or sent while another
-    /// request of the page is on its way.
+    /// Opens the cut of the file at `path` for the picture of the account (ADR 0119).
     pub fn set_account_picture(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.choose_picture(super::picture_crop::PicturePurpose::Account, path, cx);
+    }
+
+    /// A chosen file that is not a picture, told at the picture control of the page.
+    pub(super) fn account_picture_refused(&mut self, reason: &'static str) {
         let what = AskKind::SetPicture;
-        let Some((server, account_id)) = self
-            .account
-            .open
-            .and_then(|open| self.client.server(open.server_id))
-            .zip(self.account.account)
-        else {
+        if let Some(stamp) = self.account.begin(what) {
+            self.account.settle(stamp, what, Some(reason.to_owned()));
+        }
+    }
+
+    /// Sends a cut picture as the picture of the account. Its size and its first bytes are
+    /// checked before a request. Nothing is sent while another request of the page is on
+    /// its way.
+    pub(super) fn send_account_picture(
+        &mut self,
+        destination: (ServerId, AccountId, u64),
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.account.picture_destination() != Some(destination) {
+            return;
+        }
+        let what = AskKind::SetPicture;
+        let (server_id, account_id, _) = destination;
+        let Some(server) = self.client.server(server_id) else {
             return;
         };
         let Some(stamp) = self.account.begin(what) else {
             return;
         };
         let api = server.api_for(account_id);
-        let reading = cx
-            .background_executor()
-            .spawn(async move { read_picture(&path) });
+        let checked = match profile::check_avatar(&bytes) {
+            Ok(_) => Ok(bytes),
+            Err(invalid) => Err(text::account::invalid_picture(invalid)),
+        };
         cx.spawn(async move |this, cx| {
-            let refused = match reading.await {
+            let refused = match checked {
                 Err(reason) => Some(reason.to_owned()),
                 Ok(bytes) => match api.set_avatar(bytes).await {
                     Ok(_) => None,
@@ -1266,6 +1277,7 @@ pub(crate) mod tests {
                 crate::state::fixtures::from_roles(snapshot),
             ))),
             server_version: None,
+            server_events: None,
         }
     }
 
@@ -1774,15 +1786,25 @@ pub(crate) mod tests {
         assert!(!linked.busy());
     }
 
+    /// The read of a chosen file and the check of what a server stores, as the window does
+    /// them before the cut and before a request.
+    fn read_picture(path: &std::path::Path) -> Result<Vec<u8>, &'static str> {
+        let bytes = profile::read_avatar_file(path).map_err(|_| text::account::PICTURE_NOT_READ)?;
+        match profile::check_avatar(&bytes) {
+            Ok(_) => Ok(bytes),
+            Err(invalid) => Err(text::account::invalid_picture(invalid)),
+        }
+    }
+
     #[test]
     fn a_file_is_checked_by_its_size_and_its_first_bytes() {
         let png = b"\x89PNG\r\n\x1a\n";
         let mut small = png.to_vec();
         small.resize(1024, 0);
         assert_eq!(profile::check_avatar(&small).err(), None);
-        // 300 KiB with the first bytes of a PNG image.
+        // One byte more than a server stores, with the first bytes of a PNG image.
         let mut large = png.to_vec();
-        large.resize(300 * 1024, 0);
+        large.resize(profile::AVATAR_MAX_BYTES + 1, 0);
         assert_eq!(
             profile::check_avatar(&large).err(),
             Some(InvalidAvatar::TooLarge)

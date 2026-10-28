@@ -756,6 +756,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             picture: PictureSource::Display(1),
             sound: SoundChoice::System,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         }]
     );
     window.until("the own share is shown", |window| {
@@ -769,7 +770,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             shown.shares[0].sound,
             shown.shares[0].watched
         ),
-        (ShareId::Own, Some(ShareAudio::System), true)
+        (ShareId::own(0), Some(ShareAudio::System), true)
     );
     assert!(!window.shows("shares-bar"));
     // The administrator gets the picture and the sound of the share.
@@ -779,6 +780,24 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the administrator hears the share", |_| {
         heard(&caller.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
     });
+    // The device of the administrator tells the server that it watches the share: the
+    // window states the viewer on its share and plays the sound of a viewer (ADR 0502).
+    window.until("the window states the viewer of its share", |window| {
+        window.shows("share-viewers")
+            && stage(window).is_some_and(|stage| {
+                stage.shares[0]
+                    .viewers
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>()
+                    == [admin.handle.account().unwrap()]
+            })
+    });
+    window.until("the sound of a viewer", |window| {
+        let (played, rate) = window.tones.played_since_clear();
+        junto_media::audio::sounds::heard::recognise(&played, rate)
+            == Some(junto_media::audio::sounds::Sound::ViewerJoined)
+    });
 
     // The administrator shares a window with the sound of its application. The window
     // shows the bar of the two shares, watches the share of the administrator and plays
@@ -787,6 +806,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         picture: PictureSource::Window(11),
         sound: SoundChoice::Application(SyntheticCapture::player()),
         quality: ShareQuality::default(),
+        dialog_parent: None,
     });
     window.until("two shares are shown", |window| {
         window.shows("shares-bar")
@@ -802,7 +822,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
     );
     // The person picks the own share: the sound of the other share stops.
-    window.click("share-card:own");
+    window.click("share-card:own:0");
     window.until("the own share is watched", |window| {
         stage(window).is_some_and(|stage| stage.shares[1].watched && !stage.shares[0].watched)
     });
@@ -838,8 +858,10 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         })
     });
 
-    // The button of the strip ends the share.
+    // The button of the strip opens the menu of the shares, which ends the share.
     window.click("call-share");
+    assert!(window.shows("share-menu"));
+    window.click("share-stop:0");
     window.until("the share of the window has ended", |window| {
         own_share(window) == OwnShare::Off && window.capture.running() == 0
     });
@@ -906,6 +928,339 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     assert!(!window.shows("recording-indicator"));
     window.click("dismiss-recording-error");
     assert!(!window.shows("recording-error") && window.shows("start-recording"));
+}
+
+/// Several shares of one person (ADR 0502, ADR 0738): the person of the window starts a
+/// screen and then a window from the menu of the share button, and ends them there. The
+/// administrator shares a screen and a window too; the window shows a card for each, the
+/// person switches between them and hears only the sound of the one watched.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_another(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let voice = room(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: voice.id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    turn_processing_off(&mut window);
+    let admin_id = admin.handle.account().unwrap();
+    let shares_of_admin = |window: &mut Window| -> Vec<(ShareId, Option<ShareKind>)> {
+        stage(window).map_or_else(Vec::new, |stage| {
+            stage
+                .shares
+                .iter()
+                .filter(|share| share.account_id == admin_id)
+                .map(|share| (share.id, share.kind))
+                .collect()
+        })
+    };
+
+    // The screen with all system sound, from the dialog.
+    window.click("call-share");
+    window.until("the screens and windows are listed", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-display:1");
+    window.click("share-sound-1");
+    window.click("start-share");
+    window.until("the share of the screen runs", |window| {
+        own_share(window) == OwnShare::Running
+    });
+    // The button opens the menu of the shares; "Share another" opens the dialog again,
+    // and the window with no sound starts beside the screen.
+    window.click("call-share");
+    assert!(window.shows("share-menu") && window.shows("share-stop:0"));
+    window.click("share-another");
+    window.until("the dialog lists the sources again", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-window:11");
+    window.click("share-sound-0");
+    window.click("start-share");
+    window.until("two own shares run", |window| {
+        window.view().call.is_some_and(|call| {
+            call.own_shares
+                .iter()
+                .map(|share| (share.slot, share.kind))
+                .eq([(0, Some(ShareKind::Screen)), (1, Some(ShareKind::Window))])
+        })
+    });
+    assert_eq!(window.capture.running(), 2);
+    window.until("the administrator sees the two shares", |_| {
+        caller.calls.view().call.is_some_and(|call| {
+            let mut slots: Vec<u8> = call.shares.iter().map(|share| share.slot).collect();
+            slots.sort_unstable();
+            slots == [0, 1]
+        })
+    });
+    // The menu ends the screen; the window goes on.
+    window.click("call-share");
+    window.click("share-stop:0");
+    window.until("the screen has ended", |window| {
+        window.capture.running() == 1
+            && window
+                .view()
+                .call
+                .is_some_and(|call| call.own_shares.iter().map(|share| share.slot).eq([1]))
+    });
+    window.until("the administrator sees the window alone", |_| {
+        caller.calls.view().call.is_some_and(|call| {
+            call.shares
+                .iter()
+                .map(|share| (share.slot, share.kind))
+                .eq([(1, Some(ShareKind::Window))])
+        })
+    });
+    window.click("call-share");
+    window.click("share-stop-all");
+    window.until("no own share is left", |window| {
+        own_share(window) == OwnShare::Off && window.capture.running() == 0
+    });
+
+    // The administrator shares a screen with all system sound and a window with the sound
+    // of its application. The window shows a card for each, and watches the first one.
+    let (screen, shared_window) = (ShareId::of(admin_id, 0), ShareId::of(admin_id, 1));
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Display(1),
+        sound: SoundChoice::System,
+        quality: ShareQuality::default(),
+        dialog_parent: None,
+    });
+    // The window receives the screen before the window starts: the shares are kept in the
+    // order in which their tracks arrive.
+    window.until("the screen of the administrator is shown", |window| {
+        shares_of_admin(window) == [(screen, Some(ShareKind::Screen))]
+    });
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Window(11),
+        sound: SoundChoice::Application(SyntheticCapture::player()),
+        quality: ShareQuality::default(),
+        dialog_parent: None,
+    });
+    window.until("the two shares of the administrator are shown", |window| {
+        window.shows("shares-bar")
+            && shares_of_admin(window)
+                == [
+                    (screen, Some(ShareKind::Screen)),
+                    (shared_window, Some(ShareKind::Window)),
+                ]
+    });
+    window.until("the screen is watched with its sound", |window| {
+        stage(window).is_some_and(|stage| stage.watched().is_some_and(|share| share.id == screen))
+            && heard(&window.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    window.until("the sound of the window is not played", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+    });
+
+    // The person picks the window: its picture and its sound, and not the sound of the
+    // screen.
+    window.click_named(format!("share-card:{admin_id}:1"));
+    window.until("the window of the administrator is watched", |window| {
+        stage(window).is_some_and(|stage| {
+            stage
+                .watched()
+                .is_some_and(|share| share.id == shared_window)
+        }) && window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().main_picture())
+            .borrow()
+            .as_ref()
+            .is_some_and(|picture| {
+                picture.share == shared_window && picture.frame.source == (800, 600)
+            })
+    });
+    window.until("the window plays the sound of the window", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    window.until("the sound of the screen has stopped", |window| {
+        heard(&window.sound, SYSTEM_TONE_HZ) < ABSENT_DBFS
+    });
+    // And back to the screen.
+    window.click_named(format!("share-card:{admin_id}:0"));
+    window.until("the screen is watched again", |window| {
+        heard(&window.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
+            && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+    });
+
+    // The administrator ends the screen: the window watches the share that is left.
+    caller.calls.stop_share(Some(0));
+    window.until(
+        "the window of the administrator is left and watched",
+        |window| {
+            shares_of_admin(window) == [(shared_window, Some(ShareKind::Window))]
+                && stage(window).is_some_and(|stage| {
+                    stage
+                        .watched()
+                        .is_some_and(|share| share.id == shared_window)
+                })
+                && !window.shows("shares-bar")
+        },
+    );
+    window.until("the window plays its sound", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    caller.calls.stop_share(None);
+    window.until("no share is left", |window| stage(window).is_none());
+}
+
+/// One of two shares of the person ends by itself, as when the shared screen is gone: the
+/// window tells it, and the close of that notice leaves the other share running, with its
+/// capture, its tracks, its picture and sound at the other person, and its record at the
+/// server. A third share that the system refuses also leaves the two that run (ADR 0737).
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn one_of_two_shares_ends_by_itself_and_its_notice_leaves_the_other_running(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let voice = room(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: voice.id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    turn_processing_off(&mut window);
+    let own_id = window.own_account();
+    let own_slots = |window: &mut Window| -> Vec<u8> {
+        window.view().call.map_or_else(Vec::new, |call| {
+            call.own_shares.iter().map(|share| share.slot).collect()
+        })
+    };
+    let recorded_slots = || -> Vec<u8> {
+        caller
+            .handle
+            .live()
+            .view()
+            .model
+            .and_then(|model| {
+                model.call_at(&target.place).and_then(|call| {
+                    call.participant(own_id)
+                        .map(|own| own.shares().iter().map(|share| share.slot).collect())
+                })
+            })
+            .unwrap_or_default()
+    };
+
+    // The screen with all system sound, and the window with the sound of its application.
+    window.click("call-share");
+    window.until("the screens and windows are listed", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-display:1");
+    window.click("share-sound-1");
+    window.click("start-share");
+    window.until("the share of the screen runs", |window| {
+        own_share(window) == OwnShare::Running
+    });
+    window.click("call-share");
+    window.click("share-another");
+    window.until("the dialog lists the sources again", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-window:11");
+    window.click("share-sound-2");
+    window.click("start-share");
+    window.until("two own shares run", |window| own_slots(window) == [0, 1]);
+    window.until("the server records the two shares", |_| {
+        recorded_slots() == [0, 1]
+    });
+
+    // The system refuses a third share: the two go on.
+    window.capture.fail_next(CaptureError::SourceGone);
+    window.click("call-share");
+    window.click("share-another");
+    window.until("the dialog lists the sources again", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-display:1");
+    window.click("share-sound-0");
+    window.click("start-share");
+    window.until("the refusal is told", |window| window.shows("share-notice"));
+    window.click("dismiss-share-notice");
+    assert!(!window.shows("share-notice"));
+    assert_eq!(own_slots(&mut window), [0, 1]);
+    assert_eq!(window.capture.running(), 2);
+
+    // The shared screen is gone: its share ends by itself, and the window tells it.
+    window
+        .capture
+        .end_source(PictureSource::Display(1), &CaptureError::SourceGone);
+    window.until("the end of the screen is told", |window| {
+        window.shows("share-notice") && own_slots(window) == [1]
+    });
+    window.click("dismiss-share-notice");
+    window.until("the notice is closed", |window| {
+        !window.shows("share-notice")
+    });
+
+    // The window goes on: its capture, its share at this device, at the other person with
+    // its picture and its sound, and at the server.
+    let shared_window = ShareId::of(own_id, 1);
+    window.until("the share of the window goes on everywhere", |window| {
+        own_slots(window) == [1]
+            && window.capture.running() == 1
+            && recorded_slots() == [1]
+            && caller.calls.view().call.is_some_and(|call| {
+                call.shares
+                    .iter()
+                    .map(|share| (share.account_id, share.slot))
+                    .eq([(own_id, 1)])
+            })
+            && caller
+                .calls
+                .main_picture()
+                .borrow()
+                .as_ref()
+                .is_some_and(|picture| picture.share == shared_window)
+    });
+    window.until("the other person hears the sound of the window", |_| {
+        heard(&caller.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+            && heard(&caller.sound, SYSTEM_TONE_HZ) < ABSENT_DBFS
+    });
+    window.click("call-share");
+    window.click("share-stop-all");
+    window.until("no own share is left", |window| {
+        own_share(window) == OwnShare::Off && window.capture.running() == 0
+    });
 }
 
 /// A microphone that the call cannot use is opened again by "Try again": in the warning of

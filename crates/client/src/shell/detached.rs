@@ -13,6 +13,7 @@ use gpui::{
 };
 use gpui_base::Root;
 use junto_client_core::call_window::CallWindowSettings;
+use junto_client_core::settings::Panel;
 
 /// On Linux the window manager takes the request to keep a window above the windows of
 /// other programs at any time, and the window kind of gpui does not make that request
@@ -38,6 +39,10 @@ const RECORDING_BESIDE_CONTROLS: f32 = 600.0;
 /// The narrowest stage that the call window draws beside the panel of the call, in pixels
 /// of the design. A narrower window draws the panel over the stage.
 const STAGE_BESIDE_PANEL: f32 = 480.0;
+
+/// The smallest size of the call window in pixels at 100 %; it follows the interface scale at
+/// its opening (ADR 0731).
+pub(crate) const CALL_WINDOW_MIN_SIZE: (f32, f32) = (480.0, 320.0);
 
 pub fn open(state: Entity<AppState>, cx: &mut App) {
     if state.read(cx).is_call_detached() {
@@ -82,7 +87,10 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         WindowOptions {
             display_id: display.map(|display| display.id()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(480.0), px(320.0))),
+            window_min_size: Some(crate::theme::scaled_size(
+                CALL_WINDOW_MIN_SIZE,
+                state.read(cx).settings().scale_percent,
+            )),
             kind: if saved.keep_on_top && !ASKS_WINDOW_MANAGER {
                 WindowKind::Floating
             } else {
@@ -185,8 +193,8 @@ impl Shell {
         let theme = theme(cx);
         let panel = view.lists().and_then(|lists| lists.call.as_ref());
         // The panel of the call lies beside the stage when both fit, and over it otherwise.
-        let beside =
-            super::logical_width(window) >= theme.metrics.call_panel_width + STAGE_BESIDE_PANEL;
+        self.window_width = super::logical_width(window);
+        let beside = self.window_width >= self.call_panel_width(cx) + STAGE_BESIDE_PANEL;
         let mut body = div()
             .relative()
             .track_focus(&self.focus)
@@ -320,6 +328,7 @@ impl Shell {
             .and_then(|room| room.meeting.as_ref())
             .map(|meeting| self.render_meeting_bar(meeting, &theme, cx));
         let notices = self.render_call_notices(&view, cx);
+        self.stage_controls.clear();
         let stage = match panel {
             Some(panel) => self.render_call_stage(panel, &theme, cx),
             None => div().flex_1().into_any_element(),
@@ -333,7 +342,8 @@ impl Shell {
             .child(stage)
             .child(
                 crate::ui::notice_slot("call-notice-area")
-                    .h(u(128.0))
+                    .most(128.0)
+                    .moves_over(&self.stage_controls)
                     .children(meeting)
                     .children(notices)
                     .children(
@@ -344,36 +354,48 @@ impl Shell {
                     )
                     .children(self.render_camera_notice(cx)),
             );
+        self.call_panel_overlay = !beside;
+        let shown = self.call_panel_shown(!beside, cx);
         let side = match panel {
-            Some(panel) => self
-                .call_panel_open
-                .then(|| self.render_call_panel(&view, panel, true, window, cx)),
+            Some(panel) => shown.then(|| self.render_call_panel(&view, panel, true, window, cx)),
             // Before the state holds the conversation of a direct-message call there is no
             // panel of the call, but the bell opens the notices of its server (ADR 0772).
-            None => self
-                .call_panel_open
+            None => shown
                 .then(|| self.render_call_notices_alone(&view, cx))
                 .flatten(),
         };
-        body = body.child(
-            div()
-                .relative()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .child(column)
-                .when_some(side, |middle, side| {
-                    if beside {
-                        middle.child(side)
-                    } else {
-                        middle
-                            .child(Self::side_cover(&theme, cx, |this, _| {
-                                this.call_panel_open = false;
-                            }))
-                            .child(Self::side_overlay(&theme, side))
-                    }
-                }),
-        );
+        body = body
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(column)
+                    .when_some(side, |middle, side| {
+                        // The panel holds its close button beside the tabs (`PANEL_CLOSE_WIDTH`).
+                        let width = self.call_panel_width(cx) + super::call::PANEL_CLOSE_WIDTH;
+                        let edge = self.panel_edge(
+                            Panel::CallWindow,
+                            super::edges::Side::Left,
+                            width,
+                            theme.metrics.call_panel_width,
+                            window,
+                            cx,
+                        );
+                        if beside {
+                            middle.child(side).child(edge)
+                        } else {
+                            middle
+                                .child(Self::side_cover(&theme, cx, |this, _| {
+                                    this.call_panel_open = false;
+                                }))
+                                .child(Self::side_overlay(&theme, side))
+                                .child(edge)
+                        }
+                    }),
+            )
+            .children(self.edge_drag_tracking(cx));
         let controls = div()
             .flex()
             .flex_wrap()
@@ -446,7 +468,7 @@ impl Shell {
                     }),
             );
         let controls = match panel.and_then(|panel| panel.room()) {
-            Some(room) => controls.children(self.render_room_controls(room, &theme, cx)),
+            Some(room) => controls.children(self.render_room_controls(room, &theme, false, cx)),
             None => controls,
         };
         body = body.child(controls);
@@ -464,7 +486,13 @@ impl Shell {
                 |this, event: &gpui::ModifiersChangedEvent, _, cx| {
                     this.modifiers_changed(event.modifiers, cx)
                 },
-            ));
+            ))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.call_key_down(&event.keystroke, window, cx);
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _, cx| {
+                this.call_key_up(&event.keystroke, cx);
+            }));
         // The system draws the title bar of this window, except on a Wayland compositor
         // without server decorations. A layer covers the call and not that strip.
         if !super::title_bar::draws_frame(window, false, cx) {

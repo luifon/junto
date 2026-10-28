@@ -599,6 +599,7 @@ pub(crate) async fn update_channel_in(
     let mut channel = record.channel;
     let permanent_before = channel.permanent_messages;
     let category_before = channel.category_id;
+    let name_before = channel.name.clone();
     if let Some(name) = new_name {
         name.clone_into(&mut channel.name);
     }
@@ -650,6 +651,20 @@ pub(crate) async fn update_channel_in(
             permanent_messages: channel.permanent_messages,
         };
         audit::record(connection, now, Some(access.account_id), about, &updated).await?;
+    }
+    // A rename has a line with both names; a move in the list or to another category has
+    // none: the audit log keeps it (ADR 0408).
+    if channel.name != name_before {
+        let actor = access.account_id;
+        crate::messages::rename_line(
+            connection,
+            now,
+            channel_id,
+            actor,
+            &name_before,
+            &channel.name,
+        )
+        .await?;
     }
     if channel.permanent_messages != permanent_before {
         let turned = if channel.permanent_messages {

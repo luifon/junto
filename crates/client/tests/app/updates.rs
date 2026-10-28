@@ -55,7 +55,7 @@ fn update_notice_and_install_control_run_once_and_show_the_result(cx: &mut TestA
     window.until("installed update is stated", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state.update_install_status()
-                == Some("Update installed. Quit Junto and reopen it to use the new version. Version 1.0.0 is kept for a rollback.")
+                == Some("Update installed. Restart Junto to use the new version. Version 1.0.0 is kept for a rollback.")
         })
     });
     window.click("install-update");
@@ -126,4 +126,163 @@ fn untrusted_information_removes_every_install_and_release_page_action(cx: &mut 
         .state
         .update(&mut window.cx, |state, cx| state.install_update(cx));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+fn line(window: &mut crate::harness::Window) -> junto_client::state::update_install::VersionLine {
+    window
+        .state
+        .read_with(&window.cx, |state, _| state.version_line())
+}
+
+/// The operator's finding 29: the version of this copy below "Add server", and how to
+/// update it (ADR 0780).
+#[gpui::test]
+fn the_server_book_states_the_version_of_this_copy_below_add_server(cx: &mut TestAppContext) {
+    let source = FakeSource::new(Ok(Release::new(Version::new(1, 0, 0), None)));
+    let root = tempfile::tempdir().unwrap();
+    let mut window = open_with_updates(cx, root.path(), source, Version::new(1, 0, 0));
+    window.choose_name("Luca");
+    window.until("the check answered", |window| {
+        line(window).sentence == "Up to date."
+    });
+    assert!(window.shows("client-version"));
+    assert!(!window.shows("client-version-action"));
+    let add = window.cx.debug_bounds("address-field").unwrap();
+    let version = window.cx.debug_bounds("client-version").unwrap();
+    assert!(version.top() >= add.bottom(), "{version:?} below {add:?}");
+    assert_eq!(line(&mut window).version, "Junto 1.0.0");
+    // Collapsed, the server book keeps the version below the button that adds a server.
+    window.click("collapse-server-book");
+    let add = window.cx.debug_bounds("add-server").unwrap();
+    let version = window.cx.debug_bounds("client-version").unwrap();
+    assert!(version.top() >= add.bottom(), "{version:?} below {add:?}");
+}
+
+#[gpui::test]
+fn an_update_from_the_server_book_installs_and_offers_the_restart(cx: &mut TestAppContext) {
+    let source = FakeSource::new(Ok(Release::new(Version::new(2, 0, 0), None)));
+    let root = tempfile::tempdir().unwrap();
+    let mut window = open_with_updates(cx, root.path(), source, Version::new(1, 0, 0));
+    window.choose_name("Luca");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    window.state.update(&mut window.cx, move |state, cx| {
+        state.set_update_installer(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(txt::installed(&Previous::Kept(Version::new(1, 0, 0)))) })
+        });
+        cx.notify();
+    });
+    window.until("the newer version is offered", |window| {
+        window.shows("client-version-action")
+    });
+    assert_eq!(line(&mut window).sentence, "Junto 2.0.0 is available.");
+    // The label of the button is painted inside the button.
+    let button = window.cx.debug_bounds("client-version-action").unwrap();
+    let painted = {
+        let _record = junto_client::ui::record_painted_text();
+        window.cx.update(|window, _| window.refresh());
+        window.settle();
+        junto_client::ui::take_painted_text()
+    };
+    let label = painted
+        .iter()
+        .find(|text| {
+            let middle = text.bounds.center().y;
+            text.text.as_ref() == txt::UPDATE && middle > button.top() && middle < button.bottom()
+        })
+        .expect("the label of the button is painted");
+    assert!(
+        label.bounds.left() >= button.left() && label.bounds.right() <= button.right(),
+        "the label {:?} is outside the button {button:?}",
+        label.bounds
+    );
+    window.click("client-version-action");
+    window.until("the update is installed", |window| {
+        line(window).action == Some(junto_client::state::update_install::VersionAction::Restart)
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        line(&mut window).sentence,
+        "Junto 2.0.0 is installed. Restart Junto to use it."
+    );
+    // The restart quits and starts the installed version, from the server book, the
+    // notice of the channel column, or the settings.
+    let mut restart = window.cx.expect_restart();
+    window.click("client-version-action");
+    assert!(matches!(restart.try_recv(), Ok(Some(_))));
+    let mut restart = window.cx.expect_restart();
+    window.click("update-notice");
+    assert!(matches!(restart.try_recv(), Ok(Some(_))));
+    window.in_shell(|shell, window, cx| shell.open_version_settings(window, cx));
+    let mut restart = window.cx.expect_restart();
+    window.click_in_settings("restart-after-update");
+    assert!(matches!(restart.try_recv(), Ok(Some(_))));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[gpui::test]
+fn a_copy_that_does_not_update_itself_states_its_steps_and_the_download_page(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::update_install::UpdateWay;
+    let source = FakeSource::new(Ok(Release::new(Version::new(2, 0, 0), None)));
+    let root = tempfile::tempdir().unwrap();
+    let mut window = open_with_updates(cx, root.path(), source, Version::new(1, 0, 0));
+    window.choose_name("Luca");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.show_update_way_fixture(
+            UpdateWay::SystemPackage,
+            Some("https://releases.example.test/junto/"),
+            false,
+            cx,
+        );
+    });
+    window.until("the newer version is offered", |window| {
+        window.shows("client-version-action")
+    });
+    assert!(
+        line(&mut window).sentence.contains("junto_2.0.0_amd64.deb"),
+        "{}",
+        line(&mut window).sentence
+    );
+    // The button opens the section "Version" with the steps, the command and the
+    // address of the download page.
+    window.click("client-version-action");
+    assert!(window.in_shell(|shell, _, _| shell.is_settings_open()));
+    for part in ["update-steps", "update-command", "download-page"] {
+        assert!(window.shows(part), "{part}");
+    }
+    assert!(!window.shows("install-update"));
+    window.click_in_settings("copy-update-command");
+    assert_eq!(
+        window
+            .cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("sudo apt install ./junto_2.0.0_amd64.deb")
+    );
+    window.click_in_settings("copy-download-page");
+    assert_eq!(
+        window
+            .cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("https://releases.example.test/junto/")
+    );
+    // A copy in a folder that it cannot write, and a copy that no package installed.
+    for way in [UpdateWay::MoveFirst, UpdateWay::NotAPackage] {
+        window.state.update(&mut window.cx, |state, cx| {
+            state.show_update_way_fixture(
+                way.clone(),
+                Some("https://releases.example.test/junto/"),
+                false,
+                cx,
+            );
+        });
+        assert!(window.shows("update-steps"), "{way:?}");
+        assert!(!window.shows("install-update") && !window.shows("update-command"));
+    }
 }

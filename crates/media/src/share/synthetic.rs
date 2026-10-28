@@ -69,6 +69,8 @@ struct State {
     access: ScreenAccess,
     sources: ShareSources,
     colours: (Colour, Colour),
+    /// The colours of the pictures of one source, in place of `colours`.
+    source_colours: HashMap<PictureSource, (Colour, Colour)>,
     system_tones: Tones,
     application_tones: HashMap<ApplicationId, Tones>,
     /// A capture gives one picture and then none, as the capture of a screen that does
@@ -76,12 +78,22 @@ struct State {
     still: bool,
     /// A capture takes this long to start, as a system that answers late.
     start_delay: Duration,
+    /// The picture of a preview of these sources takes this long, as a window of an
+    /// application that does not answer.
+    preview_delays: HashMap<PictureSource, Duration>,
     fail_next: Option<CaptureError>,
     asked: u32,
     settings_opened: u32,
     previewed: Vec<PictureSource>,
     started: Vec<CaptureRequest>,
-    live: Vec<(Weak<AtomicBool>, Arc<dyn CaptureSink>)>,
+    live: Vec<Live>,
+}
+
+/// A capture that runs: its stop, its sink and the source that it shows.
+struct Live {
+    stop: Weak<AtomicBool>,
+    sink: Arc<dyn CaptureSink>,
+    source: PictureSource,
 }
 
 /// The capture of the tests. Every clone is the same object.
@@ -134,10 +146,12 @@ impl SyntheticCapture {
                     }],
                 },
                 colours: ((200, 30, 30), (30, 30, 200)),
+                source_colours: HashMap::new(),
                 system_tones: (700.0, 1_900.0),
                 application_tones: HashMap::from([(player, (1_100.0, 2_700.0))]),
                 still: false,
                 start_delay: Duration::ZERO,
+                preview_delays: HashMap::new(),
                 fail_next: None,
                 asked: 0,
                 settings_opened: 0,
@@ -172,6 +186,12 @@ impl SyntheticCapture {
         self.lock().sources = sources;
     }
 
+    /// The colours of the left and of the right half of the pictures of one source from
+    /// now on, so that two shares of one person are told apart.
+    pub fn set_source_colours(&self, source: PictureSource, left: Colour, right: Colour) {
+        self.lock().source_colours.insert(source, (left, right));
+    }
+
     /// The colours of the left and of the right half of every picture from now on.
     pub fn set_colours(&self, left: Colour, right: Colour) {
         self.lock().colours = (left, right);
@@ -184,6 +204,11 @@ impl SyntheticCapture {
 
     pub fn set_still(&self, still: bool) {
         self.lock().still = still;
+    }
+
+    /// The preview of `source` takes `delay` from now on.
+    pub fn set_preview_delay(&self, source: PictureSource, delay: Duration) {
+        self.lock().preview_delays.insert(source, delay);
     }
 
     pub fn set_start_delay(&self, delay: Duration) {
@@ -216,19 +241,39 @@ impl SyntheticCapture {
     /// The number of captures that run now.
     pub fn running(&self) -> usize {
         let mut state = self.lock();
-        state.live.retain(|(stop, _)| stop.strong_count() > 0);
+        state.live.retain(|live| live.stop.strong_count() > 0);
         state.live.len()
     }
 
     /// Ends every capture that runs, as the system does when a shared window is closed.
     pub fn end_all(&self, error: &CaptureError) {
         let live = std::mem::take(&mut self.lock().live);
-        for (stop, sink) in live {
-            if let Some(stop) = stop.upgrade() {
-                stop.store(true, Ordering::Relaxed);
-                sink.ended(error.clone());
-            }
+        for live in live {
+            end(live, error);
         }
+    }
+
+    /// Ends the captures of one source, as the system does when that shared window is
+    /// closed. The other captures go on.
+    pub fn end_source(&self, source: PictureSource, error: &CaptureError) {
+        let ended: Vec<Live> = {
+            let mut state = self.lock();
+            let (ended, kept) = std::mem::take(&mut state.live)
+                .into_iter()
+                .partition(|live| live.source == source);
+            state.live = kept;
+            ended
+        };
+        for live in ended {
+            end(live, error);
+        }
+    }
+}
+
+fn end(live: Live, error: &CaptureError) {
+    if let Some(stop) = live.stop.upgrade() {
+        stop.store(true, Ordering::Relaxed);
+        live.sink.ended(error.clone());
     }
 }
 
@@ -282,6 +327,10 @@ impl ScreenCapture for SyntheticCapture {
         let capture = self.clone();
         Box::pin(async move {
             crate::executor::require_runtime("the preview of the synthetic capture");
+            let delay = capture.lock().preview_delays.get(&source).copied();
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
             let mut state = capture.lock();
             if state.access == ScreenAccess::NotAllowed {
                 return Err(CaptureError::NotAllowed);
@@ -371,9 +420,14 @@ impl ScreenCapture for SyntheticCapture {
             };
             let (width, height) = request.quality.resolution.fit(width, height);
             let frame_rate = request.quality.frame_rate.max(1);
+            let picture = request.picture;
             state.started.push(request);
             let stop = Arc::new(AtomicBool::new(false));
-            state.live.push((Arc::downgrade(&stop), sink.clone()));
+            state.live.push(Live {
+                stop: Arc::downgrade(&stop),
+                sink: sink.clone(),
+                source: picture,
+            });
             drop(state);
             let stopped = stop.clone();
             let thread = std::thread::spawn(move || {
@@ -381,7 +435,7 @@ impl ScreenCapture for SyntheticCapture {
                     &capture,
                     &stopped,
                     sink.as_ref(),
-                    (width, height),
+                    (picture, (width, height)),
                     frame_rate,
                     tones,
                 );
@@ -404,7 +458,7 @@ fn produce(
     capture: &SyntheticCapture,
     stop: &AtomicBool,
     sink: &dyn CaptureSink,
-    size: (u32, u32),
+    (source, size): (PictureSource, (u32, u32)),
     frame_rate: u32,
     tones: Option<Tones>,
 ) {
@@ -422,7 +476,8 @@ fn produce(
         if pictures < pictures_due {
             let (colours, still) = {
                 let state = capture.lock();
-                (state.colours, state.still)
+                let colours = state.source_colours.get(&source).copied();
+                (colours.unwrap_or(state.colours), state.still)
             };
             if pictures == 0 || !still {
                 let picture = two_colours(size.0, size.1, colours.0, colours.1);

@@ -11,7 +11,7 @@ The structure of a server consists of workspaces, categories, channels, roles an
 ## Decision
 
 - A command-line tool has three commands:
-  - `export` writes the server structure (workspaces, categories, channels, roles, permission overrides) to a file.
+  - `export` writes the server structure (workspaces, categories, channels, roles, permission overrides, and the glossary of each workspace) to a file.
   - `plan` shows what applying a file would change.
   - `apply` makes the changes.
 - Entries in the file carry stable identifiers.

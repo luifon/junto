@@ -28,6 +28,8 @@ mod support;
 mod account;
 mod admin;
 mod admin_pages;
+mod badges;
+mod book;
 mod call_notices;
 mod calls;
 mod channel_calls;
@@ -38,16 +40,19 @@ mod composing;
 mod contacts;
 mod data_directory;
 mod departures;
+mod event_alerts;
 mod files;
 mod flows;
 mod glossary;
 mod gpui_panics;
+mod keybinds;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]
 mod growth;
 mod growth_tests;
 mod harness;
+mod header;
 mod hidden;
 mod layout;
 mod layout_forms;
@@ -58,11 +63,14 @@ mod logout;
 mod messages;
 mod notice_settings;
 mod notices;
+mod panel_widths;
 mod panics;
 mod people;
 mod permissions;
+mod pictures;
 mod recordings;
 mod recovery;
+mod system_lines;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.
 #[allow(dead_code)]
@@ -75,6 +83,7 @@ mod search;
 mod servers;
 mod settings;
 mod states;
+mod system_permissions;
 mod thread_actions;
 mod threads;
 mod transcripts;

@@ -4,9 +4,9 @@ use crate::limit::limited;
 use crate::scene::{PATIENCE, Person, Room, account, media_server_shared};
 use junto_client_core::protocol::call::BlockReason;
 use junto_media::camera::{CameraAccess, CameraError, CameraState};
-use junto_media::engine::ShareId;
+use junto_media::engine::Person as Camera;
 
-async fn picture(person: &Person, id: ShareId, left: (u8, u8, u8), right: (u8, u8, u8)) {
+async fn picture(person: &Person, id: Camera, left: (u8, u8, u8), right: (u8, u8, u8)) {
     let mut pictures = person.calls.camera_pictures();
     tokio::time::timeout(
         PATIENCE,
@@ -47,20 +47,20 @@ async fn two_clients_see_each_others_generated_camera() {
         two.calls.start_camera(None);
         picture(
             &two,
-            ShareId::Of(account(&owner)),
+            Camera::Of(account(&owner)),
             (200, 30, 30),
             (30, 30, 200),
         )
         .await;
         picture(
             &one,
-            ShareId::Of(account(&peer)),
+            Camera::Of(account(&peer)),
             (30, 160, 60),
             (210, 190, 40),
         )
         .await;
         // Mirroring belongs only to the own preview.
-        picture(&one, ShareId::Own, (30, 30, 200), (200, 30, 30)).await;
+        picture(&one, Camera::Own, (30, 30, 200), (200, 30, 30)).await;
         one.until_heard(&two).await;
         two.until_heard(&one).await;
         one.calls.stop_camera();
@@ -74,7 +74,7 @@ async fn two_clients_see_each_others_generated_camera() {
         let mut pictures = two.calls.camera_pictures();
         tokio::time::timeout(
             PATIENCE,
-            pictures.wait_for(|pictures| !pictures.contains_key(&ShareId::Of(account(&owner)))),
+            pictures.wait_for(|pictures| !pictures.contains_key(&Camera::Of(account(&owner)))),
         )
         .await
         .unwrap()
@@ -110,7 +110,7 @@ async fn camera_respects_permission_and_survives_microphone_block() {
         two.calls.start_camera(None);
         picture(
             &one,
-            ShareId::Of(account(&peer)),
+            Camera::Of(account(&peer)),
             (200, 30, 30),
             (30, 30, 200),
         )
@@ -131,7 +131,7 @@ async fn camera_respects_permission_and_survives_microphone_block() {
         two.camera.set_colours((30, 160, 60), (210, 190, 40));
         picture(
             &one,
-            ShareId::Of(account(&peer)),
+            Camera::Of(account(&peer)),
             (30, 160, 60),
             (210, 190, 40),
         )
@@ -207,7 +207,7 @@ async fn camera_returns_after_full_reconnect_without_reopening_capture() {
         one.calls.start_camera(None);
         picture(
             &two,
-            ShareId::Of(account(&owner)),
+            Camera::Of(account(&owner)),
             (220, 30, 30),
             (30, 50, 210),
         )
@@ -228,7 +228,7 @@ async fn camera_returns_after_full_reconnect_without_reopening_capture() {
         one.camera.set_colours((30, 160, 60), (210, 190, 40));
         picture(
             &two,
-            ShareId::Of(account(&owner)),
+            Camera::Of(account(&owner)),
             (30, 160, 60),
             (210, 190, 40),
         )
@@ -262,7 +262,7 @@ async fn camera_returns_after_connection_loss_without_reopening_capture() {
         one.calls.start_camera(None);
         picture(
             &two,
-            ShareId::Of(account(&owner)),
+            Camera::Of(account(&owner)),
             (220, 30, 30),
             (30, 50, 210),
         )
@@ -283,7 +283,7 @@ async fn camera_returns_after_connection_loss_without_reopening_capture() {
         one.camera.set_colours((30, 160, 60), (210, 190, 40));
         picture(
             &two,
-            ShareId::Of(account(&owner)),
+            Camera::Of(account(&owner)),
             (30, 160, 60),
             (210, 190, 40),
         )
@@ -315,7 +315,7 @@ async fn camera_frames_follow_the_visible_tile_size_and_stop_when_hidden() {
         one.enter(room.target).await;
         two.enter(room.target).await;
         one.calls.start_camera(None);
-        let id = ShareId::Of(account(&owner));
+        let id = Camera::Of(account(&owner));
         picture(&two, id, (200, 30, 30), (30, 30, 200)).await;
         two.calls
             .set_camera_views([(id, (192, 120))].into_iter().collect());
@@ -437,7 +437,7 @@ async fn the_engine_publishes_the_camera_only_while_its_controls_do_not_hold_it(
         let two = Person::new(880.0);
         let (room, owner) = Room::new("Camera hold", &one, "One").await;
         let peer = room.member(&owner, &two, "Two").await;
-        let two_id = ShareId::Of(account(&peer));
+        let two_id = Camera::Of(account(&peer));
         one.enter(room.target).await;
         let answer = peer.api().join_channel_call(room.voice).await.unwrap();
         let held = Controls {
@@ -455,6 +455,7 @@ async fn the_engine_publishes_the_camera_only_while_its_controls_do_not_hold_it(
             MediaJoin {
                 url: answer.media_url,
                 token: answer.token,
+                shares: answer.shares.unwrap_or(1),
             },
             crate::scene::plain_voice(),
             held,

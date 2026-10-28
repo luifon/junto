@@ -30,6 +30,14 @@ pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
 /// The space between two tiles of the stage.
 pub const TILE_GAP: f32 = 8.0;
 
+/// The height that the strip of `count` tiles takes under a focused tile in a stage of
+/// `width`, with the gap above it: the strip wraps into as many rows as its tiles need.
+pub fn strip_height(count: usize, width: f32) -> f32 {
+    let across = (((width + TILE_GAP) / (STRIP_TILE_SIZE.0 + TILE_GAP)).floor() as usize).max(1);
+    let rows = count.div_ceil(across).max(1) as f32;
+    rows * STRIP_TILE_SIZE.1 + rows * TILE_GAP
+}
+
 /// The columns of a grid of `count` tiles and the size of each tile: the largest 16:9 size
 /// with which every tile fits in `stage`, with `TILE_GAP` between the tiles, and at least the
 /// size of a tile of the strip. Below that size the tiles keep it and the stage scrolls. A
@@ -67,7 +75,7 @@ pub fn grid(count: usize, stage: (f32, f32)) -> (usize, (f32, f32)) {
 #[derive(IntoElement)]
 pub struct PersonTile {
     camera_picture: Option<DrawnPicture>,
-    camera_view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
+    camera_view: Option<(junto_media::calls::Calls, junto_media::engine::Person)>,
     id: ElementId,
     name: SharedString,
     seed: u128,
@@ -110,7 +118,7 @@ impl PersonTile {
 
     pub fn camera_view(
         mut self,
-        view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
+        view: Option<(junto_media::calls::Calls, junto_media::engine::Person)>,
     ) -> Self {
         self.camera_view = view;
         self
@@ -264,6 +272,17 @@ impl RenderOnce for PersonTile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_strip_reserves_each_row_that_its_tiles_wrap_into() {
+        let row = super::STRIP_TILE_SIZE.1 + super::TILE_GAP;
+        // Four tiles of 148 with gaps of 8 fit in 620: one row; five need two.
+        assert_eq!(super::strip_height(4, 620.0), row);
+        assert_eq!(super::strip_height(5, 620.0), 2.0 * row);
+        assert_eq!(super::strip_height(9, 620.0), 3.0 * row);
+        // A stage narrower than one tile still has one tile per row.
+        assert_eq!(super::strip_height(2, 100.0), 2.0 * row);
+    }
+
     use super::*;
 
     fn fits(count: usize, stage: (f32, f32)) {

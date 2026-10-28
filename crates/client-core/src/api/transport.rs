@@ -155,6 +155,9 @@ pub enum TransportErrorKind {
 pub struct TransportError {
     pub kind: TransportErrorKind,
     detail: String,
+    /// macOS refused a connection to an address that can be on the local network: the
+    /// person has not allowed Junto in the Local Network settings (ADR 0708).
+    local_network: bool,
 }
 
 impl TransportError {
@@ -162,7 +165,23 @@ impl TransportError {
         Self {
             kind,
             detail: detail.into(),
+            local_network: false,
         }
+    }
+
+    /// The error of a connection that macOS refused because the person has not allowed
+    /// connections to the local network.
+    pub fn local_network_refused(detail: impl Into<String>) -> Self {
+        Self {
+            local_network: true,
+            ..Self::new(TransportErrorKind::Connect, detail)
+        }
+    }
+
+    /// Whether the connection can have failed because macOS does not allow Junto to
+    /// connect to the local network.
+    pub fn is_local_network_refusal(&self) -> bool {
+        self.local_network
     }
 
     /// False when the server cannot have received the request.
@@ -280,7 +299,8 @@ fn build(
     };
     let mut builder = client
         .request(method, request.url)
-        .header(reqwest::header::ACCEPT, accepted);
+        .header(reqwest::header::ACCEPT, accepted)
+        .header("Junto-Notification-Preferences", "1");
     if let Some(token) = &request.bearer {
         builder = builder.bearer_auth(token.expose());
     }
@@ -419,12 +439,48 @@ pub(crate) fn failure(error: reqwest::Error) -> TransportError {
         TransportErrorKind::Interrupted
     };
     let mut detail = String::new();
+    let mut unreachable_host = false;
     let mut source = std::error::Error::source(&error);
     while let Some(cause) = source {
         detail = cause.to_string();
+        unreachable_host |= cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+            == Some(NO_ROUTE_TO_HOST);
         source = cause.source();
     }
+    let host = error
+        .url()
+        .and_then(|url| url.host().map(|host| host.to_owned()));
+    if kind == TransportErrorKind::Connect
+        && cfg!(target_os = "macos")
+        && unreachable_host
+        && host.as_ref().is_some_and(may_be_local)
+    {
+        return TransportError::local_network_refused(detail);
+    }
     TransportError::new(kind, detail)
+}
+
+/// `EHOSTUNREACH` of macOS: the answer to a connection that the local network privacy of
+/// macOS refuses.
+const NO_ROUTE_TO_HOST: i32 = 65;
+
+/// Whether a host can be on the local network: a private, shared, link-local or unique
+/// local address, or a name, whose address the client does not see. Loopback is not on
+/// the network, and macOS does not refuse it.
+pub(crate) fn may_be_local(host: &url::Host<String>) -> bool {
+    match host {
+        url::Host::Domain(_) => true,
+        url::Host::Ipv4(address) => {
+            address.is_private()
+                || address.is_link_local()
+                || (address.octets()[0] == 100 && address.octets()[1] & 0xc0 == 64)
+        }
+        url::Host::Ipv6(address) => {
+            (address.segments()[0] & 0xfe00) == 0xfc00 || (address.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 /// The `Retry-After` header as whole seconds. The server sends no date form.
@@ -436,6 +492,39 @@ pub(crate) fn parse_retry_after(text: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_address_of_the_local_network_or_a_name_can_be_refused_by_the_local_network_privacy() {
+        let local = |host: &str| may_be_local(&url::Host::parse(host).unwrap());
+        for host in [
+            "192.168.1.20",
+            "10.0.0.5",
+            "172.16.4.1",
+            "169.254.3.3",
+            "100.64.1.1",
+            "[fd12:3456::1]",
+            "[fe80::1]",
+            "junto.example.test",
+            "server.local",
+        ] {
+            assert!(local(host), "{host}");
+        }
+        for host in [
+            "203.0.113.7",
+            "127.0.0.1",
+            "[::1]",
+            "[2001:db8::1]",
+            "100.128.0.1",
+        ] {
+            assert!(!local(host), "{host}");
+        }
+        let refused = TransportError::local_network_refused("No route to host");
+        assert!(refused.is_local_network_refusal());
+        assert_eq!(refused.kind, TransportErrorKind::Connect);
+        assert!(
+            !TransportError::new(TransportErrorKind::Connect, "refused").is_local_network_refusal()
+        );
+    }
 
     #[test]
     fn formatting_a_request_or_a_response_shows_no_secret() {

@@ -128,6 +128,17 @@ function requestVideoSizes() {
   }
 }
 
+// The slot of a share among the shares of its person, from the name of its track
+// (ADR 0737): `screen/30/1` and `share-sound/1` name slot 1; every other name, as the
+// name of a client of one share, is slot 0.
+function shareSlot(publication) {
+  const parts = (publication.trackName ?? '').split('/');
+  const slot = publication.source === Track.Source.ScreenShare
+    ? (parts.length === 3 && ['screen', 'window'].includes(parts[0]) ? parts[2] : '0')
+    : (parts.length === 2 && parts[0] === 'share-sound' ? parts[1] : '0');
+  return /^[0-2]$/.test(slot) ? Number(slot) : 0;
+}
+
 function render() {
   const all = entries();
   const liveIds = new Set(all.map(({ publication: p }) => p.trackSid));
@@ -152,7 +163,8 @@ function render() {
   wanted = all.filter((entry) => videos.includes(entry)
     || entry.publication.source === Track.Source.Microphone
     || (main && entry.participant === main.participant
-      && entry.publication.source === Track.Source.ScreenShareAudio));
+      && entry.publication.source === Track.Source.ScreenShareAudio
+      && shareSlot(entry.publication) === shareSlot(main.publication)));
   const keep = new Set(wanted.map(({ publication: p }) => p.trackSid));
   for (const sid of boxes.keys()) if (!keep.has(sid)) removeBox(sid);
   for (const entry of all) {

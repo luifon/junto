@@ -45,6 +45,18 @@ pub enum Mode {
     DeleteAccount,
 }
 
+impl Mode {
+    /// The result of the request of the form or question (ADR 0730).
+    fn done(self) -> &'static str {
+        match self {
+            Self::RenameDevice(_) => text::account::DEVICE_NAME_SAVED,
+            Self::RemoveDevice(_) => text::account::DEVICE_REMOVED,
+            Self::LeaveWorkspace(_) => text::account::WORKSPACE_LEFT,
+            Self::DeleteAccount => text::account::ACCOUNT_DELETED,
+        }
+    }
+}
+
 /// What the account layer holds of the window itself: the text of its fields, and which
 /// row shows a form or a question.
 pub(crate) struct AccountUi {
@@ -223,6 +235,7 @@ impl Shell {
             .absolute()
             .inset_0()
             .occlude()
+            .child(crate::ui::cover())
             .flex()
             .items_center()
             .justify_center()
@@ -333,7 +346,7 @@ impl Shell {
                     // The answer arrives while the person can be pointing at a control
                     // under the row: the row keeps the height of its form or question.
                     if let Some(mode) = self.account.mode.take() {
-                        self.account.space.keep(mode);
+                        self.account.space.keep(mode, mode.done());
                     }
                     self.account
                         .device_name

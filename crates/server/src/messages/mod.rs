@@ -14,7 +14,7 @@ pub use mentions::{mentioned_among, mentions};
 pub use place::{Place, Purpose};
 pub use store::{
     JOINED_LINES_WITHIN, REPLY_AUTHORS, VISIBLE, changed, created, get, load_messages, remove,
-    snapshot, state, state_query, system,
+    rename_line, snapshot, state, state_query, system, system_notifying,
 };
 
 pub(crate) use store::erase;

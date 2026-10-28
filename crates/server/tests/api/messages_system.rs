@@ -17,12 +17,6 @@ async fn channel_audit_actions_project_only_kind_actor_and_safe_subject() {
             name: "secret name".into(),
             kind: junto_protocol::structure::ChannelKind::Voice,
         },
-        AuditEvent::ChannelUpdated {
-            name: "secret name".into(),
-            category_id: None,
-            position: 0,
-            permanent_messages: true,
-        },
         AuditEvent::ChannelOverrideSet {
             role_id: role.id,
             allow: vec![],
@@ -429,6 +423,8 @@ async fn a_later_hidden_call_cannot_hide_lines_of_an_ended_public_call() {
             subject_id: None,
             recording_id: None,
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         },
         Some(call),
     )
@@ -461,6 +457,8 @@ async fn call_line(scene: &crate::calls_support::Scene, action: &str) -> Message
             subject_id: None,
             recording_id: None,
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         },
         Some(call),
     )
@@ -655,6 +653,8 @@ async fn an_account_that_left_a_hidden_call_before_its_end_reads_the_call_ended_
             subject_id: None,
             recording_id: None,
             duration_seconds: None,
+            name: None,
+            previous_name: None,
         },
         Some(call),
     )
@@ -766,7 +766,16 @@ async fn the_permanent_messages_setting_has_its_own_line_and_audit_entry() {
         .iter()
         .map(|message| message.system.as_ref().unwrap().action.as_str())
         .collect();
-    assert_eq!(lines, expected);
+    // A rename has a line of its own; a move in the list has an audit entry and no line.
+    assert_eq!(
+        lines,
+        [
+            "channel_created",
+            "permanent_messages_turned_on",
+            "channel_renamed",
+            "permanent_messages_turned_off",
+        ]
+    );
 }
 
 /// The system lines and messages of a channel in their order: the action of each line, or
@@ -1036,7 +1045,7 @@ async fn the_changes_of_one_person_join_per_action_and_per_channel() {
         [
             line("channel_created"),
             line("channel_call_settings_updated"),
-            line("channel_updated"),
+            line("channel_renamed"),
             line("channel_override_set")
         ]
     );

@@ -31,6 +31,13 @@ What `manage_structure` reaches:
 - Deleting a role definition, including through the structure document, is different from changing the role assignments of a named account. Definition deletion still checks the creator’s rank and the grant ceiling on the role’s deny overrides (ADRs 0308 and 0309). Adding an existing workspace member preserves its assignments; no member route may replace or delete them with a token.
 - A token with `manage_structure` can therefore change what accounts read. It cannot choose one account: it names roles, and an account gets a role only through a session.
 
+The glossary of a workspace:
+
+- `read_structure` reads the glossary of each workspace in the structure document (ADR 0211). `manage_structure` replaces a glossary with the change `replace_glossary` of the route that applies changes of the structure, so that the setup tool writes the whole file with one token (ADR 0212).
+- The change is decided as a request of the creator of the token, with the checks of the glossary route: "manage glossary" in the workspace (ADR 0603), besides the administrator permission that the changes route needs.
+- The glossary route `PUT /api/v1/workspaces/{workspace_id}/glossary` stays in the reach of no action (ADR 0210). A token changes a glossary only through the changes route, with the revision of the whole structure.
+- A glossary is not content in the sense of this record. Every member of the workspace reads it, it must not hold confidential terms (ADR 0603), and it changes the terms that the speech model receives for later recordings. It gives no account access to anything.
+
 What no token reaches:
 
 - The content itself. No token reads a message, an attachment, a notification, a search result, a recording, a transcript, a call, the snapshot or the event stream, and no token opens a direct message (ADR 0210, ADR 0302).
@@ -39,6 +46,7 @@ What no token reaches:
 
 - A leaked token with `manage_members` alone gives a new account the access of a member without roles in the workspaces that the creator of the token may grant. It does not give the administrator permission, a role, or the access of a banned account.
 - A leaked token with `manage_structure` can open a private channel to the holders of a role, or to every member, by a change of an override or of a role. The audit log names the token in each of these entries (ADR 0210). An operator who gives this action to a program gives it the structure of the server.
+- A leaked token with `manage_structure` can replace the glossary of a workspace. The audit entry `glossary_replaced` names the token. The token reads no transcript.
 - A program that assigns roles to accounts cannot use a token. It needs a person with a session, or a later record that adds an action for it with its own rule.
 - The setup tool is not affected: the structure file names no account and no member (ADR 0211).
 - A test gives a token every action and requests each of the six routes; each answers `forbidden`, and the same request with the session of the creator is allowed.

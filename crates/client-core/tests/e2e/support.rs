@@ -77,6 +77,8 @@ pub struct TestServer {
     /// The server uses the LiveKit server of `tools/with-test-livekit.sh`, and gives its
     /// clients this address of it.
     media: Option<String>,
+    /// Settings of the process beside the ones of every test server.
+    settings: Vec<(String, String)>,
     /// Where the server stores the files of messages.
     attachments: tempfile::TempDir,
     /// Where the server writes the files of exports.
@@ -107,7 +109,26 @@ impl TestServer {
         Self::start_as(name, Some(address.to_owned())).await
     }
 
+    /// A server with these settings of its process, such as `JUNTO_PICTURE_BYTES`. The
+    /// window tests use it.
+    #[allow(dead_code)]
+    pub async fn start_with_settings(name: &str, settings: &[(&str, &str)]) -> Self {
+        let settings = settings
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        Self::start_configured(name, None, settings).await
+    }
+
     async fn start_as(name: &str, media: Option<String>) -> Self {
+        Self::start_configured(name, media, Vec::new()).await
+    }
+
+    async fn start_configured(
+        name: &str,
+        media: Option<String>,
+        settings: Vec<(String, String)>,
+    ) -> Self {
         let database = TestDatabase::create().await;
         let proxy = StdListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_port = proxy.local_addr().unwrap().port();
@@ -121,6 +142,7 @@ impl TestServer {
             proxy: Mutex::new(Some(proxy)),
             proxy_port,
             media,
+            settings,
             attachments: tempfile::tempdir().unwrap(),
             exports: tempfile::tempdir().unwrap(),
             database,
@@ -223,6 +245,7 @@ impl TestServer {
             // The server stops when the process of the tests ends, also when that process is
             // killed (ADR 0915).
             .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
+            .envs(self.settings.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -578,6 +601,9 @@ pub enum Fault {
     LoseAnswer,
     /// Ends the connection without passing the request on.
     Cut,
+    /// Answers `invalid_request` and does not pass the request on: a refusal that the
+    /// client does not try again.
+    Refused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,12 +614,14 @@ pub struct Seen {
     /// The status and the body that the client got. Absent while the server works and
     /// when the answer was dropped.
     pub answer: Option<(u16, Vec<u8>)>,
+    /// When the whole request had arrived.
+    pub arrived: std::time::Instant,
 }
 
 #[derive(Default)]
 struct ProxyState {
     faults: Vec<(String, Vec<Fault>)>,
-    /// Faults for the requests whose path ends with a text.
+    /// Faults for the requests whose path without its query ends with a text.
     faults_ending: Vec<(String, Vec<Fault>)>,
     seen: Vec<Seen>,
     /// An upgrade request is not passed on: its connection is closed.
@@ -615,6 +643,10 @@ struct ProxyState {
     answers_waiting: usize,
     /// What the server sends on the event stream waits at the proxy.
     events_held: bool,
+    /// How many connections ended before a whole request arrived.
+    unfinished: usize,
+    /// The errors of the connections that the proxy served, with their time.
+    failures: Vec<(std::time::Instant, String)>,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -679,7 +711,11 @@ impl FaultProxy {
                 let (state, cut) = (shared.clone(), cuts.subscribe());
                 let released = releases.subscribe();
                 tokio::spawn(async move {
-                    let _ = serve(stream, upstream_port, state, cut, released).await;
+                    let served = serve(stream, upstream_port, state.clone(), cut, released).await;
+                    if let Err(error) = served {
+                        let failure = (std::time::Instant::now(), error.to_string());
+                        state.lock().unwrap().failures.push(failure);
+                    }
                 });
             }
         });
@@ -820,7 +856,19 @@ impl FaultProxy {
             .push((path.to_owned(), faults));
     }
 
-    /// The next requests whose path ends with `end` fail in the given ways, in order.
+    /// The requests to `path` are passed on again: the faults that wait for it are taken
+    /// away.
+    #[allow(dead_code)]
+    pub fn clear_faults(&self, path: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .faults
+            .retain(|(planned, _)| planned != path);
+    }
+
+    /// The next requests whose path ends with `end` fail in the given ways, in order: the
+    /// path without its query, or with it for an end that names a part of the query.
     pub fn fail_ending(&self, end: &str, faults: impl IntoIterator<Item = Fault>) {
         let mut faults: Vec<Fault> = faults.into_iter().collect();
         faults.reverse();
@@ -836,15 +884,50 @@ impl FaultProxy {
         self.state.lock().unwrap().seen.clone()
     }
 
+    /// How many connections ended before a whole request arrived.
+    #[allow(dead_code)]
+    pub fn unfinished(&self) -> usize {
+        self.state.lock().unwrap().unfinished
+    }
+
+    /// The errors of the connections that the proxy served, with their time.
+    #[allow(dead_code)]
+    pub fn failures(&self) -> Vec<(std::time::Instant, String)> {
+        self.state.lock().unwrap().failures.clone()
+    }
+
+    /// The requests to `path`, with any query.
     pub fn seen(&self, path: &str) -> Vec<Seen> {
         self.state
             .lock()
             .unwrap()
             .seen
             .iter()
-            .filter(|seen| seen.path == path)
+            .filter(|seen| names(path, &seen.path))
             .cloned()
             .collect()
+    }
+}
+
+/// True when a rule of the proxy for `planned` covers a request to `path`. A rule without a
+/// query covers the path with any query, such as the `shares` of a join.
+fn names(planned: &str, path: &str) -> bool {
+    if planned.contains('?') {
+        planned == path
+    } else {
+        path.split('?').next() == Some(planned)
+    }
+}
+
+/// As [`names`], for a rule for the paths that end with `end`. An end that names a part
+/// of the query (with `?`, `&` or `=`) is compared with the path and its query.
+fn ends_with(end: &str, path: &str) -> bool {
+    if end.contains(['?', '&', '=']) {
+        path.ends_with(end)
+    } else {
+        path.split('?')
+            .next()
+            .is_some_and(|bare| bare.ends_with(end))
     }
 }
 
@@ -860,6 +943,7 @@ async fn serve(
     let (head_end, length) = loop {
         let count = client.read(&mut buffer).await?;
         if count == 0 {
+            state.lock().unwrap().unfinished += 1;
             return Ok(());
         }
         request.extend_from_slice(&buffer[..count]);
@@ -876,6 +960,7 @@ async fn serve(
     while request.len() < head_end + length {
         let count = client.read(&mut buffer).await?;
         if count == 0 {
+            state.lock().unwrap().unfinished += 1;
             return Ok(());
         }
         request.extend_from_slice(&buffer[..count]);
@@ -894,6 +979,7 @@ async fn serve(
         let blocked = {
             let mut state = state.lock().unwrap();
             state.seen.push(Seen {
+                arrived: std::time::Instant::now(),
                 method,
                 path,
                 body,
@@ -944,6 +1030,7 @@ async fn serve(
     let (index, fault) = {
         let mut state = state.lock().unwrap();
         state.seen.push(Seen {
+            arrived: std::time::Instant::now(),
             method: method.clone(),
             path: path.clone(),
             body,
@@ -954,12 +1041,12 @@ async fn serve(
         let fault = state
             .faults
             .iter_mut()
-            .find(|(planned, faults)| *planned == path && !faults.is_empty())
+            .find(|(planned, faults)| names(planned, &path) && !faults.is_empty())
             .or_else(|| {
                 state
                     .faults_ending
                     .iter_mut()
-                    .find(|(end, faults)| path.ends_with(end.as_str()) && !faults.is_empty())
+                    .find(|(end, faults)| ends_with(end, &path) && !faults.is_empty())
             })
             .and_then(|(_, faults)| faults.pop());
         (index, fault)
@@ -970,8 +1057,8 @@ async fn serve(
     released.borrow_and_update();
     let bare = path.split('?').next().unwrap_or_default();
     let held = |state: &ProxyState| {
-        state.held.contains(&path)
-            || state.held_ending.iter().any(|end| path.ends_with(end))
+        state.held.iter().any(|held| names(held, &path))
+            || state.held_ending.iter().any(|end| ends_with(end, &path))
             || state
                 .held_requests
                 .iter()
@@ -993,6 +1080,19 @@ async fn serve(
             body.len()
         );
         answered(503, body);
+        client.write_all(head.as_bytes()).await?;
+        client.write_all(body).await?;
+        return client.shutdown().await;
+    }
+    if fault == Some(Fault::Refused) {
+        let body =
+            br#"{"error":{"code":"invalid_request","message":"the proxy of the test refused"}}"#;
+        let head = format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        answered(400, body);
         client.write_all(head.as_bytes()).await?;
         client.write_all(body).await?;
         return client.shutdown().await;

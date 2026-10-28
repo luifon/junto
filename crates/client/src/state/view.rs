@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use gpui::RenderImage;
 use junto_client_core::api::SettingsScope;
+use junto_client_core::arrangement::{Arrangement, GroupColour, GroupId, ServerGroup, Shelf};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
@@ -69,6 +70,8 @@ pub struct ServerSnapshot {
     pub model: Option<Arc<ServerModel>>,
     /// The release version that the server stated on its event stream (ADR 0780).
     pub server_version: Option<ServerVersion>,
+    /// The revision of the messages and events that the server stated (ADR 0206).
+    pub server_events: Option<u32>,
 }
 
 impl ServerSnapshot {
@@ -89,6 +92,7 @@ impl ServerSnapshot {
             stream: live.status,
             model: live.model,
             server_version: live.server_version,
+            server_events: live.server_events,
         }
     }
 }
@@ -268,6 +272,9 @@ pub struct Known {
     pub quiet_failed: Vec<(ServerId, String)>,
     /// What the update check holds, and what the person did with it (ADR 0780).
     pub updates: super::book::UpdatesKnown,
+    /// The groups, the order of the workspaces and what is collapsed in the server book,
+    /// as the client core holds them (ADR 0775).
+    pub arrangement: junto_client_core::arrangement::Arrangement,
 }
 
 /// Where the fork of a thread stands that the person asked for.
@@ -378,6 +385,20 @@ impl Unreads {
 
     fn at(&self, place: PlaceId) -> Unread {
         self.0.get(&place).copied().unwrap_or_default()
+    }
+
+    /// The unread messages for the person alone in the places that `counted` names: the
+    /// mentions of a channel, and every unread message of a direct conversation that shows
+    /// its sign. A muted place counts nothing.
+    fn for_person(&self, counted: impl Fn(PlaceId) -> bool) -> u64 {
+        self.0
+            .iter()
+            .filter(|(place, unread)| counted(**place) && unread.any() && !unread.muted)
+            .map(|(place, unread)| match place {
+                PlaceId::Direct(_) => unread.messages.max(unread.mentions),
+                _ => unread.mentions,
+            })
+            .fold(0, u64::saturating_add)
     }
 
     /// Every place of the server together.
@@ -642,9 +663,47 @@ pub struct ServerRow {
     /// What of it no listed workspace shows: the direct conversations, and every place
     /// of a server without a listed workspace. The head of the server shows its sign.
     pub head_unread: Unread,
+    /// The unread messages for the person alone: the mentions, and the messages of the
+    /// direct conversations (ADR 0741). The collapsed server book and the badge of the
+    /// application count them.
+    pub for_person: u64,
     /// The join requests that wait for a decision of the person (ADR 0761).
     pub waiting_join_requests: usize,
+    /// The workspaces in the order of the person (ADR 0775).
     pub workspaces: Vec<WorkspaceRow>,
+    /// The group of the server in the server book.
+    pub group: Option<GroupId>,
+    /// The server book shows the server without its workspaces.
+    pub workspaces_collapsed: bool,
+}
+
+/// One group of the server book (ADR 0775).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupRow {
+    pub id: GroupId,
+    /// The name as the person gave it; empty without one.
+    pub name: String,
+    /// The name that the server book shows: the given one, or the names of its servers.
+    pub shown_name: String,
+    pub colour: GroupColour,
+    pub collapsed: bool,
+    /// The servers of the group, as indexes of [`ShellView::servers`].
+    pub servers: Vec<usize>,
+    /// What the servers of the group hold unread, together.
+    pub unread: Unread,
+    /// The join requests that wait for the person on the servers of the group.
+    pub waiting_join_requests: usize,
+    /// The group holds the selected server.
+    pub selected: bool,
+}
+
+/// One top-level part of the server book, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookPart {
+    /// A server outside a group: an index of [`ShellView::servers`].
+    Server(usize),
+    /// A group: an index of [`ShellView::groups`].
+    Group(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -989,6 +1048,9 @@ pub struct ShareCard {
     pub name: Option<String>,
     /// What is shared. Absent for a share whose track does not state it.
     pub kind: Option<ShareKind>,
+    /// The number of the share among the shares of its person of the same kind, from 1,
+    /// while the person runs two or more of that kind: "Carla's screen 2".
+    pub number: Option<usize>,
     /// The sound that the sharer chose. Absent until the server has told it.
     pub sound: Option<ShareAudio>,
     /// The share of this device has a sound that the server holds closed (ADR 0510).
@@ -998,6 +1060,9 @@ pub struct ShareCard {
     pub frame_rate: Option<u32>,
     /// The person of this device gets the picture and the sound of this share.
     pub watched: bool,
+    /// For the share of this device: the people in the call who watch it, with their names
+    /// (ADR 0502). Empty for the share of another person.
+    pub viewers: Vec<(AccountId, Option<String>)>,
 }
 
 /// The shares of the call of this device. Present while at least one share runs.
@@ -1017,13 +1082,24 @@ impl ShareStage {
     }
 }
 
-/// The share of this device, as its button shows it.
+/// The shares of this device, as their button shows them: none, only shares that start, or
+/// at least one share that runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OwnShare {
     #[default]
     Off,
     Starting,
     Running,
+}
+
+/// One share of this device, as the menu of the share button lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnShareItem {
+    pub slot: u8,
+    /// Absent while the share starts.
+    pub kind: Option<ShareKind>,
+    /// As [`ShareCard::number`].
+    pub number: Option<usize>,
 }
 
 /// Why the last recording of the call ended without the person asking for it.
@@ -1466,6 +1542,9 @@ pub struct ServerRelease {
     pub version: ServerVersion,
     /// The newest release, when it comes after `version`. Absent without a source.
     pub newer: Option<Version>,
+    /// The server sends messages and events of a newer revision than this build reads
+    /// (ADR 0206): the person updates Junto to see them.
+    pub newer_events: bool,
 }
 
 /// The person as the profile strip shows them.
@@ -1548,6 +1627,10 @@ pub struct CallStrip {
     /// The main area shows this call.
     pub shown: bool,
     pub share: OwnShare,
+    /// The shares of this device in the order of their slots.
+    pub own_shares: Vec<OwnShareItem>,
+    /// How many shares this device can run at once in the call (ADR 0502).
+    pub share_limit: u8,
     /// This build can capture a screen on the system that it runs on.
     pub can_share: bool,
     /// The hand of the person is raised. Absent in a direct-message call, which has no
@@ -1569,7 +1652,7 @@ pub struct Invited {
     pub by: Option<String>,
     /// The name of the voice channel. Absent for a direct-message call.
     pub channel: Option<String>,
-    /// When the invitation was made: the window shows the newest ones first.
+    /// When the invitation was made: the window orders the cards by it, the newest last.
     pub created_at: OffsetDateTime,
     /// The person holds "connect" in the voice channel, as far as the state knows: the
     /// server accepts the invitation only then (ADR 0790).
@@ -1636,9 +1719,50 @@ pub struct ShellView {
     pub preset_refused: Vec<(ServerId, String)>,
     /// A newer build of the client that the source of releases offers (ADR 0780).
     pub update: Option<super::book::Available>,
+    /// The groups of the server book (ADR 0775).
+    pub groups: Vec<GroupRow>,
+    /// The top-level parts of the server book in their order: each server outside a group,
+    /// and each group with its servers.
+    pub book: Vec<BookPart>,
 }
 
 impl ShellView {
+    /// The top-level parts of the server book in the form of the client core, for the
+    /// changes of the arrangement.
+    pub fn shelves(&self) -> Vec<Shelf> {
+        self.book
+            .iter()
+            .map(|part| match part {
+                BookPart::Server(index) => Shelf::Server(self.servers[*index].id),
+                BookPart::Group(index) => {
+                    let group = &self.groups[*index];
+                    Shelf::Group {
+                        group: ServerGroup {
+                            id: group.id,
+                            name: group.name.clone(),
+                            colour: group.colour,
+                            collapsed: group.collapsed,
+                        },
+                        servers: group
+                            .servers
+                            .iter()
+                            .map(|server| self.servers[*server].id)
+                            .collect(),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// True while a group or the workspaces of a server are expanded in the server book.
+    pub fn anything_expanded(&self) -> bool {
+        self.groups.iter().any(|group| !group.collapsed)
+            || self
+                .servers
+                .iter()
+                .any(|row| !row.workspaces.is_empty() && !row.workspaces_collapsed)
+    }
+
     /// The lists of the selected server, while it shows them.
     pub fn lists(&self) -> Option<&ServerLists> {
         match &self.selected.as_ref()?.content {
@@ -1896,7 +2020,10 @@ fn call_people(
                 None => Microphone::Closed,
             },
             held_by: held.and_then(|block| name_of(block.by)),
-            sharing: matches!(active.share, ShareState::Running(_)),
+            sharing: active
+                .own_shares
+                .values()
+                .any(|share| matches!(share, ShareState::Running(_))),
             hand_raised: listed.is_some_and(|listed| listed.hand_raised),
             sound_off: media.calls.deafened || sound_blocked,
             sound_blocked,
@@ -1946,7 +2073,7 @@ fn call_people(
                     .microphone_block
                     .as_ref()
                     .and_then(|block| name_of(block.by)),
-                sharing: participant.screen_share.is_some(),
+                sharing: !participant.shares().is_empty(),
                 hand_raised: participant.hand_raised,
                 sound_off: participant.deafened || participant.sound_block.is_some(),
                 sound_blocked: participant.sound_block.is_some(),
@@ -3044,8 +3171,23 @@ fn device_choices(connected: &[DeviceInfo], chosen: Option<&str>) -> Vec<DeviceC
     choices
 }
 
+/// The numbers of shares of one kind of one person, while the person runs two or more of
+/// that kind: `keys` holds the person and the kind of each share, in the order of the
+/// shares.
+fn share_numbers<K: PartialEq>(keys: &[K]) -> Vec<Option<usize>> {
+    keys.iter()
+        .enumerate()
+        .map(|(index, key)| {
+            let same = keys.iter().filter(|other| *other == key).count();
+            let before = keys[..index].iter().filter(|other| *other == key).count();
+            (same > 1).then_some(before + 1)
+        })
+        .collect()
+}
+
 /// The shares of a call: the ones of the other people as the media connection shows them,
-/// with the sound that the server tells of each, and the one of this device.
+/// with the sound that the server tells of each, and the ones of this device in the order
+/// of their slots.
 fn share_stage(
     server_id: ServerId,
     active: &ActiveCall,
@@ -3058,38 +3200,95 @@ fn share_stage(
     let mut shares: Vec<ShareCard> = active
         .shares
         .iter()
-        .map(|seen| ShareCard {
-            id: ShareId::Of(seen.account_id),
-            account_id: seen.account_id,
-            name: name_of(seen.account_id),
-            kind: seen.kind,
-            sound: call
-                .and_then(|call| call.participant(seen.account_id))
-                .and_then(|participant| participant.screen_share.as_ref())
-                .map(|share| share.audio),
-            sound_held: false,
-            size: seen.size,
-            frame_rate: seen.frame_rate,
-            watched: active.watched == Some(ShareId::Of(seen.account_id)),
+        .map(|seen| {
+            let id = ShareId::of(seen.account_id, seen.slot);
+            ShareCard {
+                id,
+                account_id: seen.account_id,
+                name: name_of(seen.account_id),
+                kind: seen.kind,
+                number: None,
+                sound: call
+                    .and_then(|call| call.participant(seen.account_id))
+                    .and_then(|participant| {
+                        participant
+                            .shares()
+                            .iter()
+                            .find(|share| share.slot == seen.slot)
+                    })
+                    .map(|share| share.audio),
+                sound_held: false,
+                size: seen.size,
+                frame_rate: seen.frame_rate,
+                watched: active.watched == Some(id),
+                viewers: Vec::new(),
+            }
         })
         .collect();
-    if let ShareState::Running(info) = &active.share {
-        shares.push(ShareCard {
-            id: ShareId::Own,
-            account_id: model.account.id,
-            name: name_of(model.account.id),
-            kind: Some(info.kind),
-            sound: Some(info.sound),
-            sound_held: info.sound_held,
-            size: Some(info.size),
-            frame_rate: Some(info.frame_rate),
-            watched: active.watched == Some(ShareId::Own),
-        });
+    for (slot, share) in &active.own_shares {
+        if let ShareState::Running(info) = share {
+            let id = ShareId::own(*slot);
+            shares.push(ShareCard {
+                id,
+                account_id: model.account.id,
+                name: name_of(model.account.id),
+                kind: Some(info.kind),
+                number: None,
+                sound: Some(info.sound),
+                sound_held: info.sound_held,
+                size: Some(info.size),
+                frame_rate: Some(info.frame_rate),
+                watched: active.watched == Some(id),
+                viewers: call
+                    .map(|call| call.participants.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|participant| {
+                        participant.account_id != model.account.id
+                            && participant.watching.is_some_and(|watched| {
+                                watched.account_id == model.account.id && watched.slot == *slot
+                            })
+                    })
+                    .map(|participant| (participant.account_id, name_of(participant.account_id)))
+                    .collect(),
+            });
+        }
+    }
+    let keys: Vec<(junto_media::engine::Person, Option<ShareKind>)> = shares
+        .iter()
+        .map(|share| (share.id.person, share.kind))
+        .collect();
+    for (share, number) in shares.iter_mut().zip(share_numbers(&keys)) {
+        share.number = number;
     }
     (!shares.is_empty()).then_some(ShareStage {
         shares,
         volume: known.media.voice.share_volume,
     })
+}
+
+/// The shares of this device for the menu of the share button, in the order of their slots.
+fn own_share_items(active: &ActiveCall) -> Vec<OwnShareItem> {
+    let kinds: Vec<Option<ShareKind>> = active
+        .own_shares
+        .values()
+        .map(|share| match share {
+            ShareState::Running(info) => Some(info.kind),
+            ShareState::Starting => None,
+        })
+        .collect();
+    let numbers = share_numbers(&kinds);
+    active
+        .own_shares
+        .keys()
+        .zip(kinds)
+        .zip(numbers)
+        .map(|((slot, kind), number)| OwnShareItem {
+            slot: *slot,
+            kind,
+            number: number.filter(|_| kind.is_some()),
+        })
+        .collect()
 }
 
 /// What a recording that ended with a problem tells the people of its call.
@@ -3412,7 +3611,11 @@ fn room_view(
             MeetingStart::NoPermission
         } else if active.microphone_block.is_some() {
             MeetingStart::MicrophoneBlocked
-        } else if !matches!(active.share, ShareState::Running(_)) {
+        } else if !active
+            .own_shares
+            .values()
+            .any(|share| matches!(share, ShareState::Running(_)))
+        {
             MeetingStart::NotSharing
         } else {
             MeetingStart::Possible
@@ -3645,11 +3848,19 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
         shown: shown.server == Some(active.target.server_id)
             && channel_id.is_some()
             && shown.channel == channel_id,
-        share: match active.share {
-            ShareState::Off | ShareState::Ended(_) => OwnShare::Off,
-            ShareState::Starting => OwnShare::Starting,
-            ShareState::Running(_) => OwnShare::Running,
+        share: if active
+            .own_shares
+            .values()
+            .any(|share| matches!(share, ShareState::Running(_)))
+        {
+            OwnShare::Running
+        } else if active.own_shares.is_empty() {
+            OwnShare::Off
+        } else {
+            OwnShare::Starting
         },
+        own_shares: own_share_items(active),
+        share_limit: active.share_limit,
         can_share: known.media.can_share,
         hand_raised: channel_id
             .zip(model)
@@ -3697,6 +3908,50 @@ fn call_notice(servers: &[ServerSnapshot], known: &Known) -> Option<CallNotice> 
     }
 }
 
+/// The groups of the server book and its top-level parts, from the rows of the servers in
+/// the order of the book (ADR 0775).
+fn book_parts(rows: &[ServerRow], arrangement: &Arrangement) -> (Vec<GroupRow>, Vec<BookPart>) {
+    let order: Vec<ServerId> = rows.iter().map(|row| row.id).collect();
+    let index_of = |server: &ServerId| rows.iter().position(|row| row.id == *server);
+    let mut groups = Vec::new();
+    let mut book = Vec::new();
+    for shelf in arrangement.shelves(&order) {
+        match shelf {
+            Shelf::Server(server) => {
+                if let Some(index) = index_of(&server) {
+                    book.push(BookPart::Server(index));
+                }
+            }
+            Shelf::Group { group, servers } => {
+                let servers: Vec<usize> = servers.iter().filter_map(index_of).collect();
+                let mut unread = Unread::default();
+                let mut waiting = 0;
+                for index in &servers {
+                    unread.add(rows[*index].unread);
+                    waiting += rows[*index].waiting_join_requests;
+                }
+                let names: Vec<&str> = servers
+                    .iter()
+                    .map(|index| rows[*index].name.as_str())
+                    .collect();
+                groups.push(GroupRow {
+                    id: group.id,
+                    shown_name: crate::text::book::group_shown_name(&group.name, &names),
+                    name: group.name,
+                    colour: group.colour,
+                    collapsed: group.collapsed,
+                    selected: servers.iter().any(|index| rows[*index].selected),
+                    servers,
+                    unread,
+                    waiting_join_requests: waiting,
+                });
+                book.push(BookPart::Group(groups.len() - 1));
+            }
+        }
+    }
+    (groups, book)
+}
+
 /// The view of the whole window.
 pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) -> ShellView {
     let selected_id = selection
@@ -3714,6 +3969,27 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             let shown = shown_model(server).and_then(|model| {
                 shown_workspace(model, selection.workspaces.get(&server.id).copied())
             });
+            let arrangement = &known.arrangement;
+            let collapsed = arrangement.workspaces_collapsed(server.id);
+            let mut workspaces: Vec<WorkspaceRow> = unreads
+                .as_ref()
+                .map(|(model, unreads)| {
+                    model
+                        .workspaces
+                        .iter()
+                        .map(|workspace| WorkspaceRow {
+                            unread: workspace_unread(workspace, unreads),
+                            id: workspace.workspace.id,
+                            name: workspace.workspace.name.clone(),
+                            selected: selected
+                                && shown.is_some_and(|shown| {
+                                    shown.workspace.id == workspace.workspace.id
+                                }),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            arrangement.sort_workspaces(server.id, &mut workspaces, |row| row.id);
             ServerRow {
                 id: server.id,
                 name: server.name.clone(),
@@ -3728,31 +4004,27 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     .as_ref()
                     .map(|(_, unreads)| unreads.total())
                     .unwrap_or_default(),
+                // With its workspaces collapsed, no row of a workspace shows anything: the
+                // head of the server shows all that it holds (ADR 0775).
                 head_unread: unreads
                     .as_ref()
-                    .map(|(model, unreads)| head_unread(model, unreads))
+                    .map(|(model, unreads)| {
+                        if collapsed && !workspaces.is_empty() {
+                            unreads.total()
+                        } else {
+                            head_unread(model, unreads)
+                        }
+                    })
                     .unwrap_or_default(),
+                for_person: unreads
+                    .as_ref()
+                    .map_or(0, |(_, unreads)| unreads.for_person(|_| true)),
                 waiting_join_requests: unreads.as_ref().map_or(0, |(model, _)| {
                     super::admin::view::waiting_join_requests(model)
                 }),
-                workspaces: unreads
-                    .as_ref()
-                    .map(|(model, unreads)| {
-                        model
-                            .workspaces
-                            .iter()
-                            .map(|workspace| WorkspaceRow {
-                                unread: workspace_unread(workspace, unreads),
-                                id: workspace.workspace.id,
-                                name: workspace.workspace.name.clone(),
-                                selected: selected
-                                    && shown.is_some_and(|shown| {
-                                        shown.workspace.id == workspace.workspace.id
-                                    }),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                workspaces,
+                group: arrangement.group_of(server.id),
+                workspaces_collapsed: collapsed,
                 status,
             }
         })
@@ -3796,6 +4068,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             release: server.server_version.as_ref().map(|version| ServerRelease {
                 version: version.clone(),
                 newer: super::book::newer_server_release(&known.updates, version),
+                newer_events: server.server_events.is_some_and(|revision| {
+                    revision > junto_client_core::protocol::events::EVENT_REVISION
+                }),
             }),
             content,
         }
@@ -3804,6 +4079,8 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         account_id: Some(model.account.id),
         name: crate::text::label(&model.account.name),
     });
+    let rows: Vec<ServerRow> = rows;
+    let (groups, book) = book_parts(&rows, &known.arrangement);
     let mut view = ShellView {
         servers: rows,
         selected,
@@ -3847,16 +4124,15 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .map(|server| (server.id, server.name.clone()))
             .collect(),
         update: super::book::available(&known.updates),
+        groups,
+        book,
         share_notice: known
             .media
             .calls
             .call
             .as_ref()
             .filter(|_| !known.share_notice_dismissed)
-            .and_then(|call| match &call.share {
-                ShareState::Ended(error) => Some(error.clone()),
-                _ => None,
-            }),
+            .and_then(|call| call.share_ended.clone()),
     };
     view.call = call_strip(servers, known, view.shown());
     view.faces = people::faces(servers, &known.people);

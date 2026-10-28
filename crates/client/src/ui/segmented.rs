@@ -90,7 +90,20 @@ impl RenderOnce for Segmented {
                 )
                 .text_size(u(13.0))
                 .ink(if on { colors.ink } else { colors.ink_2 })
-                .when(on, |segment| segment.bg(Hsla::from(colors.limestone_lo)))
+                .relative()
+                // The chosen part has another ground and a mark in the accent colour at its
+                // foot, with a contrast of at least 3 to 1 in both themes.
+                .when(on, |segment| {
+                    segment.bg(Hsla::from(colors.limestone_lo)).child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(gpui::px(2.0))
+                            .bg(Hsla::from(colors.terracotta)),
+                    )
+                })
                 .when(index > 0, |segment| {
                     segment.border_l_1().border_color(Hsla::from(colors.rule))
                 })

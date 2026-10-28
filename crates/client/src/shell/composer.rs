@@ -711,19 +711,7 @@ impl Shell {
                 true
             }
             Step::Up if empty && self.pen_mut(pane).editing.is_none() => {
-                let last = self.composer_feed(pane).and_then(|feed| {
-                    feed.rows.iter().rev().find_map(|row| match row {
-                        FeedRow::Message(row) if row.can_edit => Some(row.message.id),
-                        _ => None,
-                    })
-                });
-                match last {
-                    Some(message_id) => {
-                        self.edit_message(pane, message_id, window, cx);
-                        true
-                    }
-                    None => false,
-                }
+                self.edit_last_own_message(pane, window, cx)
             }
             _ => false,
         }
@@ -884,7 +872,7 @@ impl Shell {
     /// Opens the file dialog for the next message of the place that the composer writes
     /// to. The dialog does not stop the window: the person, and an event of a server, can
     /// change what the composer shows before the dialog is answered.
-    fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
+    pub(crate) fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
         let Some(asked) = self.pen(pane).place else {
             return;
         };
@@ -1003,6 +991,29 @@ impl Shell {
                 FeedRow::Message(row) if row.message.id == message_id => Some(row.message.clone()),
                 _ => None,
             })
+    }
+
+    /// Puts the text of the newest own message that the pane lists into the composer, to
+    /// change it. False when the pane lists none.
+    pub(crate) fn edit_last_own_message(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let last = self.composer_feed(pane).and_then(|feed| {
+            feed.rows.iter().rev().find_map(|row| match row {
+                FeedRow::Message(row) if row.can_edit => Some(row.message.id),
+                _ => None,
+            })
+        });
+        match last {
+            Some(message_id) => {
+                self.edit_message(pane, message_id, window, cx);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Puts the text of an own message into the composer, to change it.
@@ -1516,23 +1527,7 @@ impl Shell {
                         this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
                     },
                 )),
-            )
-            .when(!compact, |tools| {
-                tools.child(div().flex_1()).child(
-                    div()
-                        .id("composer-hint")
-                        .debug_selector(|| "composer-hint".to_owned())
-                        .flex_none()
-                        .pr(u(5.0))
-                        .text_size(u(12.5))
-                        .ink(colors.ink_3)
-                        .child(if permanent {
-                            text::PERMANENT_COMPOSER
-                        } else {
-                            text::SEND_HINT
-                        }),
-                )
-            });
+            );
 
         // The state above the box: a reply or an edit, with the control that ends it.
         let drawings = Drawings::of(cx);
@@ -1713,15 +1708,45 @@ impl Shell {
             .clone()
             .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
             .map(|sentence| {
+                let sentence = SharedString::from(sentence);
                 div()
                     .id("compose-problem")
                     .debug_selector(|| "compose-problem".to_owned())
-                    .mb(u(4.0))
+                    .role(Role::Alert)
+                    .aria_label(sentence.clone())
+                    .tooltip(crate::ui::tooltip(sentence.clone()))
+                    .min_w_0()
+                    .truncate()
                     .text_size(u(12.5))
                     .line_height(u(18.0))
                     .ink(colors.cinnabar_ink)
-                    .child(SharedString::from(sentence))
+                    .child(sentence)
             });
+
+        // The line under the box: a problem of the message, or how to send. It always has
+        // its height, so a problem that arrives moves nothing (ADR 0740).
+        let status = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(u(22.0))
+            .pt(u(4.0))
+            .min_w_0()
+            .child(problem.unwrap_or_else(|| {
+                div()
+                    .id("composer-hint")
+                    .debug_selector(|| "composer-hint".to_owned())
+                    .min_w_0()
+                    .truncate()
+                    .text_size(u(12.5))
+                    .ink(colors.ink_3)
+                    // A narrow composer states the permanence in a line above its box.
+                    .child(if permanent && !compact {
+                        text::PERMANENT_COMPOSER
+                    } else {
+                        text::SEND_HINT
+                    })
+            }));
 
         // The mention picker, above the box.
         let found = self.mention_candidates(pane);
@@ -1949,12 +1974,8 @@ impl Shell {
             .children(permanence)
             .children(banner)
             .children(files)
-            .child(
-                crate::ui::notice_slot(pane.id("compose-problem-slot"))
-                    .h(u(24.0))
-                    .children(problem),
-            )
             .child(frame)
+            .child(status)
             .into_any_element()
     }
 

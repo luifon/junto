@@ -56,13 +56,20 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
     assert!(owner.shows("logo-none") && owner.shows("logo-choose"));
     assert!(!owner.shows("logo-picture") && !owner.shows("logo-remove"));
 
-    // The owner chooses a file: the server stores its bytes, and the page and the server
-    // book of the owner show the image.
+    // The owner chooses a file and saves its cut: the server stores the square, and the
+    // page and the server book of the owner show the image. A large image is scaled to
+    // 1024 by 1024 pixels (ADR 0119).
     let files = tempfile::tempdir().unwrap();
-    let image = png(64, 200);
     let chosen = files.path().join("logo.png");
-    std::fs::write(&chosen, &image).unwrap();
+    std::fs::write(&chosen, crate::harness::picture_png(2400, 1600)).unwrap();
     owner.in_shell(|shell, _, cx| shell.use_server_logo(chosen, cx));
+    let crop = owner.until_picture_crop();
+    assert_eq!(
+        crop.purpose,
+        junto_client::state::picture_crop::PicturePurpose::Logo(owner.handle().id())
+    );
+    assert!(owner.shows("admin"));
+    owner.click("picture-crop-save");
     owner.until("the page shows the logo", |window| {
         window.shows("logo-picture") && window.shows("logo-remove")
     });
@@ -72,7 +79,8 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
     });
     assert!(owner.view().servers[0].logo.is_some());
     let stored = world.run(owner.handle().logo()).unwrap().unwrap();
-    assert_eq!(stored.bytes, image);
+    let read = image::load_from_memory(&stored.bytes).unwrap();
+    assert_eq!((read.width(), read.height()), (1024, 1024));
 
     // The window of the member follows the event: the member does nothing.
     member.until("the server book of the member shows the logo", |window| {
@@ -185,6 +193,8 @@ fn a_logo_dialog_that_is_answered_on_the_page_of_another_server_sends_nothing(
     click_in_page(&mut owner, "logo-choose");
     let file = chosen.clone();
     owner.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![file])));
+    owner.until_picture_crop();
+    owner.click("picture-crop-save");
     owner.until("the page of the second server shows the logo", |window| {
         window.shows("logo-picture")
     });

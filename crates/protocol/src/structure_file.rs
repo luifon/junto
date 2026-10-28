@@ -34,7 +34,7 @@ pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
 pub const MOST_CHANGES: usize = 200;
 
 /// The structure of a server: its server roles and its workspaces with their roles,
-/// categories, channels and the role overrides of categories and channels.
+/// categories, channels, the role overrides of categories and channels, and glossaries.
 ///
 /// An entry is matched by its identifier. An entry that is absent is kept as it is. In an
 /// entry, an absent optional field keeps its value. A file contains no member, no account,
@@ -116,6 +116,11 @@ pub struct WorkspaceEntry {
     pub categories: Vec<CategoryEntry>,
     #[serde(default)]
     pub channels: Vec<ChannelEntry>,
+    /// The terms of the glossary, most important first (ADR 0603). The list replaces the
+    /// whole glossary; an empty list removes every term. Absent: a new workspace has no
+    /// term, an existing workspace keeps its glossary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glossary: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,6 +360,13 @@ pub enum StructureChange {
         channel: StructureId,
         synced: bool,
     },
+    /// Replaces the whole glossary of a workspace with `terms`, most important first. The
+    /// change has the checks, the limits, the audit entry and the event of the glossary
+    /// route (ADR 0603).
+    ReplaceGlossary {
+        workspace: StructureId,
+        terms: Vec<String>,
+    },
     DeleteChannel {
         id: StructureId,
     },
@@ -393,6 +405,7 @@ impl StructureChange {
             Self::SetChannelOverride { .. } => "set_channel_override",
             Self::SetCategoryOverride { .. } => "set_category_override",
             Self::SetChannelSync { .. } => "set_channel_sync",
+            Self::ReplaceGlossary { .. } => "replace_glossary",
             Self::DeleteChannel { .. } => "delete_channel",
             Self::DeleteCategory { .. } => "delete_category",
             Self::DeleteWorkspaceRole { .. } => "delete_workspace_role",
@@ -461,6 +474,38 @@ mod tests {
         assert!(!file.workspaces[0].default);
         let misspelled = known.replace("\"channels\"", "\"chanels\"");
         assert!(serde_json::from_str::<StructureFile>(&misspelled).is_err());
+    }
+
+    #[test]
+    fn a_workspace_entry_tells_an_absent_glossary_from_an_empty_one() {
+        let entry = |fields: &str| -> WorkspaceEntry {
+            serde_json::from_str(&format!(
+                r#"{{"id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","name":"Main"{fields}}}"#
+            ))
+            .unwrap()
+        };
+        let absent = entry("");
+        assert_eq!(absent.glossary, None);
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("glossary")
+                .is_none()
+        );
+        let empty = entry(r#","glossary":[]"#);
+        assert_eq!(empty.glossary, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["glossary"],
+            serde_json::json!([])
+        );
+        let terms = entry(r#","glossary":["Ysolde Varkonen","Quorvex"]"#);
+        assert_eq!(
+            terms.glossary,
+            Some(vec!["Ysolde Varkonen".to_owned(), "Quorvex".to_owned()])
+        );
+        let other =
+            r#"{"id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f","name":"Main","glossary":"Quorvex"}"#;
+        assert!(serde_json::from_str::<WorkspaceEntry>(other).is_err());
     }
 
     #[test]
@@ -562,6 +607,10 @@ mod tests {
                 category: Some(None),
                 position: None,
                 permanent_messages: None,
+            },
+            StructureChange::ReplaceGlossary {
+                workspace: id,
+                terms: vec!["Quorvex".to_owned()],
             },
         ];
         for change in changes {

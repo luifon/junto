@@ -11,7 +11,7 @@ use zbus::zvariant::Value;
 
 use super::*;
 use crate::state::view::MicrophoneAction;
-use crate::tray::CallMarks;
+use crate::tray::{CallMarks, Picture};
 
 const ITEM: &str = "org.kde.StatusNotifierItem";
 
@@ -138,6 +138,7 @@ fn in_call(muted: bool, seat: &Seat) -> TrayState {
             seat: seat.clone(),
         }),
         generation: u32::from(muted),
+        mentions: 0,
     }
 }
 
@@ -274,9 +275,12 @@ async fn the_item_registers_shows_the_call_and_takes_presses_of_its_menu() {
         crate::text::tray::IN_A_CALL_MUTED
     );
     let pixmaps = items(&property(&client, &name, "IconPixmap").await);
-    let sides: Vec<i32> = renderings(Picture::Muted)
-        .map(|(side, _)| side as i32)
-        .collect();
+    let sides: Vec<i32> = renderings(IconPicture {
+        picture: Picture::Muted,
+        mention: false,
+    })
+    .map(|(side, _)| side as i32)
+    .collect();
     assert_eq!(
         pixmaps
             .iter()

@@ -5,8 +5,10 @@
 //! components, the state that follows the client core, and the main window.
 
 pub mod app;
+pub mod app_badge;
 pub mod assets;
 pub mod compose;
+pub mod dialog_parent;
 pub mod emoji;
 pub mod highlight;
 pub mod images;
@@ -15,6 +17,8 @@ pub mod moment;
 pub mod notify;
 pub mod opening;
 pub mod panics;
+pub mod permissions;
+pub mod picture;
 #[cfg(target_os = "linux")]
 pub mod renderer;
 pub mod shell;

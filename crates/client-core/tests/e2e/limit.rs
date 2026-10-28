@@ -11,6 +11,11 @@
 //! watch ends the processes that the tests started ([`adopt`]), reports the test, and ends
 //! the test process with [`LIMIT_EXIT_CODE`]. A test that is not one future holds a
 //! [`watch`] for its whole run.
+//!
+//! A test that waits for a lock that other tests hold, such as the media server of the
+//! tests of calls, calls [`wait_for_others`] before the wait and [`restart_limit`] when it
+//! holds the lock: the wait does not count, because the holders have limits of their own, so
+//! a test fails for its own steps only.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -19,9 +24,9 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The longest time that the body of one live test may take, with its waits for what it
-/// shares with the other tests of its binary. All 40 tests of calls of the media engine
-/// take about three minutes together.
+/// The longest time that the body of one live test may take. A wait for a lock that other
+/// tests hold under their own limits does not count ([`wait_for_others`]). All 40 tests of
+/// calls of the media engine take about three minutes together.
 pub const TEST_LIMIT: Duration = Duration::from_secs(300);
 
 /// The longest time that the cleanup of a test may take after its body.
@@ -50,6 +55,86 @@ thread_local! {
 /// forced end: call participants, Docker commands and helper programs. Each holds an
 /// inherited copy of what the test process inherited, such as the lock of the machine.
 static CHILDREN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// The latest time at which the holders of the lock of the tests end, cleanup included: each
+/// holder that takes the lock ([`restart_limit`]) moves it to its own limit and cleanup limit
+/// from then, if that is later.
+static HELD_UNTIL: Mutex<Option<tokio::time::Instant>> = Mutex::new(None);
+
+/// When the limit of a body ends, on the clock of the runtime, which a test of a limit
+/// pauses. While the body waits for others, its end is its whole limit after the start of the
+/// wait, or the end of the holders of the lock when that is later; a restart gives it its
+/// whole limit again.
+struct Deadline {
+    /// The end, and since when the body waits for others.
+    state: Mutex<(tokio::time::Instant, Option<tokio::time::Instant>)>,
+    limit: Duration,
+    cleanup: Duration,
+}
+
+impl Deadline {
+    fn new(limit: Duration, cleanup: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((tokio::time::Instant::now() + limit, None)),
+            limit,
+            cleanup,
+        })
+    }
+
+    /// The end as it stands now.
+    fn at(&self) -> tokio::time::Instant {
+        let (at, waits) = *self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        match waits {
+            Some(since) => {
+                let held = *HELD_UNTIL.lock().unwrap_or_else(PoisonError::into_inner);
+                held.map_or(since + self.limit, |held| held.max(since + self.limit))
+            }
+            None => at,
+        }
+    }
+
+    fn waits(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
+            .is_some()
+    }
+
+    fn wait_for_others(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.1.get_or_insert_with(tokio::time::Instant::now);
+    }
+
+    fn restart(&self) {
+        let now = tokio::time::Instant::now();
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = (now + self.limit, None);
+        let mut held = HELD_UNTIL.lock().unwrap_or_else(PoisonError::into_inner);
+        let until = now + self.limit + self.cleanup;
+        *held = Some(held.map_or(until, |held| held.max(until)));
+    }
+}
+
+tokio::task_local! {
+    /// The limit of the body that runs, for [`restart_limit`]. It follows the body from
+    /// thread to thread.
+    static RUNNING: Arc<Deadline>;
+}
+
+/// The test of this body waits for a lock that other tests hold under their own limits: the
+/// time until [`restart_limit`] does not count while the lock changes holder within the limits
+/// of its holders. A wait that outlasts both its own limit and the limits of the last holder
+/// fails. Outside a limited body it does nothing.
+pub fn wait_for_others() {
+    let _ = RUNNING.try_with(|deadline| deadline.wait_for_others());
+}
+
+/// The test of this body holds the lock that it waited for: its whole limit starts again, and
+/// the waiters of the lock wait at most until it ended with its cleanup. Outside a limited body
+/// it does nothing.
+pub fn restart_limit() {
+    let _ = RUNNING.try_with(|deadline| deadline.restart());
+}
 
 fn steps_of_this_thread() -> Steps {
     STEPS.with(Arc::clone)
@@ -203,22 +288,38 @@ pub async fn limited_within<F: Future>(
     cleanup_limit: Duration,
     body: F,
 ) -> F::Output {
+    let deadline = Deadline::new(limit, cleanup_limit);
     let watch = Watch::start(
-        limit + cleanup_limit,
+        deadline.clone(),
+        cleanup_limit,
         format!(
             "{}: this and its cleanup did not end within {:?}",
             this_test(),
             limit + cleanup_limit
         ),
     );
-    let mut body = Box::pin(body);
-    if let Ok(output) = tokio::time::timeout(limit, body.as_mut()).await {
-        drop(body);
-        drop(watch);
-        return output;
+    let mut body = Box::pin(RUNNING.scope(deadline.clone(), body));
+    loop {
+        let at = deadline.at();
+        match tokio::time::timeout_at(at, body.as_mut()).await {
+            Ok(output) => {
+                drop(body);
+                drop(watch);
+                return output;
+            }
+            // The body restarted its limit while it ran.
+            Err(_) if deadline.at() > at => {}
+            Err(_) => break,
+        }
     }
+    let waited = if deadline.waits() {
+        " while it waited for a lock of other tests that did not change holder within the \
+         limits of its holders"
+    } else {
+        ""
+    };
     let failure = format!(
-        "{}: this did not end within {limit:?}; the last steps of the test:{}",
+        "{}: this did not end within {limit:?}{waited}; the last steps of the test:{}",
         this_test(),
         last_steps()
     );
@@ -240,26 +341,36 @@ pub struct Watch {
 /// included.
 pub fn watch(limit: Duration) -> Watch {
     Watch::start(
-        limit,
+        Deadline::new(limit, Duration::ZERO),
+        Duration::ZERO,
         format!("{}: this did not end within {limit:?}", this_test()),
     )
 }
 
 impl Watch {
-    fn start(limit: Duration, failure: String) -> Self {
+    /// Watches until `extra` after `deadline`, which a restart of the body moves on.
+    fn start(deadline: Arc<Deadline>, extra: Duration, failure: String) -> Self {
         let steps = steps_of_this_thread();
         let (ended, ending) = mpsc::channel::<()>();
         let watching = std::thread::spawn(move || {
-            if let Err(mpsc::RecvTimeoutError::Timeout) = ending.recv_timeout(limit) {
-                end_children();
-                let reported = report(format!(
-                    "{failure}; the last steps of the test:{}\nThe processes that the tests \
-                     started and the test process end.",
-                    described(&steps)
-                ));
-                let _ = reported.recv_timeout(FORCED_END_WAIT);
-                std::process::exit(LIMIT_EXIT_CODE);
+            let mut over = false;
+            while !over {
+                let end = deadline.at().into_std() + extra;
+                match ending.recv_timeout(end.saturating_duration_since(Instant::now())) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        over = deadline.at().into_std() + extra <= end;
+                    }
+                    _ => return,
+                }
             }
+            end_children();
+            let reported = report(format!(
+                "{failure}; the last steps of the test:{}\nThe processes that the tests \
+                 started and the test process end.",
+                described(&steps)
+            ));
+            let _ = reported.recv_timeout(FORCED_END_WAIT);
+            std::process::exit(LIMIT_EXIT_CODE);
         });
         Self {
             ended: Some(ended),

@@ -69,26 +69,26 @@ impl super::Shell {
         &self,
         person: &crate::state::view::Occupant,
         cx: &gpui::App,
-    ) -> Option<(junto_media::calls::Calls, junto_media::engine::ShareId)> {
-        use junto_media::{camera::CameraState, engine::ShareId};
+    ) -> Option<(junto_media::calls::Calls, junto_media::engine::Person)> {
+        use junto_media::{camera::CameraState, engine::Person};
         let state = self.state.read(cx);
         let call = state.media_calls().call?;
         let id = if person.is_self {
             if !matches!(call.camera, CameraState::Starting | CameraState::Running) {
                 return None;
             }
-            ShareId::Own
+            Person::Own
         } else {
             if !call.cameras.contains(&person.account_id) {
                 return None;
             }
-            ShareId::Of(person.account_id)
+            Person::Of(person.account_id)
         };
         Some((state.calls().clone(), id))
     }
 
     pub(crate) fn sync_camera_visibility(&self, cx: &gpui::App) {
-        use junto_media::{calls::Phase, camera::CameraState, engine::ShareId};
+        use junto_media::{calls::Phase, camera::CameraState, engine::Person};
         let state = self.state.read(cx);
         if !self.detached && state.is_call_detached() {
             return;
@@ -99,9 +99,9 @@ impl super::Shell {
             && let Some(call) = state.media_calls().call
             && call.phase == Phase::Connected
         {
-            ids.extend(call.cameras.into_iter().map(ShareId::Of));
+            ids.extend(call.cameras.into_iter().map(Person::Of));
             if matches!(call.camera, CameraState::Starting | CameraState::Running) {
-                ids.push(ShareId::Own);
+                ids.push(Person::Own);
             }
         }
         state.calls().retain_camera_views(&ids);
@@ -180,9 +180,9 @@ impl super::Shell {
         person: &crate::state::view::Occupant,
     ) -> Option<crate::ui::DrawnPicture> {
         let key = if person.is_self {
-            junto_media::engine::ShareId::Own
+            junto_media::engine::Person::Own
         } else {
-            junto_media::engine::ShareId::Of(person.account_id)
+            junto_media::engine::Person::Of(person.account_id)
         };
         self.cameras.get(&key).map(|(_, image)| image.clone())
     }
@@ -196,9 +196,7 @@ pub(crate) fn failure(state: &junto_media::camera::CameraState) -> Option<&'stat
         )) => crate::text::CAMERA_RESTRICTED,
         CameraState::Failed(CameraError::NoPermission(_)) => crate::text::CAMERA_REFUSED,
         CameraState::Failed(CameraError::DeviceGone) => crate::text::CAMERA_GONE,
-        CameraState::Failed(CameraError::NotConnected) => {
-            "Wait for the call to connect, then turn on the camera."
-        }
+        CameraState::Failed(CameraError::NotConnected) => crate::text::CAMERA_NOT_CONNECTED,
         CameraState::Failed(CameraError::Blocked) => crate::text::CAMERA_BLOCKED,
         CameraState::Failed(CameraError::Unsupported) => crate::text::CAMERA_UNSUPPORTED,
         CameraState::Failed(CameraError::Interrupted) => crate::text::CAMERA_INTERRUPTED,
@@ -213,7 +211,7 @@ impl super::Shell {
     /// and is drawn for them.
     pub(crate) fn show_cameras(
         &mut self,
-        frames: super::prepared::ConvertedPictures,
+        frames: super::prepared::ConvertedPictures<junto_media::engine::Person>,
         cx: &mut gpui::Context<Self>,
     ) -> bool {
         super::prepared::take(&mut self.cameras, frames, cx)
@@ -229,7 +227,7 @@ impl super::Shell {
     pub fn show_cameras_fixture(
         &mut self,
         pictures: std::collections::HashMap<
-            junto_media::engine::ShareId,
+            junto_media::engine::Person,
             std::sync::Arc<junto_media::share::picture::VideoPicture>,
         >,
         focus: bool,
@@ -251,7 +249,7 @@ impl super::Shell {
     }
 }
 
-pub(crate) type ShownCameras = super::prepared::Shown;
+pub(crate) type ShownCameras = super::prepared::Shown<junto_media::engine::Person>;
 
 #[cfg(test)]
 mod tests {

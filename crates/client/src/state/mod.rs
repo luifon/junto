@@ -8,6 +8,9 @@
 pub mod account;
 pub mod admin;
 pub mod book;
+mod call_keys;
+mod history;
+pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
 pub mod feed;
@@ -21,7 +24,9 @@ pub mod moderation;
 pub mod notices;
 mod notifying;
 pub mod people;
+mod permissions;
 pub mod person_drop;
+pub mod picture_crop;
 mod progress;
 pub mod receipts;
 pub mod recorded;
@@ -32,7 +37,7 @@ mod searching;
 mod threads;
 pub mod transcript_work;
 mod tray;
-mod update_install;
+pub mod update_install;
 pub mod view;
 
 pub use messages::{AttachRefusal, Measured, measure};
@@ -50,6 +55,7 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState};
 use junto_client_core::live::Notice;
 use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::call::{EntryOutcome, InvitationOutcome, UpdateCallSettings};
 use junto_client_core::protocol::events::Event;
@@ -57,7 +63,7 @@ use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecordingId,
     RecoveryId, ServerId, WorkspaceId,
 };
-use junto_client_core::settings::{InterfaceSettings, ThemeChoice};
+use junto_client_core::settings::{InterfaceSettings, Panel, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
@@ -130,6 +136,8 @@ enum Setting {
     Scale,
     ServerBook,
     Theme,
+    PanelWidth(Panel),
+    CallPanel,
 }
 
 /// A part of the processing of the microphone (ADR 0701).
@@ -189,7 +197,7 @@ fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
     calls
         .call
         .as_ref()
-        .is_some_and(|call| matches!(call.share, junto_media::engine::ShareState::Ended(_)))
+        .is_some_and(|call| call.share_ended.is_some())
 }
 
 /// The quality of a share as the media engine takes it.
@@ -413,11 +421,40 @@ pub struct OpenAdmin(pub admin::AdminOpen);
 
 impl gpui::EventEmitter<OpenAdmin> for AppState {}
 
+/// A key that works while another application is in front asks the main window, now in
+/// front, for an action that needs a window: show the call, or share (ADR 0777).
+pub struct WindowKeyAction(pub junto_client_core::keybinds::KeyAction);
+
+impl gpui::EventEmitter<WindowKeyAction> for AppState {}
+
+/// A press on a system notification asks the main window to show a page of the account on
+/// the selected server.
+pub struct OpenAccount(pub account::AccountPage);
+
+impl gpui::EventEmitter<OpenAccount> for AppState {}
+
 /// What the call window does before it closes.
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
+    /// The source of the system holds the key of push to talk (ADR 0776).
+    talking_globally: bool,
+    /// The keys of a call in every application, and what they were told last.
+    global_keys: junto_client_core::global_keys::GlobalKeys,
+    call_keys_told: Option<junto_client_core::global_keys::CallKeys>,
+    /// The key bindings of the person (ADR 0777), and why their last change was not written.
+    keybinds: junto_client_core::keybinds::Keybinds,
+    keybinds_error: Option<String>,
+    keybind_recordings: HashSet<gpui::EntityId>,
+    keybind_boundary: u64,
+    keybind_global_ready: bool,
+    /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
+    /// keys of push to mute, and whether their hold closed the microphone.
+    mute_holds: HashSet<Option<gpui::EntityId>>,
+    muted_by_hold: bool,
+    /// The places that the window showed, for Back and Forward (ADR 0777).
+    history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
     /// What the call window does before it closes: it gives the text of its composer to
     /// the main window (ADR 0772).
@@ -430,6 +467,25 @@ pub struct AppState {
     sounds: junto_media::audio::sounds::SoundPlayer,
     /// What the last tones of the call were decided from.
     heard: call_sounds::Heard,
+    /// When the last sound of messages played (ADR 0707).
+    message_sound_at: Option<std::time::Instant>,
+    /// The servers on which this device waited for the answer to its join request at the
+    /// last change (ADR 0742).
+    join_waiting: std::collections::HashSet<ServerId>,
+    /// The cut of a chosen picture that is open (ADR 0119).
+    picture_crop: Option<picture_crop::PictureCrop>,
+    picture_operation: u64,
+    /// The additions of the person to a workspace whose name the state does not hold yet,
+    /// with the time of the event: each is told once the workspace is known (ADR 0742).
+    added_waiting: Vec<(
+        ServerId,
+        junto_client_core::protocol::events::Event,
+        std::time::Instant,
+    )>,
+    /// The place of the call that the call window shows, at the last change.
+    call_window_shows: Option<(ServerId, PlaceId)>,
+    /// The unread messages for the person alone on every server (ADR 0741).
+    for_person: u64,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
@@ -583,6 +639,8 @@ pub struct AppState {
     lines_asked_around: Option<(ServerId, RecordingId, u32, u64)>,
     /// The number of the last read of moderation notices with a proof of the key.
     moderation_asks: u64,
+    /// The permissions of the operating system (ADR 0708).
+    permissions: permissions::PermissionsState,
     /// The notifications of the system.
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
@@ -593,6 +651,8 @@ pub struct AppState {
     kept_tray: crate::tray::KeptTray,
     /// The state that the tray was told last.
     tray_shown: Option<crate::tray::TrayState>,
+    /// The unread messages for the person that the tray icon shows with its mark (ADR 0759).
+    tray_mentions: u64,
     /// The main window is the active window of the system.
     window_active: bool,
     /// The call window is the active window of the system.
@@ -605,6 +665,10 @@ pub struct AppState {
     shown_with_call: (Option<ServerId>, Option<PlaceId>, Option<CallTarget>),
     /// What was seen of the notices and the invitations of each server.
     seen: HashMap<ServerId, notices::Seen>,
+    /// The system notifications of the answers to the join requests of this device. They
+    /// come before the first session of the server or in place of one, so they are kept
+    /// apart from what was seen of a session and go only with the server (ADR 0742).
+    join_seen: HashMap<ServerId, notices::Seen>,
     /// The number of the last read of the message of a search result. The answer of an
     /// earlier read leads nowhere.
     result_asks: u64,
@@ -649,15 +713,29 @@ enum Updated<R> {
 /// panic in the update, such as one in an observer that the update notifies, ends this
 /// update only; without the stop the panic would end the task, and the state would no longer
 /// follow its source (ADR 0757).
+/// `source` names the task for the tests of ADR 0757, which read which tasks paused.
 fn update_once<R>(
+    source: &'static str,
     this: &gpui::WeakEntity<AppState>,
     cx: &mut gpui::AsyncApp,
     update: impl FnOnce(&mut AppState, &mut Context<AppState>) -> R,
 ) -> Updated<R> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.update(cx, update))) {
+    let run = || {
+        #[cfg(feature = "test-support")]
+        return crate::panics::test_support::following(|| this.update(cx, update));
+        #[cfg(not(feature = "test-support"))]
+        this.update(cx, update)
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(Ok(value)) => Updated::Done(value),
         Ok(Err(_)) => Updated::Gone,
-        Err(_) => Updated::Panicked,
+        Err(_) => {
+            #[cfg(feature = "test-support")]
+            crate::panics::test_support::task_paused(source);
+            #[cfg(not(feature = "test-support"))]
+            let _ = source;
+            Updated::Panicked
+        }
     }
 }
 
@@ -695,6 +773,10 @@ impl AppState {
             }
         };
         theme::apply(settings.theme, cx);
+        let keybinds = client.settings().load_keybinds().unwrap_or_else(|error| {
+            tracing::warn!(%error, "the key bindings were not read");
+            junto_client_core::keybinds::Keybinds::default()
+        });
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {
@@ -721,7 +803,7 @@ impl AppState {
         let mut calls_watch = calls.watch();
         let follow_calls = cx.spawn(async move |this, cx| {
             while calls_watch.changed().await.is_ok() {
-                match update_once(&this, cx, |this, cx| this.calls_changed(cx)) {
+                match update_once("calls", &this, cx, |this, cx| this.calls_changed(cx)) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -735,7 +817,7 @@ impl AppState {
         let follow_levels = cx.spawn(async move |this, cx| {
             while levels.changed().await.is_ok() {
                 let shown = shown_levels(&levels.borrow_and_update());
-                let told = update_once(&this, cx, |this, cx| {
+                let told = update_once("levels", &this, cx, |this, cx| {
                     if this.known.media.levels != shown {
                         this.known.media.levels = shown;
                         cx.emit(LevelsChanged);
@@ -754,7 +836,7 @@ impl AppState {
         let clock = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let told = update_once(&this, cx, |this, cx| {
+                let told = update_once("clock", &this, cx, |this, cx| {
                     let was_ringing = this.direct.ringing();
                     this.reconcile_direct(cx);
                     if was_ringing || this.direct.ringing() {
@@ -784,7 +866,7 @@ impl AppState {
             let mut again = false;
             while again || changes.changed().await {
                 again = false;
-                match update_once(&this, cx, |this, cx| this.changed(cx)) {
+                match update_once("changes", &this, cx, |this, cx| this.changed(cx)) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -807,7 +889,9 @@ impl AppState {
                 // starts, is recorded by the hook and ends this update only. The task then waits
                 // before it takes the next reports, so that an update that panics at each run
                 // returns to the event loop between two runs (ADR 0757).
-                match update_once(&this, cx, |this, cx| this.panics_recorded(batch, cx)) {
+                match update_once("reports", &this, cx, |this, cx| {
+                    this.panics_recorded(batch, cx)
+                }) {
                     Updated::Done(()) => {}
                     Updated::Gone => break,
                     Updated::Panicked => {
@@ -820,7 +904,9 @@ impl AppState {
         let retry = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(retry_interval).await;
-                if let Updated::Gone = update_once(&this, cx, |this, cx| this.retry_unreached(cx)) {
+                if let Updated::Gone =
+                    update_once("retry", &this, cx, |this, cx| this.retry_unreached(cx))
+                {
                     break;
                 }
             }
@@ -850,8 +936,23 @@ impl AppState {
             junto_client_core::call_window::CallWindowStore::new(client.data_dir().clone())
                 .load()
                 .unwrap_or_default();
+        let saved_exports = client.saved_exports().load().unwrap_or_else(|error| {
+            tracing::warn!(%error, "the saved exports were not read");
+            junto_client_core::saved_exports::SavedExports::default()
+        });
         let mut state = Self {
             talking_windows: HashSet::new(),
+            talking_globally: false,
+            global_keys: junto_client_core::global_keys::GlobalKeys::none(),
+            call_keys_told: None,
+            keybinds,
+            keybinds_error: None,
+            keybind_recordings: HashSet::new(),
+            keybind_boundary: 0,
+            keybind_global_ready: true,
+            mute_holds: HashSet::new(),
+            muted_by_hold: false,
+            history: history::History::default(),
             call_window: None,
             call_window_closing: None,
             call_window_settings,
@@ -860,6 +961,13 @@ impl AppState {
             ringer,
             sounds,
             heard: call_sounds::Heard::default(),
+            message_sound_at: None,
+            join_waiting: std::collections::HashSet::new(),
+            picture_crop: None,
+            picture_operation: 0,
+            added_waiting: Vec::new(),
+            call_window_shows: None,
+            for_person: 0,
             client,
             calls,
             voice_failed,
@@ -931,17 +1039,20 @@ impl AppState {
             result_jump: None,
             lines_asked_around: None,
             moderation_asks: 0,
+            permissions: permissions::PermissionsState::new(),
             notifier: std::rc::Rc::new(kept.clone()),
             kept,
             tray: std::rc::Rc::new(kept_tray.clone()),
             kept_tray,
             tray_shown: None,
+            tray_mentions: 0,
             window_active: false,
             call_window_active: false,
             call_window_notices: false,
             call_shown: false,
             shown_with_call: (None, None, None),
             seen: HashMap::new(),
+            join_seen: HashMap::new(),
             result_asks: 0,
             result_answers: 0,
             reloads: HashMap::new(),
@@ -962,6 +1073,7 @@ impl AppState {
             // reads why, wherever the window is.
             state.pending.call_told = Some(text::SOUND_SETTINGS_NOT_READ.to_owned());
         }
+        state.admin.exports.saved = saved_exports;
         state.load_preset_picture(cx);
         state.changed(cx);
         state
@@ -1122,20 +1234,30 @@ impl AppState {
         cx.notify();
     }
 
-    /// Starts the share of this device at the seat for which the person chose it, with
-    /// the stored resolution and frame rate. The result is in the view.
-    pub fn start_share(&mut self, seat: &Seat, picture: PictureSource, sound: SoundChoice) {
+    /// Starts a share of this device at the seat for which the person chose it, with the
+    /// stored resolution and frame rate; the shares that run go on. The result is in the
+    /// view. `dialog_parent` names the window over which the portal of Linux shows its
+    /// dialog.
+    pub fn start_share(
+        &mut self,
+        seat: &Seat,
+        picture: PictureSource,
+        sound: SoundChoice,
+        dialog_parent: Option<String>,
+    ) {
         let request = CaptureRequest {
             picture,
             sound,
             quality: share_quality(&self.known.media.voice),
+            dialog_parent,
         };
         self.calls.start_share_in(seat, request);
     }
 
-    /// Ends the share of this device, and puts away the statement that a share ended.
-    pub fn stop_share(&mut self) {
-        self.calls.stop_share();
+    /// Ends the share of this device in `slot`, or every share without a slot, and puts
+    /// away the statement that a share ended.
+    pub fn stop_share(&mut self, slot: Option<u8>) {
+        self.calls.stop_share(slot);
     }
 
     /// Puts away the notice of the own share that ended by itself. The notice goes at
@@ -1143,7 +1265,7 @@ impl AppState {
     /// still state the end.
     pub fn dismiss_share_notice(&mut self, cx: &mut Context<Self>) {
         self.known.share_notice_dismissed = true;
-        self.calls.stop_share();
+        self.calls.forget_share_end();
         self.changed(cx);
     }
 
@@ -1184,16 +1306,50 @@ impl AppState {
         self.sounds = junto_media::audio::sounds::SoundPlayer::new(host);
     }
 
-    /// Turns the short tones of the events of a call on or off (ADR 0707).
-    pub fn set_call_sounds(&mut self, on: bool, cx: &mut Context<Self>) {
-        // The tones that wait or play end with the switch.
+    /// Turns all sounds of the application on or off (ADR 0707).
+    pub fn set_all_sounds(&mut self, on: bool, cx: &mut Context<Self>) {
+        // The sounds that wait or play end with the switch.
         if !on {
             self.sounds.cancel();
         }
-        self.change_voice(cx, move |voice| voice.call_sounds = on);
+        self.change_voice(cx, move |voice| voice.sounds.all = on);
+        self.reconcile_direct(cx);
     }
 
-    /// Plays the tones of the change of the call of this device since the last change
+    /// Turns the sounds of one kind on or off (ADR 0707).
+    pub fn set_sound_kind(
+        &mut self,
+        kind: junto_client_core::voice::SoundKind,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !on {
+            self.sounds.cancel();
+        }
+        self.change_voice(cx, move |voice| voice.sounds.set(kind, on));
+        self.reconcile_direct(cx);
+    }
+
+    /// Plays a sound on a device, or on the chosen output device, when its kind is on.
+    /// While the sound of the person is off, only the sound that turns it off or on plays
+    /// (ADR 0707).
+    pub(crate) fn play_sound(
+        &self,
+        sound: junto_media::audio::sounds::Sound,
+        device: Option<&DeviceId>,
+    ) {
+        use junto_media::audio::sounds::Sound;
+        if !self.known.media.voice.sounds.plays(sound.kind()) {
+            return;
+        }
+        if self.known.media.calls.deafened && !matches!(sound, Sound::SoundOff | Sound::SoundOn) {
+            return;
+        }
+        let device = device.cloned().or_else(|| self.chosen_output());
+        self.sounds.play(sound, device.as_ref());
+    }
+
+    /// Plays the sounds of the change of the call of this device since the last change
     /// (ADR 0707).
     fn play_call_sounds(&mut self) {
         let calls = &self.known.media.calls;
@@ -1202,32 +1358,59 @@ impl AppState {
             .as_ref()
             .and_then(|call| self.client.server(call.target.server_id))
             .and_then(|server| server.live().view().model);
-        let participants = calls
-            .call
-            .as_ref()
-            .zip(model.as_deref())
-            .map(|(call, model)| {
+        let place = calls.call.as_ref().map(|call| call.target.place);
+        let entry_requests: Vec<EntryRequestId> = model
+            .as_deref()
+            .zip(place)
+            .map(|(model, place)| {
                 model
-                    .call_at(&call.target.place)
-                    .map(|listed| listed.participants.as_slice())
-                    .unwrap_or_default()
+                    .entry_requests
+                    .iter()
+                    .filter(|request| {
+                        request.place == place && request.account_id != model.account.id
+                    })
+                    .map(|request| request.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listed = model.as_deref().zip(place).map(|(model, place)| {
+            let own = model.account.id;
+            let call = model.call_at(&place);
+            let moderates = place.channel_id().is_some_and(|channel_id| {
+                model
+                    .permissions_in(channel_id)
+                    .is_some_and(|held| held.contains(&WorkspacePermission::MuteMembers))
             });
-        let next = call_sounds::heard(
-            calls,
-            participants,
-            model.as_deref().map(|model| model.account.id),
-        );
+            call_sounds::Listed {
+                own,
+                participants: call
+                    .map(|call| call.participants.as_slice())
+                    .unwrap_or_default(),
+                lowers_hands: moderates
+                    || call
+                        .and_then(|call| call.meeting.as_ref())
+                        .is_some_and(|meeting| meeting.presenter == own),
+                entry_requests: &entry_requests,
+                recording: call
+                    .and_then(|call| call.recording.as_ref())
+                    .map(|recording| (recording.id, recording.stop.is_some())),
+                moved_here: model
+                    .moves
+                    .iter()
+                    .any(|held| held.account_id == own && held.to == place),
+            }
+        });
+        let next = call_sounds::heard(calls, listed, &self.heard);
         let before = std::mem::replace(&mut self.heard, next);
-        let played = call_sounds::sounds(&before, &self.heard, self.known.media.voice.call_sounds);
+        let played = call_sounds::sounds(&before, &self.heard);
         let device = self
             .heard
             .output
             .as_ref()
             .or(before.output.as_ref())
             .cloned();
-        let device = device.or_else(|| self.chosen_output());
         for sound in played {
-            self.sounds.play(sound, device.as_ref());
+            self.play_sound(sound, device.as_ref());
         }
     }
 
@@ -1819,6 +2002,7 @@ impl AppState {
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
         }
+        self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {
             self.search_after_permission_change(server_id, cx);
             self.audit_after_permission_change(server_id, *workspace_id, cx);
@@ -1916,6 +2100,10 @@ impl AppState {
     /// Reads the sound devices and the microphone permission again, on a background
     /// thread: the list of a system can take a moment.
     pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
+        let read = self
+            .permissions
+            .order(crate::permissions::Permission::Microphone)
+            .read();
         let calls = self.calls.clone();
         let reading = cx.background_executor().spawn(async move {
             (
@@ -1931,7 +2119,13 @@ impl AppState {
                     Ok(devices) => this.known.media.devices = devices,
                     Err(error) => tracing::warn!(%error, "the sound devices were not read"),
                 }
-                this.known.media.access = Some(access);
+                if this
+                    .permissions
+                    .order(crate::permissions::Permission::Microphone)
+                    .accepts(read)
+                {
+                    this.known.media.access = Some(access);
+                }
                 this.camera_devices = cameras.unwrap_or_default();
                 cx.notify();
             });
@@ -2434,11 +2628,14 @@ impl AppState {
         let now = time::OffsetDateTime::now_utc();
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
+        self.follow_owners();
         let snapshots = self.snapshots();
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
         self.keep_logos(cx);
         self.follow_updates();
+        self.follow_arrangement();
+        self.follow_call_keys(&snapshots);
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {
@@ -2513,6 +2710,8 @@ impl AppState {
         }
         self.end_search_of_other_server(shown.server);
         self.drop_lost_search_filter(&snapshots, cx);
+        let before = self.shown;
+        self.follow_history(&before, &shown);
         self.shown = shown;
         self.follow_people(&view, &snapshots, cx);
         self.follow_followed(&view, cx);
@@ -2525,9 +2724,20 @@ impl AppState {
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.follow_result_jump(shown);
+        self.call_window_shows = call_window;
+        // The messages for the person on every server: the badge of the application and the
+        // mark of the tray count them (ADR 0741).
+        self.for_person = view
+            .servers
+            .iter()
+            .map(|row| row.for_person)
+            .fold(0, u64::saturating_add);
         self.tell_alerts(&snapshots, shown, call_window, cx);
+        self.tell_join_answers(cx);
+        self.tell_added_workspaces(cx);
+        let for_person = self.for_person;
+        self.set_tray_mentions(for_person, cx);
         self.follow_tray();
-        self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();
         self.drop_sent_uploads();
@@ -2614,6 +2824,33 @@ impl AppState {
             .channels
             .insert((server_id, workspace_id), channel_id);
         // The channel takes the place of a direct conversation that the server showed.
+        self.selection.conversations.remove(&server_id);
+        self.changed(cx);
+    }
+
+    /// The unread messages for the person alone on every server: the mentions and the
+    /// messages of direct conversations that are not muted (ADR 0741). The badge of the
+    /// application and the mark of the tray show it.
+    pub fn for_person(&self) -> u64 {
+        self.for_person
+    }
+
+    /// Shows a channel of a workspace of a server, as a press on a system notification
+    /// asks.
+    pub fn show_channel(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_jump();
+        self.navigations += 1;
+        self.selection.server = Some(server_id);
+        self.selection.workspaces.insert(server_id, workspace_id);
+        self.selection
+            .channels
+            .insert((server_id, workspace_id), channel_id);
         self.selection.conversations.remove(&server_id);
         self.changed(cx);
     }
@@ -2902,6 +3139,50 @@ impl AppState {
         self.write_setting(Setting::ServerBook, cx);
     }
 
+    /// The width of a panel in pixels of the design: the one that the person gave it, or
+    /// the width of the design.
+    pub fn panel_width(&self, panel: Panel, design: f32) -> f32 {
+        self.settings
+            .panel_widths
+            .get(panel)
+            .map_or(design, f32::from)
+    }
+
+    /// Whether the person closed the panel of a call beside its stage, in the separate call
+    /// window when `detached`, otherwise in the main window.
+    pub fn call_panel_closed(&self, detached: bool) -> bool {
+        if detached {
+            self.settings.call_window_panel_closed
+        } else {
+            self.settings.call_panel_closed
+        }
+    }
+
+    /// Closes or opens the panel of a call beside its stage; the choice is kept after a
+    /// restart (round 2 item 16).
+    pub fn set_call_panel_closed(&mut self, detached: bool, closed: bool, cx: &mut Context<Self>) {
+        if self.call_panel_closed(detached) == closed {
+            return;
+        }
+        if detached {
+            self.settings.call_window_panel_closed = closed;
+        } else {
+            self.settings.call_panel_closed = closed;
+        }
+        self.write_setting(Setting::CallPanel, cx);
+    }
+
+    /// Keeps the width that the person gave a panel, within its bounds, also after a
+    /// restart (ADR 0703).
+    pub fn set_panel_width(&mut self, panel: Panel, width: f32, cx: &mut Context<Self>) {
+        let width = width.round().clamp(0.0, f32::from(u16::MAX)) as u16;
+        let before = self.settings.panel_widths.get(panel);
+        self.settings.panel_widths.set(panel, width);
+        if self.settings.panel_widths.get(panel) != before {
+            self.write_setting(Setting::PanelWidth(panel), cx);
+        }
+    }
+
     /// Writes one changed setting on a background thread, in the order of the changes. The
     /// window uses the new value at once. Only the changed setting is written, so that a
     /// second program that changed another one keeps its value. A setting whose write
@@ -2924,6 +3205,15 @@ impl AppState {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }
                             Setting::Theme => stored.theme = wanted.theme,
+                            Setting::CallPanel => {
+                                stored.call_panel_closed = wanted.call_panel_closed;
+                                stored.call_window_panel_closed = wanted.call_window_panel_closed;
+                            }
+                            Setting::PanelWidth(panel) => {
+                                if let Some(width) = wanted.panel_widths.get(*panel) {
+                                    stored.panel_widths.set(*panel, width);
+                                }
+                            }
                         }
                     }
                 })
@@ -2997,6 +3287,7 @@ fn actionable_call(
 }
 
 pub mod direct;
+pub mod event_alerts;
 
 mod camera;
 

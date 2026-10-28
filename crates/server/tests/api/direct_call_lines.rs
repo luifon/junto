@@ -161,9 +161,11 @@ async fn a_call_that_is_not_answered_is_a_line_a_notice_and_an_unread_sign_for_t
 
     // A connection at the background level receives the line and the notice.
     let told = events(server, ben, before.cursor, Level::Background).await;
+    // The event states the notice of the account (event revision 2).
     assert!(
         told.contains(&Event::NotificationChanged {
-            message_id: missed.id
+            message_id: missed.id,
+            notice: Some(listed[0].clone()),
         }),
         "{told:?}"
     );
@@ -826,20 +828,19 @@ async fn the_unread_count_reads_missed_calls_by_an_index() {
             .fetch_all(&server.db)
             .await
             .unwrap();
-    for (first, last) in crate::support::fixture_batches(20_000) {
-        sqlx::query(
-            "insert into messages (id, place_id, position, created_at, system, notifies)
-         select gen_random_uuid(), m.place_id, m.position + n, m.created_at, m.system, m.notifies
-         from messages m cross join generate_series($2::int, $3::int) n
-         where m.id = any($1)",
-        )
-        .bind(&originals)
-        .bind(first)
-        .bind(last)
-        .execute(&server.db)
-        .await
-        .unwrap();
-    }
+    let (first, last) = (1, 20_000);
+    sqlx::query(
+        "insert into messages (id, place_id, position, created_at, system, notifies)
+     select gen_random_uuid(), m.place_id, m.position + n, m.created_at, m.system, m.notifies
+     from messages m cross join generate_series($2::int, $3::int) n
+     where m.id = any($1)",
+    )
+    .bind(&originals)
+    .bind(first)
+    .bind(last)
+    .execute(&mut server.test_data().await)
+    .await
+    .unwrap();
     analyze(&server.db, &["messages"]).await;
 
     assert_eq!(

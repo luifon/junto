@@ -47,7 +47,7 @@ async fn round3_mention_head_update_is_indexed() {
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "root").await;
     sqlx::query("with copies as (insert into messages(id,place_id,position,author_id,created_at,document,thread_root) select gen_random_uuid(),place_id,position+n,author_id,created_at,document,id from messages cross join generate_series(1,100) n where id=$1 returning *) insert into message_mention_accounts(place_id,account_id,position,message_id,thread_root) select place_id,$2,position,id,thread_root from copies")
-        .bind(root.id).bind(reader.account_id).execute(&server.db).await.unwrap();
+        .bind(root.id).bind(reader.account_id).execute(&mut server.test_data().await).await.unwrap();
     sqlx::query("analyze message_mention_accounts")
         .execute(&server.db)
         .await

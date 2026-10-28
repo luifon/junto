@@ -13,3 +13,16 @@ pub const NOT_IN_A_CALL: &str = "Junto";
 pub const IN_A_CALL: &str = "Junto: in a call";
 pub const IN_A_CALL_MUTED: &str = "Junto: in a call, microphone muted";
 pub const IN_A_CALL_SOUND_OFF: &str = "Junto: in a call, sound off";
+pub const IN_A_CALL_HELD: &str = "Junto: in a call, microphone closed by the call";
+
+/// The unread messages for the person, the mentions and the direct messages, that the
+/// tooltip of the icon adds to the state (ADR 0741).
+pub fn mentions(count: u64) -> String {
+    match count {
+        1 => "1 unread mention or direct message".to_owned(),
+        count => format!(
+            "{} unread mentions and direct messages",
+            crate::text::unread_count(count)
+        ),
+    }
+}

@@ -150,6 +150,19 @@ impl FakeMedia {
         kind: TrackKind,
         source: TrackSource,
     ) -> bool {
+        self.publish_named(room, identity, kind, source, "")
+    }
+
+    /// Publishes a track with a name, as [`FakeMedia::publish`]. A track of the same source
+    /// and name is replaced; tracks of other names stay, as the several shares of a person.
+    pub fn publish_named(
+        &self,
+        room: &str,
+        identity: &str,
+        kind: TrackKind,
+        source: TrackSource,
+        name: &str,
+    ) -> bool {
         let mut state = self.state();
         let id = state.track_id();
         let Some(participant) = state
@@ -164,12 +177,15 @@ impl FakeMedia {
             .as_ref()
             .is_none_or(|publishing| publishing.allows(source));
         if allowed {
-            participant.tracks.retain(|track| track.source != source);
+            participant
+                .tracks
+                .retain(|track| track.source != source || track.name != name);
             participant.tracks.push(Track {
                 kind,
                 source,
                 muted: false,
                 id,
+                name: name.to_owned(),
             });
         }
         allowed
@@ -190,6 +206,7 @@ impl FakeMedia {
                 source,
                 muted: false,
                 id,
+                name: String::new(),
             });
         }
     }
@@ -219,6 +236,20 @@ impl FakeMedia {
             .into_iter()
             .find(|track| track.source == source)
             .map(|track| track.id)
+    }
+
+    /// Ends the track of a source with a name, and leaves the other tracks of the source.
+    pub fn unpublish_named(&self, room: &str, identity: &str, source: TrackSource, name: &str) {
+        let mut state = self.state();
+        if let Some(participant) = state
+            .rooms
+            .get_mut(room)
+            .and_then(|room| room.iter_mut().find(|other| other.identity == identity))
+        {
+            participant
+                .tracks
+                .retain(|track| track.source != source || track.name != name);
+        }
     }
 
     pub fn unpublish(&self, room: &str, identity: &str, source: TrackSource) {

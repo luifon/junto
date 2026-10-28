@@ -26,6 +26,7 @@ use crate::api::{
     RetryPolicy, ServerApi, Session, Transport, TransportError, TransportErrorKind, logo_at,
     server_info,
 };
+use crate::arrangement::{Arrangement, Change};
 use crate::book::{
     BookError, ConnectionMode, EntryKey, Membership, Owner, ProfileSync, ServerBook, ServerEntry,
 };
@@ -46,6 +47,7 @@ use crate::live::{LiveServer, Shared};
 use crate::paths::DataDir;
 use crate::profile::ProfileStore;
 use crate::runtime::Runtime;
+use crate::saved_exports::SavedExportsStore;
 use crate::secret::SecretToken;
 use crate::settings::SettingsStore;
 use crate::storage::StorageError;
@@ -158,6 +160,9 @@ pub(crate) struct Inner {
     /// Held from the move of an entry in the book to the new order of `servers`, so that
     /// two moves give `servers` the order of the later one.
     moving: Mutex<()>,
+    /// The arrangement of the person as the book held it at the start and after each
+    /// change of this client (ADR 0775).
+    arrangement: Mutex<Arrangement>,
 }
 
 impl Inner {
@@ -183,6 +188,7 @@ impl Client {
         let data_dir = DataDir::open(options.data_dir)?;
         let book = ServerBook::new(data_dir.clone());
         let entries = book.entries()?;
+        let arrangement = book.arrangement()?;
         let profile = ProfileStore::new(data_dir.clone());
         profile.load()?;
         let transport = match options.transport {
@@ -233,6 +239,7 @@ impl Client {
                 core,
                 servers: Mutex::new(servers),
                 moving: Mutex::new(()),
+                arrangement: Mutex::new(arrangement),
             }),
         })
     }
@@ -254,6 +261,11 @@ impl Client {
     /// The sound settings of this installation (ADR 0710).
     pub fn voice(&self) -> VoiceStore {
         VoiceStore::new(self.inner.core.data_dir.clone())
+    }
+
+    /// The exports whose files this device saved (ADR 0710, ADR 0761).
+    pub fn saved_exports(&self) -> SavedExportsStore {
+        SavedExportsStore::new(self.inner.core.data_dir.clone())
     }
 
     /// Whether a newer build of the client exists (ADR 0704). Its periodic check starts
@@ -443,6 +455,35 @@ impl Client {
         Ok(())
     }
 
+    /// The arrangement of the person for the servers of [`Client::servers`]: the groups,
+    /// the order of the workspaces and what is collapsed (ADR 0775).
+    pub fn arrangement(&self) -> Arrangement {
+        let order: Vec<ServerId> = lock(&self.inner.servers)
+            .iter()
+            .map(|server| server.id)
+            .collect();
+        lock(&self.inner.arrangement).normalised(&order)
+    }
+
+    /// Makes one change of the arrangement in the server book, and takes the order of the
+    /// servers and the arrangement that the book holds after it. A change that names a
+    /// server or a group that the book does not hold changes nothing. The client tells a
+    /// change after it.
+    pub fn arrange(&self, change: Change) -> Result<(), BookError> {
+        let _moving = lock(&self.inner.moving);
+        let (order, arrangement) = self.inner.core.book.arrange(change)?;
+        let place = |server: &Arc<Server>| {
+            order
+                .iter()
+                .position(|key| *key == server.key)
+                .unwrap_or(usize::MAX)
+        };
+        lock(&self.inner.servers).sort_by_key(place);
+        *lock(&self.inner.arrangement) = arrangement;
+        self.inner.core.notify();
+        Ok(())
+    }
+
     /// The server that the interface shows. It gets every event; the others get the
     /// background events (ADR 0107).
     pub fn select(&self, server_id: Option<ServerId>) {
@@ -607,6 +648,9 @@ struct Held {
 struct ServerState {
     entry: ServerEntry,
     reach: Reach,
+    /// The last request got no answer because macOS refused a connection to the local
+    /// network (ADR 0708). An answer clears it.
+    local_network_refused: bool,
     access: AccessState,
     in_progress: Option<ActionKind>,
     error: Option<FlowError>,
@@ -672,6 +716,13 @@ impl ServerHandle {
 
     pub fn reach(&self) -> Reach {
         lock(&self.server.state).reach
+    }
+
+    /// The last request to the server got no answer because macOS refused a connection to
+    /// the local network: the person has not allowed Junto in the Local Network settings
+    /// (ADR 0708).
+    pub fn local_network_refused(&self) -> bool {
+        lock(&self.server.state).local_network_refused
     }
 
     /// The access flow: its state, its actions, the running action and the last error.
@@ -1200,6 +1251,7 @@ impl Server {
                 access: access::initial(&entry.membership, entry.logged_out),
                 entry,
                 reach: Reach::Unknown,
+                local_network_refused: false,
                 in_progress: None,
                 error: None,
                 api: None,
@@ -1612,7 +1664,11 @@ impl Server {
     fn note(&self, error: &ApiError) {
         tracing::debug!(server = %self.id, %error, "a request failed");
         match error {
-            ApiError::Unreachable(_) | ApiError::OutcomeUnknown => self.unanswered(),
+            ApiError::Unreachable(transport) => {
+                lock(&self.state).local_network_refused = transport.is_local_network_refusal();
+                self.unanswered();
+            }
+            ApiError::OutcomeUnknown => self.unanswered(),
             ApiError::InvalidResponse { status, .. } if *status >= 500 => self.unanswered(),
             ApiError::Rejected(_) | ApiError::InvalidResponse { .. } => self.answered(),
             _ => {}
@@ -1626,6 +1682,7 @@ impl Server {
     /// The server answered, so it is reachable again after a failure.
     fn answered(&self) {
         let mut state = lock(&self.state);
+        state.local_network_refused = false;
         if let (Some(api), Reach::Unreachable | Reach::Unknown) = (&state.api, state.reach) {
             state.reach = Reach::Reachable {
                 version: api.version(),

@@ -50,7 +50,7 @@ impl Bus {
     fn worker(
         &self,
         commands: mpsc::UnboundedReceiver<Command>,
-        actions: futures_channel::mpsc::UnboundedSender<String>,
+        actions: futures_channel::mpsc::UnboundedSender<Press>,
     ) -> tokio::task::JoinHandle<()> {
         let address = self.address.clone();
         tokio::spawn(worker(move || connect(address.clone()), commands, actions))
@@ -239,6 +239,7 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
         tokio::time::timeout(Duration::from_secs(20), pressed.next())
             .await
             .unwrap()
+            .map(|press| press.tag)
             .as_deref(),
         Some("one")
     );
@@ -255,6 +256,7 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
         tokio::time::timeout(Duration::from_secs(20), pressed.next())
             .await
             .unwrap()
+            .map(|press| press.tag)
             .as_deref(),
         Some("two")
     );
@@ -279,6 +281,7 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
         tokio::time::timeout(Duration::from_secs(20), pressed.next())
             .await
             .unwrap()
+            .map(|press| press.tag)
             .as_deref(),
         Some("three")
     );
@@ -288,6 +291,76 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
         .unwrap()
         .unwrap();
     assert!(pressed.next().await.is_none());
+}
+
+async fn token(connection: &Connection, id: u32, token: &str) {
+    connection
+        .emit_signal(
+            None::<&str>,
+            OBJECT,
+            SERVICE,
+            "ActivationToken",
+            &(id, token),
+        )
+        .await
+        .unwrap();
+}
+
+/// The service sends the activation token of a press before its action (version 1.2 of the
+/// specification); the press carries it, so that a Wayland compositor gives the window the
+/// focus. A token goes only with the press of its own notification and only once.
+#[tokio::test]
+async fn a_press_carries_the_activation_token_of_its_notification() {
+    let bus = Bus::new();
+    let (service, mut seen) = service(&bus).await;
+    let (send, receive) = mpsc::unbounded_channel();
+    let (actions, mut pressed) = futures_channel::mpsc::unbounded();
+    let _worker = bus.worker(receive, actions);
+    send.send(show("one")).unwrap();
+    assert!(matches!(
+        told(&mut seen).await,
+        Told::Show { replaced: 0, .. }
+    ));
+    send.send(show("two")).unwrap();
+    assert!(matches!(
+        told(&mut seen).await,
+        Told::Show { replaced: 0, .. }
+    ));
+    let next = async |pressed: &mut futures_channel::mpsc::UnboundedReceiver<Press>| {
+        tokio::time::timeout(Duration::from_secs(20), pressed.next())
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    token(&service, 999, "token-unknown").await;
+    token(&service, 8, "token-of-two").await;
+    action(&service, 7, "default").await;
+    assert_eq!(
+        next(&mut pressed).await,
+        Press {
+            tag: "one".into(),
+            token: None
+        }
+    );
+    action(&service, 8, "default").await;
+    assert_eq!(
+        next(&mut pressed).await,
+        Press {
+            tag: "two".into(),
+            token: Some("token-of-two".into())
+        }
+    );
+    // A token of a press on another action of the notification is not kept.
+    token(&service, 7, "token-of-another-action").await;
+    action(&service, 7, "unrelated").await;
+    action(&service, 7, "default").await;
+    assert_eq!(
+        next(&mut pressed).await,
+        Press {
+            tag: "one".into(),
+            token: None
+        }
+    );
 }
 
 #[tokio::test]
@@ -317,6 +390,7 @@ async fn a_new_service_owner_never_receives_an_old_notification_identifier() {
         tokio::time::timeout(Duration::from_secs(20), pressed.next())
             .await
             .unwrap()
+            .map(|press| press.tag)
             .as_deref(),
         Some("new")
     );
@@ -392,6 +466,7 @@ async fn the_worker_serves_a_new_session_bus_at_the_same_address() {
         tokio::time::timeout(Duration::from_secs(20), pressed.next())
             .await
             .unwrap()
+            .map(|press| press.tag)
             .as_deref(),
         Some("before")
     );

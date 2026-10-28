@@ -1,6 +1,6 @@
 use super::*;
 use junto_client::state::feed::FeedRow;
-use junto_client_core::protocol::export::{ExportManifest, ExportedRecording};
+use junto_client_core::protocol::export::{ExportManifest, ExportState, ExportedRecording};
 use junto_client_core::protocol::message::{Message, MessagePlace};
 use junto_client_core::transfers::UploadSource;
 use junto_server::exports::zip;
@@ -183,6 +183,71 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
         std::str::from_utf8(content(&entries, "messages.html"))
             .unwrap()
             .contains("A private plan")
+    );
+}
+
+/// The navigation counts a ready export until its file is saved, and a restart of the
+/// client on the same data directory does not count it again while the server still holds
+/// it (ADR 0761).
+#[gpui::test]
+fn a_saved_export_is_not_counted_again_after_a_restart(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let (directory, mut window, owner) = owner_window(cx, &server);
+    let general = window.selected_channel();
+    let export = world.run(owner.api().export_channel(general)).unwrap();
+    drop(owner);
+    let _downloads = downloads(&mut window);
+    window.open_administration();
+    window.until("the navigation counts the ready export", |window| {
+        window.drawn_number("admin-nav-exports").as_deref() == Some("1")
+    });
+    open_page(&mut window, "admin-nav-exports", |window| {
+        server_page!(window, Exports).is_some()
+    });
+    saved_export(&mut window, export.id);
+    window.until("the saved export is not counted", |window| {
+        window.drawn_number("admin-nav-exports").is_none()
+    });
+    let file = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().root().join("saved-exports.json")
+    });
+    let stored = export.id.to_string();
+    window.until("the saved export is in the data directory", |_| {
+        std::fs::read_to_string(&file).is_ok_and(|text| text.contains(&stored))
+    });
+
+    window.close();
+    let mut window = crate::harness::open(cx, directory.path());
+    window.until_ready();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-exports", |window| {
+        server_page!(window, Exports).is_some()
+    });
+    awaited(&mut window, "the export is listed as ready", |window| {
+        export_line(window, export.id).filter(|row| row.status == ExportStatus::Ready)
+    });
+    let owner = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers())
+        .remove(0);
+    assert_eq!(
+        world.run(owner.api().export(export.id)).unwrap().state,
+        ExportState::Ready
+    );
+    assert_eq!(window.drawn_number("admin-nav-exports"), None);
+
+    // A removal outside the page takes the export from the list of the server, and the
+    // data directory keeps it as saved no longer.
+    world.run(owner.api().remove_export(export.id)).unwrap();
+    window.until(
+        "the export removed outside the page is not kept",
+        |window| {
+            server_page!(window, Exports)
+                .and_then(|page| page.exports.loaded().cloned())
+                .is_some_and(|rows| rows.iter().all(|row| row.id != export.id))
+                && std::fs::read_to_string(&file).is_ok_and(|text| !text.contains(&stored))
+        },
     );
 }
 

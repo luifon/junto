@@ -913,19 +913,22 @@ fn the_picture_of_the_preset_is_read_from_a_regular_file_only() {
     let store = ProfileStore::new(DataDir::open(directory.path().join("junto")).unwrap());
     let picture = directory.path().join("picture.png");
     std::fs::write(&picture, png(4, 1)).unwrap();
-    // A link to a picture is not followed.
+    // The cut reads a chosen file as this: a link to a picture is not followed, and a
+    // directory is no picture (ADR 0119).
+    let read = |path: &std::path::Path| {
+        junto_client_core::profile::read_chosen_file(
+            path,
+            junto_client_core::profile::CHOSEN_PICTURE_MAX_BYTES,
+        )
+    };
     let link = directory.path().join("link.png");
     std::os::unix::fs::symlink(&picture, &link).unwrap();
-    assert!(matches!(
-        store_picture(&store, &link),
-        Err(PictureRefusal::Unreadable)
-    ));
-    assert!(matches!(
-        store_picture(&store, directory.path()),
-        Err(PictureRefusal::Unreadable)
-    ));
+    assert!(read(&link).is_err());
+    assert!(read(directory.path()).is_err());
     assert!(store.avatar().unwrap().is_none());
-    assert!(matches!(store_picture(&store, &picture), Ok(Some(_))));
+    // The cut picture is stored and drawn.
+    let bytes = read(&picture).unwrap();
+    assert!(matches!(store_picture(&store, &bytes), Ok(Some(_))));
     assert!(store.avatar().unwrap().is_some());
 }
 

@@ -357,7 +357,7 @@ async fn rule_60_concurrent_pins_preserve_limit_and_rollback_refused_events() {
              generate_series(1,99) n where id=$1 returning id,place_id,author_id,created_at) insert into message_pins
              select id,place_id,author_id,created_at from copied")
         .bind(root.id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     sqlx::query("update message_places set head=head+99 where id=$1")
@@ -373,9 +373,33 @@ async fn rule_60_concurrent_pins_preserve_limit_and_rollback_refused_events() {
     let first = server.put_empty(&owner, &a);
     tokio::pin!(first);
     crate::support::drive_until(&mut first, server.gate().arrived()).await;
-    let second = server.put_empty(&owner, &b).await;
+    // The line of the first pin in the chat holds the head of the channel: the second pin
+    // reads the count and then waits for that row. The first commits once the second waits.
+    let second = server.put_empty(&owner, &b);
+    tokio::pin!(second);
+    crate::support::drive_until(&mut second, async {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "select exists(select 1 from pg_stat_activity
+                 where datname = current_database() and wait_event_type = 'Lock')",
+            )
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < limit,
+                "the second pin did not wait for the first within 30 s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     server.gate().release();
-    let first = first.await;
+    let (first, second) = (first.await, second.await);
     assert_eq!(
         [first.status, second.status]
             .iter()
@@ -394,7 +418,8 @@ async fn rule_60_concurrent_pins_preserve_limit_and_rollback_refused_events() {
             .iter()
             .filter(|e| matches!(e, Event::MessageChanged { .. }))
             .count(),
-        1
+        // The pin that was taken and its line in the chat; the refused pin left none.
+        2
     );
 }
 

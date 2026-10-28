@@ -31,7 +31,8 @@ impl Shell {
     /// when that part is narrower than a card. A new invitation is added after the drawn
     /// cards. At most [`MOST_CARDS`] are drawn, the newest ones; a line above them states
     /// how many earlier ones wait and shows them. The cards stay inside the window and
-    /// scroll when they do not fit. The ids of a card and of its buttons are
+    /// scroll when they do not fit; a list that stands at its end shows a new card at its
+    /// end, as a message list does. The ids of a card and of its buttons are
     /// made from the identifier of its invitation, so a press and the keyboard focus stay
     /// with their invitation. Absent while no invitation waits.
     pub(crate) fn render_invitation_cards(
@@ -46,11 +47,21 @@ impl Shell {
             self.invitations_open = false;
         }
         if view.invitations.is_empty() {
+            self.invitations_newest = None;
             return None;
         }
         let several_servers = view.servers.len() > 1;
         let mut arrived: Vec<&Invited> = view.invitations.iter().collect();
         arrived.sort_by_key(|one| (one.created_at, one.id));
+        let newest = arrived.last().map(|invited| invited.id);
+        if newest != self.invitations_newest {
+            let scroll = &self.invitations_scroll;
+            let at_end = -scroll.offset().y >= scroll.max_offset().y - gpui::px(1.0);
+            if self.invitations_newest.is_none() || at_end {
+                scroll.scroll_to_bottom();
+            }
+            self.invitations_newest = newest;
+        }
         let more = arrived.len().saturating_sub(MOST_CARDS);
         let hidden = if self.invitations_open { 0 } else { more };
         let mut cards: Vec<AnyElement> = Vec::new();

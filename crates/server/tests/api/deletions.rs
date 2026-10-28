@@ -1204,7 +1204,7 @@ async fn rule_d11_the_content_is_removed_in_bounded_parts() {
         .bind(owner.account_id)
         .bind(server.clock.now())
         .bind(filled)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
         sqlx::query(
@@ -1217,7 +1217,7 @@ async fn rule_d11_the_content_is_removed_in_bounded_parts() {
         .bind(owner.account_id)
         .bind(server.clock.now())
         .bind(batch + 10)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     }
@@ -1646,7 +1646,7 @@ async fn rule_d16_the_rows_of_many_accounts_and_a_long_transcript_are_removed_in
     .bind(root.id)
     .bind(now)
     .bind(many)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query(
@@ -1671,7 +1671,7 @@ async fn rule_d16_the_rows_of_many_accounts_and_a_long_transcript_are_removed_in
     .bind(recording_id)
     .bind(owner.account_id)
     .bind(many)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query(
@@ -1686,7 +1686,7 @@ async fn rule_d16_the_rows_of_many_accounts_and_a_long_transcript_are_removed_in
     .bind(owner.account_id)
     .bind(now)
     .bind(many)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query(
@@ -1700,7 +1700,7 @@ async fn rule_d16_the_rows_of_many_accounts_and_a_long_transcript_are_removed_in
     .bind(now)
     .bind(root.id)
     .bind(many)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     let call_id: uuid::Uuid = sqlx::query_scalar(

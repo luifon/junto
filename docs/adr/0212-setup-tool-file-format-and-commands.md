@@ -17,14 +17,14 @@ Crate:
 
 File format 4 (formats 1 to 3 remain readable):
 
-- A file is one JSON object with `format`, `server_roles`, `workspaces` and `delete`. A workspace holds `roles`, `categories` and `channels`; a category holds `overrides`; a channel holds `synced` and `overrides`. The types are in `junto-protocol`, and the JSON Schema is generated into `docs/api/structure-file.json` and compared by a test (ADR 0202).
+- A file is one JSON object with `format`, `server_roles`, `workspaces` and `delete`. A workspace holds `roles`, `categories`, `channels` and `glossary`; a category holds `overrides`; a channel holds `synced` and `overrides`. The types are in `junto-protocol`, and the JSON Schema is generated into `docs/api/structure-file.json` and compared by a test (ADR 0202).
 - An object of a file with a field that the format does not name is refused, so that a misspelled field is not ignored.
 - An entry has `id` and `name`; a channel also has `kind`. Every other field is optional. An absent field keeps the value of an existing object and takes the default of the server for a new one. `category: null` and `user_limit: null` remove the value.
 - An entry that a file does not hold is kept. An override that a category or channel entry does not state is kept; an override with two empty sets removes the override. The exception is a channel that applying the file detaches from its category, below.
 - `delete` lists the identifiers of the entries to delete, per kind: `channels`, `categories`, `roles` (workspace roles), `server_roles` and `workspaces`. Nothing else is deleted. A listed entry that the server does not have is no change. The channels of a deleted category stay; a deleted workspace is deleted with everything that it holds (ADR 0308).
 - An exported file states every field, and no deletion.
 - Format 2 adds optional role `position` keys expressing relative order, with larger keys higher and everyone at zero. Numeric gaps and shifts do not request changes. Only explicitly positioned roles exchange their existing slots; other roles keep their places. A new unpositioned role stays at the bottom (ADR 0309).
-- Format 3 is the format of the glossary of a workspace (ADR 0603), which another change adds to the file. Format 4 contains the fields of format 3. Until the glossary field is part of the file, a file of format 3 is read as a file of format 2, and a file that holds `glossary` is refused as a field that the format does not name.
+- Format 3 adds the optional `glossary` of a workspace: the list of its terms in their order of priority (ADR 0603). The list replaces the whole glossary, and `[]` removes every term. As for every optional field, an absent `glossary` keeps the glossary of an existing workspace, and a new workspace has an empty glossary.
 - Format 4 adds the role overrides of a category and the sync state of a channel (ADR 0304). A category entry states `overrides` as a channel entry does: the allow set and the deny set of each role, which the synced channels of the category take. A channel entry in a category states `synced`. `true`: the channel takes the overrides of its category, and the entry states no overrides. `false`: the channel uses its own overrides, which the entry states. A channel without a category has no `synced`.
 - An absent `synced` keeps the state of an existing channel, and a new channel in a category is synced. An override that such an entry states is compared with the overrides that the channel uses now, which for a synced channel are those of its category. The first override that changes what a synced channel uses detaches it, as the route of the channel's rules does. A file of format 1 to 3 is applied this way.
 - The fields are read in a file of any format number; a file states the lowest format whose fields it uses.
@@ -39,7 +39,8 @@ Matching:
 Plan:
 
 - `plan` reads the structure document and prints one line for each change, with the fields that differ. It sends only the fields that differ.
-- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, its categories each with its overrides, and its channels each with its sync state and then its overrides, then the deletions: channels, categories, workspace roles, workspaces, server roles; atomic role reorders come last.
+- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, its categories each with its overrides, and its channels each with its sync state and then its overrides, and then its glossary, then the deletions: channels, categories, workspace roles, workspaces, server roles; atomic role reorders come last.
+- A glossary of a file that differs from the glossary of the server, in a term or in the order, is one change `replace_glossary` with the whole list (ADR 0211). Its line states the added terms, the removed terms and the new list in its order of priority. The tool removes the space around each term, as the server does, so that a file that was applied plans no change. The tool does not check the terms in another way: the server checks them with the rules of the glossary route and refuses the request with the number of the change.
 - The tool refuses, against the server, a file that lists an "everyone" role or the default workspace for deletion: the server deletes neither.
 - The changes of format 4 are `set_category_override` for an override of a category and `set_channel_sync` for the sync state of a channel (ADR 0211). The plan computes what each channel uses after its creation or update, as the server decides it (ADR 0304): a new channel in a category is synced; a synced channel that moves takes the overrides of its new category, or keeps those of its former category when it leaves for none; a channel with its own overrides keeps them when it moves. A channel that the file detaches keeps the overrides of its category as its own, and the plan removes those of roles that the entry does not state, so that the channel has the overrides of the entry. The export does not tell whether a channel without a category and without overrides takes the overrides of a category it moves into; for such a channel the plan sends every override that the entry states, and the server does not change an override that it holds already.
 - `plan --out` writes the plan: the format, the address of the server, the revision and the changes.
@@ -57,11 +58,12 @@ Commands:
 
 ## Consequences
 
-- `plan` changes nothing: it sends one reading request. A token with `read_structure` alone can export and plan.
+- `plan` changes nothing: it sends one reading request. A token with `read_structure` alone can export and plan. The export holds the glossary of each workspace, which every member of the workspace reads (ADR 0603).
 - A second `apply` of the same file plans no change and sends no request that changes the server.
 - The export of one server, applied to an empty server, renames the default workspace of that server, changes its "everyone" role, and adds the other entries. The two first channels of the empty server stay, because the file does not list them for deletion.
 - A person who writes a new entry by hand gives it a new UUID.
 - The tool reads file formats 1 to 4 and writes format 4. Saved plans use format 4; older saved plans must be recomputed. A later format has another number.
+- A tool that reads format 3 at most refuses an exported file of format 4, because a category entry holds `overrides` and a channel entry holds `synced`.
 - The protocol crate states the format that is written and the oldest format that is read as two constants. The description of the generated schema and the refusal of a file of another format are written from them, so they name the current formats.
 - A structure with more than 200 differences is applied in several files, each with a part of the entries.
 - The plan file contains no credential.

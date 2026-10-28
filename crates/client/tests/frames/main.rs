@@ -152,7 +152,7 @@ fn main() -> ExitCode {
         let calls = window
             .state
             .read_with(&window.cx, |state, _| state.calls().clone());
-        calls.stop_share();
+        calls.stop_share(None);
         calls.stop_camera();
     }
     for window in [&mut run.a, run.b.as_mut().unwrap()] {

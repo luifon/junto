@@ -9,12 +9,22 @@
 //! ```sh
 //! cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 //! JUNTO_SCREENS_THEME=dark cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
+//! JUNTO_SCREENS_FILES=0 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
+//! JUNTO_SCREENS_SIZE=720x600 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 //! ```
+//!
+//! Every run measures the empty bands of each screen and ends with an error when a screen
+//! has one, when a control of a screen lies past the left or right edge of the window, or
+//! when a screen does not settle (ADR 0730, ADR 0731). With `JUNTO_SCREENS_FILES=0` it writes
+//! no file and only measures. `JUNTO_SCREENS_SIZE` draws every window screen at one size, such
+//! as the least size of the window at 100 % (a screen at
+//! another interface scale gets that size at its scale).
 
 // The program is a tool of the developers that writes the files of the screens that it
 // draws; the refusals of the file system in `clippy.toml` are for the application (ADR 0730).
 #![allow(clippy::disallowed_methods)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -95,6 +105,8 @@ mod direct;
 mod discovery;
 #[path = "junto-screens/frames.rs"]
 mod frames;
+#[path = "junto-screens/gaps.rs"]
+mod gaps;
 #[path = "junto-screens/logo.rs"]
 mod logo;
 #[path = "junto-screens/messages.rs"]
@@ -113,6 +125,35 @@ mod rule_pages;
 mod threads;
 
 const WINDOW: (f32, f32) = (1440.0, 900.0);
+
+/// The most frames that a screen is drawn before its areas stay the same.
+const SETTLE_FRAMES: usize = 8;
+/// The longest time that the drawing of one screen takes before the program ends with an
+/// error.
+const SCREEN_TIME: Duration = Duration::from_secs(120);
+
+/// Ends the program with the name of the screen when the drawing of one screen takes
+/// longer than [`SCREEN_TIME`]: a task that never ends keeps `run_until_parked` from
+/// returning, and the program would draw without an end.
+fn watch_the_drawing(drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let late = drawing
+                .lock()
+                .ok()
+                .and_then(|drawing| *drawing)
+                .filter(|(_, started)| started.elapsed() > SCREEN_TIME);
+            if let Some((name, _)) = late {
+                eprintln!(
+                    "junto-screens: the screen {name} did not settle within {} seconds",
+                    SCREEN_TIME.as_secs()
+                );
+                std::process::exit(1);
+            }
+        }
+    });
+}
 
 /// An identifier that is the same in every run, so that a generated avatar is the same.
 fn id<T: FromStr>(number: u32) -> T
@@ -157,7 +198,9 @@ fn participant(name: &str) -> CallParticipant {
         microphone_block: None,
         sound_block: None,
         hand_raised: false,
+        watching: None,
         screen_share: None,
+        screen_shares: Vec::new(),
     }
 }
 
@@ -249,6 +292,8 @@ fn studio() -> WorkspaceState {
     bruno.muted = true;
     let mut carla = participant("Carla");
     carla.screen_share = Some(ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::Application,
         started_at: at(),
     });
@@ -428,6 +473,7 @@ fn acme() -> ServerSnapshot {
         stream: StreamStatus::Live,
         model: Some(acme_model(|_| {})),
         server_version: ServerVersion::parse("0.3.1"),
+        server_events: None,
     }
 }
 
@@ -447,6 +493,7 @@ fn harbor() -> ServerSnapshot {
             vec![workspace(13, "Lounge", true)],
         ))))),
         server_version: ServerVersion::parse("0.3.0"),
+        server_events: None,
     }
 }
 
@@ -459,6 +506,7 @@ fn harbor_as(access: AccessState, reach: Reach, error: Option<FlowError>) -> Ser
         stream: StreamStatus::Off,
         model: None,
         server_version: None,
+        server_events: None,
         ..harbor()
     }
 }
@@ -501,6 +549,16 @@ struct Studio {
     drawn: usize,
     /// The theme of every screen (`JUNTO_SCREENS_THEME`: `light`, the default, or `dark`).
     theme: ThemeChoice,
+    /// The empty bands of the screens drawn so far ([`gaps::empty_bands`]), and the controls
+    /// past an edge of their window ([`junto_client::ui::outside`]).
+    bands: Vec<String>,
+    /// The size of every window screen (`JUNTO_SCREENS_SIZE`, such as `720x600`).
+    size: Option<(f32, f32)>,
+    /// The screens are written as files; `JUNTO_SCREENS_FILES=0` only measures them.
+    files: bool,
+    /// The screen that is drawn and when its drawing started, for the watch of
+    /// [`watch_the_drawing`].
+    drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>,
 }
 
 /// One screen: the servers it shows, the state of the calls and the interface scale.
@@ -591,13 +649,34 @@ impl Studio {
             Ok("light") | Err(_) => ThemeChoice::Light,
             Ok(other) => return Err(format!("JUNTO_SCREENS_THEME is light or dark, not {other}")),
         };
+        let size = match std::env::var("JUNTO_SCREENS_SIZE") {
+            Ok(size) => Some(
+                size.split_once('x')
+                    .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
+                    .ok_or_else(|| format!("JUNTO_SCREENS_SIZE is WIDTHxHEIGHT, not {size}"))?,
+            ),
+            Err(_) => None,
+        };
+        let drawing = Arc::new(std::sync::Mutex::new(None));
+        watch_the_drawing(drawing.clone());
         Ok(Self {
             cx,
             out,
             scratch,
             drawn: 0,
             theme,
+            bands: Vec::new(),
+            size,
+            files: std::env::var("JUNTO_SCREENS_FILES").as_deref() != Ok("0"),
+            drawing,
         })
+    }
+
+    /// Notes the screen that is drawn from now on.
+    fn drawing(&self, name: Option<&'static str>) {
+        if let Ok(mut drawing) = self.drawing.lock() {
+            *drawing = name.map(|name| (name, Instant::now()));
+        }
     }
 
     /// Draws one screen. `prepare` opens what the screen shows beyond its servers.
@@ -609,6 +688,17 @@ impl Studio {
         self.draw_after(screen, Box::new(prepare), |_| true)
     }
 
+    /// Like [`Studio::draw`], and runs `answer` after the screen was drawn once, as an
+    /// answer of the server that arrives while the screen is shown.
+    fn draw_answered(
+        &mut self,
+        screen: Screen,
+        prepare: impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) + 'static,
+        answer: impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) + 'static,
+    ) -> Result<(), String> {
+        self.draw_with(screen, Box::new(prepare), |_| true, Some(Box::new(answer)))
+    }
+
     /// Like [`Studio::draw`], and waits until `ready` holds before the screen is captured.
     fn draw_after(
         &mut self,
@@ -616,7 +706,28 @@ impl Studio {
         prepare: Prepare,
         ready: impl Fn(&Shell) -> bool,
     ) -> Result<(), String> {
+        self.draw_with(screen, prepare, ready, None)
+    }
+
+    fn draw_with(
+        &mut self,
+        screen: Screen,
+        prepare: Prepare,
+        ready: impl Fn(&Shell) -> bool,
+        answer: Option<Prepare>,
+    ) -> Result<(), String> {
+        // The size of every screen is a size of the design: a screen at another interface
+        // scale gets the window of that scale, as the least size of the window does.
+        let screen = match self.size {
+            Some(size) => {
+                let scaled = junto_client::theme::scaled_size(size, screen.scale);
+                screen.size(f32::from(scaled.width), f32::from(scaled.height))
+            }
+            None => screen,
+        };
         let name = screen.name;
+        let (width, scale) = (screen.size.0, screen.scale);
+        self.drawing(Some(name));
         let (window, shell, _) = self.open(screen, prepare)?;
         let started = Instant::now();
         loop {
@@ -629,24 +740,98 @@ impl Studio {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        // Two frames: the first lays the layers out, the second draws what they opened.
-        for _ in 0..2 {
+        if let Some(answer) = answer {
+            for _ in 0..2 {
+                self.cx
+                    .update_window(window.into(), |_, window, _| window.refresh())
+                    .map_err(|error| format!("{error:#}"))?;
+                self.cx.run_until_parked();
+            }
+            self.cx
+                .update_window(window.into(), |_, window, cx| {
+                    shell.update(cx, |shell, cx| answer(shell, window, cx));
+                })
+                .map_err(|error| format!("{error:#}"))?;
+            self.cx.run_until_parked();
+            // The screen shows the page after the bound of the kept space of a form: the
+            // result at the height of its sentence (ADR 0730).
+            for _ in 0..2 {
+                self.cx
+                    .update_window(window.into(), |_, window, _| window.refresh())
+                    .map_err(|error| format!("{error:#}"))?;
+                self.cx.run_until_parked();
+            }
+            self.cx
+                .advance_clock(junto_client::ui::WAIT_BOUND + std::time::Duration::from_millis(50));
+            self.cx.run_until_parked();
+        }
+        // The first frame lays the layers out, the second draws what they opened, and a
+        // part that takes the height of a late content draws it in the frame after its
+        // measure (ADR 0730). The screen is drawn until two frames lay out the same areas.
+        junto_client::ui::take_unsettled();
+        let mut areas = None;
+        let mut controls = Vec::new();
+        let mut settled = false;
+        for _ in 0..SETTLE_FRAMES {
+            junto_client::ui::record_areas();
+            junto_client::ui::record_controls();
             self.cx
                 .update_window(window.into(), |_, window, _| window.refresh())
                 .map_err(|error| format!("{error:#}"))?;
             self.cx.run_until_parked();
+            let drawn = junto_client::ui::take_areas();
+            controls = junto_client::ui::take_controls();
+            if areas.as_ref() == Some(&drawn) {
+                settled = true;
+                break;
+            }
+            areas = Some(drawn);
+        }
+        let areas = areas.unwrap_or_default();
+        if !settled {
+            return Err(format!(
+                "{name}: the screen did not settle: its areas changed in each of \
+                 {SETTLE_FRAMES} frames"
+            ));
+        }
+        let unsettled = junto_client::ui::take_unsettled();
+        if !unsettled.is_empty() {
+            return Err(format!(
+                "{name}: the height of these parts changed in each frame, which two parts \
+                 with one element id do: {unsettled:?}"
+            ));
         }
         let image = self
             .cx
             .capture_screenshot(window.into())
             .map_err(|error| format!("{name}: {error:#}"))?;
-        let file = self.out.join(format!("{name}.png"));
-        image.save(&file).map_err(|error| error.to_string())?;
-        println!("{}", file.display());
+        self.bands.extend(
+            gaps::empty_bands(&image, &areas, width, scale)
+                .into_iter()
+                .map(|band| format!("{name}: {band}")),
+        );
+        self.bands.extend(
+            junto_client::ui::outside(&controls, px(width))
+                .into_iter()
+                .map(|control| {
+                    format!(
+                        "{name}: the control {} at {:?} lies past an edge of the window",
+                        control.name, control.bounds
+                    )
+                }),
+        );
+        if self.files {
+            let file = self.out.join(format!("{name}.png"));
+            image.save(&file).map_err(|error| error.to_string())?;
+            println!("{}", file.display());
+        } else {
+            println!("{name}");
+        }
         self.cx
             .update_window(window.into(), |_, window, _| window.remove_window())
             .map_err(|error| format!("{error:#}"))?;
         self.cx.run_until_parked();
+        self.drawing(None);
         Ok(())
     }
 
@@ -772,6 +957,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
             muted: false,
             deafened: false,
             joining: None,
+            input_test_failed: None,
             call: Some(ActiveCall {
                 camera: junto_media::camera::CameraState::Off,
                 cameras: Vec::new(),
@@ -791,7 +977,9 @@ fn in_call(phase: Phase) -> MediaSnapshot {
                 output_device: Some(device("phones", "Headphones", false)),
                 microphone_block: None,
                 sound_block: None,
-                share: ShareState::Off,
+                share_limit: junto_client_core::protocol::call::MAX_SHARES,
+                own_shares: BTreeMap::new(),
+                share_ended: None,
                 shares: Vec::new(),
                 watched: None,
                 withheld: Default::default(),
@@ -1068,9 +1256,12 @@ fn acme_with_shares(
                         .iter()
                         .find(|(name, _)| person(name) == participant.account_id)
                         .map(|(_, audio)| ScreenShare {
+                            slot: 0,
+                            kind: None,
                             audio: *audio,
                             started_at: at(),
                         });
+                    participant.screen_shares = participant.screen_share.iter().cloned().collect();
                 }
                 change(call);
             }
@@ -1080,8 +1271,13 @@ fn acme_with_shares(
 }
 
 fn seen(name: &str, kind: ShareKind, size: (u32, u32)) -> SeenShare {
+    seen_in(name, 0, kind, size)
+}
+
+fn seen_in(name: &str, slot: u8, kind: ShareKind, size: (u32, u32)) -> SeenShare {
     SeenShare {
         account_id: person(name),
+        slot,
         kind: Some(kind),
         frame_rate: Some(30),
         size: Some(size),
@@ -1137,8 +1333,8 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         &[("Carla", ShareAudio::System), ("Bruno", ShareAudio::None)];
     const LUCA: &[(&str, ShareAudio)] = &[("Luca", ShareAudio::Application)];
     let screen_size = (1920, 1200);
-    let carla = ShareId::Of(person("Carla"));
-    let bruno = ShareId::Of(person("Bruno"));
+    let carla = ShareId::of(person("Carla"), 0);
+    let bruno = ShareId::of(person("Bruno"), 0);
     let watching = |shares: Vec<SeenShare>, watched: ShareId| {
         with_call(in_call(Phase::Connected), move |call| {
             call.shares = shares;
@@ -1210,20 +1406,24 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     // The share of this device.
     let own = |sound_held: bool| {
         with_call(in_call(Phase::Connected), move |call| {
-            call.share = ShareState::Running(ShareInfo {
-                kind: ShareKind::Window,
-                sound: ShareAudio::Application,
-                sound_held,
-                size: (1280, 800),
-                frame_rate: 30,
-            });
-            call.watched = Some(ShareId::Own);
+            call.own_shares = BTreeMap::from([(
+                0,
+                ShareState::Running(ShareInfo {
+                    id: uuid::Uuid::from_u128(4),
+                    kind: ShareKind::Window,
+                    sound: ShareAudio::Application,
+                    sound_held,
+                    size: (1280, 800),
+                    frame_rate: 30,
+                }),
+            )]);
+            call.watched = Some(ShareId::own(0));
         })
     };
     studio.draw(
         Screen::call("share-own", own(false))
             .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
-        show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new()),
+        show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
     )?;
     let block = MicrophoneBlock {
         by: person("Ana"),
@@ -1245,16 +1445,92 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
             }),
             harbor(),
         ]),
-        show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new()),
+        show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
     )?;
     let starting = with_call(in_call(Phase::Connected), |call| {
-        call.share = ShareState::Starting;
+        call.own_shares = BTreeMap::from([(0, ShareState::Starting)]);
     });
     studio.draw(Screen::call("share-own-starting", starting), show_daily)?;
     let ended = with_call(in_call(Phase::Connected), |call| {
-        call.share = ShareState::Ended(CaptureError::SourceGone);
+        call.share_ended = Some(CaptureError::SourceGone);
     });
     studio.draw(Screen::call("share-own-ended-by-itself", ended), show_daily)?;
+
+    // Several shares of one person (ADR 0738): Carla shares two screens and a window. The
+    // viewer watches her second screen, and the cards number the two screens.
+    let (carla_screen_2, carla_window) = (
+        ShareId::of(person("Carla"), 1),
+        ShareId::of(person("Carla"), 2),
+    );
+    let of_carla = watching(
+        vec![
+            seen_in("Carla", 0, ShareKind::Screen, screen_size),
+            seen_in("Carla", 1, ShareKind::Screen, (2560, 1440)),
+            seen_in("Carla", 2, ShareKind::Window, (1280, 800)),
+        ],
+        carla_screen_2,
+    );
+    studio.draw(
+        Screen::call("share-three-of-one-person", of_carla)
+            .servers(vec![acme_with_shares(CARLA, true, |_| {}), harbor()]),
+        show_pictures(
+            (carla_screen_2, desktop_picture(1568, 882)),
+            vec![
+                (carla, desktop_picture(176, 110)),
+                (carla_screen_2, desktop_picture(176, 99)),
+                (carla_window, editor_picture(176, 110)),
+            ],
+        ),
+    )?;
+
+    // The menu of the share button while this device shares a screen and a window, and
+    // while it runs the most shares.
+    let own_two = |slots: &'static [(u8, ShareKind)]| {
+        with_call(in_call(Phase::Connected), move |call| {
+            call.own_shares = slots
+                .iter()
+                .map(|(slot, kind)| {
+                    (
+                        *slot,
+                        ShareState::Running(ShareInfo {
+                            id: uuid::Uuid::from_u128(5),
+                            kind: *kind,
+                            sound: ShareAudio::None,
+                            sound_held: false,
+                            size: (1280, 800),
+                            frame_rate: 30,
+                        }),
+                    )
+                })
+                .collect();
+            call.watched = Some(ShareId::own(0));
+        })
+    };
+    let open_menu =
+        |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::ShareMenu, window, cx);
+        };
+    studio.draw(
+        Screen::call(
+            "share-menu-two-own",
+            own_two(&[(0, ShareKind::Screen), (1, ShareKind::Window)]),
+        )
+        .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        open_menu,
+    )?;
+    studio.draw(
+        Screen::call(
+            "share-menu-at-the-limit",
+            own_two(&[
+                (0, ShareKind::Screen),
+                (1, ShareKind::Screen),
+                (2, ShareKind::Window),
+            ]),
+        )
+        .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        open_menu,
+    )?;
 
     // The dialog of a share.
     let picker = |prepare: fn(&mut Shell, &mut gpui::Context<Shell>)| -> Prepare {
@@ -1418,7 +1694,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                 .state()
                 .update(cx, |state, cx| state.set_server_book_collapsed(true, cx));
             shell.show_pictures_fixture(
-                Some((ShareId::Of(person("Carla")), desktop_picture(1568, 980))),
+                Some((ShareId::of(person("Carla"), 0), desktop_picture(1568, 980))),
                 Vec::new(),
                 cx,
             );
@@ -1539,6 +1815,8 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
         WorkspacePermission::MoveMembers,
     ];
     let share = || ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::Application,
         started_at: at(),
     };
@@ -1571,17 +1849,21 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     }
     let sharing = || {
         with_call(in_call(Phase::Connected), |call| {
-            call.share = ShareState::Running(ShareInfo {
-                kind: ShareKind::Window,
-                sound: ShareAudio::Application,
-                sound_held: false,
-                size: (1280, 800),
-                frame_rate: 30,
-            });
-            call.watched = Some(ShareId::Own);
+            call.own_shares = BTreeMap::from([(
+                0,
+                ShareState::Running(ShareInfo {
+                    id: uuid::Uuid::from_u128(6),
+                    kind: ShareKind::Window,
+                    sound: ShareAudio::Application,
+                    sound_held: false,
+                    size: (1280, 800),
+                    frame_rate: 30,
+                }),
+            )]);
+            call.watched = Some(ShareId::own(0));
         })
     };
-    let own_picture = || show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new());
+    let own_picture = || show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new());
 
     // View D, as the presenter: Ana raised a hand.
     let presenter = move |allowed: bool| {
@@ -1634,7 +1916,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     )?;
 
     // View D, as a participant: Carla runs meeting mode.
-    let carla = ShareId::Of(person("Carla"));
+    let carla = ShareId::of(person("Carla"), 0);
     let participant_media = |held: bool, muted: bool| {
         let mut media = with_call(in_call(Phase::Connected), move |call| {
             call.shares = vec![seen("Carla", ShareKind::Screen, (1920, 1200))];
@@ -2069,8 +2351,19 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         call.input_device = None;
     });
     studio.draw(
-        Screen::call("call-no-microphone-access", refused),
+        Screen::call("call-no-microphone-access", refused.clone()),
         show_daily_tab(CallTab::Settings),
+    )?;
+    // With the rules of macOS the settings of the call have the button of the page of System
+    // Settings (ADR 0708).
+    studio.draw(
+        Screen::call("call-no-microphone-access-macos", refused),
+        |shell, window, cx| {
+            shell.state().clone().update(cx, |state, cx| {
+                state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
+            });
+            show_daily_tab(CallTab::Settings)(shell, window, cx);
+        },
     )?;
     let asking = with_call(in_call(Phase::Connected), |call| {
         call.microphone = MicrophoneState::Asking;
@@ -2197,6 +2490,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
     let mut talking = in_call(Phase::Connected);
     talking.voice.input_mode = InputMode::PushToTalk;
     studio.draw(Screen::call("call-push-to-talk", talking), show_daily)?;
+    draw_sound_settings(studio)?;
     // The sensitivity of voice activation, with the live level of a call.
     let mut sensitive = in_call(Phase::Connected);
     sensitive.voice.voice_threshold = Some(-40);
@@ -2209,6 +2503,32 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
     Ok(())
+}
+
+/// The section of the sounds of the settings: all sounds on with one kind off, and all
+/// sounds off (ADR 0707).
+fn draw_sound_settings(studio: &mut Studio) -> Result<(), String> {
+    let mut one_off = no_call();
+    one_off
+        .voice
+        .sounds
+        .set(junto_client_core::voice::SoundKind::TalkStarts, false);
+    studio.draw(
+        Screen::new("settings-sounds", two_servers()).media(one_off.clone()),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Sounds, window, cx);
+        },
+    )?;
+    let mut all_off = one_off;
+    all_off.voice.sounds.all = false;
+    studio.draw(
+        Screen::new("settings-sounds-all-off", two_servers()).media(all_off),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Sounds, window, cx);
+        },
+    )
 }
 
 fn recovery() -> RecoveryNotice {
@@ -2392,6 +2712,7 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
             },
         )?;
     }
+    draw_permissions(studio)?;
     studio.draw(
         Screen::new(
             "main-meeting-mode-full-room-categories",
@@ -2833,6 +3154,7 @@ impl gpui::Render for Components {
 }
 
 fn draw_components(studio: &mut Studio) -> Result<(), String> {
+    studio.drawing(Some("components"));
     let window = studio
         .cx
         .open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -2869,6 +3191,76 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
         .update_window(window.into(), |_, window, _| window.remove_window())
         .map_err(|error| format!("{error:#}"))?;
     studio.cx.run_until_parked();
+    studio.drawing(None);
+    Ok(())
+}
+
+/// The section "Permissions" of the settings with the rules of each system, and the section
+/// "Notifications" with a refusal of macOS (ADR 0708).
+fn draw_permissions(studio: &mut Studio) -> Result<(), String> {
+    use junto_client::permissions::{Access, System};
+    use junto_media::permission::MicrophoneAccess;
+    for (name, system, microphone, camera, screen, notifications) in [
+        (
+            "settings-permissions-macos",
+            System::MacOs,
+            MicrophoneAccess::Allowed,
+            Access::Refused,
+            Access::Refused,
+            Access::NotAsked,
+        ),
+        (
+            "settings-permissions-windows",
+            System::Windows,
+            MicrophoneAccess::Refused,
+            Access::Allowed,
+            Access::Allowed,
+            Access::Refused,
+        ),
+        (
+            "settings-permissions-linux",
+            System::Linux,
+            MicrophoneAccess::Allowed,
+            Access::Restricted,
+            Access::AskedAtEachUse,
+            Access::Allowed,
+        ),
+    ] {
+        studio.draw(
+            Screen::new(name, two_servers()),
+            move |shell, window, cx| {
+                shell.open(Open::Settings, window, cx);
+                shell.open_settings_section(SettingsSection::Permissions, window, cx);
+                shell.state().update(cx, |state, cx| {
+                    state.show_permissions_fixture(
+                        system,
+                        microphone,
+                        camera,
+                        screen,
+                        notifications,
+                        cx,
+                    );
+                });
+            },
+        )?;
+    }
+    studio.draw(
+        Screen::new("settings-notifications-refused-macos", two_servers()),
+        |shell, window, cx| {
+            shell.open(Open::Settings, window, cx);
+            shell.open_settings_section(SettingsSection::Notifications, window, cx);
+            shell.state().update(cx, |state, cx| {
+                state.show_permissions_fixture(
+                    System::MacOs,
+                    MicrophoneAccess::Allowed,
+                    Access::Allowed,
+                    Access::Allowed,
+                    Access::Refused,
+                    cx,
+                );
+            });
+        },
+    )?;
     Ok(())
 }
 
@@ -2888,6 +3280,9 @@ fn run(out: &Path) -> Result<(), String> {
         // Not a picture: the time of a frame with 10,000 loaded messages.
         Some("frames") => frames::measure(&mut studio),
         Some("audit-frames") => frames::measure_audit(&mut studio),
+        Some("people-frames") => frames::measure_people(&mut studio),
+        // Not a picture: the cost of an animation in view (review M5).
+        Some("gif-frames") => messages::measure_animation(&mut studio),
         Some("admin") => admin::draw(&mut studio),
         Some("people") => people::draw(&mut studio),
         Some("rule-pages") => rule_pages::draw(&mut studio),
@@ -2895,7 +3290,10 @@ fn run(out: &Path) -> Result<(), String> {
         Some("account") => account::draw(&mut studio),
         Some("book") => book::draw(&mut studio),
         Some("logo") => logo::draw(&mut studio),
-        Some("permissions") => permissions::draw(&mut studio),
+        Some("channel-permissions") => permissions::draw(&mut studio),
+        Some("permissions") => draw_permissions(&mut studio),
+        Some("calls") => draw_calls(&mut studio),
+        Some("sounds") => draw_sound_settings(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
@@ -2916,10 +3314,23 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();
+    let bands = std::mem::take(&mut studio.bands);
     drop(studio);
     // The data directories of the screens hold no server and no key of a real server.
     let removed = std::fs::remove_dir_all(&scratch).map_err(|error| error.to_string());
-    drawn.and(removed)
+    drawn.and(removed)?;
+    if bands.is_empty() {
+        return Ok(());
+    }
+    for band in &bands {
+        eprintln!("{band}");
+    }
+    Err(format!(
+        "{} empty bands taller than {} design px or controls past an edge of the window \
+         (ADR 0730)",
+        bands.len(),
+        gaps::MOST_GAP
+    ))
 }
 
 fn main() -> std::process::ExitCode {

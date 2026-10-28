@@ -571,7 +571,7 @@
       "type": "object"
     },
     "call_participant_updated": {
-      "description": "The own settings, the blocks, the raised hand or the screen share of a person in a\ncall changed. The event carries the whole participant.",
+      "description": "The own settings, the blocks, the raised hand or a screen share of a person in a\ncall changed. The event carries the whole participant.",
       "properties": {
         "call_id": {
           "$ref": "#/components/schemas/CallId"
@@ -1311,6 +1311,28 @@
           "minimum": 0,
           "type": "integer"
         },
+        "thread": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/ThreadState",
+              "description": "For a reply, the state of its thread for the account that receives the event, as\nthe unread threads list it: absent when the account neither follows the thread nor\nis named in it (revision 2, ADR 0412)."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thread_root": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/MessageId",
+              "description": "The root of the thread of a reply. Absent: the message is no reply (revision 2)."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "type": {
           "enum": [
             "message_changed"
@@ -1387,6 +1409,17 @@
       "properties": {
         "message_id": {
           "$ref": "#/components/schemas/MessageId"
+        },
+        "notice": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Notification",
+              "description": "The notice of the message for the account that receives the event, as the list\nof notices states it (revision 2, ADR 0409)."
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "type": {
           "enum": [
@@ -2571,17 +2604,36 @@
           "screen_share": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ScreenShare"
+                "$ref": "#/components/schemas/ScreenShare",
+                "description": "The share of the lowest slot. A client from before several shares reads only this."
               },
               {
                 "type": "null"
               }
             ]
           },
+          "screen_shares": {
+            "description": "Every share of the person, in the order of their slots. A server from before several\nshares sends none; [`CallParticipant::shares`] then reads `screen_share`.",
+            "items": {
+              "$ref": "#/components/schemas/ScreenShare"
+            },
+            "type": "array"
+          },
           "sound_block": {
             "oneOf": [
               {
                 "$ref": "#/components/schemas/SoundBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "watching": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchedShare",
+                "description": "The share of another person in the call that the person watches now, as the client\nof the person reports it (ADR 0502). Absent: none."
               },
               {
                 "type": "null"
@@ -3840,7 +3892,7 @@
             "type": "object"
           },
           {
-            "description": "The own settings, the blocks, the raised hand or the screen share of a person in a\ncall changed. The event carries the whole participant.",
+            "description": "The own settings, the blocks, the raised hand or a screen share of a person in a\ncall changed. The event carries the whole participant.",
             "properties": {
               "call_id": {
                 "$ref": "#/components/schemas/CallId"
@@ -4533,6 +4585,28 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "thread": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ThreadState",
+                    "description": "For a reply, the state of its thread for the account that receives the event, as\nthe unread threads list it: absent when the account neither follows the thread nor\nis named in it (revision 2, ADR 0412)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "thread_root": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageId",
+                    "description": "The root of the thread of a reply. Absent: the message is no reply (revision 2)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "type": {
                 "enum": [
                   "message_changed"
@@ -4576,6 +4650,17 @@
             "properties": {
               "message_id": {
                 "$ref": "#/components/schemas/MessageId"
+              },
+              "notice": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Notification",
+                    "description": "The notice of the message for the account that receives the event, as the list\nof notices states it (revision 2, ADR 0409)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -5478,6 +5563,48 @@
         ],
         "type": "string"
       },
+      "Notification": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NotificationKind"
+          },
+          "message_id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "kind",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "NotificationKind": {
+        "enum": [
+          "message",
+          "mention",
+          "direct",
+          "thread",
+          "missed_call"
+        ],
+        "type": "string"
+      },
       "NotificationLevel": {
         "enum": [
           "all",
@@ -5847,6 +5974,23 @@
           "audio": {
             "$ref": "#/components/schemas/ShareAudio"
           },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareKind",
+                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot": {
+            "description": "The number that the sharing device gave the share, below `MAX_SHARES`. A device that\nruns one share uses slot 0; a server or a client from before several shares states\nno slot, which is slot 0.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "started_at": {
             "format": "date-time",
             "type": "string"
@@ -5874,6 +6018,12 @@
               },
               "epoch": {
                 "$ref": "#/components/schemas/StreamEpoch"
+              },
+              "event_revision": {
+                "description": "The revision of the messages and events that the server sends ([`EVENT_REVISION`]).\nAbsent: 0, a server before the revisions.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
               },
               "heartbeat_seconds": {
                 "description": "The server sends a ping at this interval and expects a frame from the client within\n`idle_seconds`.",
@@ -6094,6 +6244,14 @@
         ],
         "type": "string"
       },
+      "ShareKind": {
+        "description": "What a screen share shows.",
+        "enum": [
+          "screen",
+          "window"
+        ],
+        "type": "string"
+      },
       "SoundBlock": {
         "description": "A block of a person's sound. The client of the person applies it (ADR 0503).",
         "properties": {
@@ -6135,6 +6293,52 @@
         ],
         "type": "object"
       },
+      "ThreadState": {
+        "properties": {
+          "follow_setting": {
+            "description": "The choice of the account. Absent: none, and the account follows a thread that it\nwrote in or was named in (ADR 0412).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "following": {
+            "description": "Whether the account follows the thread: its replies count as unread and notify.",
+            "type": "boolean"
+          },
+          "last_read": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "latest": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mentions": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "root_id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "unread": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "root_id",
+          "last_read",
+          "latest",
+          "unread",
+          "mentions"
+        ],
+        "type": "object"
+      },
       "TokenAction": {
         "description": "One group of routes that an access token can reach. A token states its actions when it is\ncreated, and a request with it is refused on a route of another action.\n\nA server can add actions within one API version. An action that this build does not know\nis read as [`TokenAction::Unknown`], which is never written.",
         "enum": [
@@ -6156,6 +6360,23 @@
           "failed"
         ],
         "type": "string"
+      },
+      "WatchedShare": {
+        "description": "The share that a person watches: the person who shares it, and the slot of the share\namong the shares of that person (ADR 0502). A client that runs one share per person\nstates slot 0.",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "slot": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "type": "object"
       },
       "Workspace": {
         "properties": {

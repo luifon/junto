@@ -4,14 +4,15 @@
 
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
-    InviteToCall, MoveParticipant, MuteDirectConversation, OwnCallView, ReportCallState,
-    ReportScreenShare, ReportSpeaking, ShareAudio, UpdateCallSettings,
+    InviteToCall, MAX_SHARES, MoveParticipant, MuteDirectConversation, OwnCallView,
+    ReportCallState, ReportScreenShare, ReportSpeaking, ShareAudio, ShareKind, UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};
 use junto_protocol::snapshot::SnapshotResponse;
 use junto_protocol::structure::Channel;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::client::read_json;
 use super::error::ApiError;
@@ -25,15 +26,27 @@ impl ServerApi {
         self.get("/snapshot".to_owned()).await
     }
 
+    /// Every request for a place states that this client shows `MAX_SHARES` shares of one
+    /// person (ADR 0510).
     async fn join(&self, path: String) -> Result<CallJoin, ApiError> {
-        read_json(&self.call(Method::Post, path, Vec::new(), None).await?)
+        self.join_showing(path, Some(MAX_SHARES)).await
+    }
+
+    async fn join_showing(&self, path: String, shown: Option<u8>) -> Result<CallJoin, ApiError> {
+        let query = shown
+            .map(|shown| vec![("shares", shown.to_string())])
+            .unwrap_or_default();
+        read_json(&self.call(Method::Post, path, query, None).await?)
     }
 
     /// A request for a new token of the seat `identity` (ADR 0520): it makes, ends and
     /// takes no seat. A seat that cannot be used is refused with `seat_ended` and the
     /// reason in [`super::Rejection::left`].
     async fn renew(&self, path: String, identity: &str) -> Result<CallJoin, ApiError> {
-        let query = vec![("renews", identity.to_owned())];
+        let query = vec![
+            ("renews", identity.to_owned()),
+            ("shares", MAX_SHARES.to_string()),
+        ];
         read_json(&self.call(Method::Post, path, query, None).await?)
     }
 
@@ -65,14 +78,42 @@ impl ServerApi {
         self.put("/call/state".to_owned(), &report).await
     }
 
-    pub async fn report_screen_share(&self, audio: ShareAudio) -> Result<(), ApiError> {
-        let report = ReportScreenShare { audio };
+    /// Reports the share of this device in `slot`, with what it shows and its sound.
+    /// `share_id` names the share that was started in the slot: another one is a new share
+    /// (ADR 0510).
+    pub async fn report_screen_share(
+        &self,
+        slot: u8,
+        kind: Option<ShareKind>,
+        audio: ShareAudio,
+        share_id: Option<Uuid>,
+    ) -> Result<(), ApiError> {
+        let report = ReportScreenShare {
+            audio,
+            slot,
+            kind,
+            share_id,
+        };
         self.put("/call/screen-share".to_owned(), &report).await
     }
 
-    pub async fn end_screen_share(&self) -> Result<(), ApiError> {
-        self.act(Method::Delete, "/call/screen-share".to_owned())
+    /// Reports the end of the share in `slot`, or of every share of the person without one.
+    pub async fn end_screen_share(&self, slot: Option<u8>) -> Result<(), ApiError> {
+        let query = slot
+            .map(|slot| vec![("slot", slot.to_string())])
+            .unwrap_or_default();
+        self.call(Method::Delete, "/call/screen-share".to_owned(), query, None)
             .await
+            .map(|_| ())
+    }
+
+    /// Reports which share of another person the person watches now, or none (ADR 0502).
+    pub async fn report_watching(
+        &self,
+        watching: Option<junto_protocol::call::WatchedShare>,
+    ) -> Result<(), ApiError> {
+        let report = junto_protocol::call::ReportWatching { watching };
+        self.put("/call/watching".to_owned(), &report).await
     }
 
     pub async fn raise_hand(&self) -> Result<(), ApiError> {
@@ -110,6 +151,18 @@ impl ServerApi {
     /// the media server, which is usable for about one minute and for one connection.
     pub async fn join_channel_call(&self, channel_id: ChannelId) -> Result<CallJoin, ApiError> {
         self.join(format!("/channels/{channel_id}/call/join")).await
+    }
+
+    /// As [`ServerApi::join_channel_call`], stating `shown` shares of one person. `None`
+    /// is the request of a client from before several shares, which a test uses as such
+    /// a client.
+    pub async fn join_channel_call_showing(
+        &self,
+        channel_id: ChannelId,
+        shown: Option<u8>,
+    ) -> Result<CallJoin, ApiError> {
+        self.join_showing(format!("/channels/{channel_id}/call/join"), shown)
+            .await
     }
 
     /// A new token for the seat `identity` in the call of a voice channel.
@@ -471,6 +524,22 @@ mod tests {
             timeline_started_at: Some(at),
             transcript: TranscriptState::Ready,
             transcript_lines: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_end_of_one_share_names_its_slot_in_the_query() {
+        for (slot, query) in [(Some(1), Some("slot=1")), (None, None)] {
+            let (seen, api) = server(&serde_json::Value::Null);
+            api.end_screen_share(slot).await.unwrap();
+            assert_eq!(
+                seen.request(),
+                (
+                    Method::Delete,
+                    "/api/v1/call/screen-share".to_owned(),
+                    query.map(str::to_owned)
+                )
+            );
         }
     }
 

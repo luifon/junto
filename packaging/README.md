@@ -54,7 +54,7 @@ JUNTO_CODESIGN_KEYCHAIN='/absolute/private/code-signing/signing.keychain-db' \
     packaging/release.sh /absolute/new-release-directory
 ```
 
-Use a new absolute output directory. The command builds the version, assembles and signs the bundle, checks its identity, compiled trust and version, and writes the archive, both release informations and the first-install ZIP, which holds `Junto.app` alone. No Python is needed on the installed machine. The internal `release_locked.sh` entry point requires its caller to hold the shared lock.
+Use a new absolute output directory. The command builds the version, assembles and signs the bundle, checks its identity, compiled trust and version, and writes the archive, both release informations, the first-install ZIP, which holds `Junto.app` alone, and the disk image `Junto-<version>-macos-<architecture>.dmg` with `Junto.app` and a link to Applications, signed with the same identity (`dmg.py`, ADR 0728). No Python is needed on the installed machine. The internal `release_locked.sh` entry point requires its caller to hold the shared lock.
 
 ## Linux
 
@@ -65,7 +65,7 @@ JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
     packaging/release_linux.sh target/linux-release
 ```
 
-The output directory holds the tarball, the AppImage, and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it (ADR 0756). `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
+The output directory holds the tarball, the AppImage, the Debian package `junto_<version>_amd64.deb` (ADR 0728), and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it (ADR 0756). `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish linux directory x86_64 target/linux-release/package-directory \
@@ -79,11 +79,12 @@ target/release/junto-release publish linux appimage x86_64 target/linux-release/
 On a Windows machine with the Rust toolchain of `rust-toolchain.toml` and the MSVC build tools, with `JUNTO_UPDATE_SOURCE` set:
 
 ```sh
-CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover
-python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory>
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover --bin junto-installer --bin junto-release
+python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory> \
+    --installer target/release/junto-installer.exe --release-tool target/release/junto-release.exe
 ```
 
-The output directory holds the ZIP, the source directory `package-directory`, and `Junto-<version>-windows-x86_64.pdb`, the symbols of `junto.exe` with the line tables of every crate. The package does not carry them; publish the file with the release (ADR 0755, ADR 0757). `windows.py` refuses a build without symbols. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
+The output directory holds the ZIP, the setup program `Junto-<version>-windows-x86_64-setup.exe` (ADR 0728), the source directory `package-directory`, and `Junto-<version>-windows-x86_64.pdb`, the symbols of `junto.exe` with the line tables of every crate. The package does not carry them; publish the file with the release (ADR 0755, ADR 0757). `windows.py` refuses a build without symbols. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish windows directory x86_64 <output>/package-directory \
@@ -111,6 +112,23 @@ Each package holds `licences/Junto-LICENSE.txt` and `licences/third-party-licenc
 
 External test-only public-key, freshness-key, certificate and version variables mark the build as "test configuration" in Version and `--version`. `publish` of such a build requires `--test-configuration`; a product build refuses that flag for every command. The public release wrappers refuse overrides. Tests never rewrite tracked trust or version files. `JUNTO_TEST_KEYCHAIN_LOCK` selects an isolated lock for controlled tests; every unit test sets it.
 
-CI runs the portable Rust release, installer and configuration tests and the Python unit tests on every system. `check_signing.py` compares certificate requirements using paths with spaces and checks keychain restoration. `check_update.py` builds the release tool and the recovery program with test keys and a test certificate, then runs a real update of signed test bundles from a local source and the documented recovery command while the new executable fails; these fixture executables only end with a status. It then runs `check_lifecycle.py` on the real client: two builds of the checkout with temporary test keys, the workspace version and the next patch version, in the target directory `lifecycle` inside the target directory. The first package is installed in a folder whose name holds a space and a character outside ASCII; the installed client updates itself from a local source with `--update-from`, which only a test configuration accepts; the recovery program rolls the update back. At each of the three stages the installation must equal the package of the expected version file by file (on macOS also `codesign --verify --deep --strict`), and the client must state that version and draw its first frame with a new empty profile. `check_linux.py` (in the Linux build image) and `check_windows.py` check the Linux and Windows packages (ADR 0754, ADR 0755) and run the same lifecycle; Linux starts under X11 and Wayland and uses FUSE for the AppImage when its prerequisites are there, else states why it uses extract-and-run. The processes of every command are ended when it returns. These checks build in the repository's target directory; a local caller holds `tools/serial.sh`.
+CI runs the portable Rust release, installer and configuration tests and the Python unit tests on every system. `check_signing.py` compares certificate requirements using paths with spaces and checks keychain restoration. `check_update.py` builds the release tool and the recovery program with test keys and a test certificate, then runs a real update of signed test bundles from a local source and the documented recovery command while the new executable fails; these fixture executables only end with a status. It then runs `check_lifecycle.py` on the real client: two builds of the checkout with temporary test keys, the workspace version and the next patch version, in the target directory `lifecycle` inside the target directory. The first package is installed in a folder whose name holds a space and a character outside ASCII; the window of the installed client finds the newer version on a local source, installs it with the update action of its version line and offers the restart (`--update-source` and `--check-update`, which only a test configuration accepts); the recovery program rolls the update back. At each of the three stages the installation must equal the package of the expected version file by file (on macOS also `codesign --verify --deep --strict`), and the client must state that version and draw its first frame with a new empty profile. `check_linux.py` (in the Linux build image) and `check_windows.py` check the Linux and Windows packages (ADR 0754, ADR 0755) and run the same lifecycle; Linux starts under X11 and Wayland and uses FUSE for the AppImage when its prerequisites are there, else states why it uses extract-and-run. The processes of every command are ended when it returns. These checks build in the repository's target directory; a local caller holds `tools/serial.sh`.
 
 `check_release.py`, under the shared lock, builds two real macOS product releases with temporary role-separated keys. It checks test-build marking, publication refusal, compiled-source installation and the documented recovery command while the new executable fails. It removes temporary identities and files; remove the release build output afterwards. `check_start.py <Junto.app>` is separate: it starts the bundled executable with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires the first-frame line. Neither packaging nor signing grants microphone, camera, screen or notification permission.
+
+## The release site
+
+`site.py` writes the static files of the release site from the retained release directories (ADR 0727). It needs Python 3.11 or later and no build:
+
+```sh
+python3 packaging/site.py /private/releases docs/releases /private/new-site \
+    --base https://releases.example.test/junto/ \
+    --server-install https://docs.example.test/junto/install.html
+```
+
+- The first argument is a directory with one directory per published version, named with the version (`0.1.0`), with every file of that release from every system: the update files of each target and the first-install files `Junto-<version>-macos-aarch64.dmg`, `Junto-<version>-macos-aarch64.zip`, `Junto-<version>-windows-x86_64-setup.exe`, `Junto-<version>-windows-x86_64.zip`, `Junto-<version>-windows-x86_64.pdb`, `Junto-<version>-x86_64.AppImage`, `junto-<version>-linux-x86_64.tar.gz` and `junto_<version>_amd64.deb`. Other directories are ignored; an unknown file stops the command. The newest version must hold every first-install file and at least one latest file.
+- The second argument is the directory of the notes, `docs/releases`, with `<version>.md` for every version.
+- The third argument is the new output directory. It must not exist; a failure leaves no output directory. The command does not change the releases directory.
+- `--base` is the HTTPS address of the site, ending in `/`. `<base>updates/` is the update source, which every build of the release takes as `JUNTO_UPDATE_SOURCE`. `--server-install` is the address of the server install document. Neither address is written in a tracked file.
+
+The output holds `index.html`, `notes/<version>.html`, `download/<version>/` with the first-install files, the symbols file and `SHA256SUMS`, and `updates/` with the archives and release files of every version and the newest latest file of each target. The command prints every file with its size and, last, the order of upload: every file except `updates/latest-*.json`, then the latest files.

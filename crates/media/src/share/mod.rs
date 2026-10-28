@@ -26,7 +26,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use junto_client_core::protocol::call::ShareAudio;
+use junto_client_core::protocol::call::{MAX_SHARES, ShareAudio};
 use livekit::webrtc::video_frame::VideoBuffer;
 
 use crate::audio::Format;
@@ -179,6 +179,9 @@ impl Resolution {
 
 /// The largest picture of a source in the dialog of a share.
 pub const PREVIEW_BOUND: (u32, u32) = (320, 180);
+/// A preview that the system has not made after this time fails, so that one window of an
+/// application that does not answer does not hold the previews after it.
+pub const PREVIEW_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The frame rates that a person chooses from.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -205,6 +208,11 @@ pub struct CaptureRequest {
     pub picture: PictureSource,
     pub sound: SoundChoice,
     pub quality: ShareQuality,
+    /// The window of the client over which a system that shows its own dialog of the share
+    /// shows it, as a window identifier of the desktop portal: `x11:` with the XID in
+    /// hexadecimal, or `wayland:` with a handle that the window exported. Only the portal of
+    /// Linux reads it (ADR 0751).
+    pub dialog_parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -230,6 +238,9 @@ pub enum CaptureError {
     /// The media connection that carried the share ended.
     #[error("the media connection of the call ended")]
     Interrupted,
+    /// The person runs as many shares as one person can (`MAX_SHARES`).
+    #[error("a person runs at most {} shares at once", MAX_SHARES)]
+    TooMany,
     #[error("the capture failed: {0}")]
     Failed(String),
 }
@@ -373,27 +384,73 @@ pub fn system() -> Arc<dyn ScreenCapture> {
     }
 }
 
-/// The name of the track of a share picture. It states what is shared and at which frame
-/// rate, because the record of a share on the server holds only its sound (ADR 0737).
-pub fn track_name(kind: ShareKind, frame_rate: u32) -> String {
+/// What the name of the picture track of a share states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackName {
+    pub kind: ShareKind,
+    pub frame_rate: u32,
+    /// The slot of the share among the shares of its person.
+    pub slot: u8,
+}
+
+/// The name of the track of a share picture. It states what is shared, at which frame
+/// rate and in which slot: `screen/30` for slot 0, which a client of one share reads, and
+/// `window/30/1` for slot 1 (ADR 0737). The server reads the slot from it (ADR 0510).
+pub fn track_name(kind: ShareKind, frame_rate: u32, slot: u8) -> String {
     let kind = match kind {
         ShareKind::Screen => "screen",
         ShareKind::Window => "window",
     };
-    format!("{kind}/{frame_rate}")
+    match slot {
+        0 => format!("{kind}/{frame_rate}"),
+        slot => format!("{kind}/{frame_rate}/{slot}"),
+    }
 }
 
 /// Reads [`track_name`]. A name of another form, as another client gives it, states
-/// nothing.
-pub fn read_track_name(name: &str) -> Option<(ShareKind, u32)> {
-    let (kind, rate) = name.split_once('/')?;
-    let kind = match kind {
+/// nothing; its track is the share of slot 0.
+pub fn read_track_name(name: &str) -> Option<TrackName> {
+    let mut parts = name.split('/');
+    let kind = match parts.next()? {
         "screen" => ShareKind::Screen,
         "window" => ShareKind::Window,
         _ => return None,
     };
-    let rate = rate.parse().ok().filter(|rate| (1..=240).contains(rate))?;
-    Some((kind, rate))
+    let frame_rate = parts
+        .next()?
+        .parse()
+        .ok()
+        .filter(|rate| (1..=240).contains(rate))?;
+    let slot = match parts.next() {
+        None => 0,
+        Some(slot) => slot.parse().ok().filter(|slot| *slot < MAX_SHARES)?,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(TrackName {
+        kind,
+        frame_rate,
+        slot,
+    })
+}
+
+/// The name of the sound track of a share: `share-sound` for slot 0, as a client of one
+/// share names it, and `share-sound/1` for slot 1.
+pub fn sound_name(slot: u8) -> String {
+    match slot {
+        0 => "share-sound".to_owned(),
+        slot => format!("share-sound/{slot}"),
+    }
+}
+
+/// The slot of the share of a sound track. Every name other than [`sound_name`] of a slot
+/// is slot 0.
+pub fn read_sound_name(name: &str) -> u8 {
+    name.strip_prefix("share-sound/")
+        .and_then(|slot| slot.parse().ok())
+        .filter(|slot| *slot < MAX_SHARES)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -415,12 +472,22 @@ mod tests {
     }
 
     #[test]
-    fn the_name_of_a_share_track_states_its_kind_and_its_frame_rate() {
-        assert_eq!(track_name(ShareKind::Screen, 30), "screen/30");
-        assert_eq!(read_track_name("screen/30"), Some((ShareKind::Screen, 30)));
+    fn the_name_of_a_share_track_states_its_kind_its_frame_rate_and_its_slot() {
+        let named = |kind, frame_rate, slot| TrackName {
+            kind,
+            frame_rate,
+            slot,
+        };
+        // Slot 0 keeps the name that a client of one share reads.
+        assert_eq!(track_name(ShareKind::Screen, 30, 0), "screen/30");
         assert_eq!(
-            read_track_name(&track_name(ShareKind::Window, 60)),
-            Some((ShareKind::Window, 60))
+            read_track_name("screen/30"),
+            Some(named(ShareKind::Screen, 30, 0))
+        );
+        assert_eq!(track_name(ShareKind::Window, 60, 2), "window/60/2");
+        assert_eq!(
+            read_track_name(&track_name(ShareKind::Window, 60, 2)),
+            Some(named(ShareKind::Window, 60, 2))
         );
         for other in [
             "",
@@ -429,8 +496,21 @@ mod tests {
             "screen/0",
             "screen/fast",
             "window/999",
+            "screen/30/3",
+            "screen/30/x",
+            "screen/30/1/1",
         ] {
             assert_eq!(read_track_name(other), None, "{other}");
+        }
+        assert_eq!(sound_name(0), "share-sound");
+        assert_eq!(sound_name(1), "share-sound/1");
+        for (name, slot) in [
+            ("share-sound", 0),
+            ("share-sound/2", 2),
+            ("share-sound/3", 0),
+            ("other", 0),
+        ] {
+            assert_eq!(read_sound_name(name), slot, "{name}");
         }
     }
 

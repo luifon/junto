@@ -40,5 +40,25 @@ fn main() -> ExitCode {
         }
         println!("wrote {}", path.display());
     }
+    // The digest of the event document of each revision (ADR 0206): read from the committed
+    // file, and written beside the other documents.
+    let committed = PathBuf::from(junto_server::EVENT_REVISIONS_PATH);
+    let held = std::fs::read_to_string(&committed).unwrap_or_default();
+    let path = match (&directory, committed.file_name()) {
+        (Some(directory), Some(name)) => directory.join(name),
+        _ => committed,
+    };
+    let document = match junto_server::event_revisions_document(&held) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("cannot build {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = std::fs::write(&path, document) {
+        eprintln!("cannot write {}: {error}", path.display());
+        return ExitCode::FAILURE;
+    }
+    println!("wrote {}", path.display());
     ExitCode::SUCCESS
 }

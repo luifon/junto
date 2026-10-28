@@ -1210,7 +1210,7 @@ async fn rule_a15_the_statements_of_the_archive_read_through_indexes() {
     )
     .bind(workspace.id)
     .bind(server.clock.now())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query("analyze channels")

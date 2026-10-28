@@ -22,6 +22,7 @@ use junto_client_core::protocol::ids::{
     AccessTokenId, AccountId, AuditEntryId, CategoryId, ChannelId, ExportId, ServerId,
     ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
+use junto_client_core::saved_exports::{Listing, SavedExports};
 use junto_client_core::transfers::{Stored, StoredKind, part_file};
 
 use super::view::records::{
@@ -29,6 +30,7 @@ use super::view::records::{
 };
 use super::{AskKind, Made};
 use crate::state::AppState;
+use crate::state::view::{ServerSnapshot, shown_model};
 use crate::text;
 
 /// How many requests for the file of an export in a row may make no progress.
@@ -232,6 +234,10 @@ pub struct ExportFiles {
     /// nothing when it ends.
     pub(crate) running: HashMap<(ServerId, ExportId), RunningSave>,
     pub(crate) saves: u64,
+    /// The exports whose file a save completed, with the account that saved each, as the
+    /// data directory holds them (ADR 0710). The count of the navigation reads them
+    /// (ADR 0761).
+    pub(crate) saved: SavedExports,
 }
 
 /// What a running save tells and is told: the bytes that it has written, and that it
@@ -582,15 +588,31 @@ impl AppState {
         export_id: ExportId,
         cx: &mut Context<Self>,
     ) {
+        let account_id = self
+            .client
+            .server(server_id)
+            .and_then(|server| server.account());
         self.admin_ask(
             server_id,
             AskKind::RemoveExport(export_id),
             |api| async move { api.remove_export(export_id).await },
-            move |this, (), _| {
+            move |this, (), cx| {
                 let key = (server_id, export_id);
                 // A save that runs ends by itself: the server ends its answer.
                 if !this.admin.exports.running.contains_key(&key) {
                     this.admin.exports.files.remove(&key);
+                }
+                if let Some(account_id) = account_id
+                    && this
+                        .admin
+                        .exports
+                        .saved
+                        .contains(server_id, account_id, export_id)
+                {
+                    this.change_saved_exports(
+                        move |saved| saved.remove(server_id, account_id, export_id),
+                        cx,
+                    );
                 }
             },
             cx,
@@ -758,14 +780,79 @@ impl AppState {
         if exports.running.get(&key).map(|held| held.number) != Some(number) {
             return;
         }
-        exports.running.remove(&key);
+        let account_id = exports.running.remove(&key).map(|held| held.account_id);
+        let completed = result.is_ok();
         let state = match result {
             Ok(path) => ExportSave::Saved(path),
             Err(failure) => ExportSave::Failed(failure.sentence()),
         };
         exports.files.insert(key, state);
+        if completed && let Some(account_id) = account_id {
+            let (server_id, export_id) = key;
+            self.change_saved_exports(
+                move |saved| saved.insert(server_id, account_id, export_id),
+                cx,
+            );
+        }
         self.forget_gone_export_files();
         cx.notify();
+    }
+
+    /// Changes the exports that this device saved. The count reads the change at once, and
+    /// the file is written on a background thread (ADR 0710, ADR 0730).
+    fn change_saved_exports(
+        &mut self,
+        change: impl Fn(&mut SavedExports) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        change(&mut self.admin.exports.saved);
+        let store = self.client.saved_exports();
+        Self::queue_write(
+            cx,
+            move || store.update(|stored| change(stored)),
+            |_, written, _| {
+                if let Err(error) = written {
+                    tracing::warn!(%error, "the saved exports were not stored");
+                }
+            },
+        );
+    }
+
+    /// Puts away a saved export whose server this device holds no longer, and one that the
+    /// export list of the account that saved it does not have any more: the person or the
+    /// server removed it. The list of another account of the server, and a list that is not
+    /// read now, keep the mark. It runs with every change of the state.
+    pub(super) fn settle_saved_exports(
+        &mut self,
+        snapshots: &[ServerSnapshot],
+        cx: &mut Context<Self>,
+    ) {
+        let gone = self.admin.exports.saved.stale(|server_id| {
+            let Some(server) = snapshots.iter().find(|server| server.id == server_id) else {
+                return Listing::Removed;
+            };
+            let Some(model) = shown_model(server) else {
+                return Listing::Unknown;
+            };
+            match model.admin.exports.loaded() {
+                Some(listed) => Listing::Loaded {
+                    account_id: model.account.id,
+                    exports: listed.iter().map(|held| held.id).collect(),
+                },
+                None => Listing::Unknown,
+            }
+        });
+        if gone.is_empty() {
+            return;
+        }
+        self.change_saved_exports(
+            move |saved| {
+                for (server_id, account_id, export_id) in &gone {
+                    saved.remove(*server_id, *account_id, *export_id);
+                }
+            },
+            cx,
+        );
     }
 
     /// Stops every save whose server this device holds no longer, and every save whose
@@ -1116,10 +1203,24 @@ impl AuditLog {
 #[cfg(feature = "test-support")]
 impl ExportFiles {
     /// The files of these exports: one that is saved now with its written bytes, one
-    /// that was saved with its path, and one that failed with its sentence.
-    pub fn of(files: impl IntoIterator<Item = ((ServerId, ExportId), ExportSave)>) -> Self {
+    /// that was saved with its path by this account, and one that failed with its
+    /// sentence.
+    pub fn of(
+        account_id: AccountId,
+        files: impl IntoIterator<Item = ((ServerId, ExportId), ExportSave)>,
+    ) -> Self {
+        let files: HashMap<(ServerId, ExportId), ExportSave> = files.into_iter().collect();
+        let mut saved = SavedExports::default();
+        for (server_id, export_id) in files
+            .iter()
+            .filter(|(_, save)| matches!(save, ExportSave::Saved(_)))
+            .map(|(key, _)| *key)
+        {
+            saved.insert(server_id, account_id, export_id);
+        }
         Self {
-            files: files.into_iter().collect(),
+            files,
+            saved,
             ..Self::default()
         }
     }

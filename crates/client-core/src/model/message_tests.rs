@@ -87,6 +87,8 @@ pub(crate) fn changed(message: &Message, deleted: bool) -> Event {
         message_id: message.id,
         position: message.position,
         deleted,
+        thread_root: None,
+        thread: None,
     }
 }
 
@@ -591,6 +593,7 @@ fn a_message_without_an_answer_is_confirmed_by_its_copy_and_by_nothing_else() {
         media_type: "application/octet-stream".to_owned(),
         width: None,
         height: None,
+        frames: None,
     }];
     assert!(reply.is_confirmed_by(&copy, own));
     // A message that failed is not confirmed: the server refused it.
@@ -768,6 +771,7 @@ fn a_message_inside_the_bounds_of_the_server_fits_and_one_above_them_does_not() 
             media_type: "application/octet-stream".to_owned(),
             width: None,
             height: None,
+            frames: None,
         })
         .collect();
     most.reactions = (0..MOST_REACTIONS)

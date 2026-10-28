@@ -125,8 +125,7 @@ pub const PROFILE_HELP: &str =
 pub const PICTURE: &str = "Picture";
 pub const CHOOSE_PICTURE: &str = "Choose a picture…";
 pub const REMOVE_PICTURE: &str = "Remove picture";
-pub const PICTURE_BOUNDS: &str =
-    "A PNG, JPEG or WebP image of at most 256 KiB and at most 1024 by 1024 pixels.";
+pub const PICTURE_BOUNDS: &str = "A PNG, JPEG, WebP or GIF file of at most 10 MiB. You choose the square that the picture shows.";
 pub const NO_PICTURE: &str =
     "Your account has no picture. The pattern is made from the identifier of the account.";
 pub const PICTURE_SENDING: &str = "Sending the picture…";
@@ -167,7 +166,7 @@ pub const fn invalid_name(invalid: &InvalidName) -> &'static str {
 /// Why a file is not sent as a picture.
 pub const fn invalid_picture(invalid: InvalidAvatar) -> &'static str {
     match invalid {
-        InvalidAvatar::TooLarge => "The file is larger than 256 KiB. Choose a smaller picture.",
+        InvalidAvatar::TooLarge => "The picture is larger than 2 MiB. Choose a smaller picture.",
         InvalidAvatar::Unsupported => "The file is not a PNG, JPEG or WebP image.",
     }
 }
@@ -435,7 +434,7 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
             );
         }
         (Some(ErrorCode::ImageTooLarge), _) => {
-            "The server did not take the picture: it is larger than 256 KiB."
+            "The server did not take the picture: it is larger than this server takes."
         }
         (Some(ErrorCode::ImageUnsupported), _) => {
             "The server did not take the picture. It takes a still PNG, JPEG or WebP image of \
@@ -516,6 +515,13 @@ pub fn link_error(error: &FlowError) -> String {
     };
     fixed.to_owned()
 }
+
+/// The results of the forms and questions of the account layer, drawn in the space that a
+/// row keeps after the answer (ADR 0730).
+pub const DEVICE_NAME_SAVED: &str = "The new name of the device is saved.";
+pub const DEVICE_REMOVED: &str = "The device is removed.";
+pub const WORKSPACE_LEFT: &str = "You left the workspace.";
+pub const ACCOUNT_DELETED: &str = "The account is deleted.";
 
 #[cfg(test)]
 mod tests {
@@ -629,7 +635,7 @@ mod tests {
                 AskKind::SetPicture,
                 &rejected(ErrorCode::ImageTooLarge, None)
             )
-            .contains("256 KiB")
+            .contains("larger than this server takes")
         );
         assert!(
             refusal(

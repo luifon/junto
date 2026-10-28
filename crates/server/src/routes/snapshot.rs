@@ -1,5 +1,5 @@
-use axum::Json;
 use axum::extract::State;
+use axum::{Json, http::HeaderMap};
 use junto_authz::Request;
 use junto_protocol::call::{CallMove, ChannelCall, EntryRequest};
 use junto_protocol::ids::{CallId, ChannelId, WorkspaceId};
@@ -99,11 +99,13 @@ async fn own_entry_requests(
     path = "/api/v1/snapshot",
     tag = "events",
     security(("session" = [])),
+    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences")),
     responses((status = 200, body = SnapshotResponse), ApiError)
 )]
 pub async fn get_snapshot(
     State(app): State<AppState>,
     bearer: Bearer,
+    headers: HeaderMap,
 ) -> ApiResult<Json<SnapshotResponse>> {
     let now = app.now();
     read!(app, |connection| {
@@ -272,5 +274,12 @@ pub async fn get_snapshot(
             moderation_notices_next: notices.next_before,
         })
     })
-    .map(Json)
+    .map(|mut response| {
+        let extended = super::notifications::extended_preferences(&headers);
+        for scope in &mut response.snapshot.notification_settings {
+            scope.settings =
+                super::notifications::compatible_settings(scope.settings.clone(), extended);
+        }
+        Json(response)
+    })
 }

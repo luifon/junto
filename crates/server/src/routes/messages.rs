@@ -421,8 +421,15 @@ pub async fn delete_message(
                 return Err(ApiError::conflict("recording is still processing"));
             }
             rate(&app, &access, &mut counted)?;
-            crate::recordings::store::remove(connection, now, &recording, Some(access.account_id))
-                .await?;
+            let lease = app.config.limits.recordings.transcription.lease;
+            crate::recordings::store::remove(
+                connection,
+                now,
+                &recording,
+                Some(access.account_id),
+                lease,
+            )
+            .await?;
             return Ok(());
         }
         if message.permanent {
@@ -457,6 +464,7 @@ pub async fn delete_message(
         }
         messages::remove(connection, now, &place, &message).await
     })?;
+    app.recordings.recording_removed();
     app.recordings.process_now();
     Ok(StatusCode::NO_CONTENT)
 }

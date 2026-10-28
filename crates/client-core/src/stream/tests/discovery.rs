@@ -7,7 +7,7 @@ use junto_protocol::discovery::{
 use junto_protocol::ids::{ChannelId, MessageId};
 use junto_protocol::message::{Message, ThreadState};
 
-use super::messages::{Room, positions, room};
+use super::messages::{Room, positions, room, room_at};
 use super::*;
 use crate::model::message_tests::{document, message};
 use crate::model::{Loadable, Named, PlaceId};
@@ -132,7 +132,8 @@ async fn a_reply_is_sent_into_its_thread_and_the_read_position_goes_to_the_threa
 
 #[tokio::test(start_paused = true)]
 async fn the_unread_threads_are_read_after_the_notice_of_a_root_and_two_reads_keep_a_distance() {
-    let room = room().await;
+    // A server of revision 1: its events state no thread, and the list is read.
+    let room = room_at(1).await;
     let rig = &room.rig;
     let root = root_of(&room);
     assert_eq!(room.sent_to(UNREAD), 0);
@@ -337,7 +338,13 @@ async fn a_notice_event_reads_the_notices_and_the_messages_that_they_name() {
         chat.notices = vec![notice.clone()];
     });
     room.peer
-        .event(41, Event::NotificationChanged { message_id: far.id })
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: far.id,
+                notice: None,
+            },
+        )
         .await;
     let model = rig
         .model_when("the notice with its message", |model| {
@@ -360,7 +367,13 @@ async fn a_notice_event_reads_the_notices_and_the_messages_that_they_name() {
     // The notice is read on another device: the list is read again and names nothing.
     room.chat(|chat| chat.notices.clear());
     room.peer
-        .event(43, Event::NotificationChanged { message_id: far.id })
+        .event(
+            43,
+            Event::NotificationChanged {
+                message_id: far.id,
+                notice: None,
+            },
+        )
         .await;
     let model = rig
         .model_when("no notice", |model| model.notices.is_empty())
@@ -387,6 +400,7 @@ async fn notices_at_once_read_the_notices_with_a_distance_and_the_last_one_is_he
             41,
             Event::NotificationChanged {
                 message_id: first.id,
+                notice: None,
             },
         )
         .await;
@@ -408,6 +422,7 @@ async fn notices_at_once_read_the_notices_with_a_distance_and_the_last_one_is_he
                 42 + number,
                 Event::NotificationChanged {
                     message_id: mention.id,
+                    notice: None,
                 },
             )
             .await;
@@ -448,6 +463,7 @@ async fn a_limited_read_of_the_notices_waits_for_the_time_that_the_server_names(
             41,
             Event::NotificationChanged {
                 message_id: held.id,
+                notice: None,
             },
         )
         .await;
@@ -468,6 +484,7 @@ async fn a_limited_read_of_the_notices_waits_for_the_time_that_the_server_names(
             42,
             Event::NotificationChanged {
                 message_id: later.id,
+                notice: None,
             },
         )
         .await;
@@ -504,6 +521,7 @@ async fn a_named_wait_longer_than_the_longest_retry_is_bounded() {
             41,
             Event::NotificationChanged {
                 message_id: held.id,
+                notice: None,
             },
         )
         .await;
@@ -546,6 +564,7 @@ async fn a_refused_cursor_of_older_notices_reads_the_first_page_again() {
             41,
             Event::NotificationChanged {
                 message_id: held.id,
+                notice: None,
             },
         )
         .await;
@@ -791,7 +810,13 @@ async fn a_named_message_that_the_server_answers_with_another_message_is_not_ask
         chat.answered_wrongly = vec![wanted];
     });
     room.peer
-        .event(41, Event::NotificationChanged { message_id: wanted })
+        .event(
+            41,
+            Event::NotificationChanged {
+                message_id: wanted,
+                notice: None,
+            },
+        )
         .await;
     rig.model_when("the read that failed", |model| {
         model.named(wanted) == Some(&Named::Failed)
@@ -830,7 +855,8 @@ async fn the_answer_to_a_read_position_of_a_thread_does_not_remove_what_came_aft
         routes.snapshot.as_mut().unwrap().threads = vec![state(5, 4, 1)];
     }
     rig.want(ConnectionLevel::Selected, "jst_one");
-    let (peer, _, _) = rig.served().await;
+    // A server of revision 1: its events state no thread, and the list is read.
+    let (peer, _, _) = rig.served_at(1).await;
     let thread = PlaceId::Thread {
         channel_id: rig.scene.general,
         root_id: root.id,
@@ -862,6 +888,8 @@ async fn the_answer_to_a_read_position_of_a_thread_does_not_remove_what_came_aft
         message_id: held.id,
         position: held.position,
         deleted: false,
+        thread_root: None,
+        thread: None,
     };
     peer.event(41, changed(&sixth)).await;
     peer.event(42, changed(&root)).await;
@@ -1296,6 +1324,8 @@ async fn a_mute_with_a_later_end_is_not_asked_for_before_that_end() {
             message_id: second.id,
             position: second.position,
             deleted: false,
+            thread_root: None,
+            thread: None,
         },
     )
     .await;
@@ -1307,4 +1337,139 @@ async fn a_mute_with_a_later_end_is_not_asked_for_before_that_end() {
     .await;
     tokio::time::sleep(Duration::from_secs(600)).await;
     assert_eq!(rig.http.count("/messages/read"), 1);
+}
+
+/// A burst of replies in a followed thread, each with its notice. A server of event
+/// revision 2 states the notice and the thread state of each for the account, and the
+/// client keeps both lists from the events: it reads neither list again (ADR 0409,
+/// ADR 0412). Before, each reply read both lists, and a busy channel spent the reads that
+/// the server allows an account in a minute.
+#[tokio::test(start_paused = true)]
+async fn a_burst_of_replies_keeps_the_notices_and_the_unread_threads_without_reading_them() {
+    const BURST: u64 = 30;
+    let room = room().await;
+    // The server sends a frame at each heartbeat: the minute without a read below is no
+    // silence of two heartbeats, after which the client would end the connection.
+    room.peer.beat(Duration::from_secs(25));
+    let rig = &room.rig;
+    let root = root_of(&room);
+    let lists = || (rig.http.count("/notifications"), room.sent_to(UNREAD));
+    let before = lists();
+    for number in 1..=BURST {
+        let reply = reply(&room, &root, 3 + number, "a reply");
+        let id = 40 + number * 2;
+        room.peer
+            .event(
+                id,
+                Event::MessageChanged {
+                    place: reply.place,
+                    message_id: reply.id,
+                    position: reply.position,
+                    deleted: false,
+                    thread_root: Some(root.id),
+                    thread: Some(unread(&root, 0, reply.position, number)),
+                },
+            )
+            .await;
+        room.peer
+            .event(
+                id + 1,
+                Event::NotificationChanged {
+                    message_id: reply.id,
+                    notice: Some(Notification {
+                        id: reply.id.as_uuid(),
+                        message_id: reply.id,
+                        kind: NotificationKind::Thread,
+                        created_at: crate::model::tests::time()
+                            + ::time::Duration::seconds(i64::try_from(number).unwrap()),
+                        read_at: None,
+                    }),
+                },
+            )
+            .await;
+    }
+    let model = rig
+        .model_when("every reply is noticed and counted", |model| {
+            model.notices.len() == usize::try_from(BURST).unwrap()
+                && model
+                    .thread_state(root.id)
+                    .is_some_and(|state| state.unread == BURST)
+        })
+        .await;
+    assert!(
+        model
+            .notices
+            .windows(2)
+            .all(|pair| pair[0].created_at > pair[1].created_at)
+    );
+    assert_eq!(model.threads.len(), 1);
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    assert_eq!(lists(), before);
+
+    // A notice event that does not state the notice, as an older server sends it, reads
+    // the list once.
+    let last = reply(&room, &root, 3 + BURST + 1, "the last reply");
+    room.peer
+        .event(
+            200,
+            Event::NotificationChanged {
+                message_id: last.id,
+                notice: None,
+            },
+        )
+        .await;
+    soon("the list is read", async {
+        while rig.http.count("/notifications") == before.0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert_eq!(rig.http.count("/notifications"), before.0 + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn background_notices_refresh_the_thread_without_channel_events() {
+    let mut rig = rig();
+    let place = rig.scene.text_place();
+    let root = message(place, 1, rig.scene.account_id, "root");
+    let answer = message(place, 2, AccountId::generate(), "reply");
+    {
+        let mut routes = rig.http.routes.lock().unwrap();
+        routes.chat.own = Some(rig.scene.account_id);
+        routes.chat.messages = vec![root.clone()];
+        let mut reply = answer.clone();
+        reply.thread_root = Some(root.id);
+        routes.chat.replies = vec![reply];
+        routes.chat.threads = vec![unread(&root, 0, 2, 1)];
+    }
+    rig.set_snapshot(40, |snapshot| {
+        snapshot.threads = vec![unread(&root, 0, 2, 1)];
+    });
+    rig.want(ConnectionLevel::Background, "jst_one");
+    let (peer, level, _) = rig.served_at(2).await;
+    assert_eq!(level, Level::Background);
+    rig.model_when("the starting thread", |model| model.threads.len() == 1)
+        .await;
+    rig.http.routes.lock().unwrap().chat.threads = vec![unread(&root, 0, 3, 2)];
+    peer.event(
+        41,
+        Event::NotificationChanged {
+            message_id: answer.id,
+            notice: Some(Notification {
+                id: answer.id.as_uuid(),
+                message_id: answer.id,
+                kind: NotificationKind::Thread,
+                created_at: crate::model::tests::time(),
+                read_at: None,
+            }),
+        },
+    )
+    .await;
+    rig.model_when("the background thread count", |model| {
+        model
+            .thread_state(root.id)
+            .is_some_and(|state| state.unread == 2)
+    })
+    .await;
 }

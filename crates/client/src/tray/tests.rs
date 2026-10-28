@@ -1,7 +1,7 @@
 use junto_client_core::protocol::call::{BlockReason, CallPlace, MicrophoneBlock};
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId, WorkspaceId};
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
-use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+use junto_media::engine::{MicrophoneState, OutputState};
 
 use super::*;
 
@@ -26,7 +26,9 @@ fn call() -> ActiveCall {
         output_device: None,
         microphone_block: None,
         sound_block: None,
-        share: ShareState::Off,
+        share_limit: junto_client_core::protocol::call::MAX_SHARES,
+        own_shares: std::collections::BTreeMap::new(),
+        share_ended: None,
         shares: Vec::new(),
         watched: None,
         withheld: Default::default(),
@@ -132,56 +134,106 @@ fn a_microphone_that_the_server_holds_shows_muted_and_cannot_be_opened() {
         by: AccountId::generate(),
         reason: BlockReason::Moderator,
     });
-    // The own setting is open: the person can still close it, for after the block.
+    // The own setting is open: the person can still close it, for after the block. The
+    // picture is the one of a microphone that the call holds closed.
     let open = derive(&calls(Some(active.clone()), false, false));
-    assert_eq!(open.picture(), Picture::Muted);
+    assert_eq!(open.picture(), Picture::Held);
+    assert_eq!(open.tooltip(), text::IN_A_CALL_HELD);
     assert_eq!(open.menu()[0].label, text::MUTE_MICROPHONE);
     assert!(open.menu()[0].enabled);
-    let closed = derive(&calls(Some(active), true, false));
+    let closed = derive(&calls(Some(active.clone()), true, false));
+    assert_eq!(closed.picture(), Picture::Held);
     assert_eq!(closed.menu()[0].label, text::UNMUTE_MICROPHONE);
     assert!(!closed.menu()[0].enabled);
+    // The sound off takes precedence over the held microphone.
+    let deaf = derive(&calls(Some(active), true, true));
+    assert_eq!(deaf.picture(), Picture::SoundOff);
+}
+
+#[test]
+fn a_mention_adds_the_mark_to_every_picture_and_its_number_to_the_tooltip() {
+    for (mut state, picture) in [
+        (derive(&calls(None, false, false)), Picture::Plain),
+        (derive(&calls(Some(call()), false, false)), Picture::Call),
+        (derive(&calls(Some(call()), true, false)), Picture::Muted),
+        (derive(&calls(Some(call()), true, true)), Picture::SoundOff),
+    ] {
+        assert_eq!(
+            state.icon(),
+            IconPicture {
+                picture,
+                mention: false
+            }
+        );
+        let plain = state.tooltip();
+        state.mentions = 3;
+        assert_eq!(
+            state.icon(),
+            IconPicture {
+                picture,
+                mention: true
+            }
+        );
+        assert_eq!(
+            state.tooltip(),
+            format!("{plain}, 3 unread mentions and direct messages")
+        );
+        state.mentions = 1;
+        assert_eq!(
+            state.tooltip(),
+            format!("{plain}, 1 unread mention or direct message")
+        );
+    }
+    assert_eq!(
+        IconPicture {
+            picture: Picture::Held,
+            mention: true
+        }
+        .name(),
+        "held-mention"
+    );
 }
 
 #[test]
 fn the_build_rendered_each_picture() {
-    for picture in [
+    let pictures = [
         Picture::Plain,
         Picture::Call,
         Picture::Muted,
+        Picture::Held,
         Picture::SoundOff,
-    ] {
-        let renderings: Vec<_> = renderings(picture).collect();
-        assert!(!renderings.is_empty(), "{picture:?}");
-        for (side, bytes) in renderings {
+    ];
+    for picture in pictures {
+        for mention in [false, true] {
+            let shown = IconPicture { picture, mention };
+            let renderings: Vec<_> = renderings(shown).collect();
+            // macOS: the template picture at 1x and at 2x; elsewhere every side of the
+            // notification area of Windows and of the status area of Linux.
+            let sides: Vec<u32> = renderings.iter().map(|(side, _)| *side).collect();
             if cfg!(target_os = "macos") {
-                assert!(bytes.starts_with(b"\x89PNG"), "{picture:?} {side}");
+                assert_eq!(sides, [18, 36], "{shown:?}");
             } else {
-                assert_eq!(
-                    bytes.len(),
-                    (side * side * 4) as usize,
-                    "{picture:?} {side}"
-                );
+                assert_eq!(sides, [16, 20, 22, 24, 28, 32, 36, 40, 48, 64], "{shown:?}");
+            }
+            for (side, bytes) in renderings {
+                if cfg!(target_os = "macos") {
+                    assert!(bytes.starts_with(b"\x89PNG"), "{shown:?} {side}");
+                } else {
+                    assert_eq!(bytes.len(), (side * side * 4) as usize, "{shown:?} {side}");
+                }
             }
         }
     }
-    // The marks differ from each other and from the plain icon at the corner of the mark.
-    #[cfg(not(target_os = "macos"))]
-    {
-        let corner = |picture| {
-            let (side, bytes) = renderings(picture)
-                .find(|(side, _)| *side == 32)
+    // Each picture differs from every other one, also from the same picture with the mark.
+    let mut all: Vec<&[u8]> = Vec::new();
+    for picture in pictures {
+        for mention in [false, true] {
+            let (_, bytes) = renderings(IconPicture { picture, mention })
+                .last()
                 .unwrap_or_default();
-            let at = ((side * 3 / 4) * side + side * 3 / 4) as usize * 4;
-            bytes.get(at..at + 4).map(<[u8]>::to_vec)
-        };
-        let corners = [
-            corner(Picture::Plain),
-            corner(Picture::Call),
-            corner(Picture::Muted),
-        ];
-        assert!(corners.iter().all(Option::is_some));
-        assert_ne!(corners[0], corners[1]);
-        assert_ne!(corners[1], corners[2]);
+            assert!(!all.contains(&bytes), "{picture:?} {mention}");
+            all.push(bytes);
+        }
     }
 }
 

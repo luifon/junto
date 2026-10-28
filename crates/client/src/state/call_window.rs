@@ -3,13 +3,16 @@ mod writes;
 use junto_client_core::call_window::{CallWindowSettings, CallWindowStore};
 pub(super) use writes::Writes;
 impl AppState {
+    /// The key of push-to-talk is held in a window or released. A press and a release in
+    /// a call with push-to-talk play their sounds (ADR 0707).
     pub fn window_talking(&mut self, window: gpui::EntityId, talking: bool) {
+        let talking = talking && !self.recording_keybind();
         if talking {
             self.talking_windows.insert(window);
         } else {
             self.talking_windows.remove(&window);
         }
-        self.calls.set_talking(!self.talking_windows.is_empty());
+        self.sync_talking();
     }
     /// The call window, while it is open.
     pub fn call_window(&self) -> Option<gpui::AnyWindowHandle> {

@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::messages_support::{Files, channel, send, text};
 use crate::recordings_support::Studio;
-use crate::support::{FREE_DISK, Scratch, TestServer, fixture_batches};
+use crate::support::{FREE_DISK, Scratch, TestServer};
 
 /// ADR 0408: an account has at most 20 pending uploads, and each one reserves its declared
 /// size in the storage guard. A cancelled upload no longer counts as pending, and its
@@ -167,23 +167,22 @@ async fn a_search_over_20000_matches_stays_below_the_time_that_fills_the_connect
     send(&server, &owner, &channel, "single basalt").await;
     let document = text("placeholder")["document"].clone();
     let messages_before = server.count("messages").await;
-    for (first, last) in fixture_batches(20_000) {
-        sqlx::query(
-            "insert into messages (id, place_id, position, author_id, created_at, document)
-         select gen_random_uuid(), $1, 1000000 + n, $2, $3,
-                jsonb_set($4, '{blocks,0,content,0,text}', to_jsonb('quartz report ' || n::text))
-         from generate_series($5::int, $6::int) n",
-        )
-        .bind(channel.id)
-        .bind(owner.account_id)
-        .bind(server.clock.now())
-        .bind(sqlx::types::Json(&document))
-        .bind(first)
-        .bind(last)
-        .execute(&server.db)
-        .await
-        .unwrap();
-    }
+    let (first, last) = (1, 20_000);
+    sqlx::query(
+        "insert into messages (id, place_id, position, author_id, created_at, document)
+     select gen_random_uuid(), $1, 1000000 + n, $2, $3,
+            jsonb_set($4, '{blocks,0,content,0,text}', to_jsonb('quartz report ' || n::text))
+     from generate_series($5::int, $6::int) n",
+    )
+    .bind(channel.id)
+    .bind(owner.account_id)
+    .bind(server.clock.now())
+    .bind(sqlx::types::Json(&document))
+    .bind(first)
+    .bind(last)
+    .execute(&mut server.test_data().await)
+    .await
+    .unwrap();
     assert_eq!(server.count("messages").await, messages_before + 20_000);
     sqlx::query("analyze messages")
         .execute(&server.db)
@@ -235,7 +234,7 @@ async fn a_mention_of_1000_recipients_and_the_trim_of_its_events_stay_below_the_
     )
     .bind(channel.workspace_id)
     .bind(server.clock.now())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     let route = format!("/api/v1/channels/{}/messages", channel.id);

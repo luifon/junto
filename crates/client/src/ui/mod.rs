@@ -4,12 +4,15 @@
 //! is activated with Enter or Space. A control has a role and a label for the accessibility
 //! tree (ADR 0702).
 
+mod area;
 mod avatar;
 mod button;
 mod controls;
 mod dialog;
 mod field;
+mod fit;
 mod form_space;
+mod held;
 mod marks;
 mod menu;
 mod mosaic;
@@ -18,6 +21,7 @@ mod paint_text;
 mod panel;
 mod pattern;
 mod picture;
+mod placed;
 mod reveal;
 mod rows;
 mod scroll;
@@ -29,12 +33,19 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
+pub use area::{COVER, KEPT, area, cover};
+#[cfg(feature = "test-support")]
+pub use area::{record_areas, take_areas};
 pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
 pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
+pub use fit::Fit;
 pub use form_space::{FormSpace, NewRow};
+#[cfg(feature = "test-support")]
+pub use held::take_unsettled;
+pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
@@ -47,10 +58,13 @@ pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;
 #[cfg(all(target_os = "macos", feature = "test-support"))]
 pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_painted_surfaces};
+pub use placed::{Placed, outside};
+#[cfg(feature = "test-support")]
+pub use placed::{record_controls, take_controls};
 pub use rows::{
     CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
 };
-pub use scroll::ScrollArea;
+pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
 pub use tile::{PersonTile, TileMark};
 pub use tooltip::tooltip;

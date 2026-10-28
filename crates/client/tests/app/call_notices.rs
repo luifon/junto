@@ -5,15 +5,16 @@ use gpui::TestAppContext;
 use junto_client_core::protocol::call::{CallInvitation, CallPlace};
 use junto_client_core::protocol::ids::{CallId, CallInvitationId};
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
-use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+use junto_media::engine::{MicrophoneState, OutputState};
 use junto_media::share::CaptureError;
 
 use crate::calls::voice_channel;
 use crate::harness::{Window, World, member, selector};
 
-/// A connected call of this device in the voice channel with this name, with this state of
-/// the own share, as the media engine states it.
-fn call_with_share(window: &mut Window, channel: &str, share: ShareState) -> ActiveCall {
+/// A connected call of this device in the voice channel with this name, without an own
+/// share, and with the statement of an own share that ended by itself, as the media engine
+/// states it.
+fn call_with_share(window: &mut Window, channel: &str, ended: Option<CaptureError>) -> ActiveCall {
     let view = window.view();
     let row = (window.channels().into_iter())
         .find(|row| row.name == channel)
@@ -38,7 +39,9 @@ fn call_with_share(window: &mut Window, channel: &str, share: ShareState) -> Act
         output_device: None,
         microphone_block: None,
         sound_block: None,
-        share,
+        share_limit: junto_client_core::protocol::call::MAX_SHARES,
+        own_shares: std::collections::BTreeMap::new(),
+        share_ended: ended,
         shares: Vec::new(),
         watched: None,
         withheld: Default::default(),
@@ -69,11 +72,7 @@ fn the_notice_of_an_ended_share_goes_at_the_click_of_the_person(cx: &mut TestApp
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
-    let ended = call_with_share(
-        &mut window,
-        "Daily",
-        ShareState::Ended(CaptureError::SourceGone),
-    );
+    let ended = call_with_share(&mut window, "Daily", Some(CaptureError::SourceGone));
     give_calls(&mut window, ended.clone());
     assert!(window.shows("share-notice"));
 
@@ -84,7 +83,7 @@ fn the_notice_of_an_ended_share_goes_at_the_click_of_the_person(cx: &mut TestApp
     assert!(!window.shows("share-notice"));
 
     // A later share that ends is told again.
-    let running = call_with_share(&mut window, "Daily", ShareState::Off);
+    let running = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, running);
     give_calls(&mut window, ended);
     assert!(window.shows("share-notice"));
@@ -104,7 +103,7 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
     // the call: its panel shows the chat.
     window.open_notices();
     window.click_channel("Daily");
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, call);
     assert!(window.shows("call-panel") && window.shows("call-chat"));
     assert!(!window.shows("notices-panel") && window.notices().is_none());
@@ -161,7 +160,7 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     let random = admin.text_channel(&world, &mut window, "random");
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, call);
     window.click("detach-call");
     let mut detached = window.call_window();
@@ -195,13 +194,24 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     let texts: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
     assert_eq!(
         texts,
-        ["last, @Luca", "in the old channel, @Luca", "first, @Luca"]
+        ["first, @Luca", "in the old channel, @Luca", "last, @Luca"]
     );
+    // The call window draws the newest notice at the bottom, as the main window does. The
+    // list opens at its end, so the older of the two newest rows is drawn above it.
+    let older = bounds_of(
+        &mut detached,
+        selector(format!("notice:{}", panel.rows[1].id)),
+    );
+    let newest = bounds_of(
+        &mut detached,
+        selector(format!("notice:{}", panel.rows[2].id)),
+    );
+    assert!(older.bottom() <= newest.top() + gpui::px(1.0));
     assert!(!window.shows("notices-panel"));
 
     // A press on the newest row: the main window shows the message in its channel, comes
     // to the front, and the notice is read.
-    detached.click_named(format!("notice:{}", panel.rows[0].id));
+    detached.click_named(format!("notice:{}", panel.rows[2].id));
     window.until("the main window shows the message", |window| {
         window.selected_channel() == general
             && window
@@ -213,7 +223,7 @@ fn the_call_window_counts_and_lists_the_notices(cx: &mut TestAppContext) {
     detached.until("the notice is read", |window| {
         window
             .notices()
-            .is_some_and(|panel| panel.rows.first().is_some_and(|row| row.read))
+            .is_some_and(|panel| panel.rows.last().is_some_and(|row| row.read))
     });
     // Both windows count the notices that stay unread: the notice of the archived channel
     // at least, and fewer than before.
@@ -243,7 +253,7 @@ fn the_bell_of_the_call_window_opens_the_notices_before_the_conversation_exists(
     let (general, own) = (window.selected_channel(), window.own_account());
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, call.clone());
     window.click("detach-call");
     // The call of this device becomes a direct-message call with an account whose
@@ -287,7 +297,7 @@ fn the_call_window_shows_the_place_of_the_call_to_the_rules_of_a_system_notifica
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
     let daily = window.selected_channel();
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, call);
     window.click("detach-call");
     let mut detached = window.call_window();
@@ -345,7 +355,7 @@ fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppCo
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
     let daily = window.selected_channel();
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     let target = call.target;
     give_calls(&mut window, call);
     let (own, ada) = (window.own_account(), admin.handle.account().unwrap());
@@ -477,7 +487,7 @@ fn a_card_of_an_invitation_fits_a_narrow_call_window(cx: &mut TestAppContext) {
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
     let daily = window.selected_channel();
-    let call = call_with_share(&mut window, "Daily", ShareState::Off);
+    let call = call_with_share(&mut window, "Daily", None);
     let target = call.target;
     give_calls(&mut window, call);
     window.click("detach-call");

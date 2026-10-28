@@ -12,7 +12,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Structure};
 use zbus::{Connection, Proxy};
 
-use super::{Picture, SystemTray, TrayAction, TrayState, renderings};
+use super::{IconPicture, SystemTray, TrayAction, TrayState, renderings};
 
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_OBJECT: &str = "/StatusNotifierWatcher";
@@ -199,8 +199,8 @@ async fn show(connection: &Connection, state: &TrayState) -> zbus::Result<()> {
 /// The pictures of the specification: width, height and ARGB32 pixels in network byte order.
 type Pixmaps = Vec<(i32, i32, Vec<u8>)>;
 
-fn pixmaps(picture: Picture) -> Pixmaps {
-    renderings(picture)
+fn pixmaps(shown: IconPicture) -> Pixmaps {
+    renderings(shown)
         .map(|(side, rgba)| {
             let argb = rgba
                 .as_chunks::<4>()
@@ -252,7 +252,7 @@ impl Item {
 
     #[zbus(property)]
     fn icon_pixmap(&self) -> Pixmaps {
-        pixmaps(self.state.picture())
+        pixmaps(self.state.icon())
     }
 
     #[zbus(property)]
@@ -286,7 +286,7 @@ impl Item {
             String::new(),
             Vec::new(),
             crate::text::APP_NAME.to_owned(),
-            self.state.tooltip().to_owned(),
+            self.state.tooltip(),
         )
     }
 

@@ -29,8 +29,11 @@ pub enum FilterKind {
     Date,
 }
 
-/// The width of the search field in the header, in design pixels.
-pub(crate) const SEARCH_FIELD_WIDTH: f32 = 190.0;
+/// The width of the search field in the header, in design pixels, in the full and in the
+/// short form of the header (ADR 0730).
+pub(crate) fn search_width(compact: bool) -> f32 {
+    if compact { 130.0 } else { 190.0 }
+}
 
 impl Shell {
     /// Puts text into the search field of the header, as typing does.
@@ -86,7 +89,11 @@ impl Shell {
     }
 
     /// The search field of the header of the main area (view H of the design).
-    pub(crate) fn render_search_field(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_search_field(
+        &mut self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let searching = self
             .view
             .as_ref()
@@ -112,7 +119,7 @@ impl Shell {
         };
         div()
             .flex_none()
-            .w(u(SEARCH_FIELD_WIDTH))
+            .w(u(search_width(compact)))
             .child(field)
             .into_any_element()
     }
@@ -613,15 +620,24 @@ impl Shell {
                     .into_any_element()
             }
         };
-        side_panel(&theme, text::SEARCH, "search-panel")
-            .child(header)
-            .child(filters)
-            .child(
-                crate::ui::notice_slot("search-go-failed-slot")
-                    .children(go_failed)
-                    .children(archive_failed),
-            )
-            .child(body)
-            .into_any_element()
+        side_panel(
+            &theme,
+            text::SEARCH,
+            "search-panel",
+            self.panel_width(
+                junto_client_core::settings::Panel::Search,
+                theme.metrics.side_panel_width,
+                cx,
+            ),
+        )
+        .child(header)
+        .child(filters)
+        .child(
+            crate::ui::notice_slot("search-go-failed-slot")
+                .children(go_failed)
+                .children(archive_failed),
+        )
+        .child(body)
+        .into_any_element()
     }
 }

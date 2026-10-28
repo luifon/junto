@@ -24,7 +24,7 @@ use crate::access::Access;
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult};
 use crate::routes::channels::{self, NewChannel};
-use crate::routes::{calls, server_roles, workspace_roles, workspaces};
+use crate::routes::{calls, glossary, server_roles, workspace_roles, workspaces};
 use crate::state::AppState;
 use crate::{store, validate};
 
@@ -194,6 +194,11 @@ pub const EXPORT_CATEGORY_OVERRIDES: &str =
      from category_overrides o
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = o.role_id
      order by o.category_id, o.role_id";
+pub const EXPORT_GLOSSARIES: &str = "select g.workspace_id, g.term
+     from glossary_terms g
+     join workspaces w on w.id = g.workspace_id
+     where w.deleted_at is null
+     order by g.workspace_id, g.position";
 
 type ChannelRow = (
     Uuid,
@@ -272,6 +277,9 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let category_overrides: Vec<(Uuid, Uuid, i64, i64)> = sqlx::query_as(EXPORT_CATEGORY_OVERRIDES)
         .fetch_all(&mut *connection)
         .await?;
+    let glossaries: Vec<(WorkspaceId, String)> = sqlx::query_as(EXPORT_GLOSSARIES)
+        .fetch_all(&mut *connection)
+        .await?;
 
     let mut overrides_of = override_entries(overrides)?;
     let mut category_overrides_of = override_entries(category_overrides)?;
@@ -286,7 +294,14 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
             roles: Vec::new(),
             categories: Vec::new(),
             channels: Vec::new(),
+            glossary: Some(Vec::new()),
         });
+    }
+    for (workspace_id, term) in glossaries {
+        entry_of(&mut entries, &place, workspace_id)?
+            .glossary
+            .get_or_insert_with(Vec::new)
+            .push(term);
     }
     for (workspace_id, entry, name, permissions, everyone, position) in roles {
         entry_of(&mut entries, &place, workspace_id)?
@@ -712,6 +727,13 @@ async fn apply_one(
             crate::routes::rules::set_channel_sync_in(connection, &app.calls, access, now, ids)
                 .await?;
             Ok(())
+        }
+        StructureChange::ReplaceGlossary { workspace, terms } => {
+            let workspace_id = resolve(&mut *connection, Workspace, *workspace).await?;
+            let most = app.config.limits.recordings.most_glossary_terms;
+            let terms = glossary::checked_terms(terms, most)?;
+            let workspace_id = WorkspaceId::from_uuid(workspace_id);
+            glossary::replace_in(connection, access, now, workspace_id, &terms, None).await
         }
         StructureChange::DeleteChannel { id } => {
             let channel_id = ChannelId::from_uuid(resolve(&mut *connection, Channel, *id).await?);

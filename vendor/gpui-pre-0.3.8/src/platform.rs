@@ -1,5 +1,6 @@
 // Modified: this file differs from the published gpui-pre 0.3.8. The methods of
-// `PlatformInputHandler` stop a panic of the input handler.
+// `PlatformInputHandler` stop a panic of the input handler, and a window can be activated with
+// an activation token of the system (`PlatformWindow::activate_with_token`).
 mod app_menu;
 mod keyboard;
 mod keystroke;
@@ -1190,6 +1191,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         answers: &[PromptButton],
     ) -> Option<oneshot::Receiver<usize>>;
     fn activate(&self);
+    // Modified: added. A Wayland compositor gives the focus to a window only with an
+    // activation token that it issued, such as the token of a press on a notification.
+    /// Activates the window with an activation token that another program obtained from the
+    /// system for this application. A platform without such tokens activates the window.
+    fn activate_with_token(&self, _token: &str) {
+        self.activate();
+    }
     /// Requests that the operating system draw attention to this window.
     fn request_attention(&self) {}
     fn is_active(&self) -> bool;

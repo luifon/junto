@@ -364,6 +364,8 @@ system lines that share a public position. Each line keeps the audience it had w
 
 Set `JUNTO_ATTACHMENTS_DIR` to a dedicated existing absolute directory for attachments.
 `JUNTO_ATTACHMENT_BYTES` defaults to 100,000,000 and `JUNTO_ATTACHMENTS_PER_MESSAGE` to 10.
+`JUNTO_PICTURE_BYTES`, the largest account picture and server logo, defaults to 2,097,152
+(2 MiB, the largest request body); a picture has at most 1024 by 1024 pixels.
 Administrators can persist overrides with `PUT /api/v1/attachment-limits`; every authenticated
 client can read the effective values with GET.
 Start an upload at `POST /api/v1/attachments`, send 1 MiB chunks to its `chunks/{offset}`
@@ -506,6 +508,12 @@ into their existing slots after creations and deletions, preserving unnamed/unpo
 roles. New unpositioned roles remain at the bottom. Old exports tolerate later client
 creations, and repeated apply changes nothing. Format 1 files remain readable; old tools
 must be upgraded before reading format 2 exports.
+
+Structure format 3 adds the `glossary` of each workspace, its terms in their order of
+priority. Applying a file replaces each glossary that it states with the change
+`replace_glossary`, which has the checks, limits, audit entry and event of the glossary
+route; an absent `glossary` keeps the glossary. Formats 1 and 2 remain readable; old tools
+must be upgraded before reading format 3 exports.
 
 ## Audit filters and profiles
 

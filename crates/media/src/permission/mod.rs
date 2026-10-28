@@ -1,7 +1,8 @@
 //! The permission of the operating system to use the microphone.
 //!
 //! macOS asks the person once, for the application that it holds responsible for the
-//! process, and remembers the answer. The engine reads the state before it opens the
+//! process, and remembers the answer. Windows asks nothing: the person turns the
+//! microphone on or off in its privacy settings. The engine reads the state before it opens the
 //! microphone and never opens a microphone that the person refused; the interface shows the
 //! state. A test gives a fixed state, because an automated run cannot answer the question
 //! of the system.
@@ -9,6 +10,8 @@
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -52,7 +55,20 @@ impl MicrophonePermission for SystemPermission {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows asks a desktop program nothing: the person turns the microphone on or off for
+/// desktop programs in the privacy settings (ADR 0708).
+#[cfg(windows)]
+impl MicrophonePermission for SystemPermission {
+    fn state(&self) -> MicrophoneAccess {
+        windows::state()
+    }
+
+    fn request(&self) -> Answer {
+        Box::pin(async { windows::state() })
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 impl MicrophonePermission for SystemPermission {
     fn state(&self) -> MicrophoneAccess {
         MicrophoneAccess::Allowed

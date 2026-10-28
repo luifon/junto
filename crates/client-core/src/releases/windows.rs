@@ -44,10 +44,15 @@ fn names(directory: &Path) -> Result<Vec<std::ffi::OsString>, Error> {
 
 /// Moves each entry back from `from` to `to`, also after a failed move. Returns whether
 /// every move succeeded.
-fn move_back(moved: &[std::ffi::OsString], from: &Path, to: &Path) -> bool {
+fn move_back(
+    moved: &[std::ffi::OsString],
+    from: &Path,
+    to: &Path,
+    rename: &mut impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> bool {
     let mut every = true;
     for name in moved.iter().rev() {
-        if fs::rename(from.join(name), to.join(name)).is_err() {
+        if rename(&from.join(name), &to.join(name)).is_err() {
             every = false;
         }
     }
@@ -58,6 +63,14 @@ fn move_back(moved: &[std::ffi::OsString], from: &Path, to: &Path) -> bool {
 /// Windows refuses to rename a directory that holds a running program, and lets a running
 /// program be renamed. The replaced entries go to a directory beside the candidate.
 pub fn exchange_entries(application: &Path, candidate: &Path) -> Result<(), Error> {
+    exchange_entries_with(application, candidate, |from, to| fs::rename(from, to))
+}
+
+pub(super) fn exchange_entries_with(
+    application: &Path,
+    candidate: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), Error> {
     let replaced: PathBuf = {
         let mut name = candidate.as_os_str().to_owned();
         name.push(".replaced");
@@ -69,20 +82,22 @@ pub fn exchange_entries(application: &Path, candidate: &Path) -> Result<(), Erro
     fs::create_dir(&replaced)?;
     let mut moved_out = Vec::new();
     for name in &old {
-        if let Err(error) = fs::rename(application.join(name), replaced.join(name)) {
-            return Err(if move_back(&moved_out, &replaced, application) {
-                error.into()
-            } else {
-                Error::ExchangeIncomplete
-            });
+        if let Err(error) = rename(&application.join(name), &replaced.join(name)) {
+            return Err(
+                if move_back(&moved_out, &replaced, application, &mut rename) {
+                    error.into()
+                } else {
+                    Error::ExchangeIncomplete
+                },
+            );
         }
         moved_out.push(name.clone());
     }
     let mut moved_in = Vec::new();
     for name in &new {
-        if let Err(error) = fs::rename(candidate.join(name), application.join(name)) {
-            let new_back = move_back(&moved_in, application, candidate);
-            let old_back = move_back(&moved_out, &replaced, application);
+        if let Err(error) = rename(&candidate.join(name), &application.join(name)) {
+            let new_back = move_back(&moved_in, application, candidate, &mut rename);
+            let old_back = move_back(&moved_out, &replaced, application, &mut rename);
             return Err(if new_back && old_back {
                 error.into()
             } else {

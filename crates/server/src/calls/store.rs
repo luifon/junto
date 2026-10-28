@@ -1,10 +1,12 @@
 //! The rows of calls and what the routes and the admission check do with them. Every function
 //! works inside the transaction of its caller.
 
+use std::collections::HashMap;
+
 use junto_protocol::call::{
     BlockReason, Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall,
     DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, LeaveReason, Meeting, MeetingEnd,
-    MicrophoneBlock, MoveOutcome, OwnCall, ScreenShare, ShareAudio, SoundBlock,
+    MicrophoneBlock, MoveOutcome, OwnCall, ScreenShare, ShareAudio, ShareKind, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
@@ -39,6 +41,21 @@ impl StoredText for ShareAudio {
         [Self::Application, Self::System, Self::None]
             .into_iter()
             .find(|audio| audio.stored() == text)
+    }
+}
+
+impl StoredText for ShareKind {
+    fn stored(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Window => "window",
+        }
+    }
+
+    fn from_stored(text: &str) -> Option<Self> {
+        [Self::Screen, Self::Window]
+            .into_iter()
+            .find(|kind| kind.stored() == text)
     }
 }
 
@@ -91,12 +108,25 @@ pub enum Note {
     CallStarted,
     CallEnded,
     ScreenShareStarted,
+    ScreenShareEnded,
     EntryRequested,
     JoinedByInvitation,
     MeetingStarted,
+    /// Written by the versions before the reasons of the end; read only.
     MeetingEnded,
+    /// A person turned meeting mode off.
+    MeetingTurnedOff,
+    /// Meeting mode ended because its presenter stopped sharing.
+    MeetingEndedShareStopped,
+    /// Meeting mode ended because its presenter left the call.
+    MeetingEndedPresenterLeft,
     PersonJoined,
     PersonLeft,
+    /// A moderator removed the person, or moved the person out: a later entry of the person
+    /// is a join. The note has no line: the line of the removal or of the move tells it.
+    PersonOut,
+    CallLocked,
+    CallUnlocked,
 }
 
 impl Note {
@@ -105,12 +135,19 @@ impl Note {
             Self::CallStarted => "call_started",
             Self::CallEnded => "call_ended",
             Self::ScreenShareStarted => "screen_share_started",
+            Self::ScreenShareEnded => "screen_share_ended",
             Self::EntryRequested => "entry_requested",
             Self::JoinedByInvitation => "joined_by_invitation",
             Self::MeetingStarted => "meeting_started",
             Self::MeetingEnded => "meeting_ended",
+            Self::MeetingTurnedOff => "meeting_turned_off",
+            Self::MeetingEndedShareStopped => "meeting_ended_share_stopped",
+            Self::MeetingEndedPresenterLeft => "meeting_ended_presenter_left",
             Self::PersonJoined => "person_joined",
             Self::PersonLeft => "person_left",
+            Self::PersonOut => "person_out",
+            Self::CallLocked => "call_locked",
+            Self::CallUnlocked => "call_unlocked",
         }
     }
 }
@@ -126,17 +163,53 @@ pub async fn note_joined(
 ) -> ApiResult<()> {
     let latest: Option<String> = sqlx::query_scalar(
         "select kind from call_notes where call_id = $1 and account_id = $2
-             and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left')
+             and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left',
+                 'person_out')
          order by occurred_at desc, id desc limit 1",
     )
     .bind(call.id)
     .bind(account_id)
     .fetch_optional(&mut *connection)
     .await?;
-    if latest.is_some_and(|kind| kind != Note::PersonLeft.stored()) {
+    let out = [Note::PersonLeft.stored(), Note::PersonOut.stored()];
+    if latest.is_some_and(|kind| !out.contains(&kind.as_str())) {
         return Ok(());
     }
     note(connection, now, call, Note::PersonJoined, Some(account_id)).await
+}
+
+/// The line of the answer of a person inside to the request of another person to enter the
+/// call of a voice channel: "{actor} let {subject} in" or "{actor} did not let {subject} in".
+pub async fn entry_line(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    accepted: bool,
+    by: AccountId,
+    asked: AccountId,
+) -> ApiResult<()> {
+    let Some(channel_id) = call.place.channel_id() else {
+        return Ok(());
+    };
+    let action = if accepted {
+        "entry_accepted"
+    } else {
+        "entry_denied"
+    };
+    crate::messages::system(
+        connection,
+        now,
+        channel_id,
+        junto_protocol::ids::MessageId::generate(),
+        &junto_protocol::message::SystemMessage {
+            action: action.to_owned(),
+            actor_id: Some(by),
+            subject_id: Some(asked),
+            ..junto_protocol::message::SystemMessage::default()
+        },
+        Some(call.id),
+    )
+    .await
 }
 
 /// Notes that a person left a call that others are still in. The last person to leave is
@@ -170,6 +243,19 @@ pub async fn note(
     kind: Note,
     account_id: Option<AccountId>,
 ) -> ApiResult<()> {
+    note_with(connection, now, call, kind, account_id, None).await
+}
+
+/// As [`note`], with the length of the call in seconds for the line of its end. A note of
+/// [`Note::PersonOut`] is kept without a line.
+pub async fn note_with(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    kind: Note,
+    account_id: Option<AccountId>,
+    duration_seconds: Option<u64>,
+) -> ApiResult<()> {
     let CallPlace::Channel {
         workspace_id,
         channel_id,
@@ -192,6 +278,9 @@ pub async fn note(
     .bind(account_id)
     .execute(&mut *connection)
     .await?;
+    if kind == Note::PersonOut {
+        return Ok(());
+    }
     crate::messages::system(
         connection,
         now,
@@ -200,9 +289,8 @@ pub async fn note(
         &junto_protocol::message::SystemMessage {
             action: kind.stored().to_owned(),
             actor_id: account_id,
-            recording_id: None,
-            duration_seconds: None,
-            subject_id: None,
+            duration_seconds,
+            ..junto_protocol::message::SystemMessage::default()
         },
         Some(call.id),
     )
@@ -437,16 +525,13 @@ pub struct MemberRow {
     pub self_muted: bool,
     pub self_deafened: bool,
     pub hand_raised_at: Option<OffsetDateTime>,
-    pub share_audio: Option<String>,
-    pub share_seen_at: Option<OffsetDateTime>,
-    pub share_missing_since: Option<OffsetDateTime>,
     /// The identity of the seat in the source call that a completed move replaced.
     pub moved_from: Option<String>,
 }
 
 const MEMBER_COLUMNS: &str = "call_id, account_id, device_id, session_id, identity, \
      usable_until, connected_at, absent_since, self_muted, self_deafened, hand_raised_at, \
-     share_audio, share_seen_at, share_missing_since, moved_from";
+     moved_from";
 
 impl MemberRow {
     pub fn own_call(&self, call: &CallRow) -> OwnCall {
@@ -505,25 +590,21 @@ struct ParticipantRecord {
     self_muted: bool,
     self_deafened: bool,
     hand_raised: bool,
-    share_audio: Option<String>,
-    share_started_at: Option<OffsetDateTime>,
     microphone_blocked_by: Option<AccountId>,
     microphone_block_reason: Option<String>,
     sound_blocked_by: Option<AccountId>,
+    watching_account_id: Option<AccountId>,
+    watching_slot: i16,
 }
 
-fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
+fn participant(
+    record: ParticipantRecord,
+    screen_shares: Vec<ScreenShare>,
+) -> ApiResult<CallParticipant> {
     let microphone_block = match (record.microphone_blocked_by, record.microphone_block_reason) {
         (Some(by), Some(reason)) => Some(MicrophoneBlock {
             by,
             reason: BlockReason::read(&reason)?,
-        }),
-        _ => None,
-    };
-    let screen_share = match (record.share_audio, record.share_started_at) {
-        (Some(audio), Some(started_at)) => Some(ScreenShare {
-            audio: ShareAudio::read(&audio)?,
-            started_at,
         }),
         _ => None,
     };
@@ -537,7 +618,14 @@ fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
         microphone_block,
         sound_block: record.sound_blocked_by.map(|by| SoundBlock { by }),
         hand_raised: record.hand_raised,
-        screen_share,
+        screen_share: screen_shares.first().cloned(),
+        screen_shares,
+        watching: record
+            .watching_account_id
+            .map(|account_id| junto_protocol::call::WatchedShare {
+                account_id,
+                slot: u8::try_from(record.watching_slot).unwrap_or_default(),
+            }),
     })
 }
 
@@ -547,9 +635,9 @@ fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
 /// (ADR 0119).
 pub const PARTICIPANTS: &str =
     "select m.account_id, m.identity, m.connected_at, m.self_muted, m.self_deafened,
-                m.hand_raised_at is not null as hand_raised, m.share_audio, m.share_started_at,
+                m.hand_raised_at is not null as hand_raised,
                 mb.blocked_by as microphone_blocked_by, mb.reason as microphone_block_reason,
-                sb.blocked_by as sound_blocked_by,
+                sb.blocked_by as sound_blocked_by, m.watching_account_id, m.watching_slot,
                 (select jsonb_build_object(
                     'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
                     'bytes', octet_length(av.content), 'width', av.width, 'height', av.height)
@@ -572,9 +660,72 @@ pub async fn participants(
     let records: Vec<ParticipantRecord> = sqlx::query_as(PARTICIPANTS)
         .bind(call_id)
         .bind(only)
-        .fetch_all(connection)
+        .fetch_all(&mut *connection)
         .await?;
-    records.into_iter().map(participant).collect()
+    let mut shares: HashMap<AccountId, Vec<ScreenShare>> = HashMap::new();
+    for row in share_rows(connection, call_id, only).await? {
+        let share = row.shown()?;
+        shares.entry(row.account_id).or_default().push(share);
+    }
+    records
+        .into_iter()
+        .map(|record| {
+            let own = shares.remove(&record.account_id).unwrap_or_default();
+            participant(record, own)
+        })
+        .collect()
+}
+
+/// One screen share of a member of a call (ADR 0510).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ShareRow {
+    pub account_id: AccountId,
+    pub slot: i16,
+    pub kind: Option<String>,
+    pub audio: String,
+    pub started_at: OffsetDateTime,
+    /// When the admission check first saw the picture track of the share.
+    pub seen_at: Option<OffsetDateTime>,
+    /// Since when the admission check has not seen the picture track of the share.
+    pub missing_since: Option<OffsetDateTime>,
+}
+
+impl ShareRow {
+    fn shown(&self) -> ApiResult<ScreenShare> {
+        Ok(ScreenShare {
+            slot: u8::try_from(self.slot).map_err(|_| {
+                ApiError::internal(&format_args!("stored share slot {}", self.slot))
+            })?,
+            kind: self.kind.as_deref().map(ShareKind::read).transpose()?,
+            audio: ShareAudio::read(&self.audio)?,
+            started_at: self.started_at,
+        })
+    }
+
+    /// The media server lists the picture track of the share, and has listed it at every
+    /// check since it first did.
+    pub fn listed(&self) -> bool {
+        self.seen_at.is_some() && self.missing_since.is_none()
+    }
+}
+
+/// The shares of the members of a call (`call_id`), or of the member `only`, in the order of
+/// the accounts and of the slots.
+pub async fn share_rows(
+    connection: &mut PgConnection,
+    call_id: CallId,
+    only: Option<AccountId>,
+) -> ApiResult<Vec<ShareRow>> {
+    Ok(sqlx::query_as(
+        "select account_id, slot, kind, audio, started_at, seen_at, missing_since
+         from call_shares
+         where call_id = $1 and ($2::uuid is null or account_id = $2)
+         order by account_id, slot",
+    )
+    .bind(call_id)
+    .bind(only)
+    .fetch_all(connection)
+    .await?)
 }
 
 /// Whether an account is inside a call: the admission check has recorded that the media
@@ -721,6 +872,31 @@ pub async fn announce_participant(
             participant,
         };
         events::publish(&mut *connection, now, &updated).await?;
+    }
+    Ok(())
+}
+
+/// A new share of `sharer` in `slot` started: the members who watched the earlier share of
+/// that slot no longer watch, until their clients report the new share (ADR 0502).
+pub async fn end_watches(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    sharer: AccountId,
+    slot: u8,
+) -> ApiResult<()> {
+    let watchers: Vec<AccountId> = sqlx::query_scalar(
+        "update call_members set watching_account_id = null, watching_slot = 0
+         where call_id = $1 and watching_account_id = $2 and watching_slot = $3
+         returning account_id",
+    )
+    .bind(call.id)
+    .bind(sharer)
+    .bind(i16::from(slot))
+    .fetch_all(&mut *connection)
+    .await?;
+    for watcher in watchers {
+        announce_participant(&mut *connection, now, call, watcher).await?;
     }
     Ok(())
 }
@@ -974,11 +1150,13 @@ pub async fn start_meeting(
 
 /// Ends meeting mode and removes every microphone block of the call, the ones of moderators
 /// included (ADR 0505).
+/// Ends meeting mode. `by` is the person who turned it off, for the reason `TurnedOff`.
 pub async fn end_meeting(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     call: &CallRow,
     reason: MeetingEnd,
+    by: Option<AccountId>,
 ) -> ApiResult<()> {
     sqlx::query(
         "update calls
@@ -994,13 +1172,47 @@ pub async fn end_meeting(
         .execute(&mut *connection)
         .await?;
     let presenter = call.meeting.as_ref().map(|meeting| meeting.presenter);
-    note(&mut *connection, now, call, Note::MeetingEnded, presenter).await?;
+    let (kind, actor) = match reason {
+        MeetingEnd::TurnedOff => (Note::MeetingTurnedOff, by.or(presenter)),
+        MeetingEnd::ShareStopped => (Note::MeetingEndedShareStopped, presenter),
+        MeetingEnd::PresenterLeft => (Note::MeetingEndedPresenterLeft, presenter),
+    };
+    note(&mut *connection, now, call, kind, actor).await?;
     let ended = Event::CallMeetingEnded {
         call_id: call.id,
         place: call.place,
         reason,
     };
     events::publish(connection, now, &ended).await
+}
+
+/// Ends meeting mode with `share_stopped` when `account_id` runs it and has no share left.
+/// Returns whether it ended.
+pub async fn end_meeting_without_share(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<bool> {
+    let presents = call
+        .meeting
+        .as_ref()
+        .is_some_and(|meeting| meeting.presenter == account_id);
+    if !presents {
+        return Ok(false);
+    }
+    let shares: bool = sqlx::query_scalar(
+        "select exists (select 1 from call_shares where call_id = $1 and account_id = $2)",
+    )
+    .bind(call.id)
+    .bind(account_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if shares {
+        return Ok(false);
+    }
+    end_meeting(connection, now, call, MeetingEnd::ShareStopped, None).await?;
+    Ok(true)
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1498,7 +1710,14 @@ pub async fn end_if_empty(
         return Ok(false);
     };
     if ending.meeting.is_some() {
-        end_meeting(&mut *connection, now, &ending, MeetingEnd::PresenterLeft).await?;
+        end_meeting(
+            &mut *connection,
+            now,
+            &ending,
+            MeetingEnd::PresenterLeft,
+            None,
+        )
+        .await?;
     }
     let all = "($2::uuid is null and $3::timestamptz is null)";
     let cancelled = InvitationOutcome::Cancelled;
@@ -1531,8 +1750,18 @@ pub async fn end_if_empty(
             direct_calls::line(&mut *connection, now, caller, callee, line).await?;
         }
     }
-    if ending.started_at.is_some() {
-        note(&mut *connection, now, &ending, Note::CallEnded, None).await?;
+    if let Some(started_at) = ending.started_at {
+        // The length runs from the first person in the room to the end of the call.
+        let seconds = u64::try_from((now - started_at).whole_seconds()).unwrap_or_default();
+        note_with(
+            &mut *connection,
+            now,
+            &ending,
+            Note::CallEnded,
+            None,
+            Some(seconds),
+        )
+        .await?;
         let ended = Event::CallEnded {
             call_id,
             place: ending.place,

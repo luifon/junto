@@ -10,7 +10,8 @@
 //! the one `InOrder` of the participant, and the request sent after a resume reads the state
 //! in its turn. The media live test
 //! `sound::mute_requests_that_wait_for_a_resume_reach_the_media_server_in_their_order` checks
-//! with a media server the requests that the participant writes through it.
+//! with a media server the requests that the participant writes through it. A further test
+//! reads the order of the track permissions and the tracks after a new connection.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -248,6 +249,34 @@ fn the_mute_states_are_sent_after_each_resume_and_read_in_their_turn() {
     assert!(
         code[run].contains(".mute_track("),
         "send_mute_states sends no mute request"
+    );
+}
+
+/// After a new connection of its session the room sends the track permissions before it
+/// publishes the tracks again (ADR 0737). The media server holds no permissions for the new
+/// session, so a track published again before them reaches every participant, also a client
+/// from before several shares that may receive only the share of the lowest slot.
+#[test]
+fn the_track_permissions_are_sent_before_the_tracks_are_published_again() {
+    let room = without_comments(ROOM);
+    assert!(
+        room.contains("EngineEvent::Restarted(tx) => self.handle_restarted(tx),"),
+        "the room does not handle a new connection in handle_restarted"
+    );
+    let restarted = body(
+        &room,
+        "fn handle_restarted(self: &Arc<Self>, tx: oneshot::Sender<()>)",
+    );
+    let code = &room[restarted];
+    let permissions = code
+        .find(".update_track_subscription_permissions()")
+        .expect("handle_restarted sends no track permissions");
+    let publish = code
+        .find(".publish_track(")
+        .expect("handle_restarted publishes no track again");
+    assert!(
+        permissions < publish,
+        "handle_restarted publishes the tracks again before it sends the track permissions"
     );
 }
 

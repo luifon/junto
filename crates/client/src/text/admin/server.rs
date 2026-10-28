@@ -4,8 +4,8 @@
 use junto_client_core::profile::InvalidAvatar;
 
 pub const LOGO: &str = "Logo";
-pub const LOGO_HELP: &str = "The logo is public: a person can see it before joining the server. Use a still PNG, JPEG \
-     or WebP image of at most 256 KiB and 1024 by 1024 pixels.";
+pub const LOGO_HELP: &str = "The logo is public: a person can see it before joining the server. Choose a PNG, JPEG, \
+     WebP or GIF file of at most 10 MiB, then the square that the logo shows.";
 pub const NO_LOGO: &str = "This server has no logo.";
 pub const LOGO_NOT_SHOWN: &str = "This server has a logo. This window does not hold its image.";
 pub const CHOOSE_IMAGE: &str = "Choose image…";
@@ -38,7 +38,8 @@ pub fn files(count: u32) -> String {
 // Why a file is not sent as the logo, and why the server did not take it.
 pub const LOGO_NOT_READ: &str =
     "The file could not be read. Check that the file exists and that you may open it.";
-pub const LOGO_TOO_LARGE: &str = "The server did not take the image: it is larger than 256 KiB.";
+pub const LOGO_TOO_LARGE: &str =
+    "The server did not take the image: it is larger than this server takes.";
 pub const LOGO_UNSUPPORTED: &str = "The server did not take the image. It takes a still PNG, JPEG or WebP image of at most \
      1024 by 1024 pixels.";
 pub const LOGO_NOT_ALLOWED: &str =
@@ -47,7 +48,7 @@ pub const LOGO_NOT_ALLOWED: &str =
 /// Why a file is not sent as the logo.
 pub const fn invalid_logo(invalid: InvalidAvatar) -> &'static str {
     match invalid {
-        InvalidAvatar::TooLarge => "The file is larger than 256 KiB. Choose a smaller image.",
+        InvalidAvatar::TooLarge => "The image is larger than 2 MiB. Choose a smaller image.",
         InvalidAvatar::Unsupported => "The file is not a PNG, JPEG or WebP image.",
     }
 }
@@ -98,7 +99,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_sent_has_its_reason() {
-        assert!(invalid_logo(InvalidAvatar::TooLarge).contains("256 KiB"));
+        assert!(invalid_logo(InvalidAvatar::TooLarge).contains("2 MiB"));
         assert!(invalid_logo(InvalidAvatar::Unsupported).contains("PNG, JPEG or WebP"));
     }
 }

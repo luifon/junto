@@ -705,3 +705,40 @@ async fn a_late_joiner_cannot_read_hidden_lines_written_before_joining() {
         .await
         .ok::<Message>(StatusCode::OK);
 }
+
+/// A channel that does not exist and one that the caller may not see answer with the same
+/// statements, so that the time of the answer does not tell them apart (open item CD5, ADR
+/// 0304).
+#[tokio::test]
+async fn an_absent_and_a_hidden_channel_run_the_same_statements() {
+    use crate::messages_queries::{measure_requests, since, statements};
+    let server = crate::support::TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
+    let owner = server.owner().await;
+    let ann = server.join(&owner, "Ann").await;
+    let hidden = crate::messages_support::channel(&server, &owner, "text").await;
+    let everyone = server.everyone_role(&owner, hidden.workspace_id).await;
+    server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/rules/roles/{}", hidden.id, everyone.id),
+            &serde_json::json!({ "deny": ["view_channel"] }),
+        )
+        .await
+        .ok::<serde_json::Value>(reqwest::StatusCode::OK);
+    let absent = junto_protocol::ids::ChannelId::generate();
+    let (mut held, role) = measure_requests(&server).await;
+    let observer = &mut **held.first_mut().unwrap();
+    let mut cost = Vec::new();
+    for channel_id in [hidden.id, absent, hidden.id, absent] {
+        let before = statements(observer, role).await;
+        server
+            .get(&ann, &format!("/api/v1/channels/{channel_id}/messages"))
+            .await
+            .error(junto_protocol::error::ErrorCode::NotFound);
+        cost.push(since(statements(observer, role).await, before));
+    }
+    // The first request of each prepares its statements; the second ones are compared.
+    assert_eq!(cost[2], cost[3]);
+    server.require_no_statement_eviction(evictions).await;
+}

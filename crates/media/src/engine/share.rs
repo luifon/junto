@@ -1,14 +1,14 @@
-//! Shares in the media connection (ADR 0737): the own share with its picture track and its
-//! sound track, the shares of the other people, the one that the person watches, and the
-//! pictures for an interface.
+//! Shares in the media connection (ADR 0737): the own shares, each with its picture track
+//! and its sound track, the shares of the other people, the one that the person watches,
+//! and the pictures for an interface.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use junto_client_core::protocol::call::ShareAudio;
+use junto_client_core::protocol::call::{MAX_SHARES, ShareAudio};
 use junto_client_core::protocol::ids::AccountId;
 use livekit::options::{AudioEncoding, DegradationPreference, TrackPublishOptions, VideoEncoding};
 use livekit::prelude::{
@@ -27,6 +27,7 @@ use livekit::webrtc::video_stream::native::NativeVideoStream;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use super::order::in_order;
 use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, Stops, account_of};
@@ -35,10 +36,12 @@ use crate::audio::{Format, PLAYOUT_CHANNELS, SAMPLE_RATE};
 use crate::share::picture::VideoPicture;
 use crate::share::sound::{SHARE_CHANNELS, SHARE_FRAME_SAMPLES, SoundChain, WAITING_FRAMES};
 use crate::share::{
-    CaptureError, CaptureRequest, CaptureSink, CaptureStream, ShareKind, read_track_name,
-    track_name,
+    CaptureError, CaptureRequest, CaptureSink, CaptureStream, ShareKind, read_sound_name,
+    read_track_name, sound_name, track_name,
 };
 
+/// The number of slots of the own shares, one for each share that a person can run.
+pub(crate) const MAX_SLOTS: usize = MAX_SHARES as usize;
 /// The number of the sound of a screen share among the track sources in the protocol of
 /// the media server (`TrackSource.SCREEN_SHARE_AUDIO`).
 const SHARE_SOUND_SOURCE: i32 = 4;
@@ -124,17 +127,44 @@ pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublish
     )
 }
 
-/// A share in the call of this device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ShareId {
-    /// The share of this device.
+/// The person of a camera or a share in the call of this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Person {
+    /// The person of this device.
     Own,
     Of(AccountId),
 }
 
-/// The share of this device as it runs.
+/// A share in the call of this device: its person and the slot that the sharing device gave
+/// it. A person runs up to `MAX_SHARES` shares, in slots `0` to `MAX_SHARES - 1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShareId {
+    pub person: Person,
+    pub slot: u8,
+}
+
+impl ShareId {
+    pub const fn own(slot: u8) -> Self {
+        Self {
+            person: Person::Own,
+            slot,
+        }
+    }
+
+    pub const fn of(account_id: AccountId, slot: u8) -> Self {
+        Self {
+            person: Person::Of(account_id),
+            slot,
+        }
+    }
+}
+
+/// A share of this device as it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareInfo {
+    /// The identifier of the share, new at each start: the server tells a new share in a
+    /// slot from the share that ran there before (ADR 0510).
+    pub id: Uuid,
     pub kind: ShareKind,
     /// The sound that the sharer chose.
     pub sound: ShareAudio,
@@ -146,22 +176,20 @@ pub struct ShareInfo {
     pub frame_rate: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// A share of this device in its slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareState {
-    #[default]
-    Off,
     /// The capture starts, or the picture track is being published.
     Starting,
     Running(ShareInfo),
-    /// The share ended by itself. The state stays until the person starts a share or
-    /// puts the statement away.
-    Ended(CaptureError),
 }
 
 /// The share of another person, as the media connection shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeenShare {
     pub account_id: AccountId,
+    /// The slot that the track names; a track of a client of one share names slot 0.
+    pub slot: u8,
     /// What the track states about itself. Absent for a track of another client.
     pub kind: Option<ShareKind>,
     pub frame_rate: Option<u32>,
@@ -194,17 +222,20 @@ pub(super) struct View {
 }
 
 /// The share that is watched: the choice of the person while that share runs; otherwise
-/// the share of another person that was seen first; otherwise the own share.
-pub fn watched(choice: Option<ShareId>, own: bool, others: &[AccountId]) -> Option<ShareId> {
+/// the share of another person that was seen first; otherwise the own share of the lowest
+/// slot. `own` holds the slots of the own shares that run, `others` the shares of the
+/// other people in the order in which they were seen.
+pub fn watched(choice: Option<ShareId>, own: &[u8], others: &[ShareId]) -> Option<ShareId> {
+    let runs = |share: &ShareId| match share.person {
+        Person::Own => own.contains(&share.slot),
+        Person::Of(_) => others.contains(share),
+    };
     match choice {
-        Some(ShareId::Own) if own => Some(ShareId::Own),
-        Some(ShareId::Of(account_id)) if others.contains(&account_id) => {
-            Some(ShareId::Of(account_id))
-        }
+        Some(choice) if runs(&choice) => Some(choice),
         _ => others
             .first()
-            .map(|account_id| ShareId::Of(*account_id))
-            .or(own.then_some(ShareId::Own)),
+            .copied()
+            .or_else(|| own.iter().min().map(|slot| ShareId::own(*slot))),
     }
 }
 
@@ -258,6 +289,7 @@ impl Pictures {
 /// What the capture of the own share writes into, from the threads of the capture.
 pub(super) struct ShareSink {
     generation: u64,
+    slot: u8,
     internal: mpsc::UnboundedSender<Internal>,
     /// The source of the picture track. Absent until the capture has started.
     video: Mutex<Option<NativeVideoSource>>,
@@ -267,14 +299,14 @@ pub(super) struct ShareSink {
     sound: Mutex<SoundChain>,
     ended: AtomicBool,
     stops: Arc<Stops>,
-    /// The count of share stops when this share was asked for.
+    /// The count of stops of the slot of this share when it was asked for.
     stop: u64,
 }
 
 impl ShareSink {
     /// The share was ended by the capture, or stopped at the handle of the engine.
     fn over(&self) -> bool {
-        self.ended.load(Ordering::Relaxed) || self.stops.share.load(Ordering::Relaxed) != self.stop
+        self.ended.load(Ordering::Relaxed) || self.stops.share(self.slot) != self.stop
     }
 
     fn send(&self, buffer: &Arc<dyn VideoBuffer>) {
@@ -373,7 +405,7 @@ async fn tend(sink: Arc<ShareSink>, pictures: Pictures, mut view: watch::Receive
         if !due {
             continue;
         }
-        pictures.show(ShareId::Own, &buffer, now, &mut small_at);
+        pictures.show(ShareId::own(sink.slot), &buffer, now, &mut small_at);
         drawn = Some((buffer, now, Instant::now()));
     }
 }
@@ -404,22 +436,27 @@ async fn pump_sound(
     }
 }
 
-/// The share of this device.
+/// A share of this device.
 pub(super) struct OwnShare {
     generation: u64,
+    id: Uuid,
+    slot: u8,
     request: CaptureRequest,
     sink: Arc<ShareSink>,
     /// The capture. Absent while it starts.
     stream: Option<CaptureStream>,
-    picture: Publication,
+    pub(super) picture: Publication,
     sound_source: Arc<Mutex<Option<NativeAudioSource>>>,
-    sound: Publication,
+    pub(super) sound: Publication,
     sound_generation: u64,
     /// The call library withdrew the track and publishes it again: it connects anew. The
     /// number names the wait, which has a bound.
     picture_returns: Option<(u64, TrackSid)>,
     sound_returns: Option<(u64, TrackSid)>,
     waits: u64,
+    /// The picture track waits until the call library has taken the track permissions of
+    /// this number (ADR 0737).
+    cleared_by: Option<(u64, LocalVideoTrack, TrackPublishOptions)>,
     /// The answer of the system to the start of the capture, until the engine takes it.
     /// The share owns it: a capture that has started when the share ends is stopped with
     /// the share.
@@ -449,6 +486,14 @@ impl Drop for OwnShare {
 
 type Started = Arc<Mutex<Option<Result<CaptureStream, CaptureError>>>>;
 
+/// A share track whose publication has not answered and that no share uses any more: the
+/// picture of a share, by the share, or a sound, by the share and the sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Arriving {
+    Picture(u64),
+    Sound(u64, u64),
+}
+
 /// Whether a track that the call library published again is the track of a place: the
 /// place waits for the track with that identifier, or holds it.
 pub(super) fn is_return<S: PartialEq>(
@@ -461,7 +506,7 @@ pub(super) fn is_return<S: PartialEq>(
 
 /// The picture of the share of another person.
 pub(super) struct RemotePicture {
-    account_id: AccountId,
+    share: ShareId,
     publication: RemoteTrackPublication,
     kind: Option<ShareKind>,
     frame_rate: Option<u32>,
@@ -495,7 +540,7 @@ impl Drop for RemotePicture {
 
 /// The sound of the share of another person, while it is received.
 pub(super) struct RemoteSound {
-    account_id: AccountId,
+    share: ShareId,
     /// The sound in the mix. Its volume is set here, also while no frame arrives.
     source: Arc<SourceHandle>,
     task: JoinHandle<()>,
@@ -580,48 +625,74 @@ async fn play_sound(mut stream: NativeAudioStream, source: Arc<SourceHandle>) {
     }
 }
 
+/// The slot that a start takes: the lowest one without a share, below `limit`.
+pub(super) fn free_slot(used: impl IntoIterator<Item = u8>, limit: u8) -> Option<u8> {
+    let used: Vec<u8> = used.into_iter().collect();
+    (0..limit.min(MAX_SHARES)).find(|slot| !used.contains(slot))
+}
+
 impl Actor {
-    /// The state of the own share as the caller reads it.
-    fn share_state(&self) -> ShareState {
-        let Some(share) = &self.share else {
-            return self.state.borrow().share.clone();
-        };
-        match (&share.stream, &share.picture) {
-            (Some(stream), Publication::Published(_)) => {
-                let sound = share.request.sound.reported();
-                ShareState::Running(ShareInfo {
-                    kind: share.request.picture.kind(),
-                    sound,
-                    sound_held: sound != ShareAudio::None
-                        && !matches!(share.sound, Publication::Published(_)),
-                    size: (stream.width, stream.height),
-                    frame_rate: share.request.quality.frame_rate,
-                })
-            }
-            _ => ShareState::Starting,
-        }
+    /// The state of each own share as the caller reads it.
+    fn share_states(&self) -> BTreeMap<u8, ShareState> {
+        self.own_shares
+            .iter()
+            .map(|(slot, share)| {
+                let state = match (&share.stream, &share.picture) {
+                    (Some(stream), Publication::Published(_)) => {
+                        let sound = share.request.sound.reported();
+                        ShareState::Running(ShareInfo {
+                            id: share.id,
+                            kind: share.request.picture.kind(),
+                            sound,
+                            sound_held: sound != ShareAudio::None
+                                && !matches!(share.sound, Publication::Published(_)),
+                            size: (stream.width, stream.height),
+                            frame_rate: share.request.quality.frame_rate,
+                        })
+                    }
+                    _ => ShareState::Starting,
+                };
+                (*slot, state)
+            })
+            .collect()
     }
 
-    /// Tells the state of the shares: the own one, the ones of the other people in the
+    /// The own share of a start or a publication.
+    fn own_share_of(&mut self, generation: u64) -> Option<&mut OwnShare> {
+        self.own_shares
+            .values_mut()
+            .find(|share| share.generation == generation)
+    }
+
+    /// Tells the state of the shares: the own ones, the ones of the other people in the
     /// order in which they were seen, and the one that is watched.
     pub(super) fn tell_shares(&mut self) {
         let mut seen: Vec<&RemotePicture> = self.remote_pictures.values().collect();
         seen.sort_by_key(|picture| picture.order);
         let shares: Vec<SeenShare> = seen
             .iter()
-            .map(|picture| SeenShare {
-                account_id: picture.account_id,
-                kind: picture.kind,
-                frame_rate: picture.frame_rate,
-                size: picture.size,
+            .filter_map(|picture| match picture.share.person {
+                Person::Of(account_id) => Some(SeenShare {
+                    account_id,
+                    slot: picture.share.slot,
+                    kind: picture.kind,
+                    frame_rate: picture.frame_rate,
+                    size: picture.size,
+                }),
+                Person::Own => None,
             })
             .collect();
-        let others: Vec<AccountId> = shares.iter().map(|share| share.account_id).collect();
-        let own = self
-            .share
-            .as_ref()
-            .is_some_and(|share| share.stream.is_some());
-        let now = watched(self.watch_choice, own, &others);
+        let others: Vec<ShareId> = shares
+            .iter()
+            .map(|share| ShareId::of(share.account_id, share.slot))
+            .collect();
+        let own: Vec<u8> = self
+            .own_shares
+            .iter()
+            .filter(|(_, share)| share.stream.is_some())
+            .map(|(slot, _)| *slot)
+            .collect();
+        let now = watched(self.watch_choice, &own, &others);
         let view = View {
             watched: now,
             size: self.view_size,
@@ -642,12 +713,15 @@ impl Actor {
             self.sync_sizes(now);
             self.sync_volumes(now);
         }
-        let share = self.share_state();
+        let own_shares = self.share_states();
+        let share_ended = self.share_ended.clone();
         self.change(|state| {
-            state.share = share;
+            state.own_shares = own_shares;
+            state.share_ended = share_ended;
             state.shares = shares;
             state.watched = now;
         });
+        self.sync_permissions();
     }
 
     /// Asks the media server for the picture of each share at the size of its drawing: the
@@ -656,18 +730,18 @@ impl Actor {
     fn sync_sizes(&mut self, watched: Option<ShareId>) {
         let view_size = self.view_size;
         for picture in self.remote_pictures.values_mut() {
-            let is_watched = watched == Some(ShareId::Of(picture.account_id));
+            let is_watched = watched == Some(picture.share);
             picture.ask(if is_watched { view_size } else { SMALL_PICTURE });
         }
     }
 
-    /// Gives the sound of the watched share its volume. The sound of every other share is
-    /// received and has no volume in the mix: a change of what the media server sends
-    /// would have to be kept in order with the changes before it, and a share sound is a
-    /// small part of what a share costs.
+    /// Gives the sound of the watched share its volume. The sound of every other share,
+    /// also of another share of the same person, is received and has no volume in the
+    /// mix: a change of what the media server sends would have to be kept in order with
+    /// the changes before it, and a share sound is a small part of what a share costs.
     fn sync_volumes(&self, watched: Option<ShareId>) {
         for sound in self.remote_sounds.values() {
-            let is_watched = watched == Some(ShareId::Of(sound.account_id));
+            let is_watched = watched == Some(sound.share);
             sound
                 .source
                 .set_gain(if is_watched { self.share_volume } else { 0.0 });
@@ -692,7 +766,8 @@ impl Actor {
         self.sync_volumes(self.view.borrow().watched);
     }
 
-    /// The picture track of the share of another person arrived.
+    /// The picture track of the share of another person arrived. The name of the track
+    /// states its kind, its frame rate and its slot.
     pub(super) fn remote_picture(
         &mut self,
         track: &RemoteVideoTrack,
@@ -705,11 +780,12 @@ impl Actor {
         };
         let sid = publication.sid();
         let stated = read_track_name(&publication.name());
+        let share = ShareId::of(account_id, stated.map_or(0, |stated| stated.slot));
         self.share_order += 1;
         let task = self.runtime.spawn(watch_pictures(
             NativeVideoStream::new(track.rtc_track()),
             sid.clone(),
-            ShareId::Of(account_id),
+            share,
             self.pictures.clone(),
             self.view.subscribe(),
             self.internal.clone(),
@@ -717,10 +793,10 @@ impl Actor {
         self.remote_pictures.insert(
             sid,
             RemotePicture {
-                account_id,
+                share,
                 publication,
-                kind: stated.map(|(kind, _)| kind),
-                frame_rate: stated.map(|(_, rate)| rate),
+                kind: stated.map(|stated| stated.kind),
+                frame_rate: stated.map(|stated| stated.frame_rate),
                 size: None,
                 asked: None,
                 order: self.share_order,
@@ -732,7 +808,8 @@ impl Actor {
         self.sync_sizes(watched);
     }
 
-    /// The sound track of the share of another person is received.
+    /// The sound track of the share of another person is received. Its name states the
+    /// slot of its share.
     pub(super) fn remote_sound(
         &mut self,
         track: &RemoteAudioTrack,
@@ -743,6 +820,7 @@ impl Actor {
             return;
         };
         let sid = publication.sid();
+        let share = ShareId::of(account_id, read_sound_name(&publication.name()));
         let source = Arc::new(self.mixer.add(0.0));
         let stream = NativeAudioStream::new(
             track.rtc_track(),
@@ -753,7 +831,7 @@ impl Actor {
         self.remote_sounds.insert(
             sid,
             RemoteSound {
-                account_id,
+                share,
                 source,
                 task,
             },
@@ -767,14 +845,14 @@ impl Actor {
         let Some(picture) = self.remote_pictures.remove(sid) else {
             return sound;
         };
-        let share = ShareId::Of(picture.account_id);
+        let share = picture.share;
         drop(picture);
-        // Another track of the same person can show the same share: the person started a
-        // new one before the end of the earlier one was told.
+        // Another track of the same person and slot can show the same share: the person
+        // started a new one before the end of the earlier one was told.
         let again = self
             .remote_pictures
             .values()
-            .any(|other| ShareId::Of(other.account_id) == share);
+            .any(|other| other.share == share);
         if !again {
             self.pictures.forget(share);
         }
@@ -796,7 +874,7 @@ impl Actor {
         let shares: Vec<ShareId> = self
             .remote_pictures
             .values()
-            .map(|picture| ShareId::Of(picture.account_id))
+            .map(|picture| picture.share)
             .collect();
         self.remote_pictures.clear();
         self.remote_sounds.clear();
@@ -805,20 +883,29 @@ impl Actor {
         }
     }
 
-    /// Starts the share of this device. A share that runs is replaced. `stop`: the count
-    /// of share stops when the start was asked for; after a later stop the share sends
-    /// nothing.
-    pub(super) fn start_share(&mut self, request: CaptureRequest, stop: u64) {
-        self.end_share(None);
+    /// Starts a share of this device in the lowest free slot; the shares that run go on.
+    /// `stops`: the count of stops of each slot when the start was asked for; after a
+    /// later stop of its slot the share sends nothing. A person who runs as many shares
+    /// as the call allows, `MAX_SHARES` or one on a server from before several shares, is
+    /// told that no further one starts.
+    pub(super) fn start_share(&mut self, request: CaptureRequest, stops: [u64; MAX_SLOTS]) {
+        self.share_ended = None;
         if !self.joined() {
-            self.change(|state| state.share = ShareState::Ended(CaptureError::Interrupted));
+            self.share_ended = Some(CaptureError::Interrupted);
+            self.tell_shares();
             return;
         }
+        let Some(slot) = free_slot(self.own_shares.keys().copied(), self.share_limit) else {
+            self.share_ended = Some(CaptureError::TooMany);
+            self.tell_shares();
+            return;
+        };
         self.share_generation += 1;
         let generation = self.share_generation;
         let (frames, taken) = mpsc::channel(WAITING_FRAMES);
         let sink = Arc::new(ShareSink {
             generation,
+            slot,
             internal: self.internal.clone(),
             video: Mutex::new(None),
             last: Mutex::new(None),
@@ -826,13 +913,13 @@ impl Actor {
             sound: Mutex::new(SoundChain::new(frames)),
             ended: AtomicBool::new(false),
             stops: self.stops.clone(),
-            stop,
+            stop: stops[usize::from(slot)],
         });
         let sound_source: Arc<Mutex<Option<NativeAudioSource>>> = Arc::default();
         let starting = self.options.capture.start(request.clone(), sink.clone());
         let internal = self.internal.clone();
         let started: Started = Arc::default();
-        let slot = started.clone();
+        let held = started.clone();
         let tasks = vec![
             self.runtime.spawn(pump_sound(taken, sound_source.clone())),
             self.runtime.spawn(tend(
@@ -846,82 +933,105 @@ impl Actor {
             // nobody takes it any more is dropped with its message.
             self.runtime.spawn(async move {
                 let answer = starting.await;
-                *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(answer);
+                *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(answer);
                 let _ = internal.send(Internal::ShareStarted(generation));
             }),
         ];
-        self.share = Some(OwnShare {
-            generation,
-            request,
-            sink,
-            stream: None,
-            picture: Publication::None,
-            sound_source,
-            sound: Publication::None,
-            sound_generation: 0,
-            picture_returns: None,
-            sound_returns: None,
-            waits: 0,
-            started,
-            tasks,
-        });
+        self.own_shares.insert(
+            slot,
+            OwnShare {
+                generation,
+                id: Uuid::now_v7(),
+                slot,
+                request,
+                sink,
+                stream: None,
+                picture: Publication::None,
+                sound_source,
+                sound: Publication::None,
+                sound_generation: 0,
+                picture_returns: None,
+                sound_returns: None,
+                waits: 0,
+                cleared_by: None,
+                started,
+                tasks,
+            },
+        );
         self.tell_shares();
     }
 
-    /// Ends the share of this device. `error`: the share ended by itself, and the person
-    /// is told why.
-    pub(super) fn end_share(&mut self, error: Option<CaptureError>) {
-        let Some(mut share) = self.share.take() else {
-            if error.is_none() {
-                self.change(|state| state.share = ShareState::Off);
-            }
-            return;
+    /// Ends the share of this device in `slot`, or every share without a slot. `error`:
+    /// the share ended by itself, and the person is told why; a stop of the person puts
+    /// away the statement that a share ended.
+    pub(super) fn end_share(&mut self, slot: Option<u8>, error: Option<CaptureError>) {
+        let slots: Vec<u8> = match slot {
+            Some(slot) => vec![slot],
+            None => self.own_shares.keys().copied().collect(),
         };
-        self.share_generation += 1;
-        for publication in [
-            std::mem::replace(&mut share.picture, Publication::None),
-            std::mem::replace(&mut share.sound, Publication::None),
-        ] {
-            if let Publication::Published(publication) = publication {
-                self.withdraw(publication);
-            }
-        }
-        drop(share);
-        self.pictures.forget(ShareId::Own);
-        self.change(|state| {
-            state.share = match error {
-                Some(error) => ShareState::Ended(error),
-                None => ShareState::Off,
+        for slot in slots {
+            let Some(mut share) = self.own_shares.remove(&slot) else {
+                continue;
             };
-        });
+            self.share_generation += 1;
+            if matches!(share.picture, Publication::Publishing)
+                && share.cleared_by.is_none()
+                && share.picture_returns.is_none()
+            {
+                self.arriving.insert(Arriving::Picture(share.generation));
+            }
+            if matches!(share.sound, Publication::Publishing) && share.sound_returns.is_none() {
+                self.arriving
+                    .insert(Arriving::Sound(share.generation, share.sound_generation));
+            }
+            for publication in [
+                std::mem::replace(&mut share.picture, Publication::None),
+                std::mem::replace(&mut share.sound, Publication::None),
+            ] {
+                if let Publication::Published(publication) = publication {
+                    self.withdraw(publication);
+                }
+            }
+            drop(share);
+            self.pictures.forget(ShareId::own(slot));
+        }
+        self.share_ended = error;
         self.tell_shares();
+    }
+
+    /// Puts away the statement that a share ended by itself, and leaves the shares that
+    /// run.
+    pub(super) fn forget_share_end(&mut self) {
+        if self.share_ended.take().is_some() {
+            self.tell_shares();
+        }
     }
 
     pub(super) fn share_started(&mut self, generation: u64) {
         let started = self
-            .share
-            .as_ref()
-            .filter(|share| share.generation == generation && share.stream.is_none())
+            .own_share_of(generation)
+            .filter(|share| share.stream.is_none())
             .and_then(|share| {
                 share
                     .started
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .take()
+                    .map(|started| (share.slot, started))
             });
-        let Some(started) = started else {
+        let Some((slot, started)) = started else {
             return;
         };
         let stream = match started {
             Ok(stream) => stream,
             Err(error) => {
-                tracing::warn!(%error, "the capture of the share did not start");
-                self.end_share(Some(error));
+                tracing::warn!(%error, slot, "the capture of the share did not start");
+                self.end_share(Some(slot), Some(error));
                 return;
             }
         };
-        let (Some(room), Some(share)) = (&self.room, &mut self.share) else {
-            self.end_share(Some(CaptureError::Interrupted));
+        let (Some(_), Some(share)) = (&self.room, self.own_shares.get_mut(&slot)) else {
+            self.end_share(Some(slot), Some(CaptureError::Interrupted));
             return;
         };
         let source = NativeVideoSource::new(
@@ -943,6 +1053,7 @@ impl Actor {
         let name = track_name(
             share.request.picture.kind(),
             share.request.quality.frame_rate,
+            slot,
         );
         let track = LocalVideoTrack::create_video_track(&name, RtcVideoSource::Native(source));
         let options = picture_options(
@@ -951,6 +1062,46 @@ impl Actor {
         );
         share.stream = Some(stream);
         share.picture = Publication::Publishing;
+        share.cleared_by = Some((u64::MAX, track, options));
+        // The permissions that count this share reach the call library before its tracks.
+        let Some(number) = self.sync_permissions() else {
+            self.end_share(
+                Some(slot),
+                Some(CaptureError::Failed(
+                    "the track permissions of the room were not set".to_owned(),
+                )),
+            );
+            return;
+        };
+        if number <= self.permissions_applied {
+            self.publish_share_picture(slot);
+        } else {
+            if let Some((waits_for, _, _)) = self
+                .own_shares
+                .get_mut(&slot)
+                .and_then(|share| share.cleared_by.as_mut())
+            {
+                *waits_for = number;
+            }
+            let internal = self.internal.clone();
+            self.runtime.spawn(async move {
+                tokio::time::sleep(PUBLISH_LIMIT).await;
+                let _ = internal.send(Internal::SharePermissionsDue(generation));
+            });
+        }
+        self.tell_shares();
+    }
+
+    /// Publishes the picture track of the share in `slot` that waits for its permissions,
+    /// and its sound.
+    fn publish_share_picture(&mut self, slot: u8) {
+        let (Some(room), Some(share)) = (&self.room, self.own_shares.get_mut(&slot)) else {
+            return;
+        };
+        let Some((_, track, options)) = share.cleared_by.take() else {
+            return;
+        };
+        let generation = share.generation;
         let (participant, internal) = (room.local_participant(), self.internal.clone());
         self.runtime.spawn(async move {
             let publishing = participant.publish_track(LocalTrack::Video(track), options);
@@ -962,7 +1113,57 @@ impl Actor {
             let _ = internal.send(Internal::SharePicturePublished(generation, result));
         });
         self.sync_share_sound();
-        self.tell_shares();
+    }
+
+    /// The call library took the track permissions up to `number`, or failed to take those
+    /// of `number`: the shares that wait for them are published, or end.
+    pub(super) fn share_permissions_applied(&mut self, number: u64, failure: Option<String>) {
+        let waiting: Vec<u8> = self
+            .own_shares
+            .iter()
+            .filter(|(_, share)| {
+                share
+                    .cleared_by
+                    .as_ref()
+                    .is_some_and(|(waits_for, _, _)| *waits_for <= number)
+            })
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in waiting {
+            match &failure {
+                None => self.publish_share_picture(slot),
+                Some(error) => {
+                    tracing::warn!(%error, slot, "the share was not published without its permissions");
+                    self.end_share(
+                        Some(slot),
+                        Some(CaptureError::Failed(format!(
+                            "the track permissions of the room were not set: {error}"
+                        ))),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The time of a share to wait for its permissions has passed.
+    pub(super) fn share_permissions_due(&mut self, generation: u64) {
+        let Some(share) = self
+            .own_share_of(generation)
+            .filter(|share| share.cleared_by.is_some())
+        else {
+            return;
+        };
+        let slot = share.slot;
+        tracing::warn!(
+            slot,
+            "the track permissions of the share were not set in time"
+        );
+        self.end_share(
+            Some(slot),
+            Some(CaptureError::Failed(
+                "the track permissions of the room were not set in time".to_owned(),
+            )),
+        );
     }
 
     pub(super) fn share_picture_published(
@@ -970,38 +1171,45 @@ impl Actor {
         generation: u64,
         result: Result<LocalTrackPublication, String>,
     ) {
-        let current = self.share.as_mut().filter(|share| {
-            share.generation == generation && matches!(share.picture, Publication::Publishing)
-        });
+        let current = self
+            .own_share_of(generation)
+            .filter(|share| matches!(share.picture, Publication::Publishing));
         match (current, result) {
             (Some(share), Ok(publication)) => {
                 share.picture = Publication::Published(publication);
                 self.tell_shares();
             }
-            (Some(_), Err(error)) => {
-                tracing::warn!(%error, "the picture of the share was not published");
-                self.end_share(Some(CaptureError::Failed(error)));
+            (Some(share), Err(error)) => {
+                let slot = share.slot;
+                tracing::warn!(%error, slot, "the picture of the share was not published");
+                self.end_share(Some(slot), Some(CaptureError::Failed(error)));
             }
             // The share ended while its track was published.
-            (None, Ok(publication)) => self.withdraw(publication),
-            (None, Err(_)) => {}
+            (None, result) => {
+                self.arriving.remove(&Arriving::Picture(generation));
+                if let Ok(publication) = result {
+                    self.withdraw(publication);
+                }
+                self.sync_permissions();
+            }
         }
     }
 
     /// A track of this device was withdrawn, and this device did not ask for it. The call
     /// library does that when it connects anew, and publishes the same track again; the
     /// media server does it when the person may not send the track any more. The share
-    /// waits for the track for a bounded time. Returns whether it was a track of the share.
+    /// waits for the track for a bounded time. Returns whether it was a track of a share.
     pub(super) fn share_track_taken(&mut self, sid: &TrackSid) -> bool {
-        let Some(share) = &mut self.share else {
-            return false;
-        };
         let is = |publication: &Publication| matches!(publication, Publication::Published(held) if held.sid() == *sid);
-        let track = if is(&share.picture) {
-            ShareTrack::Picture
-        } else if is(&share.sound) {
-            ShareTrack::Sound
-        } else {
+        let Some((share, track)) = self.own_shares.values_mut().find_map(|share| {
+            if is(&share.picture) {
+                Some((share, ShareTrack::Picture))
+            } else if is(&share.sound) {
+                Some((share, ShareTrack::Sound))
+            } else {
+                None
+            }
+        }) else {
             return false;
         };
         share.waits += 1;
@@ -1026,8 +1234,8 @@ impl Actor {
     }
 
     /// The call library published a track of this device again under another identifier.
-    /// A track that the share waits for is its track again. A track that no share uses
-    /// is withdrawn: the share was stopped, or it has published a new track meanwhile.
+    /// A track that a share waits for is its track again. A track that no share uses is
+    /// withdrawn: its share was stopped, or it has published a new track meanwhile.
     pub(super) fn share_track_republished(
         &mut self,
         previous: &TrackSid,
@@ -1038,38 +1246,34 @@ impl Actor {
             TrackSource::ScreenshareAudio => ShareTrack::Sound,
             _ => return,
         };
-        let Some(share) = &mut self.share else {
-            self.withdraw(publication);
-            return;
-        };
-        let (held, returns) = match track {
-            ShareTrack::Picture => (&mut share.picture, &mut share.picture_returns),
-            ShareTrack::Sound => (&mut share.sound, &mut share.sound_returns),
-        };
-        // Only the track that this share sent returns to it. A track of a share before
-        // this one, which the call library held when it connected anew, is not adopted.
-        let waits_for = returns.as_ref().map(|(_, sid)| sid);
-        let holds = match &*held {
-            Publication::Published(before) => Some(before.sid()),
-            Publication::None | Publication::Publishing => None,
-        };
-        if is_return(waits_for, holds.as_ref(), previous) {
-            *held = Publication::Published(publication);
-            *returns = None;
-            // The permission can have changed while the track was away.
-            self.sync_share_sound();
-        } else {
-            self.withdraw(publication);
+        // Only the track that a share sent returns to it. A track of a share before this
+        // one, which the call library held when it connected anew, is not adopted.
+        let returned = self.own_shares.values_mut().find_map(|share| {
+            let (held, returns) = match track {
+                ShareTrack::Picture => (&mut share.picture, &mut share.picture_returns),
+                ShareTrack::Sound => (&mut share.sound, &mut share.sound_returns),
+            };
+            let waits_for = returns.as_ref().map(|(_, sid)| sid);
+            let holds = match &*held {
+                Publication::Published(before) => Some(before.sid()),
+                Publication::None | Publication::Publishing => None,
+            };
+            is_return(waits_for, holds.as_ref(), previous).then_some((held, returns))
+        });
+        match returned {
+            Some((held, returns)) => {
+                *held = Publication::Published(publication);
+                *returns = None;
+                // The permission can have changed while the track was away.
+                self.sync_share_sound();
+            }
+            None => self.withdraw(publication),
         }
     }
 
     /// The time for a withdrawn track to return has passed.
     pub(super) fn share_track_due(&mut self, generation: u64, wait: u64, track: ShareTrack) {
-        let Some(share) = self
-            .share
-            .as_mut()
-            .filter(|share| share.generation == generation)
-        else {
+        let Some(share) = self.own_share_of(generation) else {
             return;
         };
         match track {
@@ -1077,9 +1281,13 @@ impl Actor {
                 if share.picture_returns.as_ref().map(|(held, _)| *held) == Some(wait) =>
             {
                 share.picture = Publication::None;
-                self.end_share(Some(CaptureError::Failed(
-                    "the media server ended the picture of the share".to_owned(),
-                )));
+                let slot = share.slot;
+                self.end_share(
+                    Some(slot),
+                    Some(CaptureError::Failed(
+                        "the media server ended the picture of the share".to_owned(),
+                    )),
+                );
             }
             ShareTrack::Sound
                 if share.sound_returns.as_ref().map(|(held, _)| *held) == Some(wait) =>
@@ -1097,78 +1305,90 @@ impl Actor {
         }
     }
 
-    /// Publishes or withdraws the sound track of the share by what holds now: it is
+    /// Publishes or withdraws the sound track of each own share by what holds now: it is
     /// published while the share runs with a sound and the server lets the person send it.
     pub(super) fn sync_share_sound(&mut self) {
         let may_send = self.may_send(SHARE_SOUND_SOURCE) && !self.controls.microphone_blocked;
-        let Some(share) = &mut self.share else {
-            return;
-        };
-        let wanted = share.stream.is_some()
-            && share.request.sound.reported() != ShareAudio::None
-            && may_send;
-        match (&share.sound, wanted) {
-            (Publication::None, true) => {
-                let Some(room) = &self.room else {
-                    return;
-                };
-                share.sound_generation += 1;
-                let key = (share.generation, share.sound_generation);
-                share.sound = Publication::Publishing;
-                let source = NativeAudioSource::new(
-                    AudioSourceOptions {
-                        echo_cancellation: false,
-                        noise_suppression: false,
-                        auto_gain_control: false,
-                    },
-                    SAMPLE_RATE,
-                    SHARE_CHANNELS as u32,
-                    0,
-                );
-                *share
-                    .sound_source
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(source.clone());
-                let track = LocalAudioTrack::create_audio_track(
-                    "share-sound",
-                    RtcAudioSource::Native(source),
-                );
-                let options = TrackPublishOptions {
-                    source: TrackSource::ScreenshareAudio,
-                    audio_encoding: Some(AudioEncoding {
-                        max_bitrate: SHARE_SOUND_BITRATE,
-                    }),
-                    // The sound of a share is music as often as speech: it is sent without
-                    // gaps in silence and without a second copy at a low bitrate.
-                    dtx: false,
-                    red: false,
-                    ..TrackPublishOptions::default()
-                };
-                let (participant, internal) = (room.local_participant(), self.internal.clone());
-                self.runtime.spawn(async move {
-                    let publishing = participant.publish_track(LocalTrack::Audio(track), options);
-                    let result = match tokio::time::timeout(PUBLISH_LIMIT, publishing).await {
-                        Ok(Ok(publication)) => Ok(publication),
-                        Ok(Err(error)) => Err(error.to_string()),
-                        Err(_) => Err("no answer of the media server".to_owned()),
+        let mut withdrawn = Vec::new();
+        for share in self.own_shares.values_mut() {
+            let wanted = share.stream.is_some()
+                && share.cleared_by.is_none()
+                && share.request.sound.reported() != ShareAudio::None
+                && may_send;
+            match (&share.sound, wanted) {
+                (Publication::None, true) => {
+                    let Some(room) = &self.room else {
+                        continue;
                     };
-                    let _ = internal.send(Internal::ShareSoundPublished(key, result));
-                });
-            }
-            (Publication::Published(_) | Publication::Publishing, false) => {
-                share.sound_generation += 1;
-                share.sound_returns = None;
-                *share
-                    .sound_source
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = None;
-                if let Publication::Published(publication) =
-                    std::mem::replace(&mut share.sound, Publication::None)
-                {
-                    self.withdraw(publication);
+                    share.sound_generation += 1;
+                    let key = (share.generation, share.sound_generation);
+                    share.sound = Publication::Publishing;
+                    let source = NativeAudioSource::new(
+                        AudioSourceOptions {
+                            echo_cancellation: false,
+                            noise_suppression: false,
+                            auto_gain_control: false,
+                        },
+                        SAMPLE_RATE,
+                        SHARE_CHANNELS as u32,
+                        0,
+                    );
+                    *share
+                        .sound_source
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(source.clone());
+                    let track = LocalAudioTrack::create_audio_track(
+                        &sound_name(share.slot),
+                        RtcAudioSource::Native(source),
+                    );
+                    let options = TrackPublishOptions {
+                        source: TrackSource::ScreenshareAudio,
+                        audio_encoding: Some(AudioEncoding {
+                            max_bitrate: SHARE_SOUND_BITRATE,
+                        }),
+                        // The sound of a share is music as often as speech: it is sent
+                        // without gaps in silence and without a second copy at a low
+                        // bitrate.
+                        dtx: false,
+                        red: false,
+                        ..TrackPublishOptions::default()
+                    };
+                    let (participant, internal) = (room.local_participant(), self.internal.clone());
+                    self.runtime.spawn(async move {
+                        let publishing =
+                            participant.publish_track(LocalTrack::Audio(track), options);
+                        let result = match tokio::time::timeout(PUBLISH_LIMIT, publishing).await {
+                            Ok(Ok(publication)) => Ok(publication),
+                            Ok(Err(error)) => Err(error.to_string()),
+                            Err(_) => Err("no answer of the media server".to_owned()),
+                        };
+                        let _ = internal.send(Internal::ShareSoundPublished(key, result));
+                    });
                 }
+                (Publication::Published(_) | Publication::Publishing, false) => {
+                    if matches!(share.sound, Publication::Publishing)
+                        && share.sound_returns.is_none()
+                    {
+                        self.arriving
+                            .insert(Arriving::Sound(share.generation, share.sound_generation));
+                    }
+                    share.sound_generation += 1;
+                    share.sound_returns = None;
+                    *share
+                        .sound_source
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = None;
+                    if let Publication::Published(publication) =
+                        std::mem::replace(&mut share.sound, Publication::None)
+                    {
+                        withdrawn.push(publication);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
+        }
+        for publication in withdrawn {
+            self.withdraw(publication);
         }
         self.tell_shares();
     }
@@ -1178,9 +1398,8 @@ impl Actor {
         key: (u64, u64),
         result: Result<LocalTrackPublication, String>,
     ) {
-        let current = self.share.as_mut().filter(|share| {
-            (share.generation, share.sound_generation) == key
-                && matches!(share.sound, Publication::Publishing)
+        let current = self.own_share_of(key.0).filter(|share| {
+            share.sound_generation == key.1 && matches!(share.sound, Publication::Publishing)
         });
         match (current, result) {
             (Some(share), Ok(publication)) => {
@@ -1188,20 +1407,22 @@ impl Actor {
                 self.tell_shares();
             }
             (Some(share), Err(error)) => {
-                tracing::info!(%error, "the sound of the share was not published");
+                tracing::info!(%error, slot = share.slot, "the sound of the share was not published");
                 share.sound = Publication::None;
-                self.retry_share_sound_later();
+                self.retry_share_sound_later(key.0);
             }
-            (None, Ok(publication)) => self.withdraw(publication),
-            (None, Err(_)) => {}
+            (None, result) => {
+                self.arriving.remove(&Arriving::Sound(key.0, key.1));
+                if let Ok(publication) = result {
+                    self.withdraw(publication);
+                }
+                self.sync_permissions();
+            }
         }
     }
 
-    fn retry_share_sound_later(&self) {
-        let Some(share) = &self.share else {
-            return;
-        };
-        let (generation, internal) = (share.generation, self.internal.clone());
+    fn retry_share_sound_later(&self, generation: u64) {
+        let internal = self.internal.clone();
         self.runtime.spawn(async move {
             tokio::time::sleep(PUBLISH_RETRY).await;
             let _ = internal.send(Internal::ShareSoundRetry(generation));
@@ -1209,23 +1430,16 @@ impl Actor {
     }
 
     pub(super) fn share_sound_retry(&mut self, generation: u64) {
-        if self
-            .share
-            .as_ref()
-            .is_some_and(|share| share.generation == generation)
-        {
+        if self.own_share_of(generation).is_some() {
             self.sync_share_sound();
         }
     }
 
     pub(super) fn share_ended(&mut self, generation: u64, error: CaptureError) {
-        if self
-            .share
-            .as_ref()
-            .is_some_and(|share| share.generation == generation)
-        {
-            tracing::info!(%error, "the capture of the share ended");
-            self.end_share(Some(error));
+        if let Some(share) = self.own_share_of(generation) {
+            let slot = share.slot;
+            tracing::info!(%error, slot, "the capture of the share ended");
+            self.end_share(Some(slot), Some(error));
         }
     }
 }
@@ -1237,35 +1451,49 @@ mod tests {
     #[test]
     fn the_watched_share_is_the_choice_while_it_runs_then_the_first_other_then_the_own() {
         let (ann, ben) = (AccountId::generate(), AccountId::generate());
+        let (ann_0, ben_0, ben_1) = (
+            ShareId::of(ann, 0),
+            ShareId::of(ben, 0),
+            ShareId::of(ben, 1),
+        );
         // Nothing is shared.
-        assert_eq!(watched(None, false, &[]), None);
-        assert_eq!(watched(Some(ShareId::Own), false, &[]), None);
-        // The own share alone is the preview of the sharer.
-        assert_eq!(watched(None, true, &[]), Some(ShareId::Own));
+        assert_eq!(watched(None, &[], &[]), None);
+        assert_eq!(watched(Some(ShareId::own(0)), &[], &[]), None);
+        // The own share alone is the preview of the sharer; of two, the lowest slot.
+        assert_eq!(watched(None, &[0], &[]), Some(ShareId::own(0)));
+        assert_eq!(watched(None, &[2, 1], &[]), Some(ShareId::own(1)));
         // Without a choice: the share of another person that was seen first.
-        assert_eq!(watched(None, true, &[ann, ben]), Some(ShareId::Of(ann)));
-        // The choice holds while its share runs.
+        assert_eq!(watched(None, &[0], &[ann_0, ben_0]), Some(ann_0));
+        // The choice holds while its share runs, also a second share of one person.
+        assert_eq!(watched(Some(ben_0), &[0], &[ann_0, ben_0]), Some(ben_0));
+        assert_eq!(watched(Some(ben_1), &[], &[ben_0, ben_1]), Some(ben_1));
         assert_eq!(
-            watched(Some(ShareId::Of(ben)), true, &[ann, ben]),
-            Some(ShareId::Of(ben))
+            watched(Some(ShareId::own(1)), &[0, 1], &[ann_0, ben_0]),
+            Some(ShareId::own(1))
         );
+        // A choice whose share has ended gives way to the rule without a choice: another
+        // share of the same person is not chosen for the viewer.
+        assert_eq!(watched(Some(ben_1), &[], &[ann_0, ben_0]), Some(ann_0));
+        assert_eq!(watched(Some(ben_0), &[0], &[]), Some(ShareId::own(0)));
         assert_eq!(
-            watched(Some(ShareId::Own), true, &[ann, ben]),
-            Some(ShareId::Own)
+            watched(Some(ShareId::own(2)), &[0], &[]),
+            Some(ShareId::own(0))
         );
-        // A choice whose share has ended gives way to the rule without a choice.
-        assert_eq!(
-            watched(Some(ShareId::Of(ben)), false, &[ann]),
-            Some(ShareId::Of(ann))
-        );
-        assert_eq!(
-            watched(Some(ShareId::Of(ben)), true, &[]),
-            Some(ShareId::Own)
-        );
-        assert_eq!(
-            watched(Some(ShareId::Own), false, &[ben]),
-            Some(ShareId::Of(ben))
-        );
+        assert_eq!(watched(Some(ShareId::own(0)), &[], &[ben_1]), Some(ben_1));
+    }
+
+    #[test]
+    fn a_start_takes_the_lowest_free_slot_and_no_slot_beyond_the_limit() {
+        assert_eq!(free_slot([], MAX_SHARES), Some(0));
+        assert_eq!(free_slot([0, 2], MAX_SHARES), Some(1));
+        assert_eq!(free_slot([1, 2], MAX_SHARES), Some(0));
+        assert_eq!(free_slot([0, 1, 2], MAX_SHARES), None);
+        assert_eq!(MAX_SLOTS, 3);
+        // A server from before several shares: one share.
+        assert_eq!(free_slot([], 1), Some(0));
+        assert_eq!(free_slot([0], 1), None);
+        assert_eq!(free_slot([], 200), Some(0));
+        assert_eq!(free_slot([0, 1, 2], 200), None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1373,7 +1601,7 @@ mod tests {
     /// smaller drawing makes planes of its size.
     #[test]
     fn a_picture_at_the_size_of_the_drawing_holds_the_received_planes() {
-        let share = ShareId::Of(AccountId::generate());
+        let share = ShareId::of(AccountId::generate(), 0);
         let pictures = Pictures {
             main: Arc::new(watch::Sender::new(None)),
             small: Arc::new(watch::Sender::new(HashMap::new())),
@@ -1401,8 +1629,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_share_of_60_pictures_per_second_is_drawn_30_times_and_its_last_picture_always() {
-        let account_id = AccountId::generate();
-        let share = ShareId::Of(account_id);
+        let share = ShareId::of(AccountId::generate(), 1);
         let pictures = Pictures {
             main: Arc::new(watch::Sender::new(None)),
             small: Arc::new(watch::Sender::new(HashMap::new())),

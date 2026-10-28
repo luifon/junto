@@ -1,12 +1,17 @@
 //! The settings of the interface that belong to one installation and to no server: the
-//! interface scale, the theme and the form of the server book (ADR 0703, ADR 0710).
+//! interface scale, the theme, the form of the server book, the widths of the panels,
+//! whether the panel of a call is closed (ADR 0703, ADR 0710) and the key bindings
+//! (ADR 0777).
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::keybinds::Keybinds;
 use crate::paths::{DataDir, SETTINGS_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+pub const SETTINGS_FORMAT_VERSION: u32 = 3;
 
 /// The narrowest and the widest interface scale, in percent (ADR 0703).
 pub const SCALE_MIN_PERCENT: u32 = 90;
@@ -16,9 +21,34 @@ const SETTINGS: Versioned = Versioned {
     name: SETTINGS_FILE,
     kind: "settings",
     version: SETTINGS_FORMAT_VERSION,
-    migrations: &[],
+    migrations: &[key_bindings, inherited_talk_key],
     limit: 64 * 1024,
 };
+
+/// Version 1 had no key bindings: every action has its default.
+fn key_bindings(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    value
+        .as_object_mut()
+        .ok_or("the settings are not an object")?
+        .entry("keybinds")
+        .or_insert(serde_json::json!({}));
+    Ok(value)
+}
+
+fn inherited_talk_key(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let object = value
+        .as_object_mut()
+        .ok_or("the settings are not an object")?;
+    if let Some(binding) = object
+        .get_mut("keybinds")
+        .and_then(|bindings| bindings.get_mut("push_to_talk"))
+        .and_then(serde_json::Value::as_object_mut)
+        && binding.get("keys").is_none_or(serde_json::Value::is_null)
+    {
+        binding.insert("inherited".to_owned(), serde_json::Value::Bool(true));
+    }
+    Ok(value)
+}
 
 /// The theme that the person chose. `System` follows the light or dark appearance of the
 /// system.
@@ -31,6 +61,90 @@ pub enum ThemeChoice {
     System,
 }
 
+/// A panel beside the main area whose width the person sets by dragging its edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Panel {
+    ServerBook,
+    Channels,
+    Thread,
+    Pins,
+    Notices,
+    Search,
+    Members,
+    Transcript,
+    /// The panel of the call beside its stage in the main window.
+    Call,
+    /// The panel of the call in the separate call window.
+    CallWindow,
+}
+
+impl Panel {
+    pub const ALL: [Self; 10] = [
+        Self::ServerBook,
+        Self::Channels,
+        Self::Thread,
+        Self::Pins,
+        Self::Notices,
+        Self::Search,
+        Self::Members,
+        Self::Transcript,
+        Self::Call,
+        Self::CallWindow,
+    ];
+
+    /// The narrowest and the widest width of the panel, in pixels of the design.
+    pub const fn bounds(self) -> (u16, u16) {
+        match self {
+            Self::ServerBook => (160, 360),
+            Self::Channels => (200, 420),
+            Self::Call | Self::CallWindow => (280, 720),
+            Self::Thread
+            | Self::Pins
+            | Self::Notices
+            | Self::Search
+            | Self::Members
+            | Self::Transcript => (280, 720),
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The widths that the person gave the panels, in pixels of the design. A panel without
+/// one has the width of the design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PanelWidths([Option<u16>; Panel::ALL.len()]);
+
+impl PanelWidths {
+    pub fn get(&self, panel: Panel) -> Option<u16> {
+        self.0[panel.index()]
+    }
+
+    /// Keeps `width` for `panel`, within the bounds of the panel.
+    pub fn set(&mut self, panel: Panel, width: u16) {
+        let (least, most) = panel.bounds();
+        self.0[panel.index()] = Some(width.clamp(least, most));
+    }
+
+    fn of(stored: &BTreeMap<Panel, u16>) -> Self {
+        let mut widths = Self::default();
+        for (panel, width) in stored {
+            widths.set(*panel, *width);
+        }
+        widths
+    }
+
+    fn stored(&self) -> BTreeMap<Panel, u16> {
+        Panel::ALL
+            .into_iter()
+            .filter_map(|panel| self.get(panel).map(|width| (panel, width)))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterfaceSettings {
     /// The interface scale in percent, from 90 to 150.
@@ -38,6 +152,11 @@ pub struct InterfaceSettings {
     /// The server book shows icons only.
     pub server_book_collapsed: bool,
     pub theme: ThemeChoice,
+    pub panel_widths: PanelWidths,
+    /// The person closed the panel of a call beside its stage in the main window.
+    pub call_panel_closed: bool,
+    /// The same for the separate call window.
+    pub call_window_panel_closed: bool,
 }
 
 impl Default for InterfaceSettings {
@@ -46,6 +165,9 @@ impl Default for InterfaceSettings {
             scale_percent: 100,
             server_book_collapsed: false,
             theme: ThemeChoice::default(),
+            panel_widths: PanelWidths::default(),
+            call_panel_closed: false,
+            call_window_panel_closed: false,
         }
     }
 }
@@ -58,6 +180,30 @@ struct SettingsFile {
     server_book_collapsed: bool,
     #[serde(default)]
     theme: ThemeChoice,
+    #[serde(default)]
+    keybinds: Keybinds,
+    /// A panel that this client does not know is left out of the file at the next write.
+    #[serde(default, deserialize_with = "known_panels")]
+    panel_widths: BTreeMap<Panel, u16>,
+    #[serde(default)]
+    call_panel_closed: bool,
+    #[serde(default)]
+    call_window_panel_closed: bool,
+}
+
+/// The widths of the panels that this client knows; a panel of a later client is skipped.
+fn known_panels<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<Panel, u16>, D::Error> {
+    let all = BTreeMap::<String, u16>::deserialize(deserializer)?;
+    Ok(all
+        .into_iter()
+        .filter_map(|(name, width)| {
+            serde_json::from_value::<Panel>(serde_json::Value::String(name))
+                .ok()
+                .map(|panel| (panel, width))
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -73,16 +219,29 @@ impl SettingsStore {
     /// The stored settings, or the defaults when there is no file. A scale outside its
     /// range is read as the nearest bound.
     pub fn load(&self) -> Result<InterfaceSettings, StorageError> {
+        Ok(self.load_all()?.0)
+    }
+
+    /// The stored key bindings, or the defaults when there is no file.
+    pub fn load_keybinds(&self) -> Result<Keybinds, StorageError> {
+        Ok(self.load_all()?.1)
+    }
+
+    fn load_all(&self) -> Result<(InterfaceSettings, Keybinds), StorageError> {
         let Some(file) = SETTINGS.load::<SettingsFile>(self.data_dir.files())? else {
-            return Ok(InterfaceSettings::default());
+            return Ok((InterfaceSettings::default(), Keybinds::default()));
         };
-        Ok(InterfaceSettings {
+        let settings = InterfaceSettings {
             scale_percent: file
                 .scale_percent
                 .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
             server_book_collapsed: file.server_book_collapsed,
             theme: file.theme,
-        })
+            panel_widths: PanelWidths::of(&file.panel_widths),
+            call_panel_closed: file.call_panel_closed,
+            call_window_panel_closed: file.call_window_panel_closed,
+        };
+        Ok((settings, file.keybinds.checked()))
     }
 
     /// Replaces the stored settings. See [`SettingsStore::update`] for a file that cannot
@@ -103,32 +262,46 @@ impl SettingsStore {
         &self,
         change: impl FnOnce(&mut InterfaceSettings),
     ) -> Result<InterfaceSettings, StorageError> {
+        Ok(self.update_all(|settings, _| change(settings))?.0)
+    }
+
+    /// As [`SettingsStore::update`], for the key bindings.
+    pub fn update_keybinds(
+        &self,
+        change: impl FnOnce(&mut Keybinds),
+    ) -> Result<Keybinds, StorageError> {
+        Ok(self.update_all(|_, keybinds| change(keybinds))?.1)
+    }
+
+    fn update_all(
+        &self,
+        change: impl FnOnce(&mut InterfaceSettings, &mut Keybinds),
+    ) -> Result<(InterfaceSettings, Keybinds), StorageError> {
         let _lock = self.data_dir.lock()?;
-        let mut settings = match self.load() {
-            Ok(settings) => settings,
-            Err(StorageError::Corrupted { .. }) => InterfaceSettings::default(),
+        let (mut settings, mut keybinds) = match self.load_all() {
+            Ok(stored) => stored,
+            Err(StorageError::Corrupted { .. }) => Default::default(),
             Err(other) => return Err(other),
         };
-        change(&mut settings);
+        change(&mut settings, &mut keybinds);
         settings.scale_percent = settings
             .scale_percent
             .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT);
-        self.write(settings)?;
-        Ok(settings)
-    }
-
-    fn write(&self, settings: InterfaceSettings) -> Result<(), StorageError> {
+        let keybinds = keybinds.checked();
         SETTINGS.store(
             self.data_dir.files(),
             &SettingsFile {
                 format_version: SETTINGS_FORMAT_VERSION,
-                scale_percent: settings
-                    .scale_percent
-                    .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
+                scale_percent: settings.scale_percent,
                 server_book_collapsed: settings.server_book_collapsed,
                 theme: settings.theme,
+                keybinds: keybinds.clone(),
+                panel_widths: settings.panel_widths.stored(),
+                call_panel_closed: settings.call_panel_closed,
+                call_window_panel_closed: settings.call_window_panel_closed,
             },
-        )
+        )?;
+        Ok((settings, keybinds))
     }
 }
 
@@ -151,15 +324,42 @@ mod tests {
         assert_eq!(store.load().unwrap(), InterfaceSettings::default());
         assert!(!data_dir.root().join(SETTINGS_FILE).exists());
 
+        let mut panel_widths = PanelWidths::default();
+        panel_widths.set(Panel::Call, 420);
+        panel_widths.set(Panel::ServerBook, 900);
         let chosen = InterfaceSettings {
             scale_percent: 125,
             server_book_collapsed: true,
             theme: ThemeChoice::Dark,
+            panel_widths,
+            call_panel_closed: true,
+            call_window_panel_closed: false,
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
+        let loaded = store.load().unwrap().panel_widths;
+        assert_eq!(loaded.get(Panel::Call), Some(420));
+        // A width beyond the bounds of its panel is kept as the nearest bound.
+        assert_eq!(
+            loaded.get(Panel::ServerBook),
+            Some(Panel::ServerBook.bounds().1)
+        );
+        assert_eq!(loaded.get(Panel::Thread), None);
         let text = fs::read_to_string(data_dir.root().join(SETTINGS_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 1"), "{text}");
+        assert!(text.contains("\"format_version\": 3"), "{text}");
+    }
+
+    #[test]
+    fn the_width_of_a_panel_that_this_client_does_not_know_is_skipped() {
+        let (_directory, data_dir, store) = store();
+        fs::write(
+            data_dir.root().join(SETTINGS_FILE),
+            r#"{"format_version":1,"scale_percent":100,"panel_widths":{"call":400,"later_panel":300,"thread":10}}"#,
+        )
+        .unwrap();
+        let widths = store.load().unwrap().panel_widths;
+        assert_eq!(widths.get(Panel::Call), Some(400));
+        assert_eq!(widths.get(Panel::Thread), Some(Panel::Thread.bounds().0));
     }
 
     #[test]
@@ -188,13 +388,13 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(SETTINGS_FILE);
-        let newer = r#"{"format_version":2,"scale_percent":110,"later":true}"#;
+        let newer = r#"{"format_version":4,"scale_percent":110,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
             Err(StorageError::NewerFormat {
-                found: 2,
-                supported: 1,
+                found: 4,
+                supported: 3,
                 ..
             })
         ));
@@ -216,7 +416,7 @@ mod tests {
         let file = data_dir.root().join(SETTINGS_FILE);
         // A file of a later format that holds more than this client reads of a settings file.
         let later = format!(
-            r#"{{"format_version":2,"scale_percent":110,"later":"{}"}}"#,
+            r#"{{"format_version":4,"scale_percent":110,"later":"{}"}}"#,
             "x".repeat(70 * 1024)
         );
         fs::write(&file, &later).unwrap();
@@ -226,6 +426,74 @@ mod tests {
             Err(StorageError::TooLarge { .. })
         ));
         assert_eq!(fs::read_to_string(&file).unwrap(), later);
+    }
+
+    /// A file of version 1 has no key bindings: every action has its default. A change of
+    /// the bindings keeps the interface settings, and the reverse (ADR 0777).
+    #[test]
+    fn a_file_of_version_1_has_the_default_bindings_and_each_change_keeps_the_other_part() {
+        use crate::keybinds::KeyAction;
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(SETTINGS_FILE);
+        fs::write(
+            &file,
+            r#"{"format_version":1,"scale_percent":120,"server_book_collapsed":true,"theme":"dark"}"#,
+        )
+        .unwrap();
+        assert_eq!(store.load_keybinds().unwrap(), Keybinds::default());
+        let keys: crate::global_keys::KeyCombo = "control+alt+c".parse().unwrap();
+        store
+            .update_keybinds(|keybinds| {
+                keybinds
+                    .set(KeyAction::ToggleCamera, Some(keys.clone()))
+                    .unwrap();
+            })
+            .unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"format_version\": 3"), "{text}");
+        assert!(text.contains("\"toggle_camera\""), "{text}");
+        let settings = store.load().unwrap();
+        assert_eq!(
+            (
+                settings.scale_percent,
+                settings.server_book_collapsed,
+                settings.theme
+            ),
+            (120, true, ThemeChoice::Dark)
+        );
+        store
+            .update(|settings| settings.scale_percent = 100)
+            .unwrap();
+        assert_eq!(
+            store
+                .load_keybinds()
+                .unwrap()
+                .get(KeyAction::ToggleCamera)
+                .keys,
+            Some(keys)
+        );
+    }
+
+    #[test]
+    fn version_two_outside_only_push_to_talk_keeps_inheritance() {
+        use crate::keybinds::KeyAction;
+        let (_directory, data_dir, store) = store();
+        fs::write(data_dir.root().join(SETTINGS_FILE),
+            r#"{"format_version":2,"scale_percent":100,"keybinds":{"push_to_talk":{"keys":null,"outside":false}}}"#).unwrap();
+        let binding = store.load_keybinds().unwrap().get(KeyAction::PushToTalk);
+        assert!(binding.inherited);
+        assert!(!binding.outside);
+        store
+            .update_keybinds(|keys| keys.set(KeyAction::PushToTalk, None).unwrap())
+            .unwrap();
+        let reopened = SettingsStore::new(data_dir);
+        assert!(
+            !reopened
+                .load_keybinds()
+                .unwrap()
+                .get(KeyAction::PushToTalk)
+                .inherited
+        );
     }
 
     #[test]
@@ -246,6 +514,9 @@ mod tests {
             scale_percent: 125,
             server_book_collapsed: true,
             theme: ThemeChoice::Light,
+            panel_widths: PanelWidths::default(),
+            call_panel_closed: false,
+            call_window_panel_closed: false,
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

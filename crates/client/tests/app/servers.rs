@@ -23,7 +23,7 @@ use crate::messages::document;
 use crate::support::{Fault, FaultProxy, TestServer};
 
 impl Window {
-    fn server_names(&mut self) -> Vec<String> {
+    pub(crate) fn server_names(&mut self) -> Vec<String> {
         self.view()
             .servers
             .into_iter()
@@ -34,7 +34,7 @@ impl Window {
     /// Joins a further server with an invite code of its administrator. The new server
     /// is shown afterwards.
     #[track_caller]
-    fn join_further(&mut self, world: &World, server: &TestServer, admin: &Admin) {
+    pub(crate) fn join_further(&mut self, world: &World, server: &TestServer, admin: &Admin) {
         let count = self.view().servers.len();
         let code = admin.invite(world, 1);
         self.find_server(&server.address());
@@ -100,7 +100,7 @@ impl Window {
         }
     }
 
-    fn open_server_menu(&mut self) {
+    pub(crate) fn open_server_menu(&mut self) {
         if !self.shows("server-menu") {
             self.click("server-menu-button");
         }
@@ -110,7 +110,12 @@ impl Window {
 
 impl Admin {
     /// Writes to a person in the direct conversation with that person.
-    fn write_to(&self, world: &World, account_id: AccountId, text: &str) -> ConversationId {
+    pub(crate) fn write_to(
+        &self,
+        world: &World,
+        account_id: AccountId,
+        text: &str,
+    ) -> ConversationId {
         let api = self.handle.api();
         let conversation = world.run(api.open_conversation(account_id)).unwrap();
         let message = SendMessage {
@@ -256,10 +261,14 @@ fn a_server_in_the_background_shows_its_unread_signs_and_a_server_that_is_not_ke
                 .is_some_and(|workspace| workspace.unread.mentions == 1)
     });
     let view = window.view();
-    // The head of the server shows the direct message, which no workspace row shows.
+    // The head of the server counts the direct message and the mention of the whole
+    // server (ADR 0741).
     let row = &view.servers[1];
     assert_eq!((row.head_unread.messages, row.head_unread.mentions), (1, 0));
-    assert!(window.shows("server-head-unread-1"));
+    assert_eq!(
+        window.drawn_number("server-head-unread-1").as_deref(),
+        Some("2")
+    );
     // The workspace shows the mention.
     assert_eq!(row.workspaces[0].unread.messages, 1);
     assert_eq!(row.workspaces[0].unread.mentions, 1);
@@ -709,7 +718,8 @@ fn the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_s
         shown(&mut plain),
         Some(ServerRelease {
             version: stated.clone(),
-            newer: None
+            newer: None,
+            newer_events: false,
         })
     );
     plain.open_server_menu();
@@ -741,7 +751,8 @@ fn the_server_menu_states_the_version_of_the_server_and_a_newer_release_of_the_s
         shown(&mut window),
         Some(ServerRelease {
             version: stated.clone(),
-            newer: None
+            newer: None,
+            newer_events: false,
         })
     );
     window.open_server_menu();
@@ -886,11 +897,12 @@ fn the_server_menu_has_no_empty_space_after_its_move_items(cx: &mut TestAppConte
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
     window.open_server_menu();
-    window.until("the menu offers the administration", |window| {
-        window.shows("menu-move-down") && window.shows("menu-administration")
+    // The item after the move items is the choice of the group of the server (ADR 0775).
+    window.until("the menu offers the group of the server", |window| {
+        window.shows("menu-move-down") && window.shows("menu-server-group")
     });
     let down = window.cx.debug_bounds("menu-move-down").unwrap();
-    let next = window.cx.debug_bounds("menu-administration").unwrap();
+    let next = window.cx.debug_bounds("menu-server-group").unwrap();
     let gap = next.top() - down.bottom();
     assert!(
         gap < gpui::px(16.0),

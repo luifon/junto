@@ -1,11 +1,22 @@
 # Install Junto on Linux
 
-Junto runs on x86-64 Linux with PipeWire, under X11 or Wayland (ADR 0705). Obtain a package from a source you have verified with whoever runs your server. There are two packages with the same program (ADR 0754):
+Junto runs on x86-64 Linux with PipeWire, under X11 or Wayland (ADR 0705). Obtain a package from the download page of the release site or from a source you have verified with whoever runs your server, and compare its SHA-256 with `SHA256SUMS` (`sha256sum -c --ignore-missing SHA256SUMS`). There are three packages with the same program (ADR 0754, ADR 0728):
 
+- `junto_<version>_amd64.deb`: a Debian package, for Debian 12, Ubuntu 22.04 and later releases of both.
 - `junto-<version>-linux-x86_64.tar.gz`: a directory `junto`.
 - `Junto-<version>-x86_64.AppImage`: one file.
 
 The packages carry the X11 keyboard libraries. They take from your system the C library (glibc 2.35 or newer), the X11 connection library, the graphics driver, the Wayland and font libraries, PipeWire and ALSA, and the desktop services (notifications, secret service, desktop portal). The AppImage needs `fusermount` of FUSE 2 or 3.
+
+## The Debian package
+
+Install it with the package manager, which also installs the libraries that it names:
+
+```sh
+sudo apt install ./junto_<version>_amd64.deb
+```
+
+Junto is then in the application menu, and `junto` starts it from a terminal. The program is in `/usr/lib/junto`. The package manager updates it: Junto shows the newer version below "Add server" and in Settings, Version, with the name of its `.deb` and the address of the download page; download that file and install it with the same command, then restart Junto. Junto does not update a `.deb` installation itself. Remove it with `sudo apt remove junto`; your data stays in `~/.local/share/junto`.
 
 ## The tarball
 
@@ -32,7 +43,7 @@ chmod +x Junto-<version>-x86_64.AppImage
 
 The server book and the device keys are in `~/.local/share/junto` (or `$XDG_DATA_HOME/junto`, ADR 0710). A package never writes there.
 
-A configured build checks for a new version at start and periodically. Click Update on its notice or Install update in Settings, Version. Junto verifies the signed release information, its date and the download, then replaces the directory or the AppImage file in one step. The AppImage keeps its file name. The update keeps the replaced version as an archive in a hidden directory beside the directory or the AppImage, named after it: `.junto.junto-update` for the directory `junto`, `.<file name>.junto-update` for an AppImage. The directory that holds them must stay writable. The first update also downloads the installed version from the release source for that purpose; when the source does not have it, the update is still installed and Version states that no previous version is kept. Quit and reopen Junto afterwards.
+A configured build checks for a new version at start and periodically. The server book shows the version of Junto below "Add server"; when a newer version exists, the tarball and the AppImage choose Update there, on the notice of the channel column, or Install update in Settings, Version. Junto verifies the signed release information, its date and the download, then replaces the directory or the AppImage file in one step. The AppImage keeps its file name. The update keeps the replaced version as an archive in a hidden directory beside the directory or the AppImage, named after it: `.junto.junto-update` for the directory `junto`, `.<file name>.junto-update` for an AppImage. The directory that holds them must stay writable. The first update also downloads the installed version from the release source for that purpose; when the source does not have it, the update is still installed and Version states that no previous version is kept. Then choose Restart: Junto quits and starts the new version; an AppImage starts again from its file.
 
 ## Log and error reports
 

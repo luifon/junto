@@ -28,5 +28,8 @@ rmdir "$release_output/.bundle"
 version=$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' "$release_output/Junto.app/Contents/Info.plist")
 # The first install is the application alone; an update keeps its own record (ADR 0726).
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$release_output/Junto.app" "$release_output/Junto-$version-macos-$architecture.zip"
+# The disk image of the first install, signed with the same identity (ADR 0728).
+python3 packaging/dmg.py "$release_output/Junto.app" "$release_output/Junto-$version-macos-$architecture.dmg"
+python3 packaging/sign.py "$release_output/Junto-$version-macos-$architecture.dmg"
 
 completed=true

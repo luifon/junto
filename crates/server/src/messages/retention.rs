@@ -149,13 +149,18 @@ pub async fn run(app: &AppState) -> ApiResult<()> {
                 )
                 .await?
                 .ok_or_else(crate::error::ApiError::not_found)?;
-                crate::recordings::store::remove(connection, app.now(), &recording, None).await?;
+                let lease = app.config.limits.recordings.transcription.lease;
+                crate::recordings::store::remove(connection, app.now(), &recording, None, lease)
+                    .await?;
             }
             Ok(Some(workspace.as_uuid()))
         })?;
         let Some(place) = outcome else {
             break;
         };
+        // A recording of a message that the retention removed can have a run of its
+        // transcription, which looks at its job at once (ADR 0608).
+        app.recordings.recording_removed();
         cursor = place;
     }
     trim_notices(app, batch).await

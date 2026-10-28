@@ -163,9 +163,13 @@ impl Portal {
         }
     }
 
+    /// Starts a ScreenCast session of `kind`. The desktop shows its dialog over `parent`, a
+    /// window identifier of the portal (`x11:` with the XID in hexadecimal, or `wayland:`
+    /// with an exported handle); an empty one names no window.
     pub async fn start(
         &mut self,
         kind: ShareKind,
+        parent: &str,
     ) -> Result<(Video, zbus::proxy::SignalStream<'static>), CaptureError> {
         let capabilities = self.capabilities().await?;
         if !capabilities.kinds.contains(&kind) {
@@ -239,7 +243,7 @@ impl Portal {
         }
         let handle = token();
         let options = HashMap::from([("handle_token", Value::from(handle.as_str()))]);
-        let start = (expected.clone(), "", options);
+        let start = (expected.clone(), parent, options);
         // The desktop shows its dialog now, and a person answers it: no limit.
         let mut results = tokio::select! {
             result = self.request(&handle, "Start", &start, None) => result?,

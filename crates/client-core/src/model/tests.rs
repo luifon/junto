@@ -169,7 +169,9 @@ pub(crate) fn participant(account_id: AccountId) -> CallParticipant {
         microphone_block: None,
         sound_block: None,
         hand_raised: false,
+        watching: None,
         screen_share: None,
+        screen_shares: Vec::new(),
     }
 }
 

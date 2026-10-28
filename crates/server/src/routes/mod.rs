@@ -398,6 +398,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(calls::report_screen_share, calls::end_screen_share)
     });
+    add(&mut router, || routes!(calls::report_watching));
     add(&mut router, || {
         routes!(calls::raise_hand, calls::lower_hand)
     });

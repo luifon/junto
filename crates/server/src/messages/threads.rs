@@ -43,7 +43,7 @@ pub async fn state(
 /// replies, the unread mentions, whether the account follows, and its choice.
 type StateRow = (MessageId, i64, i64, i64, i64, bool, Option<bool>);
 
-async fn states(
+pub(crate) async fn states(
     connection: &mut PgConnection,
     account: AccountId,
     roots: &[MessageId],

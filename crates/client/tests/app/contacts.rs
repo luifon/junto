@@ -363,7 +363,12 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
     );
 
     // The last workspace goes: the direct section, the conversation, its header and the
-    // side panel stay where they are (ADR 0730).
+    // side panel stay where they are (ADR 0730). The person reads the conversation, with
+    // the pointer on its list: the notice of the removal waits until the pointer leaves it.
+    // A change waits for the pointer in the active window only (ADR 0730).
+    let list = window.cx.debug_bounds("message-list").unwrap();
+    window.cx.update(|window, _| window.activate_window());
+    window.move_pointer(list.center());
     world
         .run(api.remove_workspace_member(default, luca_id, &Default::default()))
         .unwrap();
@@ -540,7 +545,7 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
 ) {
     use junto_client_core::protocol::call::CallPlace;
     use junto_media::calls::{ActiveCall, CallTarget, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::engine::{MicrophoneState, OutputState};
 
     let world = World::new();
     let server = world.server("Harbor");
@@ -578,7 +583,9 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
             output_device: None,
             microphone_block: None,
             sound_block: None,
-            share: ShareState::Off,
+            share_limit: junto_client_core::protocol::call::MAX_SHARES,
+            own_shares: std::collections::BTreeMap::new(),
+            share_ended: None,
             shares: Vec::new(),
             watched: None,
             withheld: Default::default(),

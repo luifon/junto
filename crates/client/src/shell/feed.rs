@@ -9,25 +9,25 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext as _, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
+    AnyElement, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListState,
-    MouseButton, ObjectFit, ParentElement, RenderImage, Role, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledImage, StyledText,
-    UnderlineStyle, Window, canvas, div, img, list, point, prelude::FluentBuilder, px,
+    MouseButton, ParentElement, RenderImage, Role, SharedString, StatefulInteractiveElement,
+    StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, canvas, div, list, point,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::Departure;
-#[cfg(feature = "test-support")]
-use junto_client_core::protocol::ids::AttachmentId;
-use junto_client_core::protocol::ids::{MessageId, ServerId};
+use junto_client_core::protocol::ids::{AttachmentId, MessageId, ServerId};
 use junto_client_core::protocol::message::{
     Attachment, Block, Document, Inline, Mark, Message, Reaction,
 };
 use junto_client_core::transfers::{DownloadStage, UploadStage};
 
+use super::decode::{self, LIST_FRAME_BYTES, Stated};
+use super::moving::{self, Playback};
 use super::pictures::{MOST_PICTURES, Outcome, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
@@ -38,7 +38,7 @@ use crate::state::feed::{
     can_send_again,
 };
 use crate::state::people::ServerFaces;
-use crate::state::view::{DraftFile, ServerLists, ShellView, WorkspaceView, Writing};
+use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -81,6 +81,16 @@ pub(crate) struct FeedList {
     /// them. The state can show a read as not running after it ended and before its rows
     /// arrive; the list asks again only when its rows changed.
     asked: (Option<usize>, Option<usize>),
+    /// The counts of the failed reads of the page before and of the page after at the
+    /// last drawing.
+    failed: (u32, u32),
+    /// A read of the page before, or after, failed: the list asks for it again when the
+    /// person moves the list.
+    again: (bool, bool),
+    /// The first row in view at the last layout.
+    start: Option<usize>,
+    /// The person scrolled the list since the last layout that the window acted on.
+    scrolled: bool,
 }
 
 /// Gives a list aligned to its end that stands at the bottom of its rows a row position just
@@ -181,6 +191,10 @@ impl FeedList {
             to_latest: false,
             more_after: false,
             asked: (None, None),
+            failed: (0, 0),
+            again: (false, false),
+            start: None,
+            scrolled: false,
         }
     }
 
@@ -232,6 +246,9 @@ impl FeedList {
             self.handled.set(None);
             self.to_latest = false;
             self.asked = (None, None);
+            self.again = (false, false);
+            self.start = None;
+            self.scrolled = false;
             self.list.reset(rows.len());
             // A list follows only rows that reach the end of the history.
             self.list.set_follow_mode(if self.more_after {
@@ -287,23 +304,53 @@ impl FeedList {
 }
 
 /// The pictures of messages that the window holds decoded.
-#[derive(Default)]
 pub(crate) struct MessagePictures {
     held: Pictures<Arc<RenderImage>>,
     /// The pictures that the drawing which runs asked for and that are not held.
     waiting: Vec<(PictureKey, Attachment)>,
     /// The step that starts the reads of the waiting pictures is on its way.
     starting: bool,
+    /// The largest size at which the lists draw a picture, in pixels of the device, at the
+    /// last drawing: the size that the copies of the lists are reduced to fit.
+    pub(super) fit: (u32, u32),
+    pub(super) playback: Rc<Playback>,
     /// The pictures that the screen tool draws for files of its own, which no server has.
     #[cfg(feature = "test-support")]
     shown: HashMap<AttachmentId, Picture<Arc<RenderImage>>>,
+}
+
+impl Default for MessagePictures {
+    fn default() -> Self {
+        Self {
+            held: Pictures::default(),
+            waiting: Vec::new(),
+            starting: false,
+            fit: (PICTURE_WIDTH as u32, PICTURE_HEIGHT as u32),
+            playback: Rc::default(),
+            #[cfg(feature = "test-support")]
+            shown: HashMap::new(),
+        }
+    }
 }
 
 impl MessagePictures {
     /// A drawing of the window starts (see [`Pictures::drawing_starts`]).
     pub(crate) fn drawing_starts(&mut self) {
         self.held.drawing_starts();
+        self.playback.drawing_starts();
     }
+}
+
+/// The largest size at which a list of this window draws a picture, in pixels of the
+/// device: the largest picture of a message at the interface scale and the scale of the
+/// display.
+pub(super) fn list_fit(window: &Window) -> (u32, u32) {
+    let per_design = f32::from(window.rem_size()) / crate::theme::REM_AT_100;
+    let device = per_design * window.scale_factor();
+    (
+        (PICTURE_WIDTH * device).ceil() as u32,
+        (PICTURE_HEIGHT * device).ceil() as u32,
+    )
 }
 
 /// What a pane draws: its feed, the files of its next message, and what it says of a
@@ -346,34 +393,54 @@ pub(crate) struct MessageMenuOpen {
 
 /// True when the server marked the file as a picture that a client can show (ADR 0408).
 fn is_picture(attachment: &Attachment) -> bool {
-    matches!(
-        attachment.media_type.as_str(),
-        "image/png" | "image/jpeg" | "image/webp"
-    ) && attachment
-        .width
-        .is_some_and(|width| (1..=1024).contains(&width))
-        && attachment
-            .height
-            .is_some_and(|height| (1..=1024).contains(&height))
+    Stated::of(attachment).is_some()
 }
 
-/// Decodes a picture that another account sent. The decoder refuses a picture that is
-/// larger than the server marks, whatever its header states.
-fn decode(bytes: &[u8]) -> Option<Arc<RenderImage>> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(1024);
-    limits.max_image_height = Some(1024);
-    limits.max_alloc = Some(64 * 1024 * 1024);
-    reader.limits(limits);
-    let mut picture = reader.decode().ok()?.into_rgba8();
-    // The window takes the colours in the order blue, green, red.
-    for pixel in picture.pixels_mut() {
-        pixel.0.swap(0, 2);
+/// The width and the height of a picture in its pixels, as the server states them.
+pub(super) fn picture_pixels(attachment: &Attachment) -> Option<(u32, u32)> {
+    attachment.width.zip(attachment.height)
+}
+
+/// Reads a picture of a message for `owner` and decodes it with the plan of `fit` and
+/// `budget`. The read starts once the bytes of the file and of its decoding fit next to the
+/// other decodings (see [`decode::read_within`]). The failure of the read, or `Ok(None)`
+/// when the file is no picture that the window draws.
+pub(super) fn read_picture(
+    this: &mut Shell,
+    owner: junto_client_core::Owner,
+    attachment: &Attachment,
+    fit: Option<(u32, u32)>,
+    budget: u64,
+    cx: &mut Context<Shell>,
+) -> impl std::future::Future<
+    Output = Result<Option<Arc<RenderImage>>, junto_client_core::transfers::TransferFailure>,
+> + use<> {
+    let state = this.state.read(cx);
+    let stated = Stated::of(attachment);
+    let file = attachment.bytes;
+    let attachment = attachment.clone();
+    let read = state.picture_read(owner);
+    let executor = cx.background_executor().clone();
+    async move {
+        let Some(stated) = stated else {
+            return Ok(None);
+        };
+        let plan = decode::plan(stated, fit, budget);
+        let within = decode::read_within(decode::decoding_gate(), file, stated, plan, || {
+            read(&attachment)
+        });
+        let Some((bytes, reserved)) = within.await? else {
+            return Ok(None);
+        };
+        Ok(executor
+            .spawn(async move {
+                let decoded = decode::decode(&bytes, stated, plan);
+                drop(bytes);
+                drop(reserved);
+                decoded
+            })
+            .await)
     }
-    Some(Arc::new(RenderImage::new(vec![image::Frame::new(picture)])))
 }
 
 /// The size of a picture in the list: its own size, reduced to the bounds of the list
@@ -809,13 +876,15 @@ impl Shell {
     pub(crate) fn feed_scrolled(&mut self, pane: Pane, cx: &mut Context<Self>) {
         #[cfg(feature = "test-support")]
         crate::panics::test_support::reached(crate::panics::test_support::Handler::FeedScroll);
-        // The rows moved under a pointer that did not move; gpui tells a row that the
-        // pointer is over it at the next move of the pointer.
-        if self
-            .hovered_message
-            .is_some_and(|(hovered, _)| hovered == pane)
-        {
-            self.hovered_message = None;
+        // The rows moved under a pointer that did not move: gpui tests the hover of each row
+        // again at its next paint and tells the rows whose hover changed, so the bar stays
+        // with the row under the pointer.
+        // A scroll at the first or the last row moves no row, and the layout after it shows
+        // the same rows: the window acts on that layout so that a failed page is read again.
+        let list = self.list_mut(pane);
+        if list.again.0 || list.again.1 {
+            list.scrolled = true;
+            list.handled.set(None);
             cx.notify();
         }
     }
@@ -875,24 +944,29 @@ impl Shell {
         // While the messages around the message of a jump are on their way, the list does
         // not stand where the person goes: it reads no page and tells no position.
         let waits = feed.jump_waits;
-        let asked = self.list(pane).asked;
+        let (asked, again) = (self.list(pane).asked, self.list(pane).again);
+        let moved = self.list(pane).start != Some(shown.start) || self.list(pane).scrolled;
         let older = !waits
             && shown.start <= PAGE_MARGIN
             && feed.more_before
             && !feed.reading.older
-            && asked.0 != Some(shown.count);
+            && (asked.0 != Some(shown.count) || (again.0 && moved));
         let newer = !waits
             && shown.end + PAGE_MARGIN >= shown.count
             && feed.more_after
             && !feed.reading.newer
             && !to_latest
-            && asked.1 != Some(shown.count);
-        let asked = &mut self.list_mut(pane).asked;
+            && (asked.1 != Some(shown.count) || (again.1 && moved));
+        let list = self.list_mut(pane);
+        list.start = Some(shown.start);
+        list.scrolled = false;
         if older {
-            asked.0 = Some(shown.count);
+            list.asked.0 = Some(shown.count);
+            list.again.0 = false;
         }
         if newer {
-            asked.1 = Some(shown.count);
+            list.asked.1 = Some(shown.count);
+            list.again.1 = false;
         }
         self.state.update(cx, |state, cx| {
             if older {
@@ -1289,6 +1363,19 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let pane = Pane::of(feed.place);
+        // A read of a page that ended with a failure is asked for again at the next move of
+        // the list, also at the same number of rows; otherwise the list would stay without
+        // the page after the client core stopped its tries (ADR 0740). A move is a scroll of the
+        // person or a change of the first row in view: a notice that makes the list shorter is
+        // none.
+        let shown = self.list_mut(pane);
+        if shown.failed.0 != feed.reading.older_failed {
+            shown.again.0 = true;
+        }
+        if shown.failed.1 != feed.reading.newer_failed {
+            shown.again.1 = true;
+        }
+        shown.failed = (feed.reading.older_failed, feed.reading.newer_failed);
         let state = self.list(pane).list.clone();
         let rows = feed.rows.clone();
         let feed_of_rows = feed.clone();
@@ -1316,6 +1403,7 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(crate::ui::area(pane.id("message-list")))
             .child(
                 div()
                     .id(pane.id("message-list"))
@@ -1850,14 +1938,101 @@ impl Shell {
     /// Draws these bytes as the picture of a file of a message. The screen tool uses it.
     #[cfg(feature = "test-support")]
     pub fn show_picture(&mut self, attachment_id: AttachmentId, bytes: &[u8]) {
-        let picture = decode(bytes).map_or(Picture::Failed, Picture::Ready);
+        let size = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok());
+        let picture = size
+            .and_then(|(width, height)| {
+                let stated = Stated {
+                    width,
+                    height,
+                    frames: 1,
+                };
+                decode::decode(bytes, stated, decode::plan(stated, None, LIST_FRAME_BYTES))
+            })
+            .map_or(Picture::Failed, Picture::Ready);
         self.message_pictures.shown.insert(attachment_id, picture);
+    }
+
+    /// True when the screen tool gave the bytes of this picture.
+    #[cfg(feature = "test-support")]
+    pub(super) fn picture_of_screen_tool(&self, attachment_id: AttachmentId) -> bool {
+        self.message_pictures.shown.contains_key(&attachment_id)
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(super) fn picture_of_screen_tool(&self, _: AttachmentId) -> bool {
+        false
+    }
+
+    /// The copy of a picture that the message lists hold, for a drawing of the viewer: the
+    /// image once it is read, and whether its read failed. A picture that is not held is
+    /// read after the drawing, as for a list.
+    pub(super) fn listed_picture(
+        &mut self,
+        server_id: ServerId,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> (Option<Arc<RenderImage>>, bool) {
+        let key = self.want_picture(server_id, attachment, cx);
+        let held = key
+            .as_ref()
+            .and_then(|key| self.message_pictures.held.get(key));
+        #[cfg(feature = "test-support")]
+        let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
+        match held {
+            Some(Picture::Ready(image)) => (Some(image.clone()), false),
+            Some(Picture::Failed | Picture::Unanswered { .. }) => (None, true),
+            _ => (None, false),
+        }
+    }
+
+    /// How many reads of pictures of messages the window started. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn picture_reads(&self) -> u64 {
+        self.message_pictures.held.reads()
     }
 
     /// The owners for which the window holds the read picture of a file. A test uses it.
     #[cfg(feature = "test-support")]
     pub fn owners_of_picture(&self, attachment_id: AttachmentId) -> Vec<junto_client_core::Owner> {
         self.message_pictures.held.ready_of(attachment_id)
+    }
+
+    /// The bytes of the pictures of messages that the window holds, and the size and the
+    /// frames of the held copy of a file. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn message_picture_bytes(&self) -> u64 {
+        self.message_pictures.held.bytes()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn held_picture(&self, attachment_id: AttachmentId) -> Option<((u32, u32), usize)> {
+        self.message_pictures
+            .held
+            .ready_image_of(attachment_id)
+            .map(|image| {
+                let size = image.size(0);
+                (
+                    (size.width.0 as u32, size.height.0 as u32),
+                    image.frame_count(),
+                )
+            })
+    }
+
+    /// The frames that the last drawing showed of the animations of a file. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn shown_frames(&self, attachment_id: AttachmentId) -> Vec<usize> {
+        self.message_pictures
+            .playback
+            .shown_frames(&attachment_id.to_string())
+    }
+
+    /// True while an animation will draw the window again. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn animation_waits(&self) -> bool {
+        self.message_pictures.playback.waits()
     }
 
     /// The pictures of an account that a server has no more, and of a server that was
@@ -1886,8 +2061,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<PictureKey> {
         let owner = self.state.read(cx).owner(server_id)?;
-        let key = PictureKey::of(owner, attachment);
+        let key = PictureKey::of(owner, attachment, self.message_pictures.fit);
         let pictures = &mut self.message_pictures;
+        let key = match pictures.held.get(&key) {
+            Some(_) => key,
+            None => pictures.held.covering(&key).unwrap_or(key),
+        };
         if pictures.held.touch(&key, cx.background_executor().now()) {
             return Some(key);
         }
@@ -1919,13 +2098,17 @@ impl Shell {
             else {
                 continue;
             };
-            let reading = self.state.read(cx).picture(key.owner, &attachment);
+            let reading = read_picture(
+                self,
+                key.owner,
+                &attachment,
+                Some(key.fit),
+                LIST_FRAME_BYTES,
+                cx,
+            );
             cx.spawn(async move |this, cx| {
                 let outcome = match reading.await {
-                    Ok(bytes) => cx
-                        .background_spawn(async move { decode(&bytes) })
-                        .await
-                        .map_or(Outcome::Refused, Outcome::Read),
+                    Ok(decoded) => decoded.map_or(Outcome::Refused, Outcome::Read),
                     Err(failure) if failure.is_transient() => Outcome::Unanswered,
                     Err(_) => Outcome::Refused,
                 };
@@ -1964,19 +2147,30 @@ impl Shell {
         &mut self,
         feed: &Feed,
         message: &Message,
-        workspace: Option<&WorkspaceView>,
+        window: &Window,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let server_id = feed.server_id;
-        let _ = workspace;
+        let message_id = message.id;
+        self.message_pictures.fit = list_fit(window);
+        // The pictures of the message, which the viewer shows one after the other.
+        let pictures: Rc<Vec<Attachment>> = Rc::new(
+            message
+                .attachments
+                .iter()
+                .filter(|attachment| is_picture(attachment))
+                .cloned()
+                .collect(),
+        );
+        let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         message
             .attachments
             .iter()
             .enumerate()
             .map(|(index, attachment)| {
-                let download = self.download_control(server_id, attachment, index, theme, cx);
+                let download = self.download_control(server_id, attachment, index, "", theme, cx);
                 let name: SharedString = text::label(&attachment.name).into();
                 let size: SharedString = text::file_size(attachment.bytes).into();
                 if is_picture(attachment) {
@@ -1987,11 +2181,12 @@ impl Shell {
                     #[cfg(feature = "test-support")]
                     let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
                     let (width, height) = picture_size(attachment);
+                    let attachment_id = attachment.id;
+                    let slot: SharedString = format!("{:?}:{attachment_id}", feed.place).into();
                     let picture: AnyElement = match held {
-                        Some(Picture::Ready(image)) => img(image.clone())
-                            .size_full()
-                            .object_fit(ObjectFit::Contain)
-                            .into_any_element(),
+                        Some(Picture::Ready(image)) => {
+                            moving::picture(image.clone(), slot, &self.message_pictures.playback)
+                        }
                         Some(Picture::Failed | Picture::Unanswered { .. }) => div()
                             .p(u(8.0))
                             .typeface(theme.types.small, theme)
@@ -2004,25 +2199,80 @@ impl Shell {
                             .child(text::PICTURE_LOADING)
                             .into_any_element(),
                     };
+                    let place = pictures
+                        .iter()
+                        .position(|picture| picture.id == attachment_id)
+                        .unwrap_or_default();
+                    let open = {
+                        let pictures = Rc::clone(&pictures);
+                        move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                            this.open_picture_viewer(
+                                server_id,
+                                message_id,
+                                pictures.as_ref().clone(),
+                                place,
+                                window,
+                                cx,
+                            );
+                        }
+                    };
+                    let by_key = open.clone();
+                    let ring = ring.clone();
+                    let label: SharedString = format!("{}: {name}", text::OPEN_PICTURE).into();
+                    // The card takes the width of the list up to the size of the picture,
+                    // and the picture keeps its proportions in the width that it gets.
                     return div()
                         .flex_none()
                         .mt(u(5.0))
-                        .w(u(width.max(200.0)))
+                        .w_full()
+                        .max_w(u(width.max(200.0)))
                         .rounded(u(theme.metrics.radius))
                         .border_1()
                         .border_color(Hsla::from(colors.rule))
                         .bg(Hsla::from(colors.travertine_hi))
                         .overflow_hidden()
-                        .debug_selector(move || format!("picture:{}", index))
+                        .debug_selector(move || format!("picture-card:{attachment_id}"))
                         .child(
                             div()
                                 .flex()
+                                .flex_col()
                                 .items_center()
-                                .justify_center()
                                 .w_full()
-                                .h(u(height))
                                 .bg(Hsla::from(colors.plaster))
-                                .child(picture),
+                                .child(
+                                    div()
+                                        .id(("open-picture", index))
+                                        .role(Role::Button)
+                                        .aria_label(label)
+                                        .debug_selector(move || format!("picture:{attachment_id}"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w_full()
+                                        .max_w(u(width))
+                                        .aspect_ratio(width / height)
+                                        .overflow_hidden()
+                                        .cursor_pointer()
+                                        .focusable()
+                                        .tab_stop(true)
+                                        .focus_visible(move |style| style.shadow(ring))
+                                        .tooltip(tooltip(text::OPEN_PICTURE))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            open(this, window, cx);
+                                        }))
+                                        .on_key_down(cx.listener(
+                                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                ) {
+                                                    by_key(this, window, cx);
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ))
+                                        .child(picture),
+                                ),
                         )
                         .child(
                             div()
@@ -2114,12 +2364,14 @@ impl Shell {
     }
 
     /// The control at the end of a file: it starts the download, shows how far it is, and
-    /// then where the file is.
-    fn download_control(
+    /// then where the file is. The names of its parts start with `prefix`, so that a second
+    /// control of the same file has names of its own.
+    pub(super) fn download_control(
         &mut self,
         server_id: ServerId,
         attachment: &Attachment,
         index: usize,
+        prefix: &'static str,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2142,7 +2394,7 @@ impl Shell {
         let named = |id: &'static str, button: Button| {
             div()
                 .flex_none()
-                .debug_selector(move || format!("{id}:{attachment_id}"))
+                .debug_selector(move || format!("{prefix}{id}:{attachment_id}"))
                 .child(button)
         };
         let forget = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
@@ -2206,15 +2458,38 @@ impl Shell {
                         })),
                 ))
                 .into_any_element(),
-            Some((DownloadStage::Failed(failure), _)) => row
-                .child(
+            Some((DownloadStage::Failed(failure), _)) => {
+                // The system did not let Junto write into the download directory: macOS
+                // asks for Downloads at the first write (ADR 0708).
+                let refused = failure
+                    == junto_client_core::transfers::TransferFailure::File(
+                        std::io::ErrorKind::PermissionDenied,
+                    );
+                let system = self.state.read(cx).permission_system();
+                let sentence = if refused {
+                    crate::text::permissions::download_refused(system)
+                } else {
+                    text::transfer_failure(failure)
+                };
+                let permission = if refused {
+                    self.permission_button(
+                        "download-permission-action",
+                        crate::permissions::Permission::Downloads,
+                        cx,
+                    )
+                } else {
+                    None
+                };
+                row.child(
                     div()
                         .id(("download-failed", index))
-                        .tooltip(tooltip(text::transfer_failure(failure)))
+                        .tooltip(tooltip(sentence))
                         .child(icon(Icon::Warning, 14.0, colors.cinnabar)),
                 )
+                .children(permission)
                 .child(forget("retry-download", text::TRY_AGAIN, cx))
-                .into_any_element(),
+                .into_any_element()
+            }
             Some((DownloadStage::Cancelled, _)) => row.child(start(cx)).into_any_element(),
         }
     }
@@ -2614,7 +2889,7 @@ impl Shell {
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(feed, message, None, &theme, cx));
+            body.extend(self.attachments(feed, message, window, &theme, cx));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {
@@ -3298,6 +3573,32 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_is_shown_up_to_the_most_pixels_that_the_window_decodes() {
+        let file = |width, height| Attachment {
+            id: AttachmentId::generate(),
+            name: "photo.png".to_owned(),
+            bytes: 1000,
+            sha256: String::new(),
+            media_type: "image/png".to_owned(),
+            width: Some(width),
+            height: Some(height),
+            frames: None,
+        };
+        assert!(is_picture(&file(8192, 4096)));
+        assert!(is_picture(&file(16_384, 1)));
+        assert!(is_picture(&file(2560, 1440)));
+        assert!(!is_picture(&file(8192, 4097)));
+        assert!(!is_picture(&file(0, 10)));
+        let mut moving = file(498, 280);
+        moving.media_type = "image/gif".to_owned();
+        moving.frames = Some(37);
+        assert!(is_picture(&moving));
+        let mut other = file(10, 10);
+        other.media_type = "application/octet-stream".to_owned();
+        assert!(!is_picture(&other));
+    }
 
     #[test]
     fn a_full_store_of_code_tokens_lets_go_of_the_block_drawn_longest_ago() {

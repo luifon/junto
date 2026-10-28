@@ -96,6 +96,10 @@ pub fn measure(sources: Vec<UploadSource>) -> Vec<Measured> {
         .collect()
 }
 
+/// The read of a picture of a message, started by [`AppState::picture_read`].
+pub type PictureRead =
+    std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, TransferFailure>> + 'static>>;
+
 impl AppState {
     /// The places whose messages the window shows are held open in the client core: the
     /// place of the main area and the thread of the side panel. Every other place is
@@ -363,6 +367,23 @@ impl AppState {
             if self.owners.get(&server_id) == Some(&owner) {
                 continue;
             }
+            self.open_places.retain(|key, _| key.0 != server_id);
+            self.anchors.retain(|key, _| key.0 != server_id);
+            if self
+                .open_pins
+                .as_ref()
+                .is_some_and(|(key, _)| key.0 == server_id)
+            {
+                self.open_pins = None;
+            }
+            if self
+                .members
+                .as_ref()
+                .is_some_and(|(key, _)| key.0 == server_id)
+            {
+                self.members = None;
+            }
+            self.known.members_failed.retain(|key| key.0 != server_id);
             self.downloads.retain(|key, download| {
                 if key.0 == server_id {
                     download.cancel();
@@ -967,6 +988,19 @@ impl AppState {
     #[cfg(feature = "test-support")]
     pub fn set_download_directory(&mut self, directory: PathBuf) {
         self.download_directory = Some(directory);
+    }
+
+    /// Starts the read of a picture of a message for `owner` when it is called, so that the
+    /// window starts it after the bytes of its decoding are held (review M6).
+    pub fn picture_read(&self, owner: Owner) -> impl FnOnce(&Attachment) -> PictureRead + use<> {
+        let transfers = self
+            .client
+            .server(owner.entry.server_id)
+            .map(|server| server.transfers());
+        move |attachment| match transfers {
+            Some(transfers) => Box::pin(transfers.picture(owner, attachment)),
+            None => Box::pin(async { Err(TransferFailure::Stopped) }),
+        }
     }
 
     /// Reads a picture of a message into memory for its owner, for the window to draw

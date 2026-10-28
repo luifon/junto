@@ -257,12 +257,14 @@ async fn rule_20_22_pin_limit_idempotence_and_change_events() {
             .count(),
         1
     );
+    // The copies take the positions after the head: the line of the pin above holds one.
     sqlx::query("with copied as(insert into messages(id,place_id,position,author_id,created_at,document) select
-             gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join
-             generate_series(1,99) n where id=$1 returning id,place_id,author_id,created_at) insert into message_pins
+             gen_random_uuid(),m.place_id,p.head+n,m.author_id,m.created_at,m.document from messages m join
+             message_places p on p.id=m.place_id cross join generate_series(1,99) n where m.id=$1
+             returning id,place_id,author_id,created_at) insert into message_pins
              select id,place_id,author_id,created_at from copied")
         .bind(root.id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     sqlx::query("update message_places set head=head+99 where id=$1")

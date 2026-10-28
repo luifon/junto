@@ -210,6 +210,7 @@ impl Scene {
             now: morning(),
             active,
             shown,
+            presenting: false,
         }
     }
 
@@ -279,14 +280,15 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
         vec![(scene.studio, Collection::Loaded(Vec::new()))];
 
     let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    // The oldest first, as a message list orders its messages.
     let ids: Vec<Uuid> = panel.rows.iter().map(|row| row.id).collect();
     assert_eq!(
         ids,
         [
-            failed,
-            reply_id.as_uuid(),
+            mention_id.as_uuid(),
             direct_id.as_uuid(),
-            mention_id.as_uuid()
+            reply_id.as_uuid(),
+            failed,
         ]
     );
     assert!(panel.reading && !panel.more && !panel.marking);
@@ -294,21 +296,21 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
     // while their messages are read; a notice whose message is gone does not.
     assert_eq!(panel.unread, 5);
 
-    let unreadable = &panel.rows[0];
+    let unreadable = &panel.rows[3];
     assert_eq!(unreadable.text, text::NOTICE_NOT_READ);
     assert_eq!(
         (&unreadable.place, unreadable.jump),
         (&Whereabouts::Unknown, None)
     );
 
-    let in_thread = &panel.rows[1];
+    let in_thread = &panel.rows[2];
     assert_eq!(in_thread.kind, NotificationKind::Thread);
     let jump = in_thread.jump.unwrap();
     assert_eq!(jump.thread_root, Some(root_id));
     assert_eq!(jump.place, PlaceId::Channel(scene.general));
     assert_eq!(jump.workspace_id, Some(scene.studio));
 
-    let written = &panel.rows[2];
+    let written = &panel.rows[1];
     assert!(written.read);
     assert_eq!(
         written.place,
@@ -322,7 +324,7 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
         (PlaceId::Direct(scene.conversation.id), None, 3)
     );
 
-    let named = &panel.rows[3];
+    let named = &panel.rows[0];
     assert_eq!(
         named.place,
         Whereabouts::Channel {
@@ -1413,6 +1415,7 @@ fn the_text_of_a_system_notification_is_one_line_of_a_bounded_length() {
         sha256: String::new(),
         width: None,
         height: None,
+        frames: None,
     }];
     scene.notice(NotificationKind::Mention, message, 1);
     let told = scene.alerts(&mut seen);
@@ -1652,6 +1655,7 @@ fn a_new_join_request_is_a_system_notification_for_a_person_who_may_decide_it() 
     set_join_requests(&mut scene, vec![waited.clone(), new.clone()]);
     let told = scene.alerts(&mut seen);
     assert_eq!(told.show.len(), 1);
+    assert_eq!(told.sounds, [Sound::Request]);
     assert_eq!(
         told.show[0].0.tag,
         join_request_tag(scene.server_id, new.id)
@@ -1684,13 +1688,14 @@ fn a_new_join_request_is_a_system_notification_for_a_person_who_may_decide_it() 
         [join_request_tag(scene.server_id, meanwhile.id)]
     );
 
-    // An active window draws the count itself.
+    // An active window draws the count itself; the request sound plays.
     let other = join_request("Theo");
     let mut list = model_requests(&scene);
     list.push(other);
     set_join_requests(&mut scene, list);
     let told = alerts(&mut seen, &scene.alert_scene(true, Shown::default()));
     assert!(told.show.is_empty());
+    assert_eq!(told.sounds, [Sound::Request]);
 }
 
 fn model_requests(scene: &Scene) -> Vec<junto_client_core::protocol::invite::JoinRequest> {
@@ -1760,7 +1765,7 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
         told.show[0].0.tag,
         entry_request_tag(scene.server_id, new.id)
     );
-    assert_eq!(told.show[0].0.title, "Ana asks to enter Daily");
+    assert_eq!(told.show[0].0.title, "Ana asks to join Daily");
     assert_eq!(told.show[0].1, AlertTarget::Call(scene.server_id));
     assert_eq!(scene.alerts(&mut seen), Alerts::default());
 
@@ -1779,4 +1784,631 @@ fn a_request_to_enter_the_call_is_a_system_notification() {
             .show
             .is_empty()
     );
+}
+
+/// While the person shares a screen or presents, the account holds its notifications: no
+/// system notification and no sound of messages; the notice stays in the list and is not
+/// shown when the share ends. The account can turn the hold off (ADR 0742).
+#[test]
+fn a_share_or_a_presentation_holds_the_notifications_of_messages() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    fn presenting(scene: &Scene) -> AlertScene<'_> {
+        AlertScene {
+            presenting: true,
+            ..scene.alert_scene(false, Shown::default())
+        }
+    }
+    let held = scene.message(scene.in_channel(scene.general), 7, "during the share, @you");
+    scene.notice(NotificationKind::Mention, held, 1);
+    let told = alerts(&mut seen, &presenting(&scene));
+    assert!(told.show.is_empty() && told.sounds.is_empty());
+    assert_eq!(scene.model.notices.len(), 1);
+    // The share ended: the held notice is not shown later; a new one is.
+    assert!(scene.alerts(&mut seen).show.is_empty());
+    let after = scene.message(scene.in_channel(scene.general), 8, "after it, @you");
+    scene.notice(NotificationKind::Mention, after, 2);
+    assert_eq!(scene.alerts(&mut seen).show.len(), 1);
+
+    // The rule of the setting: absent or on holds, off does not.
+    let mut settings = NotificationSettings::default();
+    assert!(holds_while_presenting(&settings));
+    settings.hold_while_presenting = Some(false);
+    assert!(!holds_while_presenting(&settings));
+}
+
+/// The account can keep the text of messages out of the notifications of the system: a
+/// notification names who wrote and where, as before, with a fixed text (ADR 0742).
+#[test]
+fn a_hidden_text_leaves_the_message_out_of_the_notification() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    let shown = scene.message(scene.in_channel(scene.general), 7, "the plan, @you");
+    scene.notice(NotificationKind::Mention, shown, 1);
+    let told = scene.alerts(&mut seen);
+    let (title, body) = (told.show[0].0.title.clone(), told.show[0].0.body.clone());
+    assert!(body.contains("the plan"));
+    scene.settings(
+        SettingsScope::Account,
+        NotificationSettings {
+            hide_text: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let hidden = scene.message(scene.in_channel(scene.general), 8, "the budget, @you");
+    scene.notice(NotificationKind::Mention, hidden, 2);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.show.len(), 1);
+    assert_eq!(told.show[0].0.title, title);
+    assert_eq!(told.show[0].0.body, text::ALERT_TEXT_HIDDEN);
+}
+
+#[test]
+fn a_change_with_new_notices_has_one_sound_under_the_rules_of_a_system_notification() {
+    let mut scene = scene();
+    let mut seen = Seen::default();
+    scene.alerts(&mut seen);
+    // A message of a channel with the level "all messages" and a reply in a thread play
+    // the message sound.
+    let plain = scene.message(scene.in_channel(scene.general), 7, "for everyone");
+    scene.notice(NotificationKind::Message, plain, 1);
+    assert_eq!(scene.alerts(&mut seen).sounds, [Sound::Message]);
+    let mut reply = scene.message(scene.in_channel(scene.general), 8, "a reply");
+    reply.thread_root = Some(MessageId::generate());
+    scene.notice(NotificationKind::Thread, reply, 2);
+    assert_eq!(scene.alerts(&mut seen).sounds, [Sound::Message]);
+    // A mention, a direct message and a message in one change: the mention sound alone.
+    let mention = scene.message(scene.in_channel(scene.general), 9, "you, look");
+    let direct = scene.message(scene.direct(), 3, "hello");
+    let plain = scene.message(scene.in_channel(scene.general), 10, "and this");
+    scene.notice(NotificationKind::Mention, mention, 3);
+    scene.notice(NotificationKind::Direct, direct, 4);
+    scene.notice(NotificationKind::Message, plain, 5);
+    let told = scene.alerts(&mut seen);
+    assert_eq!(told.sounds, [Sound::Mention]);
+    // Two notifications were shown before in the span of the bound of three.
+    assert_eq!(told.show.len(), 1);
+    // Above the bound of the system notifications the sound still plays.
+    let more = scene.message(scene.in_channel(scene.general), 11, "one more");
+    scene.notice(NotificationKind::Mention, more, 6);
+    let told = scene.alerts(&mut seen);
+    assert!(told.show.is_empty());
+    assert_eq!(told.sounds, [Sound::Mention]);
+    // The active window shows the place of the message: no sound.
+    let shown = scene.message(scene.in_channel(scene.general), 12, "seen");
+    scene.notice(NotificationKind::Mention, shown, 7);
+    let told = alerts(
+        &mut seen,
+        &scene.alert_scene(true, scene.showing(scene.general)),
+    );
+    assert!(told.sounds.is_empty());
+    // A muted place, and a quiet time: no sound.
+    scene.settings(
+        SettingsScope::Channel(scene.general),
+        NotificationSettings {
+            mute: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let muted = scene.message(scene.in_channel(scene.general), 13, "muted");
+    scene.notice(NotificationKind::Mention, muted, 8);
+    assert!(scene.alerts(&mut seen).sounds.is_empty());
+    scene.settings(
+        SettingsScope::Account,
+        NotificationSettings {
+            do_not_disturb: true,
+            ..NotificationSettings::default()
+        },
+    );
+    let quiet = scene.message(scene.direct(), 4, "at night");
+    scene.notice(NotificationKind::Direct, quiet, 9);
+    assert!(scene.alerts(&mut seen).sounds.is_empty());
+}
+
+// The system notifications of single events (ADR 0742).
+
+mod events {
+    use super::*;
+    use crate::state::event_alerts::{
+        EventScene, Fact, TellScene, event_alert, fact_of, join_answer,
+    };
+    use junto_client_core::protocol::account::{DeviceOrigin, RecoveryNotice};
+    use junto_client_core::protocol::call::{CallMove, EntryOutcome, LeaveReason};
+    use junto_client_core::protocol::events::Event;
+    use junto_client_core::protocol::export::{Export, ExportState};
+    use junto_client_core::protocol::ids::{
+        CallMoveId, DeviceId, EntryRequestId, ExportId, RecordingId, RecoveryId,
+    };
+    use junto_client_core::protocol::keys::PublicKey;
+    use junto_client_core::protocol::recording::{Recording, RecordingState};
+    use junto_client_core::protocol::structure::WorkspaceMember;
+    use junto_client_core::protocol::transcript::TranscriptState;
+
+    impl Scene {
+        fn daily_place(&self) -> CallPlace {
+            CallPlace::Channel {
+                workspace_id: self.studio,
+                channel_id: self.daily,
+            }
+        }
+
+        fn fact(&self, event: &Event, call: Option<CallPlace>) -> Option<Fact> {
+            self.fact_with(event, call, None, None)
+        }
+
+        fn fact_with(
+            &self,
+            event: &Event,
+            call: Option<CallPlace>,
+            entry: Option<(ChannelId, EntryRequestId)>,
+            own_device: Option<DeviceId>,
+        ) -> Option<Fact> {
+            fact_of(
+                event,
+                &EventScene {
+                    server_id: self.server_id,
+                    model: &self.model,
+                    known: &self.known,
+                    own_device,
+                    call,
+                    entry,
+                },
+            )
+        }
+
+        fn recording(&self, by: AccountId, state: RecordingState) -> Recording {
+            Recording {
+                id: RecordingId::generate(),
+                workspace_id: self.studio,
+                channel_id: self.daily,
+                call_id: CallId::generate(),
+                state,
+                started_by: by,
+                requested_at: morning(),
+                recording_since: None,
+                stop: None,
+                ended_at: None,
+                failure: None,
+                language: "auto".to_owned(),
+                segments: 1,
+                failed_segments: 0,
+                bytes: None,
+                timeline_started_at: None,
+                transcript: TranscriptState::None,
+                transcript_lines: 0,
+            }
+        }
+    }
+
+    fn tell(server_id: ServerId) -> TellScene<'static> {
+        TellScene {
+            server_id,
+            server_name: "Acme Studio",
+            several_servers: false,
+            quiet: false,
+            active: false,
+            now: morning(),
+        }
+    }
+
+    /// Facts about the own call of the person follow an action on the person and are told
+    /// above the bound of system notifications; other facts are held to it.
+    #[test]
+    fn a_removal_from_the_call_is_told_above_the_bound_of_notifications() {
+        let scene = scene();
+        let mut seen = Seen::default();
+        for _ in 0..MOST_ALERTS {
+            let told = event_alert(&mut seen, &tell(scene.server_id), &Fact::Recovered, None);
+            assert_eq!(told.show.len(), 1);
+        }
+        let held = event_alert(&mut seen, &tell(scene.server_id), &Fact::Recovered, None);
+        assert!(held.show.is_empty());
+        let removed = Fact::Removed {
+            channel: Some("Daily".to_owned()),
+            workspace_id: scene.studio,
+            channel_id: scene.daily,
+        };
+        let told = event_alert(&mut seen, &tell(scene.server_id), &removed, None);
+        assert_eq!(told.show.len(), 1);
+    }
+
+    #[test]
+    fn the_answer_to_the_own_request_to_enter_is_told_on_the_device_that_asked() {
+        let scene = scene();
+        let request_id = EntryRequestId::generate();
+        let answered = |outcome| Event::CallEntryAnswered {
+            request_id,
+            outcome,
+        };
+        let entry = Some((scene.daily, request_id));
+        let fact = scene.fact_with(&answered(EntryOutcome::Denied), None, entry, None);
+        assert_eq!(
+            fact,
+            Some(Fact::EntryAnswered {
+                channel: Some("Daily".to_owned()),
+                workspace_id: scene.studio,
+                channel_id: scene.daily,
+                outcome: EntryOutcome::Denied,
+            })
+        );
+        let (alert, target) = event_alert(
+            &mut Seen::default(),
+            &tell(scene.server_id),
+            &fact.unwrap(),
+            None,
+        )
+        .show
+        .remove(0);
+        assert_eq!(alert.title, "You were not let into Daily");
+        assert_eq!(
+            target,
+            AlertTarget::Channel {
+                server_id: scene.server_id,
+                workspace_id: scene.studio,
+                channel_id: scene.daily,
+            }
+        );
+        let accepted = scene.fact_with(&answered(EntryOutcome::Accepted), None, entry, None);
+        let told = event_alert(
+            &mut Seen::default(),
+            &tell(scene.server_id),
+            &accepted.unwrap(),
+            None,
+        );
+        assert_eq!(told.show[0].0.title, "You were let into Daily");
+        assert_eq!(told.show[0].1, AlertTarget::Call(scene.server_id));
+        // The cancel of the person, and a request of another device, tell nothing.
+        assert_eq!(
+            scene.fact_with(&answered(EntryOutcome::Cancelled), None, entry, None),
+            None
+        );
+        assert_eq!(
+            scene.fact_with(
+                &answered(EntryOutcome::Denied),
+                None,
+                Some((scene.daily, EntryRequestId::generate())),
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_move_and_a_removal_by_a_moderator_are_told_to_the_device_in_the_call() {
+        let mut scene = scene();
+        let room = ChannelId::generate();
+        let workspace = Arc::make_mut(&mut scene.model.workspaces[0]);
+        let mut channel = workspace.channels[1].clone();
+        channel.channel.id = room;
+        channel.channel.name = "Room 2".to_owned();
+        workspace.channels.push(channel);
+        let moved = |account_id| Event::CallMoveRequested {
+            call_move: CallMove {
+                id: CallMoveId::generate(),
+                account_id,
+                from: scene.daily_place(),
+                to: CallPlace::Channel {
+                    workspace_id: scene.studio,
+                    channel_id: room,
+                },
+                moved_by: scene.ana,
+                expires_at: morning(),
+            },
+        };
+        assert_eq!(
+            scene.fact(&moved(scene.own), Some(scene.daily_place())),
+            Some(Fact::Moved {
+                by: Some("Ana".to_owned()),
+                channel: Some("Room 2".to_owned()),
+            })
+        );
+        // Another person is moved, or this device is in no call there.
+        assert_eq!(
+            scene.fact(&moved(scene.ana), Some(scene.daily_place())),
+            None
+        );
+        assert_eq!(scene.fact(&moved(scene.own), None), None);
+
+        let left = |reason| Event::OwnCallChanged {
+            call: None,
+            left: Some(reason),
+        };
+        let removed = scene.fact(&left(LeaveReason::Disconnected), Some(scene.daily_place()));
+        let told = event_alert(
+            &mut Seen::default(),
+            &tell(scene.server_id),
+            &removed.unwrap(),
+            None,
+        );
+        assert_eq!(
+            told.show[0].0.title,
+            "You were removed from the call in Daily"
+        );
+        assert_eq!(
+            scene.fact(&left(LeaveReason::Left), Some(scene.daily_place())),
+            None
+        );
+        assert_eq!(scene.fact(&left(LeaveReason::Disconnected), None), None);
+    }
+
+    #[test]
+    fn a_recording_is_told_when_another_person_starts_it_and_when_the_own_one_finishes() {
+        let scene = scene();
+        let started = |by| Event::RecordingStarted {
+            recording: Box::new(scene.recording(by, RecordingState::Starting)),
+        };
+        assert_eq!(
+            scene.fact(&started(scene.ana), Some(scene.daily_place())),
+            Some(Fact::RecordingStarted {
+                by: Some("Ana".to_owned()),
+                channel: Some("Daily".to_owned()),
+            })
+        );
+        assert_eq!(
+            scene.fact(&started(scene.own), Some(scene.daily_place())),
+            None
+        );
+        assert_eq!(scene.fact(&started(scene.ana), None), None);
+
+        // The own recording is ready: told once, whatever later changes of it arrive.
+        let mut seen = Seen::default();
+        let ready = Event::RecordingUpdated {
+            recording: Box::new(scene.recording(scene.own, RecordingState::Ready)),
+        };
+        let fact = scene.fact(&ready, None).unwrap();
+        let told = event_alert(&mut seen, &tell(scene.server_id), &fact, Some(&ready));
+        assert_eq!(told.show[0].0.title, "The recording of Daily is ready");
+        assert!(
+            event_alert(&mut seen, &tell(scene.server_id), &fact, Some(&ready))
+                .show
+                .is_empty()
+        );
+        // Its transcript is ready: told once as well.
+        let Event::RecordingUpdated { recording } = &ready else {
+            unreachable!()
+        };
+        let mut transcribed = (**recording).clone();
+        transcribed.transcript = TranscriptState::Ready;
+        let transcribed = Event::RecordingUpdated {
+            recording: Box::new(transcribed),
+        };
+        let fact = scene.fact(&transcribed, None).unwrap();
+        let told = event_alert(&mut seen, &tell(scene.server_id), &fact, Some(&transcribed));
+        assert_eq!(told.show[0].0.title, "The transcript of Daily is ready");
+        // A recording that runs, and one of another person, tell nothing.
+        let running = Event::RecordingUpdated {
+            recording: Box::new(scene.recording(scene.own, RecordingState::Recording)),
+        };
+        assert_eq!(scene.fact(&running, None), None);
+        let other = Event::RecordingUpdated {
+            recording: Box::new(scene.recording(scene.ana, RecordingState::Failed)),
+        };
+        assert_eq!(scene.fact(&other, None), None);
+    }
+
+    #[test]
+    fn each_transcript_retry_tells_its_outcome_once() {
+        let scene = scene();
+        let mut seen = Seen::default();
+        let mut recording = scene.recording(scene.own, RecordingState::Ready);
+        let mut when = tell(scene.server_id);
+        for state in [
+            TranscriptState::Failed,
+            TranscriptState::Waiting,
+            TranscriptState::Running,
+            TranscriptState::Failed,
+            TranscriptState::Waiting,
+            TranscriptState::Running,
+            TranscriptState::Ready,
+        ] {
+            recording.transcript = state;
+            let event = Event::RecordingUpdated {
+                recording: Box::new(recording.clone()),
+            };
+            let fact = scene.fact(&event, None).unwrap();
+            when.now += time::Duration::seconds(11);
+            let told = event_alert(&mut seen, &when, &fact, Some(&event));
+            if matches!(state, TranscriptState::Failed | TranscriptState::Ready) {
+                assert_eq!(told.show.len(), 1, "{state:?}");
+                assert!(told.show[0].0.title.contains("transcript"));
+            }
+            assert!(
+                event_alert(&mut seen, &when, &fact, Some(&event))
+                    .show
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn an_export_a_device_a_recovery_and_a_workspace_are_told() {
+        let scene = scene();
+        let export = |state| Event::ExportUpdated {
+            export: Export {
+                id: ExportId::generate(),
+                place: MessagePlace::Channel {
+                    workspace_id: scene.studio,
+                    channel_id: scene.general,
+                },
+                state,
+                failure: None,
+                requested_at: morning(),
+                finished_at: None,
+                expires_at: None,
+                bytes: None,
+            },
+        };
+        let ready = scene.fact(&export(ExportState::Ready), None).unwrap();
+        let told = event_alert(&mut Seen::default(), &tell(scene.server_id), &ready, None);
+        assert_eq!(told.show[0].0.title, "Your export of #general is ready");
+        assert_eq!(
+            told.show[0].1,
+            AlertTarget::Admin(scene.server_id, crate::state::admin::AdminPage::Exports)
+        );
+        assert_eq!(scene.fact(&export(ExportState::Running), None), None);
+
+        let own_device = DeviceId::generate();
+        let added = |device_id| Event::DeviceAdded {
+            device_id,
+            name: "Laptop".to_owned(),
+            public_key: PublicKey::from_bytes([3; 32]),
+            origin: DeviceOrigin::Link,
+            created_at: morning(),
+        };
+        let fact = scene
+            .fact_with(&added(DeviceId::generate()), None, None, Some(own_device))
+            .unwrap();
+        let told = event_alert(&mut Seen::default(), &tell(scene.server_id), &fact, None);
+        assert_eq!(
+            (told.show[0].0.title.as_str(), told.show[0].0.body.as_str()),
+            ("A device was added to your account", "Laptop")
+        );
+        assert_eq!(
+            scene.fact_with(&added(own_device), None, None, Some(own_device)),
+            None
+        );
+        let recovered = Event::AccountRecovered {
+            recovery: RecoveryNotice {
+                id: RecoveryId::generate(),
+                device_id: None,
+                performed_by: None,
+                performed_at: morning(),
+            },
+        };
+        assert_eq!(scene.fact(&recovered, None), Some(Fact::Recovered));
+
+        let member = |account_id| Event::WorkspaceMemberAdded {
+            workspace_id: scene.studio,
+            member: WorkspaceMember {
+                avatar: None,
+                account_id,
+                name: "Luca".to_owned(),
+                role_ids: Vec::new(),
+            },
+        };
+        assert_eq!(
+            scene.fact(&member(scene.own), None),
+            Some(Fact::AddedToWorkspace {
+                workspace: "Studio".to_owned(),
+                workspace_id: scene.studio,
+            })
+        );
+        assert_eq!(scene.fact(&member(scene.ana), None), None);
+    }
+
+    #[test]
+    fn a_call_that_starts_is_told_only_in_a_channel_that_notifies_of_every_message() {
+        let mut scene = scene();
+        let started = Event::CallStarted {
+            hides_occupants: None,
+            call_id: CallId::generate(),
+            place: scene.daily_place(),
+            started_at: morning(),
+        };
+        // The level of the account is "mentions only".
+        assert_eq!(scene.fact(&started, None), None);
+        scene.settings(
+            SettingsScope::Channel(scene.daily),
+            NotificationSettings {
+                level: Some(NotificationLevel::All),
+                ..NotificationSettings::default()
+            },
+        );
+        assert_eq!(
+            scene.fact(&started, None),
+            Some(Fact::CallStarted {
+                channel: "Daily".to_owned(),
+                workspace_id: scene.studio,
+                channel_id: scene.daily,
+            })
+        );
+        // Not for the device in that call, and not in a muted channel.
+        assert_eq!(scene.fact(&started, Some(scene.daily_place())), None);
+        scene.settings(
+            SettingsScope::Channel(scene.daily),
+            NotificationSettings {
+                level: Some(NotificationLevel::All),
+                mute: true,
+                ..NotificationSettings::default()
+            },
+        );
+        assert_eq!(scene.fact(&started, None), None);
+    }
+
+    #[test]
+    fn an_event_is_told_under_the_rules_of_a_system_notification() {
+        let scene = scene();
+        let fact = Fact::Recovered;
+        let quiet = TellScene {
+            quiet: true,
+            ..tell(scene.server_id)
+        };
+        assert!(
+            event_alert(&mut Seen::default(), &quiet, &fact, None)
+                .show
+                .is_empty()
+        );
+        let active = TellScene {
+            active: true,
+            ..tell(scene.server_id)
+        };
+        assert!(
+            event_alert(&mut Seen::default(), &active, &fact, None)
+                .show
+                .is_empty()
+        );
+        // Three in ten seconds at most; a press leads to the target while it is shown.
+        let mut seen = Seen::default();
+        for _ in 0..3 {
+            let told = event_alert(&mut seen, &tell(scene.server_id), &fact, None);
+            let (alert, target) = &told.show[0];
+            assert_eq!(seen.target(scene.server_id, &alert.tag), Some(*target));
+            assert!(seen.tags(scene.server_id).contains(&alert.tag));
+        }
+        assert!(
+            event_alert(&mut seen, &tell(scene.server_id), &fact, None)
+                .show
+                .is_empty()
+        );
+        // With several servers the text names the server.
+        let several = TellScene {
+            several_servers: true,
+            ..tell(scene.server_id)
+        };
+        let told = event_alert(&mut Seen::default(), &several, &fact, None);
+        assert_eq!(told.show[0].0.body, "Acme Studio");
+    }
+
+    #[test]
+    fn the_answer_to_the_own_join_request_is_told_when_the_wait_ends() {
+        assert_eq!(
+            join_answer(true, true, false, "Acme Studio"),
+            Some(Fact::JoinAnswered {
+                approved: true,
+                server: "Acme Studio".to_owned()
+            })
+        );
+        assert_eq!(
+            join_answer(true, false, true, "Acme Studio"),
+            Some(Fact::JoinAnswered {
+                approved: false,
+                server: "Acme Studio".to_owned()
+            })
+        );
+        assert_eq!(join_answer(false, true, false, "Acme Studio"), None);
+        assert_eq!(join_answer(true, false, false, "Acme Studio"), None);
+        let fact = join_answer(true, true, false, "Acme Studio").unwrap();
+        let told = event_alert(
+            &mut Seen::default(),
+            &tell(ServerId::generate()),
+            &fact,
+            None,
+        );
+        assert_eq!(
+            told.show[0].0.title,
+            "Your request to join Acme Studio was approved"
+        );
+    }
 }

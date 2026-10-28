@@ -55,6 +55,12 @@ impl Class {
     pub const fn of(event: &Event) -> Self {
         match event {
             Event::DeviceAdded { .. }
+            | Event::JoinRequestCreated { .. }
+            | Event::JoinRequestDecided { .. }
+            | Event::JoinRequestWithdrawn { .. }
+            | Event::WorkspaceMemberAdded { .. }
+            | Event::CallStarted { .. }
+            | Event::RecordingUpdated { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
             | Event::DeviceLoggedIn { .. }
@@ -108,12 +114,8 @@ impl Class {
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
             | Event::InvitesOfCreatorRevoked { .. }
-            | Event::JoinRequestCreated { .. }
-            | Event::JoinRequestDecided { .. }
-            | Event::JoinRequestWithdrawn { .. }
             | Event::WorkspaceCreated { .. }
             | Event::WorkspaceUpdated { .. }
-            | Event::WorkspaceMemberAdded { .. }
             | Event::WorkspaceMemberRolesChanged { .. }
             | Event::WorkspaceRoleCreated { .. }
             | Event::WorkspaceRoleUpdated { .. }
@@ -125,7 +127,6 @@ impl Class {
             | Event::ChannelRulesSynced { .. }
             | Event::WorkspacePersonPermissionsSet { .. }
             | Event::ServerPersonPermissionsSet { .. }
-            | Event::CallStarted { .. }
             | Event::CallEnded { .. }
             | Event::CallParticipantJoined { .. }
             | Event::CallParticipantUpdated { .. }
@@ -137,7 +138,6 @@ impl Class {
             | Event::CallEntryRequested { .. }
             | Event::CallEntryResolved { .. }
             | Event::RecordingStarted { .. }
-            | Event::RecordingUpdated { .. }
             | Event::RecordingRemoved { .. }
             | Event::TranscriptLineCorrected { .. }
             | Event::TranscriptSpeakerRenamed { .. }
@@ -837,7 +837,7 @@ impl Audience {
     pub fn fits(&self, event: &Event) -> bool {
         match (event, self) {
             (
-                Event::NotificationChanged { message_id },
+                Event::NotificationChanged { message_id, .. },
                 Self::Notification {
                     message_id: subject,
                     ..

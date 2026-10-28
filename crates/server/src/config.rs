@@ -661,7 +661,7 @@ impl Default for Limits {
             request_bodies_held_per_address: 4 * 1024 * 1024,
             attachment_bytes: 100_000_000,
             attachments_per_message: 10,
-            avatar_bytes: 256 * 1024,
+            avatar_bytes: 2 * 1024 * 1024,
             avatar_longest_side: 1024,
             calls: CallLimits::default(),
             recordings: RecordingLimits::default(),
@@ -1030,6 +1030,19 @@ impl Config {
                 return Err(invalid(
                     "JUNTO_ATTACHMENT_BYTES",
                     "expected 1 to 1073741824".to_owned(),
+                ));
+            }
+        }
+        // The largest picture that a person sets: an avatar and the logo of the server. A
+        // picture is the whole body of its request (ADR 0119).
+        if let Some(v) = value("JUNTO_PICTURE_BYTES") {
+            limits.avatar_bytes = v
+                .parse()
+                .map_err(|_| invalid("JUNTO_PICTURE_BYTES", "expected bytes".to_owned()))?;
+            if !(1024..=limits.request_body_bytes).contains(&limits.avatar_bytes) {
+                return Err(invalid(
+                    "JUNTO_PICTURE_BYTES",
+                    format!("expected 1024 to {}", limits.request_body_bytes),
                 ));
             }
         }
@@ -1514,8 +1527,10 @@ mod tests {
             ("JUNTO_ATTACHMENTS_DIR", "/tmp"),
             ("JUNTO_ATTACHMENT_BYTES", "1024"),
             ("JUNTO_ATTACHMENTS_PER_MESSAGE", "3"),
+            ("JUNTO_PICTURE_BYTES", "1048576"),
         ]))
         .unwrap();
+        assert_eq!(config.limits.avatar_bytes, 1_048_576);
         assert_eq!(config.limits.attachment_bytes, 1024);
         assert_eq!(config.limits.attachments_per_message, 3);
         for (name, value) in [
@@ -1525,6 +1540,8 @@ mod tests {
             ("JUNTO_ATTACHMENT_BYTES", "1073741825"),
             ("JUNTO_ATTACHMENTS_PER_MESSAGE", "0"),
             ("JUNTO_ATTACHMENTS_PER_MESSAGE", "101"),
+            ("JUNTO_PICTURE_BYTES", "1023"),
+            ("JUNTO_PICTURE_BYTES", "2097153"),
         ] {
             assert!(
                 Config::from_lookup(move |key| if key == name {

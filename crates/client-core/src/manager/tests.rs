@@ -32,6 +32,9 @@ type Suspension = (Option<String>, watch::Sender<bool>);
 struct Network {
     hosts: Mutex<BTreeMap<String, Arc<FakeServer>>>,
     suspended: Mutex<BTreeMap<String, Suspension>>,
+    /// Hosts to which macOS refuses a connection because the local network is not
+    /// allowed.
+    local_refused: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Network {
@@ -78,6 +81,11 @@ impl Network {
 impl Transport for Network {
     fn send(&self, request: HttpRequest) -> TransportFuture {
         let host = request.url.host_str().unwrap_or_default().to_owned();
+        if self.local_refused.lock().unwrap().contains(&host) {
+            return Box::pin(async {
+                Err(TransportError::local_network_refused("No route to host"))
+            });
+        }
         let server = self.hosts.lock().unwrap().get(&host).cloned();
         let gate = self
             .suspended
@@ -1070,6 +1078,28 @@ async fn an_ended_session_is_renewed_once_without_an_action_of_the_user() {
     ));
     handle.dispatch(AccessAction::LogIn).await.unwrap();
     assert_eq!(logged_in(&handle), account_id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_tells_a_refused_local_network_until_it_answers_again() {
+    let network = Arc::new(Network::default());
+    network.host("lan");
+    let device = device(&network);
+    let handle = device.add("lan").await;
+    handle.dispatch(claim()).await.unwrap();
+    assert!(!handle.local_network_refused());
+
+    let host = "lan.example.test".to_owned();
+    network.local_refused.lock().unwrap().insert(host.clone());
+    let error = handle.api().own_account().await.unwrap_err();
+    assert!(matches!(error, ApiError::Unreachable(_)), "{error}");
+    assert_eq!(handle.reach(), Reach::Unreachable);
+    assert!(handle.local_network_refused());
+
+    // The person allowed the local network: the next answer clears it.
+    network.local_refused.lock().unwrap().remove(&host);
+    handle.api().own_account().await.unwrap();
+    assert!(!handle.local_network_refused());
 }
 
 #[tokio::test(start_paused = true)]
@@ -4436,6 +4466,66 @@ async fn a_move_counts_the_servers_of_this_client_and_keeps_those_of_another_pro
     device.client.move_server(b, 0).unwrap();
     assert_eq!(shown(&device.client), [b, a]);
     assert_eq!(shown(&device.reopened(&network)), [n, b]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_arrangement_of_the_book_orders_the_list_and_is_read_at_the_next_start() {
+    use crate::arrangement::{Change, Item, Spot};
+
+    let network = Arc::new(Network::default());
+    for name in ["acme", "globex", "initech"] {
+        network.host(name);
+    }
+    let device = device(&network);
+    let a = device.add("acme").await.id();
+    let b = device.add("globex").await.id();
+    let c = device.add("initech").await.id();
+    let mut changes = device.client.changes();
+    assert!(!told(&mut changes).await);
+
+    device
+        .client
+        .arrange(Change::GroupWith {
+            server: c,
+            target: a,
+        })
+        .unwrap();
+    assert!(told(&mut changes).await);
+    assert_eq!(shown(&device.client), [a, c, b]);
+    let arrangement = device.client.arrangement();
+    let group = arrangement.group_of(a).unwrap();
+    assert_eq!(arrangement.group_of(c), Some(group));
+    device
+        .client
+        .arrange(Change::CollapseGroup {
+            group,
+            collapsed: true,
+        })
+        .unwrap();
+    device
+        .client
+        .arrange(Change::MoveGroup {
+            group,
+            to: Spot::After(Item::Server(b)),
+        })
+        .unwrap();
+    assert_eq!(shown(&device.client), [b, a, c]);
+
+    let reopened = device.reopened(&network);
+    assert_eq!(shown(&reopened), [b, a, c]);
+    let read = reopened.arrangement();
+    assert_eq!(read.group_of(a), Some(group));
+    assert!(read.group(group).unwrap().collapsed);
+
+    // A removed server leaves the group.
+    device.client.remove_server(a).unwrap();
+    assert_eq!(device.client.arrangement().group_of(a), None);
+    assert_eq!(device.client.arrangement().group_of(c), Some(group));
+    assert!(matches!(
+        device.client.arrange(Change::LeaveGroup { server: a }),
+        Err(BookError::Arrange(_))
+    ));
+    assert_eq!(shown(&device.client), [b, c]);
 }
 
 fn offered(version: &str) -> Release {

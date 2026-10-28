@@ -272,14 +272,16 @@ async fn perform(api: &ServerApi, action: CallAction) -> Result<Vec<String>, Fai
             )])
         }
         CallAction::Share(audio) => {
-            api.report_screen_share(audio).await.map_err(failed)?;
+            api.report_screen_share(0, None, audio, None)
+                .await
+                .map_err(failed)?;
             Ok(vec![format!(
                 "reported: screen share, sound {}",
                 word(&audio)
             )])
         }
         CallAction::Unshare => {
-            api.end_screen_share().await.map_err(failed)?;
+            api.end_screen_share(None).await.map_err(failed)?;
             done("reported: no screen share")
         }
         CallAction::Hand(true) => {
@@ -456,9 +458,21 @@ fn participant_line(participant: &CallParticipant, speaking: Option<bool>, inden
         Some(block) => format!("by {}", block.by),
         None => "none".to_owned(),
     };
-    let screen_share = match &participant.screen_share {
-        Some(share) => format!("sound {}", word(&share.audio)),
-        None => "none".to_owned(),
+    let screen_share = if participant.shares().is_empty() {
+        "none".to_owned()
+    } else {
+        participant
+            .shares()
+            .iter()
+            .map(|share| {
+                let kind = share
+                    .kind
+                    .as_ref()
+                    .map_or_else(|| "unknown".to_owned(), word);
+                format!("slot {} {kind} sound {}", share.slot, word(&share.audio))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     let hand = if participant.hand_raised {
         "up"
@@ -987,6 +1001,7 @@ fn event_details(event: &Event) -> String {
             message_id,
             position,
             deleted,
+            ..
         } => format!(
             "{} message={message_id} position={position} deleted={deleted}",
             message_place(place)
@@ -1001,7 +1016,7 @@ fn event_details(event: &Event) -> String {
         Event::ThreadRead { root_id, position } => {
             format!("thread={root_id} position={position}")
         }
-        Event::NotificationChanged { message_id } => format!("message={message_id}"),
+        Event::NotificationChanged { message_id, .. } => format!("message={message_id}"),
         Event::NotificationSettingsChanged {} => String::new(),
         Event::RetentionChanged { workspace_id } => match workspace_id {
             Some(workspace_id) => format!("workspace={workspace_id}"),

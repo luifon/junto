@@ -930,8 +930,8 @@ async fn role_and_account_lists_have_a_statement_bound() {
     let admin = server.administrator(&owner, "Administrator").await;
     let workspace = server.default_workspace(&owner).await;
     for count in [1, 249] {
-        sqlx::query("insert into workspace_roles(id,workspace_id,name,permissions,is_everyone,created_at,position) select gen_random_uuid(),$1,'Role',0,false,now(),(select max(position) from workspace_roles where workspace_id=$1)+n from generate_series(1,$2) n").bind(workspace.id).bind(count).execute(&server.db).await.unwrap();
-        sqlx::query("insert into server_roles(id,name,permissions,created_at,position) select gen_random_uuid(),'Role',0,now(),(select coalesce(max(position),0) from server_roles)+n from generate_series(1,$1) n").bind(count).execute(&server.db).await.unwrap();
+        sqlx::query("insert into workspace_roles(id,workspace_id,name,permissions,is_everyone,created_at,position) select gen_random_uuid(),$1,'Role',0,false,now(),(select max(position) from workspace_roles where workspace_id=$1)+n from generate_series(1,$2) n").bind(workspace.id).bind(count).execute(&mut server.test_data().await).await.unwrap();
+        sqlx::query("insert into server_roles(id,name,permissions,created_at,position) select gen_random_uuid(),'Role',0,now(),(select coalesce(max(position),0) from server_roles)+n from generate_series(1,$1) n").bind(count).execute(&mut server.test_data().await).await.unwrap();
         for n in 0..if count == 1 { 1 } else { 9 } {
             let guest = server.join(&owner, &format!("Banned {count} {n}")).await;
             server

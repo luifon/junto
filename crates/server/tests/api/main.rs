@@ -78,6 +78,7 @@ mod transcriber_real;
 mod transcripts;
 mod upgrades;
 
+mod call_lines;
 mod messages;
 mod messages_access;
 mod messages_attachments;

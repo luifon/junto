@@ -6,7 +6,8 @@ use std::time::{Duration as Wait, Instant};
 use junto_protocol::audit::{AuditEvent, AuditPage};
 use junto_protocol::call::{
     BlockReason, CallInvitation, CallJoin, CallParticipant, CallPlace, InvitationOutcome,
-    LeaveReason, MeetingEnd, MicrophoneBlock, ScreenShare, ShareAudio, SoundBlock,
+    LeaveReason, MAX_SHARES, MeetingEnd, MicrophoneBlock, SHOWN_SHARES_ATTRIBUTE, ScreenShare,
+    ShareAudio, ShareKind, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Event, Level};
@@ -363,6 +364,8 @@ async fn a_screen_share_is_shown_with_its_sound_choice_while_the_media_server_li
     share(server, ann, &seat, "application").await;
     let started_at = server.clock.now();
     let shown = Some(ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::Application,
         started_at,
     });
@@ -381,6 +384,8 @@ async fn a_screen_share_is_shown_with_its_sound_choice_while_the_media_server_li
         .await
         .empty(StatusCode::NO_CONTENT);
     let changed = Some(ScreenShare {
+        slot: 0,
+        kind: None,
         audio: ShareAudio::System,
         started_at,
     });
@@ -444,6 +449,438 @@ async fn a_screen_share_is_shown_with_its_sound_choice_while_the_media_server_li
         names(&server.call_events(ben, &mut to_ben).await),
         ["call_participant_updated", "call_participant_updated"]
     );
+}
+
+/// Reports a share of a slot, as a client of several shares does, and publishes its picture
+/// track with the name that states the slot (ADR 0737).
+async fn share_in(server: &TestServer, member: &Member, seat: &Seat, slot: u8, kind: &str) {
+    server
+        .put(
+            member,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "system", "slot": slot, "kind": kind }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish_named(
+        &seat.room,
+        &seat.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare,
+        &share_track(slot, kind),
+    ));
+    server.check().await;
+}
+
+fn share_track(slot: u8, kind: &str) -> String {
+    if slot == 0 {
+        format!("{kind}/30")
+    } else {
+        format!("{kind}/30/{slot}")
+    }
+}
+
+async fn shares_of(server: &TestServer, viewer: &Member, voice: ChannelId, of: &Member) -> Vec<u8> {
+    participant(server, viewer, voice, of.account_id)
+        .await
+        .screen_shares
+        .iter()
+        .map(|share| share.slot)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_person_runs_up_to_three_shares_and_each_lasts_while_its_named_track_is_listed() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let seat = server.enter_call(ann, voice).await;
+    let mut to_ben = server.full_stream(ben).await;
+    let path = "/api/v1/call/screen-share";
+
+    share_in(server, ann, &seat, 0, "screen").await;
+    share_in(server, ann, &seat, 1, "window").await;
+    let started_at = server.clock.now();
+    let shown = participant(server, ben, voice, ann.account_id).await;
+    let share = |slot, kind| ScreenShare {
+        slot,
+        kind: Some(kind),
+        audio: ShareAudio::System,
+        started_at,
+    };
+    assert_eq!(
+        shown.screen_shares,
+        [share(0, ShareKind::Screen), share(1, ShareKind::Window)]
+    );
+    // A client of one share reads the share of the lowest slot.
+    assert_eq!(shown.screen_share, Some(share(0, ShareKind::Screen)));
+    assert_eq!(
+        names(&server.call_events(ben, &mut to_ben).await),
+        ["call_participant_updated", "call_participant_updated"]
+    );
+    let lines: i64 = sqlx::query_scalar(
+        "select count(*) from call_notes where kind = 'screen_share_started' and account_id = $1",
+    )
+    .bind(ann.account_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(lines, 2);
+
+    // A fourth share has no slot.
+    for slot in [3, 255] {
+        server
+            .put(ann, path, &json!({ "audio": "none", "slot": slot }))
+            .await
+            .error(ErrorCode::InvalidRequest);
+    }
+    share_in(server, ann, &seat, 2, "screen").await;
+    assert_eq!(shares_of(server, ben, voice, ann).await, [0, 1, 2]);
+
+    // The track of slot 1 ends: only that share ends after the time of grace, while the
+    // other tracks of the person stay listed.
+    server.fake().unpublish_named(
+        &seat.room,
+        &seat.identity,
+        TrackSource::ScreenShare,
+        &share_track(1, "window"),
+    );
+    server.call_events(ben, &mut to_ben).await;
+    assert_eq!(server.check().await, CLEAN);
+    server.clock.advance(Duration::seconds(10));
+    assert_eq!(server.check().await, CLEAN);
+    assert_eq!(shares_of(server, ben, voice, ann).await, [0, 2]);
+    assert!(matches!(
+        server.call_events(ben, &mut to_ben).await.as_slice(),
+        [Event::CallParticipantUpdated { participant, .. }]
+            if participant.screen_shares.len() == 2
+    ));
+
+    // The end of one slot leaves the others; an end without a slot ends every share.
+    server
+        .delete(ann, &format!("{path}?slot=0"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let shown = participant(server, ben, voice, ann.account_id).await;
+    assert_eq!(shown.screen_shares.len(), 1);
+    assert_eq!(shown.screen_share.map(|share| share.slot), Some(2));
+    server
+        .delete(ann, &format!("{path}?slot=0"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    share_in(server, ann, &seat, 0, "window").await;
+    server.delete(ann, path).await.empty(StatusCode::NO_CONTENT);
+    let shown = participant(server, ben, voice, ann.account_id).await;
+    assert_eq!(
+        (shown.screen_share, shown.screen_shares),
+        (None, Vec::new())
+    );
+    assert_eq!(server.count("call_shares").await, 0);
+}
+
+/// Each answer that gives a place states the number of shares of one person, and a client
+/// that shows several shares has its number in the attribute of its token (ADR 0510).
+#[tokio::test]
+async fn a_join_states_the_shares_of_one_person_and_the_token_states_what_the_client_shows() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let attribute = |join: &CallJoin| {
+        claims(join)["attributes"][SHOWN_SHARES_ATTRIBUTE]
+            .as_str()
+            .map(str::to_owned)
+    };
+    // A client from before several shares states nothing.
+    let old = server.join_call(ann, voice).await;
+    assert_eq!(old.shares, Some(MAX_SHARES));
+    assert_eq!(attribute(&old), None);
+    let path = format!("/api/v1/channels/{voice}/call/join?shares=3");
+    let new: CallJoin = server
+        .post(ann, &path, &Value::Null)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(new.shares, Some(MAX_SHARES));
+    assert_eq!(attribute(&new).as_deref(), Some("3"));
+    // A renewal of the seat states it too.
+    let renewal = format!(
+        "/api/v1/channels/{voice}/call/join?renews={}&shares=2",
+        new.identity
+    );
+    let renewed: CallJoin = server
+        .post(ann, &renewal, &Value::Null)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(attribute(&renewed).as_deref(), Some("2"));
+    let other: CallJoin = server
+        .post(ben, &path, &Value::Null)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(attribute(&other).as_deref(), Some("3"));
+}
+
+/// A report with another share identifier than the share of the slot is a new share: it
+/// starts at the report and has its line in the chat; a report with the same identifier
+/// keeps the start (ADR 0510).
+#[tokio::test]
+async fn a_new_share_in_a_slot_starts_at_its_report_and_a_repeated_report_keeps_its_start() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let seat = server.enter_call(ann, voice).await;
+    let path = "/api/v1/call/screen-share";
+    let report = |share_id: uuid::Uuid, audio: &str| json!({ "audio": audio, "kind": "screen", "slot": 0, "share_id": share_id });
+    let lines = async || -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from call_notes
+             where kind = 'screen_share_started' and account_id = $1",
+        )
+        .bind(ann.account_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    let started = async || {
+        participant(server, ben, voice, ann.account_id)
+            .await
+            .screen_share
+            .map(|share| (share.started_at, share.audio))
+    };
+    let (first, second) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+    server
+        .put(ann, path, &report(first, "system"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish_named(
+        &seat.room,
+        &seat.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare,
+        "screen/30",
+    ));
+    server.check().await;
+    let at_first = server.clock.now();
+    assert_eq!(started().await, Some((at_first, ShareAudio::System)));
+    assert_eq!(lines().await, 1);
+
+    // The same share again, with another sound: the start stays.
+    server.clock.advance(Duration::seconds(5));
+    server
+        .put(ann, path, &report(first, "none"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_first, ShareAudio::None)));
+    assert_eq!(lines().await, 1);
+
+    // Another share in the slot starts at its report.
+    server.clock.advance(Duration::seconds(5));
+    let at_second = server.clock.now();
+    server
+        .put(ann, path, &report(second, "none"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_second, ShareAudio::None)));
+    assert_eq!(lines().await, 2);
+    server
+        .put(ann, path, &report(second, "none"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_second, ShareAudio::None)));
+    assert_eq!(lines().await, 2);
+
+    // A report without an identifier changes the share of the slot, as before.
+    server.clock.advance(Duration::seconds(5));
+    server
+        .put(
+            ann,
+            path,
+            &json!({ "audio": "system", "kind": "screen", "slot": 0 }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(started().await, Some((at_second, ShareAudio::System)));
+    assert_eq!(lines().await, 2);
+}
+
+/// A client of v0.1.0-test.1 or test.2 reports its one share without a slot and names its
+/// picture track `screen/30`; a picture track of another name counts as slot 0 too.
+#[tokio::test]
+async fn a_client_of_one_share_reports_and_ends_it_as_before() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let seat = server.enter_call(ann, voice).await;
+    let path = "/api/v1/call/screen-share";
+    server
+        .put(ann, path, &json!({ "audio": "application" }))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish_named(
+        &seat.room,
+        &seat.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare,
+        "screen/30",
+    ));
+    server.check().await;
+    server.clock.advance(Duration::seconds(30));
+    assert_eq!(server.check().await, CLEAN);
+    let shown = participant(server, ben, voice, ann.account_id).await;
+    assert_eq!(shown.shares().len(), 1);
+    let share = shown.screen_share.clone().unwrap();
+    assert_eq!(
+        (share.slot, share.kind, share.audio),
+        (0, None, ShareAudio::Application)
+    );
+    let json = serde_json::to_value(&shown).unwrap();
+    assert_eq!(json["screen_share"]["audio"], "application");
+    assert!(json["screen_share"].get("kind").is_none());
+
+    server.delete(ann, path).await.empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ben, voice, ann.account_id)
+            .await
+            .screen_share,
+        None
+    );
+}
+
+#[tokio::test]
+async fn meeting_mode_lasts_while_its_presenter_runs_a_share() {
+    let (scene, presenter, listener) = meeting().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let path = "/api/v1/call/screen-share";
+    share_in(server, ann, &presenter, 1, "window").await;
+    let mut to_ben = server.full_stream(ben).await;
+
+    // The presenter ends the share of slot 0, and runs the share of slot 1.
+    server
+        .delete(ann, &format!("{path}?slot=0"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.fake().unpublish(
+        &presenter.room,
+        &presenter.identity,
+        TrackSource::ScreenShare,
+    );
+    assert!(server.fake().publish_named(
+        &presenter.room,
+        &presenter.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare,
+        &share_track(1, "window"),
+    ));
+    assert_eq!(
+        names(&server.call_events(ben, &mut to_ben).await),
+        ["call_participant_updated"]
+    );
+    server.clock.advance(Duration::seconds(120));
+    server.check().await;
+    assert_eq!(meeting_of(&scene).await, Some(ann.account_id));
+    assert!(!speaks(server, &listener));
+
+    // The last share ends when the media server stops listing its track.
+    server.fake().unpublish(
+        &presenter.room,
+        &presenter.identity,
+        TrackSource::ScreenShare,
+    );
+    assert_eq!(server.check().await, CLEAN);
+    server.clock.advance(Duration::seconds(10));
+    server.check().await;
+    assert!(matches!(
+        server.call_events(ben, &mut to_ben).await.as_slice(),
+        [
+            Event::CallParticipantUpdated { .. },
+            Event::CallMeetingEnded {
+                reason: MeetingEnd::ShareStopped,
+                ..
+            }
+        ]
+    ));
+    assert_eq!(meeting_of(&scene).await, None);
+}
+
+/// Migration 0035 moves the one share of each member of `call_members` into `call_shares`
+/// as slot 0, and keeps what the admission check had seen of it.
+#[tokio::test]
+async fn migration_0035_keeps_the_share_of_each_member_as_slot_0() {
+    use sqlx::ConnectOptions;
+
+    let database = crate::support::empty_database().await;
+    let mut connection = database.options.connect().await.unwrap();
+    crate::migration_identifiers::migrations_up_to(34)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let mut accounts = [uuid::Uuid::now_v7(), uuid::Uuid::now_v7()];
+    accounts.sort();
+    for (account, name) in accounts.iter().zip(["Ana", "Ben"]) {
+        sqlx::query(
+            "insert into accounts (id, name, status, created_at) values ($1, $2, 'active', now())",
+        )
+        .bind(account)
+        .bind(name)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    }
+    let call = uuid::Uuid::now_v7();
+    sqlx::query(
+        "insert into calls (id, room_name, direct_low, direct_high, created_at)
+         values ($1, $2, $3, $4, now())",
+    )
+    .bind(call)
+    .bind(format!("jr-{}-{}", "a".repeat(12), "b".repeat(32)))
+    .bind(accounts[0])
+    .bind(accounts[1])
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let seen = time::OffsetDateTime::now_utc();
+    for (index, account) in accounts.iter().enumerate() {
+        let shares = index == 0;
+        sqlx::query(
+            "insert into call_members (call_id, account_id, device_id, session_id, identity,
+                 admitted_at, usable_until, connected_at, share_audio, share_started_at,
+                 share_seen_at, share_missing_since)
+             values ($1, $2, $3, $4, $5, now(), now(), now(), $6, $7, $8, $9)",
+        )
+        .bind(call)
+        .bind(account)
+        .bind(uuid::Uuid::now_v7())
+        .bind(uuid::Uuid::now_v7())
+        .bind(format!("{account}:{}", "c".repeat(31) + &index.to_string()))
+        .bind(shares.then_some("system"))
+        .bind(shares.then_some(seen))
+        .bind(shares.then_some(seen))
+        .bind(shares.then_some(seen))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    }
+    crate::migration_identifiers::migrations_up_to(i64::MAX)
+        .run(&mut connection)
+        .await
+        .unwrap();
+    let rows: Vec<(uuid::Uuid, i16, Option<String>, String, bool, bool)> = sqlx::query_as(
+        "select account_id, slot, kind, audio, seen_at is not null, missing_since is not null
+         from call_shares order by account_id",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [(accounts[0], 0, None, "system".to_owned(), true, true)]
+    );
+    let left: bool = sqlx::query_scalar(
+        "select exists (select 1 from information_schema.columns
+                        where table_name = 'call_members' and column_name like 'share_%')",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert!(!left, "the columns of the one share are gone");
 }
 
 fn meeting_path(channel_id: ChannelId) -> String {
@@ -1233,7 +1670,11 @@ async fn a_background_connection_of_an_account_in_a_call_receives_the_events_of_
 
     server.enter_call(ann, voice).await;
     server.enter_call(owner, other).await;
-    assert!(server.call_events(ben, &mut background).await.is_empty());
+    // The start of a call reaches a background connection for its system notification
+    // (ADR 0107); nothing else of a call that Ben is outside of reaches it.
+    let outside = server.call_events(ben, &mut background).await;
+    let outside: Vec<&str> = outside.iter().map(|event| event.name()).collect();
+    assert_eq!(outside, ["call_started", "call_started"]);
 
     server.enter_call(ben, voice).await;
     report_state(server, ann, true, false)
@@ -1594,7 +2035,8 @@ async fn what_happens_in_the_call_of_a_voice_channel_is_kept_for_the_lines_of_it
         ("call_started", ann_id),
         ("screen_share_started", ann_id),
         ("meeting_started", ann_id),
-        ("meeting_ended", ann_id),
+        ("meeting_turned_off", ann_id),
+        ("call_locked", ann_id),
         ("entry_requested", ben_id),
         ("joined_by_invitation", Some(owner.account_id.as_uuid())),
         ("call_ended", None),
@@ -1805,4 +2247,124 @@ async fn rule_64_a_join_token_carries_the_display_name_of_the_account() {
 
     let direct = server.enter_direct(&scene.ben, ann).await;
     assert_eq!(claims(&direct.join)["name"], "Ben");
+}
+
+/// A person reports the share that the person watches; the participant states it to the
+/// people who see the call, and an end of the watch takes it away (ADR 0502). The own share
+/// and a person outside the call are refused.
+#[tokio::test]
+async fn the_share_that_a_person_watches_is_stated_on_the_participant() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    let watch = |account_id| json!({ "watching": { "account_id": account_id, "slot": 0 } });
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ann.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let watching = participant(server, ann, voice, ben.account_id)
+        .await
+        .watching
+        .unwrap();
+    assert_eq!((watching.account_id, watching.slot), (ann.account_id, 0));
+    // The own share and a person who is not in the call are refused.
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ben.account_id))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .put(ben, "/api/v1/call/watching", &watch(owner.account_id))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    // A new share of the watched person ends the watch until the client reports it again.
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
+    server
+        .put(ben, "/api/v1/call/watching", &watch(ann.account_id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    // A change of the sound of the running share is no new share.
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "application" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching
+            .is_some()
+    );
+    // With several shares the watch names the slot: a new share in another slot keeps it,
+    // a report of the same share keeps it, and a new share in the watched slot (another
+    // identifier) ends it (ADR 0510).
+    let share = |slot: u8, id: uuid::Uuid| json!({ "audio": "none", "slot": slot, "kind": "screen", "share_id": id });
+    let first = uuid::Uuid::now_v7();
+    server
+        .put(ann, "/api/v1/call/screen-share", &share(1, first))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let watch_slot = json!({ "watching": { "account_id": ann.account_id, "slot": 1 } });
+    server
+        .put(ben, "/api/v1/call/watching", &watch_slot)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    for (slot, id) in [(0, uuid::Uuid::now_v7()), (1, first)] {
+        server
+            .put(ann, "/api/v1/call/screen-share", &share(slot, id))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let watching = participant(server, ann, voice, ben.account_id)
+            .await
+            .watching
+            .unwrap();
+        assert_eq!((watching.account_id, watching.slot), (ann.account_id, 1));
+    }
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &share(1, uuid::Uuid::now_v7()),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
+    // A slot that no person can share in is refused.
+    let beyond = json!({ "watching": { "account_id": ann.account_id, "slot": 3 } });
+    server
+        .put(ben, "/api/v1/call/watching", &beyond)
+        .await
+        .error(ErrorCode::InvalidRequest);
+    server
+        .put(ben, "/api/v1/call/watching", &json!({ "watching": null }))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .watching,
+        None
+    );
 }

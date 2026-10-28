@@ -24,7 +24,7 @@ Downloads:
 Removal:
 
 - `DELETE /api/v1/recordings/{recording_id}` removes a recording. The caller may read the recording and holds `manage_recordings` in its voice channel.
-- A recording that is starting, runs or is processed gets `conflict`. A recording whose transcript is built can be removed; the process that runs the worker ends it at its next heartbeat (ADR 0607).
+- A recording that is starting, runs or is processed gets `conflict`. A recording whose transcript is built can be removed. The removal tells the transcription runs of its process at once; each run looks whether it still holds its job and ends its worker when it does not. A run of another process does so at its next heartbeat (ADR 0607).
 - One transaction deletes the rows of the recording, its segments and its transcript, deletes the note of its post, records the audit entry `recording_removed` and the event `recording_removed`, and stores the directory of the recording, and the directories `rescued/<job>/` of its lost jobs, in a queue of removals.
 - The notes of the start and the stop of the recording stay, without the recording.
 - After the transaction, the task that processes recordings deletes each directory of the queue and then its row. A directory that cannot be deleted stays in the queue and is tried again after 5 minutes. A link is deleted and not followed, and a directory is deleted through descriptors, so that no link above it leads elsewhere (ADR 0606). A row leaves the queue only when its directory is gone.
@@ -42,7 +42,7 @@ Upgrades:
 - One account cannot take every place of the downloads: with 4 places per account, 8 accounts are needed to fill the 32.
 - After a ban, a logout, the loss of the voice channel, the removal of the recording, and for a person who leaves a call that hides who is inside while that call runs, a download that runs sends at most 5 further seconds of the file, and the bytes that the connection already held. Each running download costs one read transaction per 5 seconds.
 - The video player of the operating system cannot send a session token. The client downloads the file and opens the copy (ADR 0602).
-- The files of a removed recording are deleted at once after the transaction, and later when the directory cannot be deleted or the server stops in between. While a backup runs, the queue is not worked on (ADR 0018).
+- The files of a removed recording are deleted at once after the transaction, and later when the directory cannot be deleted or the server stops in between. When a worker transcribes the recording, its files wait until the run of the process that holds the job has ended the worker, at most for the lease of the job, so that the worker, which reads the audio until it ends, has ended before they are deleted; before, the worker failed when its files went and the run ended with an error. Test: `transcripts::a_removed_recording_keeps_its_files_until_its_worker_has_ended`. While a backup runs, the queue is not worked on (ADR 0018).
 - A recording of a deleted channel is read by nobody (ADR 0604). The removal of the content of the deleted channel removes it with its files (ADR 0017).
 - An administrator who stops the server during a recording and starts a version with a migration gets a server that does not start. The earlier version is started again, the recording is ended, and the upgrade follows. The host command tells this before the stop.
 - A recording that starts between the check and the migration is not seen. Only a second server process on the same database can start one in that time.

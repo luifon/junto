@@ -197,15 +197,26 @@ async fn an_avatar_is_bounded_and_recognized_by_its_bytes() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
 
+    // A picture of 2 MiB, the largest request body, is stored; one byte more is refused
+    // as a body. A server with a smaller limit refuses a larger picture as one.
     let mut largest = samples::png(64, 64);
-    largest.resize(256 * 1024, 0);
+    largest.resize(2 * 1024 * 1024, 0);
     server
         .put_bytes(&owner, AVATAR, None, largest.clone())
         .await
         .ok::<Avatar>(StatusCode::OK);
-    largest.push(0);
+    let mut above = largest.clone();
+    above.push(0);
     server
-        .put_bytes(&owner, AVATAR, Some("image/png"), largest)
+        .put_bytes(&owner, AVATAR, Some("image/png"), above)
+        .await
+        .error(ErrorCode::InvalidRequest);
+    let smaller = TestServer::start_with(|config| config.limits.avatar_bytes = 256 * 1024).await;
+    let smaller_owner = smaller.owner().await;
+    let mut picture = samples::png(64, 64);
+    picture.resize(256 * 1024 + 1, 0);
+    smaller
+        .put_bytes(&smaller_owner, AVATAR, Some("image/png"), picture)
         .await
         .error(ErrorCode::ImageTooLarge);
 
@@ -236,7 +247,7 @@ async fn an_avatar_is_bounded_and_recognized_by_its_bytes() {
         .get(&owner, "/api/v1/account")
         .await
         .ok(StatusCode::OK);
-    assert_eq!(own.avatar.unwrap().bytes, 256 * 1024);
+    assert_eq!(own.avatar.unwrap().bytes, 2 * 1024 * 1024);
 
     let stored: i64 = sqlx::query_scalar("select count(*) from account_avatars")
         .fetch_one(&server.db)
@@ -465,7 +476,7 @@ async fn profile_metadata_reads_follow_the_members() {
         "insert into accounts(id,name,status,created_at)
         select lpad(to_hex(i),32,'0')::uuid,'Other','active',now() from generate_series(1,10000) i",
     )
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query("insert into account_avatars(account_id,media_type,content,hash,width,height,updated_at)

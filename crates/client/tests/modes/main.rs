@@ -832,7 +832,7 @@ fn enter_call(
                 .is_some_and(|stage| stage.shares.iter().any(|share| share.account_id == sharer))
         });
         window.state.update(&mut window.cx, |state, _| {
-            state.watch_share(junto_media::engine::ShareId::Of(sharer));
+            state.watch_share(junto_media::engine::ShareId::of(sharer, 0));
         });
     }
     if matches!(mode, Mode::Share | Mode::ShareCamera) {
@@ -846,6 +846,7 @@ fn enter_call(
                 &seat,
                 junto_media::share::PictureSource::Display(1),
                 junto_media::share::SoundChoice::None,
+                None,
             );
         });
         window.until("the own share runs", |window| {

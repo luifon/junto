@@ -100,8 +100,7 @@ impl ScreenCapture for SystemCapture {
         })
     }
 
-    /// A picture made with GDI on a blocking thread of the runtime: one picture needs no
-    /// session of Windows Graphics Capture and no graphics device (ADR 0736).
+    /// A screen picture from GDI or a bounded window capture from the compositor (ADR 0736).
     fn preview(
         &self,
         source: PictureSource,

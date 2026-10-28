@@ -80,6 +80,8 @@ pub struct Recordings {
     instance: Uuid,
     files_wait: Notify,
     jobs_wait: Notify,
+    /// A recording was removed: a run of its transcription looks at its job at once.
+    removed: Notify,
     downloads: Arc<Transfers>,
     /// The name below `rescued/` that the sweep of saved audio examined last, when more
     /// names follow it (ADR 0606).
@@ -117,6 +119,7 @@ impl Recordings {
             instance: Uuid::new_v4(),
             files_wait: Notify::new(),
             jobs_wait: Notify::new(),
+            removed: Notify::new(),
             downloads: Arc::new(downloads),
             rescued_after: Mutex::new(None),
         }
@@ -133,6 +136,16 @@ impl Recordings {
 
     pub(crate) async fn asked_to_process(&self) {
         self.files_wait.notified().await;
+    }
+
+    /// A recording was removed: a run of a transcription of this process looks at once
+    /// whether it still holds its job, and ends its worker when it does not (ADR 0608).
+    pub fn recording_removed(&self) {
+        self.removed.notify_waiters();
+    }
+
+    pub(crate) async fn asked_to_look_at_the_job(&self) {
+        self.removed.notified().await;
     }
 
     /// Makes the server look for a transcription job now.

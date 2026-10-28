@@ -97,6 +97,18 @@ pub struct PublishArgs {
     /// Stop the screen share this many seconds after start.
     #[arg(long)]
     pub screen_stop_after: Option<f64>,
+    /// Run a second screen share of the same size and frame rate, in slot 1 of the shares
+    /// of one person: the picture track `screen/<fps>/1` and, with
+    /// --second-screen-audio-hz, the sound track `share-sound/1`. It starts when the line
+    /// `second-screen` arrives on standard input.
+    #[arg(long)]
+    pub second_screen: bool,
+    /// Background colour of the second screen pattern as RRGGBB.
+    #[arg(long)]
+    pub second_screen_color: Option<String>,
+    /// The tone of the sound track of the second screen share, in Hz.
+    #[arg(long)]
+    pub second_screen_audio_hz: Option<f64>,
 
     /// Text drawn on the video patterns. Defaults to the identity.
     #[arg(long)]

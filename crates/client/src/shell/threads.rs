@@ -100,7 +100,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.side_panel_width))
+            .w(u(self.panel_width(
+                junto_client_core::settings::Panel::Thread,
+                theme.metrics.side_panel_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -508,7 +512,11 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.side_panel_width))
+            .w(u(self.panel_width(
+                junto_client_core::settings::Panel::Pins,
+                theme.metrics.side_panel_width,
+                cx,
+            )))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -654,13 +662,6 @@ impl Shell {
                     .child(kind_name(kind)),
             )
             .child(Field::new(&self.fork_name, text::FORK_NAME).selector("fork-name"))
-            .child(
-                crate::ui::notice_slot("fork-refused-slot").children(refused.map(|reason| {
-                    div()
-                        .mt(u(10.0))
-                        .child(Notice::error(reason).selector("fork-refused"))
-                })),
-            )
             .child(dialog_footer([
                 Button::new("cancel-fork")
                     .label(text::CANCEL)
@@ -682,6 +683,13 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.submit_fork(window, cx)))
                     .into_any_element(),
             ]))
+            .child(
+                crate::ui::notice_slot("fork-refused-slot").children(refused.map(|reason| {
+                    div()
+                        .mt(u(12.0))
+                        .child(Notice::error(reason).selector("fork-refused"))
+                })),
+            )
             .into_any_element()
     }
 

@@ -65,6 +65,11 @@ impl World {
         self.run(TestServer::start_with_media(name))
     }
 
+    /// A server with these settings of its process.
+    pub fn server_with_settings(&self, name: &str, settings: &[(&str, &str)]) -> TestServer {
+        self.run(TestServer::start_with_settings(name, settings))
+    }
+
     /// A device that owns the server: it claimed it with the owner code.
     pub fn owner(&self, server: &TestServer) -> Admin {
         self.run(async {
@@ -174,6 +179,8 @@ pub struct Window {
     /// How long the application held the thread of the windows in one piece, in each of
     /// the calls of the harness that run its work.
     pub held: Held,
+    /// The test moves the clock of the test itself: the waits do not move it.
+    clock_held: bool,
     holding: usize,
     /// The lock check of ADR 0730 knows the application of the window while the window
     /// exists.
@@ -374,6 +381,7 @@ fn open_client(
         tones,
         capture,
         held: Held::default(),
+        clock_held: false,
         holding: 0,
     };
     window.cx.run_until_parked();
@@ -502,7 +510,7 @@ impl Window {
             .cx
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
-        let (down, up) = pointer_press(bounds.center(), gpui::MouseButton::Left);
+        let (down, up) = pointer_press(bounds.center(), gpui::MouseButton::Left, 1);
         self.holding(|this| {
             this.cx.update(|window, cx| {
                 window.dispatch_event(down, cx);
@@ -526,7 +534,18 @@ impl Window {
 
     /// Presses and releases a button of the pointer at a point of the window.
     pub fn press_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
-        let (down, up) = pointer_press(position, button);
+        self.press_at_count(position, button, 1);
+    }
+
+    /// The press number `count` of a series at one point, as the system counts the presses
+    /// of a double click.
+    pub fn press_at_count(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+        count: usize,
+    ) {
+        let (down, up) = pointer_press(position, button, count);
         for input in [down, up] {
             self.holding(|this| {
                 this.cx.update(|window, cx| {
@@ -577,12 +596,31 @@ impl Window {
             .expect("the window was drawn")
     }
 
+    /// Lets `duration` of real time pass, and the clock of the test with it. The clock of
+    /// the test moves only while the scheduler parks, and the waits of the tests run its
+    /// ready tasks without parking: without this, a timer of the window would not end while
+    /// a test waits for a state behind it.
+    pub fn pass(&mut self, duration: Duration) {
+        let started = Instant::now();
+        std::thread::sleep(duration);
+        if !self.clock_held {
+            self.cx.executor().advance_clock(started.elapsed());
+        }
+    }
+
+    /// The test moves the clock of the test itself from here on, to measure a time of the
+    /// window exactly: the waits let real time pass and leave the clock where it is.
+    pub fn hold_clock(&mut self) {
+        self.clock_held = true;
+    }
+
     /// Waits until `holds`, and draws the window while it waits, as a running application
     /// does.
     #[track_caller]
     pub fn until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
         crate::limit::step(what);
         let deadline = Instant::now() + PATIENCE;
+        let clock_start = self.cx.executor().now();
         loop {
             self.settle();
             if holds(self) {
@@ -590,11 +628,13 @@ impl Window {
             }
             assert!(
                 Instant::now() < deadline,
-                "after {PATIENCE:?} this did not hold: {what}; the calls of the window: {:?}",
+                "after {PATIENCE:?} this did not hold: {what}; the clock of the test moved \
+                 {:?} meanwhile; the calls of the window: {:?}",
+                self.cx.executor().now().duration_since(clock_start),
                 self.state
                     .read_with(&self.cx, |state, _| state.calls().view())
             );
-            std::thread::sleep(Duration::from_millis(20));
+            self.pass(Duration::from_millis(20));
         }
     }
 
@@ -619,7 +659,7 @@ impl Window {
                 Instant::now() < deadline,
                 "after {PATIENCE:?} this did not hold: {what}; the last value: {value:?}"
             );
-            std::thread::sleep(Duration::from_millis(20));
+            self.pass(Duration::from_millis(20));
         }
     }
 
@@ -772,9 +812,21 @@ impl Window {
     }
 
     /// Turns the wheel over the list with the name `list` until the element with the name
-    /// `target` is drawn whole inside the list, as a person scrolls to a control.
+    /// `target` is drawn whole inside the list, as a person scrolls down to a control.
     #[track_caller]
     pub fn wheel_to(&mut self, list: &'static str, target: &'static str) {
+        self.wheel_until(list, target, -300.0);
+    }
+
+    /// Turns the wheel over a list until the element is drawn whole inside it, as a person
+    /// scrolls up to a control.
+    #[track_caller]
+    pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
+        self.wheel_until(list, target, 300.0);
+    }
+
+    #[track_caller]
+    fn wheel_until(&mut self, list: &'static str, target: &'static str, step: f32) {
         use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
         self.settle();
         let area = self
@@ -789,7 +841,7 @@ impl Window {
             if !inside {
                 window.dispatch(ScrollWheelEvent {
                     position: area.center(),
-                    delta: ScrollDelta::Pixels(point(px(0.0), px(-300.0))),
+                    delta: ScrollDelta::Pixels(point(px(0.0), px(step))),
                     ..Default::default()
                 });
             }
@@ -883,6 +935,7 @@ impl Window {
             camera: self.camera.clone(),
             permission: self.permission.clone(),
             held: Held::default(),
+            clock_held: false,
             holding: 0,
         };
         window.settle();
@@ -977,6 +1030,24 @@ impl Window {
         self.click(row);
     }
 
+    /// Double-clicks the row of the channel with this name: two presses at one point, the
+    /// second one counted as the second of a series.
+    #[track_caller]
+    pub fn double_click_channel(&mut self, name: &str) {
+        let row = self
+            .channel_row(name)
+            .unwrap_or_else(|| panic!("no channel is named {name}"));
+        self.settle();
+        let middle = self
+            .cx
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("{row} is not drawn"))
+            .center();
+        self.press_at_count(middle, gpui::MouseButton::Left, 1);
+        self.press_at_count(middle, gpui::MouseButton::Left, 2);
+        self.settle();
+    }
+
     /// Clicks an action of the state panel of the selected server once the actions take
     /// clicks. The panel draws its actions disabled while an action of the access flow runs,
     /// also when it shows the outcome of that action before the action has ended (the
@@ -1015,10 +1086,12 @@ impl Window {
     }
 }
 
-/// The two events of one press of a pointer button at one point.
+/// The two events of one press of a pointer button at one point, the press number
+/// `click_count` of a series.
 fn pointer_press(
     position: gpui::Point<gpui::Pixels>,
     button: gpui::MouseButton,
+    click_count: usize,
 ) -> (gpui::PlatformInput, gpui::PlatformInput) {
     use gpui::InputEvent;
     let modifiers = Modifiers::none();
@@ -1026,14 +1099,14 @@ fn pointer_press(
         position,
         modifiers,
         button,
-        click_count: 1,
+        click_count,
         first_mouse: false,
     };
     let up = gpui::MouseUpEvent {
         position,
         modifiers,
         button,
-        click_count: 1,
+        click_count,
     };
     (down.to_platform_input(), up.to_platform_input())
 }
@@ -1298,4 +1371,67 @@ pub fn press_pad(cx: &mut VisualTestContext) {
 /// action reaches the global listeners.
 pub fn dispatch_from_the_window(action: Box<dyn gpui::Action>) -> Press {
     std::rc::Rc::new(move |window, cx| window.dispatch_action(action.boxed_clone(), cx))
+}
+
+/// A real PNG picture of this size, with a pattern of colours, as a camera or a drawing
+/// program writes one.
+pub fn picture_png(width: u32, height: u32) -> Vec<u8> {
+    let picture = image::RgbaImage::from_fn(width, height, |x, y| {
+        image::Rgba([
+            (x % 251) as u8,
+            (y % 241) as u8,
+            ((x / 7 + y / 5) % 239) as u8,
+            255,
+        ])
+    });
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(picture)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    bytes
+}
+
+impl Window {
+    /// The cut of a chosen picture that is open (ADR 0119).
+    pub fn picture_crop(&mut self) -> Option<junto_client::state::picture_crop::PictureCropView> {
+        self.state
+            .read_with(&self.cx, |state, _| state.picture_crop())
+    }
+
+    /// Waits for the cut of a chosen picture and returns it as drawn.
+    #[track_caller]
+    pub fn until_picture_crop(&mut self) -> junto_client::state::picture_crop::PictureCropView {
+        self.until("the cut of the picture", |window| {
+            window.picture_crop().is_some() && window.shows("picture-crop-frame")
+        });
+        self.picture_crop().unwrap()
+    }
+
+    /// Drags the picture in the frame of the cut by this many window pixels.
+    pub fn drag_picture(&mut self, by: (f32, f32)) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        self.settle();
+        let start = self.cx.debug_bounds("picture-crop-frame").unwrap().center();
+        let end = start + point(px(by.0), px(by.1));
+        self.simulate(|cx| cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none()));
+        self.simulate(|cx| cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::none()));
+        self.simulate(|cx| cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::none()));
+        self.settle();
+    }
+
+    /// Turns the wheel over the frame of the cut by this many pixels.
+    pub fn wheel_picture(&mut self, by: f32) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        self.settle();
+        let position = self.cx.debug_bounds("picture-crop-frame").unwrap().center();
+        self.dispatch(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+            ..Default::default()
+        });
+        self.settle();
+    }
 }

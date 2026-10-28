@@ -139,9 +139,9 @@ async fn rule_25_26_direct_mentions_survive_independent_role_and_everyone_switch
     assert_eq!(listed[0].message_id, explicit.id);
     let events = events(&server, &reader, cursor, Level::Background).await;
     assert!(events.iter().any(
-        |event| matches!(event,Event::NotificationChanged{message_id} if *message_id==explicit.id)
+        |event| matches!(event,Event::NotificationChanged{message_id,..} if *message_id==explicit.id)
     ));
-    assert!(!events.iter().any(|event|matches!(event,Event::NotificationChanged{message_id}|Event::MessageMentioned{message_id,..} if *message_id==role_message.id || *message_id==everyone.id)));
+    assert!(!events.iter().any(|event|matches!(event,Event::NotificationChanged{message_id,..}|Event::MessageMentioned{message_id,..} if *message_id==role_message.id || *message_id==everyone.id)));
 }
 
 #[tokio::test]
@@ -369,7 +369,7 @@ async fn rule_32_thread_replies_notify_previous_writers_only() {
         !events(&server, &reader, cursor, Level::Full)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==last.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==last.id))
     );
     let stored: bool = sqlx::query_scalar(
         "select exists(select 1 from notifications where account_id=$1 and message_id=$2)",
@@ -449,21 +449,15 @@ async fn rule_34_35_36_notices_read_state_snapshot_and_stream_levels() {
     let mentioned = mention(&server, &owner, &channel, &reader).await;
     let full = events(&server, &reader, cursor, Level::Full).await;
     let background = events(&server, &reader, cursor, Level::Background).await;
-    assert!(
-        full.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==ordinary.id)
-        )
-    );
-    assert!(
-        !background.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==ordinary.id)
-        )
-    );
-    assert!(
-        background.iter().any(
-            |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==mentioned.id)
-        )
-    );
+    assert!(full.iter().any(
+        |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
+    ));
+    assert!(!background.iter().any(
+        |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==ordinary.id)
+    ));
+    assert!(background.iter().any(
+        |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==mentioned.id)
+    ));
     let notice = notices(&server, &reader)
         .await
         .into_iter()
@@ -498,7 +492,7 @@ async fn rule_34_35_36_notices_read_state_snapshot_and_stream_levels() {
             .await
             .iter()
             .any(
-                |e| matches!(e,Event::NotificationChanged{message_id} if *message_id==mentioned.id)
+                |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==mentioned.id)
             )
     );
 }
@@ -529,7 +523,7 @@ async fn added_mention_upgrades_an_existing_general_notice_once() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==root.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==root.id))
     );
 }
 
@@ -662,8 +656,8 @@ async fn fix_thread_notices_do_not_reach_background_without_a_mention() {
             .iter()
             .any(|n| n.message_id == child.id)
     );
-    assert!(!events(&server, &reader, cursor, Level::Background).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id} if *message_id==child.id)));
-    assert!(events(&server, &reader, cursor, Level::Full).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id} if *message_id==child.id)));
+    assert!(!events(&server, &reader, cursor, Level::Background).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id,..} if *message_id==child.id)));
+    assert!(events(&server, &reader, cursor, Level::Full).await.iter().any(|event| matches!(event,Event::NotificationChanged{message_id,..} if *message_id==child.id)));
 }
 
 #[tokio::test]
@@ -708,7 +702,7 @@ async fn fix_dnd_suppresses_notifications_but_preserves_unread() {
         json!({"do_not_disturb":false}),
     )
     .await;
-    assert!(!events(&server,&reader,cursor,Level::Background).await.iter().any(|e|matches!(e,Event::NotificationChanged{message_id}|Event::MessageMentioned{message_id,..} if *message_id==sent.id)));
+    assert!(!events(&server,&reader,cursor,Level::Background).await.iter().any(|e|matches!(e,Event::NotificationChanged{message_id,..}|Event::MessageMentioned{message_id,..} if *message_id==sent.id)));
 
     settings(
         &server,
@@ -726,7 +720,7 @@ async fn fix_dnd_suppresses_notifications_but_preserves_unread() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==sent.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==sent.id))
     );
 }
 
@@ -751,7 +745,7 @@ async fn fix_notice_maintenance_keeps_only_the_newest_500_and_90_days() {
              notifications(id,account_id,message_id,kind,created_at) select id,$2,id, 'thread' ,created_at from copied")
         .bind(recent.id)
         .bind(reader.account_id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     // Three empty retention transactions, the age trim, then one cap batch.
@@ -882,7 +876,7 @@ async fn fix_scheduled_dnd_suppresses_direct_notices_and_call_invites_until_it_e
         events(server, reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==next.id))
+            .any(|e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==next.id))
     );
     server.enter_direct(sender, reader).await;
     assert_eq!(server.snapshot(reader).await.call_invitations.len(), 1);
@@ -964,7 +958,9 @@ async fn round2_added_mention_upgrades_a_thread_notice() {
         events(&server, &reader, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==child.id))
+            .any(
+                |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==child.id)
+            )
     );
 }
 
@@ -979,7 +975,9 @@ async fn round2_dnd_checks_replayed_notices_and_channel_invites() {
         events(server, &scene.ben, cursor, Level::Background)
             .await
             .iter()
-            .any(|e| matches!(e,Event::NotificationChanged{message_id} if *message_id==message.id))
+            .any(
+                |e| matches!(e,Event::NotificationChanged{message_id,..} if *message_id==message.id)
+            )
     );
     settings(
         server,
@@ -1284,4 +1282,64 @@ async fn round2_snapshot_and_delivery_queries_are_batched() {
         small_delivery
     );
     server.require_no_statement_eviction(evictions).await;
+}
+
+#[tokio::test]
+async fn old_clients_read_and_change_settings_after_a_new_device_sets_privacy() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct OldSettings {
+        level: Option<NotificationLevel>,
+        mute: bool,
+        muted_until: Option<String>,
+        role_mentions: Option<bool>,
+        everyone_mentions: Option<bool>,
+        do_not_disturb: bool,
+        daily_quiet: Option<DailyQuiet>,
+    }
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let path = format!("/api/v1/notification-settings/{}", uuid::Uuid::nil());
+    let response = TestServer::reply(
+        reqwest::Client::new()
+            .put(format!("{}{path}", server.base))
+            .bearer_auth(&owner.token)
+            .header("Junto-Notification-Preferences", "1")
+            .json(&json!({"hide_text":true,"hold_while_presenting":false})),
+    )
+    .await;
+    response.ok::<NotificationSettings>(StatusCode::OK);
+    let old = server.get(&owner, &path).await.ok::<Value>(StatusCode::OK);
+    serde_json::from_value::<OldSettings>(old).expect("old client reads preferences");
+    let snapshot = server
+        .get(&owner, "/api/v1/snapshot")
+        .await
+        .ok::<Value>(StatusCode::OK);
+    for scope in snapshot["notification_settings"].as_array().unwrap() {
+        serde_json::from_value::<OldSettings>(scope["settings"].clone())
+            .expect("old client reads snapshot");
+    }
+    let old = server
+        .put(&owner, &path, &json!({"level":"all"}))
+        .await
+        .ok::<Value>(StatusCode::OK);
+    serde_json::from_value::<OldSettings>(old).expect("old client reads mutation response");
+    let current = TestServer::reply(
+        reqwest::Client::new()
+            .get(format!("{}{path}", server.base))
+            .bearer_auth(&owner.token)
+            .header("Junto-Notification-Preferences", "1"),
+    )
+    .await
+    .ok::<NotificationSettings>(StatusCode::OK);
+    assert!(current.hide_text);
+    assert_eq!(current.hold_while_presenting, Some(false));
+    assert_eq!(current.level, Some(NotificationLevel::All));
+    server
+        .put(&owner, &path, &json!({"unknown_preference":true}))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    let future = serde_json::from_value::<NotificationSettings>(json!({"future_preference":true}));
+    assert!(future.is_ok(), "response settings allow future fields");
 }

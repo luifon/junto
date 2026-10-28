@@ -52,6 +52,12 @@ zeroize = "1"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs", "process", "stdio", "termios"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The keys of a call in every application (ADR 0776): the keyboard of an X11 session, and
+# the global shortcuts portal of a Wayland desktop. The client uses the same versions.
+x11rb = "0.13"
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+
 [target.'cfg(windows)'.dependencies]
 # The key of the identity of the application for the notifications (ADR 0742). gpui uses the
 # same crate for the same key.
@@ -71,6 +77,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
+    # The notification setting of the application (ADR 0708).
+    "UI_Notifications",
+    # The setup program: the instances of Junto that run (ADR 0728).
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -79,17 +89,23 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The status item of the menu bar (ADR 0759), in the versions that gpui and the client use.
+# The status item of the menu bar (ADR 0759) and the badge of the Dock (ADR 0741), in the
+# versions that gpui and the client use.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSApplication",
+    "NSBitmapImageRep",
     "NSButton",
     "NSControl",
+    "NSDockTile",
     "NSImage",
+    "NSImageRep",
     "NSMenu",
     "NSMenuItem",
     "NSResponder",
@@ -101,11 +117,21 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
+    "NSError",
     "NSData",
     "NSGeometry",
     "NSObject",
     "NSString",
     "objc2-core-foundation",
+] }
+# The notification permission of the application (ADR 0708), in the versions that gpui uses.
+block2 = "0.6"
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "UNNotificationSettings",
+    "UNUserNotificationCenter",
 ] }
 
 [dev-dependencies]

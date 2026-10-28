@@ -15,7 +15,8 @@ use crate::theme::{self, Theme};
 
 actions!(junto, [Quit]);
 
-/// The size of a new main window and its smallest size, in pixels at 100 %.
+/// The size of a new main window and its smallest size, in pixels at 100 %. The smallest size
+/// follows the interface scale at the start (ADR 0731).
 const WINDOW_SIZE: (f32, f32) = (1440.0, 900.0);
 const WINDOW_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
@@ -88,9 +89,9 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
     // shows them: a test and the screen tool keep what they would show (ADR 0742).
     let held = state.downgrade();
     let data_dir = state.read(cx).client().data_dir().root().to_path_buf();
-    let notifier = crate::notify::platform(cx, &data_dir, move |tag, cx| {
+    let notifier = crate::notify::platform(cx, &data_dir, move |tag, token, cx| {
         if let Some(state) = held.upgrade() {
-            crate::notify::bring_to_front(cx);
+            crate::notify::bring_to_front(token, cx);
             state.update(cx, |state, cx| state.alert_pressed(tag, cx));
         }
     });
@@ -106,6 +107,12 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
         state.set_notifier(notifier);
         state.set_uses_system_applications(true);
         state.set_tray(tray, cx);
+        // The permissions of the system, and the question of macOS for the notifications
+        // at the first start (ADR 0708).
+        state.use_system_permissions(cx);
+        state.ask_for_notifications_once(cx);
+        // The keys of a call while another application is in front (ADR 0776).
+        state.install_global_keys(cx);
     });
     state
 }
@@ -166,7 +173,7 @@ pub fn open_main_window(
             show: true,
             app_id: Some(APP_ID.to_owned()),
             icon: crate::window_icon::icon(),
-            window_min_size: Some(size(px(WINDOW_MIN_SIZE.0), px(WINDOW_MIN_SIZE.1))),
+            window_min_size: Some(theme::scaled_size(WINDOW_MIN_SIZE, scale)),
             ..WindowOptions::default()
         },
         move |window, cx| {

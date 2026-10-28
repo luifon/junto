@@ -12,7 +12,7 @@ ADR 0204 decides a setup tool that exports the structure of a server to a file, 
 
 Structure document:
 
-- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, its categories with their role overrides, and its channels that are not deleted with their sync state and their own role overrides. A channel that is synced with its category states no overrides, because it uses those of the category (ADR 0304). It names no account and no member, so it holds no rule of a person.
+- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, its categories with their role overrides, and its channels that are not deleted with their sync state and their own role overrides, and its glossary: its terms in their order of priority (ADR 0603). A channel that is synced with its category states no overrides, because it uses those of the category (ADR 0304). It names no account and no member, so it holds no rule of a person.
 - The route needs the administrator permission, because the document holds every channel and every override. The document is read from one snapshot, with a number of statements that does not depend on the size of the structure.
 
 Revision:
@@ -23,7 +23,7 @@ Revision:
 Changes route:
 
 - `POST /api/v1/structure/changes` takes a revision and a list of at most 200 changes, and applies them in their order in one transaction.
-- A change is one of: create, update or delete a server role; create, rename or delete a workspace; create, update or delete a workspace role; create, update or delete a category; create, update or delete a channel; update the call settings of a voice channel; set a channel override; set a category override; set the sync state of a channel.
+- A change is one of: create, update or delete a server role; create, rename or delete a workspace; create, update or delete a workspace role; create, update or delete a category; create, update or delete a channel; update the call settings of a voice channel; set a channel override; set a category override; set the sync state of a channel; replace the glossary of a workspace.
 - An override of a category runs the function of the category rule route, with the grant ceiling in the category and in each of its synced channels (ADR 0306). The sync state `true` runs the function of the sync route. The sync state `false` copies the rules of the category to the channel, which then uses them as its own; it changes no permission, so it has no grant ceiling, and it writes the audit entry and the event `channel_rules_synced` of a detach. A channel already in the requested state is not changed.
 - Each change runs the function of its single route: the same permission checks with the grant rule (ADR 0304), the same limits (ADR 0301), the same ceilings (ADR 0306), the same audit entries and the same events. The single routes and this route share that function.
 - The route needs the administrator permission, because the revision is the revision of the whole structure, which only an administrator reads.
@@ -32,6 +32,11 @@ Changes route:
 - An error that is not about one change keeps its own form: `busy`, `timeout` and `internal` (ADR 0205).
 - The answer carries the revision after the changes and, for each created object, the identifier of its entry and the identifier of the object.
 - A new workspace gets the account of the request as its first member, as on the single route. The change names the identifier of the "everyone" role of the new workspace, so that later changes and files can name that role.
+
+Glossary:
+
+- The change `replace_glossary` names a workspace and the whole list of its terms, most important first. It runs the function of the glossary route `PUT /api/v1/workspaces/{workspace_id}/glossary`: the same checks of the terms and the same limit of their number (ADR 0603), the permission "manage glossary" in the workspace, the audit entry `glossary_replaced` and the event `glossary_replaced`. The list replaces the whole glossary; an empty list removes every term.
+- The change has no `replaces` field (ADR 0616). The revision of the request does that check for the whole structure: the document holds every glossary, so a replacement of a glossary on its route after the plan makes the plan stale.
 
 Entry identifiers:
 
@@ -46,7 +51,8 @@ Entry identifiers:
 - The server does not refuse a request because another change committed during it, when that change does not depend on what the request changed. The result equals the one of the other change arriving after the answer. The revision in the answer is the revision after the request alone.
 - A change that is taken back gives the earlier revision again. A plan that was computed before both changes is then current again.
 - The revision of a server changes when a new version of the server adds a field to the document. A plan from before the upgrade is then refused and computed again.
-- Computing the revision reads the whole structure: once for an export, twice for a request with changes.
+- Computing the revision reads the whole structure: once for an export, twice for a request with changes. The glossaries of all workspaces are read with one statement.
+- A replacement of a glossary in the window or with `junto-cli` changes the revision, as a change of a channel does.
 - The ceiling of 200 changes keeps a request far below the time limit of a request (ADR 0008). Measured on a development machine with a debug build, a change costs about 10 ms, and a request of 500 changes passed the limit of 30 seconds while the whole test suite ran beside it under CPU load. A larger file is applied in parts.
 - A file that is applied to a second server creates objects with the identifiers of that server. The file and the export of the second server name them by the identifiers of the file, so the same file plans no change afterwards.
 - An object that a file created has two identifiers: the one of its entry, in files and in the structure document, and its own, in every other route, in events and in the audit log. The answer of the changes route states both.

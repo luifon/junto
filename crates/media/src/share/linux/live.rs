@@ -90,6 +90,7 @@ async fn the_real_portal_captures_the_virtual_output_and_drop_stops_delivery() {
                     resolution: Resolution::P720,
                     frame_rate: 30,
                 },
+                dialog_parent: None,
             },
             pictures.clone(),
         )

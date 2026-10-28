@@ -1,6 +1,8 @@
 //! The call rules of the server as the calls of a client follow them: a move between voice
 //! channels (ADR 0511) and meeting mode (ADR 0505, ADR 0512).
 
+use std::collections::BTreeMap;
+
 use junto_client_core::protocol::call::{BlockReason, CallPlace};
 use junto_media::calls::{Outcome, Phase, Unused};
 use junto_media::engine::ShareState;
@@ -88,11 +90,12 @@ async fn a_person_whom_the_presenter_allows_to_speak_opens_the_own_microphone() 
             picture: PictureSource::Display(1),
             sound: SoundChoice::None,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         });
         ann.until("the share runs", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| matches!(call.share, ShareState::Running(_)))
+                .is_some_and(|call| matches!(call.own_shares.get(&0), Some(ShareState::Running(_))))
         })
         .await;
         model_when(&ann_at, "the server shows the share", |model| {
@@ -200,7 +203,7 @@ async fn a_person_whom_the_presenter_allows_to_speak_opens_the_own_microphone() 
         ann.until_heard_afresh(&ben).await;
 
         // The end of the share ends meeting mode (ADR 0512).
-        ann.calls.stop_share();
+        ann.calls.stop_share(None);
         model_when(&ben_at, "meeting mode has ended", |model| {
             model
                 .call_at(&place)
@@ -260,6 +263,7 @@ async fn a_share_asked_for_in_one_call_does_not_start_in_the_next() {
             picture: PictureSource::Display(1),
             sound: SoundChoice::System,
             quality: ShareQuality::default(),
+            dialog_parent: None,
         };
 
         // Ann moves Ben. The share that Ben chose in the first call is confirmed after it.
@@ -281,18 +285,18 @@ async fn a_share_asked_for_in_one_call_does_not_start_in_the_next() {
                     || view
                         .call
                         .as_ref()
-                        .is_some_and(|call| call.share != ShareState::Off)
+                        .is_some_and(|call| !call.own_shares.is_empty())
             })
             .await;
         assert_eq!(
-            view.call.unwrap().share,
-            ShareState::Off,
+            view.call.unwrap().own_shares,
+            BTreeMap::new(),
             "the share of the first call started in the call of the destination"
         );
         assert_eq!(view.unused, Some(Unused::Share));
         ben.calls.dismiss_unused();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        assert_eq!(ben.calls.view().call.unwrap().share, ShareState::Off);
+        assert!(ben.calls.view().call.unwrap().own_shares.is_empty());
         assert!(ben.capture.started().is_empty());
         assert!(ann.calls.view().call.unwrap().shares.is_empty());
 
@@ -303,7 +307,7 @@ async fn a_share_asked_for_in_one_call_does_not_start_in_the_next() {
         ben.until("the share runs", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| matches!(call.share, ShareState::Running(_)))
+                .is_some_and(|call| matches!(call.own_shares.get(&0), Some(ShareState::Running(_))))
         })
         .await;
         ann.until("Ann sees the share", |view| {

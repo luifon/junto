@@ -8,10 +8,10 @@ use junto_authz::{ChannelScope, Participation, Request, WorkspacePermission};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallJoinQuery, CallMove, CallPlace, ChannelCall,
-    DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery,
-    LeaveReason, MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState,
-    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, ShareAudio,
-    UpdateCallSettings,
+    DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
+    LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
+    MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
+    ReportSpeaking, ReportWatching, ShareAudio, UpdateCallSettings, ViewerQuery,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
@@ -19,6 +19,7 @@ use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, En
 use junto_protocol::structure::{Channel, ChannelKind};
 use sqlx::{AssertSqlSafe, PgConnection};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::access::{Access, ChannelRecord};
 use crate::audit::{self, About};
@@ -300,8 +301,9 @@ pub async fn report_call_state(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Reports that the person shares a screen, and which sound the share sends. The server
-/// shows the share for as long as the media server lists a screen track of the person.
+/// Reports that the person shares a screen or a window in one slot, and which sound the
+/// share sends. A person runs up to `MAX_SHARES` shares. The server shows a share for as
+/// long as the media server lists its picture track (ADR 0510).
 #[utoipa::path(
     put,
     path = "/api/v1/call/screen-share",
@@ -317,10 +319,15 @@ pub async fn report_screen_share(
 ) -> ApiResult<StatusCode> {
     let now = app.now();
     proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    if body.slot >= MAX_SHARES {
+        return Err(ApiError::invalid(format!(
+            "a person runs at most {MAX_SHARES} shares: the slot is below {MAX_SHARES}"
+        )));
+    }
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (call, member) = own(connection, &access).await?;
+        let (call, _) = own(connection, &access).await?;
         let mut sources = vec![TrackSource::ScreenShare];
         if body.audio != ShareAudio::None {
             sources.push(TrackSource::ScreenShareAudio);
@@ -331,21 +338,55 @@ pub async fn report_screen_share(
                 "sharing the screen needs the permission to share the screen in the channel",
             ));
         }
-        if member.share_audio.as_deref() != Some(body.audio.stored()) {
+        let held: Option<(String, Option<String>, Option<Uuid>)> = sqlx::query_as(
+            "select audio, kind, share_id from call_shares
+             where call_id = $1 and account_id = $2 and slot = $3
+             for update",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(i16::from(body.slot))
+        .fetch_optional(&mut *connection)
+        .await?;
+        let audio = body.audio.stored();
+        let kind = body.kind.map(StoredText::stored);
+        // A share with another identifier than the one of the slot is a new share: it
+        // starts now (ADR 0510).
+        let new = match &held {
+            None => true,
+            Some((_, _, held_id)) => body.share_id.is_some() && body.share_id != *held_id,
+        };
+        let same = held.as_ref().is_some_and(|(held_audio, held_kind, _)| {
+            !new && held_audio == audio && held_kind.as_deref() == kind
+        });
+        if !same {
             sqlx::query(
-                "update call_members
-                 set share_audio = $3, share_started_at = coalesce(share_started_at, $4)
-                 where call_id = $1 and account_id = $2",
+                "insert into call_shares
+                     (call_id, account_id, slot, share_id, kind, audio, started_at)
+                 values ($1, $2, $3, $4, $5, $6, $7)
+                 on conflict (call_id, account_id, slot)
+                 do update set audio = excluded.audio, kind = excluded.kind,
+                     share_id = coalesce(excluded.share_id, call_shares.share_id),
+                     started_at = case when $8 then excluded.started_at
+                                       else call_shares.started_at end,
+                     seen_at = case when $8 then null else call_shares.seen_at end,
+                     missing_since = case when $8 then null
+                                          else call_shares.missing_since end",
             )
             .bind(call.id)
             .bind(access.account_id)
-            .bind(body.audio.stored())
+            .bind(i16::from(body.slot))
+            .bind(body.share_id)
+            .bind(kind)
+            .bind(audio)
             .bind(now)
+            .bind(new)
             .execute(&mut *connection)
             .await?;
-            if member.share_audio.is_none() {
+            if new {
                 let started = store::Note::ScreenShareStarted;
                 store::note(connection, now, &call, started, Some(access.account_id)).await?;
+                store::end_watches(connection, now, &call, access.account_id, body.slot).await?;
             }
             store::announce_participant(connection, now, &call, access.account_id).await?;
             app.calls.mark(call.room.as_str());
@@ -355,44 +396,96 @@ pub async fn report_screen_share(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Reports that the person no longer shares a screen. Meeting mode that the person runs ends.
+/// Reports that a share of the person ended, or every share without a slot. Meeting mode
+/// that the person runs ends with the last share of the person.
 #[utoipa::path(
     delete,
     path = "/api/v1/call/screen-share",
     tag = "calls",
+    params(EndScreenShareQuery),
     security(("session" = [])),
     responses((status = 204), ApiError)
 )]
 pub async fn end_screen_share(
     State(app): State<AppState>,
     bearer: Bearer,
+    ApiQuery(query): ApiQuery<EndScreenShareQuery>,
 ) -> ApiResult<StatusCode> {
     let now = app.now();
     proof::limit(&app.calls.state_reports, bearer.0, now)?;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (call, member) = own(connection, &access).await?;
-        if member.share_audio.is_some() {
+        let (call, _) = own(connection, &access).await?;
+        let ended = sqlx::query(
+            "delete from call_shares
+             where call_id = $1 and account_id = $2 and ($3::smallint is null or slot = $3)",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(query.slot.map(i16::from))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if ended > 0 {
             app.calls.mark(call.room.as_str());
-            sqlx::query(
-                "update call_members
-                 set share_audio = null, share_started_at = null, share_seen_at = null,
-                     share_missing_since = null
-                 where call_id = $1 and account_id = $2",
-            )
-            .bind(call.id)
-            .bind(access.account_id)
-            .execute(&mut *connection)
-            .await?;
-            store::announce_participant(connection, now, &call, access.account_id).await?;
-            let presents = call
-                .meeting
-                .as_ref()
-                .is_some_and(|meeting| meeting.presenter == access.account_id);
-            if presents {
-                store::end_meeting(connection, now, &call, MeetingEnd::ShareStopped).await?;
+            for _ in 0..ended {
+                let ended = store::Note::ScreenShareEnded;
+                store::note(connection, now, &call, ended, Some(access.account_id)).await?;
             }
+            store::announce_participant(connection, now, &call, access.account_id).await?;
+            store::end_meeting_without_share(connection, now, &call, access.account_id).await?;
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reports which share of another person in the call the person watches now, or none. The
+/// sharer and the people who see the call read it on the participant (ADR 0502). A share of a
+/// person who is not in the call, and the own share, are refused.
+#[utoipa::path(
+    put,
+    path = "/api/v1/call/watching",
+    tag = "calls",
+    request_body = ReportWatching,
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn report_watching(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<ReportWatching>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let (call, _) = own(connection, &access).await?;
+        if let Some(watched) = body.watching {
+            let sharer_inside = watched.account_id != access.account_id
+                && store::is_inside(connection, call.id, watched.account_id).await?;
+            if !sharer_inside || watched.slot >= MAX_SHARES {
+                return Err(ApiError::invalid(
+                    "the watched share belongs to another person in the call",
+                ));
+            }
+        }
+        let changed = sqlx::query(
+            "update call_members set watching_account_id = $3, watching_slot = $4
+             where call_id = $1 and account_id = $2
+               and (watching_account_id is distinct from $3 or watching_slot <> $4)",
+        )
+        .bind(call.id)
+        .bind(access.account_id)
+        .bind(body.watching.map(|watched| watched.account_id))
+        .bind(body.watching.map_or(0, |watched| i16::from(watched.slot)))
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+        if changed > 0 {
+            store::announce_participant(connection, now, &call, access.account_id).await?;
         }
         Ok(())
     })?;
@@ -626,7 +719,7 @@ pub(crate) async fn update_call_settings_in(
     post,
     path = "/api/v1/channels/{channel_id}/call/join",
     tag = "calls",
-    params(("channel_id" = ChannelId, Path), CallJoinQuery),
+    params(("channel_id" = ChannelId, Path), CallJoinQuery, ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -635,6 +728,7 @@ pub async fn join_channel_call(
     bearer: Bearer,
     ApiPath(channel_id): ApiPath<ChannelId>,
     ApiQuery(query): ApiQuery<CallJoinQuery>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -653,7 +747,7 @@ pub async fn join_channel_call(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(account_id, entered.key);
-    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
         .await
         .map(Json)
 }
@@ -675,6 +769,7 @@ async fn join_answer(
     media: &dyn crate::media::MediaServer,
     now: OffsetDateTime,
     shows_requests: bool,
+    viewer: &ViewerQuery,
 ) -> ApiResult<CallJoin> {
     let read: ApiResult<Option<(entry::Entered, Cursor)>> = async {
         read!(app, |connection| {
@@ -716,11 +811,11 @@ async fn join_answer(
     }
     .await;
     match read {
-        Ok(Some((answer, cursor))) => answer.join(app, media, now, Some(cursor)),
-        Ok(None) => entered.join(app, media, now, None),
+        Ok(Some((answer, cursor))) => answer.join(app, media, now, Some(cursor), viewer),
+        Ok(None) => entered.join(app, media, now, None, viewer),
         Err(error) if not_completed(&error) => {
             tracing::debug!(code = ?error.code(), "the answer of a join was not read again");
-            entered.join(app, media, now, None)
+            entered.join(app, media, now, None, viewer)
         }
         Err(error) => Err(error),
     }
@@ -800,6 +895,12 @@ async fn set_lock(
             .bind(lock.as_ref().map(|lock| lock.at))
             .execute(&mut *connection)
             .await?;
+        let noted = if locked {
+            store::Note::CallLocked
+        } else {
+            store::Note::CallUnlocked
+        };
+        store::note(connection, now, &call, noted, Some(access.account_id)).await?;
         let changed = Event::CallLockChanged {
             call_id: call.id,
             place: call.place,
@@ -1020,12 +1121,14 @@ pub async fn answer_entry_request(
             .bind(admits_until)
             .execute(&mut *connection)
             .await?;
+            store::entry_line(connection, now, &call, true, access.account_id, account_id).await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Accepted, by).await
         } else {
             sqlx::query("delete from call_entry_requests where id = $1")
                 .bind(request_id)
                 .execute(&mut *connection)
                 .await?;
+            store::entry_line(connection, now, &call, false, access.account_id, account_id).await?;
             store::tell_entry(connection, now, &request, EntryOutcome::Denied, by).await
         }
     })?;
@@ -1223,7 +1326,7 @@ async fn own_invitation(
     post,
     path = "/api/v1/call/invitations/{invitation_id}/acceptance",
     tag = "calls",
-    params(("invitation_id" = CallInvitationId, Path)),
+    params(("invitation_id" = CallInvitationId, Path), ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1231,6 +1334,7 @@ pub async fn accept_call_invitation(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(invitation_id): ApiPath<CallInvitationId>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -1254,7 +1358,7 @@ pub async fn accept_call_invitation(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(account_id, entered.key);
-    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
         .await
         .map(Json)
 }
@@ -1478,7 +1582,7 @@ async fn own_move(
     post,
     path = "/api/v1/call/moves/{move_id}/join",
     tag = "calls",
-    params(("move_id" = CallMoveId, Path)),
+    params(("move_id" = CallMoveId, Path), ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1486,6 +1590,7 @@ pub async fn join_move(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(move_id): ApiPath<CallMoveId>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -1503,7 +1608,7 @@ pub async fn join_move(
         entry::Entered::read(connection, now, to, account_id, pending.identity, false).await
     })?;
     let media = app.calls.admitting()?.clone();
-    join_answer(&app, &bearer, entered, media.as_ref(), now, false)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, false, &viewer)
         .await
         .map(Json)
 }
@@ -1560,7 +1665,7 @@ pub async fn start_meeting(
             scope: &voice.scope,
             permission: WorkspacePermission::RunMeetingMode,
         })?;
-        let (call, member) = inside(connection, &access, &voice).await?;
+        let (call, _) = inside(connection, &access, &voice).await?;
         match &call.meeting {
             Some(meeting) if meeting.presenter == access.account_id => return Ok(()),
             Some(_) => {
@@ -1570,7 +1675,8 @@ pub async fn start_meeting(
             }
             None => {}
         }
-        if member.share_seen_at.is_none() || member.share_missing_since.is_some() {
+        let shares = store::share_rows(connection, call.id, Some(access.account_id)).await?;
+        if !shares.iter().any(store::ShareRow::listed) {
             return Err(ApiError::conflict(
                 "meeting mode is turned on by a person whose screen share the media server \
                  lists",
@@ -1624,7 +1730,8 @@ pub async fn end_meeting(
             None => Ok(()),
             Some(meeting) if meeting.presenter == access.account_id => {
                 app.calls.mark(call.room.as_str());
-                store::end_meeting(connection, now, &call, MeetingEnd::TurnedOff).await
+                let by = Some(access.account_id);
+                store::end_meeting(connection, now, &call, MeetingEnd::TurnedOff, by).await
             }
             Some(_) => Err(ApiError::new(
                 junto_protocol::error::ErrorCode::Forbidden,
@@ -1954,6 +2061,15 @@ pub async fn disconnect_participant(
         let disconnected = LeaveReason::Disconnected;
         app.calls.mark(call.room.as_str());
         store::remove_member(connection, now, &call, &member, disconnected).await?;
+        // A later entry of the person into this call is a join (ADR 0408).
+        store::note(
+            connection,
+            now,
+            &call,
+            store::Note::PersonOut,
+            Some(account_id),
+        )
+        .await?;
         let removed = AuditEvent::CallMemberDisconnected { account_id };
         let actor = Some(access.account_id);
         audit::record(connection, now, actor, voice.about(), &removed).await?;
@@ -1989,7 +2105,7 @@ async fn direct_place(
     post,
     path = "/api/v1/direct-calls/{account_id}/join",
     tag = "calls",
-    params(("account_id" = AccountId, Path), CallJoinQuery),
+    params(("account_id" = AccountId, Path), CallJoinQuery, ViewerQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1998,6 +2114,7 @@ pub async fn join_direct_call(
     bearer: Bearer,
     ApiPath(account_id): ApiPath<AccountId>,
     ApiQuery(query): ApiQuery<CallJoinQuery>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -2015,7 +2132,7 @@ pub async fn join_direct_call(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(caller, entered.key);
-    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
         .await
         .map(Json)
 }

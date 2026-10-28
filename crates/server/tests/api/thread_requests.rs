@@ -130,7 +130,7 @@ async fn reply_authors_are_read_by_an_index() {
     )
     .bind(root.id)
     .bind(server.clock.now())
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     analyze(&server.db, &["thread_reply_authors"]).await;
@@ -324,24 +324,23 @@ async fn the_list_of_followed_threads_is_read_by_an_index() {
     let other = server.channel(&owner, workspace.id, "other").await;
     for place in [&channel, &other] {
         let root = send(&server, &owner, place, "root").await;
-        for (first, last) in crate::support::fixture_batches(20_000) {
-            sqlx::query(
-                "with roots as (
-                 insert into messages (id, place_id, position, author_id, created_at, document)
-                 select gen_random_uuid(), place_id, position + n, author_id, created_at, document
-                 from messages cross join generate_series($3::int, $4::int) n where id = $1
-                 returning id)
-             insert into thread_reads (root_id, account_id, following, rule_following)
-             select id, $2, true, true from roots",
-            )
-            .bind(root.id)
-            .bind(owner.account_id)
-            .bind(first)
-            .bind(last)
-            .execute(&server.db)
-            .await
-            .unwrap();
-        }
+        let (first, last) = (1, 20_000);
+        sqlx::query(
+            "with roots as (
+             insert into messages (id, place_id, position, author_id, created_at, document)
+             select gen_random_uuid(), place_id, position + n, author_id, created_at, document
+             from messages cross join generate_series($3::int, $4::int) n where id = $1
+             returning id)
+         insert into thread_reads (root_id, account_id, following, rule_following)
+         select id, $2, true, true from roots",
+        )
+        .bind(root.id)
+        .bind(owner.account_id)
+        .bind(first)
+        .bind(last)
+        .execute(&mut server.test_data().await)
+        .await
+        .unwrap();
     }
     sqlx::query("update thread_reads set latest = 1, latest_id = root_id where account_id = $1")
         .bind(owner.account_id)
