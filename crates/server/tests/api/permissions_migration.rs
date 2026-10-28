@@ -154,7 +154,7 @@ async fn permission_migration_keeps_access_and_custom_channel_rules() {
 async fn person_rules_copied_by_the_migration_stay_when_the_membership_ends() {
     let database = crate::support::empty_database().await;
     let mut connection = database.options.connect().await.unwrap();
-    crate::migration_identifiers::migrations_up_to(39)
+    crate::migration_identifiers::migrations_up_to(42)
         .run(&mut connection)
         .await
         .unwrap();

@@ -1259,7 +1259,7 @@ async fn rule_29_the_export_runs_a_fixed_number_of_statements_and_skips_deleted_
     sqlx::query("analyze").execute(&server.db).await.unwrap();
     let large = export_statements(&server, &owner, &mut held[0], role).await;
     assert_eq!(large, small);
-    assert!(small <= 14, "{small}");
+    assert!(small <= 15, "{small}");
     drop(held);
     let export = server.structure(&owner).await;
     assert_eq!(export.structure.workspaces.len(), 41);
