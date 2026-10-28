@@ -771,6 +771,8 @@ fn refusal_keeps_the_row_under_the_pointer(
     trigger: &'static str,
     under: &'static str,
 ) {
+    // A change of height waits for the pointer only in an active window (ADR 0730).
+    window.cx.update(|window, _| window.activate_window());
     let before = reveal_pair(window, trigger, under);
     let control = window
         .cx
