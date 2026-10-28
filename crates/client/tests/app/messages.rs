@@ -175,6 +175,27 @@ fn the_position_of_a_list_is_told_again_after_a_read_of_the_latest_messages(
     window.until("the end is followed", |window| {
         core_anchor(window, server_id, place) == Some(None)
     });
+    // The list of the window tells the client core its own position after each of its
+    // layouts. The latest page arrives, and the window draws it and tells the end, before
+    // the test sets the position again: a layout after it would replace the position.
+    window.until("the latest page is read", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .server(server_id)
+                .and_then(|server| server.live().view().model)
+                .and_then(|model| {
+                    model.timeline(place).map(|timeline| {
+                        timeline.loaded
+                            && !timeline.more_after
+                            && !timeline.reading.open
+                            && !timeline.reading.older
+                            && !timeline.reading.newer
+                    })
+                })
+                .unwrap_or(false)
+        })
+    });
+    window.settle();
     // The list stands at the same message again, and the client core is told so again.
     window.state.update(&mut window.cx, |state, _| {
         state.set_anchor(server_id, place, Some(anchor));
