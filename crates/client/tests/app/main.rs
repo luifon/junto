@@ -34,7 +34,6 @@ mod call_notices;
 mod calls;
 mod channel_calls;
 mod channel_history;
-mod channel_updates;
 mod channel_use;
 mod composing;
 mod contacts;
@@ -46,6 +45,7 @@ mod flows;
 mod glossary;
 mod gpui_panics;
 mod keybinds;
+mod rule_changes;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]
