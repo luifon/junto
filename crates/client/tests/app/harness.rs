@@ -593,12 +593,23 @@ impl Window {
             .expect("the window was drawn")
     }
 
+    /// Lets `duration` of real time pass, and the clock of the test with it. The clock of
+    /// the test moves only while the scheduler parks, and the waits of the tests run its
+    /// ready tasks without parking: without this, a timer of the window would not end while
+    /// a test waits for a state behind it.
+    pub fn pass(&mut self, duration: Duration) {
+        let started = Instant::now();
+        std::thread::sleep(duration);
+        self.cx.executor().advance_clock(started.elapsed());
+    }
+
     /// Waits until `holds`, and draws the window while it waits, as a running application
     /// does.
     #[track_caller]
     pub fn until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
         crate::limit::step(what);
         let deadline = Instant::now() + PATIENCE;
+        let clock_start = self.cx.executor().now();
         loop {
             self.settle();
             if holds(self) {
@@ -606,11 +617,13 @@ impl Window {
             }
             assert!(
                 Instant::now() < deadline,
-                "after {PATIENCE:?} this did not hold: {what}; the calls of the window: {:?}",
+                "after {PATIENCE:?} this did not hold: {what}; the clock of the test moved \
+                 {:?} meanwhile; the calls of the window: {:?}",
+                self.cx.executor().now().duration_since(clock_start),
                 self.state
                     .read_with(&self.cx, |state, _| state.calls().view())
             );
-            std::thread::sleep(Duration::from_millis(20));
+            self.pass(Duration::from_millis(20));
         }
     }
 
@@ -635,7 +648,7 @@ impl Window {
                 Instant::now() < deadline,
                 "after {PATIENCE:?} this did not hold: {what}; the last value: {value:?}"
             );
-            std::thread::sleep(Duration::from_millis(20));
+            self.pass(Duration::from_millis(20));
         }
     }
 
