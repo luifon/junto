@@ -27,7 +27,8 @@ mode, view audit entries and admit to full call (bits 0–16).
 
 Bits 17–30 are, in order: send messages, send messages in threads, create threads, read message
 history, attach files, add reactions, mention roles, connect, speak, video, share screen, use
-voice activity, set call user limit and set voice channel status. Camera and screen publication
+voice activity, set call user limit and set voice channel status. No route checks set voice
+channel status yet; the permission is stored, shown and evaluated. Camera and screen publication
 have separate permissions; screen sound requires both speak and share screen, because the server cannot tell screen sound from a voice (ADR 0510).
 
 Everyone and workspace roles grant workspace permissions. A workspace person override applies
@@ -54,9 +55,8 @@ that permission, a single message read requires creation after the start of the 
 live stream connection and current channel visibility. The server records the connection start;
 replay grants no older message. Reconnect establishes a new start while the client retains
 messages already held. Search, pins, exports, file lists and thread history never use this
-exception. The time bound requires no stored list of message grants. Forwarding
-requires history in the source and sending in the destination. Channel references respect
-visibility; both @everyone and @channel require mention everyone. Invite links use create invites.
+exception. The time bound requires no stored list of message grants. Channel references respect
+visibility; @everyone requires mention everyone. Invite links use create invites.
 The voice user limit has its own permission; other channel settings retain manage channel.
 
 Connecting requires view channel and connect. Microphone, camera and screen publication each
@@ -68,8 +68,8 @@ application commands, scheduled events, polls and slow mode have no permissions 
 application does not implement these features. Existing message management covers pins and
 thread management. Meeting mode retains Junto's hand and presenter rules.
 
-Limits run before the administrator pass: direct conversations belong only to their participants,
-including group conversations; nobody edits permanent messages or another author's message;
+Limits run before the administrator pass: direct conversations belong only to their participants;
+nobody edits permanent messages or another author's message;
 recovery, owner transfer and permanent-content deletion belong to the owner; owner protection,
 self-moderation restrictions and access-token restrictions remain. Administrator then passes other
 permission checks, including private channels. Role order still restricts administration actions.
