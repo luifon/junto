@@ -262,8 +262,12 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
         .state
         .read_with(&window.cx, |state, _| state.panic_notice().cloned())
         .expect("the state holds the notice");
-    assert_eq!(notice.count, 1 + paused.len());
-    assert_eq!(panics::panics_on_this_thread(), before + 1 + paused.len());
+    // The notice counts every panic that the hook recorded, also those of single updates.
+    assert_eq!(notice.count, 1 + paused.len() + once);
+    assert_eq!(
+        panics::panics_on_this_thread(),
+        before + 1 + paused.len() + once
+    );
 }
 
 /// The calls change outside a press of the window: the observer of the state in the shell
