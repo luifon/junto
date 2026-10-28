@@ -1224,13 +1224,25 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
     window.settle();
     assert_eq!(bars(&mut window), vec![last]);
 
+    // The list moves under the resting pointer: the bar goes to the row that is under the
+    // pointer after the move (ADR 0740), and no other row keeps one.
     window.dispatch(ScrollWheelEvent {
         position: row.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(300.0))),
         ..Default::default()
     });
     window.settle();
-    assert_eq!(bars(&mut window), Vec::<MessageId>::new());
+    let under: Vec<MessageId> = sent
+        .iter()
+        .filter(|id| {
+            window
+                .cx
+                .debug_bounds(crate::harness::selector(format!("message:{id}")))
+                .is_some_and(|bounds| bounds.contains(&row.center()))
+        })
+        .copied()
+        .collect();
+    assert_eq!(bars(&mut window), under);
 }
 
 impl Window {

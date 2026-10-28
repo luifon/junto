@@ -870,15 +870,9 @@ impl Shell {
     pub(crate) fn feed_scrolled(&mut self, pane: Pane, cx: &mut Context<Self>) {
         #[cfg(feature = "test-support")]
         crate::panics::test_support::reached(crate::panics::test_support::Handler::FeedScroll);
-        // The rows moved under a pointer that did not move; gpui tells a row that the
-        // pointer is over it at the next move of the pointer.
-        if self
-            .hovered_message
-            .is_some_and(|(hovered, _)| hovered == pane)
-        {
-            self.hovered_message = None;
-            cx.notify();
-        }
+        // The rows moved under a pointer that did not move: gpui tests the hover of each row
+        // again at its next paint and tells the rows whose hover changed, so the bar stays
+        // with the row under the pointer.
         // A scroll at the first or the last row moves no row, and the layout after it shows
         // the same rows: the window acts on that layout so that a failed page is read again.
         let list = self.list_mut(pane);

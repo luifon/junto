@@ -497,3 +497,56 @@ fn a_page_whose_read_failed_is_read_again_at_a_turn_of_the_wheel_at_the_first_ro
     });
     assert!(older_reads(&proxy) >= 2);
 }
+
+/// A turn of the wheel that moves the list by less than a row keeps the bar of actions on
+/// the row under the pointer: gpui tests the row under a resting pointer at each paint, so
+/// the window keeps the row that the pointer is over (ADR 0740).
+#[gpui::test]
+fn the_bar_of_actions_stays_on_the_row_under_a_resting_pointer_when_the_list_moves(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::feed::FeedRow;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let general = window.selected_channel();
+    for index in 0..60 {
+        admin.send(&world, general, document(&format!("Message {index}")));
+    }
+    window.until_message("Message 59");
+    let list = window
+        .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+        .expect("the list was drawn");
+    let pointer = list.center();
+    window.simulate(|cx| cx.simulate_mouse_move(pointer, None::<MouseButton>, Modifiers::none()));
+    window.settle();
+    let under = |window: &mut Window| {
+        let ids: Vec<_> = window
+            .feed()
+            .unwrap()
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                FeedRow::Message(row) => Some(row.message.id),
+                _ => None,
+            })
+            .collect();
+        ids.into_iter().find(|id| {
+            let name = crate::harness::selector(format!("message:{id}"));
+            window
+                .cx
+                .debug_bounds(name)
+                .is_some_and(|bounds| bounds.contains(&pointer))
+        })
+    };
+    let hovered = under(&mut window).expect("a message under the pointer");
+    let bar = crate::harness::selector(format!("react:{hovered}"));
+    assert!(window.shows(bar), "the bar of the row under the pointer");
+    window.wheel_over(Pane::Main, 4.0);
+    assert_eq!(under(&mut window), Some(hovered));
+    assert!(
+        window.shows(bar),
+        "the list moved by 4 pixels under the pointer and the bar of its row is gone"
+    );
+}
