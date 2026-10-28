@@ -269,7 +269,7 @@
       },
       "StructureFile": {
         "additionalProperties": false,
-        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and the role overrides of categories and channels.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no account,\nno rule of a person, no message and no secret.",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels, the role overrides of categories and channels, and glossaries.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no account,\nno rule of a person, no message and no secret.",
         "properties": {
           "delete": {
             "$ref": "#/components/schemas/Deletions",
@@ -322,6 +322,16 @@
           "default": {
             "description": "True for the default workspace. An entry with this mark whose identifier the server\ndoes not know stands for the default workspace of the server.",
             "type": "boolean"
+          },
+          "glossary": {
+            "description": "The terms of the glossary, most important first (ADR 0603). The list replaces the\nwhole glossary; an empty list removes every term. Absent: a new workspace has no\nterm, an existing workspace keeps its glossary.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "id": {
             "$ref": "#/components/schemas/StructureId"

@@ -343,7 +343,7 @@
         "tags": [
           "account"
         ],
-        "summary": "Stores the avatar of the caller's account. The body is the image itself: a still PNG,\nJPEG or WebP image of at most 262144 bytes and at most 1024 by 1024 pixels. The server\nreads the format from the bytes, not from `Content-Type`.",
+        "summary": "Stores the avatar of the caller's account. The body is the image itself: a still PNG,\nJPEG or WebP image of at most 2097152 bytes (`JUNTO_PICTURE_BYTES`) and at most 1024 by\n1024 pixels. The server reads the format from the bytes, not from `Content-Type`.",
         "operationId": "set_avatar",
         "requestBody": {
           "content": {
@@ -2630,6 +2630,17 @@
             "schema": {
               "$ref": "#/components/schemas/CallInvitationId"
             }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -2775,6 +2786,17 @@
             "schema": {
               "$ref": "#/components/schemas/CallMoveId"
             }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -2818,7 +2840,7 @@
         "tags": [
           "calls"
         ],
-        "summary": "Reports that the person shares a screen, and which sound the share sends. The server\nshows the share for as long as the media server lists a screen track of the person.",
+        "summary": "Reports that the person shares a screen or a window in one slot, and which sound the\nshare sends. A person runs up to `MAX_SHARES` shares. The server shows a share for as\nlong as the media server lists its picture track (ADR 0510).",
         "operationId": "report_screen_share",
         "requestBody": {
           "content": {
@@ -2862,8 +2884,21 @@
         "tags": [
           "calls"
         ],
-        "summary": "Reports that the person no longer shares a screen. Meeting mode that the person runs ends.",
+        "summary": "Reports that a share of the person ended, or every share without a slot. Meeting mode\nthat the person runs ends with the last share of the person.",
         "operationId": "end_screen_share",
+        "parameters": [
+          {
+            "name": "slot",
+            "in": "query",
+            "description": "The share that ends. Absent: every share of the person ends, as a client from before\nseveral shares ends its one share.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
         "responses": {
           "204": {
             "headers": {
@@ -2951,6 +2986,52 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ReportCallState"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/call/watching": {
+      "put": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Reports which share of another person in the call the person watches now, or none. The\nsharer and the people who see the call read it on the participant (ADR 0502). A share of a\nperson who is not in the call, and the own share, are refused.",
+        "operationId": "report_watching",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportWatching"
               }
             }
           },
@@ -3388,6 +3469,17 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
             }
           }
         ],
@@ -5634,6 +5726,17 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -7676,6 +7779,18 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7727,13 +7842,25 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 replaces the text privacy and presentation preferences; otherwise they are preserved",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NotificationSettings"
+                "$ref": "#/components/schemas/NotificationSettingsRequest"
               }
             }
           },
@@ -9204,6 +9331,20 @@
         ],
         "summary": "The state that a client starts from, with the cursor from which the event stream\ncontinues it.",
         "operationId": "get_snapshot",
+        "parameters": [
+          {
+            "name": "Junto-Notification-Preferences",
+            "in": "header",
+            "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -9245,7 +9386,7 @@
         "tags": [
           "structure"
         ],
-        "summary": "The workspaces, roles, categories, channels and overrides of the server, with the\nrevision of that structure. The caller needs the administrator permission.",
+        "summary": "The workspaces, roles, categories, channels, overrides and glossaries of the server,\nwith the revision of that structure. The caller needs the administrator permission.",
         "operationId": "get_structure",
         "responses": {
           "200": {
@@ -12464,6 +12605,15 @@
             "format": "int64",
             "minimum": 0
           },
+          "frames": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The frames of an animated picture (GIF, animated WebP or animated PNG), at least 2.\nAbsent for a still picture and for every other file.",
+            "minimum": 0
+          },
           "height": {
             "type": [
               "integer",
@@ -14886,6 +15036,15 @@
               }
             ]
           },
+          "shares": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many shares one person can run at once in this call (ADR 0502). A server from\nbefore several shares sends none: one share, which its end of a share without a\nslot ends.",
+            "minimum": 0
+          },
           "sound_block": {
             "oneOf": [
               {
@@ -15017,17 +15176,36 @@
           "screen_share": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ScreenShare"
+                "$ref": "#/components/schemas/ScreenShare",
+                "description": "The share of the lowest slot. A client from before several shares reads only this."
               },
               {
                 "type": "null"
               }
             ]
           },
+          "screen_shares": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScreenShare"
+            },
+            "description": "Every share of the person, in the order of their slots. A server from before several\nshares sends none; [`CallParticipant::shares`] then reads `screen_share`."
+          },
           "sound_block": {
             "oneOf": [
               {
                 "$ref": "#/components/schemas/SoundBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "watching": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchedShare",
+                "description": "The share of another person in the call that the person watches now, as the client\nof the person reports it (ADR 0502). Absent: none."
               },
               {
                 "type": "null"
@@ -17473,6 +17651,17 @@
               "null"
             ]
           },
+          "hide_text": {
+            "type": "boolean",
+            "description": "Account scope: the system notifications of messages name who wrote and where,\nwithout the text (ADR 0742)."
+          },
+          "hold_while_presenting": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Account scope: system notifications and the sounds of messages wait while the person\nshares a screen or presents in meeting mode. Absent: they wait (ADR 0742)."
+          },
           "level": {
             "oneOf": [
               {
@@ -17499,8 +17688,15 @@
               "null"
             ]
           }
-        },
-        "additionalProperties": false
+        }
+      },
+      "NotificationSettingsRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/NotificationSettings"
+          }
+        ],
+        "description": "Strict request fields, separate from extensible settings returned by the server."
       },
       "NotificationsRead": {
         "type": "object",
@@ -18349,6 +18545,30 @@
         "properties": {
           "audio": {
             "$ref": "#/components/schemas/ShareAudio"
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "share_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The share that the device started in the slot: a new identifier for each start. A\nreport with another identifier than the share that the slot holds is a new share,\nwhich starts at the report; a report with the same identifier changes the sound and\nthe kind of the share and keeps its start. Absent from a client from before it: a\nreport changes the share of the slot."
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The share that the report is about, below `MAX_SHARES`. Absent: slot 0, as a client\nfrom before several shares reports its one share.",
+            "minimum": 0
           }
         }
       },
@@ -18362,6 +18582,23 @@
             "type": "boolean"
           }
         }
+      },
+      "ReportWatching": {
+        "type": "object",
+        "description": "The share that the person of the device watches now, or none (ADR 0502).",
+        "properties": {
+          "watching": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchedShare"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "RequestDeviceLink": {
         "type": "object",
@@ -18527,6 +18764,23 @@
         "properties": {
           "audio": {
             "$ref": "#/components/schemas/ShareAudio"
+          },
+          "kind": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareKind",
+                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number that the sharing device gave the share, below `MAX_SHARES`. A device that\nruns one share uses slot 0; a server or a client from before several shares states\nno slot, which is slot 0.",
+            "minimum": 0
           },
           "started_at": {
             "type": "string",
@@ -19097,6 +19351,14 @@
           "application",
           "system",
           "none"
+        ]
+      },
+      "ShareKind": {
+        "type": "string",
+        "description": "What a screen share shows.",
+        "enum": [
+          "screen",
+          "window"
         ]
       },
       "Signature": {
@@ -19869,6 +20131,32 @@
           },
           {
             "type": "object",
+            "description": "Replaces the whole glossary of a workspace with `terms`, most important first. The\nchange has the checks, the limits, the audit entry and the event of the glossary\nroute (ADR 0603).",
+            "required": [
+              "workspace",
+              "terms",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "replace_glossary"
+                ]
+              },
+              "terms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "id",
               "change"
@@ -19980,7 +20268,7 @@
       },
       "StructureFile": {
         "type": "object",
-        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and the role overrides of categories and channels.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no account,\nno rule of a person, no message and no secret.",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels, the role overrides of categories and channels, and glossaries.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no account,\nno rule of a person, no message and no secret.",
         "required": [
           "format"
         ],
@@ -20066,8 +20354,22 @@
               "null"
             ],
             "format": "int64",
-            "description": "Present for the line `direct_call_ended`: the seconds from the moment at which both\naccounts were in the room of the call to the moment from which one of them was\nalone until its end (ADR 0518).",
+            "description": "Present for the line `direct_call_ended`: the seconds from the moment at which both\naccounts were in the room of the call to the moment from which one of them was\nalone until its end (ADR 0518); and for the line `call_ended` of a voice channel:\nthe seconds from the first person in the room to the end of the call.",
             "minimum": 0
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present for the line `channel_renamed`: the new name of the channel."
+          },
+          "previous_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present for the line `channel_renamed`: the name before."
           },
           "recording_id": {
             "oneOf": [
@@ -20675,6 +20977,23 @@
           }
         }
       },
+      "WatchedShare": {
+        "type": "object",
+        "description": "The share that a person watches: the person who shares it, and the slot of the share\namong the shares of that person (ADR 0502). A client that runs one share per person\nstates slot 0.",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "slot": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "WithdrawJoinRequest": {
         "type": "object",
         "description": "Withdraws the waiting join request of the device key that signs the proof.",
@@ -20729,6 +21048,16 @@
           "default": {
             "type": "boolean",
             "description": "True for the default workspace. An entry with this mark whose identifier the server\ndoes not know stands for the default workspace of the server."
+          },
+          "glossary": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The terms of the glossary, most important first (ADR 0603). The list replaces the\nwhole glossary; an empty list removes every term. Absent: a new workspace has no\nterm, an existing workspace keeps its glossary."
           },
           "id": {
             "$ref": "#/components/schemas/StructureId"
