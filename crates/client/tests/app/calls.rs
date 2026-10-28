@@ -1233,7 +1233,9 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
     show_camera(11);
     assert_eq!(held(&mut window).1, Some(11));
 
-    // Without one, a picture of a camera is taken, and the cameras rest for 200 ms.
+    // Without one, a picture of a camera is taken, and the cameras rest for 200 ms. The test
+    // moves the clock itself to measure the rest.
+    window.hold_clock();
     window.in_shell(|shell, window, cx| shell.set_software_video(true, window, cx));
     // The follower starts again and can take the picture that the window holds: a rest that
     // this begins ends first.

@@ -911,6 +911,7 @@ fn a_gif_and_a_screenshot_are_drawn_in_the_list_and_open_in_the_viewer(cx: &mut 
 
 /// Moves the clock of the application and gives the windows the frames that it asks for.
 fn wait_for(window: &mut Window, milliseconds: u64) {
+    window.hold_clock();
     window
         .cx
         .executor()

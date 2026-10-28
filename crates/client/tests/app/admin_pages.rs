@@ -701,6 +701,8 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     let server = world.server("Acme Studio");
     let (_directory, mut window, owner) = owner_window(cx, &server);
     let code = invite(&world, &owner, Vec::new());
+    // The test moves the clock itself to measure the bounds of the window.
+    window.hold_clock();
     let (_device, member) = joined(&world, &server, &code, "Bruno");
     let (ada, bruno) = (logged_in(&owner), logged_in(&member));
     let on_server = |account_id: AccountId| {

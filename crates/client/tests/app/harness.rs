@@ -179,6 +179,8 @@ pub struct Window {
     /// How long the application held the thread of the windows in one piece, in each of
     /// the calls of the harness that run its work.
     pub held: Held,
+    /// The test moves the clock of the test itself: the waits do not move it.
+    clock_held: bool,
     holding: usize,
     /// The lock check of ADR 0730 knows the application of the window while the window
     /// exists.
@@ -379,6 +381,7 @@ fn open_client(
         tones,
         capture,
         held: Held::default(),
+        clock_held: false,
         holding: 0,
     };
     window.cx.run_until_parked();
@@ -600,7 +603,15 @@ impl Window {
     pub fn pass(&mut self, duration: Duration) {
         let started = Instant::now();
         std::thread::sleep(duration);
-        self.cx.executor().advance_clock(started.elapsed());
+        if !self.clock_held {
+            self.cx.executor().advance_clock(started.elapsed());
+        }
+    }
+
+    /// The test moves the clock of the test itself from here on, to measure a time of the
+    /// window exactly: the waits let real time pass and leave the clock where it is.
+    pub fn hold_clock(&mut self) {
+        self.clock_held = true;
     }
 
     /// Waits until `holds`, and draws the window while it waits, as a running application
@@ -924,6 +935,7 @@ impl Window {
             camera: self.camera.clone(),
             permission: self.permission.clone(),
             held: Held::default(),
+            clock_held: false,
             holding: 0,
         };
         window.settle();

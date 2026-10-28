@@ -145,6 +145,8 @@ fn notice_under_a_resting_pointer(
     } else {
         window.simulate(|cx| cx.deactivate_window());
     }
+    // The test moves the clock itself to measure the bounds of the window.
+    window.hold_clock();
     window.move_pointer(viewport.center());
     world
         .run(api.remove_workspace_member(other.id, own, &Statement::default()))
