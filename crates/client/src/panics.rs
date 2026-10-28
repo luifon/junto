@@ -431,6 +431,11 @@ pub mod test_support {
         /// The tasks of the state that paused after a panic in their update, in order.
         static PAUSED: std::cell::RefCell<Vec<&'static str>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        /// How deep this thread is in updates of tasks that follow a source.
+        static FOLLOWING: Cell<usize> = const { Cell::new(0) };
+        /// The panics of the armed handler outside such an update: in an update that runs
+        /// once and ends with the panic.
+        static ONCE: Cell<usize> = const { Cell::new(0) };
         static PRESS_ENDS: Cell<usize> = const { Cell::new(0) };
         static NOTICE_PAINTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     }
@@ -454,6 +459,7 @@ pub mod test_support {
     /// the tasks that paused starts empty.
     pub fn panic_in_every(handler: Handler) {
         PAUSED.with_borrow_mut(Vec::clear);
+        ONCE.with(|once| once.set(0));
         NEXT.with(|next| next.set(Some((handler, true))));
     }
 
@@ -466,6 +472,25 @@ pub mod test_support {
 
     pub(crate) fn task_paused(task: &'static str) {
         PAUSED.with_borrow_mut(|paused| paused.push(task));
+    }
+
+    /// The panics of the armed handler since [`panic_in_every`] in updates that run once,
+    /// such as the answer of a read: such a task ends with its panic and does not pause.
+    pub fn panics_in_single_updates() -> usize {
+        ONCE.with(Cell::get)
+    }
+
+    /// Runs `update`, an update of a task that follows a source.
+    pub(crate) fn following<R>(update: impl FnOnce() -> R) -> R {
+        struct Left;
+        impl Drop for Left {
+            fn drop(&mut self) {
+                FOLLOWING.with(|depth| depth.set(depth.get().saturating_sub(1)));
+            }
+        }
+        FOLLOWING.with(|depth| depth.set(depth.get() + 1));
+        let _left = Left;
+        update()
     }
 
     pub fn stop_panicking() {
@@ -486,6 +511,9 @@ pub mod test_support {
         {
             if !every {
                 NEXT.with(|next| next.set(None));
+            }
+            if FOLLOWING.with(Cell::get) == 0 {
+                ONCE.with(|once| once.set(once.get() + 1));
             }
             panic!("{MESSAGE}");
         }

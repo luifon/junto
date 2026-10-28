@@ -720,7 +720,13 @@ fn update_once<R>(
     cx: &mut gpui::AsyncApp,
     update: impl FnOnce(&mut AppState, &mut Context<AppState>) -> R,
 ) -> Updated<R> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.update(cx, update))) {
+    let run = || {
+        #[cfg(feature = "test-support")]
+        return crate::panics::test_support::following(|| this.update(cx, update));
+        #[cfg(not(feature = "test-support"))]
+        this.update(cx, update)
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(Ok(value)) => Updated::Done(value),
         Ok(Err(_)) => Updated::Gone,
         Err(_) => {

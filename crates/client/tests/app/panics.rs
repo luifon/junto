@@ -206,7 +206,8 @@ fn a_render_that_panics_at_every_call_does_not_draw_at_every_frame(cx: &mut Test
 /// report. The task waits after such a panic: the work of the window comes to rest, with the
 /// panic of the test and one of the task of the reports. Another task of the state that takes
 /// a change of its source in the meantime, such as an event of the server that arrives late on
-/// a slow machine, panics once in the same way and waits too; no task panics twice. When the
+/// a slow machine, panics once in the same way and waits too; an update that runs once, such
+/// as the answer of a read, panics once and ends; no task panics twice. When the
 /// observer works again, the task of the reports takes the waiting reports and the window
 /// states every panic.
 #[gpui::test]
@@ -226,7 +227,10 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
     });
     window.park();
     let paused = panics::test_support::paused_tasks();
-    window.expect_panics(1 + paused.len());
+    // An update that runs once, such as the answer of a read that arrives during the park on
+    // a slow machine, panics once and ends; it does not pause.
+    let once = panics::test_support::panics_in_single_updates();
+    window.expect_panics(1 + paused.len() + once);
     assert_eq!(
         paused.iter().filter(|task| **task == "reports").count(),
         1,
@@ -242,8 +246,8 @@ fn a_state_observer_that_panics_at_each_change_lets_the_window_rest(cx: &mut Tes
     );
     assert_eq!(
         panics::panics_on_this_thread(),
-        before + 1 + paused.len(),
-        "the tasks that paused: {paused:?}"
+        before + 1 + paused.len() + once,
+        "the tasks that paused: {paused:?}, the single updates that panicked: {once}"
     );
 
     panics::test_support::stop_panicking();
