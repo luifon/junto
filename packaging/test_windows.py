@@ -1,8 +1,10 @@
 """The Windows ZIP, assembled from stand-in programs on any system."""
 import json
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -111,11 +113,18 @@ class WindowsPackageTests(unittest.TestCase):
             for program in [client, recover, installer]:
                 program.write_bytes(b"MZ " + program.name.encode())
             (root / "junto.pdb").write_bytes(b"symbols")
-            # A stand-in release tool that records its arguments and writes the output.
-            tool = root / "junto-release"
-            tool.write_text("#!/usr/bin/env python3\nimport pathlib, sys\n"
-                            "pathlib.Path(sys.argv[4]).write_text(' '.join(sys.argv[1:4]))\n")
-            tool.chmod(0o755)
+            # A stand-in release tool that records its arguments and writes the output. Windows
+            # runs a command file, not a script with a #! line.
+            script = root / "junto-release.py"
+            script.write_text("import pathlib, sys\n"
+                              "pathlib.Path(sys.argv[4]).write_text(' '.join(sys.argv[1:4]))\n")
+            if os.name == "nt":
+                tool = root / "junto-release.cmd"
+                tool.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+            else:
+                tool = root / "junto-release"
+                tool.write_text(f"#!{sys.executable}\n" + script.read_text())
+                tool.chmod(0o755)
             output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000,
                                       build=fixtures.build_directory(root / "build", TRIPLE), installer=installer,
                                       release_tool=tool)

@@ -7,6 +7,7 @@ import unittest
 import dmg
 
 
+@unittest.skipIf(os.name == "nt", "the link to /Applications needs a privilege on Windows; the image is made on macOS")
 class DiskImageTests(unittest.TestCase):
     def bundle(self, root):
         bundle = root / "Junto.app"

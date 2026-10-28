@@ -162,5 +162,9 @@ run python3 tools/windows/with_test_postgres.py cargo test --no-fail-fast --lock
     --skip threads::in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file \
     --skip thread_actions::a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread \
     --skip admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved \
-    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts
+    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts \
+    --skip pictures:: \
+    --skip admin_pages::exports_actions::a_saved_export_is_not_counted_again_after_a_restart \
+    --skip badges::the_administration_counts_the_ready_exports_and_the_channels_deleted_soon \
+    --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed
 finish

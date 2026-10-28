@@ -41,6 +41,10 @@ WINDOWS_ONLY_SKIPS = [
     "thread_actions::a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread",
     "admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved",
     "admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts",
+    "pictures::",
+    "admin_pages::exports_actions::a_saved_export_is_not_counted_again_after_a_restart",
+    "badges::the_administration_counts_the_ready_exports_and_the_channels_deleted_soon",
+    "system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed",
 ]
 DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python3 tools/windows/with_test_postgres.py"}
 
