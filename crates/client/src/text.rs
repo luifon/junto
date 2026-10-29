@@ -3789,3 +3789,14 @@ pub const FORWARD_THREAD_LINK: &str = "Use thread link";
 pub const VIEW_ORIGINAL: &str = "View original";
 
 pub const MARK_UNREAD: &str = "Mark unread";
+
+pub const WHO_REACTED: &str = "Who reacted";
+pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
+pub const REACTION_PEOPLE_UNAVAILABLE: &str =
+    "These reactions are unavailable, or you do not have access to this message.";
+pub const REACTION_PEOPLE_EMPTY: &str = "Nobody has this reaction now.";
+pub const REACTION_PEOPLE_MORE: &str = "More people reacted. Open Who reacted for the full list.";
+pub const DELETED_REACTOR: &str = "Deleted account";
+pub const UNAVAILABLE_REACTOR: &str = "This account is no longer available.";
+pub const REACTION_PREVIOUS: &str = "Previous people";
+pub const REACTION_NEXT: &str = "Next people";

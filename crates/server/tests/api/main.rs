@@ -53,6 +53,7 @@ mod permissions_migration;
 mod person_standing;
 mod processing;
 mod profiles;
+mod reaction_people;
 mod recordings;
 mod recordings_control;
 mod recordings_support;

@@ -354,3 +354,19 @@ pub struct UnreadThreads {
     /// Opaque continuation for the next unread-thread page.
     pub next: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReactionPerson {
+    pub id: AccountId,
+    pub name: Option<String>,
+    pub departed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReactionPeople {
+    pub people: Vec<ReactionPerson>,
+    pub next_after: Option<AccountId>,
+    pub previous_before: Option<AccountId>,
+}

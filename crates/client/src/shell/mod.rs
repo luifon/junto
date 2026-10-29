@@ -26,6 +26,7 @@ pub mod linking;
 mod main_area;
 mod message_links;
 mod moving;
+mod reaction_people;
 /// The least time between two drawings that the animations of a window ask for.
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
@@ -98,6 +99,7 @@ pub(crate) enum Layer {
     MessageMenu(feed::MessageMenuOpen),
     ComposerMenu(feed::ComposerMenuOpen),
     Forward(Box<forwarding::ForwardDialog>),
+    ReactionPeople(Box<reaction_people::People>),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
     /// The emoji picker: for a reaction to a message, or for the text of a composer.
@@ -1808,6 +1810,10 @@ impl Shell {
             Layer::Forward(dialog) => {
                 self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
             }
+            Layer::ReactionPeople(dialog) => !self
+                .state
+                .read(cx)
+                .reaction_people_owner_matches(&dialog.key),
             Layer::ComposerMenu(open) => !self.composer_menu_current(*open, view, cx),
             Layer::Join(join) => join.is_stale(view),
             // The list of devices belongs to the sound settings of the call.
@@ -1937,6 +1943,7 @@ impl Shell {
             }
             Layer::Notify => self.render_notify_dialog(view, cx),
             Layer::Forward(_) => self.render_forward_dialog(window, cx),
+            Layer::ReactionPeople(_) => self.render_reaction_people(window, cx),
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),

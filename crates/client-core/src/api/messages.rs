@@ -4,7 +4,8 @@
 use junto_protocol::ids::{AccountId, AttachmentId, MessageId};
 use junto_protocol::message::{
     AttachmentLimits, ContactPage, Conversation, Document, EditMessage, MarkRead, Message,
-    MessagePage, MessageState, OpenConversation, SendMessage, SetReaction, StartUpload, Upload,
+    MessagePage, MessageState, OpenConversation, ReactionPeople, SendMessage, SetReaction,
+    StartUpload, Upload,
 };
 
 use super::client::read_json;
@@ -193,6 +194,54 @@ impl ServerApi {
     ) -> Result<(), ApiError> {
         let path = format!("/messages/{message_id}/reaction/{}", emoji_segment(emoji));
         self.act(Method::Delete, path).await
+    }
+
+    pub async fn reaction_people(
+        &self,
+        id: MessageId,
+        emoji: &str,
+        after: Option<AccountId>,
+        before: Option<AccountId>,
+        limit: u32,
+    ) -> Result<ReactionPeople, ApiError> {
+        let mut query = vec![("emoji", emoji.to_owned()), ("limit", limit.to_string())];
+        if let Some(after) = after {
+            query.push(("after", after.to_string()));
+        }
+        if let Some(before) = before {
+            query.push(("before", before.to_string()));
+        }
+        let response = self
+            .call(
+                Method::Get,
+                format!("/messages/{id}/reactions"),
+                query,
+                None,
+            )
+            .await?;
+        let page: ReactionPeople = read_json(&response)?;
+        if page.people.len() > limit.min(200) as usize
+            || page
+                .people
+                .iter()
+                .any(|person| person.name.as_ref().is_some_and(|name| name.len() > 1024))
+            || page.people.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || page.people.iter().any(|person| {
+                after.is_some_and(|id| person.id <= id) || before.is_some_and(|id| person.id >= id)
+            })
+            || page
+                .next_after
+                .is_some_and(|id| page.people.last().is_none_or(|person| person.id != id))
+            || page
+                .previous_before
+                .is_some_and(|id| page.people.first().is_none_or(|person| person.id != id))
+        {
+            return Err(ApiError::InvalidResponse {
+                status: 200,
+                reason: "invalid reaction people page",
+            });
+        }
+        Ok(page)
     }
 
     // Read positions.

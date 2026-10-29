@@ -1873,77 +1873,114 @@ impl Shell {
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
         let drawings = Drawings::of(cx);
-        let chips = message.reactions.iter().enumerate().map(|(index, held)| {
-            let Reaction { emoji, count, own } = held.clone();
-            let shown = SharedString::from(drawings.shown(&emoji).into_owned());
-            let stand_in = shown.as_ref() != emoji.as_str();
-            let label: SharedString = text::reaction_label(&shown, count, own).into();
-            let sent = emoji.clone();
-            let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-            let acts = can_react && (own || may_add);
-            let reason = (can_react && !acts)
-                .then(|| text::not_permitted(WorkspacePermission::AddReactions));
-            div()
-                .id(("reaction", index))
-                .role(if can_react { Role::Button } else { Role::Note })
-                .aria_label(label.clone())
-                .debug_selector(move || format!("reaction:{message_id}:{index}"))
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(5.0))
-                .h(u(23.0))
-                .px(u(7.0))
-                .rounded(u(theme.metrics.radius))
-                .border_1()
-                .border_color(Hsla::from(if own {
-                    colors.terracotta_wash_rule
-                } else {
-                    colors.rule
-                }))
-                .bg(Hsla::from(if own {
-                    colors.terracotta_wash
-                } else {
-                    colors.travertine_hi
-                }))
-                .text_size(u(13.0))
-                .line_height(u(17.0))
-                .tooltip(tooltip(match reason {
-                    Some(reason) => SharedString::from(format!("{label} {reason}")),
-                    None => label.clone(),
-                }))
-                .when_some(reason, |chip, reason| {
-                    chip.aria_description(reason).cursor_not_allowed()
-                })
-                .when(acts, |chip| {
-                    chip.cursor_pointer()
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(move |style| style.shadow(ring))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let emoji = sent.clone();
-                            this.state.update(cx, |state, cx| {
-                                state.react(server_id, message_id, emoji, !own, cx);
-                            });
-                        }))
-                })
-                .child(
-                    div()
-                        .when(stand_in, |sign| sign.ink(colors.ink_3))
-                        .child(crate::ui::paint_text(shown, None)),
-                )
-                .child(
-                    div()
-                        .text_size(u(12.5))
-                        .font_weight(FontWeight::BOLD)
-                        .ink(if own {
-                            colors.terracotta_deep
-                        } else {
-                            colors.ink_2
-                        })
-                        .child(SharedString::from(count.to_string())),
-                )
+        let first_key = message.reactions.first().and_then(|reaction| {
+            self.reactor_key(
+                server_id,
+                PlaceId::of_message(message),
+                message_id,
+                reaction.emoji.clone(),
+                cx,
+            )
         });
+        let emojis: Vec<String> = message
+            .reactions
+            .iter()
+            .map(|reaction| reaction.emoji.clone())
+            .collect();
+        let chips: Vec<_> = message
+            .reactions
+            .iter()
+            .enumerate()
+            .map(|(index, held)| {
+                let Reaction { emoji, count, own } = held.clone();
+                let shown = SharedString::from(drawings.shown(&emoji).into_owned());
+                let stand_in = shown.as_ref() != emoji.as_str();
+                let label: SharedString = text::reaction_label(&shown, count, own).into();
+                let sent = emoji.clone();
+                let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+                let acts = can_react && (own || may_add);
+                let reason = (can_react && !acts)
+                    .then(|| text::not_permitted(WorkspacePermission::AddReactions));
+                div()
+                    .id(("reaction", index))
+                    .role(if can_react { Role::Button } else { Role::Note })
+                    .aria_label(label.clone())
+                    .debug_selector(move || format!("reaction:{message_id}:{index}"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(5.0))
+                    .h(u(23.0))
+                    .px(u(7.0))
+                    .rounded(u(theme.metrics.radius))
+                    .border_1()
+                    .border_color(Hsla::from(if own {
+                        colors.terracotta_wash_rule
+                    } else {
+                        colors.rule
+                    }))
+                    .bg(Hsla::from(if own {
+                        colors.terracotta_wash
+                    } else {
+                        colors.travertine_hi
+                    }))
+                    .text_size(u(13.0))
+                    .line_height(u(17.0))
+                    .tooltip({
+                        let caption = match reason {
+                            Some(reason) => SharedString::from(format!("{label} {reason}")),
+                            None => label.clone(),
+                        };
+                        let key = self.reactor_key(
+                            server_id,
+                            PlaceId::of_message(message),
+                            message_id,
+                            emoji.clone(),
+                            cx,
+                        );
+                        let state = self.state.clone();
+                        move |window, cx| match &key {
+                            Some(key) => super::reaction_people::tooltip(
+                                state.clone(),
+                                key.clone(),
+                                caption.clone(),
+                            )(window, cx),
+                            None => tooltip(caption.clone())(window, cx),
+                        }
+                    })
+                    .when_some(reason, |chip, reason| {
+                        chip.aria_description(reason).cursor_not_allowed()
+                    })
+                    .when(acts, |chip| {
+                        chip.cursor_pointer()
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(move |style| style.shadow(ring))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let emoji = sent.clone();
+                                this.state.update(cx, |state, cx| {
+                                    state.react(server_id, message_id, emoji, !own, cx);
+                                });
+                            }))
+                    })
+                    .child(
+                        div()
+                            .when(stand_in, |sign| sign.ink(colors.ink_3))
+                            .child(crate::ui::paint_text(shown, None)),
+                    )
+                    .child(
+                        div()
+                            .text_size(u(12.5))
+                            .font_weight(FontWeight::BOLD)
+                            .ink(if own {
+                                colors.terracotta_deep
+                            } else {
+                                colors.ink_2
+                            })
+                            .child(SharedString::from(count.to_string())),
+                    )
+            })
+            .collect();
         Some(
             div()
                 .flex()
@@ -1971,6 +2008,29 @@ impl Shell {
                             .cursor_not_allowed()
                             .tooltip(tooltip(refused))
                             .child(icon(Icon::SmilePlus, 14.0, colors.ink_3)),
+                    )
+                })
+                .when_some(first_key, |row, key| {
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("reaction-people:{message_id}"))
+                            .child(
+                                Button::new("reaction-people")
+                                    .kind(ButtonKind::Ghost)
+                                    .h(u(23.0))
+                                    .px(u(5.0))
+                                    .icon(Icon::People)
+                                    .tooltip(text::WHO_REACTED)
+                                    .accessible_label(text::WHO_REACTED)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_reaction_people(
+                                            key.clone(),
+                                            emojis.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            ),
                     )
                 })
                 .when(may_add, |row| {
@@ -3461,6 +3521,31 @@ impl Shell {
                         this.state.update(cx, |state, cx| {
                             state.mark_message_unread(server_id, message_id, place, cx)
                         });
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if let Some(reaction) = row.message.reactions.first()
+            && let Some(key) = self.reactor_key(
+                server_id,
+                PlaceId::of_message(&row.message),
+                message_id,
+                reaction.emoji.clone(),
+                cx,
+            )
+        {
+            let emojis = row
+                .message
+                .reactions
+                .iter()
+                .map(|reaction| reaction.emoji.clone())
+                .collect::<Vec<_>>();
+            items.push(
+                MenuItem::new("message-reaction-people", text::WHO_REACTED)
+                    .selector("message-reaction-people")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
                     }))
                     .into_any_element(),
             );

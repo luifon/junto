@@ -468,6 +468,42 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         .scale(150),
         |shell, _, cx| prepare(shell, none(), cx),
     )?;
+    for (name, scale, width, height) in [
+        ("messages-reaction-people", 100, 1180.0, 800.0),
+        ("messages-reaction-people-150", 150, 720.0, 600.0),
+    ] {
+        let made = general();
+        let message = made
+            .messages
+            .first()
+            .map(|message| message.id)
+            .unwrap_or_else(MessageId::generate);
+        studio.draw(
+            Screen::new(name, with_timeline(made.timeline()))
+                .scale(scale)
+                .size(width, height),
+            move |shell, window, cx| {
+                prepare(shell, none(), cx);
+                let people = ["Luca", "Ana", "Bruno", "Carla", "Marta"]
+                    .into_iter()
+                    .map(
+                        |name| junto_client_core::protocol::message::ReactionPerson {
+                            id: person(name),
+                            name: Some(name.to_owned()),
+                            departed: false,
+                        },
+                    )
+                    .collect();
+                shell.show_reaction_people_fixture(
+                    (server_id, general_place, message),
+                    "👍".to_owned(),
+                    people,
+                    window,
+                    cx,
+                );
+            },
+        )?;
+    }
     // The viewer of the pictures of a message (ADR 0740): the one picture of a message, and
     // the second of the three pictures of a message at the scale of 150 in a smaller window.
     let viewed = general();

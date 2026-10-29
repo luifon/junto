@@ -413,6 +413,7 @@ impl AppState {
             self.open_places.retain(|key, _| key.0 != server_id);
             self.anchors.retain(|key, _| key.0 != server_id);
             self.unread_pauses.retain(|key| key.0 != server_id);
+            self.reaction_people_forget(server_id);
             if self
                 .open_pins
                 .as_ref()

@@ -329,3 +329,13 @@ Read cost and future copies:
   policy are later work.
 - Attachment backups include the configured directory and database metadata together.
 - Files are inaccessible immediately after deletion and removed from disk by maintenance.
+
+Reaction rosters:
+
+- The reaction-people route checks current message access, including the live history
+  boundary, and reads one standard emoji. A page has at most 200 accounts, sorted by
+  account ID, with exclusive forward and backward cursors. An index begins with the
+  message and emoji, then account ID, so a rare reaction needs no scan of other emoji.
+- A deleted account has no displayed name; an unavailable account remains identified as
+  unavailable. Reading a roster requires access to the message, independently of the
+  permission to add a reaction.

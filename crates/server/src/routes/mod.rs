@@ -139,6 +139,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(threads::history, threads::reply));
     add(&mut router, || routes!(threads::fork));
     add(&mut router, || routes!(messages::mark_unread));
+    add(&mut router, || routes!(messages::reaction_people));
     add(&mut router, || {
         routes!(threads::read_state, threads::mark_read)
     });

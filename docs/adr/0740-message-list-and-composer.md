@@ -126,3 +126,11 @@ Message context menus include Mark unread. It uses the server's explicit backwar
 boundary, including for thread replies. Both windows pause automatic reading of an
 open place after its unread event; the header's Mark as read control or reopening the
 place resumes reading. Thread headers provide the same explicit read control.
+
+Reaction chips show live reactor names on hover. Who reacted beside the chips and in
+the existing message menu opens the full roster, with an emoji selector and pages of
+50 people, previous/next controls, retry and an empty state. Chip presses keep their
+reaction-toggle action. Both windows share at most eight roster pages, pinned to the
+saved entry/account; late responses are discarded after eviction or replacement. Message,
+profile and access changes clear their old names before rereading; owner changes discard
+them. A roster and tooltip recheck current place access before drawing names.

@@ -821,3 +821,64 @@ pub async fn mark_unread(
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ReactionPeopleQuery {
+    pub emoji: String,
+    pub after: Option<AccountId>,
+    pub before: Option<AccountId>,
+    pub limit: Option<u32>,
+}
+
+#[utoipa::path(get,path="/api/v1/messages/{message_id}/reactions",tag="messages",params(("message_id"=MessageId,Path),ReactionPeopleQuery),security(("session"=[])),responses((status=200,body=ReactionPeople),ApiError))]
+pub async fn reaction_people(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<MessageId>,
+    ApiQuery(query): ApiQuery<ReactionPeopleQuery>,
+) -> ApiResult<Json<ReactionPeople>> {
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) || query.after.is_some() && query.before.is_some() {
+        return Err(ApiError::invalid(
+            "use limit 1 to 200 and at most one reaction cursor",
+        ));
+    }
+    let emoji = emojis::get(&query.emoji)
+        .filter(|_| query.emoji.len() <= 64)
+        .ok_or_else(|| ApiError::invalid("a reaction is one standard emoji"))?
+        .as_str();
+    let backwards = query.before.is_some();
+    let (compare, order) = if backwards {
+        ("<", "desc")
+    } else {
+        (">", "asc")
+    };
+    let cursor = query
+        .before
+        .or(query.after)
+        .unwrap_or_else(|| AccountId::from_uuid(uuid::Uuid::nil()));
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        let (_, message) = messages::get(connection, &access, id, Purpose::Live(app.streams.live_since(access.account_id, access.device_id, access.session_id))).await?;
+        if message.deleted { return Err(ApiError::not_found()); }
+        super::search::read_rate(&app, &access, &mut counted)?;
+        let rows: Vec<(AccountId, Option<String>, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select r.account_id,case when a.status='deleted' then null else a.name end,a.status<>'active'
+             from message_reactions r join accounts a on a.id=r.account_id
+             where r.message_id=$1 and r.emoji=$2 and r.account_id {compare} $3
+             order by r.account_id {order} limit $4")))
+            .bind(id).bind(emoji).bind(cursor).bind(i64::from(limit))
+            .fetch_all(&mut *connection).await?;
+        let mut people: Vec<ReactionPerson> = rows.into_iter().map(|(id, name, departed)| ReactionPerson { id, name, departed }).collect();
+        if backwards { people.reverse(); }
+        let (previous_before, next_after) = if let (Some(first), Some(last)) = (people.first(), people.last()) {
+            let (before, after): (bool, bool) = sqlx::query_as(
+                "select exists(select 1 from message_reactions where message_id=$1 and emoji=$2 and account_id<$3),
+                        exists(select 1 from message_reactions where message_id=$1 and emoji=$2 and account_id>$4)")
+                .bind(id).bind(emoji).bind(first.id).bind(last.id).fetch_one(&mut *connection).await?;
+            (before.then_some(first.id), after.then_some(last.id))
+        } else { (None, None) };
+        Ok(ReactionPeople { people, next_after, previous_before })
+    }).map(Json)
+}

@@ -30,6 +30,7 @@ mod permissions;
 pub mod person_drop;
 pub mod picture_crop;
 mod progress;
+pub(crate) mod reaction_people;
 pub mod receipts;
 pub mod recorded;
 mod recorded_work;
@@ -582,6 +583,7 @@ pub struct AppState {
     message_link_asks: u64,
     message_link_failed: Option<u64>,
     unread_pauses: HashSet<(ServerId, PlaceId)>,
+    reactions: reaction_people::Reactions,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
     asked_quotes: HashMap<(ServerId, MessageId), u64>,
@@ -1019,6 +1021,7 @@ impl AppState {
             message_link_asks: 0,
             message_link_failed: None,
             unread_pauses: HashSet::new(),
+            reactions: reaction_people::Reactions::default(),
             asked_quotes: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
@@ -1981,6 +1984,7 @@ impl AppState {
         *self.reloads.entry(server_id).or_default() += 1;
         self.forget_quotes(server_id, None, cx);
         self.search_after_reload(server_id, cx);
+        self.reaction_people_changed(server_id, None, cx);
         self.changed(cx);
     }
 
@@ -2007,6 +2011,7 @@ impl AppState {
             }
             Notice::Ended { .. } => return,
         };
+        self.reaction_people_changed(server_id, Some(event.as_ref()), cx);
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
         } else if matches!(
