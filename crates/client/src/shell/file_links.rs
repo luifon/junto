@@ -84,6 +84,7 @@ impl Shell {
                 .child(
                     div()
                         .min_w_0()
+                        .debug_selector(move || format!("linked-file-name:{attachment_id}"))
                         .typeface(theme.types.control_strong, &theme)
                         .child(text::label(&file.name)),
                 )
@@ -128,7 +129,13 @@ impl Shell {
                         }),
                 )
         });
-        let row = crate::ui::bind_action_menu(row, "linked-file-actions", actions, window, cx);
+        let row = crate::ui::bind_action_menu(
+            row,
+            gpui::SharedString::from(format!("linked-file-actions:{attachment_id}")),
+            actions,
+            window,
+            cx,
+        );
         let close = cx.listener(|this, _: &(), window, cx| this.close_layer(window, cx));
         Dialog::new(text::LINKED_FILE, self.layer_focus())
             .selector("linked-file-dialog")

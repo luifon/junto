@@ -100,6 +100,8 @@ The same element serves messages, threads, search results, transcripts, profiles
 
 The scoped text-layout observer is the only gpui change for selection (ADR 0757). It avoids a separate selectable version of every text label and uses the layout that was actually painted, including clipping and wrapping. Tests in `app::copying` exercise cross-row dragging, rich Unicode text, native field selection, code-block whitespace, named-link targets and a value in settings.
 
+The picture viewer belongs to the entry and logged-in account that opened it. It closes at logout or a change of that owner, including a remove/re-add of the server, rather than retaining the previous account's picture. File-link actions use a popup keyed by the attachment, so another file target starts with its menu closed. Window tests: `target_links::file_boundaries_a_picture_preview_closes_when_its_account_logs_out` and `file_boundaries_a_replaced_target_closes_the_previous_files_context_menu`.
+
 ## Consequences
 
 - The composer shows marks while the person types, not formatted text.

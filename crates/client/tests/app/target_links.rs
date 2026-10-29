@@ -300,3 +300,73 @@ fn a_linked_picture_opens_the_viewer_and_a_file_dialog_closes_when_access_is_rem
         !window.shows("linked-file-dialog") && !window.channels().iter().any(|row| row.id == target)
     });
 }
+
+#[gpui::test]
+fn file_boundaries_a_replaced_target_closes_the_previous_files_context_menu(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let message = crate::pictures::send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(window.selected_channel()),
+        "Two files",
+        vec![
+            ("first.txt", b"first".to_vec()),
+            ("second.txt", b"second".to_vec()),
+        ],
+    );
+    let first = message.attachments[0].id;
+    let second = message.attachments[1].id;
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, first, cx)
+    }));
+    window.until("the first file is shown", |window| {
+        window.shows_named(format!("linked-file-name:{first}"))
+    });
+    window.right_click_named("linked-file-row".to_owned());
+    assert!(window.shows("row-context-menu"));
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, second, cx)
+    }));
+    window.until("the second file is shown", |window| {
+        window.shows_named(format!("linked-file-name:{second}"))
+    });
+    assert!(!window.shows("row-context-menu"));
+}
+
+#[gpui::test]
+fn file_boundaries_a_picture_preview_closes_when_its_account_logs_out(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let message = crate::pictures::send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(window.selected_channel()),
+        "A picture",
+        vec![("diagram.png", crate::pictures::png(32, 24))],
+    );
+    let file = message.attachments[0].id;
+    let server_id = window.handle().id();
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, file, cx)
+    }));
+    window.until("the file dialog is shown", |window| {
+        window.shows("linked-file-dialog")
+    });
+    window.click("file-preview");
+    assert!(window.shows("picture-viewer"));
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.log_out(server_id, cx));
+    window.until("the picture viewer closes at logout", |window| {
+        !window.shows("picture-viewer")
+    });
+}

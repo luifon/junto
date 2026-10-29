@@ -40,6 +40,7 @@ const LONGEST_SIDE: u32 = 8192;
 /// The pictures of one message in the viewer.
 pub(crate) struct PictureViewer {
     pub(crate) server_id: ServerId,
+    owner: Option<junto_client_core::Owner>,
     pub(crate) message_id: MessageId,
     /// The pictures of the message, in the order of its files.
     pictures: Vec<Attachment>,
@@ -87,7 +88,10 @@ impl PictureViewer {
     /// the shown file: the message was deleted, or the retention removed its files. The
     /// call window lists no servers, so the server book is read in the state.
     pub(super) fn is_stale(&self, view: &ShellView, state: &AppState) -> bool {
-        if state.server(self.server_id).is_none() {
+        if state
+            .server(self.server_id)
+            .is_none_or(|server| server.owner() != self.owner)
+        {
             return true;
         }
         let Some(shown) = self.shown().map(|attachment| attachment.id) else {
@@ -155,6 +159,11 @@ impl Shell {
         };
         let viewer = PictureViewer {
             server_id,
+            owner: self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.owner()),
             message_id,
             pictures,
             shown: shown.min(last),
