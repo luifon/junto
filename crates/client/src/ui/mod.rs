@@ -29,6 +29,7 @@ mod reveal;
 mod rows;
 mod scroll;
 mod segmented;
+mod text_targets;
 pub(crate) mod tile;
 mod tooltip;
 
@@ -72,6 +73,7 @@ pub use rows::{
 };
 pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
+pub use text_targets::TextTargets;
 pub use tile::{PersonTile, TileMark};
 pub use tooltip::tooltip;
 
