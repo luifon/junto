@@ -71,6 +71,8 @@ HTTP library:
 - reqwest 0.13 with rustls depends on a certificate crate with the licence CDLA-Permissive-2.0 for a target that the client does not build. The licence check covers every target and the allowed list does not contain that licence (ADR 0801), so the client stays on 0.12 until the check or the list changes.
 - The transport is behind an interface with one operation: send a request, get a response. The tests replace it with a server in memory.
 
+Channel and conversation target links open under the current account of the saved origin. A channel is read by identity, then the live state is refreshed before selecting it. An archived channel temporarily holds its archive list and permission readers until the window has acquired its own readers; failure or superseding navigation releases both. A conversation must be in the current account's readable conversation list and the refreshed state. Both kinds share the request counter, account boundary, navigation boundary and refusal display with message links. A newer link of any kind cancels the navigation of an older answer. Missing and inaccessible targets give the same plain refusal; an unknown origin returns control to the URL router for the add-server form. Window tests: `target_links::channel_links_open_active_and_archived_channels_and_conversation_links_open_directs`, `channel_links_refuse_hidden_and_missing_targets_identically_and_return_unknown_origins` and `a_late_channel_link_does_not_take_over_navigation_or_keep_archive_readers`.
+
 ## Consequences
 
 - A hostile server gets no signature for another server, operation or key, and no session token of another server.
