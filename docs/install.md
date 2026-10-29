@@ -534,3 +534,7 @@ Remaining limits:
 - Upgrade and `deploy/database-user.sh` have been run in the local form only (`deploy/tests/upgrade.sh`), with recordings represented by test rows and files. Public one-host backup and restore remain unverified.
 - The way back to a release that has the command `unnamed-files` was run with a copy that the test made by hand, because no later release exists. The scripts of an earlier checkout were not run on a deployment that has the role `junto_server`, except the server of that checkout and `upgrade-undo.sh`.
 - In the local form, `rtc.stun_servers` stopped the recorder's requests to public STUN servers of third parties. The one-host form names its TURN port in the same setting; it was not observed there (ADR 0007).
+
+### Invite download page
+
+Set `JUNTO_CLIENT_DOWNLOAD_URL` in the server environment to the HTTPS page from which your team obtains the desktop client. Browser invite links point to `/join?code=…` on the server and offer that download page, the code and Open Junto. Without this setting the page asks the person to obtain a download from the administrator. The page does not redeem an invite; the person confirms joining inside Junto. Keep invite links private.

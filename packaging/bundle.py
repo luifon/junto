@@ -61,6 +61,7 @@ def assemble(binary, destination, version, recovery=None, *, icon_tool, build, i
             "CFBundleDisplayName": "Junto",
             "CFBundleExecutable": "junto",
             "CFBundlePackageType": "APPL",
+            "CFBundleURLTypes": [{"CFBundleURLName": "org.junto.app.links", "CFBundleURLSchemes": ["junto"], "CFBundleTypeRole": "Viewer"}],
             "CFBundleShortVersionString": version,
             "CFBundleVersion": version,
             "CFBundleIconFile": "Junto.icns",

@@ -44,6 +44,8 @@ Linux:
 
 The release site (ADR 0727) and the GitHub release offer the three installers beside the packages of ADR 0754 and ADR 0755.
 
+The Windows setup program registers the current user's `Software\Classes\junto` URL protocol with `"<program>" "%1"` as its open command. The setup writes it after installing the program. Uninstall removes it only when its command names this installation; another installation's handler remains. Recorded setup tests and pure quoting/ownership tests run on Linux. The native package check verifies the actual command and removal, saving and restoring the complete previous scheme tree also after a failure; it does not leave this test's handler behind. The bundle and Linux desktop registration use the same scheme (ADR 0732).
+
 ## Consequences
 
 - A person on each system installs Junto in the way that Discord and Slack use. On Windows Junto is in the Start menu and in Settings, Apps; it is removed there.

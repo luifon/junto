@@ -34,6 +34,7 @@ pub mod exports;
 pub mod glossary;
 pub mod health;
 pub mod internal;
+mod invite_page;
 pub mod invites;
 pub mod layout;
 pub mod messages;
@@ -509,6 +510,7 @@ pub fn router(state: AppState) -> Router {
             internal::MEDIA_NOTIFICATIONS,
             axum::routing::post(internal::media_notification),
         )
+        .route("/join", axum::routing::get(invite_page::page))
         .route(layout::INDEX, axum::routing::get(layout::index))
         .route(layout::FILE, axum::routing::get(layout::file))
         .fallback(unknown_path)

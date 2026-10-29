@@ -58,6 +58,7 @@ tracing-subscriber = { workspace = true }
 utoipa = { workspace = true, features = ["axum_extras"] }
 utoipa-axum = { workspace = true }
 uuid = { workspace = true }
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }

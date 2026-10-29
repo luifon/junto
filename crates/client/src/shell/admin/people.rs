@@ -11,7 +11,7 @@ use gpui_base::input::InputState;
 use junto_client_core::api::Statement;
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::account::AccountStatus;
-use junto_client_core::protocol::ids::{AccountId, InviteId, WorkspaceId};
+use junto_client_core::protocol::ids::{AccountId, InviteId, ServerId, WorkspaceId};
 use junto_client_core::protocol::invite::CreateInvite;
 use time::OffsetDateTime;
 
@@ -160,6 +160,7 @@ pub(crate) struct Ui {
     pub(crate) new_invite: NewRow<InviteId>,
     /// The invite whose new code was copied.
     pub(crate) copied: Option<InviteId>,
+    copied_link: Option<(InviteId, bool)>,
 }
 
 impl Ui {
@@ -228,6 +229,7 @@ impl Ui {
             space: FormSpace::default(),
             new_invite: NewRow::default(),
             copied: None,
+            copied_link: None,
         };
         (ui, subscriptions)
     }
@@ -335,6 +337,7 @@ impl Shell {
         self.admin.list.state.remeasure();
         ui.new_invite.reset();
         ui.copied = None;
+        ui.copied_link = None;
         self.reset_invite_form(window, cx);
         self.type_reason("", window, cx);
         self.type_moderation_message("", window, cx);
@@ -1652,6 +1655,7 @@ impl Shell {
     fn render_new_code(
         &mut self,
         made: &NewCode,
+        server_id: ServerId,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1659,8 +1663,44 @@ impl Shell {
         let code = made.code.clone();
         let shown = SharedString::from(made.code.expose().to_owned());
         let copied = self.admin.people.copied == Some(invite_id);
+        let server = self
+            .state
+            .read(cx)
+            .client()
+            .server(server_id)
+            .map(|server| server.entry().address);
+        let links = server
+            .into_iter()
+            .flat_map(|server| {
+                let page = junto_client_core::links::invite_page(&server, &made.code);
+                let app =
+                    junto_client_core::links::format(&junto_client_core::links::AppLink::Invite {
+                        server,
+                        code: made.code.clone(),
+                    });
+                [
+                    (false, page, txt::COPY_INVITE_LINK, "invite-link-copy"),
+                    (true, app, txt::COPY_APP_LINK, "invite-app-link-copy"),
+                ]
+            })
+            .map(|(app, link, label, selector)| {
+                let copied = self.admin.people.copied_link == Some((invite_id, app));
+                Button::new(selector)
+                    .label(if copied { txt::COPIED } else { label })
+                    .selector(selector)
+                    .h(u(28.0))
+                    .px(u(10.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                        this.admin.people.copied_link = Some((invite_id, app));
+                        this.admin.people.copied = None;
+                        cx.notify();
+                    }))
+            })
+            .collect::<Vec<_>>();
         let actions = div()
             .flex()
+            .flex_wrap()
             .flex_none()
             .items_center()
             .gap(u(8.0))
@@ -1685,9 +1725,11 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(code.expose().to_owned()));
                         this.admin.people.copied = Some(invite_id);
+                        this.admin.people.copied_link = None;
                         cx.notify();
                     })),
             )
+            .children(links)
             .child(
                 Button::new("invite-code-done")
                     .kind(ButtonKind::Primary)
@@ -1699,6 +1741,7 @@ impl Shell {
                         // The person puts the code away: the row of the form gives up its
                         // height and the new invite takes its place in the list.
                         this.admin.people.copied = None;
+                        this.admin.people.copied_link = None;
                         this.admin.people.space.release();
                         this.admin.list.state.remeasure();
                         this.admin.people.new_invite.release();
@@ -1975,7 +2018,7 @@ impl Shell {
         let code = page
             .made
             .as_ref()
-            .map(|made| self.render_new_code(made, &theme, cx));
+            .map(|made| self.render_new_code(made, view.server_id, &theme, cx));
         let open = self.admin.people.open;
         let new = match open {
             Some(Open::NewInvite) => self.render_invite_form(view, &page.grant, &theme, cx),

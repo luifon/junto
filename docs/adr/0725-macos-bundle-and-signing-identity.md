@@ -20,6 +20,8 @@ ADR 0704 requires one bundle identifier and one self-signed code-signing certifi
 - The operator keeps the certificate, private key, dedicated keychain and password outside repositories, with private access and an encrypted offline backup. A replacement certificate changes the application's permission identity even if its private key stays the same.
 - `packaging/certificate.sha1` pins the permanent certificate fingerprint. It is empty before the operator creates the identity; signing and release publication refuse an empty pin or any different certificate. Publication and recovery require the complete designated requirement to equal the product identifier followed by the pinned leaf-certificate condition; merely mentioning the fingerprint inside a more permissive expression is insufficient. Tests use an external pin for that build only.
 
+The bundle declares `CFBundleURLTypes` for the `junto` scheme, with the bundle's stable identifier and Viewer role. gpui's native URL callback hands opened links to the shared router (ADR 0732). Package tests inspect the declaration without registering an application. Opening a link from another application and from a closed or running Junto requires the native macOS check.
+
 ## Consequences
 
 - Two test bundles with different version fields and one test certificate have equal designated requirements. An ad-hoc signature has a different requirement. The identity comparison uses temporary fixture bundles.

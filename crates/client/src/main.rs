@@ -21,7 +21,7 @@ const LOG_LEVEL_VARIABLE: &str = "JUNTO_LOG_LEVEL";
 const USAGE: &str = "\
 junto: the Junto desktop application
 
-usage: junto [options]
+usage: junto [options] [junto://link]
 
 options:
   --data-dir <directory>   the directory of the server book, the profile and the device
@@ -41,6 +41,7 @@ to a report file in the directory panics of the data directory. On Windows stand
 of a running window is kept only when it is redirected, for example: junto.exe 2> err.txt";
 
 struct Arguments {
+    link: Option<String>,
     data_dir: Option<PathBuf>,
     start: WindowStart,
     check_startup: bool,
@@ -64,6 +65,7 @@ fn parse(
     test_configuration: bool,
 ) -> Result<Parsed, String> {
     let mut arguments = Arguments {
+        link: None,
         data_dir: None,
         start: WindowStart::default(),
         check_startup: false,
@@ -105,7 +107,18 @@ fn parse(
                 return Ok(Parsed::Print(junto_client_core::releases::build_label()));
             }
             "--help" | "-h" => return Ok(Parsed::Print(USAGE.to_owned())),
-            other => return Err(format!("unknown argument: {other}")),
+            link if link
+                .get(..6)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("junto:")) =>
+            {
+                if arguments.link.is_some() || junto_client_core::links::parse(link).is_none() {
+                    return Err(
+                        "the Junto link is invalid or more than one was supplied".to_owned()
+                    );
+                }
+                arguments.link = Some(link.to_owned());
+            }
+            _ => return Err("unknown argument; use --help for the accepted options".to_owned()),
         }
     }
     Ok(Parsed::Run(arguments))
@@ -375,7 +388,7 @@ fn main() -> ExitCode {
                 Instance::start(
                     &directory,
                     Activation {
-                        link: None,
+                        link: arguments.link.clone(),
                         activation_token: std::env::var("XDG_ACTIVATION_TOKEN").ok(),
                     },
                 )
@@ -434,6 +447,7 @@ fn main() -> ExitCode {
     let check_startup = arguments.check_startup;
     let check_update = arguments.check_update;
     let update_source = arguments.update_source;
+    let initial_link = arguments.link;
     // A restart after an update starts the same data directory (ADR 0780).
     let mut restart_arguments: Vec<std::ffi::OsString> = if chosen_dir {
         vec![
@@ -452,6 +466,12 @@ fn main() -> ExitCode {
         .with_assets(Assets)
         .with_restart_arguments(restart_arguments);
     application.on_reopen(|cx| junto_client::notify::bring_to_front(None, cx));
+    let (opened_urls, mut urls) = tokio::sync::mpsc::channel::<String>(32);
+    application.on_open_urls(move |urls| {
+        for url in urls.into_iter().take(32) {
+            let _ = opened_urls.try_send(url);
+        }
+    });
     application.run(move |cx| {
         if let Err(error) = app::init(cx) {
             start_failed(&format!("{error:#}"), log_path.as_deref());
@@ -463,11 +483,21 @@ fn main() -> ExitCode {
         cx.spawn(async move |cx| {
             while let Some(activation) = activations.recv().await {
                 cx.update(|cx| {
-                    junto_client::notify::bring_to_front(
-                        activation.activation_token.as_deref(),
-                        cx,
-                    );
+                    if let Some(url) = activation.link {
+                        app::open_url(&url, activation.activation_token.as_deref(), cx);
+                    } else {
+                        junto_client::notify::bring_to_front(
+                            activation.activation_token.as_deref(),
+                            cx,
+                        );
+                    }
                 });
+            }
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            while let Some(url) = urls.recv().await {
+                cx.update(|cx| app::open_url(&url, None, cx));
             }
         })
         .detach();
@@ -501,7 +531,12 @@ fn main() -> ExitCode {
                 });
             }
             Ok(_) if check_update => {}
-            Ok(_) => reached.set(true),
+            Ok(_) => {
+                reached.set(true);
+                if let Some(url) = initial_link {
+                    app::open_url(&url, None, cx);
+                }
+            }
             Err(error) => {
                 start_failed(
                     &format!("its window cannot open: {error:#}"),
@@ -528,6 +563,23 @@ mod tests {
             arguments.iter().map(|argument| (*argument).to_owned()),
             false,
         )
+    }
+
+    #[test]
+    fn one_valid_app_link_is_accepted_and_invalid_links_are_not_echoed() {
+        let link = "junto://invite?server=https%3A%2F%2Fchat.example.test&code=ABCD-EFGH-JKMN-PQRS";
+        assert!(
+            matches!(parsed(&[link]), Ok(Parsed::Run(Arguments { link: Some(found), .. })) if found == link)
+        );
+        assert!(parsed(&[link, link]).is_err());
+        assert!(matches!(
+            parsed(&[&link.replacen("junto:", "JUNTO:", 1)]),
+            Ok(Parsed::Run(_))
+        ));
+        let problem = parsed(&["junto://invite?secret=should-not-be-logged"])
+            .err()
+            .unwrap();
+        assert!(!problem.contains("should-not-be-logged"));
     }
 
     #[test]

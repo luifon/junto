@@ -260,6 +260,7 @@ impl RecordingServer {
             let origin = Origin::parse(&format!("http://{address}")).unwrap();
             let proxy_origin = Origin::parse(&format!("http://{proxy_address}")).unwrap();
             let config = Config {
+                client_download_url: None,
                 exports_directory: Some(exports_directory),
                 migration_copy: junto_server::bootstrap::MigrationCopy::None,
                 recorder_layout_directory: None,

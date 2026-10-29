@@ -4015,6 +4015,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
+ "url",
  "uuid",
  "windows-sys 0.61.2",
 ]

@@ -258,6 +258,8 @@ pub trait SetupSystem {
     /// Removes the key of the identity of the notifications (ADR 0742).
     fn unregister_notifications(&self) -> std::io::Result<()>;
     fn unregister_startup(&self, program: &Path) -> std::io::Result<()>;
+    fn register_scheme(&self, program: &Path) -> std::io::Result<()>;
+    fn unregister_scheme(&self, program: &Path) -> std::io::Result<()>;
 }
 
 /// What an installation did.
@@ -353,6 +355,7 @@ fn install_from(
         fs::rename(&candidate, &folder)?;
     }
     system.create_shortcut(&places.shortcut(), &places.program())?;
+    system.register_scheme(&places.program())?;
     system.write_uninstall_entry(&uninstall_entry(places, version, size_of(&folder)))?;
     Ok(Installed { version, replaced })
 }
@@ -430,6 +433,7 @@ pub fn uninstall(
     let mut results = vec![
         system.unregister_notifications(),
         system.unregister_startup(&places.program()),
+        system.unregister_scheme(&places.program()),
     ];
     match owned {
         Ok(true) => {
@@ -467,6 +471,12 @@ mod tests {
         }
         fn unregister_notifications(&self) -> std::io::Result<()> {
             panic!("unexpected registration")
+        }
+        fn register_scheme(&self, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn unregister_scheme(&self, _: &Path) -> std::io::Result<()> {
+            Ok(())
         }
         fn unregister_startup(&self, _: &Path) -> std::io::Result<()> {
             panic!("unexpected registration")

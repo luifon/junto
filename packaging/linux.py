@@ -66,11 +66,12 @@ DESKTOP = f"""[Desktop Entry]
 Type=Application
 Name=Junto
 Comment=Chat, calls and call recordings on your own server
-Exec=junto
+Exec=junto %u
 Icon={APPLICATION_ID}
 Terminal=false
 Categories=Network;Chat;InstantMessaging;
 StartupWMClass={APPLICATION_ID}
+MimeType=x-scheme-handler/junto;
 """
 
 # The sizes of the hicolor icon theme that a package holds as PNG pictures, beside the SVG
@@ -79,9 +80,14 @@ ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512]
 
 # Writes the menu entry and the icons of a directory package for the person who runs it, with
 # the absolute path of this copy. Run it again after moving the directory.
-INSTALL_ENTRY = f"""#!/bin/sh
+INSTALL_ENTRY = rf"""#!/bin/sh
 set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+clean=$(printf '%s' "$here" | LC_ALL=C tr -d '\000-\037\177')
+if [ "$clean" != "$here" ]; then
+    echo 'The application path contains a control character.' >&2
+    exit 1
+fi
 data=${{XDG_DATA_HOME:-$HOME/.local/share}}
 mkdir -p "$data/applications"
 for icon in "$here"/share/icons/hicolor/*/apps/{APPLICATION_ID}.*; do
@@ -89,8 +95,17 @@ for icon in "$here"/share/icons/hicolor/*/apps/{APPLICATION_ID}.*; do
     mkdir -p "$data/icons/hicolor/$size/apps"
     cp "$icon" "$data/icons/hicolor/$size/apps/"
 done
-sed "s|^Exec=junto$|Exec=\\"$here/junto\\"|" "$here/share/applications/{APPLICATION_ID}.desktop" \\
-    > "$data/applications/{APPLICATION_ID}.desktop"
+# Desktop-entry strings are unescaped before their quoted arguments are parsed.
+program=$(printf '%s' "$here/junto" | sed -e 's/\\/\\\\\\\\/g' -e 's/"/\\\\"/g' -e 's/\$/\\\\$/g' -e 's/`/\\\\`/g' -e 's/%/%%/g')
+while IFS= read -r line; do
+    case "$line" in
+        Exec=*) printf 'Exec=/bin/sh -c "exec \\\\"\\\\$0\\\\" \\\\"\\\\$@\\\\"" "%s" %%u\n' "$program" ;;
+        *) printf '%s\n' "$line" ;;
+    esac
+done < "$here/share/applications/{APPLICATION_ID}.desktop" > "$data/applications/{APPLICATION_ID}.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$data/applications"
+fi
 echo "Junto is in the application menu: $data/applications/{APPLICATION_ID}.desktop"
 """
 

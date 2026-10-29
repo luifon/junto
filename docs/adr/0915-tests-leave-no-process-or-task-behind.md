@@ -32,6 +32,8 @@ The media library test `engine::tests::the_descriptions_can_be_read_while_negoti
 
 - Startup window tests inject a memory adapter. Linux autostart tests use private temporary directories, including inherited entries, and bound and reap their GIO child. Windows command and setup tests use pure comparisons and recorded registrations; macOS tests map service statuses without registering a login item. Only the real application's normal profile installs the native adapter. Ordinary tests do not change the account's login items, Run entry or autostart directory.
 
+URL-handler tests use the memory router and private desktop entries. The Windows package and uninstall-dialog checks save and restore the entire prior `Software\Classes\junto` tree, including unknown values and subkeys, in a cleanup context. The GIO launcher test uses a private executable and output file, bounds the launch and waits for its child to exit. It never replaces the desktop's preferred handler.
+
 ## Consequences
 
 - A server of a test process that was killed stops within 100 ms and its graceful shutdown, and the port of its database is not connected to afterwards.

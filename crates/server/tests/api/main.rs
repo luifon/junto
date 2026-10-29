@@ -37,6 +37,7 @@ mod glossary;
 mod history_permissions;
 mod host_commands;
 mod http_errors;
+mod invite_page;
 mod joining;
 mod layout_page;
 #[allow(dead_code)]

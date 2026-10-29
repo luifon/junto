@@ -105,16 +105,33 @@ impl Shell {
             address: address.clone(),
         });
         self.adding = Some(flow.clone());
+        self.adding_number = self.adding_number.wrapping_add(1);
+        let number = self.adding_number;
         self.address_error = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = asking.await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.adding_number != number {
+                    return;
+                }
                 this.adding = None;
+                if this.pending_link.is_some() && !matches!(this.layer, Layer::None) {
+                    this.pending_link = None;
+                    cx.notify();
+                    return;
+                }
                 match (result, flow.view().state) {
                     (_, AddServerState::Preview(_) | AddServerState::KeyOfOtherAddress { .. }) => {
                         this.code
                             .update(cx, |code, cx| code.set_value("", window, cx));
+                        if let Some(junto_client_core::links::AppLink::Invite { server, code }) =
+                            this.pending_link.take()
+                            && junto_client_core::address::ServerAddress::parse(&address)
+                                .is_ok_and(|address| address == server)
+                        {
+                            this.type_code(code.expose(), window, cx);
+                        }
                         let opened = this.next_join();
                         this.open_layer(
                             Layer::Join(join::Join::preview(opened, flow, address)),

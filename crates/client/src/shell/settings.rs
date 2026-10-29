@@ -210,6 +210,9 @@ impl Shell {
                 self.name_error = None;
                 if matches!(self.layer, Layer::Welcome) {
                     self.close_layer(window, cx);
+                    if let Some(link) = self.pending_link.take() {
+                        self.open_app_link(link, window, cx);
+                    }
                 } else {
                     // The field can hold other text by now: only the text that was
                     // stored is marked as saved.

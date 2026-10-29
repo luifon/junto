@@ -17,9 +17,21 @@ struct Recorded {
     shortcuts: RefCell<Vec<(PathBuf, PathBuf)>>,
     unregistered: RefCell<u32>,
     startup: RefCell<Option<PathBuf>>,
+    scheme: RefCell<Option<PathBuf>>,
 }
 
 impl SetupSystem for Recorded {
+    fn register_scheme(&self, program: &Path) -> std::io::Result<()> {
+        *self.scheme.borrow_mut() = Some(program.to_owned());
+        Ok(())
+    }
+    fn unregister_scheme(&self, program: &Path) -> std::io::Result<()> {
+        if self.scheme.borrow().as_deref() == Some(program) {
+            self.scheme.borrow_mut().take();
+        }
+        Ok(())
+    }
+
     fn write_uninstall_entry(&self, entry: &UninstallEntry) -> std::io::Result<()> {
         *self.entry.borrow_mut() = Some(entry.clone());
         Ok(())
@@ -151,6 +163,7 @@ fn the_setup_installs_for_the_account_and_a_second_setup_replaces_the_folder() {
             folder.join("junto.exe")
         )]
     );
+    assert_eq!(*system.scheme.borrow(), Some(places.program()));
     let entry = system.entry.borrow().clone().unwrap();
     let value = |name: &str| {
         entry
@@ -221,6 +234,7 @@ fn the_removal_takes_away_every_part_and_keeps_the_data_unless_asked() {
     assert!(system.entry.borrow().is_none());
     assert_eq!(*system.unregistered.borrow(), 1);
     assert!(system.startup.borrow().is_none());
+    assert!(system.scheme.borrow().is_none());
     assert!(places.data.join("book.json").is_file());
     // A second removal refuses an absent installation; a new installation can remove data.
     assert!(setup::uninstall(&places, true, &system).is_err());
@@ -237,6 +251,7 @@ fn a_copy_extracted_elsewhere_keeps_the_entries_of_the_installation_of_the_setup
     let archive = setup::payload(&setup_program(root.path(), "0.1.0")).unwrap();
     setup::install(&archive, &installed, false, &system).unwrap();
     *system.startup.borrow_mut() = Some(installed.program());
+    *system.scheme.borrow_mut() = Some(installed.program());
     // A person extracted the ZIP file into another folder and runs its uninstall program.
     let other = Places::of_folder(
         &root.path().join("Apps/Junto"),
@@ -251,6 +266,7 @@ fn a_copy_extracted_elsewhere_keeps_the_entries_of_the_installation_of_the_setup
     assert!(installed.shortcut().exists());
     assert!(installed.folder().join("junto.exe").exists());
     assert_eq!(*system.startup.borrow(), Some(installed.program()));
+    assert_eq!(*system.scheme.borrow(), Some(installed.program()));
 }
 
 #[test]

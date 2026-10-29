@@ -21,6 +21,7 @@ mod invited;
 mod join;
 mod keybinds;
 pub mod linking;
+mod links;
 mod main_area;
 mod moving;
 /// The least time between two drawings that the animations of a window ask for.
@@ -244,6 +245,8 @@ pub struct Shell {
     pub(crate) address: Entity<InputState>,
     /// The flow of the address that was sent last, while the server answers.
     pub(crate) adding: Option<AddServerFlow>,
+    pub(crate) adding_number: u64,
+    pub(crate) pending_link: Option<junto_client_core::links::AppLink>,
     pub(crate) address_error: Option<String>,
     /// The server whose menu is open in the collapsed server book, and whether the
     /// keyboard opened it.
@@ -723,6 +726,8 @@ impl Shell {
             return_focus: None,
             address,
             adding: None,
+            adding_number: 0,
+            pending_link: None,
             address_error: None,
             hover_menu: None,
             hover_menu_focus: cx.focus_handle(),

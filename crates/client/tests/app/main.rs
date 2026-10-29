@@ -57,6 +57,7 @@ mod hidden;
 mod layout;
 mod layout_forms;
 mod linking;
+mod links;
 mod live;
 mod logo;
 mod logout;

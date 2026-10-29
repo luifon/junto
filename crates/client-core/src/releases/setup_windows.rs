@@ -22,6 +22,13 @@ fn error(error: impl std::fmt::Display) -> std::io::Error {
 pub struct WindowsSetup;
 
 impl SetupSystem for WindowsSetup {
+    fn register_scheme(&self, program: &Path) -> std::io::Result<()> {
+        crate::url_scheme::register(program)
+    }
+    fn unregister_scheme(&self, program: &Path) -> std::io::Result<()> {
+        crate::url_scheme::unregister(program)
+    }
+
     fn write_uninstall_entry(&self, entry: &UninstallEntry) -> std::io::Result<()> {
         let key = windows_registry::CURRENT_USER
             .create(UNINSTALL_KEY)

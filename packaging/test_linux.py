@@ -138,7 +138,7 @@ class LinuxPackageTests(unittest.TestCase):
     def test_the_menu_entry_names_the_absolute_path_of_the_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            copy = root / "copy with spaces/junto"
+            copy = root / "copy ' \" $() ` %% \\ with spaces/junto"
             linux.write(copy / f"share/applications/{linux.APPLICATION_ID}.desktop", linux.DESKTOP)
             linux.icon_theme(copy, icons.TOOL)
             linux.write(copy / "install-menu-entry", linux.INSTALL_ENTRY, 0o755)
@@ -146,7 +146,20 @@ class LinuxPackageTests(unittest.TestCase):
             subprocess.run([str(copy / "install-menu-entry")], check=True, capture_output=True,
                            env=dict(os.environ, XDG_DATA_HOME=str(data)))
             entry = (data / f"applications/{linux.APPLICATION_ID}.desktop").read_text()
-            self.assertIn(f'Exec="{copy}/junto"\n', entry)
+            self.assertIn('Exec=/bin/sh -c ', entry)
+            self.assertIn("MimeType=x-scheme-handler/junto;\n", entry)
+            if shutil.which("gio"):
+                output = root / "arguments.json"
+                program = copy / "junto"
+                program.write_text("#!/usr/bin/env python3\nimport json, os, sys\noutput = os.environ['JUNTO_ENTRY_TEST_OUTPUT']\nwith open(output + '.tmp', 'w') as file:\n    json.dump(sys.argv, file)\nos.replace(output + '.tmp', output)\n")
+                program.chmod(0o755)
+                link = "junto://invite?server=https%3A%2F%2Fchat.example.test&code=ABCD-EFGH-JKMN-PQRS"
+                subprocess.run(["gio", "launch", str(data / f"applications/{linux.APPLICATION_ID}.desktop"), link], check=True, capture_output=True, timeout=10, env=dict(os.environ, JUNTO_ENTRY_TEST_OUTPUT=str(output)))
+                import time
+                deadline = time.monotonic() + 5
+                while not output.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(json.loads(output.read_text()), [str(program), link])
             self.assertIn(f"StartupWMClass={linux.APPLICATION_ID}\n", entry)
             for size in [*(f"{size}x{size}" for size in SIZES), "scalable"]:
                 ending = "svg" if size == "scalable" else "png"

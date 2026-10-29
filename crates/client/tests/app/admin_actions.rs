@@ -351,6 +351,29 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
         .and_then(|item| item.text())
         .unwrap();
     assert_eq!(copied, made.code.expose());
+    click_in_page(&mut window, "invite-app-link-copy");
+    let copied_app = window
+        .cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert!(
+        matches!(junto_client_core::links::parse(&copied_app), Some(junto_client_core::links::AppLink::Invite { code, .. }) if code == made.code)
+    );
+    click_in_page(&mut window, "invite-link-copy");
+    let copied_page = window
+        .cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert_eq!(
+        copied_page,
+        junto_client_core::links::invite_page(
+            &junto_client_core::address::ServerAddress::parse(&server.address()).unwrap(),
+            &made.code
+        )
+    );
+
     assert_drawn_label(&mut window, "Copied");
     let stored = world.run(owner.api().invites()).unwrap();
     assert_eq!(

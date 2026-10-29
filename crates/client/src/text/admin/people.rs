@@ -335,3 +335,6 @@ pub fn request_times(created: OffsetDateTime, expires: OffsetDateTime) -> String
         date_time(expires)
     )
 }
+
+pub const COPY_INVITE_LINK: &str = "Copy invite link";
+pub const COPY_APP_LINK: &str = "Copy app link";

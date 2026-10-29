@@ -14,6 +14,8 @@ A configured build checks at startup and periodically. The server book shows the
 
 Version states when no source is configured or when verification or the date of the update information prevents an update. Unrecognized signing keys do not produce a download link or installation action. A build marked "test configuration" is not a product release.
 
+An invite link can open Junto with the server and code filled. Review the server and choose Join; opening the link does not spend the code. A browser invite page also shows the code and the download page selected by the server administrator.
+
 Junto writes its log to `logs/junto.log` in `~/Library/Application Support/Junto` (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `panics/` in the same directory, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. Starting Junto again with the same data directory restores the running window and exits the second process. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`$TMPDIR`) (ADR 0757).
 
 If the new application cannot start, recover it as follows:

@@ -46,7 +46,7 @@ class UninstallDialogs(unittest.TestCase):
             environment = dict(LOCALAPPDATA=str(root / "Local"), APPDATA=str(root / "Roaming"),
                                TEMP=str(copies), TMP=str(copies))
             job = Job()
-            with window_frame.kept_identity(), window_frame.kept_uninstall_entry(), \
+            with window_frame.kept_identity(), window_frame.kept_uninstall_entry(), window_frame.kept_scheme(), \
                     mock.patch.dict(os.environ, environment):
                 try:
                     yield job, folder, data, copies

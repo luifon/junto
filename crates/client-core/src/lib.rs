@@ -51,3 +51,6 @@ pub use manager::{Client, ClientOptions, OpenError, Reach, ServerHandle};
 
 pub mod call_window;
 pub mod emoji_fonts;
+
+#[cfg(any(windows, test))]
+pub mod url_scheme;

@@ -951,6 +951,29 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let mut notices = self.render_call_notices(view, cx);
+        if let Some(refusal) = self.state.read(cx).message_link_refusal() {
+            notices.push(
+                div()
+                    .flex_none()
+                    .px(u(16.0))
+                    .pt(u(10.0))
+                    .child(
+                        Notice::error(refusal)
+                            .selector("message-link-unavailable")
+                            .action(
+                                Button::new("dismiss-message-link")
+                                    .label(text::CLOSE)
+                                    .selector("dismiss-message-link")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.dismiss_message_link_refusal(cx)
+                                        })
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
         let pending = self.state.read(cx).pending().clone();
         let Some(server) = &view.selected else {
             return notices;

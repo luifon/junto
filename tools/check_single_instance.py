@@ -8,6 +8,7 @@ import time
 
 program = sys.argv[1]
 children = []
+link = "junto://invite?server=https%3A%2F%2Fchat.example.test&code=ABCD-EFGH-JKMN-PQRS"
 
 
 def windows(pid):
@@ -38,7 +39,7 @@ try:
         children.append(first)
         first_window = wait_window(first)
         subprocess.run(['xdotool', 'windowminimize', first_window], check=True, timeout=5)
-        second = subprocess.Popen([program, '--data-dir', profile], stdout=second_log, stderr=second_log)
+        second = subprocess.Popen([program, '--data-dir', profile, link], stdout=second_log, stderr=second_log)
         children.append(second)
         try:
             exit_code = second.wait(timeout=5)
@@ -68,7 +69,7 @@ try:
             time.sleep(0.02)
         if first.poll() is not None:
             raise RuntimeError('closing the window ended the primary process')
-        third = subprocess.Popen([program, '--data-dir', profile], stdout=second_log, stderr=second_log)
+        third = subprocess.Popen([program, '--data-dir', profile, link], stdout=second_log, stderr=second_log)
         children.append(third)
         if third.wait(timeout=5) != 0:
             raise RuntimeError('the third start failed')
@@ -77,7 +78,9 @@ try:
                                  stdout=second_log, stderr=second_log)
         children.append(other)
         wait_window(other)
-        print('single_instance: forwarded activation, restored closed and minimized windows, and kept profiles independent')
+        if list(pathlib.Path(profile).glob('panics/*')):
+            raise RuntimeError('the primary recorded a panic while opening a forwarded link')
+        print('single_instance: forwarded URLs, restored closed and minimized windows, and kept profiles independent')
 finally:
     for child in children:
         if child.poll() is None:

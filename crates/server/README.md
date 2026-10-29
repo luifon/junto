@@ -252,6 +252,7 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_DATABASE_URL` | required | PostgreSQL connection URL |
 | `JUNTO_LISTEN_ADDRESS` | `127.0.0.1:8080` | Address and port of the HTTP listener |
 | `JUNTO_PUBLIC_ORIGINS` | the loopback origins of the port, when the server listens on a loopback address; required otherwise | Comma-separated origins at which clients reach the server, for example `https://chat.example.test`; `http` is accepted for a loopback host only (ADR 0117) |
+| `JUNTO_CLIENT_DOWNLOAD_URL` | none | HTTPS client download page on the public invite page; HTTP is accepted for loopback only |
 | `JUNTO_SERVER_NAME` | `Junto` | Name of the server and of its default workspace; read at the first start only |
 | `JUNTO_TRUSTED_PROXIES` | empty | Comma-separated IP addresses or networks (`172.31.240.0/24`) of the entry hosts whose `X-Forwarded-For` header the server trusts |
 | `JUNTO_EXPORTS_DIR` | none | Existing absolute directory for the files of exports. Without it the server makes no export (ADR 0411) |

@@ -1,6 +1,7 @@
 //! Addresses that open a place in the application.
 
 use junto_protocol::ids::MessageId;
+use junto_protocol::secret::InviteCode;
 use url::{Url, form_urlencoded};
 
 use crate::address::ServerAddress;
@@ -9,6 +10,10 @@ const LONGEST_LINK: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppLink {
+    Invite {
+        server: ServerAddress,
+        code: InviteCode,
+    },
     Message {
         server: ServerAddress,
         id: MessageId,
@@ -36,6 +41,13 @@ pub fn parse(text: &str) -> Option<AppLink> {
         return None;
     }
     match link.host_str()? {
+        "invite" => {
+            let (server, code) = read_target(&link, "code")?;
+            valid_invite_code(&code).then(|| AppLink::Invite {
+                server,
+                code: InviteCode::new(code),
+            })
+        }
         "message" => {
             let (server, id) = read_target(&link, "id")?;
             Some(AppLink::Message {
@@ -66,8 +78,25 @@ fn read_target(link: &Url, parameter: &str) -> Option<(ServerAddress, String)> {
 /// Writes the canonical origin and typed destination using percent-encoded parameters.
 pub fn format(link: &AppLink) -> String {
     match link {
+        AppLink::Invite { server, code } => write_target("invite", server, "code", code.expose()),
         AppLink::Message { server, id } => write_target("message", server, "id", &id.to_string()),
     }
+}
+
+pub fn valid_invite_code(code: &str) -> bool {
+    code.len() <= 32
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && code.bytes().filter(|byte| *byte != b'-').count() == 16
+}
+
+/// A browser page for a person who has not installed the application yet.
+pub fn invite_page(server: &ServerAddress, code: &InviteCode) -> String {
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("code", code.expose())
+        .finish();
+    format!("{}/join?{query}", server.as_str())
 }
 
 fn write_target(kind: &str, server: &ServerAddress, parameter: &str, target: &str) -> String {
@@ -92,6 +121,38 @@ mod tests {
     use super::*;
 
     const ID: &str = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f";
+
+    #[test]
+    fn invite_links_keep_the_origin_and_code_without_exposing_it_in_debug() {
+        let link = AppLink::Invite {
+            server: ServerAddress::parse("HTTPS://Chat.Example.Test:443/").unwrap(),
+            code: InviteCode::new("abcd-efgh-jkmn-pqrs"),
+        };
+        assert_eq!(parse(&format(&link)), Some(link.clone()));
+        assert!(!format!("{link:?}").contains("abcd"));
+        let AppLink::Invite { server, code } = link else {
+            unreachable!()
+        };
+        assert_eq!(
+            invite_page(&server, &code),
+            "https://chat.example.test/join?code=abcd-efgh-jkmn-pqrs"
+        );
+        for code in [
+            "",
+            "short",
+            "0123456789ABCDEF%26other=value",
+            "0123456789ABCDEF%0A",
+            "0123456789ABCDE%2F",
+        ] {
+            assert!(
+                parse(&format!(
+                    "junto://invite?server=https%3A%2F%2Fchat.example.test&code={code}"
+                ))
+                .is_none()
+            );
+        }
+        assert!(parse("junto://invite?server=https%3A%2F%2Fchat.example.test&code=0123456789ABCDEF&code=0123456789ABCDEF").is_none());
+    }
 
     #[test]
     fn message_links_round_trip_with_canonical_origins() {

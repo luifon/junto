@@ -68,6 +68,7 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(info["CFBundleVersion"], "0.2.3")
             self.assertEqual(info["CFBundleShortVersionString"], "0.2.3")
             self.assertEqual(info["CFBundleExecutable"], "junto")
+            self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["junto"])
             for item in ["NSMicrophoneUsageDescription", "NSCameraUsageDescription", "NSScreenCaptureUsageDescription",
                          "NSDownloadsFolderUsageDescription", "NSLocalNetworkUsageDescription"]:
                 self.assertTrue(info[item])

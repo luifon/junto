@@ -297,6 +297,7 @@ pub struct Config {
     pub listen_address: SocketAddr,
     pub public_origins: PublicOrigins,
     pub server_name: String,
+    pub client_download_url: Option<url::Url>,
     pub trusted_proxies: Vec<crate::rate_limit::Network>,
     pub log_format: LogFormat,
     pub log_level: tracing::Level,
@@ -675,6 +676,7 @@ impl Config {
     pub const DATABASE_URL: &'static str = "JUNTO_DATABASE_URL";
     pub const LISTEN_ADDRESS: &'static str = "JUNTO_LISTEN_ADDRESS";
     pub const PUBLIC_ORIGINS: &'static str = "JUNTO_PUBLIC_ORIGINS";
+    pub const CLIENT_DOWNLOAD_URL: &'static str = "JUNTO_CLIENT_DOWNLOAD_URL";
     pub const SERVER_NAME: &'static str = "JUNTO_SERVER_NAME";
     pub const TRUSTED_PROXIES: &'static str = "JUNTO_TRUSTED_PROXIES";
     pub const LOG_FORMAT: &'static str = "JUNTO_LOG_FORMAT";
@@ -746,6 +748,26 @@ impl Config {
                 )
             })?,
         };
+
+        let client_download_url = value(Self::CLIENT_DOWNLOAD_URL)
+            .map(|text| {
+                let url = url::Url::parse(&text)
+                    .map_err(|error| invalid(Self::CLIENT_DOWNLOAD_URL, error.to_string()))?;
+                let origin = Origin::parse(&url.origin().ascii_serialization())
+                    .map_err(|error| invalid(Self::CLIENT_DOWNLOAD_URL, error.to_string()))?;
+                if (origin.scheme() != Scheme::Https && !origin.is_loopback())
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(invalid(
+                        Self::CLIENT_DOWNLOAD_URL,
+                        "use an HTTPS download page without credentials or a fragment".to_owned(),
+                    ));
+                }
+                Ok(url)
+            })
+            .transpose()?;
 
         let server_name = value(Self::SERVER_NAME)
             .map(|text| text.trim().to_owned())
@@ -1070,6 +1092,7 @@ impl Config {
             listen_address,
             public_origins,
             server_name,
+            client_download_url,
             trusted_proxies,
             log_format,
             log_level,
@@ -1113,6 +1136,39 @@ mod tests {
                 .iter()
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn download_pages_need_a_web_address_without_credentials() {
+        for address in [
+            "file:///tmp/download",
+            "javascript:alert(1)",
+            "http://downloads.example.test/",
+            "https://person@example.test/",
+            "https://downloads.example.test/#secret",
+        ] {
+            assert!(
+                Config::from_lookup(|key| match key {
+                    Config::DATABASE_URL => Some("postgres://example".to_owned()),
+                    Config::CLIENT_DOWNLOAD_URL => Some(address.to_owned()),
+                    _ => None,
+                })
+                .is_err()
+            );
+        }
+        for address in [
+            "https://downloads.example.test/",
+            "http://127.0.0.1:8080/download/",
+        ] {
+            assert!(
+                Config::from_lookup(|key| match key {
+                    Config::DATABASE_URL => Some("postgres://example".to_owned()),
+                    Config::CLIENT_DOWNLOAD_URL => Some(address.to_owned()),
+                    _ => None,
+                })
+                .is_ok()
+            );
         }
     }
 

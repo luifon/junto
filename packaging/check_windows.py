@@ -273,13 +273,18 @@ class Check:
         folder = local / "Programs/Junto"
         shortcut = roaming / "Microsoft/Windows/Start Menu/Programs/Junto.lnk"
         expected = self.packages / "package-directory/Junto"
-        with window_frame.kept_uninstall_entry():
+        with window_frame.kept_uninstall_entry(), window_frame.kept_scheme():
             for remove_data in (False, True):
                 result = ran([self.setup, "--quiet", "--no-start"], env=environment, timeout=300)
                 expect(result.returncode == 0 and "installed version 1.0.0" in result.stdout,
                        "the setup program did not install", result)
                 check_lifecycle.compare(folder.parent, folder, expected)
                 expect(shortcut.is_file(), "the setup program made no Start menu entry")
+                scheme = window_frame.registry_tree(window_frame.SCHEME_KEY)
+                expect(scheme is not None, "the setup program registered no URL scheme")
+                with window_frame.winreg.OpenKey(window_frame.winreg.HKEY_CURRENT_USER, window_frame.SCHEME_KEY + r"\shell\open\command") as key:
+                    command = window_frame.winreg.QueryValueEx(key, "")[0]
+                expect(command == f'"{folder / "junto.exe"}" "%1"', f"the scheme command is {command}")
                 entry = window_frame.uninstall_entry()
                 expect(entry is not None, "the setup program wrote no entry of the installed programs")
                 expect(entry["DisplayVersion"][0] == "1.0.0", f"the entry states {entry}")
@@ -307,6 +312,7 @@ class Check:
                 expect(removed, f"the removal did not end: folder {folder.exists()}, entry "
                                 f"{window_frame.uninstall_entry()}, left {listing(temporary)}")
                 expect(not shortcut.exists(), "the Start menu entry is still there")
+                expect(window_frame.registry_tree(window_frame.SCHEME_KEY) is None, "the URL scheme was not removed")
                 expect(not (local / "Programs/.Junto.junto-update").exists(), "the update directory is still there")
                 expect((data / "kept.txt").exists() != remove_data,
                        f"the data directory {'was not' if remove_data else 'was'} removed")

@@ -591,6 +591,7 @@ fn admin_options() -> PgConnectOptions {
 
 pub fn test_config() -> Config {
     Config {
+        client_download_url: None,
         attachments_directory: None,
         exports_directory: None,
         migration_copy: junto_server::bootstrap::MigrationCopy::None,

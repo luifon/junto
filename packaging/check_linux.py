@@ -172,7 +172,7 @@ class Check:
         result = ran([self.installed / "install-menu-entry"], env=dict(os.environ, HOME=str(home), XDG_DATA_HOME=""))
         expect(result.returncode == 0, "the menu entry was not written", result)
         entry = (home / f".local/share/applications/{linux.APPLICATION_ID}.desktop").read_text()
-        expect(f'Exec="{self.installed}/junto"' in entry and f"Icon={linux.APPLICATION_ID}" in entry, entry)
+        expect('Exec=/bin/sh -c ' in entry and str(self.installed / 'junto') in entry and 'MimeType=x-scheme-handler/junto;' in entry and f"Icon={linux.APPLICATION_ID}" in entry, entry)
         self.icon_theme(home / ".local")
 
     @step("the Debian package holds the program of the tarball, names its dependencies, and its program starts")

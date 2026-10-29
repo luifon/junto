@@ -306,3 +306,51 @@ def kept_uninstall_entry():
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
                 for name, (value, kind) in saved.items():
                     winreg.SetValueEx(key, name, 0, kind, value)
+
+
+SCHEME_KEY = r"Software\Classes\junto"
+
+
+def registry_tree(path):
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            children, values, _ = winreg.QueryInfoKey(key)
+            return ([winreg.EnumValue(key, index) for index in range(values)],
+                    {name: registry_tree(path + "\\" + name)
+                     for name in (winreg.EnumKey(key, index) for index in range(children))})
+    except FileNotFoundError:
+        return None
+
+
+def remove_registry_tree(path):
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            children = winreg.QueryInfoKey(key)[0]
+            names = [winreg.EnumKey(key, index) for index in range(children)]
+        for name in names:
+            remove_registry_tree(path + "\\" + name)
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+    except FileNotFoundError:
+        pass
+
+
+def restore_registry_tree(path, saved):
+    if saved is None:
+        return
+    values, children = saved
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as key:
+        for name, value, kind in values:
+            winreg.SetValueEx(key, name, 0, kind, value)
+    for name, child in children.items():
+        restore_registry_tree(path + "\\" + name, child)
+
+
+@contextlib.contextmanager
+def kept_scheme():
+    """Restore the existing URL handler and all of its subkeys after the setup check."""
+    saved = registry_tree(SCHEME_KEY)
+    try:
+        yield saved
+    finally:
+        remove_registry_tree(SCHEME_KEY)
+        restore_registry_tree(SCHEME_KEY, saved)

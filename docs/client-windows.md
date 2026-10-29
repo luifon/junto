@@ -26,6 +26,10 @@ The project does not buy a code-signing certificate (`docs/scope.md`). At the fi
 
 The server book and the device keys are in `%LOCALAPPDATA%\Junto` (ADR 0710).
 
+An invite link can open Junto with the server and code filled. Review the server and choose Join; opening the link does not spend the code. A browser invite page also shows the code and the download page selected by the server administrator.
+
+The setup program registers `junto://` links for your account. Uninstall removes the registration only when it names that installation.
+
 ## Log and error reports
 
 Junto writes its log to `%LOCALAPPDATA%\Junto\logs\junto.log` (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `%LOCALAPPDATA%\Junto\panics`, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. Starting Junto again with the same data directory restores the running window and exits the second process. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`%TEMP%`) (ADR 0757).

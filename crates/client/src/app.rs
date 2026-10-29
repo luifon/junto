@@ -26,6 +26,22 @@ pub(crate) fn main_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
     cx.try_global::<MainWindow>().map(|main| main.0.into())
 }
 
+pub fn open_url(url: &str, token: Option<&str>, cx: &mut App) {
+    if junto_client_core::links::parse(url).is_none() {
+        return;
+    }
+    crate::notify::bring_to_front(token, cx);
+    if let Some(main) = cx.try_global::<MainWindow>().map(|main| main.0) {
+        let _ = main.update(cx, |root, window, cx| {
+            if let Ok(shell) = root.view().clone().downcast::<Shell>() {
+                shell.update(cx, |shell, cx| {
+                    shell.open_url(url, window, cx);
+                });
+            }
+        });
+    }
+}
+
 /// Keeps the client and its connections alive when the main window closes.
 pub(crate) fn main_window_closing(state: &Entity<AppState>, cx: &mut App) {
     state.update(cx, |state, cx| {
