@@ -28,20 +28,18 @@ fn every_action_has_a_name_and_the_defaults_have_no_conflict() {
     assert_eq!(KeyAction::PushToTalk.default_keys(false), None);
 }
 
-/// No default takes the keys reserved for the quick switcher.
 #[test]
-fn no_default_takes_a_reserved_combination() {
-    for macos in [false, true] {
-        let reserved = KeyAction::reserved(macos);
-        assert_eq!(reserved.len(), 1);
-        for action in KeyAction::ALL {
-            if let Some(keys) = action.default_keys(macos) {
-                assert!(!reserved.contains(&keys), "{action:?} takes {keys}");
-            }
-        }
-    }
-    assert!(KeyAction::reserved(false).contains(&combo("control+k")));
-    assert!(KeyAction::reserved(true).contains(&combo("meta+k")));
+fn the_switcher_has_the_standard_configurable_shortcut() {
+    assert_eq!(
+        KeyAction::QuickSwitcher.default_keys(false),
+        Some(combo("control+k"))
+    );
+    assert_eq!(
+        KeyAction::QuickSwitcher.default_keys(true),
+        Some(combo("meta+k"))
+    );
+    assert!(KeyAction::reserved(false).is_empty());
+    assert!(KeyAction::reserved(true).is_empty());
 }
 
 #[test]

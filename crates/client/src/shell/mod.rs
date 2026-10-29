@@ -42,6 +42,7 @@ mod search;
 mod server_menu;
 mod settings;
 pub mod share;
+mod switcher;
 mod threads;
 pub mod title_bar;
 mod transcript_edit;
@@ -137,6 +138,7 @@ pub(crate) enum Layer {
     /// The chooser of a new direct conversation (ADR 0307). The state of the application
     /// holds the accounts that it lists.
     NewDirect,
+    QuickSwitcher,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
 }
@@ -236,6 +238,7 @@ pub struct Shell {
     /// The focus of the layer that is open.
     layer_focus: FocusHandle,
     pub(crate) layer: Layer,
+    switcher: switcher::Switcher,
     /// The message under the pointer. Only its row carries the bar of actions, so the
     /// other rows build, lay out and hit-test no hidden buttons at each frame (ADR 0914).
     pub(crate) hovered_message: Option<(Pane, junto_client_core::protocol::ids::MessageId)>,
@@ -499,6 +502,7 @@ impl Shell {
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
+        let switcher = switcher::Switcher::new(window, cx);
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
@@ -524,11 +528,13 @@ impl Shell {
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
-                this.state.update(cx, |state, _| {
+                this.state.update(cx, |state, cx| {
+                    state.close_switcher(own_entity, cx);
                     state.release_window_keys(own_entity);
                     state.end_keybind_recording(own_entity);
                 });
             }),
+            switcher.observe(window, cx),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
             Field::observe(
@@ -728,6 +734,7 @@ impl Shell {
             focus: cx.focus_handle(),
             layer_focus: cx.focus_handle(),
             layer: Layer::None,
+            switcher,
             return_focus: None,
             address,
             adding: None,
@@ -1005,6 +1012,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.keys.intercepted = None;
+        if self.switcher_key(keystroke, window, cx) {
+            return;
+        }
         if self.keys.recording.is_some() || self.state.read(cx).recording_keybind() {
             return;
         }
@@ -1329,6 +1339,9 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::QuickSwitcher) {
+            self.close_switcher(window, cx);
+        }
         if matches!(self.layer, Layer::None) {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
@@ -1346,6 +1359,10 @@ impl Shell {
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::QuickSwitcher) {
+            self.close_switcher(window, cx);
+            return;
+        }
         if matches!(self.layer, Layer::Join(_)) {
             // A code is not kept in a field that nobody sees.
             self.code
@@ -1910,7 +1927,11 @@ impl Shell {
                 .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
-            Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
+            Layer::None
+            | Layer::Welcome
+            | Layer::Settings
+            | Layer::LinkAll
+            | Layer::QuickSwitcher => false,
         };
         if stale {
             self.close_layer(window, cx);
@@ -1963,6 +1984,7 @@ impl Shell {
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::NewDirect => self.render_new_direct(cx),
+            Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
         }
     }

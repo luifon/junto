@@ -29,6 +29,7 @@ pub mod followed;
 pub mod menus;
 pub mod people;
 pub mod permissions;
+pub mod switcher;
 pub mod transcripts;
 pub mod tray;
 
@@ -1211,6 +1212,7 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         OpenSettings => "Settings",
         OpenAdministration => "Administration",
         OpenKeybinds => "Keybinds",
+        QuickSwitcher => "Quick switcher",
         ZoomIn => "Zoom in",
         ZoomOut => "Zoom out",
         ResetZoom => "Reset zoom",

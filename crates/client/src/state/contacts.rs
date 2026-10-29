@@ -30,33 +30,33 @@ struct Listed {
 
 /// A read on its way: the part of the name, and the place after which it reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Read {
-    part: String,
-    after: Option<String>,
+pub(super) struct Read {
+    pub(super) part: String,
+    pub(super) after: Option<String>,
 }
 
 /// What the application holds for the chooser.
 #[derive(Debug, Default)]
 pub struct ContactSearch {
     /// The server and the account that the chooser was opened for.
-    open: Option<(ServerId, AccountId)>,
+    pub(super) open: Option<(ServerId, AccountId)>,
     /// The part of the name that the person typed last.
     wanted: String,
     listed: Option<Listed>,
     /// One read runs at a time. A part that the person types during a read is read after
     /// it.
-    reading: Option<Read>,
+    pub(super) reading: Option<Read>,
     /// The person asked for the accounts after the listed ones.
-    more_wanted: bool,
+    pub(super) more_wanted: bool,
     /// Why the last read failed. No read starts by itself after a failure.
-    failed: Option<String>,
+    pub(super) failed: Option<String>,
     /// The number of times the chooser was opened or closed. An answer to a read of an
     /// earlier opening is dropped.
-    session: u64,
+    pub(super) session: u64,
 }
 
 impl ContactSearch {
-    fn open(&mut self, server_id: ServerId, account_id: AccountId) {
+    pub(super) fn open(&mut self, server_id: ServerId, account_id: AccountId) {
         *self = Self {
             open: Some((server_id, account_id)),
             session: self.session + 1,
@@ -64,14 +64,14 @@ impl ContactSearch {
         };
     }
 
-    fn close(&mut self) {
+    pub(super) fn close(&mut self) {
         *self = Self {
             session: self.session + 1,
             ..Self::default()
         };
     }
 
-    fn want(&mut self, part: &str) {
+    pub(super) fn want(&mut self, part: &str) {
         let part: String = part.trim().chars().take(LONGEST_PART).collect();
         if part != self.wanted {
             self.wanted = part;
@@ -81,7 +81,7 @@ impl ContactSearch {
     }
 
     /// The read that is to start now, which counts as on its way from then on.
-    fn next_read(&mut self) -> Option<Read> {
+    pub(super) fn next_read(&mut self) -> Option<Read> {
         if self.open.is_none() || self.reading.is_some() || self.failed.is_some() {
             return None;
         }
@@ -105,7 +105,12 @@ impl ContactSearch {
         Some(read)
     }
 
-    fn answered(&mut self, session: u64, read: Read, answer: Result<ContactPage, String>) {
+    pub(super) fn answered(
+        &mut self,
+        session: u64,
+        read: Read,
+        answer: Result<ContactPage, String>,
+    ) {
         if session != self.session {
             return;
         }
@@ -251,9 +256,14 @@ impl AppState {
     /// The chooser as the window shows it. Absent while it is closed, and when its server
     /// is gone or shows another account than the one that it was opened for.
     pub fn contacts_view(&self) -> Option<ContactsView> {
-        let (server_id, account_id) = self.contacts.open?;
-        let shows = self
-            .snapshots()
+        self.contacts.view(&self.snapshots())
+    }
+}
+
+impl ContactSearch {
+    pub(super) fn view(&self, servers: &[super::view::ServerSnapshot]) -> Option<ContactsView> {
+        let (server_id, account_id) = self.open?;
+        let shows = servers
             .iter()
             .find(|server| server.id == server_id)
             .and_then(shown_model)
@@ -261,7 +271,7 @@ impl AppState {
         if !shows {
             return None;
         }
-        let search = &self.contacts;
+        let search = self;
         let listed = search.listed.as_ref();
         Some(ContactsView {
             server_id,

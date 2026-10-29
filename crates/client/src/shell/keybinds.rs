@@ -84,6 +84,7 @@ impl Shell {
         }
         let view = self.state.read(cx).view();
         match action {
+            KeyAction::QuickSwitcher => self.open_switcher(window, cx),
             KeyAction::ShareScreen => {
                 if view.call.as_ref().is_some_and(|call| call.can_share) {
                     self.open(Open::SharePicker, window, cx);

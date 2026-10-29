@@ -296,6 +296,7 @@ pub struct ChannelRow {
     id: ElementId,
     icon: Icon,
     name: SharedString,
+    detail: Option<SharedString>,
     selected: bool,
     states: Vec<ChannelState>,
     unread: Option<UnreadSign>,
@@ -319,6 +320,7 @@ impl ChannelRow {
             id: id.into(),
             icon,
             name: name.into(),
+            detail: None,
             selected: false,
             states: Vec::new(),
             unread: None,
@@ -350,6 +352,11 @@ impl ChannelRow {
     /// The row cannot be used: it takes no click, and tells the reason.
     pub fn unavailable(mut self, reason: Option<impl Into<SharedString>>) -> Self {
         self.unavailable = reason.map(Into::into);
+        self
+    }
+
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
@@ -428,6 +435,10 @@ impl RenderOnce for ChannelRow {
             Some(reason) => format!("{label}, {reason}").into(),
             None => label,
         };
+        let label: SharedString = match &self.detail {
+            Some(detail) => format!("{label}, {detail}").into(),
+            None => label,
+        };
         let usable = self.unavailable.is_none();
         let sign = self.unread.as_ref().map(|sign| {
             let label = sign.label.clone();
@@ -480,7 +491,9 @@ impl RenderOnce for ChannelRow {
             .flex_none()
             .items_center()
             .gap(u(8.0))
-            .h(u(if self.nested {
+            .h(u(if self.detail.is_some() {
+                52.0
+            } else if self.nested {
                 theme.metrics.channel_row_height - 4.0
             } else {
                 theme.metrics.channel_row_height
@@ -558,7 +571,19 @@ impl RenderOnce for ChannelRow {
                 )
                 .into_any_element(),
             })
-            .child(div().flex_1().min_w_0().truncate().child(self.name))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().truncate().child(self.name))
+                    .children(self.detail.map(|detail| {
+                        div()
+                            .typeface(theme.types.small, &theme)
+                            .ink(colors.ink_3)
+                            .truncate()
+                            .child(detail)
+                    })),
+            )
             .children(sign)
             .when(!states.is_empty(), |row| {
                 row.child(

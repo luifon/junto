@@ -37,6 +37,7 @@ pub enum KeyAction {
     NextUnreadChannel,
     ToggleServerBook,
     Search,
+    QuickSwitcher,
     Notices,
     JumpToNewest,
     MembersList,
@@ -66,7 +67,7 @@ pub enum ActionGroup {
 }
 
 impl KeyAction {
-    pub const ALL: [KeyAction; 40] = [
+    pub const ALL: [KeyAction; 41] = [
         KeyAction::ToggleMute,
         KeyAction::ToggleSoundOff,
         KeyAction::PushToTalk,
@@ -90,6 +91,7 @@ impl KeyAction {
         KeyAction::NextUnreadChannel,
         KeyAction::ToggleServerBook,
         KeyAction::Search,
+        KeyAction::QuickSwitcher,
         KeyAction::Notices,
         KeyAction::JumpToNewest,
         KeyAction::MembersList,
@@ -128,6 +130,7 @@ impl KeyAction {
             | NextUnreadChannel
             | ToggleServerBook
             | Search
+            | QuickSwitcher
             | Notices
             | JumpToNewest
             | MembersList
@@ -173,6 +176,7 @@ impl KeyAction {
             | NextUnreadChannel
             | ToggleServerBook
             | Search
+            | QuickSwitcher
             | Notices
             | JumpToNewest
             | MembersList
@@ -262,6 +266,7 @@ impl KeyAction {
             NextUnreadChannel => &[Alt, Shift, Down],
             ToggleServerBook => &[main, Shift, Letter('B')],
             Search => &[main, Letter('F')],
+            QuickSwitcher => &[main, Letter('K')],
             Notices => &[main, Letter('I')],
             JumpToNewest => &[Shift, PageDown],
             MembersList => &[main, Letter('U')],
@@ -287,13 +292,9 @@ impl KeyAction {
 }
 
 impl KeyAction {
-    /// The keys reserved for the quick switcher (Command or Control with K).
-    pub fn reserved(macos: bool) -> Vec<KeyCombo> {
-        let main = if macos { Key::Meta } else { Key::Control };
-        [Key::Letter('K')]
-            .into_iter()
-            .filter_map(|key| KeyCombo::new([main, key]).ok())
-            .collect()
+    /// Every application shortcut belongs to the configurable action list.
+    pub fn reserved(_macos: bool) -> Vec<KeyCombo> {
+        Vec::new()
     }
 }
 

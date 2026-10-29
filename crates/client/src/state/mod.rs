@@ -36,6 +36,7 @@ pub mod recording;
 pub mod search;
 mod searching;
 pub mod startup;
+pub mod switcher;
 mod threads;
 pub mod transcript_work;
 mod tray;
@@ -531,6 +532,7 @@ pub struct AppState {
     account: account::AccountState,
     /// The chooser of a new direct conversation (ADR 0307).
     contacts: contacts::ContactSearch,
+    switchers: switcher::SwitchSearches,
     /// The role and the flow of the link on all servers (ADR 0782).
     linking: linking::LinkingState,
     /// What the person did with the update notice, and a move of a server that failed
@@ -1017,6 +1019,7 @@ impl AppState {
             admin: admin::AdminState::default(),
             account: account::AccountState::default(),
             contacts: contacts::ContactSearch::default(),
+            switchers: switcher::SwitchSearches::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
             update_install: update_install::InstallState::new(),
@@ -2001,6 +2004,7 @@ impl AppState {
     /// The state of a server was replaced, or the reader of its changes fell behind and
     /// can have missed that: every message can have changed meanwhile.
     fn reloaded(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.invalidate_switcher(server_id, cx);
         *self.reloads.entry(server_id).or_default() += 1;
         self.forget_quotes(server_id, None, cx);
         self.search_after_reload(server_id, cx);
@@ -2030,6 +2034,24 @@ impl AppState {
             }
             Notice::Ended { .. } => return,
         };
+        if matches!(
+            event.as_ref(),
+            Event::PermissionsChanged { .. }
+                | Event::AccountAdded { .. }
+                | Event::AccountProfileUpdated { .. }
+                | Event::AccountDepartureChanged { .. }
+                | Event::AccountStatusChanged { .. }
+                | Event::AccountServerRolesChanged { .. }
+                | Event::OwnerChanged { .. }
+                | Event::WorkspaceMemberAdded { .. }
+                | Event::WorkspaceMemberRemoved { .. }
+                | Event::WorkspaceDeleted { .. }
+                | Event::ServerRoleCreated { .. }
+                | Event::ServerRoleUpdated { .. }
+                | Event::ServerRoleDeleted { .. }
+        ) {
+            self.invalidate_switcher(server_id, cx);
+        }
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
         }
@@ -2581,6 +2603,7 @@ impl AppState {
     /// Runs after every change of the client core and of an event stream: starts and ends
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_switchers(cx);
         self.reconcile_direct(cx);
         self.play_call_sounds();
         let servers = self.client.servers();

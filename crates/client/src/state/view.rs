@@ -363,7 +363,7 @@ const MOST_COUNTED: u64 = 100;
 /// What each place of a server holds unread, made once for a derivation of the window.
 /// The summaries of a server are a list without an order; a search of the list for each
 /// row would cost the square of its length.
-struct Unreads(HashMap<PlaceId, Unread>);
+pub(super) struct Unreads(HashMap<PlaceId, Unread>);
 
 // How many indexes of summaries the derivations of this thread made. A test counts them.
 #[cfg(test)]
@@ -372,7 +372,7 @@ thread_local! {
 }
 
 impl Unreads {
-    fn of(model: &ServerModel) -> Self {
+    pub(super) fn of(model: &ServerModel) -> Self {
         #[cfg(test)]
         SUMMARIES_READ.with(|read| read.set(read.get() + 1));
         Self(
@@ -384,7 +384,7 @@ impl Unreads {
         )
     }
 
-    fn at(&self, place: PlaceId) -> Unread {
+    pub(super) fn at(&self, place: PlaceId) -> Unread {
         self.0.get(&place).copied().unwrap_or_default()
     }
 
@@ -403,7 +403,7 @@ impl Unreads {
     }
 
     /// Every place of the server together.
-    fn total(&self) -> Unread {
+    pub(super) fn total(&self) -> Unread {
         let mut unread = Unread::default();
         for held in self.0.values() {
             unread.add(*held);
