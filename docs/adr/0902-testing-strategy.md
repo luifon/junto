@@ -155,3 +155,5 @@ Tests on real systems:
 - Native capture is checked separately from CI, with explicit device tests and operator-assisted checks, so an error in capture can pass CI.
 - A release needs a macOS machine, a Linux desktop with both session types, a Windows 11 virtual machine and a clean system of each kind.
 - Capture on Windows is tested in a virtual machine. Real microphones and GPUs on Windows are covered only by the physical-machine tests before a release.
+
+The media engine’s external track-permission hold control is stored only with the `test-support` feature, as is its setter. The actor always owns the operative sender; production builds do not retain a second, unread test-control field.
