@@ -44,6 +44,7 @@ mod search;
 mod server_menu;
 mod settings;
 pub mod share;
+mod thread_menu;
 mod threads;
 pub mod title_bar;
 mod transcript_edit;
@@ -96,6 +97,7 @@ pub(crate) enum Layer {
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
     AccountMenu(Box<account_menus::OpenAccountMenu>),
+    ThreadMenu(thread_menu::ThreadMenuOpen),
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
     ComposerMenu(feed::ComposerMenuOpen),
@@ -1344,6 +1346,13 @@ impl Shell {
         if matches!(self.layer, Layer::None) {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
+        if let Layer::ThreadMenu(open) = self.layer {
+            if !matches!(&layer, Layer::ThreadMenu(next) if next.same_target(&open)) {
+                self.state.update(cx, |state, cx| {
+                    state.end_thread_menu(open.owner, open.root_id, cx)
+                });
+            }
+        }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
         if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
@@ -1358,6 +1367,11 @@ impl Shell {
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Layer::ThreadMenu(open) = self.layer {
+            self.state.update(cx, |state, cx| {
+                state.end_thread_menu(open.owner, open.root_id, cx)
+            });
+        }
         if matches!(self.layer, Layer::Join(_)) {
             // A code is not kept in a field that nobody sees.
             self.code
@@ -1935,6 +1949,7 @@ impl Shell {
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
+            Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
             Layer::AccountMenu(open) => {
                 !open.source_is_present(view)
                     || self
@@ -1962,6 +1977,7 @@ impl Shell {
             Layer::None
             | Layer::DeviceMenu(_)
             | Layer::PersonMenu(_)
+            | Layer::ThreadMenu(_)
             | Layer::MessageMenu(_)
             | Layer::NoticeMenu(..)
             | Layer::ComposerMenu(_)

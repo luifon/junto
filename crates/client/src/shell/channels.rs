@@ -488,6 +488,10 @@ impl Shell {
                         .selected(entry.open)
                         .unread(sign)
                         .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
+                        .open(matches!(&self.layer, Layer::ThreadMenu(open) if open.root_id == root_id))
+                        .when_some(account_owner, |row, owner| row.on_menu(Self::handler(cx, move |this, window, cx| {
+                            this.open_thread_menu(owner, workspace_id, channel_id, root_id, window, cx);
+                        })))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let Some(server_id) = server_id else {
                                 return;
@@ -497,11 +501,19 @@ impl Shell {
                             });
                             this.open_thread(server_id, channel_id, root_id, window, cx);
                         }));
+                    let menu = match self.layer {
+                        Layer::ThreadMenu(open) if open.root_id == root_id => {
+                            Some(self.render_thread_menu(open, entry, cx))
+                        }
+                        _ => None,
+                    };
                     rows.push(
                         div()
+                            .relative()
                             .flex_none()
                             .debug_selector(move || format!("thread-row:{root_id}"))
                             .child(row)
+                            .children(menu)
                             .into_any_element(),
                     );
                 }

@@ -1233,3 +1233,91 @@ fn thread_menu_actions_read_and_follow_their_target_without_opening_its_panel(
         state.set_thread_menu_follow(owner, root, false, cx)
     }));
 }
+
+#[gpui::test]
+fn a_thread_row_menu_reads_and_changes_follow_without_selecting_its_channel(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let own = window.own_account();
+    let root = admin.send(&world, target, document("A thread plan")).id;
+    admin.reply(&world, root, crate::notices::mention("For ", own));
+    let owner = window.handle().owner().unwrap();
+    let ready = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.thread_menu_control(owner, root)
+            })
+            .is_some_and(|control| !control.busy)
+    };
+    window.until("the other channel lists its unread thread", |window| {
+        window.shows_named(format!("thread-row:{root}"))
+    });
+    window.right_click_named(format!("thread-row:{root}"));
+    assert!(window.shows("thread-menu"));
+    assert!(!window.shows("channel-menu"));
+    assert!(!window.shows("thread-panel"));
+    window.until("the thread menu state is ready", ready);
+    window.click("thread-read");
+    window.until("the thread was read and the menu closed", |window| {
+        !window.shows("thread-menu")
+            && world
+                .run(window.handle().api().thread_state(root))
+                .unwrap()
+                .unread
+                == 0
+    });
+    assert_eq!(window.selected_channel(), selected);
+    assert!(!window.shows("thread-panel"));
+    admin.reply(&world, root, document("Another plan"));
+    window.until("the new reply lists the followed thread", |window| {
+        window.shows_named(format!("thread-row:{root}"))
+    });
+    window.right_click_named(format!("thread-row:{root}"));
+    window.until("the follow action is ready", ready);
+    window.click("thread-follow");
+    window.until("stop following was stored", |window| {
+        !window.shows("thread-menu")
+            && !world
+                .run(window.handle().api().thread_state(root))
+                .unwrap()
+                .following
+    });
+    assert_eq!(window.selected_channel(), selected);
+    assert!(!window.shows("thread-panel"));
+    admin.reply(
+        &world,
+        root,
+        crate::notices::mention("A further plan for ", own),
+    );
+    window.until("the mention lists the unfollowed thread", |window| {
+        window.shows_named(format!("thread-row:{root}"))
+    });
+    window.right_click_named(format!("thread-row:{root}"));
+    window.until("follow is ready", ready);
+    window.click("thread-follow");
+    window.until("following was stored", |window| {
+        !window.shows("thread-menu")
+            && world
+                .run(window.handle().api().thread_state(root))
+                .unwrap()
+                .following
+    });
+    assert_eq!(window.selected_channel(), selected);
+    window.right_click_named(format!("thread-row:{root}"));
+    window.click("thread-open");
+    window.until("the chosen thread is opened", |window| {
+        window.selected_channel() == target
+            && window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| thread.root_id == root)
+    });
+}
