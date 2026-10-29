@@ -374,13 +374,14 @@ impl Shell {
     /// results of its kind, which names a line of a transcript for a test.
     fn render_result(
         &mut self,
-        index: usize,
-        number: usize,
+        position: (usize, usize),
         row: &ResultRow,
         panel: &SearchPanel,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (index, number) = position;
         let colors = theme.colors;
         let server_id = panel.server_id;
         let (action, tag, selector): (SharedString, Option<SharedString>, String) = match row.target
@@ -404,7 +405,7 @@ impl Shell {
             icon: place_icon(&row.place),
             place: text::place_name(&row.place).into(),
             day: row.day.clone().into(),
-            action: Some(action),
+            action: Some(action.clone()),
             seed: row.author_id.as_uuid().as_u128(),
             picture: self.faces(server_id).image(row.author_id),
             author: row.author.clone().into(),
@@ -423,30 +424,76 @@ impl Shell {
         .into();
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let target = row.target;
-        div()
-            .id((
-                match row.target {
-                    ResultTarget::Message(_) => "result",
-                    ResultTarget::Transcript { .. } => "transcript-result",
-                },
-                index,
-            ))
-            .role(Role::ListItem)
-            .aria_label(label)
-            .debug_selector(move || selector.clone())
-            .flex_none()
-            .border_t_1()
-            .border_color(Hsla::from(colors.rule_soft))
-            .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
-            .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
-            .focus_visible(move |style| style.shadow(ring))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.go_to_result(server_id, target, cx);
-            }))
-            .child(shown.element(theme, cx))
-            .into_any_element()
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
+        let copied = row.text.clone();
+        let (frame, actions) = crate::ui::collect_actions(|| {
+            crate::ui::RowAction::new(
+                action.clone(),
+                cx.listener(move |this, _, _, cx| {
+                    this.go_to_result(server_id, target, cx);
+                }),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_TEXT,
+                cx.listener(move |this, _, _, cx| {
+                    this.copy_text(copied.clone(), cx);
+                }),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_TARGET_LINK,
+                cx.listener(move |this, _, _, cx| {
+                    let state = this.state.read(cx);
+                    let link = match target {
+                        ResultTarget::Message(id) => state.message_link(server_id, id),
+                        ResultTarget::Transcript { recording_id, .. } => {
+                            state.recording_link(server_id, recording_id)
+                        }
+                    };
+                    if let Some(link) = link {
+                        this.copy_text(link, cx);
+                    }
+                }),
+            )
+            .register();
+            div()
+                .id((
+                    match row.target {
+                        ResultTarget::Message(_) => "result",
+                        ResultTarget::Transcript { .. } => "transcript-result",
+                    },
+                    index,
+                ))
+                .role(Role::ListItem)
+                .aria_label(label)
+                .debug_selector(move || selector.clone())
+                .flex_none()
+                .border_t_1()
+                .border_color(Hsla::from(colors.rule_soft))
+                .cursor_pointer()
+                .focusable()
+                .tab_stop(true)
+                .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
+                .focus_visible(move |style| style.shadow(ring))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.go_to_result(server_id, target, cx);
+                }))
+                .child(shown.element(theme, cx))
+        });
+        let id: SharedString = format!(
+            "search-actions:{owner:?}:{target:?}:{}:{:?}:{:?}:{:?}",
+            panel.text,
+            panel.channel.as_ref().map(|(id, _)| id),
+            panel.author.as_ref().map(|(id, _)| id),
+            panel.date
+        )
+        .into();
+        crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()
     }
 
     /// Goes to what a result of a search names.
@@ -484,7 +531,6 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let _ = window;
         let theme = theme(cx);
         let colors = theme.colors;
         let found = panel.results.len();
@@ -587,7 +633,7 @@ impl Shell {
                             transcripts - 1
                         }
                     };
-                    rows.push(self.render_result(index, number, row, panel, &theme, cx));
+                    rows.push(self.render_result((index, number), row, panel, &theme, window, cx));
                 }
                 // "Show more results" stands under the list, at a place of its own while
                 // results are listed: a page that arrives does not move it.

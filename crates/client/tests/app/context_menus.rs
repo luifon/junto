@@ -994,3 +994,40 @@ fn a_pending_mentions_account_menu_closes_when_the_message_is_discarded(cx: &mut
     });
     assert!(!window.shows("account-menu"));
 }
+
+#[gpui::test]
+fn a_search_result_menu_copies_its_text_and_link_and_opens_its_target(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let message = admin.send(&world, target, document("A quartz plan"));
+    window.search_for("quartz");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages().len(), 1);
+    window.right_click_named(format!("search-result:{}", message.id));
+    assert!(window.shows("row-context-menu"));
+    window.click_named("context-action:Copy text".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "A quartz plan"
+    );
+    assert_eq!(window.selected_channel(), selected);
+    window.right_click_named(format!("search-result:{}", message.id));
+    window.click_named("context-action:Copy link".to_owned());
+    let link = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(
+        matches!(junto_client_core::links::parse(&link), Some(junto_client_core::links::AppLink::Message { id, .. }) if id == message.id)
+    );
+    window.right_click_named(format!("search-result:{}", message.id));
+    window.click_named("context-action:Go to message".to_owned());
+    window.until("the search target is opened", |window| {
+        window.selected_channel() == target
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == message.id && row.target)
+    });
+}

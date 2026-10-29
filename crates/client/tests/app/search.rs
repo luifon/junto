@@ -847,3 +847,53 @@ fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
         ["quartz in random", "quartz in random again"]
     );
 }
+
+#[gpui::test]
+fn a_transcript_search_result_menu_copies_its_line_and_recording_link_and_opens_it(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let workspace = window.view().workspace().unwrap().id;
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap()
+        .id;
+    let recording = world.run(seed_transcript(
+        &server,
+        workspace,
+        voice,
+        window.own_account(),
+        "an ivory plan",
+    ));
+    window.search_for("ivory");
+    assert_eq!(window.until_searched().transcripts().len(), 1);
+    window.right_click_named("search-transcript-0".to_owned());
+    assert!(window.shows("row-context-menu"));
+    window.click_named("context-action:Copy text".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "an ivory plan"
+    );
+    assert_eq!(window.selected_channel(), selected);
+    window.right_click_named("search-transcript-0".to_owned());
+    window.click_named("context-action:Copy link".to_owned());
+    let link = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(
+        matches!(junto_client_core::links::parse(&link), Some(junto_client_core::links::AppLink::Recording { id, .. }) if id.as_uuid() == recording)
+    );
+    window.right_click_named("search-transcript-0".to_owned());
+    window.click_named("context-action:Open transcript".to_owned());
+    window.until("the recording of the transcript result is open", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.transcript.as_ref())
+            .is_some_and(|panel| panel.recording_id.as_uuid() == recording)
+    });
+}
