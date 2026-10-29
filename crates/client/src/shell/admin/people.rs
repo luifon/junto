@@ -1702,6 +1702,8 @@ impl Shell {
             .flex()
             .flex_wrap()
             .flex_none()
+            .w_full()
+            .min_w_0()
             .items_center()
             .gap(u(8.0))
             .child(
@@ -1755,6 +1757,7 @@ impl Shell {
             .mb(u(4.0))
             .child(
                 Notice::new(txt::CODE_ONCE)
+                    .stacked()
                     .selector("invite-made")
                     .action(actions),
             )
