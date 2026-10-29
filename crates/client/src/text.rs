@@ -3769,3 +3769,9 @@ mod tests {
 }
 
 pub const COPY_TARGET_LINK: &str = "Copy link";
+
+pub const EDIT_TEXT_MENU: &str = "Edit text";
+pub const CUT_SELECTION: &str = "Cut";
+pub const COPY_SELECTION: &str = "Copy";
+pub const PASTE_TEXT: &str = "Paste";
+pub const SELECT_ALL_TEXT: &str = "Select all";

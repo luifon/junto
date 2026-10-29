@@ -222,9 +222,12 @@ impl RenderOnce for Field {
                     .flex_1()
                     .min_w_0()
                     .px(u(look.padding))
-                    .child(Input::new(&self.state)),
+                    .child(super::InputMenu::new(&self.state, Input::new(&self.state))),
             )
             .children(self.trailing)
             .children(super::reveal::report(&focus, window))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -27,12 +27,16 @@ pub trait ContextMenuExt: InteractiveElement {
         })
         .on_key_down(move |event, window, cx| {
             let keys = &event.keystroke;
-            if keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift) {
+            if context_menu_key(keys) {
                 cx.stop_propagation();
                 handler(window, cx);
             }
         })
     }
+}
+
+pub(super) fn context_menu_key(keys: &gpui::Keystroke) -> bool {
+    keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift)
 }
 
 impl<T: InteractiveElement> ContextMenuExt for T {}
@@ -88,14 +92,18 @@ impl Menu {
 
     /// Floats beside its target, within the window, above scrolled content.
     pub fn popup(self, offset: Point<Pixels>) -> AnyElement {
-        gpui::deferred(
-            gpui::anchored()
-                .offset(offset)
-                .snap_to_window_with_margin(gpui::px(8.0))
-                .child(self),
-        )
-        .with_priority(1)
-        .into_any_element()
+        self.floating(gpui::anchored().offset(offset))
+    }
+
+    /// Floats at a position in window coordinates, such as an input's caret.
+    pub fn popup_at(self, position: Point<Pixels>) -> AnyElement {
+        self.floating(gpui::anchored().position(position))
+    }
+
+    fn floating(self, anchor: gpui::Anchored) -> AnyElement {
+        gpui::deferred(anchor.snap_to_window_with_margin(gpui::px(8.0)).child(self))
+            .with_priority(1)
+            .into_any_element()
     }
 
     /// Runs when Escape is pressed in the menu and when a click lands outside it.
