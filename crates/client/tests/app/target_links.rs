@@ -370,3 +370,161 @@ fn file_boundaries_a_picture_preview_closes_when_its_account_logs_out(cx: &mut T
         !window.shows("picture-viewer")
     });
 }
+
+#[gpui::test]
+fn thread_links_open_the_panel_and_archived_roots_but_refuse_replies_and_missing_roots(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::ids::MessageId;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let root = admin
+        .send(&world, target, document("Thread destination"))
+        .id;
+    let reply = admin.reply(&world, root, document("The linked reply"));
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_thread_link(&origin, root, cx)
+    }));
+    window.until("the linked thread panel is loaded", |window| {
+        window.selected_channel() == target
+            && window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| {
+                    thread.root_id == root && thread.feed.as_ref().is_some_and(|feed| feed.loaded)
+                })
+    });
+    window.click_channel("general");
+    world
+        .run(admin.handle.api().archive_channel(target))
+        .unwrap();
+    window.until("the target is archived", |window| {
+        !window.channels().iter().any(|row| row.id == target)
+    });
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_thread_link(&origin, root, cx)
+    }));
+    window.until("the archived thread panel is loaded", |window| {
+        window.selected_channel() == target
+            && window.view().workspace().is_some_and(|workspace| {
+                workspace.archived.is_some()
+                    && workspace.thread.as_ref().is_some_and(|thread| {
+                        thread.root_id == root
+                            && thread.feed.as_ref().is_some_and(|feed| feed.loaded)
+                    })
+            })
+    });
+    window.click_channel("general");
+    let deleted = admin
+        .send(
+            &world,
+            window.selected_channel(),
+            document("Removed thread"),
+        )
+        .id;
+    world
+        .run(admin.handle.api().delete_message(deleted))
+        .unwrap();
+    let workspace = window.view().workspace().unwrap().id;
+    let everyone = world
+        .run(admin.handle.api().workspace_roles(workspace))
+        .unwrap()
+        .into_iter()
+        .find(|role| role.is_everyone)
+        .unwrap()
+        .id;
+    world
+        .run(admin.handle.api().set_channel_rule(
+            target,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ViewChannel],
+            },
+        ))
+        .unwrap();
+    for id in [root, reply, deleted, MessageId::generate()] {
+        assert!(window.state.update(&mut window.cx, |state, cx| {
+            state.open_thread_link(&origin, id, cx)
+        }));
+        window.until("the thread target is refused", |window| {
+            window.shows("message-link-refusal")
+        });
+        assert!(!window.shows("thread-panel"));
+        assert_eq!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.message_link_refusal()),
+            Some(junto_client::text::MESSAGE_LINK_UNAVAILABLE)
+        );
+        window.click("dismiss-message-link-refusal");
+    }
+    let unknown = ServerAddress::parse("https://unknown.example.test").unwrap();
+    assert!(!window.state.update(&mut window.cx, |state, cx| {
+        state.open_thread_link(&unknown, root, cx)
+    }));
+}
+
+#[gpui::test]
+fn a_late_thread_link_does_not_replace_a_newly_opened_thread_on_the_same_channel(
+    cx: &mut TestAppContext,
+) {
+    use crate::support::FaultProxy;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let origin = ServerAddress::parse(&proxy.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    let target = window.selected_channel();
+    let first = admin.send(&world, target, document("First thread")).id;
+    admin.reply(&world, first, document("First answer"));
+    let second = admin.send(&world, target, document("Second thread")).id;
+    admin.reply(&world, second, document("Second answer"));
+    window.until_message("Second thread");
+    proxy.hold_answer_ending("GET", &format!("/messages/{first}"));
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_thread_link(&origin, first, cx)
+    }));
+    window.until("the linked root lookup is held", |_| {
+        proxy.answers_waiting() == 1
+    });
+    let server_id = window.handle().id();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.open_thread(server_id, target, second, cx)
+    });
+    window.until("the newly chosen thread is loaded", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .is_some_and(|thread| {
+                thread.root_id == second && thread.feed.as_ref().is_some_and(|feed| feed.loaded)
+            })
+    });
+    proxy.release();
+    let route = format!("/api/v1/channels/{target}");
+    window.until("the old link lookup completed", |_| {
+        proxy
+            .seen(&route)
+            .iter()
+            .any(|request| request.answer.is_some())
+    });
+    assert_eq!(
+        window
+            .view()
+            .workspace()
+            .unwrap()
+            .thread
+            .as_ref()
+            .unwrap()
+            .root_id,
+        second
+    );
+    assert!(!window.shows("message-link-refusal"));
+}

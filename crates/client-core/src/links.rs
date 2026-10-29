@@ -13,6 +13,10 @@ pub enum AppLink {
         server: ServerAddress,
         id: MessageId,
     },
+    Thread {
+        server: ServerAddress,
+        id: MessageId,
+    },
     Channel {
         server: ServerAddress,
         id: ChannelId,
@@ -55,6 +59,13 @@ pub fn parse(text: &str) -> Option<AppLink> {
         "message" => {
             let (server, id) = read_target(&link, "id")?;
             Some(AppLink::Message {
+                server,
+                id: id.parse().ok()?,
+            })
+        }
+        "thread" => {
+            let (server, id) = read_target(&link, "id")?;
+            Some(AppLink::Thread {
                 server,
                 id: id.parse().ok()?,
             })
@@ -111,6 +122,7 @@ fn read_target(link: &Url, parameter: &str) -> Option<(ServerAddress, String)> {
 pub fn format(link: &AppLink) -> String {
     match link {
         AppLink::Message { server, id } => write_target("message", server, "id", &id.to_string()),
+        AppLink::Thread { server, id } => write_target("thread", server, "id", &id.to_string()),
         AppLink::Channel { server, id } => write_target("channel", server, "id", &id.to_string()),
         AppLink::Conversation { server, id } => {
             write_target("conversation", server, "id", &id.to_string())
@@ -219,8 +231,8 @@ mod tests {
     }
 
     #[test]
-    fn channel_conversation_file_and_recording_links_round_trip() {
-        for kind in ["channel", "conversation", "file", "recording"] {
+    fn channel_conversation_file_recording_and_thread_links_round_trip() {
+        for kind in ["channel", "conversation", "file", "recording", "thread"] {
             let written = format!("junto://{kind}?server=https%3A%2F%2Fchat.example.test&id={ID}");
             let link = parse(&written).unwrap_or_else(|| panic!("{kind} is not accepted"));
             assert_eq!(format(&link), written);

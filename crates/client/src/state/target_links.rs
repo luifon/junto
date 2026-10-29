@@ -5,9 +5,9 @@ use junto_client_core::address::ServerAddress;
 use junto_client_core::links::{self, AppLink};
 use junto_client_core::model::{AdminPart, PlaceId};
 use junto_client_core::protocol::ids::{
-    AccountId, AttachmentId, ChannelId, ConversationId, RecordingId,
+    AccountId, AttachmentId, ChannelId, ConversationId, MessageId, RecordingId,
 };
-use junto_client_core::protocol::message::Message;
+use junto_client_core::protocol::message::{Message, MessagePlace};
 use junto_client_core::protocol::recording::Recording;
 use junto_client_core::protocol::structure::Channel;
 
@@ -24,6 +24,7 @@ impl gpui::EventEmitter<OpenFileLink> for AppState {}
 
 #[derive(Clone, Copy)]
 enum Target {
+    Thread(MessageId),
     Recording(RecordingId),
     File(AttachmentId),
     Channel(ChannelId),
@@ -31,6 +32,7 @@ enum Target {
 }
 
 enum Destination {
+    Thread(Channel, MessageId),
     Recording(Recording),
     File(Message, AttachmentId),
     Channel(Channel),
@@ -98,6 +100,24 @@ impl Readers {
 
     async fn resolve(&mut self, account: AccountId, target: Target) -> Option<Destination> {
         match target {
+            Target::Thread(id) => {
+                let root = self.server.api_for(account).message(id).await.ok()?;
+                if root.id != id || root.deleted || root.thread_root.is_some() {
+                    return None;
+                }
+                let MessagePlace::Channel {
+                    workspace_id,
+                    channel_id,
+                } = root.place
+                else {
+                    return None;
+                };
+                let channel = self.channel(account, channel_id).await?;
+                if channel.workspace_id != workspace_id {
+                    return None;
+                }
+                Some(Destination::Thread(channel, id))
+            }
             Target::Recording(id) => {
                 let recording = self
                     .server
@@ -146,6 +166,28 @@ impl Readers {
 }
 
 impl AppState {
+    pub fn thread_link(
+        &self,
+        server_id: junto_client_core::protocol::ids::ServerId,
+        id: MessageId,
+    ) -> Option<String> {
+        let server = self.client.server(server_id)?;
+        Some(links::format(&AppLink::Thread {
+            server: server.entry().address,
+            id,
+        }))
+    }
+
+    /// False asks the URL router to open the add-server form with this origin.
+    pub fn open_thread_link(
+        &mut self,
+        address: &ServerAddress,
+        id: MessageId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.open_target_link(address, Target::Thread(id), cx)
+    }
+
     pub fn recording_link(
         &self,
         server_id: junto_client_core::protocol::ids::ServerId,
@@ -236,6 +278,8 @@ impl AppState {
         let server_id = server.id();
         let navigation = self.navigations;
         let transcript = self.selection.transcript;
+        let thread = self.selection.thread;
+        let pins = self.selection.pins;
         cx.spawn(async move |this, cx| {
             let mut readers = Readers {
                 server,
@@ -245,6 +289,8 @@ impl AppState {
             let _ = this.update(cx, |this, cx| {
                 if this.message_link_asks != number
                     || this.navigations != navigation
+                    || this.selection.thread != thread
+                    || this.selection.pins != pins
                     || this.selection.transcript != transcript
                     || this
                         .client
@@ -255,6 +301,11 @@ impl AppState {
                     return;
                 }
                 match destination {
+                    Some(Destination::Thread(channel, root)) => {
+                        this.selection.transcript = None;
+                        this.show_channel(server_id, channel.workspace_id, channel.id, cx);
+                        this.open_thread(server_id, channel.id, root, cx);
+                    }
                     Some(Destination::Recording(recording)) => this.open_transcript(
                         server_id,
                         recording.workspace_id,

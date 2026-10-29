@@ -202,6 +202,23 @@ impl Shell {
                                 }
                             })),
                     )
+                    .child(
+                        MenuItem::new("thread-copy-link", text::COPY_TARGET_LINK)
+                            .selector("thread-copy-link")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if !this.thread_menu_current(open, cx) {
+                                    return;
+                                }
+                                let link = this
+                                    .state
+                                    .read(cx)
+                                    .thread_link(open.owner.entry.server_id, open.root_id);
+                                this.close_layer(window, cx);
+                                if let Some(link) = link {
+                                    this.copy_text(link, cx);
+                                }
+                            })),
+                    )
                     .when(failed, |menu| {
                         menu.child(
                             Notice::error(text::THREAD_FAILED).selector("thread-menu-failed"),

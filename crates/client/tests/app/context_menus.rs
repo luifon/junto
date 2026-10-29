@@ -1263,6 +1263,18 @@ fn a_thread_row_menu_reads_and_changes_follow_without_selecting_its_channel(
     assert!(window.shows("thread-menu"));
     assert!(!window.shows("channel-menu"));
     assert!(!window.shows("thread-panel"));
+    window.click("thread-copy-link");
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert_eq!(
+        junto_client_core::links::parse(&copied),
+        Some(junto_client_core::links::AppLink::Thread {
+            server: junto_client_core::address::ServerAddress::parse(&server.address()).unwrap(),
+            id: root
+        })
+    );
+    assert!(window.shows("copied-confirmation"));
+    assert_eq!(window.selected_channel(), selected);
+    window.right_click_named(format!("thread-row:{root}"));
     window.until("the thread menu state is ready", ready);
     window.click("thread-read");
     window.until("the thread was read and the menu closed", |window| {
