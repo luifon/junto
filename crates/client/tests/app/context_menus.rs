@@ -679,3 +679,32 @@ fn an_application_link_can_be_sent_and_copied_from_its_rendered_menu(cx: &mut Te
     );
     assert!(window.shows("copied-confirmation"));
 }
+
+#[gpui::test]
+fn a_member_row_copies_identity_and_opens_its_existing_direct_action(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let account = admin.handle.account().unwrap();
+    window.click("members-button");
+    window.until("the member is visible", |window| window.shows_member("Ada"));
+    window.right_click_named(format!("member-row:{account}"));
+    assert!(window.shows("row-context-menu"));
+    window.click_named("context-action:Copy account ID".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        account.to_string()
+    );
+    assert!(window.shows("copied-confirmation"));
+    window.right_click_named(format!("member-row:{account}"));
+    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.until("the selected member's conversation is shown", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .conversation
+                .as_ref()
+                .is_some_and(|conversation| conversation.account_id == account)
+        })
+    });
+}

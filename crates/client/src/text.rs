@@ -3793,3 +3793,6 @@ pub const SELECT_ALL: &str = "Select all";
 
 pub const LINK_ACTIONS: &str = "Link actions";
 pub const OPEN_LINK: &str = "Open link";
+
+pub const COPY_NAME: &str = "Copy name";
+pub const COPY_ACCOUNT_ID: &str = "Copy account ID";

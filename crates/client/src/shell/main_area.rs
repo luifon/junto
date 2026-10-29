@@ -1446,7 +1446,7 @@ impl Shell {
         let refused = lists.conversation_refused.clone();
         let asked = lists.conversation_asked;
         let count = rows.len();
-        let render = cx.processor(move |this: &mut Self, index: usize, _window, cx| {
+        let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
             if index == 0 {
                 return div()
                     .w_full()
@@ -1462,6 +1462,7 @@ impl Shell {
                         server_id,
                         refused.as_ref(),
                         asked,
+                        window,
                         cx,
                     ))
                     .into_any_element(),
@@ -1511,6 +1512,7 @@ impl Shell {
         server_id: Option<ServerId>,
         refused: Option<&ConversationRefusal>,
         asked: Option<AccountId>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1518,102 +1520,118 @@ impl Shell {
         let faces = self.shown_faces();
         let detail: SharedString = member.roles.join(" · ").into();
         let account_id = member.account_id;
-        let write = (!member.is_self).then(|| {
-            div()
-                .flex_none()
-                .debug_selector(move || format!("message-member:{account_id}"))
-                .child(
-                    Button::new(("message-member", index))
-                        .kind(ButtonKind::Ghost)
-                        .icon(Icon::Chat)
-                        .tooltip(text::message_person(&member.name))
-                        .accessible_label(text::message_person(&member.name))
-                        .disabled(asked == Some(account_id))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let Some(server_id) = server_id else {
-                                return;
-                            };
-                            this.state.update(cx, |state, cx| {
-                                state.open_conversation(server_id, account_id, cx);
-                            });
-                        })),
-                )
-        });
-        let refusal = refused
-            .filter(|refusal| refusal.account_id == account_id)
-            .map(|refusal| {
+        let owner = server_id.and_then(|id| self.state.read(cx).server(id)?.owner());
+        let (row, actions) = crate::ui::collect_actions(|| {
+            self.account_copy_actions(account_id, member.name.clone(), cx);
+            let write = (!member.is_self).then(|| {
                 div()
-                    .debug_selector(|| "conversation-refused".to_owned())
-                    .typeface(theme.types.small, &theme)
-                    .line_height(u(17.0))
-                    .ink(colors.cinnabar_ink)
-                    .child(SharedString::from(refusal.reason.clone()))
-            });
-        div()
-            .id(("member", index))
-            .role(Role::ListItem)
-            .aria_label(member.name.clone())
-            .debug_selector(move || format!("member-row:{account_id}"))
-            .flex()
-            .flex_none()
-            .gap(u(10.0))
-            .pt(u(7.0))
-            .pb(u(8.0))
-            .pl(u(14.0))
-            .pr(u(12.0))
-            .when(index > 0, |row| {
-                row.border_t_1().border_color(Hsla::from(colors.rule_soft))
-            })
-            .child(div().mt(u(2.0)).child(super::people::avatar_of(
-                &faces,
-                member.account_id,
-                &member.name,
-                member.pictured,
-                30.0,
-            )))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
+                    .flex_none()
+                    .debug_selector(move || format!("message-member:{account_id}"))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(u(7.0))
-                            .line_height(u(19.0))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .typeface(theme.types.name, &theme)
-                                    .line_height(u(19.0))
-                                    .ink(colors.ink)
-                                    .child(member.name.clone()),
-                            )
-                            .when(member.is_self, |line| {
-                                line.child(
-                                    div()
-                                        .flex_none()
-                                        .typeface(theme.types.small, &theme)
-                                        .ink(colors.ink_2)
-                                        .child(text::YOU),
-                                )
-                            }),
+                        Button::new(("message-member", index))
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Chat)
+                            .tooltip(text::message_person(&member.name))
+                            .accessible_label(text::message_person(&member.name))
+                            .disabled(asked == Some(account_id))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let Some(server_id) = server_id else {
+                                    return;
+                                };
+                                this.state.update(cx, |state, cx| {
+                                    state.open_conversation(server_id, account_id, cx);
+                                });
+                            })),
                     )
-                    .when(!detail.is_empty(), |column| {
-                        column.child(
+            });
+            let refusal = refused
+                .filter(|refusal| refusal.account_id == account_id)
+                .map(|refusal| {
+                    div()
+                        .debug_selector(|| "conversation-refused".to_owned())
+                        .typeface(theme.types.small, &theme)
+                        .line_height(u(17.0))
+                        .ink(colors.cinnabar_ink)
+                        .child(SharedString::from(refusal.reason.clone()))
+                });
+            div()
+                .id(("member", index))
+                .role(Role::ListItem)
+                .aria_label(member.name.clone())
+                .debug_selector(move || format!("member-row:{account_id}"))
+                .flex()
+                .flex_none()
+                .gap(u(10.0))
+                .pt(u(7.0))
+                .pb(u(8.0))
+                .pl(u(14.0))
+                .pr(u(12.0))
+                .when(index > 0, |row| {
+                    row.border_t_1().border_color(Hsla::from(colors.rule_soft))
+                })
+                .child(div().mt(u(2.0)).child(super::people::avatar_of(
+                    &faces,
+                    member.account_id,
+                    &member.name,
+                    member.pictured,
+                    30.0,
+                )))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
                             div()
-                                .typeface(theme.types.small, &theme)
-                                .line_height(u(18.0))
-                                .ink(colors.ink_2)
-                                .truncate()
-                                .child(detail),
+                                .flex()
+                                .items_center()
+                                .gap(u(7.0))
+                                .line_height(u(19.0))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .typeface(theme.types.name, &theme)
+                                        .line_height(u(19.0))
+                                        .ink(colors.ink)
+                                        .child(member.name.clone()),
+                                )
+                                .when(member.is_self, |line| {
+                                    line.child(
+                                        div()
+                                            .flex_none()
+                                            .typeface(theme.types.small, &theme)
+                                            .ink(colors.ink_2)
+                                            .child(text::YOU),
+                                    )
+                                }),
                         )
-                    })
-                    .children(refusal),
-            )
-            .children(write)
-            .into_any_element()
+                        .when(!detail.is_empty(), |column| {
+                            column.child(
+                                div()
+                                    .typeface(theme.types.small, &theme)
+                                    .line_height(u(18.0))
+                                    .ink(colors.ink_2)
+                                    .truncate()
+                                    .child(detail),
+                            )
+                        })
+                        .children(refusal),
+                )
+                .children(write)
+        });
+        let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+        let row = row
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring));
+        crate::ui::bind_action_menu(
+            row,
+            SharedString::from(format!("member-actions:{owner:?}:{account_id}")),
+            actions,
+            window,
+            cx,
+        )
+        .into_any_element()
     }
 
     /// The side panel of the members with its header and its body.
