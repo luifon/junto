@@ -36,6 +36,7 @@ pub mod recording;
 pub mod search;
 mod searching;
 mod target_links;
+pub use target_links::OpenFileLink;
 mod threads;
 pub mod transcript_work;
 mod tray;

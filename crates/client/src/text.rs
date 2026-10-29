@@ -3780,3 +3780,6 @@ pub const ROW_ACTIONS: &str = "Row actions";
 pub const COPY_TEXT: &str = "Copy text";
 
 pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
+
+pub const LINKED_FILE: &str = "File";
+pub const COPY_FILE_NAME: &str = "Copy file name";

@@ -165,3 +165,138 @@ fn a_late_channel_link_does_not_take_over_navigation_or_keep_archive_readers(
     assert_eq!(window.selected_channel(), next);
     assert!(!window.shows("message-link-refusal"));
 }
+
+#[gpui::test]
+fn a_file_link_opens_its_message_and_shows_the_file_with_copy_and_download_actions(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::links::{self, AppLink};
+    use junto_client_core::transfers::UploadSource;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let place = PlaceId::Channel(target);
+    let bytes = b"The plan for the week";
+    let (file, message) = world.run(async {
+        let file = admin
+            .handle
+            .transfers()
+            .upload(
+                place,
+                UploadSource::Bytes {
+                    name: "planning.txt".to_owned(),
+                    bytes: std::sync::Arc::new(bytes.to_vec()),
+                },
+            )
+            .finished()
+            .await
+            .unwrap();
+        let message = admin
+            .handle
+            .api()
+            .send_message(
+                place,
+                &SendMessage {
+                    document: document("Linked report"),
+                    reply_to: None,
+                    attachments: vec![file],
+                },
+            )
+            .await
+            .unwrap();
+        (file, message)
+    });
+    let downloads = tempfile::tempdir().unwrap();
+    let directory = downloads.path().to_path_buf();
+    window.state.update(&mut window.cx, |state, _| {
+        state.set_download_directory(directory)
+    });
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, file, cx)
+    }));
+    window.until("the linked file is shown", |window| {
+        window.shows("linked-file-dialog")
+    });
+    assert_eq!(window.selected_channel(), target);
+    window.right_click_named("linked-file-row".to_owned());
+    window.click_named("context-action:Copy file name".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "planning.txt"
+    );
+    assert!(window.shows("linked-file-dialog") && window.shows("copied-confirmation"));
+    window.click("file-copy-link");
+    assert_eq!(
+        links::parse(&window.cx.read_from_clipboard().unwrap().text().unwrap()),
+        Some(AppLink::File {
+            server: origin,
+            id: file
+        })
+    );
+    window.click_named(format!("linked-download:{file}"));
+    window.until("the linked file is downloaded", |_| {
+        std::fs::read(downloads.path().join("planning.txt")).is_ok_and(|read| read == bytes)
+    });
+    window.press("escape");
+    window.until("the source message is marked", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == message.id && row.target)
+    });
+}
+
+#[gpui::test]
+fn a_linked_picture_opens_the_viewer_and_a_file_dialog_closes_when_access_is_removed(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let workspace = window.view().workspace().unwrap().id;
+    let message = crate::pictures::send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(target),
+        "A diagram",
+        vec![("diagram.png", crate::pictures::png(32, 24))],
+    );
+    let file = message.attachments[0].id;
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, file, cx)
+    }));
+    window.until("the linked picture has its file dialog", |window| {
+        window.shows("linked-file-dialog")
+    });
+    window.click("file-preview");
+    window.until("the picture viewer is open", |window| {
+        window.shows("picture-viewer")
+    });
+    window.press("escape");
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, file, cx)
+    }));
+    window.until("the file dialog is open again", |window| {
+        window.shows("linked-file-dialog")
+    });
+    let everyone = crate::channel_use::everyone(&world, &admin, workspace);
+    world
+        .run(admin.handle.api().set_channel_rule(
+            target,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ViewChannel],
+            },
+        ))
+        .unwrap();
+    window.until("the inaccessible file dialog is closed", |window| {
+        !window.shows("linked-file-dialog") && !window.channels().iter().any(|row| row.id == target)
+    });
+}

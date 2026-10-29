@@ -18,6 +18,7 @@ pub mod detached;
 mod direct;
 mod edges;
 mod feed;
+mod file_links;
 mod invited;
 mod join;
 mod keybinds;
@@ -141,6 +142,7 @@ pub(crate) enum Layer {
     NewDirect,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
+    FileLink(Box<crate::state::OpenFileLink>),
 }
 
 /// What the emoji of the picker is for.
@@ -655,6 +657,15 @@ impl Shell {
                 |this, _, event: &OpenAccount, window, cx| {
                     if !this.detached {
                         this.open_account(event.0, window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, _, event: &crate::state::OpenFileLink, window, cx| {
+                    if !this.detached {
+                        this.open_layer(Layer::FileLink(Box::new(event.clone())), window, cx);
                     }
                 },
             ),
@@ -1906,6 +1917,7 @@ impl Shell {
                 .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
+            Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1961,6 +1973,7 @@ impl Shell {
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::NewDirect => self.render_new_direct(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
+            Layer::FileLink(_) => self.render_linked_file(window, cx),
         }
     }
 }
