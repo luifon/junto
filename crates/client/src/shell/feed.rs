@@ -1617,7 +1617,7 @@ impl Shell {
                 )
                 .into_any_element(),
             FeedRow::System(row) => system_line(row, &theme),
-            FeedRow::Recording(row) => self.render_recording_card(index, row, cx),
+            FeedRow::Recording(row) => self.render_recording_card(index, row, window, cx),
             FeedRow::Message(row) => {
                 let shape = if compact {
                     MessageShape::Compact

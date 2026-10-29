@@ -1312,3 +1312,45 @@ fn recording_links_open_the_recording_under_history_permissions_and_support_arch
             && window.panel().is_some_and(|(_, open, _, _)| open.id == id)
     });
 }
+
+#[gpui::test]
+fn a_recording_context_menu_copies_its_link_and_opens_its_transcript(cx: &mut TestAppContext) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::links::{self, AppLink};
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, "The plan is ready.")]));
+    window.click_channel("Daily");
+    window.until("the recording is ready", |window| {
+        window
+            .card_detail(id)
+            .is_some_and(|detail| detail.transcript.held == 1)
+    });
+    window.right_click_named(format!("recording:{id}"));
+    window.click_named("context-action:Copy link".to_owned());
+    assert_eq!(
+        links::parse(&window.cx.read_from_clipboard().unwrap().text().unwrap()),
+        Some(AppLink::Recording {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id
+        })
+    );
+    assert!(window.shows("copied-confirmation"));
+    window.right_click_named(format!("recording:{id}"));
+    window.click_named("context-action:Show all".to_owned());
+    window.until("the recording menu opened its transcript", |window| {
+        window
+            .panel()
+            .is_some_and(|(_, open, _, _)| open.id == id && open.lines.lines.len() == 1)
+    });
+}

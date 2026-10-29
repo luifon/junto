@@ -639,6 +639,13 @@ impl Shell {
                 .child({
                     let ring =
                         crate::ui::focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+                    crate::ui::RowAction::new(
+                        text::SHOW_ALL,
+                        cx.listener(move |this, _, _, cx| {
+                            this.open_transcript(server_id, recording_id, None, cx);
+                        }),
+                    )
+                    .register();
                     div()
                         .id(("show-transcript", recording_id.as_uuid().as_u128() as usize))
                         .role(Role::Button)
@@ -813,6 +820,46 @@ impl Shell {
 
     /// The card of a finished recording, in place of the system line that posted it.
     pub(crate) fn render_recording_card(
+        &mut self,
+        index: usize,
+        row: &RecordingRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (server_id, recording_id) = (row.card.server_id, row.card.recording_id);
+        let (content, actions) = crate::ui::collect_actions(|| {
+            if matches!(row.card.state, CardState::Shown(_)) {
+                crate::ui::RowAction::new(
+                    text::COPY_TARGET_LINK,
+                    cx.listener(move |this, _, _, cx| {
+                        let link = this.state.read(cx).recording_link(server_id, recording_id);
+                        if let Some(link) = link {
+                            this.copy_text(link, cx);
+                        }
+                    }),
+                )
+                .register();
+            }
+            self.recording_card_content(index, row, cx)
+        });
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let key = SharedString::from(format!("recording-actions:{recording_id}"));
+        let frame = div()
+            .id(key.clone())
+            .w_full()
+            .min_w_0()
+            .role(Role::Group)
+            .aria_label(text::RECORDING)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+    }
+
+    fn recording_card_content(
         &mut self,
         index: usize,
         row: &RecordingRow,

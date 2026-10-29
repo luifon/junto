@@ -42,6 +42,8 @@ Removal:
 - A failed metadata refresh leaves the loaded transcript visible with an error and a retry that reloads the recording and transcript. The retry acquires its replacement reader before releasing the earlier one, keeping all loaded pages through failure and success. A failed page read retries the lines instead. This includes refreshes requested by a speaker rename.
 - An archived channel offers no removal of its recordings. An open removal confirmation closes when the card loses that permission, and the removal handler checks that the current channel is active before sending a request. For an active channel the server decides permission and its refusal remains visible in the card.
 
+Each recording card is a keyboard context-menu target. It uses the shared action collection for the card's current buttons and their disabled reasons, plus Copy link when its metadata is readable and the existing Show all transcript action when available. Menus call the same card operations; they do not repeat permission decisions or bypass removal confirmation. The recording URL follows ADR0714 and copying uses the shared confirmation. Window test: `transcripts::a_recording_context_menu_copies_its_link_and_opens_its_transcript`.
+
 ## Consequences
 
 - The prediction of "Remove" reads the roles of the workspace and not the overrides of the channel: a person who holds "manage recordings" only through an override of the voice channel sees the control disabled.
