@@ -22,8 +22,12 @@ pub(crate) struct AccountTarget {
     pub departed: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AccountSource {
+    CallOccupant {
+        seat: Box<junto_media::calls::Seat>,
+        account_id: AccountId,
+    },
     Message(MessageId),
     Pending(u64),
     Search(crate::state::search::ResultTarget),
@@ -44,19 +48,39 @@ pub(crate) struct OpenAccountMenu {
 }
 
 impl OpenAccountMenu {
-    pub(super) fn source_is_present(&self, view: &crate::state::view::ShellView) -> bool {
+    pub(super) fn source_is_present(
+        &self,
+        view: &crate::state::view::ShellView,
+        state: &crate::state::AppState,
+    ) -> bool {
         use crate::state::{feed::FeedRow, view::PinsState};
-        let Some(source) = self.source else {
+        let Some(source) = &self.source else {
             return true;
         };
         match source {
+            AccountSource::CallOccupant { seat, account_id } => {
+                return seat.target.server_id == self.owner.entry.server_id
+                    && state.calls().view().call.is_some_and(|call| {
+                        call.phase == junto_media::calls::Phase::Connected
+                            && call.seat() == *seat.as_ref()
+                    })
+                    && view
+                        .lists()
+                        .and_then(|lists| lists.call.as_ref())
+                        .is_some_and(|panel| {
+                            panel
+                                .people
+                                .iter()
+                                .any(|person| person.account_id == *account_id)
+                        });
+            }
             AccountSource::Search(target) => {
                 return view
                     .workspace()
                     .and_then(|workspace| workspace.search.as_ref())
                     .is_some_and(|panel| {
                         panel.server_id == self.owner.entry.server_id
-                            && panel.results.iter().any(|row| row.target == target)
+                            && panel.results.iter().any(|row| row.target == *target)
                     });
             }
             AccountSource::Notice(id) => {
@@ -67,7 +91,7 @@ impl OpenAccountMenu {
                     && view
                         .lists()
                         .and_then(|lists| lists.notices.as_ref())
-                        .is_some_and(|panel| panel.rows.iter().any(|row| row.id == id));
+                        .is_some_and(|panel| panel.rows.iter().any(|row| row.id == *id));
             }
             AccountSource::VoiceOccupant {
                 channel_id,
@@ -82,13 +106,13 @@ impl OpenAccountMenu {
                             .sections
                             .iter()
                             .flat_map(|section| &section.rows)
-                            .find(|channel| channel.id == channel_id)
+                            .find(|channel| channel.id == *channel_id)
                             .and_then(|channel| channel.voice.as_ref())
                             .is_some_and(|voice| {
                                 voice
                                     .occupants
                                     .iter()
-                                    .any(|person| person.account_id == account_id)
+                                    .any(|person| person.account_id == *account_id)
                             })
                     });
             }
@@ -99,9 +123,11 @@ impl OpenAccountMenu {
                 feed.server_id == self.owner.entry.server_id
                     && feed.rows.iter().any(|row| match (source, row) {
                         (AccountSource::Message(id), FeedRow::Message(row)) => {
-                            row.message.id == id && !row.message.deleted
+                            row.message.id == *id && !row.message.deleted
                         }
-                        (AccountSource::Pending(id), FeedRow::Waiting(row)) => row.pending.id == id,
+                        (AccountSource::Pending(id), FeedRow::Waiting(row)) => {
+                            row.pending.id == *id
+                        }
                         _ => false,
                     })
             })
@@ -123,9 +149,9 @@ impl OpenAccountMenu {
         {
             return false;
         }
-        thread.and_then(|thread| thread.root.as_ref()).is_some_and(|row| row.message.id == id && !row.message.deleted)
+        thread.and_then(|thread| thread.root.as_ref()).is_some_and(|row| row.message.id == *id && !row.message.deleted)
             || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| {
-                matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(|row| row.message.id == id && !row.message.deleted))
+                matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(|row| row.message.id == *id && !row.message.deleted))
             })
     }
 }
@@ -155,7 +181,7 @@ pub(super) fn account_target(
             Box::new(OpenAccountMenu {
                 owner,
                 people: vec![target.clone()],
-                source,
+                source: source.clone(),
                 position,
             }),
             cx,
@@ -190,6 +216,34 @@ pub(super) fn account_target(
 }
 
 impl Shell {
+    pub(super) fn call_menu_trigger(
+        &self,
+        person: &crate::state::view::Occupant,
+        cx: &App,
+    ) -> Option<impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static> {
+        let state = self.state.read(cx);
+        let call = state.shown_calls().call?;
+        let owner = state.server(call.target.server_id)?.owner()?;
+        let open = OpenAccountMenu {
+            owner,
+            people: vec![AccountTarget {
+                account_id: person.account_id,
+                name: super::channels::occupant_name(person).to_string(),
+                departed: false,
+            }],
+            source: Some(AccountSource::CallOccupant {
+                seat: Box::new(call.seat()),
+                account_id: person.account_id,
+            }),
+            position: Point::default(),
+        };
+        Some(move |position, window: &mut Window, cx: &mut App| {
+            let mut open = open.clone();
+            open.position = position;
+            window.dispatch_action(Box::new(open), cx);
+        })
+    }
+
     pub(super) fn open_account_menu(
         &mut self,
         mut open: OpenAccountMenu,
@@ -203,7 +257,7 @@ impl Shell {
             && self
                 .view
                 .as_ref()
-                .is_some_and(|view| open.source_is_present(view))
+                .is_some_and(|view| open.source_is_present(view, self.state.read(cx)))
             && self
                 .state
                 .read(cx)
@@ -216,7 +270,7 @@ impl Shell {
 
     fn account_menu_current(&self, owner: Owner, person: &AccountTarget, cx: &App) -> bool {
         matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person)
-            && self.view.as_ref().is_some_and(|view| open.source_is_present(view)))
+            && self.view.as_ref().is_some_and(|view| open.source_is_present(view, self.state.read(cx))))
             && self
                 .state
                 .read(cx)

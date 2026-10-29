@@ -1953,7 +1953,7 @@ impl Shell {
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
             Layer::AccountMenu(open) => {
-                !open.source_is_present(view)
+                !open.source_is_present(view, self.state.read(cx))
                     || self
                         .state
                         .read(cx)

@@ -82,7 +82,7 @@ pub(crate) struct Excerpt {
 impl Excerpt {
     pub(crate) fn element(self, theme: &Theme, cx: &gpui::App) -> gpui::Div {
         let owner = self.account.as_ref().map(|account| account.owner);
-        let source = self.account.as_ref().map(|account| account.source);
+        let source = self.account.as_ref().map(|account| account.source.clone());
         let target = self
             .account
             .as_ref()
@@ -184,7 +184,7 @@ impl Excerpt {
                             SharedString::from(format!("excerpt-avatar:{}", self.seed)),
                             owner,
                             target.clone(),
-                            source,
+                            source.clone(),
                             Avatar::new(self.seed, 30.0).image(self.picture),
                             cx,
                         ),
@@ -203,7 +203,7 @@ impl Excerpt {
                                         SharedString::from(format!("excerpt-author:{}", self.seed)),
                                         owner,
                                         target,
-                                        source,
+                                        source.clone(),
                                         div()
                                             .min_w_0()
                                             .truncate()

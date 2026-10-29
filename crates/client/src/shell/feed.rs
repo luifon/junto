@@ -734,7 +734,7 @@ impl Rich {
                 Box::new(super::account_menus::OpenAccountMenu {
                     owner,
                     people,
-                    source,
+                    source: source.clone(),
                     position,
                 }),
                 cx,
@@ -1791,7 +1791,7 @@ impl Shell {
                         &drawings,
                         next(),
                         owner,
-                        source,
+                        source.clone(),
                     ));
                 }
                 Block::Quote { content } => blocks.push(
@@ -1808,7 +1808,7 @@ impl Shell {
                             &drawings,
                             next(),
                             owner,
-                            source,
+                            source.clone(),
                         ))
                         .into_any_element(),
                 ),
@@ -1850,7 +1850,7 @@ impl Shell {
                                     &drawings,
                                     next(),
                                     owner,
-                                    source,
+                                    source.clone(),
                                 ))
                                 .into_any_element(),
                         );
@@ -1936,7 +1936,7 @@ impl Shell {
                                     &drawings,
                                     next(),
                                     owner,
-                                    source,
+                                    source.clone(),
                                 ))
                                 .into_any_element(),
                         );

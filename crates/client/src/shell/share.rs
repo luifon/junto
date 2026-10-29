@@ -1835,6 +1835,9 @@ impl Shell {
                         Microphone::Open { speaking: true }
                     ))
                     .marks(marks)
+                    .when_some(self.call_menu_trigger(occupant, cx), |tile, open| {
+                        tile.on_menu(open)
+                    })
                     .selector(format!("call-tile:{}", occupant.account_id))
                     .into_any_element()
                 })

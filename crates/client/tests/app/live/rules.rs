@@ -2505,3 +2505,146 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
     });
     scene.world.run(scene.caller.calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn call_tiles_offer_account_actions_in_both_windows_and_close_with_their_source(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let (ada, own) = (scene.ada, scene.luca);
+    scene.window.until("the other tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("account-menu"));
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    assert!(scene.window.shows("copied-confirmation"));
+    scene.window.right_click_named(format!("call-tile:{own}"));
+    assert!(!scene.window.shows_named(format!("account-message:{own}")));
+    scene.window.click_named(format!("account-copy-name:{own}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Luca"
+    );
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    scene.window.click_named(format!("account-message:{ada}"));
+    scene
+        .window
+        .until("the direct conversation is shown", |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.conversation.as_ref())
+                .is_some_and(|conversation| conversation.account_id == ada)
+        });
+    assert!(connected(&mut scene.window));
+    scene.window.click_channel(ROOM);
+    let main = scene.window.cx.update(|window, _| window.window_handle());
+    scene.window.click("detach-call");
+    scene.window.until("the call is detached", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+    let handle = cx
+        .windows()
+        .into_iter()
+        .find(|handle| *handle != main)
+        .unwrap();
+    let mut detached = scene.window.window_of(handle);
+    detached.until("the detached tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    detached.right_click_named(format!("call-tile:{ada}"));
+    detached.click_named(format!("account-copy-name:{ada}"));
+    assert_eq!(
+        detached.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Ada"
+    );
+    detached.right_click_named(format!("call-tile:{ada}"));
+    scene.world.run(scene.caller.calls.leave());
+    detached.until("the departing target closes its menu", |window| {
+        !window.shows("account-menu")
+    });
+    drop(detached);
+    scene.window.click("return-call");
+    scene.window.until("the call is returned", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+    scene.window.right_click_named(format!("call-tile:{own}"));
+    scene
+        .window
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string("Unchanged".to_owned()));
+    let calls = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.calls().clone());
+    let old_seat = calls.view().call.unwrap().seat();
+    scene.world.run(async {
+        calls.leave().await;
+        calls.join(scene.target).await.unwrap();
+        let mut watch = calls.watch();
+        tokio::time::timeout(PATIENCE, async {
+            while !watch
+                .borrow_and_update()
+                .call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected)
+            {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the replacement call did not connect");
+    });
+    assert_ne!(calls.view().call.unwrap().seat(), old_seat);
+    scene
+        .window
+        .press_as_drawn(crate::harness::selector(format!("account-copy-name:{own}")));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Unchanged"
+    );
+    scene
+        .window
+        .until("the previous seat closes its menu", |window| {
+            !window.shows("account-menu")
+        });
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| state.leave_call(cx));
+    scene
+        .window
+        .until("the window left the new call", |window| {
+            window.view().call.is_none()
+        });
+}
