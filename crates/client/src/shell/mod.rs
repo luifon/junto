@@ -23,6 +23,7 @@ mod keybinds;
 pub mod linking;
 mod links;
 mod main_area;
+mod member_search;
 mod moving;
 /// The least time between two drawings that the animations of a window ask for.
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
@@ -278,6 +279,7 @@ pub struct Shell {
 
     // The side panel.
     pub(crate) members_open: bool,
+    member_search: member_search::MemberSearch,
 
     // The call.
     pub(crate) call_tab: CallTab,
@@ -504,6 +506,7 @@ impl Shell {
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
         let invite_find = Field::state(text::FIND_A_MEMBER, window, cx);
+        let member_search = member_search::MemberSearch::new(window, cx);
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
@@ -712,6 +715,7 @@ impl Shell {
                 },
             ),
             // The list of the members follows the text that it is searched for.
+            member_search.observe(window, cx),
             Field::observe(&invite_find, window, cx, |_: &mut Self, _, _, cx| {
                 cx.notify();
             }),
@@ -758,6 +762,7 @@ impl Shell {
             window_width: f32::MAX,
             edge_focus: HashMap::new(),
             members_open: false,
+            member_search,
             call_tab: CallTab::default(),
             call_panel_open: false,
             call_panel_overlay: false,
@@ -1203,6 +1208,7 @@ impl Shell {
         if searched && view.search_text.is_none() {
             self.type_search("", window, cx);
         }
+        self.member_search_scope(&view, window, cx);
         self.view = Some(view.clone());
         self.take_handed_drafts(window, cx);
         self.feed_changed(&view, window, cx);

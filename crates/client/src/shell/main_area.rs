@@ -1383,7 +1383,7 @@ impl Shell {
             && workspace.transcript.is_none()
             && workspace.search.is_none()
             && matches!(&workspace.members, Members::Loaded(members)
-                if members.iter().any(|member| member.account_id == account_id))
+                if members.iter().any(|member| member.account_id == account_id && self.member_search.matches(member)))
     }
 
     /// The members of the shown workspace in the side panel. Without a workspace the panel
@@ -1454,8 +1454,38 @@ impl Shell {
                     ),
                 )
                 .into_any_element(),
-            Members::Loaded(members) => self.member_list(members, lists, cx),
+            Members::Loaded(members) => {
+                let shown: Rc<Vec<_>> = Rc::new(
+                    members
+                        .iter()
+                        .filter(|member| self.member_search.matches(member))
+                        .cloned()
+                        .collect(),
+                );
+                if shown.is_empty() && self.member_search.active() {
+                    note(text::NO_MEMBER_FOUND)
+                        .debug_selector(|| "member-search-empty".to_owned())
+                        .into_any_element()
+                } else {
+                    self.member_list(shown, lists, cx)
+                }
+            }
         };
+        let body = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .flex_none()
+                    .px(u(14.))
+                    .pt(u(12.))
+                    .pb(u(8.))
+                    .child(self.member_search_field(cx)),
+            )
+            .child(body)
+            .into_any_element();
         self.side_panel(header, body, theme, cx)
     }
 
@@ -1464,16 +1494,18 @@ impl Shell {
     /// 601 members took 181 ms of each frame).
     fn member_list(
         &mut self,
-        members: &[MemberRow],
+        rows: Rc<Vec<MemberRow>>,
         lists: &ServerLists,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let rows: Rc<Vec<MemberRow>> = Rc::new(members.to_vec());
         if self.member_rows.as_ref() != Some(&rows) {
             // The label of the section, each member, and the space at the end.
             super::changed_rows(&self.members_list, rows.len() + 2);
             self.member_rows = Some(rows.clone());
+        }
+        if self.member_search.take_scroll_reset() {
+            self.members_list.scroll_to(gpui::ListOffset::default());
         }
         let server_id = self
             .view
@@ -1508,6 +1540,7 @@ impl Shell {
         let state = self.members_list.clone();
         div()
             .id("member-list")
+            .debug_selector(|| "member-list".to_owned())
             .role(Role::List)
             .aria_label(text::MEMBERS)
             .relative()
@@ -1555,25 +1588,30 @@ impl Shell {
         let faces = self.shown_faces();
         let detail: SharedString = member.roles.join(" · ").into();
         let account_id = member.account_id;
+        let owner = server_id.and_then(|server| self.state.read(cx).owner(server));
         let write = (!member.is_self).then(|| {
             div()
                 .flex_none()
                 .debug_selector(move || format!("message-member:{account_id}"))
                 .child(
-                    Button::new(("message-member", index))
-                        .kind(ButtonKind::Ghost)
-                        .icon(Icon::Chat)
-                        .tooltip(text::message_person(&member.name))
-                        .accessible_label(text::message_person(&member.name))
-                        .disabled(asked == Some(account_id))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let Some(server_id) = server_id else {
-                                return;
-                            };
-                            this.state.update(cx, |state, cx| {
+                    Button::new(SharedString::from(format!(
+                        "message-member:{owner:?}:{account_id}"
+                    )))
+                    .kind(ButtonKind::Ghost)
+                    .icon(Icon::Chat)
+                    .tooltip(text::message_person(&member.name))
+                    .accessible_label(text::message_person(&member.name))
+                    .disabled(asked == Some(account_id))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let Some(server_id) = server_id else {
+                            return;
+                        };
+                        this.state.update(cx, |state, cx| {
+                            if owner.is_some() && state.owner(server_id) == owner {
                                 state.open_conversation(server_id, account_id, cx);
-                            });
-                        })),
+                            }
+                        });
+                    })),
                 )
         });
         let refusal = refused
@@ -1587,7 +1625,7 @@ impl Shell {
                     .child(SharedString::from(refusal.reason.clone()))
             });
         div()
-            .id(("member", index))
+            .id(SharedString::from(format!("member:{owner:?}:{account_id}")))
             .role(Role::ListItem)
             .aria_label(member.name.clone())
             .debug_selector(move || format!("member-row:{account_id}"))

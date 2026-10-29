@@ -324,6 +324,7 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/state/account.rs`, `src/shell/account.rs`, `src/shell/account/` | The account layer: profile and devices. |
 | `src/state/linking.rs`, `src/shell/linking.rs` | The link of a device on one server and on all servers. |
 | `src/state/people.rs`, `src/shell/people.rs`, `src/ui/avatar.rs` | The profiles and the avatar images of the people that the window shows. |
+| `src/shell/member_search.rs` | Search of the workspace member roster, with scope and scroll handling. |
 | `src/state/profile.rs`, `src/shell/profile.rs`, `src/ui/profile.rs` | Account profile cards, their scoped reads, shared name and picture actions, and keyboard access. |
 | `src/state/logo.rs` | The logo image of each server that the server book and the administration show. |
 | `src/state/followed.rs` | The follow state of the open thread, the followed threads of the shown channel, and the roots that are read for their titles. |

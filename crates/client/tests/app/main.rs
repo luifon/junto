@@ -62,6 +62,7 @@ mod links;
 mod live;
 mod logo;
 mod logout;
+mod member_search;
 mod messages;
 mod notice_settings;
 mod notices;

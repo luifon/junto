@@ -440,6 +440,7 @@ pub fn entry_prompt(name: Option<&str>, channel: &str) -> String {
 // Invitations.
 pub const INVITE_A_MEMBER: &str = "Invite a member";
 pub const FIND_A_MEMBER: &str = "Find a member";
+pub const CLEAR_MEMBER_SEARCH: &str = "Clear member search";
 pub const INVITE: &str = "Invite";
 pub const INVITED: &str = "Invited";
 pub const WITHDRAW_INVITATION: &str = "Cancel the invitation";
