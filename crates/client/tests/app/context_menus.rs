@@ -428,3 +428,73 @@ fn a_device_menu_renames_its_device_and_keeps_the_last_device(cx: &mut TestAppCo
     });
     assert_eq!(world.run(window.handle().api().devices()).unwrap().len(), 1);
 }
+
+#[gpui::test]
+fn a_readonly_glossary_row_copies_its_term_without_editing(cx: &mut TestAppContext) {
+    use junto_client::state::admin::view::ServerPage;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let workspace = window.view().workspace().unwrap().id;
+    let terms = vec!["Quorvex".to_owned()];
+    world
+        .run(admin.handle.api().set_glossary(workspace, &terms, None))
+        .unwrap();
+    window.open_administration();
+    crate::admin_pages::open_page(&mut window, "admin-nav-glossary", |window| {
+        matches!(window.admin().map(|view| view.scope), Some(Scope::Server {
+            page: ServerPage::Glossary(page), ..
+        }) if !page.may_manage && page.terms.loaded().is_some_and(|terms| terms.len() == 1))
+    });
+    window.right_click_named("glossary-row-0".to_owned());
+    window.click_named("context-action:Copy text".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Quorvex"
+    );
+    assert!(window.shows("copied-confirmation"));
+    assert!(!window.shows("glossary-term"));
+    assert_eq!(
+        world
+            .run(admin.handle.api().glossary(workspace))
+            .unwrap()
+            .terms,
+        terms
+    );
+}
+
+#[gpui::test]
+fn an_audit_row_copies_its_displayed_entry(cx: &mut TestAppContext) {
+    use junto_client::state::admin::view::ServerPage;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    crate::admin_pages::invite(&world, &owner, Vec::new());
+    window.open_administration();
+    crate::admin_pages::open_page(&mut window, "admin-nav-audit", |window| {
+        matches!(window.admin().map(|view| view.scope), Some(Scope::Server {
+            page: ServerPage::AuditLog(page), ..
+        }) if !page.rows.is_empty())
+    });
+    let row = match window.admin().unwrap().scope {
+        Scope::Server {
+            page: ServerPage::AuditLog(page),
+            ..
+        } => page.rows[0].clone(),
+        _ => unreachable!(),
+    };
+    window.right_click_named(format!("audit-row-{}", row.id));
+    window.click_named("context-action:Copy text".to_owned());
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(copied.contains(&junto_client::text::admin::records::audit_head(&row)));
+    assert!(copied.contains(&row.sentence));
+    assert!(window.shows("copied-confirmation"));
+    assert!(matches!(
+        window.admin().unwrap().scope,
+        Scope::Server {
+            page: ServerPage::AuditLog(_),
+            ..
+        }
+    ));
+}

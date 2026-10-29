@@ -90,6 +90,8 @@ Administration row menus:
 - This covers the action rows of workspaces, categories, channels, archived channels, server and workspace roles, accounts, workspace members, invites, join requests, access tokens, exports, glossary entries, recordings and permission-rule subjects. A row with no button action has no menu from this binding. The popup remains inside the administration focus hierarchy and restores its original focus after closing; its floating placement is bounded by the window rather than the scrolled list.
 - Window tests: `context_menus::an_administration_workspace_menu_renames_its_workspace` renames through the row's context menu and reads the new value from the server; `a_role_context_menu_preserves_the_delete_confirmation` verifies that choosing Delete opens the existing confirmation and the role remains until confirmation. The list's focus and scrolling tests cover the binding without changing the list's keyboard behavior.
 
+Audit entries and glossary terms have a Copy text context action, including rows the account may only read. It copies the displayed audit heading, sentence, token reference, reason and message, or the glossary term; it uses the shared Copied confirmation. These rows remain keyboard targets even when their changing actions are unavailable. Copying does not grant a changing permission or open a form. Window tests: `context_menus::an_audit_row_copies_its_displayed_entry` and `a_readonly_glossary_row_copies_its_term_without_editing`.
+
 ## Consequences
 
 - Every screen of the administration is designed in this record.

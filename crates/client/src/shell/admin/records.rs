@@ -1571,13 +1571,14 @@ impl Shell {
                 });
             });
         }
-        let list =
-            std::iter::once(Row::new("audit-header", true).part())
-                .chain(page.rows.iter().map(|row| {
-                    Row::new(format!("audit-{}", row.id), row.deleted_workspace.is_some())
-                }))
-                .chain(std::iter::once(Row::new("audit-footer", true).part()))
-                .collect();
+        let list = std::iter::once(Row::new("audit-header", true).part())
+            .chain(
+                page.rows
+                    .iter()
+                    .map(|row| Row::new(format!("audit-{}", row.id), true)),
+            )
+            .chain(std::iter::once(Row::new("audit-footer", true).part()))
+            .collect();
         self.admin.list.take(Some(view), list, window, cx);
         // "Continue" and "Read again" start the view at the first entry of their read: the
         // request ends with the read.
@@ -1737,6 +1738,22 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let mut copied = vec![txt::audit_head(row), row.sentence.clone()];
+        if let Some(token) = &row.token {
+            copied.push(txt::audit_token(token));
+        }
+        if let Some(reason) = &row.reason {
+            copied.push(txt::audit_reason(reason));
+        }
+        if let Some(message) = &row.message {
+            copied.push(txt::audit_message(message));
+        }
+        let copied = copied.join("\n");
+        crate::ui::RowAction::new(
+            text::COPY_TEXT,
+            cx.listener(move |this, _, _, cx| this.copy_text(copied.clone(), cx)),
+        )
+        .register();
         // The entry of the deletion of a workspace opens the log of that workspace.
         let action = row.deleted_workspace.clone().map(|(workspace_id, name)| {
             row_action(

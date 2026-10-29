@@ -23,6 +23,24 @@ pub struct RowAction {
 }
 
 impl RowAction {
+    pub fn new(
+        label: impl Into<SharedString>,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            icon: None,
+            disabled: false,
+            detail: None,
+            handler: Some(Rc::new(handler)),
+        }
+    }
+
+    /// Adds an action without a visible button to the current collection scope.
+    pub fn register(self) {
+        record(|| Some(self));
+    }
+
     fn same_presentation(&self, other: &Self) -> bool {
         self.label == other.label
             && self.icon == other.icon
