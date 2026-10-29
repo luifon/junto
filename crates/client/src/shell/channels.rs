@@ -353,6 +353,7 @@ impl Shell {
         let colors = theme.colors;
         let workspace_id = workspace.id;
         let server_id = view.selected.as_ref().map(|server| server.id);
+        let account_owner = server_id.and_then(|id| self.state.read(cx).server(id)?.owner());
         let faces = self.shown_faces();
         // The person whose menu is open, and the menu.
         let open_menu = match &self.layer {
@@ -547,8 +548,7 @@ impl Shell {
                     .marks(occupant_marks(occupant))
                     .selector(format!("occupant:{account_id}"))
                     .open(menu.is_some());
-                    // The menu of a person holds what the person of this device can do with
-                    // another person. The own row has none.
+                    // Other people keep the volume and moderation menu.
                     let row = if occupant.is_self {
                         row
                     } else {
@@ -576,7 +576,27 @@ impl Shell {
                                     cx.new(|_| super::person_drag::DragLabel(name.clone()))
                                 })
                             })
-                            .child(row)
+                            .child(if occupant.is_self {
+                                super::account_menus::account_target(
+                                    SharedString::from(format!(
+                                        "own-occupant:{channel_id}:{account_id}"
+                                    )),
+                                    account_owner,
+                                    Some(super::account_menus::AccountTarget {
+                                        account_id,
+                                        name: occupant_name(occupant).to_string(),
+                                        departed: false,
+                                    }),
+                                    Some(super::account_menus::AccountSource::VoiceOccupant {
+                                        channel_id,
+                                        account_id,
+                                    }),
+                                    row,
+                                    cx,
+                                )
+                            } else {
+                                row.into_any_element()
+                            })
                             .children(menu)
                             .into_any_element(),
                     );

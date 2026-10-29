@@ -6,7 +6,7 @@ use gpui::{
 };
 use junto_client_core::{
     Owner,
-    protocol::ids::{AccountId, MessageId},
+    protocol::ids::{AccountId, ChannelId, MessageId},
 };
 
 use super::{Layer, Shell};
@@ -28,6 +28,10 @@ pub(crate) enum AccountSource {
     Pending(u64),
     Search(crate::state::search::ResultTarget),
     Notice(uuid::Uuid),
+    VoiceOccupant {
+        channel_id: ChannelId,
+        account_id: AccountId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
@@ -64,6 +68,29 @@ impl OpenAccountMenu {
                         .lists()
                         .and_then(|lists| lists.notices.as_ref())
                         .is_some_and(|panel| panel.rows.iter().any(|row| row.id == id));
+            }
+            AccountSource::VoiceOccupant {
+                channel_id,
+                account_id,
+            } => {
+                return view
+                    .selected
+                    .as_ref()
+                    .is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && view.workspace().is_some_and(|workspace| {
+                        workspace
+                            .sections
+                            .iter()
+                            .flat_map(|section| &section.rows)
+                            .find(|channel| channel.id == channel_id)
+                            .and_then(|channel| channel.voice.as_ref())
+                            .is_some_and(|voice| {
+                                voice
+                                    .occupants
+                                    .iter()
+                                    .any(|person| person.account_id == account_id)
+                            })
+                    });
             }
             AccountSource::Message(_) | AccountSource::Pending(_) => {}
         }

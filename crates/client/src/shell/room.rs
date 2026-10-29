@@ -1242,6 +1242,39 @@ impl Shell {
                 );
             }
         }
+        if !moving {
+            items.push(menu_separator(cx).into_any_element());
+            for (id, label, value) in [
+                ("person-copy-name", text::COPY_NAME, name.to_string()),
+                (
+                    "person-copy-id",
+                    text::COPY_ACCOUNT_ID,
+                    account_id.to_string(),
+                ),
+            ] {
+                items.push(
+                    MenuItem::new(id, label)
+                        .selector(id)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_layer(window, cx);
+                            this.copy_text(value.clone(), cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+            let server_id = menu.server_id;
+            items.push(
+                MenuItem::new("person-message", text::message_person(&name))
+                    .selector("person-message")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.open_conversation(server_id, account_id, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
         let footer = div()
             .flex_none()
             .mt(u(4.0))

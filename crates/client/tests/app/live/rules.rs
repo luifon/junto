@@ -890,8 +890,8 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .in_shell(|shell, _, _| shell.member_picker_is_open())
     );
 
-    // The menu of a person. A member without a permission of moderation gets the volume
-    // only; the person of this device has no menu.
+    // A member without moderation gets volume and identity actions. The own row has
+    // identity actions without the moderation menu.
     scene.window.right_click_named(ada_row());
     assert!(scene.window.shows("person-menu") && scene.window.shows("menu-volume"));
     for absent in ["menu-invite", "menu-move", "menu-mute", "menu-disconnect"] {
@@ -2428,6 +2428,80 @@ fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
         .unwrap();
     scene.window.until("the move is told", |window| {
         told(window, "Ada moved you to Second")
+    });
+    scene.world.run(scene.caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let (ada, own) = (scene.ada, scene.luca);
+    scene.window.until("the other person is listed", |window| {
+        occupants(window)
+            .iter()
+            .any(|person| person.account_id == ada && person.name.as_deref() == Some("Ada"))
+    });
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("person-copy-name");
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Ada"
+    );
+    assert!(scene.window.shows("copied-confirmation"));
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("person-copy-id");
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    scene.window.right_click_named(format!("occupant:{own}"));
+    assert!(scene.window.shows("account-menu"));
+    assert!(!scene.window.shows_named(format!("account-message:{own}")));
+    scene.window.click_named(format!("account-copy-id:{own}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        own.to_string()
+    );
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("person-message");
+    scene
+        .window
+        .until("the person's direct conversation is open", |window| {
+            window.view().lists().is_some_and(|lists| {
+                lists
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|conversation| conversation.account_id == ada)
+            })
+        });
+    assert!(connected(&mut scene.window));
+    scene.window.click_channel(ROOM);
+    scene.window.click("leave-call");
+    scene.window.until("the window left its call", |window| {
+        window.view().call.is_none()
     });
     scene.world.run(scene.caller.calls.leave());
 }
