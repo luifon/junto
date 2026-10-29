@@ -2821,3 +2821,147 @@ fn the_own_tile_menu_controls_media_and_hand_and_respects_camera_permissions(
         window.view().call.is_none()
     });
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_call_tile_menu_uses_live_moderation_permissions_and_existing_actions(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let ada = scene.ada;
+    let show = |window: &mut Window| window.right_click_named(format!("call-tile:{ada}"));
+    scene.window.until("the other tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    show(&mut scene.window);
+    for id in [
+        "call-menu-block-microphone",
+        "call-menu-block-sound",
+        "call-menu-disconnect",
+    ] {
+        assert!(!scene.window.shows(id));
+    }
+    scene.window.press("escape");
+    scene.allow_everyone(&[
+        WorkspacePermission::MuteMembers,
+        WorkspacePermission::DeafenMembers,
+        WorkspacePermission::DisconnectMembers,
+    ]);
+    scene.window.until("the member may moderate", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            workspace.allowed.mute && workspace.allowed.deafen && workspace.allowed.disconnect
+        })
+    });
+    show(&mut scene.window);
+    assert!(scene.window.shows("call-menu-block-microphone"));
+    scene.window.click("call-menu-block-microphone");
+    scene
+        .window
+        .until("the tile action blocked the microphone", |_| {
+            scene
+                .caller
+                .calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_some())
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-block-microphone");
+    scene
+        .window
+        .until("the tile action unblocked the microphone", |_| {
+            scene
+                .caller
+                .calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_none())
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-block-sound");
+    scene.window.until("the tile action blocked sound", |_| {
+        scene
+            .caller
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.sound_block.is_some())
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-block-sound");
+    scene.window.until("the tile action unblocked sound", |_| {
+        scene
+            .caller
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.sound_block.is_none())
+    });
+    scene
+        .world
+        .run(scene.admin.handle.api().raise_hand())
+        .unwrap();
+    scene.window.until("the other hand is raised", |window| {
+        occupants(window)
+            .iter()
+            .any(|person| person.account_id == ada && person.hand_raised)
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-lower-hand");
+    scene
+        .window
+        .until("the tile action lowered the hand", |window| {
+            occupants(window)
+                .iter()
+                .any(|person| person.account_id == ada && !person.hand_raised)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-disconnect");
+    scene
+        .window
+        .until("the tile action disconnected the target", |_| {
+            scene.caller.calls.view().call.is_none()
+        });
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .world
+        .run(scene.admin.handle.api().set_channel_rule(
+            scene.voice,
+            RuleSubject::Person {
+                account_id: scene.luca,
+            },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![
+                    WorkspacePermission::MuteMembers,
+                    WorkspacePermission::DeafenMembers,
+                    WorkspacePermission::DisconnectMembers,
+                ],
+            },
+        ))
+        .unwrap();
+    scene
+        .window
+        .until("moderation permission was revoked", |window| {
+            window.view().workspace().is_some_and(|workspace| {
+                !workspace.allowed.mute
+                    && !workspace.allowed.deafen
+                    && !workspace.allowed.disconnect
+            })
+        });
+    show(&mut scene.window);
+    for id in [
+        "call-menu-block-microphone",
+        "call-menu-block-sound",
+        "call-menu-disconnect",
+    ] {
+        assert!(!scene.window.shows(id));
+    }
+    scene.window.press("escape");
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the own call ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}

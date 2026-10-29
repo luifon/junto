@@ -300,6 +300,7 @@ impl Shell {
             .into_iter()
             .collect();
         items.extend(self.own_call_controls(&open, cx));
+        items.extend(self.participant_controls(&open, cx));
         for (index, person) in open.people.iter().enumerate() {
             let account = person.account_id;
             let owner = open.owner;

@@ -119,18 +119,27 @@ impl Shell {
 }
 
 #[derive(Clone)]
-enum OwnCallAction {
+enum CallMenuAction {
     Microphone(crate::state::view::MicrophoneAction),
     Sound(bool),
     Camera(crate::state::CameraAction),
     Hand(bool),
     Leave,
+    Participant(ParticipantAction),
 }
 
-struct OwnControl {
+#[derive(Clone)]
+enum ParticipantAction {
+    Microphone(bool),
+    Sound(bool),
+    LowerHand,
+    Disconnect,
+}
+
+struct CallControl {
     id: &'static str,
     label: &'static str,
-    action: OwnCallAction,
+    action: CallMenuAction,
     disabled: bool,
     detail: Option<String>,
 }
@@ -165,7 +174,7 @@ impl Shell {
         };
         let camera = CameraAction::drawn_for(&call);
         let camera_on = matches!(&camera, CameraAction::Stop);
-        let make = |id, label, action| OwnControl {
+        let make = |id, label, action| CallControl {
             id,
             label,
             action,
@@ -179,7 +188,7 @@ impl Shell {
             } else {
                 text::OPEN_MICROPHONE
             },
-            OwnCallAction::Microphone(controls.microphone_action),
+            CallMenuAction::Microphone(controls.microphone_action),
         );
         microphone.disabled = controls.microphone == MicrophoneButton::NotPermitted;
         microphone.detail = match controls.microphone {
@@ -196,7 +205,7 @@ impl Shell {
             } else {
                 text::TURN_ON_CAMERA
             },
-            OwnCallAction::Camera(camera),
+            CallMenuAction::Camera(camera),
         );
         camera.disabled = call.withheld.camera;
         camera.detail = call
@@ -212,7 +221,7 @@ impl Shell {
                 } else {
                     text::SOUND_OUTPUT_ON
                 },
-                OwnCallAction::Sound(!controls.sound_off),
+                CallMenuAction::Sound(!controls.sound_off),
             ),
             camera,
         ];
@@ -224,14 +233,23 @@ impl Shell {
                 } else {
                     text::RAISE_HAND
                 },
-                OwnCallAction::Hand(!raised),
+                CallMenuAction::Hand(!raised),
             ));
         }
         items.push(make(
             "call-menu-leave",
             text::LEAVE_CALL,
-            OwnCallAction::Leave,
+            CallMenuAction::Leave,
         ));
+        self.call_controls(open, items, cx)
+    }
+
+    fn call_controls(
+        &self,
+        open: &OpenAccountMenu,
+        items: Vec<CallControl>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         items
             .into_iter()
             .map(|control| {
@@ -245,16 +263,127 @@ impl Shell {
                             return;
                         }
                         this.close_layer(window, cx);
+                        let participant = match &context.source {
+                            Some(AccountSource::CallOccupant { seat, account_id }) => {
+                                match seat.target.place {
+                                    junto_client_core::protocol::call::CallPlace::Channel {
+                                        channel_id,
+                                        ..
+                                    } => Some(((seat.target.server_id, channel_id), *account_id)),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
                         this.state.update(cx, |state, cx| match &control.action {
-                            OwnCallAction::Microphone(action) => state.use_microphone(action),
-                            OwnCallAction::Sound(off) => state.set_sound_off(*off),
-                            OwnCallAction::Camera(action) => state.use_camera(action, cx),
-                            OwnCallAction::Hand(raised) => state.set_hand(*raised, cx),
-                            OwnCallAction::Leave => state.leave_call(cx),
+                            CallMenuAction::Microphone(action) => state.use_microphone(action),
+                            CallMenuAction::Sound(off) => state.set_sound_off(*off),
+                            CallMenuAction::Camera(action) => state.use_camera(action, cx),
+                            CallMenuAction::Hand(raised) => state.set_hand(*raised, cx),
+                            CallMenuAction::Leave => state.leave_call(cx),
+                            CallMenuAction::Participant(action) => {
+                                if let Some((room, account)) = participant {
+                                    match action {
+                                        ParticipantAction::Microphone(block) => {
+                                            state.set_microphone_block(room, account, *block, cx)
+                                        }
+                                        ParticipantAction::Sound(block) => {
+                                            state.set_sound_block(room, account, *block, cx)
+                                        }
+                                        ParticipantAction::LowerHand => {
+                                            state.lower_hand_of(room, account, cx)
+                                        }
+                                        ParticipantAction::Disconnect => {
+                                            state.disconnect(room, account, cx)
+                                        }
+                                    }
+                                }
+                            }
                         });
                     }))
                     .into_any_element()
             })
             .collect()
+    }
+}
+
+impl Shell {
+    pub(super) fn participant_controls(
+        &self,
+        open: &OpenAccountMenu,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        use junto_client_core::protocol::call::CallPlace;
+        let Some(AccountSource::CallOccupant { seat, account_id }) = &open.source else {
+            return Vec::new();
+        };
+        if *account_id == open.owner.account_id || !self.call_menu_current(open, cx) {
+            return Vec::new();
+        }
+        let CallPlace::Channel { channel_id, .. } = seat.target.place else {
+            return Vec::new();
+        };
+        let Some(menu) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.person_menu(channel_id, *account_id))
+        else {
+            return Vec::new();
+        };
+        let make = |id, label, action, detail: &str| CallControl {
+            id,
+            label,
+            action: CallMenuAction::Participant(action),
+            disabled: false,
+            detail: Some(detail.to_owned()),
+        };
+        let mut items = Vec::new();
+        if let Some(blocked) = menu.microphone_blocked {
+            items.push(make(
+                "call-menu-block-microphone",
+                if blocked {
+                    text::REMOVE_MICROPHONE_BLOCK
+                } else {
+                    text::MUTE_FOR_EVERYONE
+                },
+                ParticipantAction::Microphone(!blocked),
+                text::PERMISSION_MUTE,
+            ));
+        }
+        if let Some(blocked) = menu.sound_blocked {
+            items.push(make(
+                "call-menu-block-sound",
+                if blocked {
+                    text::REMOVE_SOUND_BLOCK
+                } else {
+                    text::BLOCK_SOUND
+                },
+                ParticipantAction::Sound(!blocked),
+                text::PERMISSION_DEAFEN,
+            ));
+        }
+        if let Some(raised) = menu.hand_raised {
+            let mut item = make(
+                "call-menu-lower-hand",
+                text::LOWER_HAND_OF_PERSON,
+                ParticipantAction::LowerHand,
+                if raised {
+                    text::LOWER_HAND_HELP
+                } else {
+                    text::NO_RAISED_HAND
+                },
+            );
+            item.disabled = !raised;
+            items.push(item);
+        }
+        if menu.disconnect {
+            items.push(make(
+                "call-menu-disconnect",
+                text::DISCONNECT,
+                ParticipantAction::Disconnect,
+                text::PERMISSION_DISCONNECT,
+            ));
+        }
+        self.call_controls(open, items, cx)
     }
 }
